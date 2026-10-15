@@ -7,7 +7,9 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_config::integration::NativeBackend;
 use phux_plugin::{LaunchableIntegration, ResolvedLaunch};
-use phux_protocol::native_agent::{NativeRequest, SpawnNativeAgent, SpawnedNativeAgent};
+use phux_protocol::native_agent::{
+    NativeRequest, NativeRequestPayload, SpawnNativeAgent, SpawnedNativeAgent,
+};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
 use crate::commands::agent::sdk_runtime;
@@ -94,16 +96,12 @@ pub(crate) async fn spawn_request(
     socket: &Path,
     spec: SpawnNativeAgent,
 ) -> Result<SpawnedNativeAgent, String> {
+    let request = NativeRequestPayload::new(NativeRequest::Spawn { spec })?;
     let mut connection = Connection::connect(socket)
         .await
         .map_err(|error| error.to_string())?;
     let (result, _) = connection
-        .request(
-            1,
-            Command::NativeAgent {
-                request: Box::new(NativeRequest::Spawn { spec }),
-            },
-        )
+        .request(1, Command::NativeAgent { request })
         .await
         .map_err(|error| error.to_string())?
         .into_parts();

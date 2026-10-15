@@ -213,7 +213,7 @@ impl Fixture {
     }
     async fn request(&self, client: ClientId, request: NativeRequest) -> CommandResult {
         let command = Command::NativeAgent {
-            request: Box::new(request.clone()),
+            request: NativeRequestPayload::new(request.clone()).unwrap(),
         };
         assert!(matches!(
             self.state
@@ -242,10 +242,10 @@ impl Fixture {
             activation: "activation-A".into(),
             backend: "omp-rpc".into(),
             capabilities: NativeCapabilities {
-                prompt: true,
-                interrupt: true,
-                questions: true,
-                follow_up: true,
+                prompt: true.into(),
+                interrupt: true.into(),
+                questions: true.into(),
+                follow_up: true.into(),
             },
             connected: true,
             turn_id: Some("turn-A".into()),
@@ -746,11 +746,12 @@ async fn controller_binding_fences_old_generation_and_cannot_create_resources() 
                 }
             ));
             let spawn = Command::NativeAgent {
-                request: Box::new(NativeRequest::Spawn {
+                request: NativeRequestPayload::new(NativeRequest::Spawn {
                     spec: fx
                         .state
                         .with(|s| s.native_agents().bindings[&fx.agent].launch.clone()),
-                }),
+                })
+                .unwrap(),
             };
             assert!(
                 fx.state
@@ -1381,7 +1382,7 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
                     .get_mut(&spawned.agent)
                     .unwrap();
                 binding.view.connected = true;
-                binding.view.capabilities.prompt = true;
+                binding.view.capabilities.prompt = true.into();
             });
             let request = NativeRequest::Command {
                 agent_session_id: spawned.agent.clone(),
@@ -1392,7 +1393,7 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
                 },
             };
             let command = Command::NativeAgent {
-                request: Box::new(request.clone()),
+                request: NativeRequestPayload::new(request.clone()).unwrap(),
             };
             assert!(
                 fx.state

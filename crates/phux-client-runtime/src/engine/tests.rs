@@ -714,7 +714,7 @@ fn engine_accessor_exposes_only_committed_views_and_disconnects_closed_sources()
         activation: "activation-A".into(),
         backend: "omp-rpc".into(),
         capabilities: NativeCapabilities {
-            prompt: true,
+            prompt: true.into(),
             ..NativeCapabilities::default()
         },
         connected: true,

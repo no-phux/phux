@@ -7,6 +7,7 @@ use phux_protocol::{
     ids::ResourceId,
     native_agent::{
         NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativeRequest,
+        NativeRequestPayload,
     },
     wire::frame::{AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind},
 };
@@ -77,6 +78,17 @@ pub(super) fn run(
         Err(code) => return code,
     };
     let result = runtime.block_on(async {
+        let request = match NativeRequestPayload::new(NativeRequest::Command {
+            agent_session_id: ResourceId::local(id),
+            command: NativeCommand { operation_id, activation: activation.to_owned(), intent },
+        }) {
+            Ok(request) => Command::NativeAgent { request },
+            Err(message) => return Ok(NativeCommandResult {
+                operation_id,
+                disposition: NativeDisposition::Refused,
+                detail: Some(message),
+            }),
+        };
         let mut connection = Connection::connect(&socket).await
             .map_err(|error| json_err::report_no_server(json, &error, &socket, "agent native-command"))?;
         if !connection.negotiated_bootstrap().is_some_and(|negotiated| {
@@ -90,10 +102,6 @@ pub(super) fn run(
         }
         connection.send(&FrameKind::SubscribeEvents { terminal: Some(ResourceId::local(id)), after_seq: Some(0) }).await
             .map_err(|error| json_err::report_no_server(json, &error, &socket, "agent native-command"))?;
-        let request = Command::NativeAgent { request: Box::new(NativeRequest::Command {
-            agent_session_id: ResourceId::local(id),
-            command: NativeCommand { operation_id, activation: activation.to_owned(), intent },
-        }) };
         let (reply, frames) = match connection.request(1, request).await {
             Ok(reply) => reply.into_parts(),
             Err(error) => return Ok(uncertain(operation_id, &error.to_string())),

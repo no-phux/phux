@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use phux_protocol::ResourceId;
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativePublicationReceipt,
-    NativeRequest, NativeUpdate, validate_payload,
+    NativeRequest, NativeRequestPayload, NativeUpdate,
 };
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 use serde::Deserialize;
@@ -67,7 +67,7 @@ impl ClientError {
 
 struct PendingPublication {
     id: u64,
-    update: NativeUpdate,
+    request: Box<NativeRequestPayload>,
 }
 
 struct ControlLane {
@@ -151,7 +151,7 @@ impl NativeController {
             activation: activation.clone(),
             binding_proof: binding_proof.clone(),
         };
-        validate_payload(&request).map_err(ClientError::Invalid)?;
+        let request = NativeRequestPayload::new(request).map_err(ClientError::Invalid)?;
         let mut connection = Connection::connect(socket.as_ref())
             .await
             .map_err(transport_error)?;
@@ -215,14 +215,15 @@ impl NativeController {
                     }
                 },
             };
-            let request_id = lane.next_request.max(1);
-            lane.next_request = request_id.wrapping_add(1).max(1);
-            let request = NativeRequest::Receive {
+            let request = NativeRequestPayload::new(NativeRequest::Receive {
                 agent_session_id: self.agent.clone(),
                 activation: self.activation.clone(),
                 binding_proof: self.binding_proof.clone(),
                 generation,
-            };
+            })
+            .map_err(ClientError::Invalid)?;
+            let request_id = lane.next_request.max(1);
+            lane.next_request = request_id.wrapping_add(1).max(1);
             // A control reconnect fences this held receive. Cancel its socket
             // before asking the broker under the new generation.
             let result = tokio::select! {
@@ -285,8 +286,8 @@ impl NativeController {
     pub async fn complete(&self, result: NativeCommandResult) -> Result<(), ClientError> {
         let mut lane = self.control.lock().await;
         self.ensure_open()?;
-        let request = self.complete_request(result);
-        validate_payload(&request).map_err(ClientError::Invalid)?;
+        let request = NativeRequestPayload::new(self.complete_request(result))
+            .map_err(ClientError::Invalid)?;
         ok_reply(self.control_request(&mut lane, request).await?)
     }
 
@@ -304,8 +305,12 @@ impl NativeController {
     ) -> Result<NativePublicationReceipt, ClientError> {
         let mut lane = self.control.lock().await;
         self.ensure_open()?;
-        let id = if let Some(pending) = lane.pending.iter().find(|pending| pending.update == update)
-        {
+        let id = if let Some(pending) = lane.pending.iter().find(|pending| {
+            matches!(
+                pending.request.request(),
+                NativeRequest::Publish { update: queued, .. } if *queued == update
+            )
+        }) {
             pending.id
         } else {
             if lane.pending.len() >= MAX_NATIVE_PENDING {
@@ -316,13 +321,10 @@ impl NativeController {
             let id = lane
                 .next_publication
                 .ok_or_else(|| ClientError::Invalid("publication ids exhausted".into()))?;
-            let request = self.publish_request(id, update);
-            validate_payload(&request).map_err(ClientError::Invalid)?;
-            let NativeRequest::Publish { update, .. } = request else {
-                return Err(ClientError::Protocol("invalid publication request".into()));
-            };
+            let request = NativeRequestPayload::new(self.publish_request(id, update))
+                .map_err(ClientError::Invalid)?;
             lane.next_publication = id.checked_add(1);
-            lane.pending.push_back(PendingPublication { id, update });
+            lane.pending.push_back(PendingPublication { id, request });
             id
         };
         loop {
@@ -331,7 +333,7 @@ impl NativeController {
                 .front()
                 .ok_or_else(|| ClientError::Protocol("pending publication disappeared".into()))?;
             let expected_id = pending.id;
-            let request = self.publish_request(expected_id, pending.update.clone());
+            let request = pending.request.clone();
             let receipt: NativePublicationReceipt =
                 json_reply(self.control_request(&mut lane, request).await?)?;
             if receipt.publication_id != expected_id || receipt.first_seq > receipt.last_seq {
@@ -357,12 +359,13 @@ impl NativeController {
         if self.closed.load(Ordering::Acquire) {
             return Ok(());
         }
-        let request = NativeRequest::Close {
+        let request = NativeRequestPayload::new(NativeRequest::Close {
             agent_session_id: self.agent.clone(),
             activation: self.activation.clone(),
             binding_proof: self.binding_proof.clone(),
             generation: *self.generation.borrow(),
-        };
+        })
+        .map_err(ClientError::Invalid)?;
         ok_reply(self.control_request(&mut lane, request).await?)?;
         self.closed.store(true, Ordering::Release);
         lane.connection = None;
@@ -398,15 +401,16 @@ impl NativeController {
 
     async fn register(&self, lane: &mut ControlLane) -> Result<(), ClientError> {
         self.ensure_open()?;
+        let request = NativeRequestPayload::new(NativeRequest::Register {
+            agent_session_id: self.agent.clone(),
+            activation: self.activation.clone(),
+            binding_proof: self.binding_proof.clone(),
+        })
+        .map_err(ClientError::Invalid)?;
         lane.connection = None;
         let mut connection = Connection::connect(&self.socket)
             .await
             .map_err(transport_error)?;
-        let request = NativeRequest::Register {
-            agent_session_id: self.agent.clone(),
-            activation: self.activation.clone(),
-            binding_proof: self.binding_proof.clone(),
-        };
         let registration: Registration = json_reply(
             round_trip(&mut connection, lane.request_id(), request)
                 .await
@@ -433,14 +437,14 @@ impl NativeController {
     async fn control_request(
         &self,
         lane: &mut ControlLane,
-        mut request: NativeRequest,
+        request: Box<NativeRequestPayload>,
     ) -> Result<CommandResult, ClientError> {
         self.ensure_connected(lane).await?;
-        set_generation(&mut request, *self.generation.borrow());
+        let request = set_generation(request, *self.generation.borrow())?;
         match self.control_once(lane, request.clone()).await {
             Err(error) if matches!(error, ClientError::Transport(_)) => {
                 self.register(lane).await?;
-                set_generation(&mut request, *self.generation.borrow());
+                let request = set_generation(request, *self.generation.borrow())?;
                 self.control_once(lane, request).await
             }
             result => result,
@@ -450,9 +454,8 @@ impl NativeController {
     async fn control_once(
         &self,
         lane: &mut ControlLane,
-        request: NativeRequest,
+        request: Box<NativeRequestPayload>,
     ) -> Result<CommandResult, ClientError> {
-        validate_payload(&request).map_err(ClientError::Invalid)?;
         let request_id = lane.request_id();
         // Taking ownership before awaiting makes cancellation safe: the
         // socket is dropped rather than reused with an unread acknowledgement.
@@ -498,13 +501,27 @@ impl NativeController {
     }
 }
 
-fn set_generation(request: &mut NativeRequest, current: u64) {
-    match request {
+fn set_generation(
+    request: Box<NativeRequestPayload>,
+    current: u64,
+) -> Result<Box<NativeRequestPayload>, ClientError> {
+    let generation = match request.request() {
+        NativeRequest::Complete { generation, .. }
+        | NativeRequest::Publish { generation, .. }
+        | NativeRequest::Close { generation, .. } => *generation,
+        _ => return Ok(request),
+    };
+    if generation == current {
+        return Ok(request);
+    }
+    let mut request = request.into_request();
+    match &mut request {
         NativeRequest::Complete { generation, .. }
         | NativeRequest::Publish { generation, .. }
         | NativeRequest::Close { generation, .. } => *generation = current,
         _ => {}
     }
+    NativeRequestPayload::new(request).map_err(ClientError::Invalid)
 }
 
 fn transport_error(error: AttachError) -> ClientError {
@@ -537,21 +554,16 @@ fn transport_error(error: AttachError) -> ClientError {
 async fn round_trip(
     connection: &mut Connection,
     request_id: u32,
-    request: NativeRequest,
+    request: Box<NativeRequestPayload>,
 ) -> Result<CommandResult, ClientError> {
     let mutation = matches!(
-        &request,
+        request.request(),
         NativeRequest::Publish { .. }
             | NativeRequest::Complete { .. }
             | NativeRequest::Close { .. }
     );
     let (result, _interleaved) = connection
-        .request(
-            request_id,
-            Command::NativeAgent {
-                request: Box::new(request),
-            },
-        )
+        .request(request_id, Command::NativeAgent { request })
         .await
         .map_err(transport_error)?
         .into_parts();

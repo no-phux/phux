@@ -153,7 +153,7 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
         else {
             panic!("controller must use only dedicated native requests");
         };
-        let result = match *request {
+        let result = match request.into_request() {
             NativeRequest::Register {
                 agent_session_id,
                 activation,
@@ -324,6 +324,33 @@ async fn legacy_server_is_refused_before_sending_native_registration() {
     .await;
     assert!(matches!(result, Err(ClientError::Protocol(_))));
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn oversized_payloads_are_local_errors_without_publication_reservations() {
+    let fixture = Fixture::start(0).await;
+    let controller = fixture.controller().await;
+    let oversized = "x".repeat(16 * 1024);
+    assert!(matches!(
+        controller.publish(notice(&oversized)).await,
+        Err(ClientError::Invalid(_))
+    ));
+    assert!(matches!(
+        controller
+            .complete(NativeCommandResult {
+                operation_id: 91,
+                disposition: NativeDisposition::Completed,
+                detail: Some(oversized),
+            })
+            .await,
+        Err(ClientError::Invalid(_))
+    ));
+    assert!(fixture.broker.publishes.lock().await.is_empty());
+    assert!(fixture.broker.completions.lock().await.is_empty());
+    assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
+    let receipt = controller.publish(notice("valid output")).await.unwrap();
+    assert_eq!(receipt.publication_id, 1);
+    controller.close().await.unwrap();
 }
 
 #[tokio::test]

@@ -397,9 +397,11 @@ pub(super) async fn spawn_relaunch(
     spec: SpawnNativeAgent,
     operation: phux_protocol::ids::OperationId,
 ) -> CommandResult {
-    let command = phux_protocol::wire::frame::Command::NativeAgent {
-        request: Box::new(NativeRequest::Spawn { spec }),
+    let request = match NativeRequestPayload::new(NativeRequest::Spawn { spec }) {
+        Ok(request) => request,
+        Err(message) => return refusal(message),
     };
+    let command = phux_protocol::wire::frame::Command::NativeAgent { request };
     if !matches!(
         ctx.state
             .with(|s| crate::policy::authorize_command(s, ctx.client_id, &command)),
@@ -410,7 +412,7 @@ pub(super) async fn spawn_relaunch(
     let phux_protocol::wire::frame::Command::NativeAgent { request } = command else {
         return refusal("invalid native relaunch carrier");
     };
-    let NativeRequest::Spawn { spec } = *request else {
+    let NativeRequest::Spawn { spec } = request.into_request() else {
         return refusal("invalid native relaunch request");
     };
     match spawn_transaction(ctx, spec, Some(operation)).await {
@@ -1005,28 +1007,32 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
                     NativeIntent::Prompt { .. } => true,
                 }
         });
-        let wire_command = phux_protocol::wire::frame::Command::NativeAgent {
-            request: Box::new(NativeRequest::Command {
-                agent_session_id: agent.clone(),
-                command: command.clone(),
-            }),
-        };
+        let wire_command = NativeRequestPayload::new(NativeRequest::Command {
+            agent_session_id: agent.clone(),
+            command: command.clone(),
+        })
+        .map(|request| phux_protocol::wire::frame::Command::NativeAgent { request });
         if valid
             && !s.input_blocked(core_parent, requester)
             && !s.is_viewer(requester, &parent)
-            && matches!(
-                crate::policy::authorize_command(s, requester, &wire_command),
-                Ok(crate::policy::Admission::Run)
-            )
+            && wire_command.as_ref().is_ok_and(|wire_command| {
+                matches!(
+                    crate::policy::authorize_command(s, requester, wire_command),
+                    Ok(crate::policy::Admission::Run)
+                )
+            })
         {
             continue;
         }
         let result = NativeCommandResult {
             operation_id: command.operation_id,
             disposition: NativeDisposition::Refused,
-            detail: Some(
-                "caller authority, lease, source, turn, or question changed before dispatch".into(),
-            ),
+            detail: Some(match wire_command {
+                Err(message) => message,
+                Ok(_) => {
+                    "caller authority, lease, source, turn, or question changed before dispatch".into()
+                }
+            }),
         };
         if let Some(binding) = s.native_agents_mut().bindings.get_mut(agent) {
             binding.pending.retain(|id| *id != command.operation_id);

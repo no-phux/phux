@@ -1017,7 +1017,9 @@ async fn dispatch_local(
     let input_lane = ctx.input_lane.as_ref();
 
     match command {
-        Command::NativeAgent { request } => super::native_agent::handle(ctx, *request).await,
+        Command::NativeAgent { request } => {
+            super::native_agent::handle(ctx, request.into_request()).await
+        }
         Command::AttachResource {
             terminal_id,
             role_policy,

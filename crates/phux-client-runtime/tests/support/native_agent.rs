@@ -46,7 +46,7 @@ fn sent(plane: &mut ControlPlane) -> (u32, u64) {
             let NativeRequest::Command {
                 agent_session_id,
                 command,
-            } = *request
+            } = request.into_request()
             else {
                 panic!("dedicated command")
             };
@@ -111,6 +111,11 @@ fn validates_before_scheduling_and_bounds_pending_commands() {
     assert_eq!(
         plane.native_agent_command(&ResourceId::local(22), "", prompt()),
         None
+    );
+    assert_eq!(
+        plane.native_agent_command(&ResourceId::local(22), &"a".repeat(16 * 1024), prompt()),
+        None,
+        "the complete request must fit even when the intent alone is valid"
     );
     assert!(plane.take_outbound().is_empty());
     assert!(plane.take_events().is_empty());

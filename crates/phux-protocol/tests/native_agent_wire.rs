@@ -11,7 +11,7 @@ fn frame(request: NativeRequest) -> FrameKind {
     FrameKind::Command {
         request_id: 7,
         command: Command::NativeAgent {
-            request: Box::new(request),
+            request: NativeRequestPayload::new(request).unwrap(),
         },
     }
 }
@@ -107,6 +107,26 @@ fn all_native_request_roles_round_trip() {
         let json = serde_json::to_vec(&request).unwrap();
         assert_eq!(common::decode(&raw_json(&json)).unwrap(), expected);
     }
+}
+
+#[test]
+fn request_payload_admits_before_encoding_and_preserves_the_typed_request() {
+    let request = NativeRequest::Register {
+        agent_session_id: ResourceId::local(9),
+        activation: "activation".into(),
+        binding_proof: "proof".into(),
+    };
+    let payload = NativeRequestPayload::new(request.clone()).unwrap();
+    assert_eq!(payload.request(), &request);
+    assert_eq!(payload.into_request(), request);
+    assert!(
+        NativeRequestPayload::new(NativeRequest::Register {
+            agent_session_id: ResourceId::local(9),
+            activation: "x".repeat(MAX_NATIVE_PAYLOAD_BYTES),
+            binding_proof: "proof".into(),
+        })
+        .is_err()
+    );
 }
 
 #[test]

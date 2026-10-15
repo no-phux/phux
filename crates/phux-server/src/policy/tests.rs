@@ -524,11 +524,11 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
 
 fn native_samples(agent: &WireResourceId) -> [FrameKind; 3] {
     use phux_protocol::native_agent::{
-        NativeCommand, NativeIntent, NativeRequest, SpawnNativeAgent,
+        NativeCommand, NativeIntent, NativeRequest, NativeRequestPayload, SpawnNativeAgent,
     };
     [
         command(Command::NativeAgent {
-            request: Box::new(NativeRequest::Spawn {
+            request: NativeRequestPayload::new(NativeRequest::Spawn {
                 spec: SpawnNativeAgent {
                     session: "alpha".into(),
                     backend: "omp-rpc".into(),
@@ -543,10 +543,11 @@ fn native_samples(agent: &WireResourceId) -> [FrameKind; 3] {
                     guardian_key: None,
                     guardian_expected: None,
                 },
-            }),
+            })
+            .unwrap(),
         }),
         command(Command::NativeAgent {
-            request: Box::new(NativeRequest::Command {
+            request: NativeRequestPayload::new(NativeRequest::Command {
                 agent_session_id: agent.clone(),
                 command: NativeCommand {
                     operation_id: 1,
@@ -555,14 +556,16 @@ fn native_samples(agent: &WireResourceId) -> [FrameKind; 3] {
                         text: "human prompt".into(),
                     },
                 },
-            }),
+            })
+            .unwrap(),
         }),
         command(Command::NativeAgent {
-            request: Box::new(NativeRequest::Register {
+            request: NativeRequestPayload::new(NativeRequest::Register {
                 agent_session_id: agent.clone(),
                 activation: "activation".into(),
                 binding_proof: "proof".into(),
-            }),
+            })
+            .unwrap(),
         }),
     ]
 }

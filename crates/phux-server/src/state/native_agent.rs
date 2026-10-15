@@ -131,16 +131,18 @@ impl NativeBinding {
         }
         let validation = match &command.intent {
             NativeIntent::Prompt { .. } => {
-                if !self.view.capabilities.prompt {
+                if !self.view.capabilities.prompt.is_supported() {
                     Err("provider does not support native prompt")
-                } else if self.view.turn_id.is_some() && !self.view.capabilities.follow_up {
+                } else if self.view.turn_id.is_some()
+                    && !self.view.capabilities.follow_up.is_supported()
+                {
                     Err("provider does not support a prompt during this turn")
                 } else {
                     Ok(())
                 }
             }
             NativeIntent::Interrupt { turn_id } => {
-                if !self.view.capabilities.interrupt {
+                if !self.view.capabilities.interrupt.is_supported() {
                     Err("provider does not support native interrupt")
                 } else if self.view.turn_id.as_ref() != Some(turn_id) {
                     Err("turn is stale or absent")
@@ -152,7 +154,7 @@ impl NativeBinding {
                 question_id,
                 response,
             } => {
-                if !self.view.capabilities.questions {
+                if !self.view.capabilities.questions.is_supported() {
                     Err("provider does not support native questions")
                 } else if self.answered.contains_key(question_id) {
                     Err("question already has a reserved responder")

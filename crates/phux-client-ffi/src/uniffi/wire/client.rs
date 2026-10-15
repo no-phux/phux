@@ -1258,7 +1258,7 @@ mod tests {
         assert!(rest.is_empty());
         assert!(matches!(frame, FrameKind::Command {
             command: phux_protocol::wire::frame::Command::NativeAgent { request }, ..
-        } if matches!(request.as_ref(), NativeRequest::Command { agent_session_id, command }
+        } if matches!(request.request(), NativeRequest::Command { agent_session_id, command }
             if *agent_session_id == ResourceId::local(22) && command.operation_id == operation_id && command.activation == "activation-A")));
         let mut projected = Vec::new();
         for (disposition, word) in [

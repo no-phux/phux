@@ -3,7 +3,7 @@
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
-    NativeRequest, validate_payload,
+    NativeRequest, NativeRequestPayload,
 };
 
 use super::{
@@ -64,7 +64,7 @@ impl ControlPlane {
             },
         };
         // The transport bounds the entire request, not just the inner intent.
-        validate_payload(&request).ok()?;
+        let request = NativeRequestPayload::new(request).ok()?;
         let request_id = self.next_request_id();
         self.pending.insert(
             request_id,
@@ -75,9 +75,7 @@ impl ControlPlane {
         );
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::NativeAgent {
-                request: Box::new(request),
-            },
+            command: Command::NativeAgent { request },
         });
         Some(operation_id)
     }
