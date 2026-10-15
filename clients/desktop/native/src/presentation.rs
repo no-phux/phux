@@ -6,6 +6,7 @@
 //! lease a receipt takes. The paint path borrows the entity's `Arc` and never
 //! drops a `Client`.
 
+use std::cell::RefCell;
 use std::rc::{Rc, Weak as RcWeak};
 use std::sync::{Arc, Weak};
 
@@ -13,7 +14,7 @@ use gpui::{self, App, Window};
 use phux_client_runtime::{
     Client, ViewId,
     control::{ControlPlane, ProjectionFence, Status},
-    publication::GridFrame,
+    publication::{GridFrame, TerminalPublication},
 };
 use phux_protocol::ResourceId;
 
@@ -43,6 +44,17 @@ impl std::fmt::Display for Rejection {
 pub(crate) struct Surface {
     lifetime: Rc<()>,
     window: Option<u64>,
+    /// The last frame proven current for this connection. A later draw reuses
+    /// it without an owner-thread turn while the publication is still that
+    /// exact frame. A new publication, reconnect, detach, or prediction fence
+    /// takes the full check.
+    validated: RefCell<Option<ValidatedFrame>>,
+}
+
+struct ValidatedFrame {
+    epoch: u64,
+    frame: Arc<GridFrame>,
+    slot: TerminalPublication,
 }
 
 impl Surface {
@@ -50,6 +62,7 @@ impl Surface {
     /// avoids wrapping epochs or reused element ids.
     pub(crate) fn invalidate(&mut self) {
         self.lifetime = Rc::new(());
+        self.validated = RefCell::new(None);
     }
 
     /// Borrow `client`. This does not clone it, so the paint path cannot be
@@ -65,7 +78,15 @@ impl Surface {
         self.bind_window(window_id);
         let weak = Arc::downgrade(client);
         client.with_control(|control| {
-            Ticket::capture(weak, terminal, view, window_id, &self.lifetime, control)
+            Ticket::capture(
+                weak,
+                terminal,
+                view,
+                window_id,
+                &self.lifetime,
+                &self.validated,
+                control,
+            )
         })
     }
 
@@ -97,13 +118,20 @@ impl Ticket {
         view: ViewId,
         window: u64,
         lifetime: &Rc<()>,
+        validated: &RefCell<Option<ValidatedFrame>>,
         control: &ControlPlane,
     ) -> Result<Self, Rejection> {
-        let frame = current_frame(control, view)?;
-        if frame.terminal_id != *terminal {
-            return Err(Rejection::WrongTerminal);
-        }
-        let frame = recovery_frame(control, view, frame)?;
+        let frame = if let Some(frame) = reused_frame(control, terminal, &validated.borrow()) {
+            frame
+        } else {
+            let frame = current_frame(control, view)?;
+            if frame.terminal_id != *terminal {
+                return Err(Rejection::WrongTerminal);
+            }
+            let frame = recovery_frame(control, view, frame)?;
+            remember_frame(control, view, &frame, &mut validated.borrow_mut());
+            frame
+        };
         Ok(Self {
             client,
             view,
@@ -221,6 +249,41 @@ fn bounds_cover(mask: gpui::Bounds<gpui::Pixels>, bounds: gpui::Bounds<gpui::Pix
     }
     let hit = mask.intersect(&bounds);
     hit.origin == bounds.origin && hit.size == bounds.size
+}
+
+fn reused_frame(
+    control: &ControlPlane,
+    terminal: &ResourceId,
+    validated: &Option<ValidatedFrame>,
+) -> Option<Arc<GridFrame>> {
+    if control.status() != Status::Attached || control.projection_fence(terminal).is_some() {
+        return None;
+    }
+    let validated = validated.as_ref()?;
+    if control.connection_epoch() != validated.epoch || validated.frame.terminal_id != *terminal {
+        return None;
+    }
+    // `acquire` returns without an owner turn when this frame is current. A
+    // deferred projection is stale, so it falls through and catches up.
+    let frame = validated.slot.acquire()?;
+    Arc::ptr_eq(&frame, &validated.frame).then_some(frame)
+}
+
+fn remember_frame(
+    control: &ControlPlane,
+    view: ViewId,
+    frame: &Arc<GridFrame>,
+    validated: &mut Option<ValidatedFrame>,
+) {
+    let Some(slot) = control.publication().view_slot(view) else {
+        *validated = None;
+        return;
+    };
+    *validated = Some(ValidatedFrame {
+        epoch: control.connection_epoch(),
+        frame: Arc::clone(frame),
+        slot,
+    });
 }
 
 fn recovery_frame(
