@@ -6,9 +6,9 @@ last-reviewed: 2026-10-15
 
 # Mission control
 
-**TL;DR.** Mission control is a client composition for tasks. It is decided
-and not built; the decision lives in the architecture record. The verb that
-starts a task's agent is `start`.
+**TL;DR.** Mission control lets you tell one agent, Lead, what needs doing.
+Lead turns it into tasks, and each task gets its own worktree and agent.
+You review and merge.
 
 <!-- impl-status: spec-only; probe: PhuxMissionStore -->
 > **Status: spec-only.** No `phux mission` verb and no mission store exist

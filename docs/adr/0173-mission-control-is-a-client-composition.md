@@ -85,13 +85,13 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
    on the worker's own session only, and never `CREATE`, `ORGANIZE`,
    `TERMINATE`, or `SIGNAL`. Delegation only narrows. The default lifetime
    is 12 hours. The ledger is in memory, so a cold restart revokes every
-   credential. `phux mission` runs as the owner. Lead is the exception and
-   runs without the owner's full authority. The grant Lead should hold is
-   a later ADR, tracked as MC-1.4b: `CREATE` and `ORGANIZE` scoped to the
-   `mission` session and to the sessions created when a task is started,
-   and never `TERMINATE` or `SIGNAL`. Stopping a worker is an Inbox
-   approval as in [ADR-0128](./0128-approvals-are-held-actions.md). Until
-   MC-1.4b lands, Lead is an interactive demo and stays attended.
+   credential. `phux mission` runs as the owner. Until MC-1.4b, Lead runs
+   with the owner's authority and only while attended. After MC-1.4b it
+   holds the scoped grant and never the owner's: `CREATE` and `ORGANIZE`
+   on the `mission` session and the sessions created when a task is
+   started, never `TERMINATE` or `SIGNAL`. Stopping a worker is an Inbox
+   approval as in [ADR-0128](./0128-approvals-are-held-actions.md). That
+   scoped grant is a later ADR, tracked as MC-1.4b.
 
 6. **Lost credential.** A lost credential, including one a cold restart
    revoked, is a `credential_lost` Signal on the task. The task moves to
@@ -120,10 +120,10 @@ teach the terminal process about git. The event ring cannot be the task
 log: it drops history on restart. A second writer, or a second product
 store in the ops hub, Blackbird, or beads, splits the authority ADR-0092
 exists to keep. An automatic or agent merge would land a SHA the human
-did not confirm. The worker grant already on main is narrow enough for a
-task agent. Lead with the owner's authority could terminate any session,
-so it stays attended until MC-1.4b. A cold restart clears the ledger
-unless the store raises `credential_lost`.
+did not confirm. A delegated grant cannot create panes or start workers,
+so until MC-1.4b Lead runs with the owner's authority and only while
+attended; after that it holds the scoped grant and never the owner's.
+A cold restart clears the ledger unless the store raises `credential_lost`.
 
 ## Tradeoffs
 
@@ -131,8 +131,8 @@ Two stores in sequence, interim then coordinator. Every client resolves
 the display alias `phux/12` through the store, and decodes through
 `phux.mission/v1`. One writer serializes the keeper and the CLI on one
 lock. Workers cannot create, organize, terminate, or signal. Until
-MC-1.4b, Lead cannot be left running. Shared `CARGO_TARGET_DIR` and
-sccache couple task worktrees at the build cache.
+MC-1.4b Lead holds the owner's authority only while attended. Shared
+`CARGO_TARGET_DIR` and sccache couple task worktrees at the build cache.
 
 ## Alternatives
 
