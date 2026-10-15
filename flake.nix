@@ -19,7 +19,7 @@
     # GHOSTTY_COMMIT names in the pinned libghostty-rs's build.rs (the rev in
     # Cargo.toml); `just ghostty-pin-check` fails when the two differ.
     ghostty = {
-      url = "github:phall1/ghostty/ff896fea333f954c8ba1f8932a4871aaf927a5e9";
+      url = "github:phall1/ghostty/11e797c05f162911fb64804d37337e7224ab501f";
       flake = false;
     };
   };
