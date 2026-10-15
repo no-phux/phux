@@ -32,7 +32,7 @@ use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::{self, Motion};
 use super::notifications::{Feed, Kind};
-use super::overlays::{GotoPalette, GotoSearch, InputSlot};
+use super::overlays::{GotoFrecency, GotoPalette, GotoSearch, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
 use super::settings_panel::SettingsControls;
@@ -178,6 +178,8 @@ pub struct Desk {
     pub(crate) goto: GotoPalette,
     /// Folded Go To rows. Rebuilt when pane, agent, or tab metadata changes.
     pub(crate) goto_search: GotoSearch,
+    /// Opens remembered for Go To ranking. Visits follow a listed destination only.
+    pub(crate) goto_frecency: GotoFrecency,
     pub(crate) modal_inputs: Vec<(InputSlot, Entity<InputState>, Subscription)>,
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
@@ -354,6 +356,7 @@ impl Desk {
             palette_state: None,
             goto: GotoPalette::default(),
             goto_search: GotoSearch::default(),
+            goto_frecency: GotoFrecency::default(),
             modal_inputs: Vec::new(),
             find_input: None,
             conversation_faces: HashMap::new(),

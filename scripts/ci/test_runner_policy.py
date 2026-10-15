@@ -5,6 +5,7 @@ import ctypes
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,12 +24,19 @@ RETIRED_UBUNTU_2204 = re.compile(
     r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
 )
 
-# Darwin <sys/attr.h>. Extended common attributes are requested in forkattr
-# and returned only when FSOPT_ATTR_CMN_EXTENDED is set. The buffer is a
-# packed (u_int32 length, u_int64 clone id): 64-bit fields stay 4-byte aligned.
+# Darwin <sys/attr.h>. Extended common attributes live in forkattr and are
+# returned only when FSOPT_ATTR_CMN_EXTENDED is set. Asking for
+# ATTR_CMN_RETURNED_ATTRS plus FSOPT_PACK_INVAL_ATTRS puts the clone id at a
+# fixed offset: u32 length, then the 20-byte returned attribute set, then the
+# u64 id. Reading eight bytes at offset 4 instead returns a per-file value on
+# Darwin 27, so identical clones look independent.
 _DARWIN_ATTR_BIT_MAP_COUNT = 5
+_DARWIN_ATTR_CMN_RETURNED_ATTRS = 0x80000000
+_DARWIN_FSOPT_NOFOLLOW = 0x00000001
+_DARWIN_FSOPT_PACK_INVAL_ATTRS = 0x00000008
 _DARWIN_FSOPT_ATTR_CMN_EXTENDED = 0x00000020
 _DARWIN_ATTR_CMNEXT_CLONEID = 0x00000100
+_DARWIN_CLONE_ID_OFFSET = 24
 
 
 class _DarwinAttrList(ctypes.Structure):
@@ -43,12 +51,25 @@ class _DarwinAttrList(ctypes.Structure):
     ]
 
 
-class _DarwinCloneId(ctypes.Structure):
-    _pack_ = 4
-    _fields_ = [
-        ("length", ctypes.c_uint32),
-        ("clone_id", ctypes.c_uint64),
-    ]
+def _clone_id_from_buffer(raw: bytes) -> int | None:
+    """Parse one clone id from a returned-attribute ``getattrlist`` buffer.
+
+    ``None`` when the buffer is short, the filesystem did not return
+    ``ATTR_CMNEXT_CLONEID``, or the id is zero. An id parked at offset 4,
+    which is what a length-plus-u64 reading used to accept, is not this layout.
+    """
+    if len(raw) < _DARWIN_CLONE_ID_OFFSET + 8:
+        return None
+    total = int.from_bytes(raw[0:4], sys.byteorder)
+    if total < _DARWIN_CLONE_ID_OFFSET + 8:
+        return None
+    returned_fork = int.from_bytes(raw[20:24], sys.byteorder)
+    if returned_fork & _DARWIN_ATTR_CMNEXT_CLONEID == 0:
+        return None
+    clone_id = int.from_bytes(raw[_DARWIN_CLONE_ID_OFFSET:_DARWIN_CLONE_ID_OFFSET + 8], sys.byteorder)
+    if clone_id == 0:
+        return None
+    return clone_id
 
 
 def _apfs_clone_id(path: Path) -> int | None:
@@ -57,42 +78,41 @@ def _apfs_clone_id(path: Path) -> int | None:
     Zero is not a shared stream. ``getattrlist`` is Darwin-only; every other
     platform returns None and the caller has to use inode identity.
     """
-    getattrlist = None
-    for library in (None, "/usr/lib/libSystem.B.dylib"):
-        if library is not None and sys.platform != "darwin":
-            continue
-        try:
-            loaded = ctypes.CDLL(library, use_errno=True)
-            getattrlist = loaded.getattrlist
-            break
-        except (AttributeError, OSError):
-            continue
-    if getattrlist is None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        getattrlist = library.getattrlist
+    except (AttributeError, OSError):
         return None
     query = _DarwinAttrList(
         bitmapcount=_DARWIN_ATTR_BIT_MAP_COUNT,
+        commonattr=_DARWIN_ATTR_CMN_RETURNED_ATTRS,
         forkattr=_DARWIN_ATTR_CMNEXT_CLONEID,
     )
-    found = _DarwinCloneId()
+    found = ctypes.create_string_buffer(64)
     getattrlist.argtypes = [
         ctypes.c_char_p,
         ctypes.POINTER(_DarwinAttrList),
-        ctypes.POINTER(_DarwinCloneId),
+        ctypes.c_void_p,
         ctypes.c_size_t,
         ctypes.c_ulong,
     ]
     getattrlist.restype = ctypes.c_int
+    options = (
+        _DARWIN_FSOPT_NOFOLLOW
+        | _DARWIN_FSOPT_PACK_INVAL_ATTRS
+        | _DARWIN_FSOPT_ATTR_CMN_EXTENDED
+    )
     if getattrlist(
         os.fsencode(path),
         ctypes.byref(query),
-        ctypes.byref(found),
+        ctypes.cast(found, ctypes.c_void_p),
         ctypes.sizeof(found),
-        _DARWIN_FSOPT_ATTR_CMN_EXTENDED,
+        options,
     ) != 0:
         return None
-    if found.length < ctypes.sizeof(found) or found.clone_id == 0:
-        return None
-    return int(found.clone_id)
+    return _clone_id_from_buffer(found.raw)
 
 
 def _shares_stored_bytes(
@@ -371,8 +391,21 @@ class RunnerPolicyTests(unittest.TestCase):
         same = os.stat_result((0o644, 1, 7, 2, 0, 0, 11, 0, 0, 0))
         other = os.stat_result((0o644, 2, 7, 1, 0, 0, 11, 0, 0, 0))
         other_device = os.stat_result((0o644, 1, 8, 1, 0, 0, 11, 0, 0, 0))
-        self.assertEqual(ctypes.sizeof(_DarwinCloneId), 12)
-        self.assertEqual(_DarwinCloneId.clone_id.offset, 4)
+        shared = bytearray(64)
+        shared[0:4] = (32).to_bytes(4, sys.byteorder)
+        shared[20:24] = _DARWIN_ATTR_CMNEXT_CLONEID.to_bytes(4, sys.byteorder)
+        shared[_DARWIN_CLONE_ID_OFFSET:_DARWIN_CLONE_ID_OFFSET + 8] = (9).to_bytes(8, sys.byteorder)
+        self.assertEqual(_clone_id_from_buffer(shared), 9)
+        # Issue #1339 read a packed (length, u64) at offset 4. That window is
+        # the returned attribute set, not the stream id, so a short buffer of
+        # that shape must not count as a clone id.
+        misplaced = (12).to_bytes(4, sys.byteorder) + (9).to_bytes(8, sys.byteorder)
+        self.assertIsNone(_clone_id_from_buffer(misplaced))
+        shared[20:24] = (0).to_bytes(4, sys.byteorder)
+        self.assertIsNone(_clone_id_from_buffer(shared))
+        shared[20:24] = _DARWIN_ATTR_CMNEXT_CLONEID.to_bytes(4, sys.byteorder)
+        shared[_DARWIN_CLONE_ID_OFFSET:_DARWIN_CLONE_ID_OFFSET + 8] = (0).to_bytes(8, sys.byteorder)
+        self.assertIsNone(_clone_id_from_buffer(shared))
         self.assertTrue(_shares_stored_bytes(same, same, None, None))
         self.assertFalse(_shares_stored_bytes(same, other, None, None))
         self.assertFalse(_shares_stored_bytes(same, other, 0, 0))
@@ -390,6 +423,17 @@ class RunnerPolicyTests(unittest.TestCase):
         the portable signal. Two target files whose mode or mtime disagree
         still cannot share an inode: the collapse puts that metadata back.
         """
+        self._assert_target_copies_collapsed(hide_hardlink=False)
+
+    def test_export_headroom_collapses_target_copies_without_hardlink_binary(self):
+        """Darwin's util-linux hardlink is keg-only and often not on PATH.
+
+        The copies still have to share storage. ``os.link`` is what does that
+        when the binary is missing; skipping the assertion is not.
+        """
+        self._assert_target_copies_collapsed(hide_hardlink=True)
+
+    def _assert_target_copies_collapsed(self, *, hide_hardlink: bool) -> None:
         script = ROOT / "scripts/ci/mbx-export-headroom.sh"
         payload = b"same-object" * 1000
         with tempfile.TemporaryDirectory() as tmp:
@@ -417,19 +461,30 @@ class RunnerPolicyTests(unittest.TestCase):
             mbx = bindir / "mbx"
             mbx.write_text("#!/bin/sh\necho mbx-was-called >&2\nexit 1\n")
             mbx.chmod(0o755)
+            if hide_hardlink:
+                for tool in ("bash", "python3", "df", "du", "rm", "awk", "dirname"):
+                    source = shutil.which(tool)
+                    self.assertIsNotNone(source, tool)
+                    os.symlink(source, bindir / tool)
+                path = str(bindir)
+            else:
+                path = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
             completed = subprocess.run(
                 ["bash", str(script)],
                 check=False,
                 capture_output=True,
                 text=True,
                 env={
-                    "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "PATH": path,
                     "HOME": str(home),
                     "PHUX_MBX_EXPORT_HEADROOM": "1",
                 },
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertNotIn("mbx-was-called", completed.stderr)
+            if hide_hardlink:
+                self.assertIn("hardlink is not installed", completed.stderr)
+                self.assertNotIn("leaving target copies", completed.stderr)
             first_stat, second_stat = first.stat(), second.stat()
             blob_stat, unique_stat = blob.stat(), unique.stat()
             first_clone, second_clone = _apfs_clone_id(first), _apfs_clone_id(second)
@@ -444,6 +499,8 @@ class RunnerPolicyTests(unittest.TestCase):
                 "target copies still occupy their own storage "
                 f"(inodes {first_stat.st_ino}, {second_stat.st_ino}, "
                 f"blob {blob_stat.st_ino}; "
+                f"nlink {first_stat.st_nlink}, {second_stat.st_nlink}, "
+                f"{blob_stat.st_nlink}; "
                 f"clone ids {first_clone}, {second_clone}, {blob_clone})",
             )
             self.assertFalse(

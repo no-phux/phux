@@ -60,6 +60,12 @@ unset LIBRARY_PATH LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
 # build-script links die with `unable to execute tool 'cc'`.
 unset SDKROOT MACOSX_DEPLOYMENT_TARGET DEVELOPER_DIR
 
+# (8) The devshell links the flake's prebuilt libghostty-vt
+# (LIBGHOSTTY_VT_SYS_LIB_DIR): one macOS host archive built against the Nix
+# SDK. The build script links it for every target, an iOS slice included, so
+# drop it and let libghostty-vt-sys build each target from source.
+unset LIBGHOSTTY_VT_SYS_LIB_DIR
+
 # (4) Apple's toolchain first, so clang/ld/swiftc resolve to Xcode's. Nix
 # entries stay later in PATH so `just`, `cargo` and `mise` still resolve.
 # Devshell-only: on a stock Mac this prepend is what BREAKS the build rather
