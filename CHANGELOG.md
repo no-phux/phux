@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.79.2](https://github.com/no-phux/phux/compare/v0.79.1...v0.79.2) (2026-10-15)
+
+
+### Build System
+
+* **nix:** link a Cachix-served libghostty-vt instead of building Zig ([#1434](https://github.com/no-phux/phux/issues/1434)) ([baebc3a](https://github.com/no-phux/phux/commit/baebc3abd3798fcfb3180336d0de8e55e698cebb))
+
 ## [0.79.1](https://github.com/no-phux/phux/compare/v0.79.0...v0.79.1) (2026-10-15)
 
 
