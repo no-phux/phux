@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-15
 ---
 
 # phux-desktop (native crate)
@@ -18,6 +18,7 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 | `launch` | CLI options, installed-CLI and server resolution, Kit init, first window |
 | `diag` | log file, `perf.jsonl` sampler, `--evidence`/`--smoke` captures, window metrics |
 | `app` | windows, menus, commands, chrome, overlays, the per-window `Desk` |
+| `app/overlays/launcher` | native command/navigation presentation over Kit's query and selection state |
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |
 | `connection` | one runtime `Client` per window and its sole event/path-answer drain |
@@ -47,7 +48,7 @@ resolution failure still opens the window, with the reason shown.
 ## Observing it
 
 - **Native performance window:** runtime controls and metric semantics are in
-  [Developer performance monitor](../README.md#developer-performance-monitor).
+  [Performance monitor](../README.md#performance-monitor).
   The view owns its sampler and cancellable task; `telemetry::Sampler` itself
   does no background work. `diag::report()` exposes the existing typed report.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr

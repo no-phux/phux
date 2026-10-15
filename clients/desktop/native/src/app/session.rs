@@ -23,7 +23,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
 use super::AppOptions;
-use super::actions::{OpenPathDirectory, PerformanceMonitor, Quit, Run, StopPerformanceMonitor};
+use super::actions::{OpenPathDirectory, Quit, Run};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
 
@@ -120,25 +120,6 @@ impl Desktop {
                 }
                 async {}
             }));
-        });
-        let weak = desktop.downgrade();
-        cx.on_action(move |_: &PerformanceMonitor, cx| {
-            // Menu actions may run while the focused window is leased.
-            let weak = weak.clone();
-            cx.defer(move |cx| {
-                let _ = weak.update(cx, |desktop, cx| {
-                    if let Err(error) = desktop.open_performance(cx) {
-                        log::error!("could not open performance monitor: {error:#}");
-                    }
-                });
-            });
-        });
-        let weak = desktop.downgrade();
-        cx.on_action(move |_: &StopPerformanceMonitor, cx| {
-            let weak = weak.clone();
-            cx.defer(move |cx| {
-                let _ = weak.update(cx, |desktop, cx| desktop.stop_performance(cx));
-            });
         });
         let weak = desktop.downgrade();
         cx.on_system_notification_response(move |response, cx| {
@@ -604,7 +585,12 @@ impl Desktop {
         });
     }
 
-    fn open_performance(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+    /// Whether a performance window currently owns the live sampler.
+    pub(crate) fn performance_is_open(&self) -> bool {
+        self.performance.is_some()
+    }
+
+    pub(crate) fn open_performance(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         if let Some(handle) = self.performance
             && handle
                 .update(cx, |_, window, _| {
@@ -617,15 +603,13 @@ impl Desktop {
             return Ok(());
         }
         self.performance = Some(super::performance::open(cx)?);
-        self.publish_menus(cx);
         Ok(())
     }
 
-    fn stop_performance(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn stop_performance(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.performance.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
-        self.publish_menus(cx);
     }
 
     fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
@@ -634,7 +618,6 @@ impl Desktop {
             .is_some_and(|handle| handle.window_id() == id)
         {
             self.performance = None;
-            self.publish_menus(cx);
             return;
         }
         let closed = if let Some(index) = self
@@ -782,7 +765,7 @@ impl Desktop {
     /// Menu items name [`Run`] actions; the platform menu shows each one's bound
     /// chord. The palette holds the rest of the catalog.
     fn publish_menus(&self, cx: &mut App) {
-        let mut menus = vec![
+        let menus = vec![
             Menu::new("Phux").items([
                 MenuItem::action("Settings…", Run::new("settings")),
                 MenuItem::separator(),
@@ -819,14 +802,6 @@ impl Desktop {
                 MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
             ]),
         ];
-        let mut developer = vec![MenuItem::action("Performance Monitor", PerformanceMonitor)];
-        if self.performance.is_some() {
-            developer.push(MenuItem::action(
-                "Stop Performance Monitoring",
-                StopPerformanceMonitor,
-            ));
-        }
-        menus.push(Menu::new("Developer").items(developer));
         cx.set_menus(menus);
     }
 

@@ -124,29 +124,30 @@ impl gpui::Render for ResourceDrag {
     }
 }
 
-/// Titlebar and sidebar slots. Each is notified only when the desk notifies.
+/// Chrome slots refresh on desk notifications, not on terminal-only frames.
 #[derive(Default)]
 pub(super) struct ChromeCache {
     titlebar: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
+    overlays: Option<Entity<CachedChrome>>,
 }
 
 struct CachedChrome {
     desk: WeakEntity<Desk>,
-    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+    build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
 }
 
 impl gpui::Render for CachedChrome {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(desk) = self.desk.upgrade() else {
             return div().into_any_element();
         };
-        desk.update(cx, self.build)
+        desk.update(cx, |desk, cx| (self.build)(desk, window, cx))
     }
 }
 
 fn cached_chrome(
-    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+    build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
     cx: &mut Context<Desk>,
 ) -> Entity<CachedChrome> {
     let observed = cx.entity();
@@ -161,7 +162,7 @@ fn cached_chrome(
 
 fn chrome_slot(
     slot: &mut Option<Entity<CachedChrome>>,
-    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+    build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
     style: StyleRefinement,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
@@ -170,15 +171,20 @@ fn chrome_slot(
         .cached(style)
 }
 
-fn build_titlebar(desk: &mut Desk, cx: &mut Context<Desk>) -> AnyElement {
+fn build_titlebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     let colors = chrome_palette(desk);
     titlebar(desk, sidebar, &colors, cx).into_any_element()
 }
 
-fn build_sidebar(desk: &mut Desk, cx: &mut Context<Desk>) -> AnyElement {
+fn build_sidebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let colors = chrome_palette(desk);
     sidebar_column(desk, &colors, cx).into_any_element()
+}
+
+fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = chrome_palette(desk);
+    overlays::layer(desk, &colors, window, cx)
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -263,7 +269,12 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                 })
                 .child(main_column(desk, &colors, window, cx)),
         )
-        .child(overlays::layer(desk, &colors, window, cx))
+        .child(chrome_slot(
+            &mut desk.chrome.overlays,
+            build_overlays,
+            StyleRefinement::default().absolute().inset_0().size_full(),
+            cx,
+        ))
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
 }
 

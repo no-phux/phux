@@ -1,5 +1,5 @@
 use super::{Desktop, WindowRole};
-use crate::app::actions::{PerformanceMonitor, Run, StopPerformanceMonitor};
+use crate::app::actions::Run;
 use gpui::prelude::*;
 use gpui::{AppContext, Context, Entity, FocusHandle, Focusable, TestAppContext, Window, div};
 use gpui_kit::component::input::{Input, InputState};
@@ -77,15 +77,50 @@ fn performance_monitor_starts_stops_and_reopens_live_without_a_launch_flag(
         gpui_kit::init(cx);
         Desktop::install(cx)
     });
-    let main = cx
-        .add_empty_window()
-        .update(|window, _| window.window_handle());
-    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
-    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
+    let path = std::env::temp_dir().join(format!("phux-performance-window-{}", std::process::id()));
+    let mut prefs = crate::settings::default_display();
+    prefs.ghostty_keys = false;
+    std::fs::create_dir_all(&path).unwrap();
+    let layout = crate::workspace::persist::save_layout("", &[], &prefs, None);
+    std::fs::write(
+        path.join("layout.json"),
+        serde_json::to_vec(&crate::workspace::persist::layout_value(&layout)).unwrap(),
+    )
+    .unwrap();
+    let main = desktop.update(cx, |desktop, cx| {
+        desktop
+            .launch(
+                crate::app::AppOptions {
+                    socket: path.join("isolated.sock"),
+                    session: String::new(),
+                    phux: path.join("not-installed-phux"),
+                    layout_path: path.join("layout.json"),
+                    fresh: false,
+                    initial_terminal: None,
+                    quick: false,
+                    dev_telemetry: false,
+                    startup_error: None,
+                },
+                cx,
+            )
+            .unwrap()
+    });
     cx.run_until_parked();
+    let run = |id: &str, cx: &mut TestAppContext| {
+        main.update(cx, |_, window, cx| {
+            window.activate_window();
+            window.dispatch_action(Box::new(Run::new(id)), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
+    run("performance-monitor-stop", cx);
+    assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
+    run("performance-monitor", cx);
+    assert!(desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
     let first = desktop.read_with(cx, |desktop, _| desktop.performance.unwrap());
-    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
-    cx.run_until_parked();
+    run("performance-monitor", cx);
     assert_eq!(
         desktop.read_with(cx, |desktop, _| desktop.performance.unwrap().window_id()),
         first.window_id(),
@@ -93,27 +128,26 @@ fn performance_monitor_starts_stops_and_reopens_live_without_a_launch_flag(
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
-    cx.update(|cx| cx.dispatch_action(&StopPerformanceMonitor));
-    cx.run_until_parked();
+    run("performance-monitor-stop", cx);
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(2));
     cx.run_until_parked();
-    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
+    assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
     assert!(
         cx.update_window(first, |_, _, _| ()).is_err(),
         "stop closes the sampler's owning window"
     );
-    // The test platform does not transfer native focus when a window closes.
-    main.update(cx, |_, window, _| window.activate_window())
-        .unwrap();
-    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
-    cx.run_until_parked();
+    run("performance-monitor", cx);
     let reopened = desktop.read_with(cx, |desktop, _| desktop.performance.unwrap());
     assert_ne!(reopened.window_id(), first.window_id());
     cx.update_window(reopened, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
-    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
+    assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
+    run("performance-monitor", cx);
+    assert!(desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
+    run("performance-monitor-stop", cx);
+    assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
 }
 
 struct FocusFixture {
