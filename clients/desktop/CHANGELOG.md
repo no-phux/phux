@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/no-phux/phux/compare/desktop-v0.12.1...desktop-v0.12.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** isolate the project-window fixture from the test scheduler ([#1417](https://github.com/no-phux/phux/issues/1417)) ([33fcd17](https://github.com/no-phux/phux/commit/33fcd17726f493b6e22c987a712f91545f7f5c5f))
+
 ## [0.12.1](https://github.com/no-phux/phux/compare/desktop-v0.12.0...desktop-v0.12.1) (2026-10-15)
 
 
