@@ -8,6 +8,7 @@ git-fetch-with-cli = true
 # parses, starving the current-thread terminal actor and making async tests
 # time out. The Rust test harness retains its assertions; only the vendored
 # terminal engine uses the same optimized mode as the production binary.
+# flake.nix reads this value to build the devshell's prebuilt libghostty-vt.
 [env]
 LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"
 
