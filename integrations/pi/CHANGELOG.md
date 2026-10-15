@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.5.1](https://github.com/no-phux/phux/compare/pi-extension-v0.5.0...pi-extension-v0.5.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **pi:** defer runtime imports until package activation ([a4f45b6](https://github.com/no-phux/phux/commit/a4f45b63e3c80959b033ae57b04a9aec3367486f))
+
 ## [0.5.0](https://github.com/no-phux/phux/compare/pi-extension-v0.4.1...pi-extension-v0.5.0) (2026-10-09)
 
 
