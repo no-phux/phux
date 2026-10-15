@@ -4,7 +4,8 @@
 
 ### Features
 
-- Add an explicit configured ACP-agent launch picker, server-owned conversation
+- Add an explicit configured ACP-agent launch picker through the titlebar,
+  File menu, workspace glass menu and command palette, server-owned conversation
   commands and native permission dialogs. Keep terminal-attached conversations
   explicitly labeled, with independent draft/scroll preservation.
 - Surface executing-host prerequisites and queued/completed/refused/unknown
@@ -12,18 +13,32 @@
 
 ### Bug Fixes
 
-- Preserve an SDK conversation's editor, pending receipts and question drafts
+- Preserve an ACP conversation's editor, pending receipts and question drafts
   when a graceful server handoff recreates desktop layout placements. Rebind
-  only to the same endpoint, parent, AgentSession and SDK activation; a
+  only to the same endpoint, parent, AgentSession and ACP activation; a
   replacement owner never inherits the old draft.
 - Keep native draft editing and Stop available while a provider question blocks
   another prompt. Queued or ambiguous delivery never consumes or resends a draft.
 - Keep New ACP Agent clicks out of the titlebar's window-drag region.
-- Reveal a newly launched SDK guardian from its authoritative catalog identity
+- Reveal a newly launched ACP guardian from its authoritative catalog identity
   before waiting for the resulting agent subscription. Native controls still
   require the exact returned AgentSession and activation.
-- Restore the focused SDK guardian after a daemon handoff even when it is not
+- Restore the focused ACP guardian after a daemon handoff even when it is not
   the session's home terminal, retaining the original editor and draft.
+
+## [0.14.1](https://github.com/no-phux/phux/compare/desktop-v0.14.0...desktop-v0.14.1) (2026-10-15)
+
+
+### Build System
+
+* **nix:** link a Cachix-served libghostty-vt instead of building Zig ([#1434](https://github.com/no-phux/phux/issues/1434)) ([baebc3a](https://github.com/no-phux/phux/commit/baebc3abd3798fcfb3180336d0de8e55e698cebb))
+
+## [0.14.0](https://github.com/no-phux/phux/compare/desktop-v0.13.1...desktop-v0.14.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** give workspace menu native glass and spring motion ([#1432](https://github.com/no-phux/phux/issues/1432)) ([a82e993](https://github.com/no-phux/phux/commit/a82e993636ef493c561ded53101323ab9a775b21))
 
 ## [0.13.1](https://github.com/no-phux/phux/compare/desktop-v0.13.0...desktop-v0.13.1) (2026-10-15)
 

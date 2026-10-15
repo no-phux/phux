@@ -91,7 +91,7 @@ impl Harness {
     /// The hermetic environment, shared by the `Command` and PTY spawn paths so
     /// they cannot diverge (including the idle backstop the auto-spawned daemon
     /// needs if the harness dies).
-    fn hermetic_env(&self) -> [(&'static str, OsString); 15] {
+    fn hermetic_env(&self) -> [(&'static str, OsString); 16] {
         let (backstop_key, backstop_secs) = common::AutoSpawnedServer::IDLE_BACKSTOP;
         [
             ("HOME", self.home.clone().into_os_string()),
@@ -104,6 +104,7 @@ impl Harness {
             ("XDG_RUNTIME_DIR", self.runtime.clone().into_os_string()),
             ("PHUX_PROFILE", OsString::from(PROFILE)),
             ("PHUX_SOCKET", self.socket.clone().into_os_string()),
+            ("PHUX_NO_UPDATE_CHECK", OsString::from("1")),
             ("SHELL", OsString::from("/bin/sh")),
             ("TERM", OsString::from("xterm-256color")),
             ("RUST_LOG", OsString::from("off")),

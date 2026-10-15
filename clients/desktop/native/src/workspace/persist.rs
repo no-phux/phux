@@ -962,4 +962,41 @@ mod tests {
         );
         fs::remove_file(path).expect("remove temporary history");
     }
+
+    #[test]
+    fn failed_rename_removes_the_staging_file_and_keeps_the_destination() {
+        let directory = std::env::temp_dir().join(format!(
+            "phux-layout-rename-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let _remove = RemoveDir(&directory);
+        let path = directory.join("layout.json");
+        fs::create_dir(&path).unwrap();
+        let marker = path.join("marker");
+        fs::write(&marker, b"kept").unwrap();
+        let store = FileLayoutStore::new(&path, None);
+        assert!(store.write(&serde_json::json!(1)).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"kept");
+        let staging = fs::read_dir(&directory).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".next")
+        });
+        assert!(!staging, "a failed replace must not leave a staging file");
+    }
+
+    struct RemoveDir<'a>(&'a Path);
+
+    impl Drop for RemoveDir<'_> {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0);
+        }
+    }
 }

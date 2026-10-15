@@ -135,6 +135,13 @@ class RoutingTests(unittest.TestCase):
         library = classify(["crates/phux-server/src/lib.rs"])
         self.assertEqual(library["unit_mode"], "rdeps")
 
+    def test_gated_test_target_names_its_features(self):
+        stress = classify(["crates/phux-server/tests/stress/stress_churn.rs"])
+        self.assertEqual(stress["unit_mode"], "narrow")
+        self.assertEqual(stress["unit_targets"], "phux-server:stress:stress")
+        flood = classify(["crates/phux-client-ffi/tests/connected_flood.rs"])
+        self.assertEqual(flood["unit_targets"], "phux-client-ffi:connected_flood:measure")
+
     def test_cheap_flags(self):
         for paths, docs, workflows in [
             (["docs/SETUP.md", "clients/desktop/README.md"], "true", "false"),

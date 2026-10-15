@@ -362,7 +362,7 @@ impl Desk {
         let view = identity
             .native
             .as_ref()
-            .ok_or("This is an attached TUI, not a native SDK session")?;
+            .ok_or("This is an attached TUI, not a native ACP session")?;
         if !view.capabilities.questions.is_supported()
             || !view.questions.iter().any(|item| item == &request.question)
         {
@@ -419,7 +419,7 @@ impl Desk {
                         .insert(operation, Some(question.to_owned()));
                     face.question_status.insert(
                         question.to_owned(),
-                        "Submitting response; waiting for SDK receipt…".into(),
+                        "Submitting response; waiting for ACP receipt…".into(),
                     );
                     face.error = None;
                 }
@@ -456,20 +456,20 @@ fn response_button(
 
 fn options(
     placement: &str,
-    request: Arc<Request>,
+    draft: &Draft,
     item: &str,
     offered: &[NativeOption],
     multi: bool,
-    selected: &[String],
     disabled: bool,
     cx: &mut Context<Desk>,
 ) -> Vec<AnyElement> {
+    let selected = draft.choices.get(item).map(Vec::as_slice).unwrap_or(&[]);
     offered
         .iter()
         .map(|option| {
             let placement = placement.to_owned();
-            let question = request.question.id.clone();
-            let request = request.clone();
+            let question = draft.source.question.id.clone();
+            let request = draft.source.clone();
             let item = item.to_owned();
             let option_id = option.id.clone();
             let label = match &option.description {
@@ -712,15 +712,10 @@ fn render_ask(
             )))
             .children(options(
                 placement,
-                draft.source.clone(),
+                draft,
                 &item.id,
                 &item.options,
                 item.multi,
-                draft
-                    .choices
-                    .get(&item.id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
                 disabled,
                 cx,
             ));
@@ -762,11 +757,10 @@ fn render_form(
         if let Some(offered) = draft.form_options.get(id) {
             panel = panel.children(options(
                 placement,
-                draft.source.clone(),
+                draft,
                 id,
                 offered,
                 schema.get("type").and_then(Value::as_str) == Some("array"),
-                draft.choices.get(id).map(Vec::as_slice).unwrap_or(&[]),
                 disabled,
                 cx,
             ));

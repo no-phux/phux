@@ -194,6 +194,7 @@ pub struct Desk {
     pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    pub(super) main_menu: Option<gpui::WindowHandle<super::glass_menu::GlassMenu>>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
@@ -349,6 +350,7 @@ impl Desk {
             host_adding: None,
             host_switching: false,
             drag_region: None,
+            main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
@@ -1317,6 +1319,10 @@ impl Desk {
             return;
         }
         self.closed = true;
+        if let Some(menu) = self.main_menu.take() {
+            let _ =
+                gpui::AnyWindowHandle::from(menu).update(cx, |_, window, _| window.remove_window());
+        }
         self.persist();
         self.flush_saves();
         if let Some(link) = self.link.as_mut() {

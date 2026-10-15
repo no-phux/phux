@@ -13,8 +13,10 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 #
 # PHUX_UNIT_PART splits the pool by target kind so CI can compile and run the
 # halves on two runners: `lib` is every lib and bin unit-test harness,
-# `integration` is every tests/ target plus the examples. Unset runs both in
-# one invocation. Either half keeps --workspace, so the feature union and the
+# `integration` is every tests/ target whose `required-features` the default
+# features meet: Cargo refuses a gated target named by `--test '*'`, so the
+# names come from `cargo metadata`. Examples hold no tests; `just lint`
+# (clippy --all-targets) type-checks them. Unset runs both in one invocation. Either half keeps --workspace, so the feature union and the
 # rdeps filterset are the same as the whole pool's.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
@@ -25,7 +27,15 @@ test:
     case "$part" in
       all) targets=() ;;
       lib) targets=(--lib --bins) ;;
-      integration) targets=(--test '*' --examples) ;;
+      integration)
+        targets=()
+        while IFS= read -r name; do targets+=(--test "$name"); done < <(
+          cargo metadata --no-deps --format-version 1 | jq -r '
+            .packages[] | (.features.default // []) as $default | .targets[]
+            | select(.kind == ["test"])
+            | select(((."required-features" // []) - $default) == []) | .name' | sort -u)
+        if [[ ${#targets[@]} -eq 0 ]]; then echo "found no integration test targets" >&2; exit 1; fi
+        ;;
       *) echo "PHUX_UNIT_PART must be lib, integration, or unset (got: $part)" >&2; exit 2 ;;
     esac
     # Build selection stays --workspace for main and for library changes (see
@@ -38,13 +48,17 @@ test:
         exit 0
       fi
       IFS=',' read -ra specs <<< "${PHUX_UNIT_TARGETS:?PHUX_UNIT_TARGETS is required}"
+      # A spec is `package:binary`, plus `:feature+feature` when the target
+      # is gated behind non-default `required-features`. Gated targets hold
+      # `#[ignore]`d tests only, so building them is the check.
       for spec in "${specs[@]}"; do
-        pkg="${spec%%:*}"
-        bin="${spec##*:}"
+        IFS=':' read -r pkg bin feats <<< "$spec"
+        features=()
+        if [[ -n "$feats" ]]; then features=(--features "${feats//+/,}" --no-tests=warn); fi
         if [[ "$bin" == "*" ]]; then
           {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --tests
         else
-          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --test "$bin"
+          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --test "$bin" ${features[@]+"${features[@]}"}
         fi
       done
       exit 0
@@ -76,23 +90,27 @@ test:
 [doc('Fast e2e + perf gates that spin a real server; every PR.')]
 e2e:
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
-      {{E2E_TARGETS}} --test-threads=1 --retries=2 \
+      {{E2E_FEATURES}} {{E2E_TARGETS}} --test-threads=1 --retries=2 \
       -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
-      {{E2E_TARGETS}} --test-threads=1 --retries=2 \
+      {{E2E_FEATURES}} {{E2E_TARGETS}} --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf)'
 
+# `phux-server/measure` builds the `perf` target, which the default test build
+# skips. The feature is empty, so it changes no dependency's feature set.
+E2E_FEATURES := "--features phux-server/measure"
 E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test perf --test discovery"
 
 
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
 # Starvation-sensitive on 2-core runners; run locally. Also hosts
-# perf_bursty_output (~110s, allocation count, not wall time).
+# perf_bursty_output (~110s, allocation count, not wall time). The `stress`
+# feature builds the target, which the default test build skips.
 [group('test')]
 [doc('Heavy stress storms; off the PR path (post-merge + nightly).')]
 stress:
     cargo nextest run --workspace --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
+      --features phux-server/stress --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::stress)'
 
 

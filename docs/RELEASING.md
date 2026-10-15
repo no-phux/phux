@@ -115,8 +115,9 @@ compressed and 27.8 GiB restored: run 38503810705 spent 6m 28s unpacking it,
 then 7m 51s compiling the workspace crates that every code PR changes anyway,
 for a 21-minute `test` job. The four test lanes (`test`, `test (integration)`,
 `e2e`, `uniffi`) each restore a `rust-cache` entry (`build-cache: deps`) that
-holds only third-party artifacts and build-script outputs, including the
-libghostty-vt Zig build (198 s cold). Those builds set `CARGO_INCREMENTAL=0`
+holds only third-party artifacts and build-script outputs. The
+libghostty-vt Zig build (198 s cold) is not among them: the devshell links
+the flake's Cachix-served archive instead (docs/SETUP.md). Those builds set `CARGO_INCREMENTAL=0`
 and `CARGO_PROFILE_DEV_DEBUG=0`: a cold `--workspace` test build left 2.6 GB
 of `target/debug` against 9.7 GB with line tables, and compiled in 586 s
 against 649 s (run 38518949085). The workspace crates are about 1,500

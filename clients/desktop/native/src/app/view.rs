@@ -18,7 +18,7 @@ use gpui::{
     point, px, relative,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, Side};
+use gpui_kit::base::Disableable;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
@@ -422,7 +422,7 @@ fn titlebar(
                             .label("New Agent")
                             .ghost()
                             .small()
-                            .tooltip("Launch a server-owned native SDK conversation")
+                            .tooltip("Launch a server-owned ACP conversation")
                             .on_click(cx.listener(|desk, _, window, cx| {
                                 desk.execute("native-agent", window, cx)
                             })),
@@ -795,92 +795,9 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
     if sidebar { sidebar_width } else { MENU_RAIL }
 }
 
-const MAIN_COMMANDS: &[&[(&str, IconName)]] = &[
-    &[
-        ("new", IconName::Plus),
-        ("new-session", IconName::Folder),
-        ("folder", IconName::FolderOpen),
-        ("new-window", IconName::Frame),
-    ],
-    &[
-        ("goto", IconName::ArrowRight),
-        ("palette", IconName::Search),
-        ("settings", IconName::Settings),
-    ],
-];
-
-const PANE_COMMANDS: &[(&str, IconName)] = &[
-    ("split-right", IconName::PanelRight),
-    ("split-down", IconName::PanelBottom),
-    ("view", IconName::Copy),
-];
-
-/// One persistent entry to workspace actions and host navigation. Building the
-/// popup is deferred until it opens; every action uses the same command path as
-/// shortcuts and the palette. The button stays in the sidebar's titlebar rail.
+/// A stable entry point; the material and interaction live in their own window.
 pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
-    let current = desk.remote.clone();
-    let label = current.clone().unwrap_or_else(|| "Local".to_owned());
-    let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
-    let handle = cx.weak_entity();
-    let menu = move |mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
-        menu = menu
-            .min_w(px(256.))
-            .max_w(px(320.))
-            .scrollable(true)
-            .max_h((window.viewport_size().height - px(TITLEBAR + GUTTER * 2.)).max(px(80.)));
-        for (command, icon) in MAIN_COMMANDS[0] {
-            menu = menu.item(main_command(command, *icon, &handle));
-        }
-        let pane_handle = handle.clone();
-        menu = menu.submenu_with_icon(
-            Some(IconName::LayoutDashboard.into()),
-            "Pane Layout",
-            window,
-            cx,
-            move |mut menu, _, _| {
-                for (command, icon) in PANE_COMMANDS {
-                    menu = menu.item(main_command(command, *icon, &pane_handle));
-                }
-                menu.min_w(px(224.))
-            },
-        );
-        menu = menu.separator();
-        for (command, icon) in MAIN_COMMANDS[1] {
-            menu = menu.item(main_command(command, *icon, &handle));
-        }
-        let (current, hosts, switch) = (current.clone(), hosts.clone(), handle.clone());
-        menu.separator()
-            .submenu_with_icon(
-                Some(IconName::Network.into()),
-                "Switch Host",
-                window,
-                cx,
-                move |mut menu, _, _| {
-                    menu = menu
-                        .min_w(px(224.))
-                        .max_w(px(320.))
-                        .scrollable(true)
-                        .check_side(Side::Right)
-                        .item(host_choice(None, "Local", current.is_none(), &switch));
-                    for name in &hosts {
-                        let here = current.as_deref() == Some(name.as_str());
-                        menu = menu.item(host_choice(Some(name.clone()), name, here, &switch));
-                    }
-                    menu
-                },
-            )
-            .item({
-                let handle = handle.clone();
-                PopupMenuItem::new("Add Host…")
-                    .icon(IconName::Plus)
-                    .on_click(move |_, window, cx| {
-                        let _ = handle
-                            .update(cx, |desk, cx| desk.open_modal(Modal::AddHost, window, cx));
-                    })
-            })
-            .item(main_command("reconnect", IconName::RefreshCw, &handle))
-    };
+    let label = desk.remote.clone().unwrap_or_else(|| "Local".to_owned());
     div()
         .flex_1()
         .min_w_0()
@@ -893,26 +810,15 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .dropdown_caret(true)
                 .ghost()
                 .small()
+                .rounded_full()
+                .h(px(30.))
+                .px(px(10.))
                 .w_full()
-                .dropdown_menu(menu),
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    super::glass_menu::toggle(desk, window, cx);
+                })),
         )
         .into_any_element()
-}
-
-fn main_command(command: &'static str, icon: IconName, handle: &WeakEntity<Desk>) -> PopupMenuItem {
-    let spec = crate::settings::builtin_commands()
-        .iter()
-        .find(|spec| spec.id == command)
-        .expect("main menu command is in the catalogue");
-    let handle = handle.clone();
-    PopupMenuItem::new(spec.title)
-        .icon(icon)
-        .action(Box::new(Run {
-            id: command.to_owned(),
-        }))
-        .on_click(move |_, window, cx| {
-            let _ = handle.update(cx, |desk, cx| desk.execute(command, window, cx));
-        })
 }
 
 #[cfg(test)]
@@ -926,62 +832,6 @@ mod menu_tests {
         assert_eq!(titlebar_lead(false, false, 248.), MENU_RAIL);
         assert!(titlebar_lead(false, true, 248.) > TRAFFIC_LIGHTS);
     }
-
-    #[test]
-    fn menu_icons_are_in_the_shipping_asset_bundle() {
-        use gpui::AssetSource;
-
-        let assets = gpui_kit::assets::Assets;
-        for icon in MAIN_COMMANDS
-            .iter()
-            .flat_map(|group| group.iter())
-            .chain(PANE_COMMANDS.iter())
-            .map(|(_, icon)| *icon)
-            .chain([
-                IconName::LayoutDashboard,
-                IconName::Network,
-                IconName::Plus,
-                IconName::RefreshCw,
-            ])
-        {
-            assert!(
-                assets.load(&icon.path()).unwrap().is_some(),
-                "missing menu icon: {icon:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_main_menu_action_uses_the_existing_catalogue() {
-        for command in MAIN_COMMANDS
-            .iter()
-            .flat_map(|group| group.iter().map(|(command, _)| command))
-            .chain(PANE_COMMANDS.iter().map(|(command, _)| command))
-            .chain([&"reconnect"])
-        {
-            assert!(
-                crate::settings::builtin_commands()
-                    .iter()
-                    .any(|spec| spec.id == *command)
-            );
-        }
-    }
-}
-
-fn host_choice(
-    name: Option<String>,
-    label: &str,
-    checked: bool,
-    handle: &WeakEntity<Desk>,
-) -> PopupMenuItem {
-    let handle = handle.clone();
-    PopupMenuItem::new(label.to_owned())
-        .icon(IconName::Network)
-        .checked(checked)
-        .on_click(move |_, _, cx| {
-            let name = name.clone();
-            let _ = handle.update(cx, |desk, cx| desk.switch_host(name, cx));
-        })
 }
 
 fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {

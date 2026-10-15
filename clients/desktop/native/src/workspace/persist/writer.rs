@@ -167,8 +167,12 @@ impl Drop for Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    type Committed = Arc<Mutex<Vec<(PathBuf, serde_json::Value)>>>;
 
     fn fail_once() -> Writer {
         let first = std::sync::atomic::AtomicBool::new(true);
@@ -357,5 +361,176 @@ mod tests {
         writer.json(FileLayoutStore::new("a.json", None), 1.into());
         drop(writer);
         assert_eq!(*committed.lock().unwrap(), 1);
+    }
+
+    /// Holds the worker inside its first commit so later enqueues are pending,
+    /// not in flight. Those enqueues run on this thread while the worker is
+    /// blocked, which is the responsiveness proof: they return before `release`.
+    fn block_writer() -> (Writer, mpsc::Sender<()>, Committed) {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let writes = Arc::clone(&committed);
+        let writer = Writer::start(move |write| {
+            let Snapshot::Json(value) = write.snapshot else {
+                panic!("JSON fixture");
+            };
+            let path = write.store.path;
+            if path.ends_with("stall.json") {
+                started_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("stall released");
+            }
+            writes.lock().unwrap().push((path, value));
+            Ok(())
+        });
+        writer.json(FileLayoutStore::new("stall.json", None), 0.into());
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer started");
+        (writer, release_tx, committed)
+    }
+
+    #[test]
+    fn rapid_persists_to_one_destination_keep_only_the_latest_payload() {
+        let (writer, release, committed) = block_writer();
+        let destination = FileLayoutStore::new("layout.json", None);
+        // The worker cannot finish the stall until `release`. These enqueues
+        // therefore neither wait on that commit nor schedule A or B.
+        writer.json(destination.clone(), "A".into());
+        writer.json(destination.clone(), "B".into());
+        writer.json(destination, "C".into());
+        release.send(()).unwrap();
+        assert!(writer.flush().is_empty());
+        assert_eq!(
+            *committed.lock().unwrap(),
+            vec![
+                ("stall.json".into(), 0.into()),
+                ("layout.json".into(), "C".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn retarget_keeps_later_snapshots_off_the_previous_destination() {
+        let (writer, release, committed) = block_writer();
+        let mut store = FileLayoutStore::new("session-a.json", None);
+        writer.json(store.clone(), "layout-a".into());
+        // Host/session adoption replaces the desk's store. The snapshot already
+        // queued keeps the path it captured; later persists use the new one.
+        store.path = PathBuf::from("session-b.json");
+        writer.json(store.clone(), "layout-b".into());
+        writer.json(store, "layout-c".into());
+        release.send(()).unwrap();
+        assert!(writer.flush().is_empty());
+        assert_eq!(
+            *committed.lock().unwrap(),
+            vec![
+                ("stall.json".into(), 0.into()),
+                ("session-a.json".into(), "layout-a".into()),
+                ("session-b.json".into(), "layout-c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_previous_bytes_and_stays_unacknowledged() {
+        let scratch = Scratch::new("failed-write");
+        let path = scratch.join("layout.json");
+        let store = FileLayoutStore::new(&path, None);
+        let writer = Writer::default();
+        writer.json(store.clone(), "good".into());
+        assert!(writer.flush().is_empty());
+        assert!(!writer.failed(&path));
+        let good = std::fs::read(&path).unwrap();
+
+        let original = std::fs::metadata(&scratch.path).unwrap().permissions();
+        let mut locked = original.clone();
+        locked.set_readonly(true);
+        std::fs::set_permissions(&scratch.path, locked).unwrap();
+        writer.json(store.clone(), "bad".into());
+        let errors = writer.flush();
+        let mut restored = original.clone();
+        restored.set_mode(original.mode());
+        std::fs::set_permissions(&scratch.path, restored).unwrap();
+
+        assert!(
+            !errors.is_empty(),
+            "failure is reported asynchronously, got {errors:?}"
+        );
+        assert!(writer.failed(&path));
+        assert_eq!(std::fs::read(&path).unwrap(), good);
+        assert!(std::fs::read_dir(&scratch.path).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".next")
+        }));
+
+        let other = FileLayoutStore::new(scratch.join("other.json"), None);
+        writer.json(other.clone(), "elsewhere".into());
+        assert!(writer.flush().is_empty());
+        assert!(
+            writer.failed(&path),
+            "another destination's success does not acknowledge this one"
+        );
+        assert!(!writer.failed(&other.path));
+
+        writer.json(store.clone(), "recovered".into());
+        assert!(writer.flush().is_empty());
+        assert!(!writer.failed(&path));
+        assert_eq!(
+            store.read(),
+            super::super::StoreValue::Present("recovered".into())
+        );
+    }
+
+    #[test]
+    fn dropping_the_writer_flushes_the_latest_coalesced_snapshot() {
+        let scratch = Scratch::new("quit-flush");
+        let store = FileLayoutStore::new(scratch.join("layout.json"), None);
+        let writer = Writer::default();
+        writer.json(store.clone(), "A".into());
+        writer.json(store.clone(), "B".into());
+        writer.json(store.clone(), "C".into());
+        drop(writer);
+        assert_eq!(store.read(), super::super::StoreValue::Present("C".into()));
+        assert_eq!(std::fs::read_dir(&scratch.path).unwrap().count(), 1);
+    }
+
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "phux-desktop-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if let Ok(metadata) = std::fs::metadata(&self.path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(perms.mode() | 0o200);
+                let _ = std::fs::set_permissions(&self.path, perms);
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
