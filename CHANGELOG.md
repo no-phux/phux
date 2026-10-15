@@ -9,6 +9,17 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.78.0](https://github.com/no-phux/phux/compare/v0.77.0...v0.78.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cockpit:** remove phux cockpit, logs --cockpit, Cockpit installers and updater integration; logs/update/channel success JSON schemas are now version 2.
+
+### Chores
+
+* **cockpit:** archive zig client outside main ([#1404](https://github.com/no-phux/phux/issues/1404)) ([ceea3a6](https://github.com/no-phux/phux/commit/ceea3a6299521a2e5067aa2d8ddcc2f854b7ee6e))
+
 ## [0.77.0](https://github.com/no-phux/phux/compare/v0.76.2...v0.77.0) (2026-10-15)
 
 
