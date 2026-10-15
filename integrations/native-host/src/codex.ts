@@ -16,6 +16,7 @@ import type { ThreadStartParams } from './codex-protocol/generated/v2/ThreadStar
 import type { ThreadStartResponse } from './codex-protocol/generated/v2/ThreadStartResponse.js';
 import type { TurnStartParams } from './codex-protocol/generated/v2/TurnStartParams.js';
 import type { TurnStartResponse } from './codex-protocol/generated/v2/TurnStartResponse.js';
+import type { Turn } from './codex-protocol/generated/v2/Turn.js';
 import type { TurnInterruptParams } from './codex-protocol/generated/v2/TurnInterruptParams.js';
 import type { TurnInterruptResponse } from './codex-protocol/generated/v2/TurnInterruptResponse.js';
 import type { CommandExecutionApprovalDecision } from './codex-protocol/generated/v2/CommandExecutionApprovalDecision.js';
@@ -203,12 +204,16 @@ interface Validators {
   elicitation: ValidateFunction<McpServerElicitationRequestResponse>;
 }
 interface PendingQuestion { controller: AbortController; turnId?: string | null; closeWithTurn: boolean }
+type TerminalTurnStatus = Exclude<Turn['status'], 'inProgress'>;
 
 class CodexAdapter implements NativeAdapter {
   readonly capabilities = { prompt: true, interrupt: true, questions: true, follow_up: true };
   providerSessionId?: string;
   private currentTurn?: string;
-  private readonly endedTurns = new Set<string>();
+  private readonly endedTurns = new Map<string, TerminalTurnStatus>();
+  private readonly promptOperations = new Map<string, string>();
+  private pendingStarts = 0;
+  private evictedOutcomes = 0;
   private readonly questions = new Map<RequestId, PendingQuestion>();
   private readonly partials = new Map<string, { role: TranscriptEntry['role']; text: string; truncated: boolean }>();
   private readonly tools = new Map<string, TranscriptEntry>();
@@ -260,16 +265,37 @@ class CodexAdapter implements NativeAdapter {
     }
   }
 
-  async prompt(text: string, _operationId: string) {
+  async prompt(text: string, operationId: string) {
     if (this.closed || !this.providerSessionId) return { disposition: 'refused' as const, detail: 'Codex is disconnected' };
+    if (this.pendingStarts + this.promptOperations.size >= MAX_PENDING) {
+      return { disposition: 'refused' as const, detail: 'Codex has 128 prompts awaiting correlated turn outcomes' };
+    }
     const params: TurnStartParams = { threadId: this.providerSessionId, input: [{ type: 'text', text, text_elements: [] }] };
+    const evictedBeforeStart = this.evictedOutcomes;
+    this.pendingStarts++;
     try {
       const response = await this.rpc.request('turn/start', params, this.validators.turn);
-      if (response.turn.status === 'inProgress' && !this.endedTurns.has(response.turn.id)) this.started(response.turn.id);
-      return { disposition: 'admitted' as const, detail: `Codex accepted turn ${response.turn.id}` };
+      const turn = response.turn;
+      if (this.promptOperations.has(turn.id)) {
+        return { disposition: 'unknown' as const, detail: 'Codex returned a turn already associated with another prompt; input was not retried' };
+      }
+      this.promptOperations.set(turn.id, operationId);
+      const outcome = this.endedTurns.get(turn.id) ?? (turn.status === 'inProgress' ? undefined : turn.status);
+      if (outcome !== undefined) this.completePrompt(turn.id, outcome);
+      else {
+        // A bounded early-outcome cache must not silently turn lost evidence into
+        // admission or reopen a turn whose completion may have been evicted.
+        if (this.evictedOutcomes !== evictedBeforeStart) {
+          return { disposition: 'unknown' as const, detail: 'Codex terminal correlation history exceeded capacity while turn/start was pending; input was not retried' };
+        }
+        this.started(turn.id);
+      }
+      return { disposition: 'admitted' as const, detail: `Codex accepted turn ${turn.id}` };
     } catch (error) {
       return { disposition: error instanceof RpcRejected ? 'refused' as const : 'unknown' as const,
         detail: error instanceof Error ? error.message : 'Codex prompt admission is unknown' };
+    } finally {
+      this.pendingStarts--;
     }
   }
 
@@ -280,11 +306,27 @@ class CodexAdapter implements NativeAdapter {
     const params: TurnInterruptParams = { threadId: this.providerSessionId, turnId };
     try {
       await this.rpc.request('turn/interrupt', params, this.validators.interrupt);
-      return { disposition: 'admitted' as const, detail: 'Codex acknowledged interruption; awaiting turn/completed' };
+      return { disposition: 'completed' as const, detail: `Codex acknowledged interrupt for turn ${turnId}; turn termination is reported separately by turn/completed` };
     } catch (error) {
       return { disposition: error instanceof RpcRejected ? 'refused' as const : 'unknown' as const,
         detail: error instanceof Error ? error.message : 'Codex interruption is unknown' };
     }
+  }
+
+  private completePrompt(turnId: string, status: TerminalTurnStatus): void {
+    if (!this.endedTurns.has(turnId)) this.endedTurns.set(turnId, status);
+    if (this.endedTurns.size > MAX_PENDING) {
+      const oldest = this.endedTurns.keys().next().value;
+      if (oldest !== undefined) {
+        this.endedTurns.delete(oldest);
+        this.evictedOutcomes++;
+      }
+    }
+    const operationId = this.promptOperations.get(turnId);
+    if (operationId === undefined) return;
+    this.promptOperations.delete(turnId);
+    this.context.result({ operation_id: operationId, disposition: 'completed',
+      detail: `Codex turn ${turnId} ended with status ${this.endedTurns.get(turnId) ?? status}` });
   }
 
   private started(id: string): void {
@@ -319,11 +361,8 @@ class CodexAdapter implements NativeAdapter {
       case 'turn/started': this.started(event.params.turn.id); break;
       case 'turn/completed': {
         const turn = event.params.turn;
-        this.endedTurns.add(turn.id);
-        if (this.endedTurns.size > MAX_PENDING) {
-          const oldest = this.endedTurns.values().next().value;
-          if (oldest !== undefined) this.endedTurns.delete(oldest);
-        }
+        if (turn.status === 'inProgress') break;
+        this.completePrompt(turn.id, turn.status);
         for (const item of turn.items) this.item(item, true);
         for (const [id, pending] of this.questions) {
           if (pending.closeWithTurn && pending.turnId === turn.id) {
