@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/no-phux/phux/compare/desktop-v0.9.2...desktop-v0.9.3) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** skip owner turns for unchanged frames ([#1391](https://github.com/no-phux/phux/issues/1391)) ([a1e0f09](https://github.com/no-phux/phux/commit/a1e0f09f47e465fd910df7f469e77cc8cd8c07ce))
+
 ## [0.9.2](https://github.com/no-phux/phux/compare/desktop-v0.9.1...desktop-v0.9.2) (2026-10-15)
 
 
