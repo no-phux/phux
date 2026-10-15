@@ -27,7 +27,7 @@ pub struct Options {
     pub fresh: bool,
     pub terminal: Option<String>,
     pub quick: bool,
-    /// Enable the Developer menu and open the native performance monitor.
+    /// Open the native performance monitor at launch; it can also be opened live.
     pub dev_telemetry: bool,
     /// Directory for presentation evidence and `perf.jsonl`.
     pub evidence: Option<PathBuf>,

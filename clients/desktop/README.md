@@ -77,15 +77,17 @@ server behind the supervisor.
 
 ### Developer performance monitor
 
-Opt in on a development profile:
+Choose **Developer > Performance Monitor** at any time to opt in. It opens a
+separate native window and starts sampling immediately; neither the desktop nor
+the server needs a restart. Reopening the command raises the same window.
 
-```sh
-PHUX_PROFILE=dev PHUX_DESKTOP_DEV_TELEMETRY=1 just desktop-app
-```
+**Developer > Stop Performance Monitoring** closes the monitor and stops its
+sampler. Closing the window does the same. You can enable it again immediately;
+each new monitor starts a fresh CPU and metric interval.
 
-The native executable also accepts `--dev-telemetry`. Either opens a separate
-**Performance Monitor** window and adds **Developer > Performance Monitor** to
-the native menu. Reopening the command raises that same window.
+For automatic opening at launch, the native executable accepts `--dev-telemetry`
+or `PHUX_DESKTOP_DEV_TELEMETRY=1`. These are conveniences, not prerequisites for
+the runtime controls.
 
 The monitor samples the **desktop process**, not the server or terminal child
 processes, once per second. CPU is measured over the actual elapsed interval
@@ -101,8 +103,9 @@ and cumulative report. Sampling stops when the monitor closes; use the
 Developer menu to reopen it. This is local instrumentation: no telemetry is
 uploaded and no metrics history is written by the monitor.
 
-Without the opt-in, there is no Developer menu, monitor window, or monitor
-sampling loop. The existing cheap atomic render/runtime counters remain on.
+Without opening the monitor, there is no monitor sampling loop. The Developer
+menu remains available, and the existing cheap atomic render/runtime counters
+remain on. Nothing about enabling or stopping this monitor changes the server.
 
 ### Updates
 

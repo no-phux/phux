@@ -46,7 +46,7 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
-- **Native performance window:** opt-in launch and metric semantics are in
+- **Native performance window:** runtime controls and metric semantics are in
   [Developer performance monitor](../README.md#developer-performance-monitor).
   The view owns its sampler and cancellable task; `telemetry::Sampler` itself
   does no background work. `diag::report()` exposes the existing typed report.

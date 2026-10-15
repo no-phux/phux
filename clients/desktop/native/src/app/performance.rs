@@ -77,7 +77,7 @@ impl PerformanceMonitor {
     fn start_timer(&mut self, cx: &mut Context<Self>) {
         self.timer = Some(cx.spawn(async move |this, cx| {
             loop {
-                smol::Timer::after(Duration::from_secs(1)).await;
+                cx.background_executor().timer(Duration::from_secs(1)).await;
                 if this
                     .update(cx, |monitor, cx| {
                         monitor.sample();
@@ -223,12 +223,15 @@ impl gpui::Render for PerformanceMonitor {
             .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .text_left()
             .child(TitleBar::new().child(
                 div().text_sm().child("phux Performance Monitor"),
             ))
             .child(
                 div()
                     .p_4()
+                    .w_full()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .gap_3()
