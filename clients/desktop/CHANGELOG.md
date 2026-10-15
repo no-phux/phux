@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/no-phux/phux/compare/desktop-v0.12.2...desktop-v0.13.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** modernize native command palette ([#1421](https://github.com/no-phux/phux/issues/1421)) ([60976bd](https://github.com/no-phux/phux/commit/60976bd1fb335e37210bd2b4cbb8ec352109ef03))
+
+
+### Bug Fixes
+
+* **desktop:** admit delayed fits only for the visible size owner ([#1423](https://github.com/no-phux/phux/issues/1423)) ([90416a7](https://github.com/no-phux/phux/commit/90416a7e0c6bb9ea5499fd45434c5e13e558174b))
+
 ## [0.12.2](https://github.com/no-phux/phux/compare/desktop-v0.12.1...desktop-v0.12.2) (2026-10-15)
 
 
