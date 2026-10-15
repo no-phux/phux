@@ -1,8 +1,14 @@
-//! The fed-frame fixture both control-plane test binaries share: a plane
+//! The fed-frame fixture the `it` and `perf_counters` binaries share: a plane
 //! past `HELLO_OK`, attached to one 20x4 terminal named `main`, and (with the
 //! engine) an embedded client holding that terminal's replica.
 
-#![allow(unreachable_pub, reason = "shared test support")]
+#![allow(
+    unreachable_pub,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "shared test support"
+)]
 
 #[cfg(feature = "engine")]
 use phux_client_runtime::control::ControlOptions;

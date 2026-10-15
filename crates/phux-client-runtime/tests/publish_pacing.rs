@@ -7,7 +7,7 @@
 //! ignored by default. Run it with
 //!
 //! ```text
-//! cargo nextest run -p phux-client-runtime --test publish_pacing --run-ignored all --no-capture
+//! cargo nextest run -p phux-client-runtime --features measure --test publish_pacing --run-ignored all --no-capture
 //! ```
 //!
 //! `PHUX_FLOOD_LINES` (default 1000000, ~72 MB of VT) sizes the flood,

@@ -240,7 +240,7 @@ pub fn main() -> ExitCode {
         exit_after: options.smoke,
     });
     gpui_platform::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
             diag::install(evidence, cx);

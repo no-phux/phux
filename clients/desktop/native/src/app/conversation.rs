@@ -488,12 +488,12 @@ impl Desk {
         }
         let native = conversation.native.as_ref();
         if binding.activation.as_deref() != native.map(|view| view.activation.as_str()) {
-            return Err("The SDK activation changed. Nothing was sent.".into());
+            return Err("The ACP activation changed. Nothing was sent.".into());
         }
         if let Some(native) = native {
             if !native.connected {
                 return Err(
-                    "SDK controller disconnected. Controls remain disabled; no terminal fallback."
+                    "ACP controller disconnected. Controls remain disabled; no terminal fallback."
                         .into(),
                 );
             }
@@ -574,7 +574,7 @@ impl Desk {
                     gate(control, &binding, &identity, false)?;
                     if let Some(native) = identity.native {
                         if !prompt_available(native, identity.state) {
-                            return Err("This SDK does not accept a prompt in its current turn. Draft preserved.".into());
+                            return Err("This ACP agent does not accept a prompt in its current turn. Draft preserved.".into());
                         }
                         control.native_agent_command(&binding.session, &native.activation, NativeIntent::Prompt { text: text.clone() })
                             .ok_or_else(|| "Native prompt was not scheduled. Draft preserved.".to_owned())
@@ -592,7 +592,7 @@ impl Desk {
                     face.draft_changed_after_submit = false;
                     if binding.activation.is_some() {
                         face.native_commands.insert(delivery, None);
-                        face.notice = Some("Submitting to the SDK controller…".into());
+                        face.notice = Some("Submitting to the ACP controller…".into());
                     }
                     face.error = None;
                 }
@@ -655,7 +655,7 @@ impl Desk {
             if let Ok(Some((operation, turn))) = result.as_ref() {
                 face.native_commands.insert(*operation, None);
                 face.interrupted_turn = Some(turn.clone());
-                face.notice = Some("Interrupt submitted; waiting for SDK receipt.".into());
+                face.notice = Some("Interrupt submitted; waiting for ACP receipt.".into());
             }
         }
         cx.notify();
@@ -758,7 +758,7 @@ fn gate(
         if current.as_ref() != identity.native
             || !current.as_ref().is_some_and(|view| view.connected)
         {
-            return Err("SDK state changed. Nothing was sent; wait for current controls.".into());
+            return Err("ACP state changed. Nothing was sent; wait for current controls.".into());
         }
         return Ok(());
     }
@@ -834,7 +834,7 @@ pub(crate) fn render(
         .as_ref()
         .is_some_and(|view| !view.connected)
     {
-        "SDK disconnected · read-only"
+        "ACP disconnected · read-only"
     } else {
         match conversation.state.status {
             AgentSessionStatus::Working => "working",
@@ -861,7 +861,7 @@ pub(crate) fn render(
             conversation.resource,
             view.provider_session_id
                 .as_deref()
-                .unwrap_or("not yet reported by SDK"),
+                .unwrap_or("not yet reported by ACP agent"),
         )
     });
     let rows = conversation

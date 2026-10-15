@@ -160,8 +160,7 @@ struct FocusFixture {
 
 #[gpui::test]
 fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAppContext) {
-    // Kit's popup uses a platform timer; allow its real wake just as the
-    // runtime-backed window journeys do.
+    // The runtime-backed fixture may wake outside the test scheduler.
     cx.executor().allow_parking();
     let desktop = cx.update(|cx| {
         gpui_kit::init(cx);
@@ -208,8 +207,13 @@ fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAp
     }
     let bounds = cx.debug_bounds("main-menu-rail").unwrap();
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-    // Creation, pane submenu, navigation, and Settings: eight selectable rows.
-    cx.simulate_keystrokes("down down down down down down down down enter");
+    let menu = desk.read_with(cx, |desk, _| desk.main_menu.unwrap());
+    let menu_cx = &mut gpui::VisualTestContext::from_window(menu.into(), cx);
+    menu_cx.run_until_parked();
+    let settings = menu_cx
+        .debug_bounds("glass-menu-settings")
+        .expect("Settings command");
+    menu_cx.simulate_click(settings.center(), gpui::Modifiers::none());
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.modal.clone()),
         crate::app::Modal::Settings
@@ -242,12 +246,8 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         (true, true, None),
         (false, false, None),
         (true, false, None),
-        (false, true, Some("down down down down down right")),
-        (
-            true,
-            true,
-            Some("down down down down down down down down down right"),
-        ),
+        (false, true, Some("panes")),
+        (true, true, Some("hosts")),
     ] {
         cx.update(|window, cx| {
             fixture.read(cx).terminal.clone().focus(window, cx);
@@ -260,35 +260,41 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         cx.run_until_parked();
         let bounds = cx.debug_bounds("main-menu-rail").unwrap();
         cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-        cx.update(|window, cx| {
-            let target = if input {
-                fixture.read(cx).inputs[0].focus_handle(cx)
-            } else {
-                fixture.read(cx).terminal.clone()
-            };
-            assert!(
-                !target.is_focused(window),
-                "popup actually took focus before dismissal"
-            );
+        let menu = desk.read_with(cx, |desk, _| {
+            desk.main_menu.expect("menu reopened for focus journey")
         });
-        if let Some(keys) = submenu {
-            let parent_focus = cx.update(|window, cx| window.focused(cx));
-            cx.simulate_keystrokes(keys);
-            cx.update(|window, cx| {
-                assert_ne!(
-                    window.focused(cx),
-                    parent_focus,
-                    "keyboard entered the submenu"
-                );
+        {
+            let menu_cx = &mut gpui::VisualTestContext::from_window(menu.into(), cx);
+            menu_cx.update(|window, cx| {
+                window.activate_window();
+                assert!(window.focused(cx).is_some(), "popup receives its own focus");
             });
-        }
-        if escape {
-            cx.simulate_keystrokes("escape");
-        } else {
-            cx.simulate_click(
-                gpui::point(gpui::px(700.), gpui::px(500.)),
-                gpui::Modifiers::none(),
-            );
+            menu_cx.run_until_parked();
+            if let Some(page) = submenu {
+                if page == "panes" {
+                    let pane = menu_cx
+                        .debug_bounds("glass-menu-panes")
+                        .expect("Pane layout");
+                    menu_cx.simulate_mouse_move(pane.center(), None, gpui::Modifiers::none());
+                }
+                menu_cx.simulate_keystrokes("right");
+                let first = if page == "panes" {
+                    "glass-menu-split-right"
+                } else {
+                    "glass-menu-local"
+                };
+                assert!(menu_cx.debug_bounds(first).is_some());
+                assert!(
+                    menu_cx.debug_bounds("glass-menu-settings").is_none(),
+                    "child page replaced command rows"
+                );
+            }
+            if escape {
+                menu_cx.simulate_keystrokes("escape");
+            } else {
+                // Native outside clicks arrive through window resignation.
+                menu_cx.deactivate_window();
+            }
         }
         cx.update(|window, cx| {
             let target = if input {
@@ -310,7 +316,22 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
             "terminal still receives keys after Escape"
         );
     });
+    let bounds = cx.debug_bounds("main-menu-rail").unwrap();
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    let moved_menu = desk.read_with(cx, |desk, _| desk.main_menu.unwrap());
+    cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+    assert!(
+        moved_menu.read_with(cx, |_, _| ()).is_err(),
+        "parent geometry changes dismiss the panel"
+    );
+    let bounds = cx.debug_bounds("main-menu-rail").unwrap();
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    let closing_menu = desk.read_with(cx, |desk, _| desk.main_menu.unwrap());
     desk.update(cx, |desk, cx| desk.prepare_close(cx));
+    assert!(
+        closing_menu.read_with(cx, |_, _| ()).is_err(),
+        "closing a desk leaves no orphan menu"
+    );
 }
 
 impl gpui::Render for FocusFixture {

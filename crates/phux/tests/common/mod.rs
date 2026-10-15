@@ -466,6 +466,9 @@ impl PtyAttach {
         command.env("RUST_LOG", "off");
         command.env("XDG_CONFIG_HOME", config.path());
         command.env("XDG_STATE_HOME", &ambient::isolated_xdg().state);
+        // Private XDG state alone still permits a live release lookup and a
+        // delayed modal that consumes the next scripted key.
+        command.env("PHUX_NO_UPDATE_CHECK", "1");
         configure(config.path(), &mut command);
         let child = pair
             .slave

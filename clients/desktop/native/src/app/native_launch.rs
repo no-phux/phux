@@ -1,4 +1,4 @@
-//! Explicit SDK launch UI. Only the CLI starts a durable server-owned host.
+//! Explicit ACP launch UI. Only the CLI starts a durable server-owned host.
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, SharedString, Window, div, px};
 use gpui_kit::base::Disableable;
@@ -58,7 +58,7 @@ impl Desk {
         self.modal = Modal::NativeLaunch;
         if let Some(remote) = self.remote.as_deref() {
             self.native_launch.error = Some(format!(
-                "This window is on {remote}. Native launch must run on that executing host: phux launch --acp INTEGRATION --json --session {}. The desktop never starts an SDK locally for a remote session.",
+                "This window is on {remote}. Native launch must run on that executing host: phux launch --acp INTEGRATION --json --session {}. The desktop never starts an agent locally for a remote session.",
                 self.session
             ));
         } else {
@@ -141,7 +141,7 @@ impl Desk {
                         desk.close_modal(window, cx);
                         desk.reveal_pending_native(cx);
                         if let Some(link) = desk.link.as_ref() { let _ = link.connection.refresh_topology(); }
-                        desk.post(Kind::Info, "Native agent launched", Some("The server-owned SDK session continues when this window closes. Waiting for its exact structured conversation.".into()));
+                        desk.post(Kind::Info, "Native agent launched", Some("The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.".into()));
                     }
                     Err(error) => {
                         desk.native_launch.error = Some(error.clone());
@@ -289,7 +289,7 @@ pub(crate) fn panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .flex().flex_col().gap(px(12.))
         .child(div().text_lg().child("New ACP Agent"))
-        .child(div().text_sm().text_color(from_hex(&colors.muted)).child(format!("Launch into ‘{}’. The server owns the SDK; desktop and mobile control the same session. Terminal-only profiles remain terminal-only.", desk.session)))
+        .child(div().text_sm().text_color(from_hex(&colors.muted)).child(format!("Launch into ‘{}’. The server owns the ACP agent; desktop and mobile control the same session. Terminal-only profiles remain terminal-only.", desk.session)))
         .child(div().id("native-launch-list").min_h_0().overflow_y_scroll().flex().flex_col().gap(px(8.)).children(rows))
         .when(state.loading, |panel| panel.child("Reading configured native integrations…"))
         .when(!state.loading && state.integrations.is_empty(), |panel| panel.child("No native-capable integrations are configured. Configure a supported integration using the phux CLI, then refresh."))

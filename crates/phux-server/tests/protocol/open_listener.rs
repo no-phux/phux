@@ -333,20 +333,65 @@ fn a_listener_lives_while_used_and_closes_after_its_linger() {
         let a = opened(open(&mut uds, 1, ListenerTransport::Quic, None, 1).await);
         assert_eq!(a.linger_secs, 1);
 
+        let linger = Duration::from_secs(a.linger_secs);
+
         let held = dial(&a, &a.token).await.expect("admitted");
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Outlast the linger while the connection is held; idle, the listener
+        // would have closed by now.
+        tokio::time::sleep(linger + Duration::from_millis(500)).await;
         let second = dial(&a, &a.token)
             .await
             .expect("a live connection holds the listener open past its linger");
         held.close().await;
+        // The linger cannot start before the last connection leaves.
+        let left = tokio::time::Instant::now();
         second.close().await;
 
-        // One linger after the last connection leaves, with slack for the
-        // server to observe the close.
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        // Watch the UDP port without dialing: a dial is a use and would
+        // restart the linger. The port frees once the listener closes.
+        let deadline = left + linger + LINGER_CLOSE_SLACK;
+        while port_is_bound(a.port) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "an unused listener closes after its linger"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         assert!(
-            dial(&a, &a.token).await.is_err(),
+            left.elapsed() >= linger,
+            "the listener closed {:?} after its last connection began to leave, inside its \
+             {linger:?} linger",
+            left.elapsed()
+        );
+        // Nothing holds the port, so no dial can complete HELLO; a short
+        // bound replaces waiting out the full dial deadline.
+        let after = tokio::time::timeout(CLOSED_DIAL_BOUND, dial(&a, &a.token)).await;
+        assert!(
+            !matches!(after, Ok(Ok(_))),
             "an unused listener closes after its linger"
         );
     });
+}
+
+/// How long a dial to the freed port is given before it counts as refused.
+const CLOSED_DIAL_BOUND: Duration = Duration::from_secs(1);
+
+/// How long past its linger a listener may take to close and free its port:
+/// the server must observe the last connection leave and drain its endpoint.
+const LINGER_CLOSE_SLACK: Duration = Duration::from_secs(10);
+
+/// Whether a UDP socket still holds the wildcard `port`, probed by binding it
+/// the way the server does: IPv6 first, IPv4 only when IPv6 is unavailable.
+fn port_is_bound(port: u16) -> bool {
+    use std::io::ErrorKind;
+    use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+    match UdpSocket::bind((Ipv6Addr::UNSPECIFIED, port)) {
+        Ok(_) => false,
+        Err(err) if err.kind() == ErrorKind::AddrInUse => true,
+        Err(_) => match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)) {
+            Ok(_) => false,
+            Err(err) if err.kind() == ErrorKind::AddrInUse => true,
+            Err(err) => panic!("cannot probe UDP port {port}: {err}"),
+        },
+    }
 }

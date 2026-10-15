@@ -8,7 +8,7 @@
 //! ignored by default. Run it with
 //!
 //! ```text
-//! cargo nextest run -p phux-client-ffi --test connected_flood --run-ignored all --no-capture
+//! cargo nextest run -p phux-client-ffi --features measure --test connected_flood --run-ignored all --no-capture
 //! ```
 //!
 //! `PHUX_FLOOD_LINES` (default 65536, ~4.5 MiB of VT) sizes the flood and
