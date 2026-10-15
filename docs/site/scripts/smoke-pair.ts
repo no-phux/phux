@@ -157,14 +157,19 @@ function open(label: string, attach: string, attachId: number): Promise<View> {
         return;
       }
       // The session answers ATTACH with ATTACHED, this view's bootstrap, and
-      // ATTACH_READY. Those two addressed frames must reach *this* view: if the
-      // routing loses them the real client stalls on "protocol attach timed out",
-      // so the smoke refuses to call a view ready without them.
+      // ATTACH_READY, in that order, and then waits. The greeting is the
+      // BootstrapChunk sitting *between* those two addressed frames; ATTACH_READY
+      // itself carries no terminal bytes. Both addressed frames must reach *this*
+      // view: if the routing loses them the real client stalls on "protocol
+      // attach timed out", so the smoke refuses to call a view ready without
+      // them. Readiness is that conjunction, so it is checked after every frame.
+      // The frame that completes it is ATTACH_READY, which has no payload.
       if (type === TYPE_ATTACHED || type === TYPE_ATTACH_READY) addressed += 1;
       const payload = parseTerminalPayload(frame);
-      if (!payload) return;
-      terminalId ??= payload.terminalId;
-      text += new TextDecoder().decode(payload.bytes);
+      if (payload) {
+        terminalId ??= payload.terminalId;
+        text += new TextDecoder().decode(payload.bytes);
+      }
       if (terminalId && envelope && addressed >= 2) {
         clearTimeout(timeout);
         resolve({
