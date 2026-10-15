@@ -291,6 +291,8 @@ test('MCP forms preserve original JSON schema and validate required fields, enum
   const cancelled = f.options.onElicitation!(request, { signal: new AbortController().signal, requestId: 'cancelled-form' });
   f.questions.at(-1)!.resolve({ cancelled: true });
   assert.deepEqual(await cancelled, { action: 'cancel' });
+  assert.deepEqual(f.updates.flatMap(update => update.type === 'question_closed' ? [update.id] : []),
+    f.questions.map(({ question }) => question.id), 'declined and cancelled callback answers must also retire their exact forms');
   await adapter.close();
 });
 
