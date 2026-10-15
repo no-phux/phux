@@ -1,12 +1,12 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-15
 ---
 
 # Module structure
 
-**TL;DR.** Directory-level maps of phux's twenty crates. Follow each crate's
+**TL;DR.** Directory-level maps of phux's twenty-one crates. Follow each crate's
 current layout when adding modules; do not retrofit older layouts onto new
 work. File-level detail belongs in the crate's `lib.rs` and module docs.
 
@@ -292,6 +292,11 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 - **`phux-crash`** — fatal-signal handler trimmed from an upstream crate
   (Apache-2.0 only) that
   restores the terminal from an alternate signal stack before re-raising.
+- **`phux-mission`** — local mission task store, schema v1. SQLite at
+  `<state_dir>/mission/mission-v1.sqlite`, mode `0600`. Objectives, runs,
+  bindings, signals, and an append-only event log. `phux mission` is a thin
+  CLI over it and does not contact a server. The JSON contract is
+  `phux.mission/v1` (`crates/phux-mission/schema/phux.mission.v1.schema.json`).
 - **`phux-perf`** — lock-free telemetry primitives and the `PerfReport`
   behind `GET_PERF` (ADR-0096); no workspace dependencies.
 - **`phux-server-testkit`** — shared scaffolding for the server's wire

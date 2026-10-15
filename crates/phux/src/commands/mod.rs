@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use mission::MissionAction;
 use pair::PairAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
@@ -268,6 +269,7 @@ pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
+pub(crate) mod mission;
 pub(crate) mod new;
 pub(crate) mod org;
 pub(crate) mod pair;
@@ -408,6 +410,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
+        Command::Mission { .. } => Some("mission"),
         _ => None,
     }
 }
@@ -1323,6 +1326,21 @@ pub(crate) enum Command {
         /// `resume`, the reversible brake, never ask.
         #[usage(long)]
         yes: bool,
+    },
+
+    /// Track tasks in the local mission store
+    ///
+    /// Reads and writes the mission database in the phux state directory and
+    /// never contacts a server. With no subcommand, prints this help.
+    ///
+    /// `--json` prints a document whose `schema` is `phux.mission/v1`.
+    /// Exit status: 0 success; 1 the task is missing, the revision is stale,
+    /// the operation id was reused for a different write, or the store failed;
+    /// 2 the command line was refused.
+    #[usage(help_heading = "Agents", display_order = 36)]
+    Mission {
+        #[usage(subcommand)]
+        action: Option<MissionAction>,
     },
 
     /// List actions held for approval

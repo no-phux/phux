@@ -1588,6 +1588,7 @@ fn dispatch(
         // Returned above, before process-global setup.
         Some(Command::Mcp { .. }) => ExitCode::FAILURE,
         Some(Command::Skill { scope }) => skill::run(scope),
+        Some(Command::Mission { action }) => commands::mission::run(action),
         Some(Command::Worktree { action }) => commands::worktree::run_worktree(&action, socket),
         Some(Command::Project { action }) => commands::project::run_project(&action, socket),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),

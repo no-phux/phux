@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-15
 ---
 
 # phux Project Instructions for Agents
@@ -74,7 +74,7 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
-Crates: twenty, all under `crates/*`, all workspace members. The ones
+Crates: twenty-one, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
 `phux-agent-rules` (agent manifest evaluator: regions, TOML rules, offline
 explain), `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
@@ -86,7 +86,7 @@ layer: registry resolution, dial planning, reconnect policy, the relay tunnel;
 ADR-0133), `phux-client-ffi` (the one binding crate: `projection/` plus the
 `c-abi` encoder for native embedders and the
 `uniffi` encoder for phux-mobile; ADR-0135), `phux-config` (TOML + widgets + the settings
-catalogue), `phux` (binary). Every crate has a section in
+catalogue), `phux-mission` (local task store behind `phux mission`), `phux` (binary). Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
 — read it before assuming a capability is missing. `phux-protocol` is
 publishable; the rest are `publish = false`.

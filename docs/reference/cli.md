@@ -61,6 +61,7 @@ Agents:
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
+  mission       Track tasks in the local mission store
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -1939,6 +1940,178 @@ Arguments:
   [ARGS]…  Arguments forwarded unchanged to the MCP companion.
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mission`
+
+```text
+Track tasks in the local mission store
+
+Reads and writes the mission database in the phux state directory and never
+contacts a server. With no subcommand, prints this help.
+
+`--json` prints a document whose `schema` is `phux.mission/v1`. Exit status: 0
+success; 1 the task is missing, the revision is stale, the operation id was
+reused for a different write, or the store failed; 2 the command line was
+refused.
+
+Usage: phux mission [SUBCOMMAND]
+
+Commands:
+  add       Add a task and print its alias
+  archive   Archive a task
+  describe  Set a task's title or description
+  list      List tasks
+  restore   Restore an archived task
+  show      Show one task
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mission add`
+
+```text
+Add a task and print its alias
+
+Usage: phux mission add [FLAGS] <TITLE>
+
+Arguments:
+  <TITLE>  Task title.
+
+Flags:
+      --description <DESCRIPTION>  Description stored with the task.
+      --repo <ID>                 Repo id the alias is allocated under, such as
+                                  `phux` for `phux/3`. Defaults to the current
+                                  directory's name.
+      --operation-id <HEX32>      Repeat a write safely: 32 hex digits. The same
+                                  id returns the first result.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux mission archive`
+
+```text
+Archive a task
+
+Usage: phux mission archive [FLAGS] <ALIAS>
+
+Arguments:
+  <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
+
+Flags:
+      --expected-revision <N>  Refuse the write unless the task revision is N.
+      --operation-id <HEX32>   Repeat a write safely: 32 hex digits. The same id
+                               returns the first result.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mission describe`
+
+```text
+Set a task's title or description
+
+Usage: phux mission describe [FLAGS] <ALIAS>
+
+Arguments:
+  <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
+
+Flags:
+      --title <TITLE>             New title.
+      --description <DESCRIPTION>  New description.
+      --expected-revision <N>     Refuse the write unless the task revision is
+                                  N.
+      --operation-id <HEX32>      Repeat a write safely: 32 hex digits. The same
+                                  id returns the first result.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux mission list`
+
+```text
+List tasks
+
+Usage: phux mission list [FLAGS]
+
+Flags:
+      --repo <ID>      Only tasks for this repo id.
+      --archived       List archived tasks instead of active ones.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mission restore`
+
+```text
+Restore an archived task
+
+Usage: phux mission restore [FLAGS] <ALIAS>
+
+Arguments:
+  <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
+
+Flags:
+      --expected-revision <N>  Refuse the write unless the task revision is N.
+      --operation-id <HEX32>   Repeat a write safely: 32 hex digits. The same id
+                               returns the first result.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mission show`
+
+```text
+Show one task
+
+Usage: phux mission show [--json] <ALIAS>
+
+Arguments:
+  <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:

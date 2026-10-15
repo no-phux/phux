@@ -1,0 +1,29 @@
+[package]
+name = "phux-mission"
+description = "Local mission task store: objectives, runs, bindings, signals, and an append-only event log."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+# Opaque 16-byte ids. `getrandom` 0.2 is already in Cargo.lock; this names
+# that line rather than pulling a new crate version.
+getrandom = "0.2"
+# Exclusive writer lock, the same `flock` the workload store uses. The
+# binary already depends on rustix 1.1, so this adds no crate version.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

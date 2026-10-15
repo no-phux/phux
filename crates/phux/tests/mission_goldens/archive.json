@@ -1,0 +1,19 @@
+{
+  "idempotent_replay": false,
+  "operation_id": "cccccccccccccccccccccccccccccccc",
+  "schema": "phux.mission/v1",
+  "schema_version": 1,
+  "task": {
+    "alias": "phux/1",
+    "archived": true,
+    "created_at": "<timestamp>",
+    "description": "more detail",
+    "id": "<id>",
+    "repo_project_id": "phux",
+    "revision": 3,
+    "state": "todo",
+    "title": "Fix the prompt",
+    "updated_at": "<timestamp>"
+  },
+  "verb": "archive"
+}
