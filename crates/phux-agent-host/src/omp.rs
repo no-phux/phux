@@ -5,20 +5,23 @@ use omp_rpc::{
 };
 use parking_lot::Mutex;
 use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptRole};
-use phux_protocol::native_agent::*;
+use phux_protocol::native_agent::{
+    NativeCapabilities, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
+    NativeOption, NativeQuestion, NativeQuestionItem, NativeState, NativeUpdate,
+};
 use serde_json::{Value, json};
 use std::{process::Command, sync::Arc, thread, time::Duration};
 use tokio::sync::{mpsc, watch};
 
-pub(super) fn run(
-    spec: HostSpec,
-    sink: Sink,
+pub fn run(
+    spec: &HostSpec,
+    sink: &Sink,
     mut commands: mpsc::Receiver<NativeCommand>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), HostError> {
     let mut process = Command::new(&spec.command[0]);
     process.args(&spec.command[1..]);
-    common::configure(&mut process, &spec);
+    common::configure(&mut process, spec);
     let child = common::WatchedChild::spawn(process, shutdown.clone())?;
     let stdout = child
         .0
@@ -69,56 +72,13 @@ pub(super) fn run(
     };
     sink.update(NativeUpdate::View { view })?;
     let dialog = Arc::new(Mutex::new(()));
-    let event_sink = sink.clone();
+    let event_sink = Sink::clone(sink);
     let provider = spec.provider.clone();
     let event_dialog = dialog.clone();
     let event_thread = thread::spawn(move || -> Result<(), HostError> {
         let mut rows = Rows::default();
         while let Ok(event) = events.recv() {
-            match event {
-                Event::Notification(RpcNotification::RpcAgentEvent(event)) => {
-                    project(&event_sink, &provider, event, &mut rows)?
-                }
-                Event::Notification(RpcNotification::ExtensionUiRequest(request)) => {
-                    let _dialog = event_dialog.lock();
-                    question(&event_sink, request)?;
-                }
-                Event::Notification(RpcNotification::SessionSettled(_)) => {
-                    settle(&event_sink)?;
-                }
-                Event::Notification(RpcNotification::PromptResult(result)) => {
-                    if let Some(error) = result.error {
-                        event_sink.notice(error.message)?;
-                    }
-                    if result.session_settled {
-                        settle(&event_sink)?;
-                    }
-                }
-                Event::Notification(RpcNotification::CommandOutput(output)) => {
-                    event_sink.notice(output.text)?
-                }
-                Event::Notification(RpcNotification::SessionInfoUpdate(info)) => {
-                    if event_sink.view().provider_session_id.as_ref() != Some(&info.session_id) {
-                        return Err(HostError::Sdk(
-                            "OMP changed provider session identity; new activation required".into(),
-                        ));
-                    }
-                }
-                Event::Notification(RpcNotification::ExtensionError(error)) => {
-                    event_sink.notice(error.error)?
-                }
-                Event::Notification(RpcNotification::RpcFrameError(_)) => {
-                    return Err(HostError::Sdk(
-                        "OMP reported dropped oversized event".into(),
-                    ));
-                }
-                Event::Undecodable { error, .. } => {
-                    return Err(HostError::Sdk(format!(
-                        "OMP event failed official SDK decode: {error}"
-                    )));
-                }
-                _ => {}
-            }
+            project_event(&event_sink, &provider, &event_dialog, event, &mut rows)?;
         }
         Ok(())
     });
@@ -131,47 +91,15 @@ pub(super) fn run(
                 _ = shutdown.changed() => break,
                 command = commands.recv() => {
                     let Some(command) = command else { break; };
-                    let client = client.clone(); let sink = sink.clone(); let dialog = dialog.clone();
+                    let client = Arc::clone(&client);
+                    let sink = Sink::clone(sink);
+                    let dialog = Arc::clone(&dialog);
                     tokio::task::spawn_blocking(move || {
-                        let id = command.operation_id;
-                        let result = match command.intent {
-                            NativeIntent::Prompt { text } => {
-                                let follow_up = match sink.begin_prompt(format!("omp:{id}")) {
-                                    Ok(follow_up) => follow_up,
-                                    Err(error) => { let _ = sink.result(common::result(id, NativeDisposition::Refused, &error.to_string())); return; }
-                                };
-                                match client.call(&omp_rpc::PromptCommand { message: text, images: None, streaming_behavior: follow_up.then_some(omp_rpc::StreamingBehavior::FollowUp) }) {
-                                    Ok(_) => common::result(id, NativeDisposition::Admitted, if follow_up { "OMP acknowledged provider follow-up queue admission; turn outcome arrives separately" } else { "OMP typed prompt acknowledged; turn outcome arrives separately" }),
-                                    Err(error) => {
-                                        if !follow_up && matches!(error, omp_rpc::Error::Command { .. }) {
-                                            let _ = sink.reject_pending_turn(&format!("omp:{id}"));
-                                        }
-                                        sdk_error(id, error)
-                                    }
-                                }
-                            }
-                            NativeIntent::Interrupt { turn_id } => {
-                                if sink.view().turn_id.as_ref() != Some(&turn_id) { common::result(id, NativeDisposition::Refused, "turn already ended") }
-                                else { match client.call(&omp_rpc::AbortCommand {}) {
-                                    Ok(_) => common::result(id, NativeDisposition::Completed, "OMP typed abort acknowledged; session remains open"),
-                                    Err(error) => sdk_error(id, error),
-                                } }
-                            }
-                            NativeIntent::Answer { question_id, response } => {
-                                let _dialog = dialog.lock();
-                                match answer(&sink, &question_id, response) {
-                                    Err(error) => common::result(id, NativeDisposition::Refused, &error.to_string()),
-                                    Ok(answer) => match client.send(&RpcInbound::ExtensionUiResponse(answer)) {
-                                        Ok(()) => common::result(id, NativeDisposition::Queued, "queued to OMP SDK writer; provider consumption is not acknowledged"),
-                                        Err(error) => common::result(id, NativeDisposition::Unknown, &error.to_string()),
-                                    },
-                                }
-                            }
-                        };
+                        let result = execute(&client, &sink, &dialog, command);
                         let _ = sink.result(result);
                     });
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
                     if event_thread.is_finished() || child.0.lock().try_wait()?.is_some() { break; }
                 }
             }
@@ -184,7 +112,132 @@ pub(super) fn run(
     let event_result = common::join_reader(event_thread, "OMP event projector")?;
     outcome.and(event_result)
 }
-fn sdk_error(id: u64, error: omp_rpc::Error) -> NativeCommandResult {
+fn project_event(
+    sink: &Sink,
+    provider: &str,
+    dialog: &Mutex<()>,
+    event: Event,
+    rows: &mut Rows,
+) -> Result<(), HostError> {
+    match event {
+        Event::Notification(RpcNotification::RpcAgentEvent(event)) => {
+            project(sink, provider, event, rows)?;
+        }
+        Event::Notification(RpcNotification::ExtensionUiRequest(request)) => {
+            let _dialog = dialog.lock();
+            question(sink, request)?;
+        }
+        Event::Notification(RpcNotification::SessionSettled(_)) => {
+            settle(sink)?;
+        }
+        Event::Notification(RpcNotification::PromptResult(result)) => {
+            if let Some(error) = result.error {
+                sink.notice(&error.message)?;
+            }
+            if result.session_settled {
+                settle(sink)?;
+            }
+        }
+        Event::Notification(RpcNotification::CommandOutput(output)) => {
+            sink.notice(&output.text)?;
+        }
+        Event::Notification(RpcNotification::SessionInfoUpdate(info)) => {
+            if sink.view().provider_session_id.as_ref() != Some(&info.session_id) {
+                return Err(HostError::Sdk(
+                    "OMP changed provider session identity; new activation required".into(),
+                ));
+            }
+        }
+        Event::Notification(RpcNotification::ExtensionError(error)) => {
+            sink.notice(&error.error)?;
+        }
+        Event::Notification(RpcNotification::RpcFrameError(_)) => {
+            return Err(HostError::Sdk(
+                "OMP reported dropped oversized event".into(),
+            ));
+        }
+        Event::Undecodable { error, .. } => {
+            return Err(HostError::Sdk(format!(
+                "OMP event failed official SDK decode: {error}"
+            )));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn execute(
+    client: &Client,
+    sink: &Sink,
+    dialog: &Mutex<()>,
+    command: NativeCommand,
+) -> NativeCommandResult {
+    let id = command.operation_id;
+    match command.intent {
+        NativeIntent::Prompt { text } => prompt(client, sink, id, text),
+        NativeIntent::Interrupt { turn_id } => {
+            if sink.view().turn_id.as_ref() == Some(&turn_id) {
+                match client.call(&omp_rpc::AbortCommand {}) {
+                    Ok(()) => common::result(
+                        id,
+                        NativeDisposition::Completed,
+                        "OMP typed abort acknowledged; session remains open",
+                    ),
+                    Err(error) => sdk_error(id, &error),
+                }
+            } else {
+                common::result(id, NativeDisposition::Refused, "turn already ended")
+            }
+        }
+        NativeIntent::Answer { question_id, response } => {
+            let _dialog = dialog.lock();
+            match answer(sink, &question_id, &response) {
+                Err(error) => common::result(id, NativeDisposition::Refused, &error.to_string()),
+                Ok(answer) => match client.send(&RpcInbound::ExtensionUiResponse(answer)) {
+                    Ok(()) => common::result(
+                        id,
+                        NativeDisposition::Queued,
+                        "queued to OMP SDK writer; provider consumption is not acknowledged",
+                    ),
+                    Err(error) => common::result(id, NativeDisposition::Unknown, &error.to_string()),
+                },
+            }
+        }
+    }
+}
+
+fn prompt(client: &Client, sink: &Sink, id: u64, text: String) -> NativeCommandResult {
+    let follow_up = match sink.begin_prompt(format!("omp:{id}")) {
+        Ok(follow_up) => follow_up,
+        Err(error) => {
+            return common::result(id, NativeDisposition::Refused, &error.to_string());
+        }
+    };
+    let command = omp_rpc::PromptCommand {
+        message: text,
+        images: None,
+        streaming_behavior: follow_up.then_some(omp_rpc::StreamingBehavior::FollowUp),
+    };
+    match client.call(&command) {
+        Ok(_) => common::result(
+            id,
+            NativeDisposition::Admitted,
+            if follow_up {
+                "OMP acknowledged provider follow-up queue admission; turn outcome arrives separately"
+            } else {
+                "OMP typed prompt acknowledged; turn outcome arrives separately"
+            },
+        ),
+        Err(error) => {
+            if !follow_up && matches!(error, omp_rpc::Error::Command { .. }) {
+                let _ = sink.reject_pending_turn(&format!("omp:{id}"));
+            }
+            sdk_error(id, &error)
+        }
+    }
+}
+
+fn sdk_error(id: u64, error: &omp_rpc::Error) -> NativeCommandResult {
     let disposition = if matches!(error, omp_rpc::Error::Command { .. }) {
         NativeDisposition::Refused
     } else {
@@ -209,17 +262,13 @@ struct Rows {
     tools: std::collections::BTreeMap<String, (String, ToolStatus)>,
 }
 impl Rows {
-    fn tool(
+    fn tool_summary(
         &mut self,
-        sink: &Sink,
-        provider: &str,
-        id: String,
-        name: String,
-        input: Option<Value>,
-        output: Option<Value>,
+        id: &str,
+        input: Option<&Value>,
         status: ToolStatus,
-    ) -> Result<(), HostError> {
-        if !self.tools.contains_key(&id) && self.tools.len() >= 128 {
+    ) -> Result<String, HostError> {
+        if !self.tools.contains_key(id) && self.tools.len() >= 128 {
             let retired = self
                 .tools
                 .iter()
@@ -232,21 +281,13 @@ impl Rows {
         }
         let summary = self
             .tools
-            .entry(id.clone())
+            .entry(id.to_owned())
             .or_insert_with(|| (String::new(), status));
         if let Some(input) = input {
-            summary.0 = common::summarize_args(&input);
+            summary.0 = common::summarize_args(input);
         }
         summary.1 = status;
-        common::tool(
-            sink,
-            provider,
-            id,
-            name,
-            summary.0.clone(),
-            output.map_or_else(String::new, |value| value.to_string()),
-            status,
-        )
+        Ok(summary.0.clone())
     }
 }
 fn project(
@@ -285,38 +326,56 @@ fn project(
             &event.message,
             true,
         ),
-        RpcAgentEvent::ToolExecutionStart(event) => rows.tool(
-            sink,
-            provider,
-            event.tool_call_id,
-            event.tool_name,
-            event.args,
-            None,
-            ToolStatus::Running,
-        ),
-        RpcAgentEvent::ToolExecutionUpdate(event) => rows.tool(
-            sink,
-            provider,
-            event.tool_call_id,
-            event.tool_name,
-            event.args,
-            event.partial_result,
-            ToolStatus::Running,
-        ),
-        RpcAgentEvent::ToolExecutionEnd(event) => rows.tool(
-            sink,
-            provider,
-            event.tool_call_id,
-            event.tool_name,
-            None,
-            event.result,
-            if event.is_error == Some(true) {
+        RpcAgentEvent::ToolExecutionStart(event) => {
+            let summary = rows.tool_summary(
+                &event.tool_call_id,
+                event.args.as_ref(),
+                ToolStatus::Running,
+            )?;
+            common::tool(
+                sink,
+                provider,
+                event.tool_call_id,
+                event.tool_name,
+                summary,
+                String::new(),
+                ToolStatus::Running,
+            )
+        }
+        RpcAgentEvent::ToolExecutionUpdate(event) => {
+            let summary = rows.tool_summary(
+                &event.tool_call_id,
+                event.args.as_ref(),
+                ToolStatus::Running,
+            )?;
+            common::tool(
+                sink,
+                provider,
+                event.tool_call_id,
+                event.tool_name,
+                summary,
+                event.partial_result.map_or_else(String::new, |value| value.to_string()),
+                ToolStatus::Running,
+            )
+        }
+        RpcAgentEvent::ToolExecutionEnd(event) => {
+            let status = if event.is_error == Some(true) {
                 ToolStatus::Error
             } else {
                 ToolStatus::Ok
-            },
-        ),
-        RpcAgentEvent::Notice(notice) => sink.notice(notice.message),
+            };
+            let summary = rows.tool_summary(&event.tool_call_id, None, status)?;
+            common::tool(
+                sink,
+                provider,
+                event.tool_call_id,
+                event.tool_name,
+                summary,
+                event.result.map_or_else(String::new, |value| value.to_string()),
+                status,
+            )
+        }
+        RpcAgentEvent::Notice(notice) => sink.notice(&notice.message),
         _ => Ok(()),
     }
 }
@@ -343,15 +402,15 @@ fn message(
     let mut text = String::new();
     let mut thinking = String::new();
     for block in blocks {
-        if let Some(part) = block["text"].as_str() {
-            if text.len() < 12 * 1024 + 4 {
-                text.push_str(&common::head(part, 12 * 1024 + 4 - text.len()));
-            }
+        if let Some(part) = block["text"].as_str()
+            && text.len() < 12 * 1024 + 4
+        {
+            text.push_str(&common::head(part, 12 * 1024 + 4 - text.len()));
         }
-        if let Some(part) = block["thinking"].as_str() {
-            if thinking.len() < 12 * 1024 + 4 {
-                thinking.push_str(&common::head(part, 12 * 1024 + 4 - thinking.len()));
-            }
+        if let Some(part) = block["thinking"].as_str()
+            && thinking.len() < 12 * 1024 + 4
+        {
+            thinking.push_str(&common::head(part, 12 * 1024 + 4 - thinking.len()));
         }
     }
     if !thinking.is_empty() {
@@ -394,21 +453,21 @@ fn question(sink: &Sink, request: ExtensionUiRequest) -> Result<(), HostError> {
             question.questions = request.questions.into_iter().map(|item| NativeQuestionItem { recommended: item.recommended.and_then(|index| usize::try_from(index).ok()).and_then(|index| item.options.get(index)).map(|option| option.label.clone()), id: item.id, question: item.question, header: item.header.unwrap_or_default(), multi: item.multi, options: item.options.into_iter().map(|option| NativeOption { id: option.label.clone(), label: option.label, description: option.description }).collect() }).collect();
         }
         ExtensionUiRequest::Cancel(request) => return sink.update(NativeUpdate::QuestionClosed { id: request.target_id, reason: "provider cancelled dialog".into() }),
-        ExtensionUiRequest::Notify(request) => return sink.notice(request.message),
-        ExtensionUiRequest::OpenUrl(_) => return sink.notice("Provider requested opening an external URL; automatic browser/auth actions unsupported".into()),
+        ExtensionUiRequest::Notify(request) => return sink.notice(&request.message),
+        ExtensionUiRequest::OpenUrl(_) => return sink.notice("Provider requested opening an external URL; automatic browser/auth actions unsupported"),
         _ => return Ok(()), // Cosmetic status/title/widget updates are not lifecycle evidence.
     }
     sink.update(NativeUpdate::QuestionOpened { question })?;
     sink.state(NativeState::Blocked)
 }
-fn answer(sink: &Sink, id: &str, response: Value) -> Result<ExtensionUiResponse, HostError> {
+fn answer(sink: &Sink, id: &str, response: &Value) -> Result<ExtensionUiResponse, HostError> {
     let view = sink.view();
     let question = view
         .questions
         .iter()
         .find(|question| question.id == id)
         .ok_or_else(|| HostError::Invalid("OMP dialog cancelled before dispatch".into()))?;
-    common::validate_answer(question, &response).map_err(HostError::Invalid)?;
+    common::validate_answer(question, response).map_err(HostError::Invalid)?;
     let mut wire = json!({"id": id});
     if response["cancelled"].as_bool() == Some(true) {
         wire["cancelled"] = json!(true);
@@ -420,25 +479,32 @@ fn answer(sink: &Sink, id: &str, response: Value) -> Result<ExtensionUiResponse,
             "select" => wire["value"] = response["option_id"].clone(),
             "input" | "editor" => wire["value"] = response["text"].clone(),
             "ask" => {
+                let answers = response
+                    .get("answers")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| HostError::Invalid("OMP form answers required".into()))?;
                 wire["answers"] = Value::Array(
                     question
                         .questions
                         .iter()
                         .map(|item| {
-                            let answer = response["answers"]
-                                .as_array()
-                                .expect("validated answers")
+                            let answer = answers
                                 .iter()
                                 .find(|answer| answer["id"].as_str() == Some(&item.id))
-                                .expect("validated question");
+                                .ok_or_else(|| {
+                                    HostError::Invalid(format!(
+                                        "OMP form answer missing for question {}",
+                                        item.id
+                                    ))
+                                })?;
                             let mut result =
                                 json!({"id":item.id,"selectedOptions":answer["selected_options"]});
                             if let Some(input) = answer.get("custom_input") {
                                 result["customInput"] = input.clone();
                             }
-                            result
+                            Ok(result)
                         })
-                        .collect(),
+                        .collect::<Result<Vec<_>, HostError>>()?,
                 );
             }
             _ => return Err(HostError::Invalid("unsupported OMP question kind".into())),
