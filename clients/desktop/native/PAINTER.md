@@ -95,5 +95,26 @@ neighboring row untouched. Linux needs a Vulkan adapter, hardware or
 lavapipe; macOS uses Metal. The on-screen smoke is still the packaged
 qualification run.
 
+## Headless measurements
+
+`just desktop-perf-headless` runs the same main-thread GPUI pixel binary in
+benchmark mode. No CLI, server, socket, visible window, or production profile:
+an embedded runtime feeds an 80×24 terminal, and GPUI draws it offscreen.
+Three JSON lines report 128 cached redraws, one-row updates, and sustained
+full-width scrolling. `tick_us` covers the in-process VT feed (for changed
+frames) plus the draw; `stages` separate acquisition, scene preparation,
+painting and presentation handoff. `scene` counts reused/patched scenes and
+shaped lines, and `process` carries CPU and peak RSS. A render count check and
+screenshots outside the timed path reject an empty/no-op benchmark.
+
+The default test profile is quick for iteration; use
+`just desktop-perf-headless release` for comparable optimized runs. Compare
+back-to-back runs on the same machine without concurrent builds. This measures
+the terminal view, not the desk's chrome, input-to-pixel latency, compositor
+presentation or production thread contention. Use `perf-bench.ts` with a
+visible desktop for those; it refuses to report a locked-display run that
+never drew a frame. The hosted packaged-app smoke remains the visual release
+qualification.
+
 phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
 script/box-drawing fidelity, and a graphics product decision.
