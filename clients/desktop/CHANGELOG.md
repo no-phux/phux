@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/no-phux/phux/compare/desktop-v0.11.0...desktop-v0.11.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** map pointer hits onto the painted cell ([2ea27b3](https://github.com/no-phux/phux/commit/2ea27b3a6fa0d6f27decb086b4a72e267bc3fa4b))
+
 ## [0.11.0](https://github.com/no-phux/phux/compare/desktop-v0.10.0...desktop-v0.11.0) (2026-10-15)
 
 
