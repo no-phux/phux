@@ -32,7 +32,7 @@ pub const RECORD_TYPES: [&str; 10] = [
 
 /// What one accepted record says about the session's lifecycle
 /// (ADR-0103 §5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StreamEvidence {
     /// The session is doing work.
     Working,
@@ -97,7 +97,7 @@ impl fmt::Display for RecordError {
 }
 
 /// A pending question a blocking record carried, for the ask ladder.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamAsk {
     /// Producer-chosen question id; empty when it named none.
     pub id: String,

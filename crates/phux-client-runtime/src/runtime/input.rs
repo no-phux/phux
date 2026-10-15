@@ -6,6 +6,23 @@ use super::{
 };
 
 impl Client {
+    /// Submit a validated SDK intent without any terminal-input fallback.
+    /// A lost acknowledgement becomes a dedicated Unknown receipt, never replay.
+    #[must_use]
+    pub fn native_agent_command(
+        &self,
+        agent_session_id: &ResourceId,
+        activation: &str,
+        intent: phux_protocol::native_agent::NativeIntent,
+    ) -> Option<u64> {
+        let operation = self.inner.with(|control| {
+            control.native_agent_command(agent_session_id, activation, intent)
+        });
+        if operation.is_some() {
+            self.nudge();
+        }
+        operation
+    }
     // ----- input ------------------------------------------------------
 
     /// Send one key on the raw path.

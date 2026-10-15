@@ -550,6 +550,9 @@ impl ControlPlane {
             Pending::Close => {
                 self.push_event(Event::TerminalsClosed { request_id, error });
             }
+            Pending::NativeAgent { agent_session_id, operation_id } => {
+                self.resolve_native_agent(agent_session_id, operation_id, result);
+            }
             Pending::RefreshTopology => {
                 self.resolve_topology_read(result)?;
             }

@@ -63,6 +63,7 @@ mod geometry;
 mod input;
 mod kernel;
 pub mod keys;
+mod native_agent;
 mod org_plane;
 pub mod organization;
 mod responses;
@@ -367,6 +368,10 @@ enum Pending {
     },
     Kill(ResourceId),
     Close,
+    NativeAgent {
+        agent_session_id: ResourceId,
+        operation_id: u64,
+    },
     RefreshTopology,
     /// A binding's own command; the reply is surfaced raw.
     Extension,

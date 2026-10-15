@@ -153,6 +153,26 @@ pub(super) fn launch_pane_actor(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     attribution: SpawnAttribution,
 ) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    launch_pane_actor_with_failure_policy(
+        state, terminal, cmd, (cols, rows), scrollback, root_token, default_colors, attribution, false,
+    )
+}
+
+/// A native insertion into an existing record reports a failed activation
+/// under that record's original exit policy rather than unconditionally
+/// deleting a retained imported arrangement slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn launch_pane_actor_with_failure_policy(
+    state: &SharedState,
+    terminal: phux_core::ids::ResourceId,
+    cmd: Option<portable_pty::CommandBuilder>,
+    (cols, rows): (u16, u16),
+    scrollback: phux_config::ScrollbackLimits,
+    root_token: &CancellationToken,
+    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    attribution: SpawnAttribution,
+    honor_exit_policy_on_failure: bool,
+) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
     let bundle = match TerminalActor::build_with_token_and_colors(
@@ -165,7 +185,11 @@ pub(super) fn launch_pane_actor(
     ) {
         Ok(bundle) => bundle,
         Err(err) => {
-            state.with_mut(|s| s.reap_terminal(terminal));
+            state.with_mut(|s| {
+                if honor_exit_policy_on_failure {
+                    s.activation_ended(terminal, phux_core::ExitOutcome::UNKNOWN, true);
+                } else { s.reap_terminal(terminal); }
+            });
             return Err(err);
         }
     };
@@ -882,6 +906,20 @@ async fn route_command(
     // answer with their own result shapes; they never route to a satellite
     // or take the keyed-command record (core keeps their receipts).
     if command.is_organization() {
+        if let Command::ResourceRelaunch { operation, resource, expected } = &command {
+            match state.with(|s| super::organization::native_relaunch_spec(s, resource, *expected)) {
+                Ok(Some(spec)) => {
+                    let result = super::native_agent::spawn_relaunch(ctx, spec, *operation).await;
+                    send_result(out_tx, request_id, result).await;
+                    return None;
+                }
+                Err(result) => {
+                    send_result(out_tx, request_id, result).await;
+                    return None;
+                }
+                Ok(None) => {}
+            }
+        }
         let result = super::organization::handle(state, client_id, command, root_token);
         send_result(out_tx, request_id, result).await;
         return None;
@@ -963,6 +1001,7 @@ async fn dispatch_local(
     let input_lane = ctx.input_lane.as_ref();
 
     match command {
+        Command::NativeAgent { request } => super::native_agent::handle(ctx, *request).await,
         Command::AttachResource {
             terminal_id,
             role_policy,
@@ -3907,6 +3946,12 @@ pub(crate) fn with_route_input_destination<R>(
             Resolved::Local(local) => local,
         };
         let pane = local.id;
+        if s.native_owned_terminal(pane) {
+            return Err(CommandResult::Error {
+                code: ErrorCode::InputNotWritten,
+                message: "SDK-owned guardian input is diagnostics-only; use native agent commands".to_owned(),
+            });
+        }
         if s.retained_exit(pane).is_some() {
             return Err(exited_input_refusal());
         }
@@ -4342,6 +4387,9 @@ pub(crate) async fn handle_report_agent_state(
     terminal_id: &phux_protocol::ids::ResourceId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
+    if state.with(|s| s.terminal_from_wire(terminal_id).is_some_and(|core| s.native_owned_terminal(core))) {
+        return CommandResult::Error { code: ErrorCode::NotProducer, message: "SDK-owned lifecycle requires its native controller".to_owned() };
+    }
     // One borrow, so a `session_end` cannot land between the two reads.
     let (resolved, live_session) = state.with(|server| {
         let resolved = server.resolve_resource(terminal_id).into_owned();
@@ -4420,6 +4468,9 @@ pub(crate) fn handle_report_asked(
         Ok((terminal, _)) => terminal,
         Err(refusal) => return refusal,
     };
+    if state.with(|s| s.native_owned_terminal(terminal)) {
+        return CommandResult::Error { code: ErrorCode::NotProducer, message: "SDK-owned questions require its native controller".to_owned() };
+    }
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {
             code: ErrorCode::InvalidCommand,
@@ -4635,6 +4686,17 @@ pub(crate) fn with_attached_input_destination<R>(
             }
         };
         let pane = local.id;
+        if s.native_owned_terminal(pane) {
+            let error = Outbound::Frame(FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::InputNotWritten,
+                message: "SDK-owned guardian refuses terminal input; use native agent commands".to_owned(),
+            });
+            if let Some(out) = s.client_mailbox(client_id) {
+                let _ = out.try_send(error);
+            }
+            return None;
+        }
         if s.retained_exit(pane).is_some() {
             trace!(
                 ?client_id,

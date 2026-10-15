@@ -529,6 +529,7 @@ enum Query {
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),
+    NativeAgentView(ResourceId, Sender<Option<phux_protocol::native_agent::NativeView>>),
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
@@ -718,6 +719,18 @@ impl EngineHandle {
     #[must_use]
     pub fn agent_stream_info(&self, terminal_id: &ResourceId) -> Option<AgentStreamInfo> {
         self.request(|reply| Command::Query(Query::AgentStreamInfo(terminal_id.clone(), reply)))
+            .ok()
+            .flatten()
+    }
+
+    /// The exact committed SDK controller view, never inferred from a provider.
+    /// Closed sources remain readable but cannot expose connected controls.
+    #[must_use]
+    pub fn native_agent_view(
+        &self,
+        agent_session_id: &ResourceId,
+    ) -> Option<phux_protocol::native_agent::NativeView> {
+        self.request(|reply| Command::Query(Query::NativeAgentView(agent_session_id.clone(), reply)))
             .ok()
             .flatten()
     }

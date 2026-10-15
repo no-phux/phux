@@ -42,6 +42,22 @@ use super::{
     encode_terminal_id,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NativeResultEvent {
+    agent_session_id: crate::ids::ResourceId,
+    operation_id: u64,
+    disposition: crate::native_agent::NativeDisposition,
+    detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct NativeResultEventRef<'a> {
+    agent_session_id: &'a crate::ids::ResourceId,
+    operation_id: u64,
+    disposition: crate::native_agent::NativeDisposition,
+    detail: Option<&'a str>,
+}
+
 // `Command` and `CommandResult`: a tag, then a positional body.
 
 #[allow(
@@ -50,6 +66,14 @@ use super::{
 )]
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
+        Command::NativeAgent { request } => {
+            enc.write_u8(super::COMMAND_TAG_NATIVE_AGENT);
+            // Serialization of these DTOs is infallible (string-keyed maps).
+            // Like other command encoders, admission limits are enforced by
+            // the decoder rather than silently truncating outgoing requests.
+            let bytes = serde_json::to_vec(request).expect("native request serialization");
+            enc.write_bytes(&bytes);
+        }
         Command::AttachResource {
             terminal_id,
             role_policy,
@@ -317,6 +341,15 @@ fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> 
 pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
+    if tag == super::COMMAND_TAG_NATIVE_AGENT {
+        let bytes = dec.read_bytes()?;
+        if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+            return Err(DecodeError::NativeAgentLimitExceeded);
+        }
+        let request = serde_json::from_slice(bytes)
+            .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+        return Ok(Command::NativeAgent { request: Box::new(request) });
+    }
     // Each family claims a disjoint tag set and returns `None` (reading
     // nothing) for the rest.
     if let Some(command) = decode_terminal_subscription_command(tag, dec)? {
@@ -945,6 +978,17 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     let tag = {
         let mut body_enc = Encoder::new(&mut body);
         match event {
+            AgentEvent::NativeAgentResult { agent_session_id, operation_id, disposition, detail } => {
+                let value = NativeResultEventRef {
+                    agent_session_id,
+                    operation_id: *operation_id,
+                    disposition: *disposition,
+                    detail: detail.as_deref(),
+                };
+                let json = serde_json::to_vec(&value).expect("native result serialization");
+                body_enc.write_bytes(&json);
+                super::EVENT_TAG_NATIVE_AGENT_RESULT
+            }
             AgentEvent::CommandStarted => EVENT_TAG_COMMAND_STARTED,
             AgentEvent::CommandFinished { exit_code } => {
                 encode_optional_i32(*exit_code, &mut body_enc);
@@ -1118,6 +1162,24 @@ pub(in crate::wire) fn decode_agent_event(
 
     let mut body_dec = Decoder::new(body);
     let event = match tag {
+        super::EVENT_TAG_NATIVE_AGENT_RESULT => {
+            // Bound the enclosing body as well as the JSON before allocation.
+            if body.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES + 4 {
+                return Err(DecodeError::NativeAgentLimitExceeded);
+            }
+            let bytes = body_dec.read_bytes()?;
+            if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+                return Err(DecodeError::NativeAgentLimitExceeded);
+            }
+            let value: NativeResultEvent = serde_json::from_slice(bytes)
+                .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+            AgentEvent::NativeAgentResult {
+                agent_session_id: value.agent_session_id,
+                operation_id: value.operation_id,
+                disposition: value.disposition,
+                detail: value.detail,
+            }
+        }
         EVENT_TAG_COMMAND_STARTED => AgentEvent::CommandStarted,
         EVENT_TAG_COMMAND_FINISHED => AgentEvent::CommandFinished {
             exit_code: decode_optional_i32(&mut body_dec)?,

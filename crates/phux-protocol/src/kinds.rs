@@ -748,6 +748,21 @@ static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     &[Verb::Bind, Verb::Input],
     Subject::ParentOfNamed,
 );
+static C_NATIVE_SPAWN: Rule = Rule::verbs(
+    "`NATIVE_AGENT { type: spawn }`",
+    &[Verb::Create, Verb::Bind],
+    Subject::KeyedSession,
+);
+static C_NATIVE_COMMAND: Rule = Rule::verbs(
+    "`NATIVE_AGENT { type: command }`",
+    &[Verb::Input],
+    Subject::NamedTerminal,
+);
+static C_NATIVE_CONTROLLER: Rule = Rule::verbs(
+    "`NATIVE_AGENT { type: register/receive/complete/publish/close }`",
+    &[Verb::Bind],
+    Subject::ParentOfNamed,
+);
 static C_GET_ORGANIZATION: Rule = Rule::verbs(
     "`GET_ORGANIZATION`",
     &[Verb::Inventory],
@@ -816,7 +831,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 42] = [
+pub static COMMAND_RULES: [&Rule; 45] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -844,6 +859,9 @@ pub static COMMAND_RULES: [&Rule; 42] = [
     &C_GET_PERF,
     &C_GET_PERF_RESET,
     &C_APPEND_RESOURCE_OUTPUT,
+    &C_NATIVE_SPAWN,
+    &C_NATIVE_COMMAND,
+    &C_NATIVE_CONTROLLER,
     &C_GET_ORGANIZATION,
     &C_SESSION_CREATE,
     &C_SESSION_ORGANIZE,
@@ -957,6 +975,15 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
 #[must_use]
 pub fn command_rule(command: &Command) -> &'static Rule {
     match command {
+        Command::NativeAgent { request } => match request.as_ref() {
+            crate::native_agent::NativeRequest::Spawn { .. } => &C_NATIVE_SPAWN,
+            crate::native_agent::NativeRequest::Command { .. } => &C_NATIVE_COMMAND,
+            crate::native_agent::NativeRequest::Register { .. }
+            | crate::native_agent::NativeRequest::Receive { .. }
+            | crate::native_agent::NativeRequest::Complete { .. }
+            | crate::native_agent::NativeRequest::Publish { .. }
+            | crate::native_agent::NativeRequest::Close { .. } => &C_NATIVE_CONTROLLER,
+        },
         Command::AttachResource { .. } => &C_ATTACH_RESOURCE,
         Command::DetachResource { .. } => &C_DETACH_RESOURCE,
         Command::KillResource { .. } => &C_KILL_RESOURCE,
@@ -1947,13 +1974,24 @@ pub static KINDS: [KindSpec; 2] = [
         kind: ResourceKind::AgentSession,
         name: "AGENT_SESSION",
         gate: Some(FeatureGate::Features(ServerFeature::ResourceKinds)),
-        methods: &[method!(
-            "APPEND_RESOURCE_OUTPUT",
-            Carrier::Command(COMMAND_TAG_APPEND_RESOURCE_OUTPUT),
-            [C_APPEND_RESOURCE_OUTPUT],
-            Some(FeatureGate::Features(ServerFeature::ResourceKinds))
-        )],
-        events: &[],
+        methods: &[
+            method!(
+                "APPEND_RESOURCE_OUTPUT",
+                Carrier::Command(COMMAND_TAG_APPEND_RESOURCE_OUTPUT),
+                [C_APPEND_RESOURCE_OUTPUT],
+                Some(FeatureGate::Features(ServerFeature::ResourceKinds))
+            ),
+            method!(
+                "NATIVE_AGENT",
+                Carrier::Command(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT),
+                [C_NATIVE_SPAWN, C_NATIVE_COMMAND, C_NATIVE_CONTROLLER],
+                None
+            ),
+        ],
+        events: &[EventSpec {
+            name: "native_agent_result",
+            tag: crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT,
+        }],
         metadata_keys: &[],
     },
 ];
