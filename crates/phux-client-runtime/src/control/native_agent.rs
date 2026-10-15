@@ -1,5 +1,6 @@
 //! Dedicated SDK commands and honest, non-PTY receipts.
 
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
     NativeRequest, validate_payload,
@@ -25,6 +26,10 @@ impl ControlPlane {
         intent: NativeIntent,
     ) -> Option<u64> {
         if !self.handshake_ready
+            || !self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has_ext(ServerFeatureExt::NativeAgent))
             || activation.is_empty()
             || intent.validate().is_err()
             || self

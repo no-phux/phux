@@ -1197,7 +1197,10 @@ mod tests {
 
     #[test]
     fn native_json_is_validated_before_scheduling_and_receipts_stay_dedicated() {
-        use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
+        use phux_protocol::caps::{
+            BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
+            ServerFeatureExtSet,
+        };
         use phux_protocol::native_agent::{NativeDisposition, NativeRequest};
         let mut remote = RemoteClient::new("unused".into(), 0, 0, None, None);
         let runtime =
@@ -1213,7 +1216,8 @@ mod tests {
                 protocol_major: phux_protocol::PROTOCOL_VERSION.major,
                 protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
                 protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new(),
+                server_caps: ServerCapabilities::new()
+                    .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent])),
                 server_id: vec![0xAB; 16],
                 selected_profile: BootstrapProfile::SynthesizedVtRaw,
                 bootstrap_limits: BootstrapLimits::default(),

@@ -52,7 +52,7 @@ These are not implied by the host cutover:
 | Persistence | Same-incarnation restore, changed-incarnation refusal, malformed and newer files left unwritten. |
 | Connections | Startup error stays in the window. Reconnect does not invent a second lifecycle. Remote hosts are not built. |
 | Settings and Ghostty | Effective value, font, palette, keybinds, and the quick-terminal chord. `reset`, `vt`, and `html` copy formats remain unsupported. |
-| Agents | Attached-mode badge/conversation/composer/Stop behavior, plus native SDK launch, typed exact-session commands, structured dialogs, same provider session across viewers, honest admission receipts, and read-only disconnection/end. |
+| Agents | Attached-mode badges and attention, terminal/conversation switching, same-terminal acknowledged composer delivery, once-per-working-turn Stop, and read-only ended streams; attached approvals remain terminal-owned. Native SDK launch, typed exact-session commands, structured dialogs, same provider session across viewers, honest admission receipts, and read-only disconnection/end. |
 | Accessibility | A real screen-reader and IME journey. Manual observation is required; do not mark it passed from a unit test. |
 | Linux | A later platform matrix. macOS evidence does not qualify it. |
 
@@ -72,13 +72,18 @@ clients/desktop/native/Cargo.toml --features terminal-fixtures --test pixels
 app::conversation::native_face_is_rendered -- --ignored --nocapture` with the same
 environment. It renders the production Desk and native prose/thinking/tool
 rows through Metal on the main thread, using records from its private server.
-It also renders seven actual Kit question scenes from explicit `NativeView`
-fixtures: confirm, select, input, editor, multiple questions, permission and form.
-`PHUX_DESKTOP_PIXEL_EVIDENCE` optionally names the attached PNG; SDK question PNGs
-are written beside it with `-confirm`, `-select`, `-input`, `-editor`, `-ask`,
-`-permission` and `-form` suffixes. These are rendering fixtures, not provider
-transport/admission proof. They need no screenshot permission or frontmost window;
-offscreen Metal does not qualify live presentation, accessibility or IME.
+`PHUX_DESKTOP_PIXEL_EVIDENCE` optionally names the captured conversation PNG.
+This retained fixture does not generate SDK question scenes or exercise provider
+transport/admission.
+
+Separate qualification exercised all seven native question kinds—confirm,
+select, input, editor, multiple questions, permission and form—through the actual
+Desk/Kit Metal renderer, and each resulting PNG was inspected. The temporary
+injected-scene loop and actual-SDK GPUI journey were removed after qualification;
+they are not shipped regression tests or outputs promised by the retained
+command above. Offscreen rendering requires neither screen-capture permission
+nor a frontmost window; it does not qualify live presentation, accessibility,
+IME or cross-view provider control.
 
 Native SDK acceptance additionally requires an isolated same-checkout server and
 the genuine installed/pinned provider SDK. Launch from **New Agent** and verify the

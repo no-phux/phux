@@ -48,6 +48,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "return-from-attention",
     "switch-session",
     "switch-host",
+    "toggle-project-group",
     "new-session",
     "last-session",
     "next-session",
@@ -76,6 +77,9 @@ pub const CLIENT_ATTACHED: &str = "client-attached";
 pub const CLIENT_DETACHED: &str = "client-detached";
 /// Hook point: a pane's derived agent state changed (ADR-0046).
 pub const AGENT_STATE_CHANGED: &str = "agent-state-changed";
+/// Hook point: `phux worktree new` created a checkout (ADR-0168). The CLI
+/// fires it, since worktree creation never reaches the server.
+pub const WORKTREE_CREATED: &str = "worktree-created";
 
 /// Every valid hook event name (`docs/consumers/tui.md` §9).
 pub const HOOK_EVENTS: &[&str] = &[
@@ -85,6 +89,7 @@ pub const HOOK_EVENTS: &[&str] = &[
     CLIENT_ATTACHED,
     CLIENT_DETACHED,
     AGENT_STATE_CHANGED,
+    WORKTREE_CREATED,
 ];
 
 /// The context keys a hook event can carry (sorted, optional keys
@@ -98,6 +103,7 @@ pub fn hook_context_keys(event: &str) -> Option<&'static [&'static str]> {
         FOCUS_CHANGED => &["client-id", "terminal-id"],
         CLIENT_ATTACHED | CLIENT_DETACHED => &["client-id", "session"],
         AGENT_STATE_CHANGED => &["agent-kind", "agent-name", "from", "terminal-id", "to"],
+        WORKTREE_CREATED => &["branch", "repo", "session", "worktree"],
         _ => return None,
     })
 }

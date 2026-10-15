@@ -18,7 +18,7 @@ Superseded in part by [ADR-0160](./0160-sessions-own-resources-and-window-is-ret
 
 ## Context
 
-The approved [everyday UX contract](../../clients/cockpit/docs/specs/phux-2jza/PRODUCT.md) behavior 19
+The approved [everyday UX contract](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/specs/phux-2jza/PRODUCT.md) behavior 19
 distinguishes resource termination from client-view lifetime. The previous
 Cockpit shared-window removal was layout-only, despite being exposed as Close
 Tab. OS-window closure and tab closure cannot share that operation.
@@ -26,7 +26,7 @@ Tab. OS-window closure and tab closure cannot share that operation.
 [ADR-0105](./0105-sessions-can-outlive-their-last-window.md) makes keep-empty an
 opt-in session property; [ADR-0107](./0107-satellite-sessions-are-listed-never-adopted.md)
 preserves real satellite terminal ownership even when a hub projects its leaf.
-Cockpit's [emptied-window decision](../../clients/cockpit/docs/DECISIONS.md)
+Cockpit's [emptied-window decision](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/DECISIONS.md)
 predates keep-empty. None of these permits a client to claim detach after kill.
 
 ## Decision

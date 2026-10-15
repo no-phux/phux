@@ -8,7 +8,7 @@
 #   just/gates.just     root Rust gates (`just ci`)
 #   just/test.just      unit/e2e/stress
 #   just/build.just     developer builds
-#   just/cockpit.just   cockpit-ci
+#   just/ffi.just       shared C ABI builds and checks
 #   just/perf.just      local observability (no product lane)
 #   just/release.just   packaging (no product lane)
 #   just/mutation.just  optional scans (no product lane)
@@ -18,7 +18,7 @@ import 'just/test.just'
 import 'just/setup.just'
 import 'just/build.just'
 import 'just/gates.just'
-import 'just/cockpit.just'
+import 'just/ffi.just'
 import 'just/desktop.just'
 import 'just/perf.just'
 import 'just/release.just'

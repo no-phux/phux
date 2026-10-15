@@ -17,7 +17,7 @@ export type Scenario = {
   beats: readonly Beat[];
 };
 
-export const CLIENTS = ["Cockpit", "Terminal", "Browser", "iPhone"] as const;
+export const CLIENTS = ["Desktop", "Terminal", "Browser", "iPhone"] as const;
 export const BEAT_SECONDS = 2.5;
 export const SCENARIOS: readonly Scenario[] = [
   {

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """One CI routing contract. Patterns use fnmatch (stars include slashes).
 
-Library inputs in the bundled coordinator or FFI closure still route to
-Cockpit. `tests/`, `benches/` and `examples/` do not: they are not binary
-inputs, so they do not rebuild Cockpit, the browser, or native setup. Crates
-outside both closures (the MCP binary, the server testkit) do not either.
+`tests/`, `benches/` and `examples/` are not binary inputs, so they do not
+rebuild the browser or native setup.
 Browser workspaces stay separate. Native means the *clean setup assurance*
 lane, not all native Rust. Workflow orchestration is compile-free.
 
@@ -20,22 +18,20 @@ import re
 import sys
 import tomllib
 
-SURFACES = ("phux", "cockpit", "web", "web_engine", "integrations", "native")
+SURFACES = ("phux", "web", "web_engine", "integrations", "native")
 ALL = set(SURFACES)
-RUST = {"phux", "cockpit"}
+RUST = {"phux"}
 SHARED = RUST | {"web", "native"}
 ZIG = SHARED | {"web_engine"}
 
 # Documentation that code or a guard reads as an input. Each row leaves the
 # docs-only fast path and routes like its reader: Rust tests byte-compare the
-# spec, generated reference, agent guide and recorded casts; Cockpit checks the
-# release fallback page; the full workflow gate reads the site sources and the
-# root changelog. classify-changes-test.py fails when a crate starts reading a
-# doc that is missing here.
+# spec, generated reference, agent guide and recorded casts; the full workflow
+# gate reads the site sources and root changelog. classify-changes-test.py fails
+# when a crate starts reading a doc that is missing here.
 DOC_INPUTS = (
     (("docs/spec/*", "docs/reference/*", "docs/assets/*",
       "docs/consumers/agents.md"), {"phux"}),
-    (("docs/dsr-release-fallback.md",), {"cockpit"}),
     (("docs/site/*", "CHANGELOG.md"), set()),
 )
 
@@ -43,8 +39,6 @@ DOC_INPUTS = (
 # row. Keep these in one table rather than duplicating path filters in YAML.
 ROUTES = DOC_INPUTS + (
     ((".agents/skills/using-phux/*", ".agents/skills/using-phux-mcp/*"), RUST),
-    (("clients/cockpit/*",), {"cockpit"}),
-    (("scripts/ci/cockpit_artifacts.py", "scripts/ci/test_cockpit_artifacts.py"), {"cockpit"}),
     (("clients/phux-web/*", "clients/phux-vt-web/*", "scripts/ci/web-browser.py",
       "scripts/ci/test_web_browser.py", "scripts/ci/web_agent_fixture.py"), {"web"}),
     (("clients/phux-vt-web/vendor/*", "scripts/build-vt-wasm.sh",
@@ -69,17 +63,16 @@ ROUTES = DOC_INPUTS + (
     (("Cargo.toml", "rust-toolchain.toml", ".cargo/*"), SHARED),
     (("Cargo.lock",), SHARED),
     # Setup helpers and just/setup.just are the native-setup assurance lane.
-    # They do not rebuild Cockpit, the browser, or the root Rust graph.
+    # They do not rebuild the browser or the root Rust graph.
     (("just/setup.just", "scripts/setup-rust.sh", "scripts/doctor.sh",
       "scripts/test-dev-setup.sh", "scripts/native-smoke.sh"), {"native"}),
     ((".config/zig-toolchain.json",), ZIG),
-    # install-zig.sh is how cockpit-ci, native-setup, and web-engine get Zig;
+    # install-zig.sh is how native-setup and web-engine get libghostty's Zig;
     # the Nix phux lanes use flake.nix's compiler instead.
     (("scripts/install-zig.sh", "scripts/lib/dev-toolchain.sh"),
-     {"cockpit", "native", "web_engine"}),
+     {"native", "web_engine"}),
     (("flake.nix", "flake.lock"), RUST | {"web"}),
     (("just/gates.just", "just/test.just", "just/build.just"), {"phux"}),
-    (("just/cockpit.just",), {"cockpit"}),
     # Root justfile is imports + `default`. Product recipes live in just/*.just.
     # Perf/release/mutation and release-please config are compile-free.
     (("justfile", "just/perf.just", "just/release.just", "just/mutation.just",
@@ -110,6 +103,7 @@ WORKFLOWS = (
     "scripts/ci/mbx-export-failed-lane.sh",
     "scripts/check-release-orchestration.mjs",
     "scripts/ci/test_linear_release_workflow.py",
+    "scripts/ci/test_release_drift.py", "scripts/ci/test_next_channel.py",
     "scripts/ci/site_source_pin.py", "scripts/ci/test_site_source_pin.py",
     "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
@@ -169,58 +163,7 @@ def crate_for(path, packages):
 
 
 NON_LIBRARY = frozenset({"tests", "benches", "examples"})
-DROP_FOR_NON_LIBRARY = frozenset({"cockpit", "web", "web_engine", "native"})
-SHARED_BINARY_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/*")
-ZIG_APP = (
-    "clients/cockpit/build.zig",
-    "clients/cockpit/build.zig.zon",
-    "clients/cockpit/src/*",
-    "clients/cockpit/*.zig",
-    "clients/cockpit/scripts/build-shipping-app.sh",
-    "clients/cockpit/scripts/zig-build.sh",
-    "clients/cockpit/scripts/build-phux-cli.sh",
-    "clients/cockpit/scripts/build-phux-artifacts.sh",
-    "clients/cockpit/scripts/native-cargo-target.sh",
-    ".config/zig-toolchain.json",
-    "scripts/install-zig.sh",
-)
-FFI_ROOT = "phux-client-ffi"
-CLI_ROOT = "phux"
-
-
-def package_manifests(root=ROOT):
-    found = {}
-    for manifest in (root / "crates").glob("*/Cargo.toml"):
-        data = tomllib.loads(manifest.read_text())
-        found[data["package"]["name"]] = data
-    return found
-
-
-def normal_deps(manifest):
-    deps = set()
-    for table in (manifest, *manifest.get("target", {}).values()):
-        deps.update(table.get("dependencies", {}))
-    return deps
-
-
-def normal_closure(roots, manifests):
-    pending = list(roots)
-    seen = set()
-    while pending:
-        name = pending.pop()
-        if name in seen or name not in manifests:
-            continue
-        seen.add(name)
-        pending.extend(normal_deps(manifests[name]) & manifests.keys())
-    return seen
-
-
-def closure_directories(root_package, packages=None, manifests=None):
-    """Crate directories whose normal-dependency closure includes root_package."""
-    packages = workspace_packages() if packages is None else packages
-    manifests = package_manifests() if manifests is None else manifests
-    names = normal_closure((root_package,), manifests)
-    return {prefix.split("/", 1)[1] for name, prefix in packages if name in names}
+DROP_FOR_NON_LIBRARY = frozenset({"web", "web_engine", "native"})
 
 
 def non_library_kind(path):
@@ -228,13 +171,6 @@ def non_library_kind(path):
     if len(parts) < 4 or parts[0] != "crates" or parts[2] not in NON_LIBRARY:
         return None
     return parts[2]
-
-
-def crate_directory(path):
-    parts = path.split("/")
-    if len(parts) < 2 or parts[0] != "crates":
-        return None
-    return parts[1]
 
 
 def part_is_e2e(part):
@@ -312,39 +248,10 @@ def unit_plan(files, packages, root=ROOT):
     return narrow_unit_plan(productive, packages, root)
 
 
-def touches_closure(path, packages, directories):
-    if matches(path, SHARED_BINARY_INPUTS):
-        return True
-    directory = crate_directory(path)
-    return directory in directories and non_library_kind(path) is None
-
-
-def artifact_flags(files, packages, manifests):
-    if not files:
-        return {"ffi_needed": True, "cli_needed": True, "zig_needed": True, "shipping_needed": True}
-    ffi_dirs = closure_directories(FFI_ROOT, packages, manifests)
-    cli_dirs = closure_directories(CLI_ROOT, packages, manifests)
-    flags = {"ffi_needed": False, "cli_needed": False, "zig_needed": False}
-    for path in files:
-        if not path or is_doc(path):
-            continue
-        if matches(path, ZIG_APP):
-            flags["zig_needed"] = True
-        if touches_closure(path, packages, ffi_dirs):
-            flags["ffi_needed"] = True
-        if touches_closure(path, packages, cli_dirs):
-            flags["cli_needed"] = True
-    flags["shipping_needed"] = flags["zig_needed"] or flags["ffi_needed"]
-    return flags
-
-
-def route_path(path, packages, cli_dirs, ffi_dirs):
+def route_path(path):
     selected = surfaces_for(path)
     if non_library_kind(path):
         return (selected - DROP_FOR_NON_LIBRARY) | {"phux"}
-    directory = crate_directory(path)
-    if directory and directory not in cli_dirs and directory not in ffi_dirs:
-        selected.discard("cockpit")
     return selected
 
 
@@ -396,12 +303,9 @@ def perf_icount_needed(files):
 def classify(files):
     files = [path for path in files if path]
     packages = workspace_packages()
-    manifests = package_manifests()
-    cli_dirs = closure_directories(CLI_ROOT, packages, manifests)
-    ffi_dirs = closure_directories(FFI_ROOT, packages, manifests)
     selected = set()
     for path in files:
-        selected.update(route_path(path, packages, cli_dirs, ffi_dirs))
+        selected.update(route_path(path))
     if not files:
         selected = ALL.copy()
     outputs = {surface + "_needed": surface in selected for surface in SURFACES}
@@ -410,7 +314,6 @@ def classify(files):
     outputs["perf_icount_needed"] = perf_icount_needed(files)
     outputs["test_filterset"] = test_filterset(files, packages)
     outputs.update(unit_plan(files, packages))
-    outputs.update(artifact_flags(files, packages, manifests))
     return outputs
 
 

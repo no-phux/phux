@@ -5,7 +5,6 @@ const facts = {
   productName: "phux",
   cliInstall: "curl -fsSL https://phux.sh/install | sh",
   desktopInstall: "curl -fsSL https://phux.sh/install-desktop | sh",
-  cockpitInstall: "curl -fsSL https://phux.sh/install-cockpit | sh",
   docsUrl: "https://docs.phux.sh",
   releaseTag: "v0.9.0",
   releaseUrl: "https://github.com/no-phux/phux/releases/tag/v0.9.0",
@@ -46,8 +45,9 @@ describe("site WebMCP registration", () => {
     await registerSiteTools(context, facts);
     const [install, docs, release] = context.tools;
     expect(await install.execute({})).toEqual({ command: facts.cliInstall });
-    expect(await install.execute({ target: "cockpit" })).toEqual({
-      command: facts.cockpitInstall,
+    expect(install.inputSchema.properties.target).toMatchObject({ enum: ["cli", "desktop", "skills"] });
+    expect(await install.execute({ target: "desktop" })).toEqual({
+      command: facts.desktopInstall,
     });
     expect(await install.execute({ target: "skills" })).toEqual({
       command: "npx skills add no-phux/skills",

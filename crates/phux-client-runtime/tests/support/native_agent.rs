@@ -1,6 +1,7 @@
 //! Consumer contract: native intents never become PTY input or replay on loss.
 
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event};
+use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommandResult, NativeDisposition, NativeIntent, NativeRequest,
 };
@@ -18,9 +19,11 @@ fn connected() -> ControlPlane {
     });
     plane.connection_opened();
     plane.take_outbound();
-    plane
-        .feed(embedded::hello_ok(PROTOCOL_VERSION.patch))
-        .unwrap();
+    let mut hello = embedded::hello_ok(PROTOCOL_VERSION.patch);
+    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
+        server_caps.features_ext = ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent]);
+    }
+    plane.feed(hello).unwrap();
     plane.take_events();
     plane.take_outbound();
     plane
@@ -54,6 +57,26 @@ fn sent(plane: &mut ControlPlane) -> (u32, u64) {
         }
         other => panic!("native command must not emit PTY input: {other:?}"),
     }
+}
+
+#[test]
+fn requires_native_capability_before_scheduling() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        automatic_lifecycle: false,
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    plane.take_outbound();
+    plane
+        .feed(embedded::hello_ok(PROTOCOL_VERSION.patch))
+        .unwrap();
+    plane.take_outbound();
+    assert_eq!(
+        plane.native_agent_command(&ResourceId::local(22), "activation-A", prompt()),
+        None,
+        "a successful legacy handshake does not authorize a new command tag"
+    );
+    assert!(plane.take_outbound().is_empty());
 }
 
 #[test]

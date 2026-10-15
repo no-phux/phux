@@ -48,7 +48,6 @@ interface ToolDef {
 
 const INSTALL_COMMANDS = {
   cli: "curl -fsSL https://phux.sh/install | sh",
-  cockpit: "curl -fsSL https://phux.sh/install-cockpit | sh",
   desktop: "curl -fsSL https://phux.sh/install-desktop | sh",
   skills: "npx skills add no-phux/skills",
 } as const;
@@ -111,20 +110,20 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_install_command",
     description:
-      "Get the one-line installer for the phux CLI, GPUI desktop, Cockpit, or agent skills.",
+      "Get the one-line installer for the phux CLI, GPUI desktop, or agent skills.",
     inputSchema: {
       type: "object",
       properties: {
         target: {
           type: "string",
-          enum: ["cli", "desktop", "cockpit", "skills"],
+          enum: ["cli", "desktop", "skills"],
           description: "What to install. Defaults to the phux CLI.",
         },
       },
     },
     run: async (params) => {
       const target = params.target;
-      if (target === "desktop" || target === "cockpit" || target === "skills") {
+      if (target === "desktop" || target === "skills") {
         return INSTALL_COMMANDS[target];
       }
       return INSTALL_COMMANDS.cli;
@@ -133,14 +132,14 @@ const TOOLS: ToolDef[] = [
   {
     name: "latest_release",
     description:
-      "Get the latest phux and Cockpit release tags, URLs, and publish dates.",
+      "Get the latest phux CLI and Desktop release tags, URLs, and publish dates.",
     inputSchema: { type: "object", properties: {} },
     run: async (_params, env) => {
       const index = await loadIndex(env);
-      const { phux, cockpit } = index.release;
+      const { phux, desktop } = index.release;
       return [
         `phux ${phux.tag} — ${phux.url} (published ${phux.publishedAt})`,
-        `Cockpit ${cockpit.tag} — ${cockpit.url} (published ${cockpit.publishedAt})`,
+        `Desktop ${desktop.tag} — ${desktop.url} (published ${desktop.publishedAt})`,
       ].join("\n");
     },
   },
@@ -184,7 +183,7 @@ interface SearchPage {
 
 interface ReleaseInfo {
   phux: { tag: string; url: string; publishedAt: string };
-  cockpit: { tag: string; url: string; publishedAt: string };
+  desktop: { tag: string; url: string; publishedAt: string };
 }
 
 async function loadIndex(env: McpEnv): Promise<{ pages: SearchPage[]; release: ReleaseInfo }> {
@@ -206,7 +205,7 @@ async function loadIndex(env: McpEnv): Promise<{ pages: SearchPage[]; release: R
 function placeholderRelease(): ReleaseInfo {
   return {
     phux: { tag: "unknown", url: "https://github.com/no-phux/phux/releases", publishedAt: "unknown" },
-    cockpit: {
+    desktop: {
       tag: "unknown",
       url: "https://github.com/no-phux/phux/releases",
       publishedAt: "unknown",

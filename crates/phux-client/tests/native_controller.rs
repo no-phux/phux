@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_client::native_agent::{ClientError, NativeController};
-use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
+use phux_protocol::caps::{
+    BootstrapCapabilities, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
+    select_bootstrap_profile,
+};
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
     NativePublicationReceipt, NativeRequest, NativeUpdate,
@@ -31,6 +34,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 #[derive(Default)]
 struct Broker {
     generation: AtomicU64,
+    advertises_native: AtomicBool,
     lose_acks: AtomicUsize,
     publishes: Mutex<Vec<(u64, u64, NativeUpdate)>>,
     accepted: Mutex<HashMap<u64, (NativeUpdate, NativePublicationReceipt)>>,
@@ -57,6 +61,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let listener = UnixListener::bind(dir.path().join("native.sock")).unwrap();
         let broker = Arc::new(Broker::default());
+        broker.advertises_native.store(true, Ordering::Release);
         broker.lose_acks.store(lost_acks, Ordering::Release);
         let owned = Arc::clone(&broker);
         let task = tokio::spawn(async move {
@@ -127,7 +132,13 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
+            server_caps: ServerCapabilities::new().with_features_ext(
+                if broker.advertises_native.load(Ordering::Acquire) {
+                    ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent])
+                } else {
+                    ServerFeatureExtSet::new()
+                },
+            ),
             server_id: vec![],
             selected_profile,
             bootstrap_limits,
@@ -295,6 +306,24 @@ fn notice(text: &str) -> NativeUpdate {
         level: "info".into(),
         text: text.into(),
     }
+}
+
+#[tokio::test]
+async fn legacy_server_is_refused_before_sending_native_registration() {
+    let fixture = Fixture::start(0).await;
+    fixture
+        .broker
+        .advertises_native
+        .store(false, Ordering::Release);
+    let result = NativeController::connect(
+        fixture.dir.path().join("native.sock"),
+        ResourceId::local(22),
+        "activation-A".into(),
+        "private-binding".into(),
+    )
+    .await;
+    assert!(matches!(result, Err(ClientError::Protocol(_))));
+    assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 0);
 }
 
 #[tokio::test]

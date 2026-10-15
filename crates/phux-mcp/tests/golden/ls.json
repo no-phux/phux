@@ -75,6 +75,7 @@
       "lifetime": null,
       "members": 4,
       "name": "work",
+      "project": null,
       "windows": 1
     }
   ],

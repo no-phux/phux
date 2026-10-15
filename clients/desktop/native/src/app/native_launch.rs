@@ -22,7 +22,7 @@ pub(crate) struct State {
 }
 
 struct Pending {
-    server: String,
+    owner: std::sync::Weak<phux_client_runtime::Client>,
     session: String,
     terminal: ResourceId,
     agent: String,
@@ -54,6 +54,9 @@ impl Desk {
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || host::native_integrations(&phux, &socket)).await;
             let _ = this.update(cx, |desk, cx| {
+                if desk.remote.is_some() {
+                    return;
+                }
                 desk.native_launch.loading = false;
                 match result {
                     Ok(items) => desk.native_launch.integrations = items,
@@ -82,11 +85,11 @@ impl Desk {
         {
             return;
         }
-        let Some(server) = self
+        let Some(owner) = self
             .link
             .as_ref()
             .filter(|link| link.connection.status == phux_client_runtime::control::Status::Attached)
-            .and_then(|link| link.connection.server_id())
+            .map(|link| std::sync::Arc::downgrade(&link.connection.client))
         else {
             self.native_launch.error =
                 Some("Reconnect to this session before launching a native agent.".into());
@@ -103,10 +106,15 @@ impl Desk {
             let destination = session.clone();
             let result = smol::unblock(move || host::launch_native(&phux, &socket, &integration, &destination)).await;
             let _ = this.update_in(cx, |desk, window, cx| {
+                if !desk.link.as_ref().is_some_and(|link| {
+                    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(&link.connection.client))
+                }) {
+                    return;
+                }
                 desk.native_launch.launching = None;
                 match result {
                     Ok(launched) => {
-                        desk.native_launch.pending = Some(Pending { server, session, terminal: ResourceId::local(launched.terminal_id), agent: launched.agent_session_id, activation: launched.activation, revealed: false });
+                        desk.native_launch.pending = Some(Pending { owner, session, terminal: ResourceId::local(launched.terminal_id), agent: launched.agent_session_id, activation: launched.activation, revealed: false });
                         desk.close_modal(window, cx);
                         desk.reveal_pending_native(cx);
                         if let Some(link) = desk.link.as_ref() { let _ = link.connection.refresh_topology(); }
@@ -172,17 +180,19 @@ impl Desk {
 fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
     desk.session == pending.session
         && desk.link.as_ref().is_some_and(|link| {
-            link.connection.server_id().as_deref() == Some(pending.server.as_str())
-                && link
-                    .connection
-                    .conversation(&pending.terminal)
-                    .is_some_and(|conversation| {
-                        conversation.resource.to_string() == pending.agent
-                            && conversation
-                                .native
-                                .as_ref()
-                                .is_some_and(|view| view.activation == pending.activation)
-                    })
+            std::ptr::eq(
+                pending.owner.as_ptr(),
+                std::sync::Arc::as_ptr(&link.connection.client),
+            ) && link
+                .connection
+                .conversation(&pending.terminal)
+                .is_some_and(|conversation| {
+                    conversation.resource.to_string() == pending.agent
+                        && conversation
+                            .native
+                            .as_ref()
+                            .is_some_and(|view| view.activation == pending.activation)
+                })
         })
 }
 

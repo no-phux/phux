@@ -11,6 +11,12 @@
 * Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
   Pi/OMP transcript mapper.
 
+## [0.2.0](https://github.com/no-phux/phux/compare/omp-extension-v0.1.0...omp-extension-v0.2.0) (2026-10-15)
+
+
+### Features
+
+* **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
 ## 0.1.0 (2026-10-14)
 
 

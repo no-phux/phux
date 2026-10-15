@@ -19,7 +19,6 @@
 
 pub(crate) mod apply;
 pub(crate) mod channel;
-pub(crate) mod cockpit;
 pub(crate) mod release;
 pub(crate) mod source;
 
@@ -34,9 +33,9 @@ use self::source::{Install, InstallSource, UnknownReason};
 use super::json_err::{self, CliError, codes};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 
-/// Version of the `phux update --json` document. Additive fields do not bump
-/// it (ADR-0071 freezes the shape at 1.0).
-pub(crate) const DOCUMENT_SCHEMA_VERSION: u8 = 1;
+/// Version of the `phux update --json` document. Version 2 removes the
+/// retired native app's update report; additive fields do not bump it.
+pub(crate) const DOCUMENT_SCHEMA_VERSION: u8 = 2;
 
 /// Everything that can go wrong between "there is a newer release" and "it is
 /// installed", with the failure kept separate from how it is reported.
@@ -921,44 +920,18 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
 
     match execute(opts, &env) {
         Ok(outcome) => {
-            let cockpit = sync_cockpit(opts, &outcome);
             let shadow = std::env::var_os("PATH")
                 .and_then(|path| shadowing_phux(&outcome.plan.install, &path));
-            if opts.json {
-                let mut document = outcome.document();
-                document["cockpit"] = cockpit
-                    .as_ref()
-                    .map_or(serde_json::Value::Null, |(app, report)| {
-                        report.document(app)
-                    });
-                document["path_shadowed_by"] =
-                    shadow.as_ref().map_or(serde_json::Value::Null, |path| {
-                        serde_json::Value::String(path.display().to_string())
-                    });
-                match serde_json::to_string_pretty(&document) {
-                    Ok(rendered) => outln!("{rendered}"),
-                    Err(err) => {
-                        return json_err::emit(
-                            true,
-                            &CliError::new(
-                                codes::JSON_SERIALIZE,
-                                format!("could not render the update document: {err}"),
-                                "report this at https://github.com/no-phux/phux/issues".to_owned(),
-                            ),
-                            EXIT_FAILURE,
-                        );
-                    }
-                }
-            } else {
-                for line in outcome.lines() {
-                    outln!("{line}");
-                }
-                for line in cockpit.iter().flat_map(|(_, report)| report.lines()) {
-                    outln!("{line}");
-                }
-                if let Some(path) = shadow.as_ref() {
-                    outln!("{}", shadow_warning(path, &outcome.plan.install.executable));
-                }
+            if let Err(err) = print_outcome(&outcome, shadow.as_deref(), opts.json) {
+                return json_err::emit(
+                    true,
+                    &CliError::new(
+                        codes::JSON_SERIALIZE,
+                        format!("could not render the update document: {err}"),
+                        "report this at https://github.com/no-phux/phux/issues".to_owned(),
+                    ),
+                    EXIT_FAILURE,
+                );
             }
             reconcile_installed(outcome.action, opts.json, |print| {
                 super::service::reconcile_after_update(print);
@@ -969,24 +942,25 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
     }
 }
 
-/// Keep an installed Phux Cockpit on the CLI's channel. `--check` reports,
-/// an install or channel switch installs, and `--dry-run` / `--rollback`
-/// leave the app alone. `None` when there is no Cockpit to speak of.
-fn sync_cockpit(opts: &UpdateOpts, outcome: &Outcome) -> Option<(PathBuf, cockpit::Report)> {
-    if !matches!(
-        outcome.action,
-        Action::Checked | Action::UpToDate | Action::Installed
-    ) {
-        return None;
+/// Print the update result and any stale binary shadowing it on PATH.
+fn print_outcome(
+    outcome: &Outcome,
+    shadow: Option<&std::path::Path>,
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        let mut document = outcome.document();
+        document["path_shadowed_by"] = shadow.map(|path| path.display().to_string()).into();
+        outln!("{}", serde_json::to_string_pretty(&document)?);
+        return Ok(());
     }
-    let app = super::cockpit::installed_app()?;
-    let report = cockpit::sync(
-        &app,
-        outcome.plan.channel,
-        !opts.check,
-        outcome.plan.install.bin_dir(),
-    );
-    Some((app, report))
+    for line in outcome.lines() {
+        outln!("{line}");
+    }
+    if let Some(path) = shadow {
+        outln!("{}", shadow_warning(path, &outcome.plan.install.executable));
+    }
+    Ok(())
 }
 
 /// The first `phux` on `PATH`, when it is not the binary this command
@@ -1316,7 +1290,8 @@ mod tests {
         );
 
         let doc = outcome.document();
-        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["schema_version"], 2);
+        assert!(doc.get("cockpit").is_none());
         assert_eq!(doc["action"], "checked");
         assert_eq!(doc["install"]["source"], "direct-release");
         assert_eq!(doc["install"]["mutable"], true);
@@ -1678,34 +1653,23 @@ mod tests {
         assert_eq!(super::shadowing_phux(&brew, &path), None);
     }
 
-    /// The desktop and Cockpit link the protocol in-process, and a server
-    /// refuses a client whose protocol `major.minor` differs. Their release
-    /// trains only cut a release for commits under their own directory, so a
-    /// protocol bump must edit these pins in the same commit: that commit then
-    /// releases both apps, and their in-app updaters deliver them.
+    /// The desktop links the protocol in-process, and a server refuses a
+    /// client whose protocol `major.minor` differs. Its release train only
+    /// cuts a release for commits under its own directory, so a protocol bump
+    /// must edit the pin in the same commit to release the matching app.
     #[test]
-    fn app_release_trains_pin_the_protocol_they_link() {
+    fn desktop_release_train_pins_the_protocol_it_links() {
         let protocol = format!(
             "{}.{}",
             phux_protocol::PROTOCOL_VERSION.major,
             phux_protocol::PROTOCOL_VERSION.minor
         );
-        for (pin, path) in [
-            (
-                include_str!("../../../../../clients/desktop/phux-protocol"),
-                "clients/desktop/phux-protocol",
-            ),
-            (
-                include_str!("../../../../../clients/cockpit/phux-protocol"),
-                "clients/cockpit/phux-protocol",
-            ),
-        ] {
-            assert_eq!(
-                pin.trim(),
-                protocol,
-                "protocol is {protocol}: set {path} to {protocol} in this commit so the app \
-                 that links it is released with it"
-            );
-        }
+        let pin = include_str!("../../../../../clients/desktop/phux-protocol");
+        assert_eq!(
+            pin.trim(),
+            protocol,
+            "protocol is {protocol}: set clients/desktop/phux-protocol to {protocol} in this \
+             commit so the app that links it is released with it"
+        );
     }
 }

@@ -23,12 +23,20 @@ import { requirePhuxAccount } from "./account.ts";
 export const PRODUCTION_STAGE = "prod";
 
 /**
- * Native admission kill switch. Every deploy sets it; site-native-control.yml
- * redeploys with PHUX_NATIVE_ENABLED=false to contain native shells while the
- * edge fallback stays live. The next ordinary deploy turns native back on.
+ * Native admission switch. Native shells are parked: an unset value means
+ * "false", so no ordinary deploy can silently re-enable them. Bring them back
+ * by setting the repository variable `PHUX_NATIVE_ENABLED=true` (the worker
+ * deploy passes it through) or by dispatching site-native-control.yml with
+ * `enabled=true`; set it back to false to contain a native regression while the
+ * edge fallback stays live. `/healthz` reports `nativeEnabled`.
+ *
+ * Parked on 2026-10-14: the public browser path could not be reproduced as
+ * working (the wire-level synthetic probe is green, but no signed-in browser
+ * session was confirmed to start a container), and the edge shell stays online
+ * either way. Re-enable after the browser-path follow-up in the parking commit.
  */
 export const nativeEnabled = (value = process.env.PHUX_NATIVE_ENABLED) => {
-  if (value === undefined || value === "") return "true";
+  if (value === undefined || value === "") return "false";
   if (value !== "true" && value !== "false") {
     throw new Error(`PHUX_NATIVE_ENABLED must be "true" or "false" (got "${value}")`);
   }
@@ -106,7 +114,7 @@ export default Alchemy.Stack(
         IDLE_KILL_MS: "120000", // 2 min of no input → close
         HARD_MAX_MS: "600000", // 10 min wall-clock cap → close
         NATIVE_HARD_MAX_MS: "300000", // native shell wall-clock cap: 5 min
-        NATIVE_ENABLED: nativeEnabled(), // false routes native requests to edge
+        NATIVE_ENABLED: nativeEnabled(), // parked; repo var PHUX_NATIVE_ENABLED=true re-enables
         NATIVE_CONCURRENCY_CAP: "25", // soft cap; platform hard max remains 30
         NATIVE_PER_IP_CAP: "1", // active native shell per source IP
         NATIVE_RATE_LIMIT_PER_MIN: "2", // native launches per IP per minute

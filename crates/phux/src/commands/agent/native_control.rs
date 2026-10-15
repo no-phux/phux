@@ -3,6 +3,7 @@ use crate::commands::json_err::{self, CliError, codes};
 use crate::exit_codes::EXIT_USAGE;
 use phux_client::attach::connection::Connection;
 use phux_protocol::{
+    caps::ServerFeatureExt,
     ids::ResourceId,
     native_agent::{
         NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativeRequest,
@@ -78,6 +79,15 @@ pub(super) fn run(
     let result = runtime.block_on(async {
         let mut connection = Connection::connect(&socket).await
             .map_err(|error| json_err::report_no_server(json, &error, &socket, "agent native-command"))?;
+        if !connection.negotiated_bootstrap().is_some_and(|negotiated| {
+            negotiated.server_features_ext.contains(ServerFeatureExt::NativeAgent)
+        }) {
+            return Ok(NativeCommandResult {
+                operation_id,
+                disposition: NativeDisposition::Refused,
+                detail: Some("The executing host does not support native SDK commands; upgrade phux. Nothing was submitted.".into()),
+            });
+        }
         connection.send(&FrameKind::SubscribeEvents { terminal: Some(ResourceId::local(id)), after_seq: Some(0) }).await
             .map_err(|error| json_err::report_no_server(json, &error, &socket, "agent native-command"))?;
         let request = Command::NativeAgent { request: Box::new(NativeRequest::Command {

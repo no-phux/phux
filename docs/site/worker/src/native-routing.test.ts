@@ -122,7 +122,8 @@ describe("native container configuration", () => {
     expect(config).toContain('NATIVE_HARD_MAX_MS: "300000"');
     expect(config).toContain('NATIVE_CONCURRENCY_CAP: "25"');
     expect(config).toContain("NATIVE_ENABLED: nativeEnabled()");
-    expect(config).toContain('if (value === undefined || value === "") return "true";');
+    // Parked: an unset value is off, so an ordinary deploy cannot re-enable native.
+    expect(config).toContain('if (value === undefined || value === "") return "false";');
     expect(config).toContain('NATIVE_STARTUP_TIMEOUT_MS: "8000"');
     expect(config).toContain('NATIVE_PER_IP_CAP: "1"');
     expect(config).toContain('NATIVE_RATE_LIMIT_PER_MIN: "2"');

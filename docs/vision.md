@@ -41,7 +41,7 @@ The research note (now archived) captures the algorithm composition:
 
 The proposed coordinator would own durable work identity and evidence;
 clients would own presentation. Swarm members would authenticate as first-class
-clients, alongside TUI, Cockpit, web, and mobile projections. A Run could exist
+clients, alongside TUI, desktop, web, and mobile projections. A Run could exist
 without a Terminal. Objective, Run, WorkSession, Actor, Artifact, and Signal
 would have shared definitions rather than being inferred independently by
 each client.
@@ -62,7 +62,7 @@ routing from the remaining federation work:
   ([`consumers/web.md`](./consumers/web.md)).
 - **Desktop.** The GPUI native macOS client is the maintained app
   ([`consumers/desktop.md`](./consumers/desktop.md)). The Zig Cockpit is
-  frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)).
+  archived outside main ([ADR-0169](adr/0169-zig-cockpit-lives-in-an-archive.md)).
 
 ## Self-hosted federation networking
 

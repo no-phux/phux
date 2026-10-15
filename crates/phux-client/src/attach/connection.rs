@@ -11,7 +11,7 @@ use phux_client_core::handshake::validate_hello_ok;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet, ServerFeature,
-    ServerFeatureExtSet, ServerFeatureSet,
+    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::ids::{ResourceId, StreamId};
 use phux_protocol::wire::frame::{
@@ -1263,12 +1263,25 @@ impl Connection {
     /// # Errors
     ///
     /// Transport and decode failures; a server that closes without replying
-    /// is [`AttachError::Disconnected`].
+    /// is [`AttachError::Disconnected`]. A native SDK command without negotiated
+    /// `NATIVE_AGENT` support is a local protocol error; no bytes are written.
     pub async fn request(
         &mut self,
         request_id: u32,
         command: Command,
     ) -> Result<Reply, AttachError> {
+        if matches!(&command, Command::NativeAgent { .. })
+            && !self.negotiated_bootstrap.is_some_and(|negotiated| {
+                negotiated
+                    .server_features_ext
+                    .contains(ServerFeatureExt::NativeAgent)
+            })
+        {
+            return Err(AttachError::Protocol(
+                "Native SDK sessions require NATIVE_AGENT support; upgrade the executing host."
+                    .into(),
+            ));
+        }
         let frame = FrameKind::Command {
             request_id,
             command,

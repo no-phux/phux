@@ -53,8 +53,9 @@ def parse_tag(tag):
         return None
     # Every lane is stable-only. The desktop train was the one prerelease
     # channel; it graduated to stable, so any component's `-alpha.N` tag is not
-    # a shippable version.
-    if match.group("alpha") is not None:
+    # a shippable version. Archived Cockpit tags are historical evidence, never
+    # integration candidates (including when reconciliation sees old drafts).
+    if match.group("alpha") is not None or match.group("component") == "cockpit":
         return None
     return {
         "component": match.group("component") or "phux",
@@ -68,7 +69,7 @@ def lane(component):
     if component == "phux":
         return "phux"
     if component == "cockpit":
-        return "cockpit"
+        raise ValueError("Cockpit is archived and has no publication lane")
     if component == "desktop":
         return "desktop"
     return "integration"
@@ -178,7 +179,7 @@ def _decide_reconcile(candidates, ci_state, result):
 
 
 def split_lanes(tags):
-    lanes = {"phux": "", "cockpit": "", "desktop": "", "integration": []}
+    lanes = {"phux": "", "desktop": "", "integration": []}
     for tag in tags:
         identity = parse_tag(tag)
         if identity is None:
@@ -230,7 +231,6 @@ def _delete_drafts(repository, tags):
 def _write_outputs(path, lanes, blocked):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"phux_tag={lanes['phux']}\n")
-        handle.write(f"cockpit_tag={lanes['cockpit']}\n")
         handle.write(f"desktop_tag={lanes['desktop']}\n")
         handle.write(f"integration_tags={json.dumps(lanes['integration'])}\n")
         handle.write(f"blocked={blocked}\n")

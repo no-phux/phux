@@ -1,4 +1,17 @@
 .hero-demo { min-width: 0; }
+.live-invitation { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 28px; padding: 24px 28px; border: 1px solid #b4cba225; border-radius: 14px; background: linear-gradient(110deg, #b4cba209, transparent); }
+.live-invitation h3 { margin: 0 0 8px; color: var(--color-fg); font: 500 23px var(--font-reading); letter-spacing: -0.04em; }
+.live-invitation p { margin: 0 0 8px; color: var(--color-muted); font: 13px/1.6 var(--font-reading); }
+.live-invitation small { color: var(--color-dim); font: 11px/1.6 var(--font-reading); }
+.live-invitation > a { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 18px; min-height: 44px; padding: 0 18px; border: 1px solid #b4cba24a; border-radius: 999px; color: #d9e6cf; font: 12px var(--font-reading); }
+.live-invitation > a:hover { background: #b4cba212; border-color: #b4cba2; }
+.mux-demo-guide { margin: 0; padding: 12px 16px; border-top: 1px solid var(--terminal-rule); background: var(--terminal-bg); color: var(--terminal-muted); font: 12px/1.7 var(--font-reading); }
+.mux-demo-guide strong, .mux-demo-guide code { color: var(--terminal-fg); }
+.mux-demo-guide code { font-family: var(--font-code); }
+@media (max-width: 700px) {
+  .live-invitation { flex-direction: column; align-items: stretch; gap: 18px; padding: 20px; }
+  .live-invitation > a { align-self: start; }
+}
 .mux-dialog {
   width: min(872px, calc(100vw - 40px));
   max-width: none;
@@ -29,6 +42,22 @@
 .mux-dialog-description { margin: 0; padding: 12px 16px; color: var(--terminal-muted); font: 12px/1.6 var(--font-reading); }
 .mux-dialog-description[role="alert"] { color: var(--terminal-warning); }
 .mux-dialog-description :is(code, kbd) { color: var(--terminal-fg); font: 11px var(--font-code); }
+/* Pairing: one line while it is closed, a QR and link when it is open. It sits
+   below the terminal so opening it never moves the shell. */
+.mux-pair { border-top: 1px solid var(--terminal-rule); background: var(--terminal-bg); }
+.mux-pair-toggle { display: block; width: 100%; min-height: 44px; padding: 8px 16px; border: 0; background: transparent; color: var(--terminal-muted); font: 12px var(--font-reading); text-align: left; cursor: pointer; transition: color 120ms ease; }
+.mux-pair-toggle:hover, .mux-pair-toggle[aria-expanded="true"] { color: var(--terminal-fg); }
+.mux-pair-toggle:focus-visible { outline: 2px solid var(--terminal-focus); outline-offset: -2px; }
+.mux-pair-body { display: flex; align-items: center; gap: 18px; padding: 4px 16px 16px; }
+.mux-pair-code { flex: none; display: grid; place-items: center; width: 132px; height: 132px; padding: 6px; box-sizing: border-box; border-radius: 10px; background: #fff; }
+.mux-pair-code svg { display: block; width: 100%; height: 100%; }
+.mux-pair-text { display: grid; gap: 8px; min-width: 0; color: var(--terminal-muted); font: 12px/1.6 var(--font-reading); }
+.mux-pair-text p { margin: 0; }
+.mux-pair-text strong { color: var(--terminal-fg); font-weight: 600; }
+.mux-pair-state { color: var(--terminal-dim); }
+.mux-pair-copy { justify-self: start; min-height: 36px; padding: 0 14px; border: 1px solid var(--terminal-rule); border-radius: 999px; background: transparent; color: var(--terminal-fg); font: 12px var(--font-reading); cursor: pointer; transition: border-color 120ms ease; }
+.mux-pair-copy:hover { border-color: var(--terminal-dim); }
+.mux-pair-copy:focus-visible { outline: 2px solid var(--terminal-focus); outline-offset: 2px; }
 .mux-dialog .pterm { width: 100%; max-width: 100%; border-inline: 0; border-radius: 0; }
 .mux-dialog .pterm-mark { display: none; }
 .mux-dialog-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 8px 16px; color: var(--terminal-dim); font: 11px/1.6 var(--font-reading); }

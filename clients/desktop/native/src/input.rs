@@ -412,7 +412,7 @@ impl TerminalInput {
         &mut self,
         down: &KeyDownEvent,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<KeyDisposition, InputError> {
         self.pending_key = None;
         if down.keystroke.modifiers.platform {
@@ -440,8 +440,12 @@ impl TerminalInput {
         self.with_current(true, |control| {
             queued(control.send_key(&self.terminal, event.clone()))
         })?;
+        let echoed = self.predict_sent(&event);
         self.key_probe.arm(self.painted_seq);
         self.pressed.insert(event.key, event);
+        if echoed {
+            cx.notify();
+        }
         Ok(KeyDisposition::Consumed)
     }
 
@@ -491,12 +495,42 @@ impl TerminalInput {
             self.with_current(true, |control| {
                 queued(control.send_key(&self.terminal, event.clone()))
             })?;
+            self.predict_sent(&event);
             self.pressed.insert(event.key, event);
             return Ok(());
         }
         self.with_current(true, |control| {
             queued(control.send_text(&self.terminal, &committed))
-        })
+        })?;
+        self.publish_echo(&committed);
+        Ok(())
+    }
+
+    /// Paint a local guess for this key before the server can echo it.
+    ///
+    /// The runtime predictor decides what is safe to draw, including hiding
+    /// alternate-screen guesses until the application proves it echoes.
+    /// A local socket still predicts: it may be the near end of a tunnel.
+    fn predict_sent(&self, event: &KeyEvent) -> bool {
+        let Some(text) = echo_guess(event) else {
+            return false;
+        };
+        self.publish_echo(&text)
+    }
+
+    fn publish_echo(&self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let Some(client) = self.client.upgrade() else {
+            return false;
+        };
+        let Some(engine) = client.engine() else {
+            return false;
+        };
+        engine
+            .predict_view_text(self.view, text.to_owned())
+            .unwrap_or(false)
     }
 
     /// The user's own clipboard paste, trusted (the runtime's
@@ -755,9 +789,37 @@ fn clamp(cells: f32) -> u16 {
     cells.min(f32::from(u16::MAX)) as u16
 }
 
+/// The text a key should draw locally, if it is a guess the predictor can own.
+/// Control and super chords are commands. Alt stays: Option types a character.
+fn echo_guess(event: &KeyEvent) -> Option<String> {
+    if !echo_action(event.action) || command_chord(event) {
+        return None;
+    }
+    match event.key {
+        PhysicalKey::Enter => Some("\r".to_owned()),
+        PhysicalKey::Backspace => Some("\u{7f}".to_owned()),
+        _ => nonempty_text(event.text.as_deref()),
+    }
+}
+
+fn echo_action(action: KeyAction) -> bool {
+    matches!(action, KeyAction::Press | KeyAction::Repeat)
+}
+
+fn command_chord(event: &KeyEvent) -> bool {
+    event.mods.intersects(ModSet::CTRL | ModSet::SUPER)
+}
+
+fn nonempty_text(text: Option<&str>) -> Option<String> {
+    text.filter(|text| !text.is_empty()).map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Admit, InputError, InputMetrics, admit_presentation, capacity, upgrade_client};
+    use super::{
+        Admit, InputError, InputMetrics, admit_presentation, capacity, echo_guess, upgrade_client,
+    };
+    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
     use gpui::{Bounds, point, px, size};
 
     fn metrics(width: f32, height: f32) -> InputMetrics {
@@ -838,5 +900,44 @@ mod tests {
         assert!(upgrade_client(&weak).is_ok());
         drop(client);
         assert_eq!(upgrade_client(&weak).unwrap_err(), InputError::StaleHandle);
+    }
+
+    fn press(key: PhysicalKey, mods: ModSet, text: Option<&str>) -> KeyEvent {
+        KeyEvent {
+            action: KeyAction::Press,
+            key,
+            mods,
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: text.map(str::to_owned),
+            unshifted_codepoint: None,
+        }
+    }
+
+    #[test]
+    fn local_echo_guesses_typed_text_and_skips_commands() {
+        assert_eq!(
+            echo_guess(&press(PhysicalKey::Unidentified, ModSet::empty(), Some("é"))),
+            Some("é".to_owned())
+        );
+        assert_eq!(
+            echo_guess(&press(PhysicalKey::Enter, ModSet::empty(), None)),
+            Some("\r".to_owned())
+        );
+        assert_eq!(
+            echo_guess(&press(PhysicalKey::Backspace, ModSet::SHIFT, None)),
+            Some("\u{7f}".to_owned())
+        );
+        assert_eq!(
+            echo_guess(&press(PhysicalKey::C, ModSet::CTRL, Some("c"))),
+            None
+        );
+        assert_eq!(
+            echo_guess(&press(PhysicalKey::ArrowLeft, ModSet::empty(), None)),
+            None
+        );
+        let mut release = press(PhysicalKey::Unidentified, ModSet::empty(), Some("a"));
+        release.action = KeyAction::Release;
+        assert_eq!(echo_guess(&release), None);
     }
 }

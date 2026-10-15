@@ -126,16 +126,22 @@ pub fn init_logging() {
 
 // ── Reports ────────────────────────────────────────────────────────────
 
-/// Kernel, runtime, painter and window rows as one `PerfReport` JSON.
+/// Kernel, runtime, painter and window rows as one typed report.
 #[must_use]
-pub fn report_json() -> String {
+pub fn report() -> phux_perf::PerfReport {
     let mut report = phux_client_core::perf::report(crate::perf::uptime());
     report.metrics.extend(phux_client_runtime::perf::snapshot());
     report
         .metrics
         .extend(crate::perf::TABLE.iter().map(Metric::snapshot));
     report.metrics.extend(TABLE.iter().map(Metric::snapshot));
-    report.to_json()
+    report
+}
+
+/// Kernel, runtime, painter and window rows as one `PerfReport` JSON.
+#[must_use]
+pub fn report_json() -> String {
+    report().to_json()
 }
 
 // ── Evidence ───────────────────────────────────────────────────────────
@@ -422,7 +428,7 @@ fn ms(micros: u64) -> f64 {
 }
 
 fn perf_line(uptime: Duration, second: &Sample) -> String {
-    let host: serde_json::Value = serde_json::from_str(&report_json()).unwrap_or_default();
+    let host = report();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -441,7 +447,7 @@ fn perf_line(uptime: Duration, second: &Sample) -> String {
             "ms": ms(second.drain.sum),
             "maxMs": ms(second.drain.max),
         },
-        "memory": { "rss": host["process"]["max_rss_bytes"] },
+        "memory": { "rss": host.process.map(|process| process.max_rss_bytes) },
         "host": host,
     });
     format!("{line}\n")

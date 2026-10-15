@@ -31,6 +31,11 @@ desktop-test: desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
+[doc('Measure GPUI terminal draws headlessly (pass release for optimized comparisons)')]
+desktop-perf-headless profile="test": desktop-source
+    cargo test --locked --manifest-path clients/desktop/native/Cargo.toml --profile {{profile}} --test pixels -- --headless-perf
+
+[group('desktop')]
 [doc('Format check and clippy -D warnings for the native desktop crate')]
 desktop-lint: desktop-source
     cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check

@@ -84,7 +84,7 @@ curl -fsSL https://phux.sh/install-desktop | sh
 
 Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. `phux update`
 keeps it current. Options and source builds:
-[Install](./docs/INSTALL.md). The Zig Cockpit is frozen.
+[Install](./docs/INSTALL.md). The Zig Cockpit is [archived](./docs/consumers/cockpit.md).
 
 ## First minute
 

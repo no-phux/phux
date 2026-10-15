@@ -113,6 +113,17 @@ impl super::SessionLoop {
         self.apply_stored_project_tag();
     }
 
+    /// Flip one project group's sidebar collapse (ADR-0168), keep it on
+    /// disk, and redraw.
+    pub(super) fn toggle_project_group(&mut self, key: String) {
+        let collapsed = &mut self.peers.collapsed_projects;
+        if !collapsed.remove(&key) {
+            collapsed.insert(key);
+        }
+        crate::attach::project_collapse::save(collapsed);
+        self.peers.chrome_dirty = true;
+    }
+
     /// Replace the session list and rejoin the stored project tag.
     pub(super) fn adopt_listed_sessions(
         &mut self,

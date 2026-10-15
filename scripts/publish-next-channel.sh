@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # Publish SHA-qualified next-channel assets onto the moving `next` prerelease.
 #
-# Usage: bash scripts/publish-next-channel.sh [--cockpit] SHA DIST_DIR
+# Usage: bash scripts/publish-next-channel.sh SHA DIST_DIR
 #
 # Default (phux): DIST_DIR contains phux-next.<sha>-<target>.tar.gz and
 # matching .sha256 sidecars; the pointer is channel.json.
-# --cockpit: DIST_DIR contains phux-cockpit-next.<sha>-macos-arm64.zip and its
-# .sha256 sidecar; the pointer is cockpit-channel.json. The two products move
-# independently, so a Cockpit-only change never rebuilds the CLI and a failed
-# Cockpit build never holds the CLI back.
 #
 # The pointer is written last so an in-flight client cannot observe a pointer
 # whose archive is not yet attached. The previous SHA's assets are kept; older
@@ -16,13 +12,8 @@
 set -euo pipefail
 
 product="phux"
-if [[ "${1:-}" == "--cockpit" ]]; then
-  product="cockpit"
-  shift
-fi
-
 if [[ $# -ne 2 ]]; then
-  echo "usage: bash scripts/publish-next-channel.sh [--cockpit] SHA DIST_DIR" >&2
+  echo "usage: bash scripts/publish-next-channel.sh SHA DIST_DIR" >&2
   exit 2
 fi
 
@@ -34,21 +25,14 @@ if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-if [[ "$product" == "cockpit" ]]; then
-  asset_family="phux-cockpit-next."
-  pointer_name="cockpit-channel.json"
-  IFS= read -r version < clients/cockpit/version.txt
-  required=("phux-cockpit-next.${sha}-macos-arm64.zip")
-else
-  asset_family="phux-next."
-  pointer_name="channel.json"
-  version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' Cargo.toml | head -n 1)"
-  required=(
-    "phux-next.${sha}-aarch64-apple-darwin.tar.gz"
-    "phux-next.${sha}-x86_64-unknown-linux-gnu.tar.gz"
-    "phux-next.${sha}-aarch64-unknown-linux-gnu.tar.gz"
-  )
-fi
+asset_family="phux-next."
+pointer_name="channel.json"
+version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' Cargo.toml | head -n 1)"
+required=(
+  "phux-next.${sha}-aarch64-apple-darwin.tar.gz"
+  "phux-next.${sha}-x86_64-unknown-linux-gnu.tar.gz"
+  "phux-next.${sha}-aarch64-unknown-linux-gnu.tar.gz"
+)
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
   echo "error: could not read the ${product} version" >&2
   exit 1
@@ -77,12 +61,18 @@ if gh release view next >/dev/null 2>&1; then
   rm -f "$tmp"
   gh release upload next "${assets[@]}" --clobber
   # Clients resolve assets by release name, so the tag position is cosmetic.
-  # GITHUB_TOKEN can be refused moving it (HTTP 403); never let that strand
-  # uploaded archives without their pointer.
+  # Moving the tag, and `gh release edit --target`, both return HTTP 403
+  # "Resource not accessible by integration" when this commit's
+  # .github/workflows tree differs from the default branch. That update
+  # requires workflows:write, which GITHUB_TOKEN cannot hold; contents:write
+  # is not enough, and the release is not immutable. Never let the refusal
+  # strand uploaded archives without their pointer.
   if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$sha" -F force=true >/dev/null; then
     echo "::warning::could not move the next tag to ${sha}; publishing the pointer anyway"
   fi
-  gh release edit next --prerelease --latest=false --target "$sha" --title "next"
+  if ! gh release edit next --prerelease --latest=false --target "$sha" --title "next"; then
+    echo "::warning::could not retarget the next release to ${sha}; publishing the pointer anyway"
+  fi
 else
   gh release create next "${assets[@]}" \
     --prerelease --latest=false --target "$sha" --title "next" \
@@ -115,7 +105,7 @@ fi
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   case "$name" in
-    channel.json|cockpit-channel.json) continue ;;
+    channel.json) continue ;;
     "${keep_prefix}"*) continue ;;
     tmp.*)
       gh release delete-asset next "$name" --yes

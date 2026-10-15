@@ -13,7 +13,7 @@ authors.workspace = true
 workspace = true
 
 [lib]
-# staticlib for Cockpit's linker and the Apple archives the xcframework
+# staticlib for native embedders and the Apple archives the xcframework
 # carries, cdylib for the Android jniLibs and the library-mode bindgen, rlib
 # so the in-crate `uniffi-bindgen` bin can link this crate.
 crate-type = ["rlib", "staticlib", "cdylib"]
@@ -32,24 +32,7 @@ required-features = ["uniffi"]
 name = "rig_seed"
 required-features = ["uniffi"]
 
-# The Cockpit fixture generators and the connected-lane test drive the
-# `extern "C"` surface, so they build only where `c-abi` is on.
-[[example]]
-name = "cockpit_fixture"
-required-features = ["c-abi"]
-
-[[example]]
-name = "cockpit_style_fixture"
-required-features = ["c-abi"]
-
-[[example]]
-name = "session_attachment_fixtures"
-required-features = ["c-abi"]
-
-[[example]]
-name = "workspace_fixtures"
-required-features = ["c-abi"]
-
+# The connected-lane tests drive the C ABI.
 [[test]]
 name = "connected"
 required-features = ["c-abi"]
@@ -63,7 +46,7 @@ name = "agent_resume_live"
 required-features = ["c-abi"]
 
 [features]
-# Cockpit's lane and the shipped default: the `extern "C"` surface
+# The native embedder lane and shipped default: the `extern "C"` surface
 # `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
 # UniFFI scaffolding and no proc-macro generator.
 default = ["c-abi"]
@@ -74,7 +57,7 @@ default = ["c-abi"]
 # closure the same size it was as `phux-mobile-ffi`.
 c-abi = ["dep:bytes", "dep:uuid", "dep:phux-config", "dep:tracing", "dep:tracing-subscriber"]
 # The mobile lane: the Swift/Kotlin surface UniFFI generates. Off by default
-# so Cockpit's `ffi-release` archive never carries it (ADR-0135). Kitty
+# so C-only `ffi-release` archives never carry it (ADR-0135). Kitty
 # graphics stays on for parity with the `phux-mobile-ffi` era artifact (its
 # `engine` feature carried `libghostty-vt/kitty-graphics` so the artifact
 # exposed the image surface); nothing on this side reads placements yet, but
@@ -123,8 +106,8 @@ tracing-subscriber = { workspace = true, optional = true }
 
 # The binding generator and its runtime scaffolding, behind the `uniffi`
 # feature. It is new to this workspace's DEFAULT graph only when that feature
-# is on: no shipped phux executable depends on this crate, and Cockpit's
-# `just cockpit-ffi` builds the default features, so the proc-macro generator
+# is on: the CLI does not depend on this crate, and
+# `just ffi-build` builds the default features, so the proc-macro generator
 # stack (uniffi_bindgen/uniffi_meta/uniffi_macros plus askama, weedle2,
 # camino, clap and cargo_metadata) is compiled only for the mobile artifact
 # jobs. In the library it adds a small lowering/lifting runtime over `bytes`

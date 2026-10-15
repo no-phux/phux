@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,10 @@ try {
   const archive = join(archiveDir, report[0].filename);
   run("tar", ["-xzf", archive, "-C", temp], { cwd: workDir });
   const packedPackage = join(temp, "package");
-  run("tar", ["-xzf", archive, "-C", projectPackage, "--strip-components=1"], { cwd: workDir });
+  // A fresh source checkout has no node_modules. Inactive project copies must
+  // yield to the installed package before importing their runtime dependencies.
+  await Promise.all(["package.json", "extensions", "src"].map((path) =>
+    cp(join(packageDir, path), join(projectPackage, path), { recursive: true })));
   const projectConfigDir = join(workDir, ".pi");
   await mkdir(projectConfigDir);
   await writeFile(join(projectConfigDir, "settings.json"), `${JSON.stringify({

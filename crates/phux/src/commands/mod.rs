@@ -252,7 +252,6 @@ pub(crate) mod ask;
 pub(crate) mod attach;
 pub(crate) mod bootstrap;
 pub(crate) mod channel;
-pub(crate) mod cockpit;
 pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
@@ -404,7 +403,6 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
         Command::Mcp { .. } => Some("mcp"),
-        Command::Cockpit { .. } => Some("cockpit"),
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
         Command::RuntimeInfo { .. } => Some("runtime-info"),
@@ -1397,9 +1395,6 @@ pub(crate) enum Command {
             rather than overwritten.\n\n\
             The previous binaries are kept beside the new ones; `--rollback` puts \
             them back.\n\n\
-            On macOS, an installed Phux Cockpit follows the same channel: it is \
-            reported by `--check` and reinstalled through the Cockpit installer \
-            when it is behind. A Homebrew Cockpit gets `brew upgrade` instead.\n\n\
             Examples:\n  \
             phux update --check\n  \
             phux update --check --json\n  \
@@ -1424,8 +1419,7 @@ pub(crate) enum Command {
             is published there. `phux channel next` follows green `main`; \
             `phux channel latest` (also `stable`) follows the numbered GitHub \
             releases. Switching persists the choice and runs the same update \
-            path as `phux update --channel`, so live panes survive. An installed \
-            Phux Cockpit switches with it.\n\n\
+            path as `phux update --channel`, so live panes survive.\n\n\
             Examples:\n  \
             phux channel\n  \
             phux channel next\n  \
@@ -1437,24 +1431,6 @@ pub(crate) enum Command {
         #[usage(value_enum, value_name = "CHANNEL")]
         channel: Option<update::channel::Channel>,
 
-        #[usage(flatten)]
-        json: JsonOpt,
-    },
-
-    /// Open the native macOS Cockpit app.
-    #[usage(
-        help = "Open the native macOS Cockpit app",
-        long_help = "Open the native macOS Cockpit app.\n\n\
-            Finds Phux Cockpit.app in /Applications or ~/Applications and opens \
-            it through Launch Services. Set PHUX_COCKPIT_APP to pin a specific \
-            bundle. macOS-only; if the app is missing the remedy is the curl \
-            installer.\n\n\
-            Examples:\n  \
-            phux cockpit\n  \
-            phux cockpit --json"
-    )]
-    #[usage(help_heading = "More", display_order = 67)]
-    Cockpit {
         #[usage(flatten)]
         json: JsonOpt,
     },
@@ -2619,7 +2595,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
     /// dir that holds them — with existence, size, and age, so a fresh
     /// machine reads "not created yet" instead of an error. `--server`
     /// tails the server log, `--client` the newest client log (`--pid`
-    /// picks a specific one), and `--cockpit` the native macOS app's log;
+    /// picks a specific one);
     /// `-f` follows and `-n` sets the tail length. `--json` emits the
     /// inventory as a stable document.
     #[usage(help_heading = "Maintain", display_order = 52)]
@@ -2632,23 +2608,17 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         #[usage(long, group = "which")]
         client: bool,
 
-        /// Tail the Phux Cockpit app's log (macOS; `PHUX_COCKPIT_LOG` overrides
-        /// the path).
-        #[usage(long, group = "which")]
-        cockpit: bool,
-
         /// With --client: the client pid whose log to tail, instead of the
         /// newest.
         #[usage(long, value_name = "PID", requires("--client"))]
         pid: Option<u32>,
 
-        /// Follow the tailed log as it grows (needs --server, --client, or
-        /// --cockpit).
+        /// Follow the tailed log as it grows (needs --server or --client).
         #[usage(short, long)]
         follow: bool,
 
         /// How many trailing lines to show; 200 when omitted (needs
-        /// --server, --client, or --cockpit).
+        /// --server or --client).
         #[usage(short = 'n', long, value_name = "NUM")]
         lines: Option<u32>,
 
@@ -2656,7 +2626,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         /// human text. Inventory only — it cannot combine with a tail.
         #[usage(
             long,
-            conflicts("--server", "--client", "--cockpit", "--pid", "--follow", "--lines")
+            conflicts("--server", "--client", "--pid", "--follow", "--lines")
         )]
         json: bool,
     },

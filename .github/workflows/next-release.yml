@@ -2,15 +2,13 @@
 #
 # Trigger: ci.yml succeeded on a push to main, or a manual dispatch.
 # Ownership: this workflow owns the moving `next` prerelease only. It never
-# creates a vX.Y.Z or cockpit-vX.Y.Z tag and never touches Homebrew.
+# creates a stable version tag and never touches Homebrew.
 # release-please remains the sole owner of stable tags (ADR-0113).
 #
 # Two products ride the one prerelease on their own pointers: channel.json
 # (phux + phux-mcp, three targets) and desktop-channel.json (the GPUI desktop).
 # Each rebuilds only when its own inputs moved since the SHA its pointer names,
-# and each publishes on its own success. Cockpit next builds are frozen
-# (ADR-0167): cockpit_build stays false. The job below remains so a resume
-# sprint can restore the decide line in clients/cockpit/FROZEN.md.
+# and each publishes on its own success.
 #
 # Cost: at most one run in flight. A newer green SHA waits instead of
 # cancelling it, and pending runs coalesce to the newest, so a busy main still
@@ -51,7 +49,6 @@ jobs:
     outputs:
       sha: ${{ steps.select.outputs.sha }}
       should_build: ${{ steps.decide.outputs.should_build }}
-      cockpit_build: ${{ steps.decide.outputs.cockpit_build }}
       desktop_build: ${{ steps.decide.outputs.desktop_build }}
     steps:
       - name: Select SHA
@@ -124,14 +121,10 @@ jobs:
           }
           echo "phux:" >&2
           phux="$(decide channel.json phux_needed native_needed)"
-          echo "cockpit:" >&2
-          echo "  frozen by ADR-0167; not building" >&2
-          cockpit=false
           echo "desktop:" >&2
           desktop="$(decide desktop-channel.json desktop_inputs phux_needed native_needed)"
           {
             echo "should_build=${phux}"
-            echo "cockpit_build=${cockpit}"
             echo "desktop_build=${desktop}"
           } >> "$GITHUB_OUTPUT"
 
@@ -240,79 +233,6 @@ jobs:
             phux-*.tar.gz.sha256
           if-no-files-found: error
 
-  # Frozen (ADR-0167). The gate above keeps this job from running.
-  cockpit:
-    name: build Phux Cockpit (macOS arm64)
-    needs: gate
-    if: needs.gate.outputs.cockpit_build == 'true'
-    runs-on: xcode-27
-    timeout-minutes: 45
-    env:
-      LIBGHOSTTY_VT_SYS_CPU: baseline
-      RUSTFLAGS: -C target-cpu=apple-m1
-      PHUX_ZIG_CACHE_MODE: shared
-      PHUX_ZIG_BUILD_TIMEOUT: "0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install Zig
-        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-      - name: Install Rust toolchain
-        run: bash scripts/setup-rust.sh cockpit
-
-      # The same best-effort dependency caches cockpit-release.yml warms.
-      # Restore only: stable releases own the saved entries.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: mini-v1-cockpit-ffi
-          save-if: false
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/zig
-            clients/cockpit/.zig-cache
-          key: mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-relsafe-aarch64-baseline-phux-traceoff-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon', 'clients/cockpit/src/**', 'clients/cockpit/**/*.zig', 'clients/cockpit/**/*.ts', 'clients/cockpit/**/*.native', '.config/zig-toolchain.json', 'clients/cockpit/scripts/build-shipping-app.sh', 'clients/cockpit/scripts/zig-build.sh', 'clients/cockpit/scripts/build-phux-cli.sh', 'clients/cockpit/scripts/build-phux-artifacts.sh', 'clients/cockpit/scripts/native-cargo-target.sh', 'scripts/install-zig.sh') }}
-          restore-keys: |
-            mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Fetch Zig packages
-        working-directory: clients/cockpit
-        run: ./scripts/zig-build.sh --fetch=all
-
-      - name: Build the same-checkout Phux FFI and coordinator CLI
-        uses: ./.github/actions/cockpit-rust-artifacts
-
-      - name: Build, sign, verify, and package
-        env:
-          PHUX_BUILD_CHANNEL: next
-          PHUX_BUILD_SHA: ${{ needs.gate.outputs.sha }}
-          PHUX_CLIENT_FFI_INCLUDE_DIR: ${{ github.workspace }}/crates/phux-client-ffi/include
-          PHUX_CLIENT_FFI_LIB_DIR: ${{ github.workspace }}/target/ffi-release
-        run: clients/cockpit/scripts/package-macos.sh
-
-      - name: Name the next-channel archive
-        env:
-          SHA: ${{ needs.gate.outputs.sha }}
-        run: |
-          set -euo pipefail
-          IFS= read -r version < clients/cockpit/version.txt
-          name="phux-cockpit-next.${SHA}-macos-arm64.zip"
-          mkdir -p dist
-          cp "clients/cockpit/zig-out/release/phux-cockpit-${version}-macos-arm64.zip" "dist/${name}"
-          (cd dist && shasum -a 256 "${name}" > "${name}.sha256" && shasum -a 256 -c "${name}.sha256")
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cockpit
-          path: |
-            dist/phux-cockpit-next.*.zip
-            dist/phux-cockpit-next.*.zip.sha256
-          if-no-files-found: error
-
   desktop:
     name: qualify Phux Desktop (macOS arm64)
     needs: gate
@@ -325,10 +245,10 @@ jobs:
 
   publish:
     name: publish next channel
-    needs: [gate, build, cockpit, desktop]
+    needs: [gate, build, desktop]
     if: >-
       !cancelled() &&
-      (needs.build.result == 'success' || needs.cockpit.result == 'success' || needs.desktop.result == 'success')
+      (needs.build.result == 'success' || needs.desktop.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -350,14 +270,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.gate.outputs.sha }}
         run: bash scripts/publish-next-channel.sh "$SHA" dist
-
-      - name: Publish Phux Cockpit onto the next prerelease
-        if: ${{ !cancelled() && needs.cockpit.result == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          SHA: ${{ needs.gate.outputs.sha }}
-        run: bash scripts/publish-next-channel.sh --cockpit "$SHA" dist
 
       - name: Publish Phux Desktop onto the next prerelease
         if: ${{ !cancelled() && needs.desktop.result == 'success' }}
@@ -386,11 +298,14 @@ jobs:
               previous="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha", ""))' "$pointer_dir/desktop-channel.json")"
             fi
             gh release upload next "dist/$archive" "dist/$archive.sha256" --clobber
-            # Cosmetic tag move; see scripts/publish-next-channel.sh.
+            # Cosmetic retarget; see scripts/publish-next-channel.sh. A 403
+            # here is the workflows:write refusal, and must not skip the pointer.
             if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$SHA" -F force=true >/dev/null; then
               echo "::warning::could not move the next tag to ${SHA}; publishing the pointer anyway"
             fi
-            gh release edit next --prerelease --latest=false --target "$SHA" --title next
+            if ! gh release edit next --prerelease --latest=false --target "$SHA" --title next; then
+              echo "::warning::could not retarget the next release to ${SHA}; publishing the pointer anyway"
+            fi
           else
             gh release create next "dist/$archive" "dist/$archive.sha256" \
               --prerelease --latest=false --target "$SHA" --title next \

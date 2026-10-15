@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-15
 ---
 
 # Native Oh My Pi integration
@@ -242,6 +242,8 @@ inspect ownership rather than assuming rollback.
 
 ## Native conversation clients
 
+### Attached interactive OMP
+
 Install or upgrade `@phux/omp`, then start ordinary interactive `omp` inside a
 phux terminal. Its own process remains the session; native clients read its
 AgentSession through the same authenticated phux connection used for the pane.
@@ -258,25 +260,50 @@ entries. This is a bounded live/replayed window, not the full session archive.
 Transcript text reaches the CLI on stdin, never argv. Turning transcripts off
 leaves the lifecycle timeline and the terminal available.
 
+### SDK-owned OMP
+
+Use **New Agent** in the desktop, or explicitly launch from a terminal:
+
+```sh
+phux launch --native omp --session main --json
+```
+
+This creates one server-owned guardian and one headless OMP worker. The host
+uses the official Rust SDK over that worker's owned pipes; desktop and iOS
+control the same AgentSession through typed phux commands. Native questions
+remain native dialogs, not terminal keystrokes. Closing a viewer detaches;
+graceful daemon handoff preserves the worker, provider session and activation.
+The daemon must advertise `features_ext.NATIVE_AGENT`; missing support is a
+local refusal, never a terminal-input fallback.
+
+SDK workers set `PHUX_AGENT_REPORTING=0` so the ordinary extension cannot create
+a second lifecycle writer. This does not disable the extension's tools.
+Ordinary `omp` remains explicitly **Attached TUI**: no argv guessing, terminal
+parsing, or second RPC worker is used to impersonate an existing TUI session.
+See [SDK-owned native sessions](./agents.md#sdk-owned-native-sessions) for
+receipt, setup, privacy and archive semantics.
+
 ### Contract research and reuse
 
 OMP's official [RPC contract](https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md)
 is a custom JSONL protocol over the stdio of `omp --mode rpc`, not JSON-RPC 2.0.
 The official [Rust client](https://github.com/can1357/oh-my-pi/tree/main/sdk/rust/omp-rpc)
 supports protocol negotiation, bounded chunk reassembly, command correlation and
-process teardown, but spawning it creates another worker rather than attaching
-to the already running TUI. It is appropriate for a client-owned agent, not for
-this terminal-first path.
+process teardown. It cannot attach to an already running interactive TUI. The
+SDK-owned path instead precreates the durable guardian and supplies its sole
+worker's pipes to `Client::from_io`, pinned to
+[`a4dc3302bbe4a960c02388400864e481f2ff6477`](https://github.com/can1357/oh-my-pi/tree/a4dc3302bbe4a960c02388400864e481f2ff6477/sdk/rust/omp-rpc).
 
 The upstream [SDK catalog](https://github.com/can1357/oh-my-pi/tree/main/sdk)
 contains Rust, Python and Go clients, not a Swift client. A persistent local
 multi-client host/attach protocol is tracked as an open
 [upstream proposal](https://github.com/can1357/oh-my-pi/issues/5405), rather than a
-contract this integration can assume. GPUI therefore reuses the existing Rust
-AgentSession reader, and iOS reuses its Swift conversation kit over the existing
-UniFFI-backed phux client. Neither frontend reimplements omp RPC or scrapes VT
-output. Research sources were checked on 2026-10-14; the integration remains
-qualified against its pinned SDK.
+contract this integration can assume. Both frontends therefore reuse the
+authenticated phux AgentSession reader and native controller protocol: Rust
+for GPUI, Swift over the existing UniFFI-backed phux client for iOS. Only the
+server-owned host uses OMP RPC. Neither frontend reimplements it or scrapes VT
+output. The upstream catalog/proposal research was checked on 2026-10-14;
+the SDK-owned implementation uses the exact Rust revision above.
 
 ## Native loader smoke check
 

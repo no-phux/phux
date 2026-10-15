@@ -33,7 +33,6 @@ jobs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
       phux_needed: ${{ steps.detect.outputs.phux_needed }}
       workflow_only: ${{ steps.detect.outputs.workflow_only }}
-      cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
       web_needed: ${{ steps.detect.outputs.web_needed }}
       web_engine_needed: ${{ steps.detect.outputs.web_engine_needed }}
       integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
@@ -487,9 +486,7 @@ jobs:
           keep_newest e2e-deps v0-rust-phux-e2e-Linux-
           keep_newest uniffi-deps v0-rust-phux-uniffi-Linux-
           keep_newest icount linux-x64-mbx-phux-icount-
-          keep_newest zig mini-v3-cockpit-zig-0.16.0-macOS-ARM64-
           keep_newest android-ffi v0-rust-ffi-android-Linux-x64-
-          keep_newest cockpit-ffi v0-rust-mini-v1-cockpit-ffi-Darwin-arm64-
           keep_newest release-deps-x64 v0-rust-release-deps-Linux-x64-
           keep_newest release-deps-arm v0-rust-release-deps-Linux-arm64-
           keep_newest release-deps-mac v0-rust-release-deps-Darwin-arm64-

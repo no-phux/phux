@@ -1,5 +1,5 @@
 # Root gates. `just ci` / `just ci-full` live here so changing composition
-# routes the Rust lanes without firing Cockpit, web, or native-setup.
+# routes the Rust lanes without firing web or native-setup.
 
 
 # Small pure-Rust loop: no Zig, Node, nextest, or browser tools.
@@ -23,7 +23,7 @@ crate-check PACKAGE FEATURES="":
 # The binding crate's opt-in UniFFI encoder (ADR-0135). `lint` and `doc` are
 # already --all-features, but the unit pool builds default features only, so
 # this lane's tests would otherwise stop running the day the two shims merged.
-# It is not a default feature precisely so Cockpit's archive never links it.
+# It is not a default feature so C ABI archives never link it implicitly.
 # --no-default-features --lib: the mobile artifact never carries the c-abi
 # lane (see the build scripts), and its own ~200 tests already run in the
 # default-features unit pool, so this only needs to prove the lib target
@@ -108,7 +108,6 @@ shellcheck:
 workflow-check: shellcheck
     actionlint .github/workflows/*.yml
     bash scripts/check-release-cpu-baselines.sh
-    python3 clients/cockpit/scripts/check-build-contracts.py
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
     python3 -B scripts/test-output.py
@@ -251,7 +250,7 @@ ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check
 
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.
-# Browser and Cockpit clients have separate gates; see docs/SETUP.md.
+# Browser and desktop clients have separate gates; see docs/SETUP.md.
 [group('gates')]
 [doc('Full root PR bar: ci plus the real-server e2e and agent smoke lanes.')]
 ci-full: ci e2e agents-fleet-smoke

@@ -53,7 +53,7 @@ Both tools support start, split, detach, and reattach. phux's default prefix is
 
 tmux is a mature multiplexer with a terminal client and control mode. phux
 defines a resource protocol beneath its clients. Headless commands, agents,
-Cockpit, and browsers use it without treating the TUI's screen as an API.
+the desktop, and browsers use it without treating the TUI's screen as an API.
 The server and rendering clients use the same terminal engine, exchanging
 terminal bytes rather than translating them into a second screen model.
 

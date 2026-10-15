@@ -84,6 +84,10 @@ pub struct SessionInfo {
     /// The session's persistent key, from the extension block's
     /// `SESSION_STATE`; `None` from a server that does not report it.
     pub key: Option<SessionKey>,
+    /// The session's descriptive attributes (`docs/spec/L2.md` §2.2), in
+    /// order, from the extension block's `SESSION_STATE`; empty from a
+    /// server that does not report them.
+    pub attrs: Vec<(String, String)>,
 }
 
 impl SessionInfo {
@@ -100,6 +104,7 @@ impl SessionInfo {
             keep_empty: false,
             lifetime: None,
             key: None,
+            attrs: Vec::new(),
         }
     }
 
@@ -129,10 +134,17 @@ impl SessionInfo {
         self
     }
 
+    /// Builder setter for [`Self::attrs`].
+    #[must_use]
+    pub fn with_attrs(mut self, attrs: Vec<(String, String)>) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
     /// Whether this session's extension-block `SESSION_STATE` has anything
     /// to say.
     const fn has_session_state(&self) -> bool {
-        self.lifetime.is_some() || self.key.is_some()
+        self.lifetime.is_some() || self.key.is_some() || !self.attrs.is_empty()
     }
 
     /// Whether the session currently holds no windows: a keep-empty session
@@ -827,6 +839,7 @@ pub(super) fn decode_session_info(dec: &mut Decoder<'_>) -> Result<SessionInfo, 
         keep_empty: false,
         lifetime: None,
         key: None,
+        attrs: Vec::new(),
     })
 }
 
@@ -1004,6 +1017,12 @@ fn encode_snapshot_extension(
             if let Some(key) = &info.key {
                 e.write_field(field::session_state::KEY, key.as_bytes());
             }
+            for (name, value) in &info.attrs {
+                e.write_field_with(field::session_state::ATTR, |e| {
+                    e.write_str(name);
+                    e.write_str(value);
+                });
+            }
         });
     }
     block
@@ -1094,6 +1113,7 @@ fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(),
     let id = SessionId::new(dec.read_u32_be()?);
     let mut lifetime = None;
     let mut key = None;
+    let mut attrs = Vec::new();
     while let Some((field_id, v)) = dec.read_field()? {
         match field_id {
             field::session_state::LIFETIME => {
@@ -1102,14 +1122,32 @@ fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(),
             field::session_state::KEY => {
                 key = <[u8; 16]>::try_from(v).ok().and_then(SessionKey::new);
             }
+            field::session_state::ATTR if attrs.len() < MAX_SESSION_ATTRS => {
+                if let Some(pair) = decode_attr(v) {
+                    attrs.push(pair);
+                }
+            }
             _ => {}
         }
     }
     if let Some(info) = sessions.iter_mut().find(|s| s.id == id) {
         info.lifetime = lifetime;
         info.key = key;
+        info.attrs = attrs;
     }
     Ok(())
+}
+
+/// Most attributes one `SESSION_STATE` carries; later ones are dropped.
+const MAX_SESSION_ATTRS: usize = 64;
+
+/// One `attr` value: `str key || str value`, each at most 256 bytes. A
+/// malformed or oversized pair reads as absent.
+fn decode_attr(value: &[u8]) -> Option<(String, String)> {
+    let mut dec = Decoder::new(value);
+    let key = dec.read_str().ok()?;
+    let value = dec.read_str().ok()?;
+    (key.len() <= 256 && value.len() <= 256).then(|| (key.to_owned(), value.to_owned()))
 }
 
 /// Join one `RESOURCE_STATE` value onto its entry (ignored when none); an

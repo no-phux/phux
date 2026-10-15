@@ -12,6 +12,7 @@ mod runner;
 mod agent_log_validation;
 mod agent_record_e2e;
 mod agent_session_e2e;
+mod native_sdk_validation;
 mod plugin_agent_bench_e2e;
 mod resource_e2e;
 mod run_wait_e2e;

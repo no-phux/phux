@@ -86,6 +86,7 @@ pub(super) struct CtxFixture {
     pub(super) review: crate::attach::review::ReviewIndex,
     pub(super) session_name: String,
     pub(super) project_tags: HashMap<phux_protocol::ids::SessionId, String>,
+    pub(super) collapsed_projects: std::collections::BTreeSet<String>,
     pub(super) rename_pending: Option<PendingSessionRename>,
     pub(super) rename_notice: Option<String>,
     pub(super) switch_request: Option<ReattachTarget>,
@@ -107,6 +108,7 @@ pub(super) struct CtxFixture {
     pub(super) plugin_panes: Vec<PluginPaneEntry>,
     pub(super) reload_request: bool,
     pub(super) host_switch_request: Option<(String, String)>,
+    pub(super) project_toggle_request: Option<String>,
     pub(super) agent_meta: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) vcs: VcsIndex,
     painted_targets: SidebarTargets,
@@ -147,6 +149,7 @@ impl Default for CtxFixture {
             review: crate::attach::review::ReviewIndex::new(),
             session_name: String::new(),
             project_tags: HashMap::new(),
+            collapsed_projects: std::collections::BTreeSet::new(),
             rename_pending: None,
             rename_notice: None,
             switch_request: None,
@@ -166,6 +169,7 @@ impl Default for CtxFixture {
             plugin_panes: Vec::new(),
             reload_request: false,
             host_switch_request: None,
+            project_toggle_request: None,
             agent_meta: HashMap::new(),
             vcs: VcsIndex::default(),
             painted_targets: SidebarTargets::default(),
@@ -220,6 +224,7 @@ impl CtxFixture {
                 foreign_agents: &self.foreign_agents,
                 foreign_attention: &self.foreign_attention,
                 project_tags: &self.project_tags,
+                collapsed_projects: &self.collapsed_projects,
                 review: &self.review,
             },
             host_refresh_request: &mut self.host_refresh_request,
@@ -244,6 +249,7 @@ impl CtxFixture {
             plugin_tx: None,
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
+            project_toggle_request: &mut self.project_toggle_request,
             agent_meta: &self.agent_meta,
             vcs: &mut self.vcs,
         }
@@ -499,6 +505,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             roster,
             active_session: (windows > 0 && roster > 0).then_some(0),
             host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
+            project_starts: 0,
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
             plugin: crate::render::chrome::sidebar_sections::PluginShape::default(),
             agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
@@ -529,6 +536,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
                 })
             })
             .collect(),
+        projects: vec![None; roster],
         plugin: Vec::new(),
     }
 }

@@ -4,7 +4,6 @@
 # engine inside each slice, wrapped so Swift can `import PhuxFFI` (ADR-0133).
 #
 # This is the canonical native artifact a Swift-only phux-mobile consumes;
-# Cockpit links the same crate from this checkout through clients/cockpit.
 # ffi-xcframework.yml runs this on macOS and attaches the result to the root
 # release; `just ffi-xcframework` is the local entry point.
 #
@@ -31,7 +30,7 @@
 #
 # CPU floors: every Rust slice is built with an explicit per-target
 # `-C target-cpu` (apple-a7 device, apple-a12 simulator, apple-m1 macOS, the
-# rustc defaults for those targets and Cockpit's macOS floor). The macOS
+# rustc defaults for iOS and the portable Apple-silicon macOS floor). The macOS
 # engine flat build is pinned with LIBGHOSTTY_VT_SYS_CPU=baseline; the iOS
 # engine archives come from ghostty's xcframework emit, which selects its own
 # platform targets and does not inherit that setting. Inherited RUSTFLAGS are
@@ -150,8 +149,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The explicit Rust CPU floor per target: rustc's own default for the two iOS
-# targets, and Cockpit's floor for macOS (clients/cockpit/scripts/
-# build-phux-artifacts.sh builds the same archive with apple-m1). The literal
+# targets, and the Apple-silicon floor for macOS. The literal
 # strings are what scripts/check-release-cpu-baselines.sh pins.
 target_rustflags() {
     case "$1" in

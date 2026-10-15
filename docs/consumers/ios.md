@@ -28,7 +28,7 @@ Neither surface has a mobile consumer yet.
 `cursor`) as the defaults every grid is resolved with (ADR-0157), now and
 on every later `connect`; `nil` clears it. A program's OSC colour changes
 still win over it. The mapping from a `colors.toml` is the one
-[Cockpit's guide](./cockpit.md#terminal-theme) lists, and `phux theme
+[native SDK guide](./sdk.md#native-terminal-theme) lists, and `phux theme
 show NAME --json` prints it as `ansi16`. Requires a `PHUX_REV` that
 includes this surface.
 

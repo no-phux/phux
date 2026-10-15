@@ -28,6 +28,9 @@ use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
 use phux_protocol::ids::{ResourceId, SessionId};
 
+mod projects;
+use projects::{foreign_member_host, roster_indent};
+
 /// Label of the "create" affordance row (runs `new-window`).
 pub const NEW_LABEL: &str = "+ new tab";
 /// Agents header: the agents that need a human.
@@ -128,6 +131,10 @@ pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) 
 /// One session with its serving host (an unreachable host may add an
 /// unselectable placeholder). Counts, not one worst colour: a dot says what,
 /// a count says how much.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent row facts (current, selectable, satellite, linked), not a state machine"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionRosterEntry {
     /// The session's name — the human-facing label a click still carries.
@@ -164,6 +171,28 @@ pub struct SessionRosterEntry {
     /// structurally unknowable from here, so the row is painted as explicitly
     /// unknown rather than being allowed to read as a calm zero.
     pub satellite: bool,
+    /// ADR-0168: the project group this row sits in, the same value on every
+    /// member row; `None` outside a group.
+    pub group: Option<RosterGroup>,
+    /// A linked worktree, drawn one step further in than its primary
+    /// checkout.
+    pub linked: bool,
+}
+
+/// A project group in the Sessions zone (ADR-0168), carried by each of its
+/// member rows so the header can paint from the first one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RosterGroup {
+    /// The grouping key, which a header click toggles.
+    pub key: String,
+    /// The project's display name.
+    pub name: String,
+    /// Whether the user collapsed the group.
+    pub collapsed: bool,
+    /// Panes across the group's sessions that need you (blocked or asking).
+    pub needs_you: usize,
+    /// Member sessions the collapsed group is not showing.
+    pub hidden: usize,
 }
 
 impl SessionRosterEntry {
@@ -208,6 +237,9 @@ pub struct SidebarCounts {
     /// precedes it. A bitmask keeps the shape `Copy`; entries past the 128th
     /// open no segment, which a strip never has the rows to show anyway.
     pub host_starts: u128,
+    /// ADR-0168: bit `j` is set when the segment opening at roster entry `j`
+    /// is a project group, whose header toggles it rather than switching.
+    pub project_starts: u128,
     /// Which column carries the separator rule. Part of the shape because
     /// it moves every hit target: the rule and its collapse chevron are not
     /// row targets, and the rows shift away from a leading rule.
@@ -274,7 +306,8 @@ pub enum SidebarRow {
     RosterEntry(usize),
     /// ADR-0140: the machine segment header opening at roster entry `j`
     /// (host label, and `here` for the attached machine); shares entry
-    /// `j`'s target.
+    /// `j`'s target. ADR-0168: a project group's header when the segment
+    /// is one; it toggles the group.
     RosterHost(usize),
     /// Hidden sessions/windows; opens the session picker.
     RosterOverflow,
@@ -302,6 +335,8 @@ pub enum SidebarHit {
     NeedsYou(usize),
     /// Session name or host row `j`.
     Roster(usize),
+    /// ADR-0168: the project group header opening at roster entry `j`.
+    Project(usize),
     /// Plugin section `s`'s row `j`: focuses that row's pane.
     Plugin(usize, usize),
     /// Agents overflow opens the agent-fleet dashboard.
@@ -352,6 +387,8 @@ pub struct SidebarTargets {
     pub needs_you: Vec<SidebarTarget>,
     /// Session destinations in display order; placeholders have no target.
     pub roster: Vec<Option<SessionRosterTarget>>,
+    /// ADR-0168: each roster entry's project group key, when it has one.
+    pub projects: Vec<Option<String>>,
     /// ADR-0148: per plugin section, each row's `(window, pane)` for
     /// `focus-pane`.
     pub plugin: Vec<Vec<(usize, usize)>>,
@@ -507,18 +544,26 @@ const fn opens_segment(counts: SidebarCounts, j: usize) -> bool {
     j < 128 && counts.host_starts & (1u128 << j) != 0
 }
 
-/// The [`SidebarCounts::host_starts`] mask for `hosts`, in roster order.
-/// One machine opens no segment: a lone host header says nothing.
-fn segment_starts<'a>(hosts: impl Iterator<Item = &'a str>) -> u128 {
+/// The [`SidebarCounts::host_starts`] mask for `segments`, in roster order:
+/// a segment is a project group (`true`, its key) or a host (`false`, its
+/// label). One machine opens no segment: a lone host header says nothing.
+fn segment_starts<'a>(segments: impl Iterator<Item = (bool, &'a str)>) -> u128 {
     let mut mask = 0u128;
-    let mut previous: Option<&str> = None;
-    for (j, host) in hosts.take(128).enumerate() {
-        if previous != Some(host) {
+    let mut previous: Option<(bool, &str)> = None;
+    for (j, segment) in segments.take(128).enumerate() {
+        if previous != Some(segment) {
             mask |= 1u128 << j;
         }
-        previous = Some(host);
+        previous = Some(segment);
     }
     if mask.count_ones() < 2 { 0 } else { mask }
+}
+
+/// The roster segment entry `s` belongs to.
+fn roster_segment(s: &SessionRosterEntry) -> (bool, &str) {
+    s.group
+        .as_ref()
+        .map_or((false, s.host.as_str()), |group| (true, group.key.as_str()))
 }
 
 /// Limit iteration by viewport capacity, even for extremely large counts.
@@ -565,6 +610,12 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
         return None;
     }
     let row = *row_model(counts, rect.h).get(usize::from(local_y))?;
+    if let SidebarRow::RosterHost(j) = row
+        && j < 128
+        && counts.project_starts & (1u128 << j) != 0
+    {
+        return Some(SidebarHit::Project(j));
+    }
     row_hit(row)
 }
 
@@ -780,7 +831,8 @@ impl SidebarPainter {
             windows: self.windows.len(),
             roster: self.roster.len(),
             active_session: self.roster.iter().position(|s| s.active),
-            host_starts: segment_starts(self.roster.iter().map(|s| s.host.as_str())),
+            host_starts: segment_starts(self.roster.iter().map(roster_segment)),
+            project_starts: self.project_starts(),
             rule: self.rule,
             plugin: PluginShape::of(&self.plugin),
             agents_share: self.agents_share,
@@ -821,6 +873,11 @@ impl SidebarPainter {
                         switch_host: s.switch_host.clone(),
                     })
                 })
+                .collect(),
+            projects: self
+                .roster
+                .iter()
+                .map(|s| s.group.as_ref().map(|group| group.key.clone()))
                 .collect(),
             plugin: self
                 .plugin
@@ -1087,7 +1144,8 @@ impl SidebarPainter {
         let (dot, color) = self.roster_badge(s);
         let counts = self.roster_histogram(s);
         let counts_w: usize = counts.iter().map(|span| display_width(&span.content)).sum();
-        let avail = usize::from(text_w).saturating_sub(2);
+        let indent = roster_indent(s);
+        let avail = usize::from(text_w).saturating_sub(2 + display_width(indent));
         // Identity keeps at least half the row even under a large histogram.
         let name_budget = avail
             .saturating_sub(counts_w + usize::from(counts_w > 0))
@@ -1102,14 +1160,22 @@ impl SidebarPainter {
         } else {
             Style::default().fg(self.theme.dim)
         };
-        justify(
-            vec![
-                Span::styled(format!("{dot} "), Style::default().fg(color)),
-                Span::styled(name, style),
-            ],
-            counts,
-            text_w,
-        )
+        let mut left = vec![
+            Span::styled(indent, Style::default().fg(self.theme.dim)),
+            Span::styled(format!("{dot} "), Style::default().fg(color)),
+            Span::styled(name, style),
+        ];
+        if let Some(host) = foreign_member_host(s) {
+            let used: usize = left.iter().map(|span| display_width(&span.content)).sum();
+            let room = usize::from(text_w).saturating_sub(used + counts_w + 1);
+            if room > 2 {
+                left.push(Span::styled(
+                    clip_text(&format!(" @{host}"), room),
+                    Style::default().fg(self.theme.chord),
+                ));
+            }
+        }
+        justify(left, counts, text_w)
     }
 
     /// The counts of the rungs that need a human, each in its own glyph and
@@ -1292,10 +1358,15 @@ impl SidebarPainter {
                 .roster
                 .get(j)
                 .map_or_else(|| Line::from(""), |s| self.roster_line(s, text_w)),
-            SidebarRow::RosterHost(j) => self
-                .roster
-                .get(j)
-                .map_or_else(|| Line::from(""), |s| self.host_line(s, text_w)),
+            SidebarRow::RosterHost(j) => self.roster.get(j).map_or_else(
+                || Line::from(""),
+                |s| {
+                    s.group.as_ref().map_or_else(
+                        || self.host_line(s, text_w),
+                        |group| self.project_line(group, text_w),
+                    )
+                },
+            ),
             SidebarRow::NeedsYouOverflow => self.overflow_line(hidden.needs_you, text_w),
             SidebarRow::RosterOverflow => self.sessions_overflow_line(hidden, text_w),
             SidebarRow::Blank => Line::from(""),
@@ -1635,6 +1706,7 @@ mod tests {
             roster: usize::MAX,
             active_session: Some(0),
             host_starts: u128::MAX,
+            project_starts: 0,
             rule: SidebarRule::Trailing,
             plugin: PluginShape::default(),
             agents_share: DEFAULT_AGENTS_SHARE,
@@ -2591,6 +2663,7 @@ mod tests {
             roster,
             active_session: None,
             host_starts: every_segment(roster),
+            project_starts: 0,
             rule: SidebarRule::Trailing,
             plugin: PluginShape::default(),
             agents_share: DEFAULT_AGENTS_SHARE,
@@ -2708,8 +2781,14 @@ mod tests {
     /// One machine opens no segment; two or more open one each.
     #[test]
     fn a_lone_machine_paints_no_host_line() {
-        assert_eq!(segment_starts(["mini", "mini"].into_iter()), 0);
-        assert_eq!(segment_starts(["mini", "mini", "xps"].into_iter()), 0b101);
+        assert_eq!(
+            segment_starts([(false, "mini"), (false, "mini")].into_iter()),
+            0
+        );
+        assert_eq!(
+            segment_starts([(false, "mini"), (false, "mini"), (false, "xps")].into_iter()),
+            0b101
+        );
     }
 
     /// Agents overflow at the panel's capacity, not a population-based cap.

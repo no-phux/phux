@@ -138,7 +138,15 @@ fn unknown(client: &Client) -> ProjectionFence {
 fn capture(client: &Arc<Client>, view: ViewId, surface: &Surface) -> Result<Ticket, Rejection> {
     let weak = Arc::downgrade(client);
     client.with_control(|control| {
-        Ticket::capture(weak, &terminal(), view, 17, &surface.lifetime, control)
+        Ticket::capture(
+            weak,
+            &terminal(),
+            view,
+            17,
+            &surface.lifetime,
+            &surface.validated,
+            control,
+        )
     })
 }
 
@@ -301,6 +309,7 @@ fn wrong_terminal_is_rejected() {
             view,
             17,
             &surface.lifetime,
+            &surface.validated,
             control,
         )
     });
@@ -453,4 +462,14 @@ fn a_pending_receipt_does_not_keep_the_runtime_alive() {
         "the ticket must not retain Arc<Client>"
     );
     assert!(ticket.client.upgrade().is_none());
+}
+
+#[test]
+fn an_unchanged_frame_does_not_take_another_owner_turn() {
+    let (client, view, surface) = ready();
+    let first = capture(&client, view, &surface).unwrap();
+    let requests = phux_client_runtime::perf::REQUEST_WALL.count();
+    let second = capture(&client, view, &surface).unwrap();
+    assert_eq!(phux_client_runtime::perf::REQUEST_WALL.count(), requests);
+    assert!(Arc::ptr_eq(&first.frame(), &second.frame()));
 }

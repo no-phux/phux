@@ -23,8 +23,6 @@ public/docs-manifest.json
 # checked-in copy is a second one waiting to go stale.
 public/install
 public/install.sh
-public/install-cockpit
-public/install-cockpit.sh
 public/install-desktop
 public/install-desktop.sh
 

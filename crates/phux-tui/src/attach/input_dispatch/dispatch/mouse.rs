@@ -662,6 +662,16 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
         SidebarHit::Roster(j) => {
             return Some(sidebar_session_action(targets.roster.get(j)?.as_ref()?));
         }
+        SidebarHit::Project(j) => {
+            let key = targets.projects.get(j)?.clone()?;
+            return Some(phux_config::keybind::ResolvedAction {
+                action: "toggle-project-group".to_owned(),
+                args: std::collections::BTreeMap::from([(
+                    "project".to_owned(),
+                    toml::Value::String(key),
+                )]),
+            });
+        }
         SidebarHit::Plugin(s, j) => {
             let (window, pane) = *targets.plugin.get(s)?.get(j)?;
             return focus_pane_action(window, pane);

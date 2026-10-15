@@ -3,7 +3,9 @@
 //! (ADR-0030). A CLI-created session has no persisted TUI layout until a TUI
 //! visits it, so the server window/resource graph is its inventory until then.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use phux_core::project_identity::SessionProject;
 
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
@@ -48,6 +50,8 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_attention: &'a HashSet<ResourceId>,
     /// `phux.session.project/v1` tags, keyed by session id.
     pub project_tags: &'a HashMap<SessionId, String>,
+    /// ADR-0168: project group keys collapsed in this client's sidebar.
+    pub collapsed_projects: &'a BTreeSet<String>,
     /// Connection-lifetime review index. Peer rows read `seen`
     /// from here instead of hardcoding unseen.
     pub review: &'a ReviewIndex,
@@ -320,6 +324,7 @@ pub(super) fn session_roster(
     local: &[AgentEntry],
 ) -> Vec<SessionRosterEntry> {
     let mut out = Vec::new();
+    let mut projects: Vec<RowProject<'_>> = Vec::new();
     let here = peers
         .origin
         .and_then(|origin| {
@@ -342,6 +347,8 @@ pub(super) fn session_roster(
             settled: 0,
             unknown: 0,
             satellite: false,
+            group: None,
+            linked: false,
         };
         if entry.active {
             summarize_local_agents(&mut entry, local);
@@ -349,10 +356,79 @@ pub(super) fn session_roster(
             count_peer_leaves(&mut entry, &peer_leaves(peers, session), peers);
         }
         out.push(entry);
+        projects.push(RowProject {
+            project: phux_client::project_identity::of_session(session),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
+        });
     }
-    out.extend(satellite_roster(peers.hosts));
-    out.extend(machine_roster(&peers.other_machines()));
-    out
+    let satellites = satellite_roster(peers.hosts);
+    projects.extend(satellites.iter().map(|_| RowProject::default()));
+    out.extend(satellites);
+    for (entry, project) in machine_roster(&peers.other_machines()) {
+        out.push(entry);
+        projects.push(RowProject {
+            project: project.cloned(),
+            label: None,
+        });
+    }
+    group_roster(&out, &projects, peers.collapsed_projects)
+}
+
+/// What groups one roster row (ADR-0168).
+#[derive(Default)]
+struct RowProject<'a> {
+    project: Option<SessionProject>,
+    label: Option<&'a str>,
+}
+
+/// Project groups of two or more rows first, in first-appearance order;
+/// then every other row in its place. A collapsed group keeps its first
+/// row, the current session, and any session that needs you.
+fn group_roster(
+    entries: &[SessionRosterEntry],
+    projects: &[RowProject<'_>],
+    collapsed: &BTreeSet<String>,
+) -> Vec<SessionRosterEntry> {
+    use phux_client::project_groups::{Block, GroupRow, group_rows};
+    let rows: Vec<GroupRow<'_>> = entries
+        .iter()
+        .zip(projects)
+        .map(|(entry, row)| GroupRow {
+            project: row.project.as_ref(),
+            label: row.label,
+            needs_you: entry.blocked,
+        })
+        .collect();
+    let mut grouped = Vec::new();
+    let mut singles = Vec::new();
+    for block in group_rows(&rows, 2) {
+        let block = match block {
+            Block::Single(index) => {
+                singles.push(index);
+                continue;
+            }
+            Block::Project(block) => block,
+        };
+        let is_collapsed = collapsed.contains(&block.key);
+        let first = block.members.first().map(|member| member.index);
+        let visible = block.visible(is_collapsed, |index| {
+            Some(index) == first || entries[index].active || entries[index].blocked > 0
+        });
+        let group = crate::render::chrome::sidebar::RosterGroup {
+            hidden: block.members.len() - visible.len(),
+            key: block.key,
+            name: block.name,
+            collapsed: is_collapsed,
+            needs_you: block.needs_you,
+        };
+        grouped.extend(visible.into_iter().map(|member| SessionRosterEntry {
+            group: Some(group.clone()),
+            linked: member.linked,
+            ..entries[member.index].clone()
+        }));
+    }
+    grouped.extend(singles.into_iter().map(|index| entries[index].clone()));
+    grouped
 }
 
 /// How many panes of each peer session want a person (the roster's top
@@ -379,7 +455,9 @@ pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize
 /// Agent counts are not known across machines (the provider lists
 /// sessions, not panes), so every count is zero and the dot is the quiet
 /// rung, the same "nothing known" reading a not-yet-swept peer gets.
-fn machine_roster(hosts: &[&phux_core::host_list::HostJson]) -> Vec<SessionRosterEntry> {
+fn machine_roster<'a>(
+    hosts: &[&'a phux_core::host_list::HostJson],
+) -> Vec<(SessionRosterEntry, Option<&'a SessionProject>)> {
     let mut out = Vec::new();
     for host in hosts {
         let base = SessionRosterEntry {
@@ -389,23 +467,34 @@ fn machine_roster(hosts: &[&phux_core::host_list::HostJson]) -> Vec<SessionRoste
             ..SessionRosterEntry::default()
         };
         if !host.reachable {
-            out.push(SessionRosterEntry {
-                name: "down".to_owned(),
-                ..base
-            });
+            out.push((
+                SessionRosterEntry {
+                    name: "down".to_owned(),
+                    ..base
+                },
+                None,
+            ));
             continue;
         }
         if host.sessions.is_empty() {
-            out.push(SessionRosterEntry {
-                name: "no sessions".to_owned(),
-                selectable: false,
-                ..base
-            });
+            out.push((
+                SessionRosterEntry {
+                    name: "no sessions".to_owned(),
+                    selectable: false,
+                    ..base
+                },
+                None,
+            ));
             continue;
         }
-        out.extend(host.sessions.iter().map(|session| SessionRosterEntry {
-            name: session.name.clone(),
-            ..base.clone()
+        out.extend(host.sessions.iter().map(|session| {
+            (
+                SessionRosterEntry {
+                    name: session.name.clone(),
+                    ..base.clone()
+                },
+                session.project.as_ref(),
+            )
         }));
     }
     out
@@ -545,6 +634,7 @@ mod tests {
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
         project_tags: HashMap<SessionId, String>,
+        collapsed: BTreeSet<String>,
         review: ReviewIndex,
     }
 
@@ -563,6 +653,7 @@ mod tests {
                 foreign_agents: &self.agents,
                 foreign_attention: &self.attention,
                 project_tags: &self.project_tags,
+                collapsed_projects: &self.collapsed,
                 review: &self.review,
             }
         }
@@ -586,6 +677,7 @@ mod tests {
             ],
             layouts,
             project_tags: HashMap::new(),
+            collapsed: BTreeSet::new(),
             agents: HashMap::new(),
             attention: HashSet::new(),
             review: ReviewIndex::default(),
@@ -618,6 +710,7 @@ mod tests {
                     lifetime: None,
                     members: 0,
                     exec: phux_core::session_list::ExecCounts::default(),
+                    project: None,
                 })
                 .collect(),
         }
@@ -1036,5 +1129,97 @@ mod tests {
         assert_eq!(rows[1].state, AgentMetaState::Working);
         let ids = foreign_terminal_ids(&f.inputs());
         assert!(ids.contains(&edge) && ids.contains(&gpu) && ids.contains(&open));
+    }
+
+    fn identity(linked: bool, host: &str) -> SessionProject {
+        SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w".to_owned(),
+            branch: None,
+            linked_worktree: linked,
+            host: Some(host.to_owned()),
+        }
+    }
+
+    /// Give session `id` an identity the way the snapshot carries it.
+    fn tag(f: &mut Fixture, id: u32, project: &SessionProject) {
+        let session = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(id))
+            .expect("fixture session");
+        *session = session.clone().with_attrs(project.to_attrs());
+    }
+
+    /// ADR-0168: one repository groups across machines. The group leads
+    /// the roster; a linked worktree packs under the primary checkout on
+    /// its own machine; ungrouped rows keep their place.
+    #[test]
+    fn a_project_groups_its_sessions_across_machines() {
+        use phux_core::host_list::HostKind;
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "scratch"));
+        tag(&mut f, 1, &identity(false, "mini"));
+        tag(&mut f, 2, &identity(true, "mini"));
+        let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
+        let mut laptop = machine("local", "laptop", HostKind::Local, true, &["phux", "notes"]);
+        laptop.sessions[0].project = Some(identity(false, "laptop"));
+        let hosts = vec![laptop];
+        let peers = PeerInputs {
+            origin: Some(&origin),
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        let rows: Vec<_> = roster
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.host.as_str(),
+                    r.group.as_ref().map(|g| g.name.as_str()),
+                    r.linked,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("here", "mini", Some("phux"), false),
+                ("peer", "mini", Some("phux"), true),
+                ("phux", "laptop", Some("phux"), false),
+                ("scratch", "mini", None, false),
+                ("notes", "laptop", None, false),
+            ]
+        );
+    }
+
+    /// A collapsed group keeps its first row, the current session, and a
+    /// session that needs you, and counts the rest it hides.
+    #[test]
+    fn a_collapsed_group_still_shows_what_needs_you() {
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "quiet"));
+        f.sessions.push(sinfo(4, "loud"));
+        for id in 1..=4 {
+            tag(&mut f, id, &identity(id == 2, "mini"));
+        }
+        f.agents.insert(
+            ResourceId::local(10),
+            record("claude", AgentMetaState::Blocked),
+        );
+        f.collapsed.insert("github.com/no-phux/phux".to_owned());
+        let names = |roster: &[SessionRosterEntry]| -> Vec<String> {
+            roster.iter().map(|r| r.name.clone()).collect()
+        };
+        let mut inputs = f.inputs();
+        inputs.focused_session = Some(SessionId::new(4));
+        let roster = session_roster(&inputs, &[]);
+        assert_eq!(names(&roster), ["here", "peer", "loud"]);
+        let group = roster[0].group.as_ref().expect("grouped");
+        assert!(group.collapsed);
+        assert_eq!(group.hidden, 1, "only `quiet` is hidden");
+        assert_eq!(group.needs_you, 1);
     }
 }

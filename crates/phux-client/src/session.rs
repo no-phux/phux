@@ -247,6 +247,10 @@ pub struct CreateSessionRequest<'a> {
     /// persistent; a bare `phux` session is ephemeral. Only a server that
     /// advertises `ORGANIZATION` honors ephemeral.
     pub lifetime: SessionLifetime,
+    /// Descriptive attributes (`docs/spec/L2.md` §2.2), such as the project
+    /// identity (ADR-0168). Only a server that advertises `ORGANIZATION`
+    /// records them.
+    pub attrs: &'a [(String, String)],
 }
 
 /// Whether the connected server honors a keyed create.
@@ -356,7 +360,7 @@ async fn create_by_record(
         operation,
         name: request.name.to_owned(),
         lifetime: request.lifetime,
-        attrs: Vec::new(),
+        attrs: request.attrs.to_vec(),
         launch: Some(Box::new(launch)),
     };
     let (outcome, degradation) = crate::org::request(conn, 1, command)
@@ -932,6 +936,7 @@ mod tests {
             env,
             agent_session: None,
             lifetime: SessionLifetime::Persistent,
+            attrs: &[],
         }
     }
 

@@ -6,28 +6,21 @@
 // React wrapper lives in ../PhuxTerminal.tsx.
 
 import type * as TerminalModule from "../../lib/phux-web/phux_web.js";
+import {
+  isSessionInfo,
+  type PublicFallbackReason,
+  type SessionInfo,
+} from "../../../worker/src/session-info";
 
-export type SessionBackend = "native" | "edge";
-export type SessionFallbackReason =
-  | "auth-required"
-  | "account-concurrency"
-  | "hourly-quota"
-  | "daily-quota"
-  | "native-capacity"
-  | "ip-capacity"
-  | "native-disabled"
-  | "native-unhealthy"
-  | "startup-timeout"
-  | "startup-failed";
+// The hosted session envelope is one contract, shared with the Worker that mints
+// it: the client validates with the Worker's own schema instead of a second copy
+// that could drift.
+export type { SessionBackend } from "../../../worker/src/session-info";
+export type SessionFallbackReason = PublicFallbackReason;
+export type SessionPair = NonNullable<SessionInfo["pair"]>;
 
 export type HostedEvent =
-  | {
-      type: "phux.session.v1";
-      outcome: "accepted";
-      backend: SessionBackend;
-      expiresAt: number;
-      fallbackReason?: SessionFallbackReason;
-    }
+  | SessionInfo
   | { type: "error"; category: "protocol" | "client" | "transport" }
   | {
       type: "close";
@@ -213,19 +206,6 @@ export function terminalGeometry(
   };
 }
 
-const fallbacks = new Set<SessionFallbackReason>([
-  "auth-required",
-  "account-concurrency",
-  "hourly-quota",
-  "daily-quota",
-  "native-capacity",
-  "ip-capacity",
-  "native-disabled",
-  "native-unhealthy",
-  "startup-timeout",
-  "startup-failed",
-]);
-
 const closeCategories = new Set([
   "normal",
   "going-away",
@@ -245,29 +225,7 @@ export function parseHostedEvent(value: unknown): HostedEvent | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const event = value as Record<string, unknown>;
   if (event.type === "phux.session.v1") {
-    const keys = Object.keys(event);
-    if (
-      !keys.every((key) =>
-        ["type", "outcome", "backend", "expiresAt", "fallbackReason"].includes(
-          key,
-        ),
-      ) ||
-      event.outcome !== "accepted" ||
-      (event.backend !== "native" && event.backend !== "edge") ||
-      !Number.isSafeInteger(event.expiresAt) ||
-      (event.expiresAt as number) <= 0
-    ) {
-      return null;
-    }
-    if (
-      event.fallbackReason !== undefined &&
-      (event.backend !== "edge" ||
-        typeof event.fallbackReason !== "string" ||
-        !fallbacks.has(event.fallbackReason as SessionFallbackReason))
-    ) {
-      return null;
-    }
-    return event as HostedEvent;
+    return isSessionInfo(event) ? (event as SessionInfo) : null;
   }
   if (
     event.type === "error" &&

@@ -11,12 +11,6 @@
 /install.sh
   Cache-Control: public, max-age=300
 
-/install-cockpit
-  Cache-Control: public, max-age=300
-
-/install-cockpit.sh
-  Cache-Control: public, max-age=300
-
 /install-desktop
   Cache-Control: public, max-age=300
 

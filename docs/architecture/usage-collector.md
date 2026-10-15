@@ -25,7 +25,7 @@ section of that ADR. The answers below are the draft.
 | Enabled flag, spawn, restart, and stop | The phux server, at process start |
 | Scan, parse, dedup, pricing, ledger, snapshot | The collector process |
 | Served reading | The server, by reading the snapshot on command |
-| Presentation | A later client. Cockpit does not collect |
+| Presentation | A later client; presentation does not collect |
 | Token Tach history, UI, and OAuth allowance | Out of this design |
 
 `phux-server` does not depend on the collector. The `phux` binary may.
@@ -72,9 +72,8 @@ When the flag is true:
 6. The supervisor waits asynchronously. It does not run on a PTY actor,
    and a collector failure does not tear down the server.
 
-Collection continues while Cockpit is closed, because the child is
-tied to the server. A Cockpit direct-local PTY is not a phux server
-session and is not collected.
+Collection continues while clients are closed, because the child is tied
+to the server. A client-owned local PTY outside phux is not collected.
 
 ## Delivery
 
@@ -205,7 +204,6 @@ not part of the snapshot and is not required in the ledger yet.
 
 Platforms are the server's: macOS (Apple Silicon release artifacts;
 x86_64 from source) and Linux x86_64 and aarch64. Windows is out.
-Cockpit remains a macOS client of whatever server it attached to.
 
 ## Accounting
 

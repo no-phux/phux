@@ -32,7 +32,8 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Hook point names (defined in [`phux_config::vocab`]).
 pub use phux_config::vocab::{
-    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED, PANE_EXIT,
+    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
+    PANE_EXIT, WORKTREE_CREATED,
 };
 
 /// One hook event as the generated reference documents it: the vocab's
@@ -86,6 +87,11 @@ fn event_doc(name: &str) -> &'static str {
              changed (ADR-0046). `from` is absent on a first sighting; \
              `agent-name` is absent for an anonymous agent; a withdrawn \
              record arrives as `to = \"unknown\"`."
+        }
+        WORKTREE_CREATED => {
+            "`phux worktree new` created a checkout, before its session \
+             starts (ADR-0168). The CLI fires it, not the server, and \
+             waits for each hook; `repo` is the primary checkout."
         }
         other => unreachable!("no doc prose for hook event `{other}`"),
     }
@@ -196,6 +202,40 @@ impl HookEvent {
         context.push(("to".to_owned(), to.to_owned()));
         Self::new(AGENT_STATE_CHANGED, context)
     }
+}
+
+impl HookEvent {
+    /// [`WORKTREE_CREATED`]: `phux worktree new` made `worktree` on
+    /// `branch` from the checkout `repo`, bound to `session`.
+    #[must_use]
+    pub fn worktree_created(worktree: &Path, branch: &str, repo: &Path, session: &str) -> Self {
+        Self::new(
+            WORKTREE_CREATED,
+            [
+                ("branch".to_owned(), branch.to_owned()),
+                ("repo".to_owned(), repo.display().to_string()),
+                ("session".to_owned(), session.to_owned()),
+                ("worktree".to_owned(), worktree.display().to_string()),
+            ],
+        )
+    }
+}
+
+/// Run every hook `event` matches, one after another, each to completion or
+/// [`HOOK_TIMEOUT`], for a firing that has no dispatcher (the CLI). Returns
+/// how many ran.
+pub async fn run_to_completion(
+    catalog: &HookCatalog,
+    event: &HookEvent,
+    server_socket: Option<&Path>,
+    run_log: Option<PathBuf>,
+) -> usize {
+    let runs = matched_runs(catalog, event, server_socket);
+    let count = runs.len();
+    for run in runs {
+        execute(run, run_log.clone()).await;
+    }
+    count
 }
 
 /// Shared context helper: the pane's wire-local id, when it has one.
@@ -791,6 +831,12 @@ mod tests {
             HookEvent::client_attached(client, "work"),
             HookEvent::client_detached(client, Some("work")),
             HookEvent::agent_state_changed(&terminal, "claude", "reviewer", Some("busy"), "idle"),
+            HookEvent::worktree_created(
+                Path::new("/w/phux-feat"),
+                "feat",
+                Path::new("/w/phux"),
+                "phux-feat",
+            ),
         ];
         assert_eq!(
             events.len(),
@@ -883,6 +929,12 @@ mod tests {
             HookEvent::client_attached(client, "work"),
             HookEvent::client_detached(client, Some("work")),
             HookEvent::agent_state_changed(&terminal, "claude", "reviewer", Some("busy"), "idle"),
+            HookEvent::worktree_created(
+                Path::new("/w/phux-feat"),
+                "feat",
+                Path::new("/w/phux"),
+                "phux-feat",
+            ),
         ];
         assert_eq!(
             events.len(),

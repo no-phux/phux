@@ -18,6 +18,54 @@
   replacement owner never inherits the old draft.
 - Keep native draft editing and Stop available while a provider question blocks
   another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+## [0.11.0](https://github.com/no-phux/phux/compare/desktop-v0.10.0...desktop-v0.11.0) (2026-10-15)
+
+
+### Features
+
+* **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
+
+## [0.10.0](https://github.com/no-phux/phux/compare/desktop-v0.9.4...desktop-v0.10.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** add live native performance monitoring ([e60e87e](https://github.com/no-phux/phux/commit/e60e87e5c05be81c30c1ffb9e167b178f07b181f))
+
+## [0.9.4](https://github.com/no-phux/phux/compare/desktop-v0.9.3...desktop-v0.9.4) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** keep the last frame across reconnect and size the websocket send budget ([#1392](https://github.com/no-phux/phux/issues/1392)) ([b33f042](https://github.com/no-phux/phux/commit/b33f0426c1b661fd216df75739a032b47be96b5b))
+
+## [0.9.3](https://github.com/no-phux/phux/compare/desktop-v0.9.2...desktop-v0.9.3) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** skip owner turns for unchanged frames ([#1391](https://github.com/no-phux/phux/issues/1391)) ([a1e0f09](https://github.com/no-phux/phux/commit/a1e0f09f47e465fd910df7f469e77cc8cd8c07ce))
+
+## [0.9.2](https://github.com/no-phux/phux/compare/desktop-v0.9.1...desktop-v0.9.2) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** probe quiet links and echo keys before the round trip ([#1385](https://github.com/no-phux/phux/issues/1385)) ([ec9a265](https://github.com/no-phux/phux/commit/ec9a265e63322b12de8f39b441a9577d4892e72f))
+
+## [0.9.1](https://github.com/no-phux/phux/compare/desktop-v0.9.0...desktop-v0.9.1) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
+## [0.9.0](https://github.com/no-phux/phux/compare/desktop-v0.8.6...desktop-v0.9.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** switch the active host in place and place spawned panes sooner ([#1379](https://github.com/no-phux/phux/issues/1379)) ([dd1d231](https://github.com/no-phux/phux/commit/dd1d23164f2e857c673b42ea9e6fe158bbcfb733))
 
 ## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
 

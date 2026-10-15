@@ -530,6 +530,14 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
                  so a bare palette row would have no target to act on",
     },
     NonPaletteAction {
+        name: "toggle-project-group",
+        description: "Collapse or expand one project group in the sidebar's \
+                      Sessions zone (ADR-0168)",
+        params: "`project` (the group's key, as the sidebar header carries it)",
+        reason: "requires the `project` arg the sidebar's group header supplies, \
+                 so a bare palette row would have no group to act on",
+    },
+    NonPaletteAction {
         name: "copy-mode",
         description: "Enter copy-mode on the focused pane (scrollback \
                       navigation, search, selection, yank)",

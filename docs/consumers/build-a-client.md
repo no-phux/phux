@@ -21,7 +21,7 @@ Choose an interface:
 | A harness that can emit lifecycle | AgentSession producer | [`harness.md`](./harness.md) |
 | A new graphical or headless client | Speak L1, carry an engine | [`../spec/L1.md`](../spec/L1.md), [`web.md`](./web.md) |
 | A native app | GPUI desktop, in process | [`desktop.md`](./desktop.md) |
-| A frozen C ABI embedder | `phux-client-ffi` | [`cockpit.md`](./cockpit.md) |
+| An archived C ABI embedder | `phux-client-ffi` | [`cockpit.md`](./cockpit.md) (recovery refs) |
 
 `phux-protocol` is the publishable codec (`publish = true`).
 `phux-client` is workspace-internal (`publish = false`), not a downstream

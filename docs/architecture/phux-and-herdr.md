@@ -76,7 +76,7 @@ same-install protocol because the workspace projection is the boundary.
                │
        ┌───────┼────────┐
        ▼       ▼        ▼
-      TUI  Cockpit/web CLI/SDK/MCP
+      TUI  desktop/web CLI/SDK/MCP
   replica   projection  headless
 ```
 

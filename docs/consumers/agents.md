@@ -346,6 +346,11 @@ Raw provider payloads remain separate and explicitly opt-in.
 
 ### SDK-owned native sessions
 
+The executing daemon must advertise `features_ext.NATIVE_AGENT`. A newer CLI
+or adapter does not upgrade an older daemon: native requests are refused locally
+before transmission when the bit is absent. Upgrade the host through its install
+source; do not substitute terminal keystrokes for a refused SDK operation.
+
 `phux launch --list --native --json` reports configured integrations and
 their actual host prerequisites. `phux launch --native omp --session main
 --json` starts one server-owned `phux agent host`, one headless SDK worker,
@@ -415,7 +420,10 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
       "keep_empty": true, "empty": false, "lifetime": "persistent",
       "members": 2,
       "exec": { "dormant": 0, "starting": 0, "running": 1, "stopping": 0,
-                "completed": 1, "failed": 0, "lost": 0, "abandoned": 0 } }
+                "completed": 1, "failed": 0, "lost": 0, "abandoned": 0 },
+      "project": { "id": "github.com/no-phux/phux", "name": "phux",
+                   "checkout": "/src/phux-feat", "branch": "feat",
+                   "linked_worktree": true, "host": "mini" } }
   ],
   "terminals": ["@3"],
   "resources": [
@@ -439,7 +447,14 @@ absent / `running` / `null` / `false`. Version 4 adds each session's
 `lifetime` (`persistent` survives its last process; `ephemeral` ends with it;
 `null` from a server that does not report one), `members` (its resource
 count), and `exec` (members per execution state; `dormant` never launched).
-`keep_empty` is `lifetime == "persistent"` and `empty` is `members == 0`. `kind` is `terminal`, `agent_session`,
+`keep_empty` is `lifetime == "persistent"` and `empty` is `members == 0`.
+`project` is additive and `null` for a session with no project identity
+([ADR-0168](../adr/0168-project-identity-is-a-session-attribute.md)):
+sessions whose `project.id` is equal are one repository, on any machine
+(`id` is the normalized `origin` URL, or `path:<host>:<common git dir>`
+without one); `branch` is the branch at creation and `linked_worktree`
+marks a worktree other than the primary checkout. `phux ls --all --json`
+rows carry it too. `kind` is `terminal`, `agent_session`,
 or `unknown`. `sessions` lists this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
 `HOST_SESSIONS`). `host` is `null` for this machine (`local: true`).
@@ -876,6 +891,12 @@ on `RETAIN_ON_EXIT` (normative: [resource protocol](../spec/L1.md),
 [ADR-0124](../adr/0124-retain-on-exit.md)).
 
 ### Other `--json` verbs
+
+`logs`, `update`, and `channel` success documents are `schema_version` 2.
+Version 2 removes the archived Zig Cockpit's `cockpit_log` inventory field
+and `cockpit` updater/channel field; these commands no longer discover,
+launch, tail, or update that app. The standard error document remains
+`schema_version` 1.
 
 `config agents` is `schema_version` 2: top-level `state` / `attention`
 are *effective* values (runtime record first, declared manifest as

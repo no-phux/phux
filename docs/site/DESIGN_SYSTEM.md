@@ -64,18 +64,34 @@ preference before paint and Astro document swaps.
 
 ## Landing and live shell
 
-The landing has no top navigation or visible tagline. The wordmark, install
-command, release links, tour, and three feature links lead to a quiet footer
-containing Docs, Try, and Source navigation. Other marketing pages retain their
-header. The landing canvas is `#0b0b0d`, with `#ededee` text and neutral accents.
+The landing carries a short top bar: wordmark plus Docs, Try, and Source. There is
+no visible tagline. The install targets, command, and copy action float as type on
+the canvas — no card, panel, or fill behind them, and hover changes color rather
+than background. The three targets are CLI, Desktop, and Mobile; Mobile swaps the
+command line for the TestFlight address request inside the same reserved slot, so
+the landing carries no separate beta band. The quiet footer keeps Demos, More,
+Privacy, and Support instead of repeating the top bar. The landing canvas is
+`#0b0b0d`, with `#ededee` text and neutral accents.
 
 The hero tour shows a server, clients, and signals travelling along connections.
 It autoplays only while on screen, with pause and chapter controls; reduced motion
 shows settled chapters. Faint background hosts are decorative, hidden from
-assistive technology, and do not claim live status. Hovering or keyboard-focusing
-the scene link reveals the shell invitation; touch devices show it continuously.
-Activating the scene opens the live shell. `/more` retains its opt-in, pausable,
+assistive technology, and do not claim live status. The scene's live-demo invitation is always visible as a bottom chip, for mouse,
+keyboard, and touch alike. Hover and focus emphasize that invitation without
+covering or blurring the product. Chapter headings and client emphasis follow
+the story; output enters briefly rather than flashing. Opening the live shell
+suspends the illustration, and closing it resumes the same position. `/more` retains its opt-in, pausable,
 scrubbable explainer.
+
+The live shell's dialog offers one more thing: **Pair your phone**, a single line
+that expands into a QR (a white tile, the only light surface in the dialog) with
+the status beneath it. The phone opens `/phone#CODE` — a page that is a terminal
+and almost nothing else — and lands in the same shell, thumb key bar included, in
+about a second. The link is single-use and expires with the session; the pairing
+code never appears in a URL the site's own logs would keep. While a phone is
+attached the shared shell follows the newest screen's size, which is the tmux
+rule and the honest reading of "one shell, two screens"; the pairing line says
+"Phone linked" so the beat is visible on the big screen.
 
 The live dialog uses one rounded glass shell with a blurred backdrop, not stacked
 outer frames. The terminal canvas is inset within it; pane controls sit below the

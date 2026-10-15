@@ -439,6 +439,13 @@ fn create(
         tracing::debug!(error = %err, "auto-spawn failed on the project open path");
     }
     let rt = cli_runtime()?;
+    // ADR-0168: the session carries the checkout's project identity, named
+    // by the `[[projects]]` label when there is one.
+    let attrs = phux_client::project_identity::creation_attrs(
+        &project.root,
+        &super::ls::local_hostname(),
+        project.name.as_deref(),
+    );
     // R16: import the recipe's session without starting anything, then start
     // its panes, as two explicit steps.
     let built = rt.block_on(async {
@@ -449,6 +456,7 @@ fn create(
             ImportKind::Project {
                 directory: &project.root,
             },
+            &attrs,
         )
         .await?;
         // A colliding session can appear between the first lookup and import.

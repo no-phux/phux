@@ -151,6 +151,13 @@ impl ControlPlane {
         self.push_event(Event::StatusChanged(status));
     }
 
+    /// Test seam: the pump's quiet probe waits until the session is attached,
+    /// and opening a connection always passes through `Connecting` first.
+    #[cfg(test)]
+    pub(crate) fn set_status_for_test(&mut self, status: Status) {
+        self.set_status(status);
+    }
+
     pub(super) fn now_ms(&self) -> u64 {
         u64::try_from(self.clock_origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }

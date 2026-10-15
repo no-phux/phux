@@ -121,8 +121,10 @@ setup details come from `phux launch --list --native --json`; the app never inst
 dependencies, accepts terms, or guesses readiness from executable names. Explicit
 launch calls `phux launch --native INTEGRATION --json --session SESSION` off the UI
 thread. Its returned terminal, AgentSession and activation identify the only
-conversation that may be revealed automatically. Passive discovery never switches
-faces or keyboard focus. Project open passes `--prefer-native` to the same CLI.
+conversation that may be revealed automatically. When its authenticated
+`AgentSession` stream publishes, that pane gains a persistent **Conversation**
+button and a matching control in its pane capsule. Passive discovery never
+switches faces or keyboard focus. Project open passes `--prefer-native` to the same CLI.
 
 The SDK worker belongs to the durable server-owned guardian, not the GUI. Closing
 desktop/mobile viewers leaves that same provider session running. The terminal face

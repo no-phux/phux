@@ -60,7 +60,7 @@ mr-boxington = "1.22.0"
 # scripts/doctor.sh ci` reports it missing.
 #
 # The browser-client tools (wasm-pack, wasm-bindgen-cli, binaryen, trunk,
-# chromedriver), the Cockpit SDK toolchain, the build-observability crates
+# chromedriver), the build-observability crates
 # (cargo-llvm-lines, cargo-bloat, cargo-watch, cargo-insta, cargo-mutants),
 # mold and lldb stay Nix-only or native-install. They are area tools, not root
-# gate tools; `bash scripts/doctor.sh web|cockpit` names each with its remedy.
+# gate tools; `bash scripts/doctor.sh web` names browser tools with remedies.

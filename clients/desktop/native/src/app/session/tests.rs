@@ -1,5 +1,5 @@
 use super::{Desktop, WindowRole};
-use crate::app::actions::Run;
+use crate::app::actions::{PerformanceMonitor, Run, StopPerformanceMonitor};
 use gpui::prelude::*;
 use gpui::{AppContext, Context, Entity, FocusHandle, Focusable, TestAppContext, Window, div};
 use gpui_kit::component::input::{Input, InputState};
@@ -19,6 +19,7 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
         fresh: false,
         initial_terminal: None,
         quick: false,
+        dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
     };
     desktop.update(cx, |desktop, cx| {
@@ -47,6 +48,7 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
         fresh: false,
         initial_terminal: None,
         quick: false,
+        dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
     };
     desktop.update(cx, |desktop, cx| {
@@ -60,6 +62,53 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
         assert_eq!(desktop.windows[2].role, WindowRole::Main);
         assert_eq!(desktop.windows[2].session, "Cedar");
     });
+}
+
+#[gpui::test]
+fn performance_monitor_starts_stops_and_reopens_live_without_a_launch_flag(
+    cx: &mut TestAppContext,
+) {
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Desktop::install(cx)
+    });
+    let main = cx
+        .add_empty_window()
+        .update(|window, _| window.window_handle());
+    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
+    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
+    cx.run_until_parked();
+    let first = desktop.read_with(cx, |desktop, _| desktop.performance.unwrap());
+    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
+    cx.run_until_parked();
+    assert_eq!(
+        desktop.read_with(cx, |desktop, _| desktop.performance.unwrap().window_id()),
+        first.window_id(),
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    cx.update(|cx| cx.dispatch_action(&StopPerformanceMonitor));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
+    assert!(
+        cx.update_window(first, |_, _, _| ()).is_err(),
+        "stop closes the sampler's owning window"
+    );
+    // The test platform does not transfer native focus when a window closes.
+    main.update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.update(|cx| cx.dispatch_action(&PerformanceMonitor));
+    cx.run_until_parked();
+    let reopened = desktop.read_with(cx, |desktop, _| desktop.performance.unwrap());
+    assert_ne!(reopened.window_id(), first.window_id());
+    cx.update_window(reopened, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(desktop.read_with(cx, |desktop, _| desktop.performance.is_none()));
 }
 
 struct FocusFixture {
