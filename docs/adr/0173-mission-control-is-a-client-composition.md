@@ -33,17 +33,17 @@ learns nothing about git. [ADR-0168](./0168-project-identity-is-a-session-attrib
 already stamps project identity at session create, client-side.
 [ADR-0123](./0123-events-are-journaled.md) journals events in a bounded
 in-memory ring that a restart empties; it is a wake-up, not a task history.
-[ADR-0163](./0163-actors-and-delegated-agent-grants.md) stage 5 designs
-delegated agent grants. This tree's status table still says agents act
-with their connection's grant. Bead phux-3q58 is absent from the beads
-export, so that stage's built status is unverified here.
+Delegated grants are [ADR-0163](./0163-actors-and-delegated-agent-grants.md)
+Decision §5 plus its amendment of 2026-10-13 (`fa14a54f`). ADR-0163 has no
+stages. The grant is built on main (`#1191`, `fa80d732`).
 
 ## Decision
 
 1. **Client composition.** Mission control is a client composition, as
    `phux worktree` is. For tasks it may own the worktree, the brief, and
-   the agent launch, by composing existing client verbs. The server and
-   the wire learn nothing new. This amends the
+   starting the task's agent, by composing existing client verbs. The
+   user-facing verb is `start`. The server and the wire learn nothing new.
+   This amends the
    [ADR-0009](./0009-phux-vs-mux-positioning.md) /
    [ADR-0092](./0092-durable-work-coordinator-authority.md) /
    [ADR-0132](./0132-swarm-members-are-coordinator-clients.md) boundary
@@ -62,7 +62,10 @@ export, so that stage's built status is unverified here.
    - exactly one writer holds the store, via a lock and an atomic write.
    A herdr-shaped tree keyed by the short label is outside this schema.
    Task history lives in this store. The [ADR-0123](./0123-events-are-journaled.md)
-   ring stays bounded and in memory.
+   ring stays bounded and in memory. Clients, including phux-mobile,
+   decode this store through the versioned `phux.mission/v1` JSON contract
+   and the JSON Schema the MC-1.1 pull request commits. That schema is the
+   stable decode surface.
 
 3. **One layer.** The coordinator owns tasks. Until phux-ajxq, the interim
    store is that coordinator. The ops hub is its first read-and-command
@@ -73,11 +76,28 @@ export, so that stage's built status is unverified here.
    at the reviewed SHA. Nothing merges automatically. An agent never
    merges.
 
-5. **Grants.** Task agents run with the owner's grant until
-   [ADR-0163](./0163-actors-and-delegated-agent-grants.md) stage 5.
-   Delegated grants stay unverified until that stage is shown to be built.
+5. **Grants.** A task worker runs under the ordinary delegated grant.
+   [ADR-0163](./0163-actors-and-delegated-agent-grants.md) Decision §5, as
+   amended on 2026-10-13 (`fa14a54f`), is that grant, and it is built on
+   main (`#1191`, `fa80d732`): `crates/phux-server/src/delegation.rs` and
+   `policy.rs` hold the ledger, and `phux agent start` mints and revokes
+   the credential. It carries `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND`
+   on the worker's own session only, and never `CREATE`, `ORGANIZE`,
+   `TERMINATE`, or `SIGNAL`. Delegation only narrows. The default lifetime
+   is 12 hours. The ledger is in memory, so a cold restart revokes every
+   credential. `phux mission` runs as the owner. Lead is the exception and
+   runs without the owner's full authority. The grant Lead should hold is
+   a later ADR, tracked as MC-1.4b: `CREATE` and `ORGANIZE` scoped to the
+   `mission` session and to the sessions created when a task is started,
+   and never `TERMINATE` or `SIGNAL`. Stopping a worker is an Inbox
+   approval as in [ADR-0128](./0128-approvals-are-held-actions.md). Until
+   MC-1.4b lands, Lead is an interactive demo and stays attended.
 
-6. **Worktrees and names.** One worktree per task. Those worktrees share
+6. **Lost credential.** A lost credential, including one a cold restart
+   revoked, is a `credential_lost` Signal on the task. The task moves to
+   Needs you. It stays out of Working.
+
+7. **Worktrees and names.** One worktree per task. Those worktrees share
    `CARGO_TARGET_DIR` and sccache. Syncing a task branch to the default
    branch is optional and off by default. Grouping uses the
    [ADR-0168](./0168-project-identity-is-a-session-attribute.md) project
@@ -85,9 +105,10 @@ export, so that stage's built status is unverified here.
 
 Defaults, which Patrick may override while this record is Proposed: ship
 the interim store rather than wait for the coordinator; a built-in
-`phux mission` verb; the feature name "mission control"; the chat agent
-named Lead. "Coordinator" stays the [ADR-0092](./0092-durable-work-coordinator-authority.md)
-authority.
+`phux mission` verb whose action for a task's agent is `start`; the
+feature name "mission control"; the chat agent named Lead. "Coordinator"
+stays the [ADR-0092](./0092-durable-work-coordinator-authority.md)
+authority. "Delegation" in this record means an ADR-0163 credential.
 
 ## Why
 
@@ -99,16 +120,19 @@ teach the terminal process about git. The event ring cannot be the task
 log: it drops history on restart. A second writer, or a second product
 store in the ops hub, Blackbird, or beads, splits the authority ADR-0092
 exists to keep. An automatic or agent merge would land a SHA the human
-did not confirm.
+did not confirm. The worker grant already on main is narrow enough for a
+task agent. Lead with the owner's authority could terminate any session,
+so it stays attended until MC-1.4b. A cold restart clears the ledger
+unless the store raises `credential_lost`.
 
 ## Tradeoffs
 
 Two stores in sequence, interim then coordinator. Every client resolves
-the display alias `phux/12` through the store. One
-writer serializes the keeper and the CLI on one lock. Owner-grant agents
-can do what the owner can until stage 5; that matches a single-owner
-machine and is the wrong posture for someone else's host. Shared
-`CARGO_TARGET_DIR` and sccache couple task worktrees at the build cache.
+the display alias `phux/12` through the store, and decodes through
+`phux.mission/v1`. One writer serializes the keeper and the CLI on one
+lock. Workers cannot create, organize, terminate, or signal. Until
+MC-1.4b, Lead cannot be left running. Shared `CARGO_TARGET_DIR` and
+sccache couple task worktrees at the build cache.
 
 ## Alternatives
 
@@ -121,3 +145,6 @@ machine and is the wrong posture for someone else's host. Shared
 - Let the ops hub, Blackbird, or beads own tasks. Each is a second
   authority.
 - Merge automatically, or let an agent merge. Refused.
+- Run task workers or an unattended Lead on the owner's grant, or name
+  the user-facing verb `delegate`. Workers would hold terminate and signal
+  authority. `delegate` stays the name of an ADR-0163 credential. Refused.
