@@ -28,6 +28,7 @@ pub mod launch;
 pub mod perf;
 mod presentation;
 pub mod settings;
+pub mod telemetry;
 pub mod terminal;
 mod updates;
 pub mod workspace;

@@ -75,6 +75,35 @@ server behind the supervisor.
 
 ## Using it
 
+### Developer performance monitor
+
+Opt in on a development profile:
+
+```sh
+PHUX_PROFILE=dev PHUX_DESKTOP_DEV_TELEMETRY=1 just desktop-app
+```
+
+The native executable also accepts `--dev-telemetry`. Either opens a separate
+**Performance Monitor** window and adds **Developer > Performance Monitor** to
+the native menu. Reopening the command raises that same window.
+
+The monitor samples the **desktop process**, not the server or terminal child
+processes, once per second. CPU is measured over the actual elapsed interval
+(one fully occupied core is 100%, so multiple cores can exceed 100%). Current
+resident memory and lifetime peak resident memory are separate readings.
+An em dash means unavailable or no interval yet, not zero.
+
+The scrollable metric table shows the existing kernel, runtime, renderer, and
+UI-thread instrumentation as interval rates, mean timings, and estimated p95.
+**Pause** freezes the readings and stops sampling; **Resume** starts a fresh
+interval. **Copy JSON** copies the displayed process readings, interval metrics,
+and cumulative report. Sampling stops when the monitor closes; use the
+Developer menu to reopen it. This is local instrumentation: no telemetry is
+uploaded and no metrics history is written by the monitor.
+
+Without the opt-in, there is no Developer menu, monitor window, or monitor
+sampling loop. The existing cheap atomic render/runtime counters remain on.
+
 ### Updates
 
 **Settings > Updates** checks releases at launch and every six hours without

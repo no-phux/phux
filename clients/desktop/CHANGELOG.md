@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **desktop:** add an opt-in native Performance Monitor with process CPU,
+  current and peak resident memory, layered interval metrics, pause/resume,
+  and local JSON copy. Enable with `--dev-telemetry` or
+  `PHUX_DESKTOP_DEV_TELEMETRY=1`.
+
 ## [0.9.2](https://github.com/no-phux/phux/compare/desktop-v0.9.1...desktop-v0.9.2) (2026-10-15)
 
 

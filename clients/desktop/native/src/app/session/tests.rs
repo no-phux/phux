@@ -19,6 +19,7 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
         fresh: false,
         initial_terminal: None,
         quick: false,
+        dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
     };
     desktop.update(cx, |desktop, cx| {
@@ -47,6 +48,7 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
         fresh: false,
         initial_terminal: None,
         quick: false,
+        dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
     };
     desktop.update(cx, |desktop, cx| {
@@ -59,6 +61,32 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
         assert_eq!(desktop.windows.len(), 3);
         assert_eq!(desktop.windows[2].role, WindowRole::Main);
         assert_eq!(desktop.windows[2].session, "Cedar");
+    });
+}
+
+#[gpui::test]
+fn performance_monitor_is_opt_in_singleton_and_reopens_after_close(cx: &mut TestAppContext) {
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Desktop::install(cx)
+    });
+    desktop.update(cx, |desktop, cx| {
+        desktop.open_performance(cx).unwrap();
+        assert!(desktop.performance.is_none(), "disabled means no monitor");
+        desktop.dev_telemetry = true;
+        desktop.open_performance(cx).unwrap();
+        let first = desktop.performance.unwrap();
+        desktop.open_performance(cx).unwrap();
+        assert_eq!(desktop.performance.unwrap().window_id(), first.window_id());
+    });
+    let first = desktop.read_with(cx, |desktop, _| desktop.performance.unwrap());
+    cx.update_window(first, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    desktop.update(cx, |desktop, cx| {
+        assert!(desktop.performance.is_none(), "close retires the monitor");
+        desktop.open_performance(cx).unwrap();
+        assert_ne!(desktop.performance.unwrap().window_id(), first.window_id());
     });
 }
 

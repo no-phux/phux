@@ -2,7 +2,7 @@
 
 use gpui_kit::Action;
 
-gpui_kit::actions!(phux_desktop, [Quit, OpenPathDirectory]);
+gpui_kit::actions!(phux_desktop, [Quit, OpenPathDirectory, PerformanceMonitor]);
 
 /// Run a desktop command by the same id the palette, menus, and key bindings use.
 #[derive(Action, Clone, PartialEq, Eq, Debug)]

@@ -14,6 +14,7 @@ mod notifications;
 mod organization;
 mod overlays;
 mod panes;
+mod performance;
 mod session;
 mod settings_panel;
 mod typed;
@@ -49,6 +50,8 @@ pub struct AppOptions {
     pub initial_terminal: Option<ResourceId>,
     /// Open the quick-terminal window instead of the main window.
     pub quick: bool,
+    /// Enable the Developer menu and open the native performance monitor.
+    pub dev_telemetry: bool,
     /// Shown in the window when the server could not be ensured. Not hidden as an empty inventory.
     pub startup_error: Option<String>,
 }
