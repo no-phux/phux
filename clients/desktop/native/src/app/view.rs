@@ -31,6 +31,7 @@ use phux_protocol::{ResourceId, ResourceKind};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
 use crate::settings::theme::Palette;
+use crate::settings::TabPosition;
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::place::{self, SessionLine};
 
@@ -59,6 +60,7 @@ const TRAFFIC_LIGHTS: f32 = 78.;
 /// Room for the host-labelled main menu and sidebar toggle, even with the
 /// navigator hidden. Long host names truncate instead of pushing tabs away.
 const MENU_RAIL: f32 = 192.;
+const TAB_RAIL: f32 = 212.;
 
 /// Paint values for the glass sheet and the cards on it, from the theme.
 struct Glass {
@@ -129,6 +131,7 @@ impl gpui::Render for ResourceDrag {
 pub(super) struct ChromeCache {
     titlebar: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
+    tabs: Option<Entity<CachedChrome>>,
     overlays: Option<Entity<CachedChrome>>,
 }
 
@@ -180,6 +183,38 @@ fn build_titlebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
 fn build_sidebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let colors = chrome_palette(desk);
     sidebar_column(desk, &colors, cx).into_any_element()
+}
+
+fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = chrome_palette(desk);
+    div()
+        .w(px(TAB_RAIL))
+        .h_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .px(px(8.))
+        .pt(px(10.))
+        .pb(px(8.))
+        .child(
+            div()
+                .px(px(10.))
+                .pb(px(10.))
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(from_hex(&colors.muted))
+                .child("Workspace"),
+        )
+        .child(
+            div()
+                .id("side-tabs-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(tab_strip(desk, TabPosition::Side, &colors, cx)),
+        )
+        .into_any_element()
 }
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
@@ -267,6 +302,14 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                         cx,
                     ))
                 })
+                .when(desk.tab_position() == TabPosition::Side, |row| {
+                    row.child(chrome_slot(
+                        &mut desk.chrome.tabs,
+                        build_tab_rail,
+                        StyleRefinement::default().w(px(TAB_RAIL)).h_full().flex_shrink_0(),
+                        cx,
+                    ))
+                })
                 .child(main_column(desk, &colors, window, cx)),
         )
         .child(chrome_slot(
@@ -337,17 +380,6 @@ fn titlebar(
         .drag_region
         .get_or_insert_with(|| cx.new(crate::chrome::DragRegion::new))
         .clone();
-    let tabs = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.tabs.clone())
-        .unwrap_or_default();
-    let active = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.active_id.clone())
-        .unwrap_or_default();
-    let centers = desk.tab_centers.clone();
     let quick = desk.role == desk::WindowRole::Quick;
     let lead = titlebar_lead(sidebar, quick, desk.prefs.sidebar_width as f32);
     div()
@@ -388,27 +420,12 @@ fn titlebar(
                     |rail, width| rail.w(px(width)),
                 ),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .px(px(4.))
-                .overflow_x_hidden()
-                .children(
-                    tabs.iter()
-                        .map(|tab| tab_button(desk, tab, &active, colors, cx).into_any_element()),
-                )
-                .on_children_prepainted(move |bounds, _, _| {
-                    *centers.borrow_mut() = bounds
-                        .iter()
-                        .map(|bounds| (bounds.origin.x + bounds.size.width / 2.).as_f32())
-                        .collect();
-                }),
-        )
+        .when(desk.tab_position() == TabPosition::Top, |bar| {
+            bar.child(tab_strip(desk, TabPosition::Top, colors, cx))
+        })
+        .when(desk.tab_position() == TabPosition::Side, |bar| {
+            bar.child(div().flex_1())
+        })
         .child(
             div()
                 .flex()
@@ -425,6 +442,46 @@ fn titlebar(
                 ))
                 .child(bell(desk, colors, cx))
                 .child(update_button(desk, cx)),
+        )
+}
+
+/// One tab renderer and one set of tab actions for both placements.
+fn tab_strip(
+    desk: &Desk,
+    position: TabPosition,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let tabs = desk.link.as_ref().map(|link| link.workspace.tabs.as_slice()).unwrap_or_default();
+    let active = desk.link.as_ref().map(|link| link.workspace.active_id.as_str()).unwrap_or_default();
+    let geometry = desk.tab_geometry.clone();
+    geometry.borrow_mut().prepare(position, tabs.len());
+    let side = position == TabPosition::Side;
+    div()
+        .id(if side { "side-tabs" } else { "top-tabs" })
+        .when(side, |list| list.w_full())
+        .when(!side, |list| list.flex_1().min_w_0().h_full().overflow_x_scroll())
+        .child(
+            // Measure inside the scroller: its children then include the actual
+            // painted scroll offset, not the unscrolled layout coordinates.
+            div()
+                .flex()
+                .gap(px(5.))
+                .when(side, |list| list.flex_col().w_full())
+                .when(!side, |list| {
+                    list.w_full()
+                        .min_w(px(tabs.len() as f32 * 105. + 3.))
+                        .h_full()
+                        .items_center()
+                        .px(px(4.))
+                })
+                .children(tabs.iter().map(|tab| tab_button(desk, tab, active, position, colors, cx)))
+                .on_children_prepainted(move |bounds, _, _| {
+                    let mut geometry = geometry.borrow_mut();
+                    for (index, bounds) in bounds.into_iter().enumerate() {
+                        geometry.record(index, position, bounds);
+                    }
+                }),
         )
 }
 
@@ -451,10 +508,13 @@ fn tab_button(
     desk: &Desk,
     tab: &DeskTab,
     active: &str,
+    position: TabPosition,
     colors: &Palette,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let id = tab.id.clone();
+    let tab_selector = SharedString::from(format!("tab-{id}"));
+    let close_selector = SharedString::from(format!("tab-close-{id}"));
     let selected = tab.id == active;
     let title = desk::tab_title(desk, tab);
     let agent = strongest_agent(desk, tab);
@@ -464,25 +524,37 @@ fn tab_button(
     let drag_id = tab.id.clone();
     let rename_id = tab.id.clone();
     let middle_id = tab.id.clone();
+    let side = position == TabPosition::Side;
     div()
-        .id(SharedString::from(format!("tab-{id}")))
+        .id(tab_selector.clone())
+        .debug_selector(move || tab_selector.to_string())
         .group("tab")
-        .h(px(28.))
-        .min_w(px(88.))
-        .max_w(px(220.))
-        .flex_1()
+        .relative()
+        .flex_shrink_0()
+        .when(side, |tab| tab.h(px(38.)).w_full())
+        .when(!side, |tab| tab.h(px(30.)).min_w(px(100.)).max_w(px(220.)).flex_1())
         .pl(px(10.))
         .pr(px(4.))
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded(px(9.))
+        .rounded(px(if side { 11. } else { 10. }))
+        .border_1()
+        .border_color(if selected { from_hex(&colors.border) } else { gpui::transparent_black() })
         .bg(if selected {
             from_hex(&colors.active)
         } else {
             gpui::transparent_black()
         })
         .when(!selected, |tab| tab.hover(move |style| style.bg(hover)))
+        .when(selected, |tab| {
+            tab.shadow(vec![BoxShadow {
+                color: gpui::black().opacity(if colors.theme.appearance == "light" { 0.05 } else { 0.12 }),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(4.),
+                spread_radius: px(0.),
+            }])
+        })
         .occlude()
         .children(agent.map(|state| {
             div()
@@ -516,7 +588,8 @@ fn tab_button(
         }))
         .child(
             div()
-                .id(SharedString::from(format!("tab-close-{id}")))
+                .id(close_selector.clone())
+                .debug_selector(move || close_selector.to_string())
                 .flex_shrink_0()
                 .size(px(18.))
                 .rounded_full()
@@ -544,7 +617,12 @@ fn tab_button(
             MouseButton::Left,
             cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
                 desk.select_tab(&drag_id);
-                desk.begin_tab_drag(drag_id.clone(), event.position.x.as_f32(), cx);
+                desk.begin_tab_drag(
+                    drag_id.clone(),
+                    event.position.x.as_f32(),
+                    event.position.y.as_f32(),
+                    cx,
+                );
                 desk.after_command(window, cx);
             }),
         )
@@ -811,6 +889,9 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let label = current.clone().unwrap_or_else(|| "Local".to_owned());
     let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
     let handle = cx.weak_entity();
+    let tab_position = desk.prefs.tab_position;
+    let colors = chrome_palette(desk);
+    let menu_ink = from_hex(&colors.theme.foreground);
     let menu = move |mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
         menu = menu
             .min_w(px(256.))
@@ -831,6 +912,21 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                     menu = menu.item(main_command(command, *icon, &pane_handle));
                 }
                 menu.min_w(px(224.))
+            },
+        );
+        let tabs_handle = handle.clone();
+        menu = menu.submenu_with_icon(
+            Some(IconName::PanelLeft.into()),
+            "Tab Placement",
+            window,
+            cx,
+            move |menu, _, _| {
+                menu.min_w(px(208.))
+                    .check_side(Side::Right)
+                    .item(main_command("tabs-top", IconName::LayoutDashboard, &tabs_handle)
+                        .checked(tab_position == TabPosition::Top))
+                    .item(main_command("tabs-side", IconName::PanelLeft, &tabs_handle)
+                        .checked(tab_position == TabPosition::Side))
             },
         );
         menu = menu.separator();
@@ -878,10 +974,16 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
         .child(
             Button::new("main-menu")
                 .label(label)
+                .icon(IconName::Network)
                 .dropdown_caret(true)
                 .ghost()
                 .small()
                 .w_full()
+                .rounded_full()
+                .border_1()
+                .border_color(menu_ink.opacity(0.10))
+                .bg(menu_ink.opacity(0.045))
+                .text_color(menu_ink)
                 .dropdown_menu(menu),
         )
         .into_any_element()
@@ -955,6 +1057,9 @@ mod menu_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tab_tests;
 
 fn host_choice(
     name: Option<String>,

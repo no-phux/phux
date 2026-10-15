@@ -208,8 +208,8 @@ fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAp
     }
     let bounds = cx.debug_bounds("main-menu-rail").unwrap();
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-    // Creation, pane submenu, navigation, and Settings: eight selectable rows.
-    cx.simulate_keystrokes("down down down down down down down down enter");
+    // Creation, pane/tab submenus, navigation, and Settings: nine selectable rows.
+    cx.simulate_keystrokes("down down down down down down down down down enter");
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.modal.clone()),
         crate::app::Modal::Settings
@@ -246,7 +246,7 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         (
             true,
             true,
-            Some("down down down down down down down down down right"),
+            Some("down down down down down down down down down down right"),
         ),
     ] {
         cx.update(|window, cx| {

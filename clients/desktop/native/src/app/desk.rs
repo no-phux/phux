@@ -21,7 +21,7 @@ use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
-use crate::settings::{self, DisplayPrefs};
+use crate::settings::{self, DisplayPrefs, TabPosition};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
 use crate::workspace::persist::{self, FileLayoutStore};
@@ -166,8 +166,8 @@ pub struct Desk {
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
     pub(crate) split_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
-    /// Horizontal tab centers from the last prepaint, in tab order.
-    pub(crate) tab_centers: Rc<RefCell<Vec<f32>>>,
+    /// Painted tab centers, including scroll offsets, for the current orientation.
+    pub(crate) tab_geometry: Rc<RefCell<TabGeometry>>,
     viewport: gpui::Size<gpui::Pixels>,
     _wake: Option<Task<()>>,
     _clock: Option<Task<()>>,
@@ -225,9 +225,50 @@ enum Drag {
     },
     Tab {
         id: String,
-        start_x: f32,
+        position: TabPosition,
+        start: f32,
         moved: bool,
     },
+}
+
+#[derive(Default)]
+pub(crate) struct TabGeometry {
+    position: TabPosition,
+    centers: Vec<f32>,
+}
+
+impl TabGeometry {
+    pub(crate) fn prepare(&mut self, position: TabPosition, count: usize) {
+        self.position = position;
+        self.centers.clear();
+        self.centers.resize(count, f32::NAN);
+    }
+
+    pub(crate) fn record(&mut self, index: usize, position: TabPosition, bounds: Bounds<Pixels>) {
+        if self.position == position
+            && let Some(center) = self.centers.get_mut(index)
+        {
+            *center = tab_coordinate(
+                position,
+                (bounds.origin.x + bounds.size.width / 2.).as_f32(),
+                (bounds.origin.y + bounds.size.height / 2.).as_f32(),
+            );
+        }
+    }
+
+    fn drop_index(&self, from: usize, position: TabPosition, x: f32, y: f32) -> usize {
+        if self.position != position {
+            return from;
+        }
+        tab_drop_index(from, &self.centers, tab_coordinate(position, x, y))
+    }
+}
+
+fn tab_coordinate(position: TabPosition, x: f32, y: f32) -> f32 {
+    match position {
+        TabPosition::Top => x,
+        TabPosition::Side => y,
+    }
 }
 
 /// Terminal damage and delivered input. Chrome, toasts, and layout stay put.
@@ -329,7 +370,7 @@ impl Desk {
             agent_epoch: None,
             drag: None,
             split_bounds: Rc::default(),
-            tab_centers: Rc::default(),
+            tab_geometry: Rc::default(),
             viewport: gpui::size(gpui::px(1320.), gpui::px(840.)),
             _wake: None,
             _clock: None,
@@ -944,6 +985,8 @@ impl Desk {
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
+            "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
+            "tabs-side" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Side, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
             "font-down" => self.update_prefs(|prefs| prefs.font_size -= 1.0, cx),
             "font-reset" => {
@@ -1223,6 +1266,12 @@ impl Desk {
         self.prefs = settings::sanitize_display(&self.prefs);
         if self.prefs == before {
             return false;
+        }
+        if self.prefs.tab_position != before.tab_position {
+            if matches!(self.drag, Some(Drag::Tab { .. })) {
+                self.drag = None;
+            }
+            self.tab_geometry.borrow_mut().prepare(self.tab_position(), 0);
         }
         if self.prefs.ghostty_keys != before.ghostty_keys {
             self.sync_bindings(cx);
@@ -3213,10 +3262,21 @@ impl Desk {
         cx.notify();
     }
 
-    pub fn begin_tab_drag(&mut self, id: String, x: f32, cx: &mut Context<Self>) {
+    /// Quick windows keep their compact titlebar regardless of the main layout.
+    pub(crate) fn tab_position(&self) -> TabPosition {
+        if self.role == WindowRole::Quick {
+            TabPosition::Top
+        } else {
+            self.prefs.tab_position
+        }
+    }
+
+    pub fn begin_tab_drag(&mut self, id: String, x: f32, y: f32, cx: &mut Context<Self>) {
+        let position = self.tab_position();
         self.drag = Some(Drag::Tab {
             id,
-            start_x: x,
+            position,
+            start: tab_coordinate(position, x, y),
             moved: false,
         });
         cx.notify();
@@ -3269,8 +3329,9 @@ impl Desk {
                 self.workspace_mut(|link| link.workspace.resize_split(&id, ratio));
                 cx.notify();
             }
-            Some(Drag::Tab { id, start_x, moved }) => {
-                if !*moved && (x - *start_x).abs() < 6. {
+            Some(Drag::Tab { id, position, start, moved }) => {
+                let coordinate = tab_coordinate(*position, x, y);
+                if !*moved && (coordinate - *start).abs() < 6. {
                     return;
                 }
                 *moved = true;
@@ -3280,7 +3341,7 @@ impl Desk {
                     .as_ref()
                     .and_then(|link| link.workspace.tabs.iter().position(|tab| tab.id == id));
                 let Some(from) = from else { return };
-                let to = tab_drop_index(from, &self.tab_centers.borrow(), x);
+                let to = self.tab_geometry.borrow().drop_index(from, *position, x, y);
                 if to != from {
                     self.workspace_mut(|link| link.workspace.move_tab(from, to));
                 }
@@ -3335,11 +3396,14 @@ impl Desk {
     }
 }
 
-/// Where a dragged tab lands: after the last other tab whose center is left of `x`.
-pub(crate) fn tab_drop_index(from: usize, centers: &[f32], x: f32) -> usize {
+/// Where a dragged tab lands along either axis, excluding its own center.
+pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> usize {
+    if from >= centers.len() || centers.iter().any(|center| !center.is_finite()) {
+        return from;
+    }
     let mut to = 0;
     for (index, center) in centers.iter().enumerate() {
-        if index != from && x > *center {
+        if index != from && coordinate > *center {
             to = if index < from { index + 1 } else { index };
         }
     }
@@ -3348,7 +3412,8 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], x: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{pane_label, tab_drop_index};
+    use super::{TabGeometry, pane_label, tab_drop_index};
+    use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
 
@@ -3398,6 +3463,37 @@ mod tests {
         assert_eq!(tab_drop_index(2, &centers, 10.), 0);
         // A small move inside its own slot stays put.
         assert_eq!(tab_drop_index(1, &centers, 160.), 1);
+    }
+
+    #[test]
+    fn tab_reordering_uses_the_painted_axis_and_rejects_stale_geometry() {
+        let mut geometry = TabGeometry::default();
+        for position in [TabPosition::Top, TabPosition::Side] {
+            geometry.prepare(position, 3);
+            // Before the new strip has painted, no drop may reorder the workspace.
+            assert_eq!(geometry.drop_index(1, position, 500., 500.), 1);
+            for index in 0..3 {
+                // Nonzero origins model the titlebar/rail and a scrolled strip.
+                let bounds = gpui::Bounds::new(
+                    gpui::point(gpui::px(200. + index as f32 * 100.), gpui::px(-40. + index as f32 * 40.)),
+                    gpui::size(gpui::px(80.), gpui::px(32.)),
+                );
+                geometry.record(index, position, bounds);
+            }
+            match position {
+                TabPosition::Top => {
+                    assert_eq!(geometry.drop_index(0, position, 500., -1000.), 2);
+                    assert_eq!(geometry.drop_index(2, position, 220., 1000.), 0);
+                }
+                TabPosition::Side => {
+                    assert_eq!(geometry.drop_index(0, position, -1000., 100.), 2);
+                    assert_eq!(geometry.drop_index(2, position, 1000., -30.), 0);
+                }
+            }
+            let other = if position == TabPosition::Top { TabPosition::Side } else { TabPosition::Top };
+            assert_eq!(geometry.drop_index(1, other, 1000., 1000.), 1);
+        }
+        assert_eq!(tab_drop_index(2, &[], 10.), 2);
     }
 }
 

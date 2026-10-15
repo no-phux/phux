@@ -681,8 +681,51 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .shown_chord("sidebar")
         .map(|chord| format!("Toggle it with {chord}."))
         .unwrap_or_default();
+    let tabs = handle.clone();
+    let tabs_dirty = handle.clone();
+    let tabs_reset = handle.clone();
+    let tab_position = SettingField::render(move |_, _, cx| {
+        let position = prefs_of(&tabs, cx).tab_position;
+        let ink = cx.theme().foreground;
+        div()
+            .tab_group()
+            .flex()
+            .gap(px(3.))
+            .p(px(3.))
+            .rounded(px(10.))
+            .bg(ink.opacity(0.05))
+            .children([
+                (settings::TabPosition::Top, "Top", IconName::LayoutDashboard),
+                (settings::TabPosition::Side, "Side", IconName::PanelLeft),
+            ].into_iter().map(|(value, label, icon)| {
+                let writer = tabs.clone();
+                let selected = position == value;
+                Button::new(SharedString::from(format!("tab-position-{}", value.as_str())))
+                    .label(label)
+                    .icon(icon)
+                    .small()
+                    .ghost()
+                    .toggled(selected)
+                    .rounded(px(7.))
+                    .bg(ink.opacity(if selected { 0.10 } else { 0. }))
+                    .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                    .on_click(move |_, _, cx| {
+                        set_prefs(&writer, cx, |prefs| prefs.tab_position = value);
+                    })
+            }))
+    })
+    .on_reset(
+        move |cx| prefs_of(&tabs_dirty, cx).tab_position != settings::TabPosition::Top,
+        move |_, cx| {
+            set_prefs(&tabs_reset, cx, |prefs| prefs.tab_position = settings::TabPosition::Top);
+        },
+    );
     let layout = SettingGroup::new()
         .title("Layout")
+        .item(
+            SettingItem::new("Tab placement", tab_position)
+                .description("Top keeps tabs in the titlebar. Side gives them a scrollable rail, independent of the sidebar. Quick windows stay compact."),
+        )
         .item(
             SettingItem::new(
                 "Show sidebar",

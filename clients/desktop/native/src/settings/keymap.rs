@@ -465,6 +465,22 @@ fn catalog() -> Vec<CommandSpec> {
             "Show or hide the navigation sidebar.",
             &[],
         ),
+        spec(
+            "tabs-top",
+            "Tabs on Top",
+            "View",
+            None,
+            "Place workspace tabs in the titlebar.",
+            &["layout", "horizontal", "placement"],
+        ),
+        spec(
+            "tabs-side",
+            "Tabs on Side",
+            "View",
+            None,
+            "Place workspace tabs in a scrollable left rail.",
+            &["layout", "vertical", "placement"],
+        ),
         CommandSpec {
             aliases: &["cmd+shift+="],
             ..spec(
