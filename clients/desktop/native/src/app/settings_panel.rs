@@ -46,8 +46,8 @@ impl SelectItem for FontChoice {
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut font = gpui::font(self.0.clone());
         crate::fonts::resolve(&mut font, cx);
-        let bundled = self.0.as_ref() == crate::fonts::BUNDLED
-            || self.0.as_ref() == crate::fonts::SYMBOLS;
+        let bundled =
+            self.0.as_ref() == crate::fonts::BUNDLED || self.0.as_ref() == crate::fonts::SYMBOLS;
         div()
             .w_full()
             .flex()
@@ -80,7 +80,11 @@ impl SelectItem for FontChoice {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if bundled { "Bundled with Phux" } else { "Font family" }),
+                            .child(if bundled {
+                                "Bundled with Phux"
+                            } else {
+                                "Font family"
+                            }),
                     ),
             )
     }
@@ -228,7 +232,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
                 window,
                 cx,
             )
-                .searchable(true)
+            .searchable(true)
         });
         subs.push(cx.subscribe_in(
             &font,
@@ -270,7 +274,14 @@ fn sync_font(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
         controls.fonts.push(current.clone());
         controls.font.update(cx, |state, cx| {
             state.set_items(
-                SearchableVec::new(controls.fonts.iter().cloned().map(FontChoice).collect::<Vec<_>>()),
+                SearchableVec::new(
+                    controls
+                        .fonts
+                        .iter()
+                        .cloned()
+                        .map(FontChoice)
+                        .collect::<Vec<_>>(),
+                ),
                 window,
                 cx,
             )
@@ -333,12 +344,14 @@ pub(crate) fn panel(
                 offset: gpui::point(px(0.), px(20.)),
                 blur_radius: px(64.),
                 spread_radius: px(-8.),
+                inset: false,
             },
             gpui::BoxShadow {
                 color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
                 offset: gpui::point(px(0.), px(2.)),
                 blur_radius: px(8.),
                 spread_radius: px(0.),
+                inset: false,
             },
         ])
         .overflow_hidden()
@@ -694,13 +707,19 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             .p(px(3.))
             .rounded(px(10.))
             .bg(ink.opacity(0.05))
-            .children([
-                (settings::TabPosition::Top, "Top", IconName::LayoutDashboard),
-                (settings::TabPosition::Side, "Side", IconName::PanelLeft),
-            ].into_iter().map(|(value, label, icon)| {
-                let writer = tabs.clone();
-                let selected = position == value;
-                Button::new(SharedString::from(format!("tab-position-{}", value.as_str())))
+            .children(
+                [
+                    (settings::TabPosition::Top, "Top", IconName::LayoutDashboard),
+                    (settings::TabPosition::Side, "Side", IconName::PanelLeft),
+                ]
+                .into_iter()
+                .map(|(value, label, icon)| {
+                    let writer = tabs.clone();
+                    let selected = position == value;
+                    Button::new(SharedString::from(format!(
+                        "tab-position-{}",
+                        value.as_str()
+                    )))
                     .label(label)
                     .icon(icon)
                     .small()
@@ -712,12 +731,15 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     .on_click(move |_, _, cx| {
                         set_prefs(&writer, cx, |prefs| prefs.tab_position = value);
                     })
-            }))
+                }),
+            )
     })
     .on_reset(
         move |cx| prefs_of(&tabs_dirty, cx).tab_position != settings::TabPosition::Top,
         move |_, cx| {
-            set_prefs(&tabs_reset, cx, |prefs| prefs.tab_position = settings::TabPosition::Top);
+            set_prefs(&tabs_reset, cx, |prefs| {
+                prefs.tab_position = settings::TabPosition::Top
+            });
         },
     );
     let layout = SettingGroup::new()

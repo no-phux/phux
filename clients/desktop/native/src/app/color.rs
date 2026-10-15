@@ -44,7 +44,11 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
     let border = fg.opacity(if mode == ThemeMode::Light { 0.12 } else { 0.14 });
     // Neutral controls should sit within the material, not read as opaque tiles.
     // Popovers retain a denser backing so terminal text cannot compete with labels.
-    let control = fg.opacity(if mode == ThemeMode::Light { 0.035 } else { 0.045 });
+    let control = fg.opacity(if mode == ThemeMode::Light {
+        0.035
+    } else {
+        0.045
+    });
     let hover = from_hex(&colors.hover);
     let active = from_hex(&colors.active);
     let muted = from_hex(&colors.muted);
@@ -70,7 +74,11 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
         kit.popover_foreground = fg;
         kit.muted = surface;
         kit.muted_foreground = muted;
-        kit.accent = fg.opacity(if mode == ThemeMode::Light { 0.055 } else { 0.075 });
+        kit.accent = fg.opacity(if mode == ThemeMode::Light {
+            0.055
+        } else {
+            0.075
+        });
         kit.accent_foreground = fg;
         kit.primary = accent;
         kit.primary_hover = accent_hover;

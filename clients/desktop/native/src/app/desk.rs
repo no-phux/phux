@@ -1271,7 +1271,9 @@ impl Desk {
             if matches!(self.drag, Some(Drag::Tab { .. })) {
                 self.drag = None;
             }
-            self.tab_geometry.borrow_mut().prepare(self.tab_position(), 0);
+            self.tab_geometry
+                .borrow_mut()
+                .prepare(self.tab_position(), 0);
         }
         if self.prefs.ghostty_keys != before.ghostty_keys {
             self.sync_bindings(cx);
@@ -3329,7 +3331,12 @@ impl Desk {
                 self.workspace_mut(|link| link.workspace.resize_split(&id, ratio));
                 cx.notify();
             }
-            Some(Drag::Tab { id, position, start, moved }) => {
+            Some(Drag::Tab {
+                id,
+                position,
+                start,
+                moved,
+            }) => {
                 let coordinate = tab_coordinate(*position, x, y);
                 if !*moved && (coordinate - *start).abs() < 6. {
                     return;
@@ -3475,7 +3482,10 @@ mod tests {
             for index in 0..3 {
                 // Nonzero origins model the titlebar/rail and a scrolled strip.
                 let bounds = gpui::Bounds::new(
-                    gpui::point(gpui::px(200. + index as f32 * 100.), gpui::px(-40. + index as f32 * 40.)),
+                    gpui::point(
+                        gpui::px(200. + index as f32 * 100.),
+                        gpui::px(-40. + index as f32 * 40.),
+                    ),
                     gpui::size(gpui::px(80.), gpui::px(32.)),
                 );
                 geometry.record(index, position, bounds);
@@ -3490,7 +3500,11 @@ mod tests {
                     assert_eq!(geometry.drop_index(2, position, 1000., -30.), 0);
                 }
             }
-            let other = if position == TabPosition::Top { TabPosition::Side } else { TabPosition::Top };
+            let other = if position == TabPosition::Top {
+                TabPosition::Side
+            } else {
+                TabPosition::Top
+            };
             assert_eq!(geometry.drop_index(1, other, 1000., 1000.), 1);
         }
         assert_eq!(tab_drop_index(2, &[], 10.), 2);

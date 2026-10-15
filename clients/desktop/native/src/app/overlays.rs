@@ -423,9 +423,7 @@ fn card(colors: &Palette, width: f32) -> gpui::Div {
         .bg(from_hex(&colors.raised).opacity(0.97))
         .text_color(from_hex(&colors.theme.foreground))
         .border_1()
-        .border_color(
-            from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }),
-        )
+        .border_color(from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }))
         .shadow(vec![
             gpui::BoxShadow {
                 color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
@@ -962,9 +960,7 @@ fn path_panel(
                 .text_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(
-                    Icon::new(IconName::Search).text_color(cx.theme().muted_foreground),
-                )
+                .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
                 .child(if pending { "Searching…" } else { "No paths." })
         })
         .footer(move |_, _, _| {
@@ -1021,10 +1017,11 @@ fn notification_rows(
                 .rounded(px(10.))
                 .border_1()
                 .border_color(from_hex(&colors.theme.foreground).opacity(0.055))
-                .bg(
-                    from_hex(&colors.theme.foreground)
-                        .opacity(if entry.read { 0.015 } else { 0.04 }),
-                )
+                .bg(from_hex(&colors.theme.foreground).opacity(if entry.read {
+                    0.015
+                } else {
+                    0.04
+                }))
                 .flex()
                 .items_start()
                 .gap(px(10.))

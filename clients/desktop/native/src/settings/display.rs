@@ -275,7 +275,12 @@ mod tests {
 
     #[test]
     fn old_or_unrecognized_tab_placement_preserves_the_rest_of_the_display() {
-        for value in [None, Some(json!("bottom")), Some(json!(null)), Some(json!(42))] {
+        for value in [
+            None,
+            Some(json!("bottom")),
+            Some(json!(null)),
+            Some(json!(42)),
+        ] {
             let mut display = json!({"sidebarVisible": false, "fontSize": 18});
             if let Some(value) = value {
                 display["tabPosition"] = value;

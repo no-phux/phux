@@ -51,7 +51,8 @@ fn fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Desk>, PathBuf) 
                 .unwrap()
         })
         .unwrap();
-    let connection = Connection::connect(path.join("never-connected.sock"), "fixture".into()).unwrap();
+    let connection =
+        Connection::connect(path.join("never-connected.sock"), "fixture".into()).unwrap();
     desk.update(cx, |desk, cx| {
         desk.link = Some(Link {
             connection,
@@ -98,7 +99,14 @@ fn run(desk: &Entity<Desk>, command: &str, cx: &mut VisualTestContext) {
 
 fn ids(desk: &Entity<Desk>, cx: &VisualTestContext) -> Vec<String> {
     desk.read_with(cx, |desk, _| {
-        desk.link.as_ref().unwrap().workspace.tabs.iter().map(|tab| tab.id.clone()).collect()
+        desk.link
+            .as_ref()
+            .unwrap()
+            .workspace
+            .tabs
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect()
     })
 }
 
@@ -119,11 +127,16 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
         run(&desk, command, cx);
         desk.read_with(cx, |desk, _| {
             let workspace = &desk.link.as_ref().unwrap().workspace;
-            assert_eq!(workspace.tabs, original, "placement never edits tab content");
+            assert_eq!(
+                workspace.tabs, original,
+                "placement never edits tab content"
+            );
             assert_eq!(workspace.active_id, "fixture-b");
             assert!(!desk.prefs.sidebar_visible);
         });
-        let a = cx.debug_bounds("tab-fixture-a").expect("tab is visible without a sidebar");
+        let a = cx
+            .debug_bounds("tab-fixture-a")
+            .expect("tab is visible without a sidebar");
         let c = cx.debug_bounds("tab-fixture-c").unwrap();
         if command == "tabs-side" {
             assert_eq!(a.origin.x, c.origin.x);
@@ -136,7 +149,16 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
         }
         cx.simulate_click(a.center(), Modifiers::none());
         draw(cx);
-        assert_eq!(desk.read_with(cx, |desk, _| desk.link.as_ref().unwrap().workspace.active_id.clone()), "fixture-a");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk
+                .link
+                .as_ref()
+                .unwrap()
+                .workspace
+                .active_id
+                .clone()),
+            "fixture-a"
+        );
         cx.simulate_mouse_down(a.center(), MouseButton::Left, Modifiers::none());
         draw(cx);
         let target = if command == "tabs-side" {
@@ -149,12 +171,30 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
         cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::none());
         draw(cx);
         assert_eq!(ids(&desk, cx), ["fixture-b", "fixture-c", "fixture-a"]);
-        assert_eq!(desk.read_with(cx, |desk, _| desk.link.as_ref().unwrap().workspace.active_id.clone()), "fixture-a");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk
+                .link
+                .as_ref()
+                .unwrap()
+                .workspace
+                .active_id
+                .clone()),
+            "fixture-a"
+        );
         let close = cx.debug_bounds("tab-close-fixture-a").unwrap();
         cx.simulate_click(close.center(), Modifiers::none());
         draw(cx);
         assert_eq!(ids(&desk, cx), ["fixture-b", "fixture-c"]);
-        assert_eq!(desk.read_with(cx, |desk, _| desk.link.as_ref().unwrap().workspace.active_id.clone()), "fixture-c");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk
+                .link
+                .as_ref()
+                .unwrap()
+                .workspace
+                .active_id
+                .clone()),
+            "fixture-c"
+        );
         let c = cx.debug_bounds("tab-fixture-c").unwrap().center();
         cx.simulate_event(gpui::MouseDownEvent {
             position: c,
@@ -172,7 +212,9 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
         draw(cx);
         assert_eq!(
             desk.read_with(cx, |desk, _| desk.modal.clone()),
-            Modal::Rename { tab_id: "fixture-c".into() },
+            Modal::Rename {
+                tab_id: "fixture-c".into()
+            },
         );
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -183,15 +225,24 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
     });
     draw(cx);
     let c = cx.debug_bounds("tab-fixture-c").unwrap();
-    assert!(c.bottom() <= px(TITLEBAR), "Quick retains compact titlebar tabs");
-    assert_eq!(desk.read_with(cx, |desk, _| desk.prefs.tab_position), TabPosition::Side);
+    assert!(
+        c.bottom() <= px(TITLEBAR),
+        "Quick retains compact titlebar tabs"
+    );
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.prefs.tab_position),
+        TabPosition::Side
+    );
     desk.update(cx, |desk, cx| {
         desk.role = desk::WindowRole::Main;
         cx.notify();
     });
     desk.update(cx, |desk, cx| desk.prepare_close(cx));
     let saved = serde_json::from_slice(&std::fs::read(path.join("layout.json")).unwrap()).unwrap();
-    assert_eq!(persist::parse_layout(&saved).unwrap().display.tab_position, TabPosition::Side);
+    assert_eq!(
+        persist::parse_layout(&saved).unwrap().display.tab_position,
+        TabPosition::Side
+    );
 }
 
 #[gpui::test]
@@ -213,10 +264,15 @@ fn side_tabs_scroll_and_reorder_using_their_scrolled_positions(cx: &mut TestAppC
         ..Default::default()
     });
     draw(cx);
-    let h = cx.debug_bounds("tab-fixture-h").expect("scroll reveals later tabs");
+    let h = cx
+        .debug_bounds("tab-fixture-h")
+        .expect("scroll reveals later tabs");
     let i = cx.debug_bounds("tab-fixture-i").unwrap();
     assert!(h.origin.y >= px(TITLEBAR));
-    assert!(i.bottom() < px(360.), "later tabs fit after scrolling a short window");
+    assert!(
+        i.bottom() < px(360.),
+        "later tabs fit after scrolling a short window"
+    );
     cx.simulate_mouse_down(h.center(), MouseButton::Left, Modifiers::none());
     draw(cx);
     let target = point(i.center().x, i.bottom() - px(2.));
@@ -226,13 +282,34 @@ fn side_tabs_scroll_and_reorder_using_their_scrolled_positions(cx: &mut TestAppC
     draw(cx);
     let order = ids(&desk, cx);
     assert_eq!(&order[7..9], ["fixture-i", "fixture-h"]);
-    assert_eq!(desk.read_with(cx, |desk, _| desk.link.as_ref().unwrap().workspace.active_id.clone()), "fixture-h");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk
+            .link
+            .as_ref()
+            .unwrap()
+            .workspace
+            .active_id
+            .clone()),
+        "fixture-h"
+    );
     let h = cx.debug_bounds("tab-fixture-h").unwrap().center();
     cx.simulate_mouse_down(h, MouseButton::Left, Modifiers::none());
     draw(cx);
     run(&desk, "tabs-top", cx);
-    cx.simulate_mouse_move(point(px(700.), px(20.)), MouseButton::Left, Modifiers::none());
-    cx.simulate_mouse_up(point(px(700.), px(20.)), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        point(px(700.), px(20.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        point(px(700.), px(20.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
     draw(cx);
-    assert_eq!(ids(&desk, cx), order, "changing placement cancels the old-axis drag");
+    assert_eq!(
+        ids(&desk, cx),
+        order,
+        "changing placement cancels the old-axis drag"
+    );
 }

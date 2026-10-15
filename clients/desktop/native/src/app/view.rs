@@ -30,8 +30,8 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use phux_protocol::{ResourceId, ResourceKind};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
-use crate::settings::theme::Palette;
 use crate::settings::TabPosition;
+use crate::settings::theme::Palette;
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::place::{self, SessionLine};
 
@@ -306,7 +306,10 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                     row.child(chrome_slot(
                         &mut desk.chrome.tabs,
                         build_tab_rail,
-                        StyleRefinement::default().w(px(TAB_RAIL)).h_full().flex_shrink_0(),
+                        StyleRefinement::default()
+                            .w(px(TAB_RAIL))
+                            .h_full()
+                            .flex_shrink_0(),
                         cx,
                     ))
                 })
@@ -452,15 +455,25 @@ fn tab_strip(
     colors: &Palette,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let tabs = desk.link.as_ref().map(|link| link.workspace.tabs.as_slice()).unwrap_or_default();
-    let active = desk.link.as_ref().map(|link| link.workspace.active_id.as_str()).unwrap_or_default();
+    let tabs = desk
+        .link
+        .as_ref()
+        .map(|link| link.workspace.tabs.as_slice())
+        .unwrap_or_default();
+    let active = desk
+        .link
+        .as_ref()
+        .map(|link| link.workspace.active_id.as_str())
+        .unwrap_or_default();
     let geometry = desk.tab_geometry.clone();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
     div()
         .id(if side { "side-tabs" } else { "top-tabs" })
         .when(side, |list| list.w_full())
-        .when(!side, |list| list.flex_1().min_w_0().h_full().overflow_x_scroll())
+        .when(!side, |list| {
+            list.flex_1().min_w_0().h_full().overflow_x_scroll()
+        })
         .child(
             // Measure inside the scroller: its children then include the actual
             // painted scroll offset, not the unscrolled layout coordinates.
@@ -475,7 +488,9 @@ fn tab_strip(
                         .items_center()
                         .px(px(4.))
                 })
-                .children(tabs.iter().map(|tab| tab_button(desk, tab, active, position, colors, cx)))
+                .children(tabs.iter().map(|tab| {
+                    tab_button(desk, tab, active, position, colors, cx).into_any_element()
+                }))
                 .on_children_prepainted(move |bounds, _, _| {
                     let mut geometry = geometry.borrow_mut();
                     for (index, bounds) in bounds.into_iter().enumerate() {
@@ -532,7 +547,9 @@ fn tab_button(
         .relative()
         .flex_shrink_0()
         .when(side, |tab| tab.h(px(38.)).w_full())
-        .when(!side, |tab| tab.h(px(30.)).min_w(px(100.)).max_w(px(220.)).flex_1())
+        .when(!side, |tab| {
+            tab.h(px(30.)).min_w(px(100.)).max_w(px(220.)).flex_1()
+        })
         .pl(px(10.))
         .pr(px(4.))
         .flex()
@@ -540,7 +557,11 @@ fn tab_button(
         .gap(px(6.))
         .rounded(px(if side { 11. } else { 10. }))
         .border_1()
-        .border_color(if selected { from_hex(&colors.border) } else { gpui::transparent_black() })
+        .border_color(if selected {
+            from_hex(&colors.border)
+        } else {
+            gpui::transparent_black()
+        })
         .bg(if selected {
             from_hex(&colors.active)
         } else {
@@ -549,13 +570,18 @@ fn tab_button(
         .when(!selected, |tab| tab.hover(move |style| style.bg(hover)))
         .when(selected, |tab| {
             tab.shadow(vec![BoxShadow {
-                color: gpui::black().opacity(if colors.theme.appearance == "light" { 0.05 } else { 0.12 }),
+                color: gpui::black().opacity(if colors.theme.appearance == "light" {
+                    0.05
+                } else {
+                    0.12
+                }),
                 offset: point(px(0.), px(1.)),
                 blur_radius: px(4.),
                 spread_radius: px(0.),
+                inset: false,
             }])
         })
-        .occlude()
+        .block_mouse_except_scroll()
         .children(agent.map(|state| {
             div()
                 .flex_shrink_0()
@@ -604,14 +630,11 @@ fn tab_button(
                 .hover(move |style| style.bg(hover))
                 .child("✕")
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |desk, _, window, cx| {
-                        desk.close_tab(&close_id);
-                        desk.after_command(window, cx);
-                        cx.stop_propagation();
-                    }),
-                ),
+                .on_click(cx.listener(move |desk, _, window, cx| {
+                    desk.close_tab(&close_id);
+                    desk.after_command(window, cx);
+                    cx.stop_propagation();
+                })),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -923,10 +946,14 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
             move |menu, _, _| {
                 menu.min_w(px(208.))
                     .check_side(Side::Right)
-                    .item(main_command("tabs-top", IconName::LayoutDashboard, &tabs_handle)
-                        .checked(tab_position == TabPosition::Top))
-                    .item(main_command("tabs-side", IconName::PanelLeft, &tabs_handle)
-                        .checked(tab_position == TabPosition::Side))
+                    .item(
+                        main_command("tabs-top", IconName::LayoutDashboard, &tabs_handle)
+                            .checked(tab_position == TabPosition::Top),
+                    )
+                    .item(
+                        main_command("tabs-side", IconName::PanelLeft, &tabs_handle)
+                            .checked(tab_position == TabPosition::Side),
+                    )
             },
         );
         menu = menu.separator();
