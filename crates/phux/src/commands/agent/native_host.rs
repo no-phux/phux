@@ -97,8 +97,7 @@ fn bootstrap() -> Result<HostSpec, String> {
         };
         let bridge = public
             .node_bridge
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.join("index.mjs"));
+            .map_or_else(|| root.join("index.mjs"), PathBuf::from);
         if !bridge.is_file() {
             return Err("native SDK bridge file is missing".into());
         }

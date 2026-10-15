@@ -70,7 +70,7 @@ pub(crate) enum AgentAction {
         /// Nonzero command identity; retain it when querying an uncertain result.
         #[usage(long)]
         operation_id: u64,
-        /// NativeIntent JSON: prompt, interrupt or answer with exact IDs.
+        /// `NativeIntent` JSON: prompt, interrupt or answer with exact IDs.
         #[usage(long)]
         intent: String,
         /// Emit the actual command receipt as JSON.
