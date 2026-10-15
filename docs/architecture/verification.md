@@ -46,7 +46,7 @@ All three test layers run today:
 3. **Snapshot tests** (`insta`) for outputs that should change only on
    purpose:
    - Wire bytes of representative messages in
-     `crates/phux-protocol/tests/frame_wire_snapshots.rs`, so an accidental
+     `crates/phux-protocol/tests/it/frame_wire_snapshots.rs`, so an accidental
      format change is loud rather than silent.
    - Rendered TUI frames and chrome, via a cell-grid to ASCII-art helper.
 

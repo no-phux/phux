@@ -1,0 +1,5 @@
+---
+source: crates/phux-config/tests/it/parse.rs
+expression: normalized
+---
+config.toml: 3:<col>: invalid basic string, expected `"`

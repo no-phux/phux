@@ -26,6 +26,11 @@ native-engine = []
 # and DHAT.
 capture-bench = ["dep:criterion", "dep:dhat"]
 ack-allocations-example = ["dep:dhat"]
+# Builds the `#[ignore]`d `stress` storms. Only `just stress` runs them, so
+# the default test build skips compiling and linking that binary.
+stress = []
+# Builds the `#[ignore]`d `perf` wall-clock gates, which only `just e2e` runs.
+measure = []
 
 
 [dependencies]
@@ -156,6 +161,16 @@ phux-dial = { workspace = true, features = ["provision", "testing"] }
 # WebTransport test client; `dangerous-configuration` trusts the throwaway
 # self-signed leaf.
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "dangerous-configuration"] }
+
+[[test]]
+name = "stress"
+path = "tests/stress/main.rs"
+required-features = ["stress"]
+
+[[test]]
+name = "perf"
+path = "tests/perf/main.rs"
+required-features = ["measure"]
 
 [[example]]
 name = "ack_allocations"

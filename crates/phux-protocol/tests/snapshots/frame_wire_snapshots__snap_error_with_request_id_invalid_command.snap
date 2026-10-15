@@ -1,7 +1,0 @@
----
-source: crates/phux-protocol/tests/frame_wire_snapshots.rs
-expression: dump_frame(&frame)
----
-00000000 | 00 00 00 2a c1 01 04 04  00 00 00 2a 02 04 02 00 |...*.......*....
-00000010 | c8 03 04 1a 6d 69 73 73  69 6e 67 20 66 69 65 6c |....missing fiel
-00000020 | 64 3a 20 74 65 72 6d 69  6e 61 6c 5f 69 64       |d: terminal_id
