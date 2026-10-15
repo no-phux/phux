@@ -20,6 +20,7 @@ export interface AdapterContext {
   resumeSessionId?: string;
   connection(connected: boolean): void;
   emit(update: NativeUpdate): void;
+  result(result: NativeCommandResult): void;
   identity(id: string): void;
   turn(id: string | undefined): void;
   question(question: NativeQuestion, signal?: AbortSignal): Promise<Json>;

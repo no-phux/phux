@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { setImmediate as drained } from 'node:timers/promises';
 import test from 'node:test';
 import { Ajv } from 'ajv';
-import { nativeUpdate, parseCommand } from '../src/bridge.js';
+import { NativeOperationLedger, nativeUpdate, parseCommand } from '../src/bridge.js';
 import { createAdapter as createPi } from '../src/pi.js';
 import { createAdapter as createAmp } from '../src/amp.js';
 import { QuestionRegistry } from '../src/questions.js';
-import type { AdapterContext, NativeQuestion } from '../src/types.js';
+import type { AdapterContext, NativeCommand, NativeCommandResult, NativeQuestion } from '../src/types.js';
 
 const permission: NativeQuestion = { id: 'sdk-request-42', kind: 'permission', title: 'Run tool?', message: 'Provider request', options: [{ id: 'allow_once', label: 'Allow once' }, { id: 'deny', label: 'Deny' }], questions: [], fields: {} };
 
@@ -87,7 +88,133 @@ test('native transcript boundary applies output privacy before retaining the ful
 
 test('in-process SDK descriptors reject unmapped CLI options before loading providers', async () => {
   for (const [provider, create] of [['pi', createPi], ['amp', createAmp]] as const) {
-    const context = { provider, command: ['node', '--model', 'unmapped'], runtime: '/nonexistent/no-provider-may-load' } as AdapterContext;
+    const context: AdapterContext = {
+      provider, activation: 'a', cwd: '/tmp', env: {}, command: ['node', '--model', 'unmapped'],
+      runtime: '/nonexistent/no-provider-may-load', emit: () => {}, result: () => {},
+      identity: () => {}, turn: () => {}, connection: () => {}, closeQuestions: () => {},
+      question: async () => { throw new Error('Provider must reject unmapped CLI options before asking a question'); },
+    };
     await assert.rejects(create(context), /additional CLI arguments are unsupported/);
   }
+});
+
+const nativePrompt = (operation_id: string, text = 'captured private draft'): NativeCommand => ({
+  operation_id, activation: 'owner-generation', intent: { type: 'prompt', text },
+});
+
+test('operation ledger publishes async admission/completion and replays the latest result without redispatch', async () => {
+  const packets: NativeCommandResult[] = [];
+  let calls = 0;
+  const ledger = new NativeOperationLedger(async command => {
+    calls++;
+    return { operation_id: command.operation_id, disposition: 'queued', detail: 'SDK input queue only' };
+  }, result => packets.push(result));
+  const command = nativePrompt('18446744073709551615');
+  ledger.receive(command);
+  await drained();
+  assert.deepEqual(packets.map(result => result.disposition), ['queued']);
+  ledger.result({ operation_id: command.operation_id, disposition: 'admitted', detail: 'SDK consumed the correlated input' });
+  ledger.receive(command);
+  assert.deepEqual(packets.map(result => result.disposition), ['queued', 'admitted', 'admitted']);
+  ledger.result({ operation_id: command.operation_id, disposition: 'completed', detail: 'SDK correlated result received' });
+  ledger.receive(command);
+  ledger.receive({ ...command, intent: { type: 'prompt', text: 'changed private draft' } });
+  assert.equal(packets.at(-1)?.disposition, 'refused');
+  assert.match(packets.at(-1)?.detail ?? '', /changed command/);
+  ledger.receive({ ...command, activation: 'different-generation' });
+  assert.equal(packets.at(-1)?.disposition, 'refused');
+  ledger.receive(command);
+  assert.equal(packets.at(-1)?.disposition, 'completed', 'changed-payload refusal must not replace the original receipt');
+  assert.equal(calls, 1);
+  assert.ok(packets.every(result => result.operation_id === command.operation_id));
+  assert.equal(JSON.stringify(packets).includes('private draft'), false);
+});
+
+test('operation reservation handles sync SDK reentry and pending duplicate requests without queued regression', async () => {
+  const packets: NativeCommandResult[] = [];
+  const initial = Promise.withResolvers<NativeCommandResult>();
+  const command = nativePrompt('9007199254740993');
+  let calls = 0;
+  const ledger: NativeOperationLedger = new NativeOperationLedger(() => {
+    calls++;
+    ledger.receive(command);
+    ledger.result({ operation_id: command.operation_id, disposition: 'admitted', detail: 'Synchronous consumed-input callback' });
+    return initial.promise;
+  }, result => packets.push(result));
+  ledger.receive(command);
+  assert.deepEqual(packets.map(result => result.disposition), ['admitted', 'admitted']);
+  initial.resolve({ operation_id: command.operation_id, disposition: 'queued', detail: 'Late initial queued receipt' });
+  await drained();
+  ledger.result({ operation_id: command.operation_id, disposition: 'queued', detail: 'Late SDK queue callback' });
+  ledger.receive(command);
+  assert.deepEqual(packets.map(result => result.disposition), ['admitted', 'admitted', 'admitted']);
+  assert.equal(calls, 1);
+});
+
+test('terminal receipts survive late callbacks and source close while unknown operations can gain factual evidence', async () => {
+  const packets: NativeCommandResult[] = [];
+  let calls = 0;
+  const ledger = new NativeOperationLedger(async command => {
+    calls++;
+    return { operation_id: command.operation_id, disposition: 'queued' };
+  }, result => packets.push(result));
+  for (const id of ['1', '2', '3']) ledger.receive(nativePrompt(id));
+  await drained();
+  ledger.result({ operation_id: '1', disposition: 'completed', detail: 'Actual result' });
+  ledger.result({ operation_id: '2', disposition: 'refused', detail: 'Actual rejection' });
+  ledger.result({ operation_id: 'provider-uuid', disposition: 'completed' });
+  ledger.close();
+  ledger.result({ operation_id: '1', disposition: 'unknown', detail: 'Late disconnect' });
+  ledger.result({ operation_id: '2', disposition: 'queued' });
+  ledger.result({ operation_id: '3', disposition: 'queued' });
+  for (const id of ['1', '2', '3']) ledger.receive(nativePrompt(id));
+  assert.deepEqual(packets.slice(-3).map(result => [result.operation_id, result.disposition]),
+    [['1', 'completed'], ['2', 'refused'], ['3', 'unknown']]);
+  ledger.result({ operation_id: '3', disposition: 'completed', detail: 'Late actual result' });
+  ledger.receive(nativePrompt('3'));
+  assert.equal(packets.at(-1)?.disposition, 'completed');
+  assert.equal(calls, 3);
+  assert.ok(!packets.some(result => result.operation_id === 'provider-uuid'));
+});
+
+test('ambiguous dispatch never retries and concurrent receipts remain correlated', async () => {
+  const packets: NativeCommandResult[] = [];
+  const pending = new Map<string, { promise: Promise<NativeCommandResult>; resolve(result: NativeCommandResult): void; reject(reason: unknown): void }>();
+  let calls = 0;
+  const ledger = new NativeOperationLedger(command => {
+    calls++;
+    const task = Promise.withResolvers<NativeCommandResult>();
+    pending.set(command.operation_id, task);
+    return task.promise;
+  }, result => packets.push(result));
+  ledger.receive(nativePrompt('31'));
+  ledger.receive(nativePrompt('32'));
+  pending.get('32')!.resolve({ operation_id: '32', disposition: 'completed', detail: 'Second command completed first' });
+  pending.get('31')!.reject(new Error('private-provider-credential'));
+  await drained();
+  assert.deepEqual(packets.map(result => [result.operation_id, result.disposition]), [['32', 'completed'], ['31', 'unknown']]);
+  ledger.receive(nativePrompt('31'));
+  assert.equal(packets.at(-1)?.disposition, 'unknown');
+  ledger.result({ operation_id: '31', disposition: 'admitted', detail: 'Late correlated input evidence' });
+  ledger.receive(nativePrompt('31'));
+  assert.equal(packets.at(-1)?.disposition, 'admitted');
+  assert.equal(calls, 2);
+  assert.equal(JSON.stringify(packets).includes('private-provider-credential'), false);
+});
+
+test('bounded operation ledger refuses new IDs without evicting old deduplication evidence', async () => {
+  const packets: NativeCommandResult[] = [];
+  let calls = 0;
+  const ledger = new NativeOperationLedger(async command => {
+    calls++;
+    return { operation_id: command.operation_id, disposition: 'completed' };
+  }, result => packets.push(result));
+  for (let id = 0; id < 4096; id++) ledger.receive(nativePrompt(String(id)));
+  await drained();
+  ledger.receive(nativePrompt('4096'));
+  assert.equal(packets.at(-1)?.disposition, 'refused');
+  assert.match(packets.at(-1)?.detail ?? '', /ledger is full/);
+  ledger.receive(nativePrompt('0'));
+  assert.equal(packets.at(-1)?.disposition, 'completed');
+  assert.equal(calls, 4096);
 });

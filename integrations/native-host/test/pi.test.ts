@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { setImmediate as drained } from 'node:timers/promises';
 import test from 'node:test';
 import type { AgentSessionEvent, SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
+import { NativeOperationLedger } from '../src/bridge.js';
 import { attachPiSession, createPiUI, type PiSession } from '../src/pi.js';
-import type { AdapterContext, Json, NativeQuestion, NativeUpdate } from '../src/types.js';
+import type { AdapterContext, Json, NativeCommand, NativeCommandResult, NativeQuestion, NativeUpdate } from '../src/types.js';
 
 function harness() {
   const updates: NativeUpdate[] = [];
+  const results: NativeCommandResult[] = [];
   const identities: string[] = [];
   const turns: (string | undefined)[] = [];
   const connections: boolean[] = [];
@@ -13,6 +16,7 @@ function harness() {
   const context: AdapterContext = {
     provider: 'pi', activation: 'activation', cwd: '/isolated/project', command: [], runtime: '/isolated/runtime', env: {},
     emit: update => { updates.push(update); },
+    result: result => { results.push(result); },
     identity: id => { identities.push(id); },
     turn: id => { turns.push(id); },
     connection: connected => { connections.push(connected); },
@@ -33,7 +37,7 @@ function harness() {
       for (const pending of [...questions.values()]) pending.answer(null);
     },
   };
-  return { context, updates, identities, turns, connections, questions };
+  return { context, updates, results, identities, turns, connections, questions };
 }
 
 function fakeSession() {
@@ -44,11 +48,12 @@ function fakeSession() {
   let disposals = 0;
   let unsubscribes = 0;
   let prompt: PiSession['prompt'] = async () => {};
+  let abort: PiSession['abort'] = async () => {};
   const session: PiSession = {
     sessionManager: { getSessionId: () => id, getLeafEntry: () => leaf },
     subscribe(callback) { listener = callback; return () => { unsubscribes++; listener = undefined; }; },
     prompt: (text, options) => prompt(text, options),
-    async abort() { aborts++; },
+    async abort() { aborts++; await abort(); },
     dispose() { disposals++; },
   };
   return {
@@ -57,6 +62,7 @@ function fakeSession() {
     persist(entry: SessionEntry) { leaf = entry; },
     replaceSession(value: string) { id = value; },
     setPrompt(value: PiSession['prompt']) { prompt = value; },
+    setAbort(value: PiSession['abort']) { abort = value; },
     counts: () => ({ aborts, disposals, unsubscribes }),
   };
 }
@@ -152,13 +158,16 @@ test('Pi prompt receipt does not await SDK preflight questions or model completi
   assert.equal(receipt.disposition, 'queued');
   assert.match(receipt.detail ?? '', /not provider admission/);
   onlyQuestion(h).answer({ confirmed: true });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.ok(h.updates.some(update => update.type === 'notice' && update.text === 'Pi operation 17: SDK preflight started.'));
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['17', 'admitted']]);
   assert.ok(complete);
   complete();
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['17', 'admitted'], ['17', 'completed']]);
   await adapter.close();
   assert.deepEqual(sdk.counts(), { aborts: 1, disposals: 1, unsubscribes: 1 });
   assert.deepEqual(h.connections, [false]);
+  assert.equal(h.results.at(-1)?.disposition, 'completed', 'closing a completed prompt cannot turn it into unknown');
 });
 
 test('Pi maps persisted input IDs, tool IDs and actual settled lifecycle without invented turn IDs', async () => {
@@ -210,6 +219,8 @@ test('Pi rejects asynchronously without dumping SDK credentials or blocking subs
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.ok(h.updates.some(update => update.type === 'notice' && update.level === 'error'));
   assert.equal(JSON.stringify(h.updates).includes('secret-api-key'), false);
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['1', 'unknown']]);
+  assert.equal(JSON.stringify(h.results).includes('secret-api-key'), false);
   sdk.replaceSession('actual-replacement-id');
   sdk.emit({ type: 'agent_start' });
   assert.equal(h.identities.at(-1), 'actual-replacement-id');
@@ -258,4 +269,134 @@ test('Pi streaming response and tool updates keep actual IDs and bounded full ou
   assert.ok((finalTool.entry.tool?.output.length ?? 0) <= 4096);
   assert.ok(finalTool.entry.tool?.output.endsWith('tail'));
   await adapter.close();
+});
+
+test('Pi synchronous preflight and actual promise completion advance the bridge receipt without redispatch', async () => {
+  const h = harness();
+  const sdk = fakeSession();
+  const completion = Promise.withResolvers<void>();
+  let calls = 0;
+  sdk.setPrompt((_text, options) => {
+    calls++;
+    options?.preflightResult?.('started');
+    return completion.promise;
+  });
+  const adapter = attachPiSession(h.context, sdk.session);
+  const packets: NativeCommandResult[] = [];
+  const ledger = new NativeOperationLedger(async command => {
+    assert.equal(command.intent.type, 'prompt');
+    if (command.intent.type !== 'prompt') throw new Error('Expected prompt command');
+    return { operation_id: command.operation_id, ...await adapter.prompt(command.intent.text, command.operation_id) };
+  }, result => packets.push(result));
+  h.context.result = result => { h.results.push(result); ledger.result(result); };
+  const command: NativeCommand = { operation_id: '18446744073709551615',
+    activation: 'activation', intent: { type: 'prompt', text: 'exact captured draft' } };
+  ledger.receive(command);
+  assert.deepEqual(packets.map(result => result.disposition), ['admitted']);
+  await drained();
+  ledger.receive(command);
+  assert.deepEqual(packets.map(result => result.disposition), ['admitted', 'admitted']);
+  completion.resolve();
+  await drained();
+  assert.equal(packets.at(-1)?.disposition, 'completed');
+  ledger.close();
+  await adapter.close();
+  ledger.receive(command);
+  assert.equal(packets.at(-1)?.disposition, 'completed');
+  assert.ok(packets.every(result => result.operation_id === command.operation_id));
+  assert.ok(!packets.some(result => result.disposition === 'unknown' || result.disposition === 'queued'));
+  assert.equal(calls, 1);
+});
+
+test('Pi queued follow-ups and unrelated events never fabricate admission or completion across concurrent prompts', async () => {
+  const h = harness();
+  const sdk = fakeSession();
+  const preflights = new Map<string, (disposition: 'handled' | 'queued' | 'started') => void>();
+  const completions = new Map<string, { resolve(): void }>();
+  sdk.setPrompt((text, options) => {
+    const completion = Promise.withResolvers<void>();
+    preflights.set(text, disposition => options?.preflightResult?.(disposition));
+    completions.set(text, completion);
+    return completion.promise;
+  });
+  const adapter = attachPiSession(h.context, sdk.session);
+  assert.equal((await adapter.prompt('first', '41')).disposition, 'queued');
+  assert.equal((await adapter.prompt('second', '42')).disposition, 'queued');
+  const unrelated = userEntry('unrelated-sdk-input');
+  sdk.emit({ type: 'agent_start' });
+  sdk.emit({ type: 'message_end', message: unrelated.message });
+  sdk.persist(unrelated);
+  sdk.emit({ type: 'agent_end', messages: [], willRetry: false });
+  sdk.emit({ type: 'agent_settled', aborted: false });
+  await drained();
+  assert.deepEqual(h.results, [], 'uncorrelated lifecycle/transcript evidence cannot consume either captured draft');
+  preflights.get('second')!('queued');
+  completions.get('second')!.resolve();
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['42', 'queued']]);
+  preflights.get('first')!('started');
+  completions.get('first')!.resolve();
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]),
+    [['42', 'queued'], ['41', 'admitted'], ['41', 'completed']]);
+  await adapter.close();
+});
+
+test('Pi deferred prompt promise resolution does not invent completion before its later preflight', async () => {
+  const h = harness();
+  const sdk = fakeSession();
+  let preflight: ((disposition: 'handled' | 'queued' | 'started') => void) | undefined;
+  sdk.setPrompt(async (_text, options) => { preflight = options?.preflightResult; });
+  const adapter = attachPiSession(h.context, sdk.session);
+  assert.equal((await adapter.prompt('deferred', '51')).disposition, 'queued');
+  await drained();
+  assert.deepEqual(h.results, []);
+  assert.ok(preflight);
+  preflight('started');
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['51', 'admitted']]);
+  await adapter.close();
+  assert.equal(h.results.at(-1)?.disposition, 'admitted', 'closing is not correlated completion evidence');
+});
+
+test('Pi handled-input callback completes only its captured operation without claiming model admission', async () => {
+  const h = harness();
+  const sdk = fakeSession();
+  sdk.setPrompt(async (_text, options) => { options?.preflightResult?.('handled'); });
+  const adapter = attachPiSession(h.context, sdk.session);
+  await adapter.prompt('/local-extension-command', '61');
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]), [['61', 'completed']]);
+  assert.match(h.results[0]?.detail ?? '', /no model prompt admission/);
+  await adapter.close();
+});
+
+test('Pi abort completion and the captured prompt promise settle independently without fabricated response success', async () => {
+  const h = harness();
+  const sdk = fakeSession();
+  const completion = Promise.withResolvers<void>();
+  sdk.setPrompt((_text, options) => {
+    options?.preflightResult?.('started');
+    return completion.promise;
+  });
+  sdk.setAbort(async () => {
+    sdk.emit({ type: 'agent_settled', aborted: true });
+    completion.resolve();
+  });
+  const adapter = attachPiSession(h.context, sdk.session);
+  await adapter.prompt('interrupt this run', '71');
+  const entry = userEntry('cancelled-input-entry');
+  sdk.emit({ type: 'message_end', message: entry.message });
+  sdk.persist(entry);
+  await drained();
+  const interrupted = await adapter.interrupt(entry.id);
+  assert.equal(interrupted.disposition, 'completed');
+  assert.match(interrupted.detail ?? '', /abort completed/);
+  await drained();
+  assert.deepEqual(h.results.map(result => [result.operation_id, result.disposition]),
+    [['71', 'admitted'], ['71', 'completed']]);
+  assert.match(h.results.at(-1)?.detail ?? '', /does not assert a successful model response/);
+  assert.equal(h.turns.at(-1), undefined);
+  await adapter.close();
+  assert.equal(h.results.at(-1)?.disposition, 'completed');
 });

@@ -118,6 +118,7 @@ function harness(resume = false): {
     ...(resume ? { resumeSessionId: sessionID } : {}),
     emit: (update) => { updates.push(update); }, identity: (id) => { identities.push(id); }, turn: (id) => { turns.push(id); },
     connection: (connected) => { connections.push(connected); },
+    result: () => {},
     question: (question, signal) => {
       const pending = Promise.withResolvers<Json>();
       questions.set(question.id, { question, resolve: pending.resolve });

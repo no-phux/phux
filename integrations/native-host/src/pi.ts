@@ -285,11 +285,31 @@ export function attachPiSession(context: AdapterContext, session: PiSession): Na
       if (closed) return { disposition: 'refused', detail: 'Pi session is closed.' };
       // Never await this promise here: extension input/command preflight and the
       // entire run can await a brokered answer. The command dispatcher must drain.
+      let preflight: 'handled' | 'queued' | 'started' | undefined;
       const task = session.prompt(text, { streamingBehavior: 'followUp', source: 'interactive',
-        preflightResult: disposition => context.emit({ type: 'notice', level: 'info',
-          text: `Pi operation ${operationId}: SDK preflight ${disposition}.` }),
+        preflightResult: disposition => {
+          preflight = disposition;
+          // This callback belongs to THIS invocation. Lifecycle/transcript
+          // events have no native operation ID and cannot establish admission.
+          context.result({ operation_id: operationId,
+            disposition: disposition === 'handled' ? 'completed' : disposition === 'started' ? 'admitted' : 'queued',
+            detail: disposition === 'handled'
+              ? 'Pi SDK extension/input handler handled the input; no model prompt admission is asserted.'
+              : disposition === 'started'
+                ? 'Pi SDK accepted the prompt and started its agent run; model response completion is pending.'
+                : 'Pi SDK queued the input for follow-up; provider consumption is not confirmed.' });
+        },
       });
-      const observed = task.then(() => { identity(); }, () => {
+      const observed = task.then(() => {
+        identity();
+        // A queued prompt's promise resolves on enqueue, not consumption. A
+        // prompt deferred by agent_settled handlers can resolve BEFORE preflight.
+        // Only "started" observed before resolution binds this promise to a run.
+        if (preflight === 'started') context.result({ operation_id: operationId, disposition: 'completed',
+          detail: 'Pi SDK prompt run settled; this does not assert a successful model response.' });
+      }, () => {
+        context.result({ operation_id: operationId, disposition: 'unknown',
+          detail: 'Pi SDK prompt failed after invocation; input was not retried.' });
         if (!closed) {
           context.emit({ type: 'notice', level: 'error', text: `Pi operation ${operationId} failed in the SDK.` });
         }

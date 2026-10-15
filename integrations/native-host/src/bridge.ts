@@ -48,6 +48,64 @@ export function parseCommand(value: unknown): NativeCommand | { type: 'shutdown'
   return { operation_id: packet.operation_id, activation: packet.activation, intent };
 }
 
+/** Host-owned deduplication survives SDK callbacks after the initial receipt. */
+export class NativeOperationLedger {
+  private readonly entries = new Map<string, { fingerprint: string; result?: NativeCommandResult; waiting: number }>();
+  private closed = false;
+
+  constructor(private readonly dispatch: (command: NativeCommand) => Promise<NativeCommandResult>,
+    private readonly publish: (result: NativeCommandResult) => void) {}
+
+  receive(command: NativeCommand): void {
+    const fingerprint = createHash('sha256').update(JSON.stringify(command)).digest('hex');
+    const previous = this.entries.get(command.operation_id);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) this.publish({ operation_id: command.operation_id, disposition: 'refused', detail: 'Operation ID was reused with a changed command' });
+      else if (previous.result) this.publish({ ...previous.result });
+      else previous.waiting++;
+      return;
+    }
+    if (this.closed || this.entries.size >= 4096) {
+      this.publish({ operation_id: command.operation_id, disposition: 'refused', detail: this.closed
+        ? 'SDK source is unavailable'
+        : 'Native operation ledger is full; input was not dispatched' });
+      return;
+    }
+    // SDK code may synchronously reenter result() before dispatch returns.
+    this.entries.set(command.operation_id, { fingerprint, waiting: 1 });
+    void this.invoke(command);
+  }
+
+  result(result: NativeCommandResult): void {
+    const entry = this.entries.get(result.operation_id);
+    if (!entry) return; // A provider UUID cannot create a native operation.
+    const previous = entry.result;
+    if (previous?.disposition === 'completed' || previous?.disposition === 'refused') return;
+    if (result.disposition === 'queued' && previous && previous.disposition !== 'queued') return;
+    if (previous?.disposition === result.disposition && previous.detail === result.detail) return;
+    entry.result = { ...result };
+    const copies = Math.max(1, entry.waiting);
+    entry.waiting = 0;
+    for (let index = 0; index < copies; index++) this.publish({ ...entry.result });
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const operation_id of this.entries.keys()) {
+      this.result({ operation_id, disposition: 'unknown', detail: 'SDK source closed before a terminal command outcome was observed; input was not retried' });
+    }
+  }
+
+  private async invoke(command: NativeCommand): Promise<void> {
+    try {
+      this.result(await this.dispatch(command));
+    } catch {
+      // Never publish provider exceptions or retry ambiguous dispatches.
+      this.result({ operation_id: command.operation_id, disposition: 'unknown', detail: 'SDK command failed after dispatch; input was not retried' });
+    }
+  }
+}
+
 export async function runBridge(startup: Startup, writeProtocol: (packet: string) => boolean): Promise<void> {
   // Native form validation is loaded only after the private runtime hook exists.
   const { Ajv } = await import('ajv');
@@ -108,13 +166,13 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
     ...startup,
     env: { ...process.env },
     emit,
+    result: result => ledger.result(result),
     connection(value) { available = value; publishView(); },
     identity(id) { if (!id || id.length > 256) throw new Error('Invalid provider session identity'); providerId = id; publishView(); },
     turn(id) { turnId = id; publishView(); },
     question: (question, signal) => questions.open(question, signal),
     closeQuestions(reason) { questions.closeAll(reason); publishView(); },
   };
-  const ledger = new Map<string, { fingerprint: string; result: Promise<NativeCommandResult> }>();
   const dispatch = async (command: NativeCommand): Promise<NativeCommandResult> => {
     if (command.activation !== startup.activation) return { operation_id: command.operation_id, disposition: 'refused', detail: 'Native activation is stale' };
     if (!connected || !available) return { operation_id: command.operation_id, disposition: 'refused', detail: 'SDK source is unavailable' };
@@ -127,33 +185,14 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
     if (!adapter) return { operation_id: command.operation_id, disposition: 'refused', detail: 'SDK initialization has not completed' };
     if (intent.type === 'interrupt' && (!capabilities.interrupt || turnId !== intent.turn_id)) return { operation_id: command.operation_id, disposition: 'refused', detail: 'Provider turn is stale or interruption is unsupported' };
     if (intent.type === 'prompt' && !capabilities.prompt) return { operation_id: command.operation_id, disposition: 'refused', detail: 'Provider prompts are unsupported' };
-    try {
-      const outcome = intent.type === 'prompt' ? await adapter.prompt(intent.text, command.operation_id) : await adapter.interrupt(intent.turn_id);
-      return { operation_id: command.operation_id, ...outcome };
-    } catch {
-      // An SDK error after dispatch is ambiguous, never a safe automatic retry.
-      return { operation_id: command.operation_id, disposition: 'unknown', detail: 'SDK command failed after dispatch; input was not retried' };
-    }
+    const outcome = intent.type === 'prompt' ? await adapter.prompt(intent.text, command.operation_id) : await adapter.interrupt(intent.turn_id);
+    return { operation_id: command.operation_id, ...outcome };
   };
-  const commandReceived = (command: NativeCommand): void => {
-    const fingerprint = createHash('sha256').update(JSON.stringify(command)).digest('hex');
-    const previous = ledger.get(command.operation_id);
-    if (previous) {
-      if (previous.fingerprint !== fingerprint) send({ type: 'result', result: { operation_id: command.operation_id, disposition: 'refused', detail: 'Operation ID was reused with a changed command' } });
-      else void previous.result.then(result => send({ type: 'result', result }));
-      return;
-    }
-    if (ledger.size >= 4096) { send({ type: 'result', result: { operation_id: command.operation_id, disposition: 'refused', detail: 'Native operation ledger is full; input was not dispatched' } }); return; }
-    // Reserve before running SDK code, including synchronous callback reentry.
-    let complete!: (result: NativeCommandResult) => void;
-    const result = new Promise<NativeCommandResult>(resolve => { complete = resolve; });
-    ledger.set(command.operation_id, { fingerprint, result });
-    void dispatch(command).then(complete);
-    void result.then(result => send({ type: 'result', result }));
-  };
+  const ledger = new NativeOperationLedger(dispatch, result => send({ type: 'result', result }));
   function shutdown(): Promise<void> {
     if (closing) return closing;
     connected = false;
+    ledger.close();
     questions.closeAll('host_closed');
     publishView();
     process.stdin.pause();
@@ -180,7 +219,7 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
       try {
         const packet = parseCommand(JSON.parse(line));
         if ('type' in packet) { void shutdown(); return; }
-        commandReceived(packet);
+        ledger.receive(packet);
       } catch { fatal('Malformed native SDK input packet; no terminal fallback is available'); return; }
     }
     if (pending.length >= MAX_PACKET_BYTES) fatal('Native SDK input packet exceeds protocol bounds');

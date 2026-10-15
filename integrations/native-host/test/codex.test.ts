@@ -119,6 +119,7 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
     emit: (update) => updates.push(update), identity: (id) => identities.push(id),
     turn: (id) => turns.push(id), connection: (connected) => connections.push(connected),
     closeQuestions: () => {},
+    result: () => {},
     question: async (question, signal) => {
       questions.push(question);
       if (!options.question) throw new Error('Fixture has no human answer');
