@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/no-phux/phux/compare/desktop-v0.13.1...desktop-v0.14.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** give workspace menu native glass and spring motion ([#1432](https://github.com/no-phux/phux/issues/1432)) ([a82e993](https://github.com/no-phux/phux/commit/a82e993636ef493c561ded53101323ab9a775b21))
+
 ## [0.13.1](https://github.com/no-phux/phux/compare/desktop-v0.13.0...desktop-v0.13.1) (2026-10-15)
 
 
