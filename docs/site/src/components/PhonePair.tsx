@@ -40,12 +40,25 @@ export default function PhonePair({ wsUrl = "" }: { wsUrl?: string }) {
     );
   }
 
-  const endpoint = new URL(wsUrl);
-  endpoint.searchParams.set("attach", pair.code);
+  // A build with no hosted-shell endpoint has nothing to attach to. Say so
+  // rather than failing to parse an absent URL.
+  let endpoint: string;
+  try {
+    const url = new URL(wsUrl);
+    url.searchParams.set("attach", pair.code);
+    endpoint = url.toString();
+  } catch {
+    return (
+      <p className="phone-note" role="status">
+        Hosted shells are not configured on this site, so this pairing link has
+        nothing to attach to.
+      </p>
+    );
+  }
 
   return (
     <PhuxTerminal
-      wsUrl={endpoint.toString()}
+      wsUrl={endpoint}
       mode="demo"
       cols={46}
       rows={18}

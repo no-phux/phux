@@ -15,6 +15,7 @@ on:
       - "docs/site/bun.lock"
       - "docs/site/scripts/phux-wire.ts"
       - "docs/site/scripts/smoke-native.ts"
+      - "docs/site/scripts/smoke-pair.ts"
       - ".github/workflows/site-deploy-worker.yml"
   workflow_dispatch:
 

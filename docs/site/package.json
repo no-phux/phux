@@ -13,6 +13,7 @@
     "verify:demo": "bun run scripts/verify-demo.ts",
     "verify:motion": "bun run scripts/verify-motion.ts",
     "verify:home": "bun run scripts/verify-home.ts",
+    "verify:pair": "bun run scripts/verify-pair.ts",
     "verify:docs": "bun run scripts/verify-docs.ts",
     "demo:add": "bun run scripts/add-demo.ts",
     "sync-docs": "bun run scripts/sync-docs.ts",

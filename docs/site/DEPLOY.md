@@ -114,6 +114,10 @@ attaches to the same session through `wss://shell.phux.sh/session?attach=CODE`.
   bound it. Do not extend the code's lifetime without revisiting this.
 - Native sessions refuse an attach (`pairing covers the edge shell only`), so a
   future container offering must add its own path rather than inherit this one.
+- `bun run verify:pair [origin]` drives the whole thing in a browser against a
+  live site: the pairing panel, the phone page, the linked state, and a pane
+  spawned on each screen showing up on the other. It talks to the deployed demo
+  Worker, so it only passes where the pairing surface is actually serving.
 
 ### TestFlight access requests (`/api/beta`)
 

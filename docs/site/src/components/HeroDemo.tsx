@@ -54,7 +54,17 @@ function PairPanel({ wsUrl, pair }: { wsUrl: string; pair: SessionPair }) {
   const [linked, setLinked] = useState(false);
   const [copied, setCopied] = useState(false);
   const [qr, setQr] = useState("");
+  const [expired, setExpired] = useState(() => Date.now() > pair.expiresAt);
   const link = `${window.location.origin}/phone#${pair.code}`;
+
+  // A pairing code lives five minutes. Say so instead of offering a QR that
+  // would be refused: the shell is disposable, so reloading for a fresh one is
+  // the honest recovery.
+  useEffect(() => {
+    if (expired) return;
+    const timer = setTimeout(() => setExpired(true), Math.max(0, pair.expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [expired, pair.expiresAt]);
 
   // The QR encoder is only fetched when someone actually asks to pair, so the
   // landing's first paint never pays for it.
@@ -106,30 +116,39 @@ function PairPanel({ wsUrl, pair }: { wsUrl: string; pair: SessionPair }) {
       </button>
       {open && (
         <div className="mux-pair-body">
-          <span className="mux-pair-code" aria-hidden="true" dangerouslySetInnerHTML={{ __html: qr }} />
-          <div className="mux-pair-text">
-            <p>
-              <strong>Point your phone camera here.</strong> The same shell opens in its browser —
-              no install, no sign-in.
+          {expired && !linked ? (
+            <p className="mux-pair-text">
+              <strong>This pairing code expired.</strong> Reload the page for a fresh shell and a
+              fresh code.
             </p>
-            <p className="mux-pair-state" role="status">
-              {linked ? "Linked. Both screens drive this shell." : "Waiting for your phone…"}
-            </p>
-            <button
-              type="button"
-              className="mux-pair-copy"
-              onClick={() => {
-                void navigator.clipboard.writeText(link).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1400);
-                }).catch(() => {
-                  // Clipboard refusal leaves the link visible in the QR.
-                });
-              }}
-            >
-              {copied ? "Link copied" : "Copy link"}
-            </button>
-          </div>
+          ) : (
+            <>
+              <span className="mux-pair-code" aria-hidden="true" dangerouslySetInnerHTML={{ __html: qr }} />
+              <div className="mux-pair-text">
+                <p>
+                  <strong>Point your phone camera here.</strong> The same shell opens in its browser —
+                  no install, no sign-in.
+                </p>
+                <p className="mux-pair-state" role="status">
+                  {linked ? "Linked. Both screens drive this shell." : "Waiting for your phone…"}
+                </p>
+                <button
+                  type="button"
+                  className="mux-pair-copy"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(link).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1400);
+                    }).catch(() => {
+                      // Clipboard refusal leaves the link visible in the QR.
+                    });
+                  }}
+                >
+                  {copied ? "Link copied" : "Copy link"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
