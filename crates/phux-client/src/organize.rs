@@ -10,31 +10,45 @@
 //! and returns a [`Journal`] that [`undo`] reverses. [`run`] is the whole
 //! button; the CLI, the MCP tool, and the TUI all call it.
 //!
+//! Apply and undo have one implementation, the runtime's sans-IO
+//! [`Sequencer`] (ADR-0171), which the desktop drives over the runtime's
+//! asynchronous organization lane. Here it is driven over request/reply: a
+//! [`Submitter`] that queues each submission, and a loop that sends each as
+//! a request and feeds the reply back as its [`OrgOutcome`]. The sequencer
+//! reads the records through the [`Records`] trait rather than a live
+//! replica: a one-shot connection has no event stream to keep a replica
+//! current, and a fresh `GET_ORGANIZATION` read ([`OrgInventory`]) answers
+//! the same three questions (which server, where a terminal is, what a
+//! session is called) without synthesizing replica pages from it. Moves go
+//! through [`org::move_many`], which re-reads revisions and retries on
+//! `CONFLICT`.
+//!
 //! Only metadata leaves the machine: names, titles, working directories,
 //! agent providers, and repository identities. Terminal contents never do.
 
-use std::collections::{BTreeMap, HashMap};
+use std::cell::RefCell;
+use std::collections::VecDeque;
 
-use phux_client_core::organize::{
-    self as planner, CreatedSession, MovedPane, PaneFacts, Plan, PlannedRename,
-};
-use phux_protocol::ids::{ResourceKey, SessionKey};
-use phux_protocol::wire::frame::{Command, OrgFilter, Refusal, SessionLifetime};
-use serde::Serialize;
+use phux_client_core::org_ops::{OrganizationCommand, SubmitError};
+use phux_client_core::organize::{self as planner, PaneFacts, Plan};
+use phux_protocol::ids::{AuthorityId, OperationId, ResourceKey, SessionKey};
+use phux_protocol::wire::frame::{Command, OrgFilter};
 use serde_json::Value;
 
 use crate::attach::connection::Connection;
 use crate::glance::{self, Sources};
-use crate::org::{self, OrgError, OrgInventory};
+use crate::org::{self, OrgError, OrgInventory, OrgOutcome};
 
 pub use phux_client_core::organize::{
     DEFAULT_MIN_CONFIDENCE, Facts, JOURNAL_SCHEMA, Journal, count, plan_lines,
 };
-use phux_client_runtime::organize::{PaneSeen, ProjectCache, session_facts};
+use phux_client_runtime::organize::{
+    PaneSeen, ProjectCache, Records, Sequencer, Submitter, UndoRefusal, session_facts,
+};
 
 pub use phux_client_runtime::organize::{
     API_KEY_ENV, INTERACTIVE_JEV_TIMEOUT, JEV_ENDPOINT, JEV_TIMEOUT, Judge, Options, PlanError,
-    clear_journal, journal_path, load_journal, save_journal,
+    Report, Step, clear_journal, journal_path, load_journal, save_journal,
 };
 
 /// First request id for the agent-record reads.
@@ -194,308 +208,214 @@ pub async fn plan_or_fallback(
     .map_err(OrganizeError::from)
 }
 
-/// One step that did not take effect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StepFailure {
-    /// What the step was (`create web`, `move @3 to web`).
-    pub step: String,
-    /// The refusal's code.
-    pub code: &'static str,
-    /// Why.
-    pub message: String,
+/// Request id for organization requests: a one-shot connection has one
+/// request in flight at a time.
+const REQUEST_ID: u32 = 1;
+
+impl Records for OrgInventory {
+    fn authority(&self) -> Option<AuthorityId> {
+        Some(self.authority)
+    }
+
+    fn session_of(&self, resource: &ResourceKey) -> Option<SessionKey> {
+        self.resource(resource).map(|record| record.session)
+    }
+
+    fn session_name(&self, session: &SessionKey) -> Option<&str> {
+        self.session(session).map(|record| record.name.as_str())
+    }
 }
 
-/// What [`apply`] or [`undo`] did.
-#[derive(Debug, Clone, Default)]
-pub struct Applied {
-    /// What took effect.
-    pub journal: Journal,
-    /// Steps the server refused or that could not be sent.
-    pub failures: Vec<StepFailure>,
-    /// Steps left alone because the records changed since the plan (or the
-    /// run) was made; not failures.
-    pub skipped: Vec<StepFailure>,
+/// A submission the [`Sequencer`] made, waiting to be sent.
+enum Submission {
+    /// One round trip: `SESSION_CREATE`, `SESSION_RENAME`, `SESSION_DELETE`.
+    Command(Command),
+    /// One `RESOURCE_MOVE_MANY`, rebuilt against fresh revisions when the
+    /// server answers `CONFLICT` ([`org::move_many`]).
+    Move {
+        resources: Vec<ResourceKey>,
+        to: SessionKey,
+    },
 }
 
-/// Carry out `plan`: create its sessions, move its terminals, then rename.
+/// The request/reply [`Submitter`]: it records each submission under a
+/// fresh operation id for [`drive`] to send.
+#[derive(Default)]
+struct Queue(RefCell<VecDeque<(OperationId, Submission)>>);
+
+impl Queue {
+    fn push(&self, operation: OperationId, submission: Submission) -> OperationId {
+        self.0.borrow_mut().push_back((operation, submission));
+        operation
+    }
+
+    fn pop(&self) -> Option<(OperationId, Submission)> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+}
+
+impl Submitter for Queue {
+    fn submit(&self, command: Command) -> Result<OperationId, SubmitError> {
+        let operation = *command
+            .organization_operation()
+            .ok_or(SubmitError::NotAnOperation)?;
+        Ok(self.push(operation, Submission::Command(command)))
+    }
+
+    fn move_resources(
+        &self,
+        resources: &[ResourceKey],
+        to: SessionKey,
+    ) -> Result<Vec<OperationId>, SubmitError> {
+        let resources = resources.to_vec();
+        let submission = Submission::Move { resources, to };
+        Ok(vec![self.push(org::mint_operation(), submission)])
+    }
+
+    fn rename_session(&self, session: SessionKey, name: &str) -> Result<OperationId, SubmitError> {
+        self.submit(Command::SessionRename {
+            operation: org::mint_operation(),
+            session,
+            name: name.to_owned(),
+        })
+    }
+
+    fn delete_session(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
+        self.submit(Command::SessionDelete {
+            operation: org::mint_operation(),
+            session,
+        })
+    }
+}
+
+/// Run `sequencer` to its report over `conn`: send each submission as a
+/// request, in the order made, and feed the reply back as its outcome.
+///
+/// The sequencer checks a phase's steps against the records only as it
+/// enters that phase, which happens when the previous phase's last reply
+/// lands; so `records` is read again just before that reply is fed. A
+/// failed re-read keeps the older records: the moves are still
+/// compare-and-swap against the server's current revisions.
+async fn drive(conn: &mut Connection, mut sequencer: Sequencer, records: OrgInventory) -> Report {
+    let queue = Queue::default();
+    let mut records = records;
+    let mut finished = sequencer.start(&records, &queue);
+    loop {
+        if let Some(report) = finished {
+            return report;
+        }
+        let Some((operation, submission)) = queue.pop() else {
+            return sequencer.report_so_far();
+        };
+        let outcome = send(conn, submission).await;
+        if queue.is_empty() {
+            records = org::fetch(conn, OrgFilter::All, REQUEST_ID)
+                .await
+                .unwrap_or(records);
+        }
+        finished = sequencer.on_outcome(operation, &outcome, &records, &queue);
+    }
+}
+
+/// Send one submission and classify its reply.
+async fn send(conn: &mut Connection, submission: Submission) -> OrgOutcome {
+    let result = match submission {
+        Submission::Command(command) => org::request(conn, REQUEST_ID, command)
+            .await
+            .map(|(outcome, _)| outcome),
+        Submission::Move { resources, to } => org::move_many(conn, &resources, to)
+            .await
+            .map(moved_outcome),
+    };
+    result.unwrap_or_else(lost)
+}
+
+/// The outcome of a move the sequencer submitted. It submits at most one
+/// server batch per move, so [`org::move_many`] answers one chunk.
+fn moved_outcome(batches: Vec<org::BatchResult>) -> OrgOutcome {
+    let mut outcome = OrgOutcome::NotSent {
+        reason: "nothing to move".to_owned(),
+    };
+    for batch in batches {
+        match batch.result {
+            Ok(committed) => outcome = OrgOutcome::Committed(Box::new(committed)),
+            Err(err) => return lost(err),
+        }
+    }
+    outcome
+}
+
+/// A request that did not commit, as the outcome the sequencer reads: a
+/// refusal or server error as such; a failure before sending as never
+/// sent; anything after as unknown.
+fn lost(err: OrgError) -> OrgOutcome {
+    match err {
+        OrgError::Refused(refusal) => OrgOutcome::Refused(refusal),
+        OrgError::Server { code, message } => OrgOutcome::Error { code, message },
+        unsent @ (OrgError::Unsupported | OrgError::NotFound(_) | OrgError::Ambiguous { .. }) => {
+            OrgOutcome::NotSent {
+                reason: unsent.to_string(),
+            }
+        }
+        unknown @ (OrgError::OutcomeUnknown { .. }
+        | OrgError::Unexpected(_)
+        | OrgError::Attach(_)) => OrgOutcome::Unknown {
+            reason: unknown.to_string(),
+        },
+    }
+}
+
+/// Carry out `plan`: create its sessions, move its terminals, then rename,
+/// through the [`Sequencer`].
 ///
 /// The records are read again first: a terminal no longer in the session
 /// the plan saw it in (a person moved it while the judge thought) is
 /// skipped. Moves go in one atomic batch per destination. A step that fails
 /// is reported and the rest continue; a move into a session that failed to
-/// create is skipped.
-pub async fn apply(conn: &mut Connection, plan: &Plan) -> Applied {
-    let mut applied = Applied {
-        journal: Journal::new(),
-        ..Applied::default()
-    };
-    let inventory = match org::fetch(conn, OrgFilter::All, 1).await {
-        Ok(inventory) => inventory,
-        Err(err) => {
-            applied.fail("read the records".to_owned(), &err);
-            return applied;
+/// create fails.
+pub async fn apply(conn: &mut Connection, plan: &Plan) -> Report {
+    match org::fetch(conn, OrgFilter::All, REQUEST_ID).await {
+        Ok(records) => {
+            let sequencer = Sequencer::apply(plan.clone(), Some(records.authority));
+            drive(conn, sequencer, records).await
         }
-    };
-    applied.journal.authority = Some(inventory.authority);
-    let mut new_keys: HashMap<String, SessionKey> = HashMap::new();
-    for new in &plan.creates {
-        match create_session(conn, new).await {
-            Ok(key) => {
-                new_keys.insert(new.name.clone(), key);
-                applied.journal.created.push(CreatedSession {
-                    key,
-                    name: new.name.clone(),
-                });
-            }
-            Err(err) => applied.fail(format!("create {}", new.name), &err),
-        }
-    }
-    for (to, steps) in batches(plan, &inventory, &new_keys, &mut applied) {
-        move_batch(conn, to, &steps, &mut applied).await;
-    }
-    for rename in &plan.renames {
-        match rename_session(conn, rename.session, &rename.to).await {
-            Ok(()) => applied.journal.renamed.push(rename.clone()),
-            Err(err) => applied.fail(format!("rename {} to {}", rename.from, rename.to), &err),
-        }
-    }
-    applied
-}
-
-/// The plan's moves by destination, each still valid: a terminal no longer
-/// where the plan saw it is skipped, and a move into a session that failed
-/// to create fails.
-fn batches<'p>(
-    plan: &'p Plan,
-    inventory: &OrgInventory,
-    new_keys: &HashMap<String, SessionKey>,
-    applied: &mut Applied,
-) -> BTreeMap<SessionKey, Vec<&'p planner::PlannedMove>> {
-    let mut batches: BTreeMap<SessionKey, Vec<&planner::PlannedMove>> = BTreeMap::new();
-    for step in &plan.moves {
-        let label = format!("move {} to {}", step.label, step.to_name);
-        let still_there = inventory
-            .resource(&step.pane)
-            .is_some_and(|record| record.session == step.from);
-        if !still_there {
-            applied.skip(label, "moved or gone since the plan");
-            continue;
-        }
-        let Some(to) = step.to.or_else(|| new_keys.get(&step.to_name).copied()) else {
-            applied.failures.push(StepFailure {
-                step: label,
-                code: "not_found",
-                message: format!("session {:?} was not created", step.to_name),
-            });
-            continue;
-        };
-        batches.entry(to).or_default().push(step);
-    }
-    batches
-}
-
-impl Applied {
-    fn fail(&mut self, step: String, err: &OrgError) {
-        self.failures.push(StepFailure {
-            step,
-            code: err.code(),
-            message: err.to_string(),
-        });
+        Err(err) => Report {
+            journal: Journal::new(),
+            failures: vec![Step {
+                step: "read the records".to_owned(),
+                code: err.code(),
+                message: err.to_string(),
+            }],
+            skipped: Vec::new(),
+        },
     }
 }
 
-async fn move_batch(
-    conn: &mut Connection,
-    to: SessionKey,
-    steps: &[&planner::PlannedMove],
-    applied: &mut Applied,
-) {
-    let keys: Vec<ResourceKey> = steps.iter().map(|step| step.pane).collect();
-    let results = match org::move_many(conn, &keys, to).await {
-        Ok(results) => results,
-        Err(err) => {
-            let name = steps.first().map_or("", |step| step.to_name.as_str());
-            applied.fail(format!("move {} terminals to {name}", keys.len()), &err);
-            return;
-        }
-    };
-    let from: HashMap<ResourceKey, SessionKey> =
-        steps.iter().map(|step| (step.pane, step.from)).collect();
-    for batch in results {
-        match batch.result {
-            Ok(_) => applied
-                .journal
-                .moved
-                .extend(batch.resources.iter().filter_map(|pane| {
-                    Some(MovedPane {
-                        pane: *pane,
-                        from: *from.get(pane)?,
-                        to,
-                    })
-                })),
-            Err(err) => applied.fail(format!("move {} terminals", batch.resources.len()), &err),
-        }
-    }
-}
-
-async fn create_session(
-    conn: &mut Connection,
-    new: &planner::NewSession,
-) -> Result<SessionKey, OrgError> {
-    let attrs = phux_client_runtime::organize::creation_attrs(new);
-    let command = Command::SessionCreate {
-        operation: org::mint_operation(),
-        name: new.name.clone(),
-        lifetime: SessionLifetime::Persistent,
-        attrs,
-        launch: None,
-    };
-    let committed = org::commit(conn, 1, command).await?;
-    committed
-        .session
-        .ok_or_else(|| OrgError::Unexpected("create answered without a session".to_owned()))
-}
-
-async fn rename_session(
-    conn: &mut Connection,
-    session: SessionKey,
-    name: &str,
-) -> Result<(), OrgError> {
-    let command = Command::SessionRename {
-        operation: org::mint_operation(),
-        session,
-        name: name.to_owned(),
-    };
-    org::commit(conn, 1, command).await.map(|_| ())
-}
-
-/// Reverse `journal` against the current records.
+/// Reverse `journal` against the current records, through the
+/// [`Sequencer`].
 ///
-/// Rename sessions back
-/// where they still carry the new name, move terminals back that are still
-/// where they were put, then delete created sessions left empty. Anything
-/// changed since is left alone and reported.
+/// Rename sessions back where they still carry the new name, move terminals
+/// back that are still where they were put, then delete created sessions
+/// left empty. Anything changed since is left alone and reported.
 ///
 /// # Errors
 ///
-/// A server without `ORGANIZATION`, or a failed read.
-pub async fn undo(conn: &mut Connection, journal: &Journal) -> Result<Applied, OrganizeError> {
+/// A server without `ORGANIZATION`, a failed read, or
+/// [`OrganizeError::OtherServer`] for another server's journal.
+pub async fn undo(conn: &mut Connection, journal: &Journal) -> Result<Report, OrganizeError> {
     if !org::supported(conn) {
         return Err(OrgError::Unsupported.into());
     }
-    let inventory = org::fetch(conn, OrgFilter::All, 1).await?;
-    if journal
-        .authority
-        .is_some_and(|authority| authority != inventory.authority)
-    {
+    let records = org::fetch(conn, OrgFilter::All, REQUEST_ID).await?;
+    let sequencer = Sequencer::undo(journal.clone());
+    if sequencer.refusal(&records) == Some(UndoRefusal::OtherServer) {
         return Err(OrganizeError::OtherServer);
     }
-    let mut applied = Applied::default();
-    undo_renames(conn, &inventory, &journal.renamed, &mut applied).await;
-    let back = moves_back(&inventory, &journal.moved, &mut applied);
-    for (to, panes) in back {
-        undo_batch(conn, &inventory, to, &panes, &mut applied).await;
-    }
-    for created in &journal.created {
-        let step = format!("delete {}", created.name);
-        match org::delete_session(conn, created.key).await {
-            Ok(_) => applied.journal.created.push(created.clone()),
-            Err(OrgError::Refused(Refusal::NotEmpty { .. })) => {
-                applied.skip(step, "it holds work now; left in place");
-            }
-            Err(OrgError::Refused(Refusal::NotFound)) => applied.skip(step, "already gone"),
-            Err(err) => applied.fail(step, &err),
-        }
-    }
-    Ok(applied)
-}
-
-/// Rename each session back that still carries the name the run gave it.
-async fn undo_renames(
-    conn: &mut Connection,
-    inventory: &OrgInventory,
-    renamed: &[PlannedRename],
-    applied: &mut Applied,
-) {
-    for rename in renamed.iter().rev() {
-        let step = format!("rename {} back to {}", rename.to, rename.from);
-        let current = inventory.session(&rename.session).map(|s| s.name.as_str());
-        if current != Some(rename.to.as_str()) {
-            applied.skip(step, "changed since");
-            continue;
-        }
-        match rename_session(conn, rename.session, &rename.from).await {
-            Ok(()) => applied.journal.renamed.push(PlannedRename {
-                session: rename.session,
-                from: rename.to.clone(),
-                to: rename.from.clone(),
-            }),
-            Err(err) => applied.fail(step, &err),
-        }
-    }
-}
-
-/// The moves to reverse, by the session each pane returns to: only panes
-/// still where the run put them, whose old session still exists.
-fn moves_back(
-    inventory: &OrgInventory,
-    moved: &[MovedPane],
-    applied: &mut Applied,
-) -> BTreeMap<SessionKey, Vec<ResourceKey>> {
-    let mut back: BTreeMap<SessionKey, Vec<ResourceKey>> = BTreeMap::new();
-    for moved in moved {
-        let still_there = inventory
-            .resource(&moved.pane)
-            .is_some_and(|record| record.session == moved.to);
-        if still_there && inventory.session(&moved.from).is_some() {
-            back.entry(moved.from).or_default().push(moved.pane);
-        } else {
-            applied.skip(format!("move {} back", moved.pane), "moved or gone since");
-        }
-    }
-    back
-}
-
-async fn undo_batch(
-    conn: &mut Connection,
-    inventory: &OrgInventory,
-    to: SessionKey,
-    panes: &[ResourceKey],
-    applied: &mut Applied,
-) {
-    let results = match org::move_many(conn, panes, to).await {
-        Ok(results) => results,
-        Err(err) => {
-            applied.fail(format!("move {} terminals back", panes.len()), &err);
-            return;
-        }
-    };
-    for batch in results {
-        match batch.result {
-            Ok(_) => applied
-                .journal
-                .moved
-                .extend(batch.resources.iter().map(|pane| MovedPane {
-                    pane: *pane,
-                    from: inventory.resource(pane).map_or(to, |record| record.session),
-                    to,
-                })),
-            Err(err) => applied.fail(
-                format!("move {} terminals back", batch.resources.len()),
-                &err,
-            ),
-        }
-    }
-}
-
-impl Applied {
-    fn skip(&mut self, step: String, why: &str) {
-        self.skipped.push(StepFailure {
-            step,
-            code: "skipped",
-            message: why.to_owned(),
-        });
-    }
+    Ok(drive(conn, sequencer, records).await)
 }
 
 /// Schema of [`document`].
@@ -506,7 +426,7 @@ pub const DOCUMENT_SCHEMA: u8 = 1;
 #[must_use]
 pub fn document(
     plan: &Plan,
-    applied: Option<&Applied>,
+    applied: Option<&Report>,
     judge_error: Option<&str>,
     dry_run: bool,
 ) -> Value {
@@ -518,9 +438,34 @@ pub fn document(
         "panes_considered": plan.moves.len() + plan.kept.len(),
         "plan": plan,
         "applied": applied.map(|applied| &applied.journal),
-        "failures": applied.map_or(&[][..], |applied| applied.failures.as_slice()),
-        "skipped": applied.map_or(&[][..], |applied| applied.skipped.as_slice()),
+        "failures": steps(applied.map_or(&[][..], |applied| applied.failures.as_slice())),
+        "skipped": steps(applied.map_or(&[][..], |applied| applied.skipped.as_slice())),
     })
+}
+
+/// The result document `phux organize --undo --json` prints.
+#[must_use]
+pub fn undo_document(undone: &Report) -> Value {
+    serde_json::json!({
+        "schema_version": DOCUMENT_SCHEMA,
+        "undone": undone.journal,
+        "failures": steps(&undone.failures),
+        "skipped": steps(&undone.skipped),
+    })
+}
+
+/// Steps as the documents carry them: `{ step, code, message }`.
+fn steps(steps: &[Step]) -> Value {
+    steps
+        .iter()
+        .map(|step| {
+            serde_json::json!({
+                "step": step.step,
+                "code": step.code,
+                "message": step.message,
+            })
+        })
+        .collect()
 }
 
 /// Gather, plan (Jev falling back to the heuristic), and, unless
@@ -529,7 +474,7 @@ pub fn document(
 /// # Errors
 ///
 /// As [`gather`] and [`plan_or_fallback`]; per-step failures are in the
-/// [`Applied`].
+/// [`Report`].
 pub async fn run(
     conn: &mut Connection,
     files_host: Option<&str>,
@@ -565,7 +510,7 @@ pub struct Outcome {
     /// The plan.
     pub plan: Plan,
     /// What applying it did; `None` for a dry run or an empty plan.
-    pub applied: Option<Applied>,
+    pub applied: Option<Report>,
     /// Why Jev was not used when it was asked for.
     pub judge_error: Option<String>,
     /// Why the undo journal could not be kept.
@@ -599,9 +544,9 @@ impl Outcome {
 mod tests {
     use super::*;
     use crate::testkit::{OrgFixture, ScriptSpec};
-    use phux_client_core::organize::JudgeKind;
+    use phux_client_core::organize::{JudgeKind, PlannedRename};
     use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
-    use phux_protocol::wire::frame::ExecState;
+    use phux_protocol::wire::frame::{ExecState, SessionLifetime};
 
     fn org_spec(fixture: OrgFixture) -> ScriptSpec {
         ScriptSpec::new()
@@ -705,5 +650,38 @@ mod tests {
         assert!(after.session(&created).is_none());
         drop(conn);
         server.await.expect("scripted server");
+    }
+
+    /// Another server's journal is refused before anything is sent, and
+    /// a step keeps its code in the `--json` documents.
+    #[tokio::test]
+    async fn undo_refuses_another_servers_journal() {
+        let mut fixture = OrgFixture::new();
+        fixture.session("misc", SessionLifetime::Persistent);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (socket, server) = crate::testkit::serve_one(dir.path(), org_spec(fixture));
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut journal = Journal::new();
+        journal.authority = Some(AuthorityId::new([0xee; 16]).expect("non-zero"));
+        let refused = undo(&mut conn, &journal).await;
+        assert!(
+            matches!(refused, Err(OrganizeError::OtherServer)),
+            "{refused:?}"
+        );
+        drop(conn);
+        server.await.expect("scripted server");
+
+        let report = Report {
+            journal: Journal::new(),
+            failures: vec![Step {
+                step: "delete web".into(),
+                code: "not_empty",
+                message: "it holds work".into(),
+            }],
+            skipped: Vec::new(),
+        };
+        let document = undo_document(&report);
+        assert_eq!(document["failures"][0]["code"], "not_empty");
+        assert_eq!(document["failures"][0]["step"], "delete web");
     }
 }

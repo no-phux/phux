@@ -79,17 +79,20 @@ repository fact, but not always: a pane titled `tail beta prod logs` in
    `curl -q` (no `.curlrc`) with the key and body on stdin, every config
    value escaped; an error never echoes the reply body, and the key is
    redacted from any error text.
-8. **Surfaces.** The judge, the transport, and the journal live in
-   `phux_client_runtime::organize`, beside repository discovery, so every
-   client shares them. The CLI applies by default (`--dry-run` previews);
-   the MCP tool previews by default (`apply: true` applies), since an agent
-   should show a plan before moving a person's work. The TUI runs on its
-   own control connection off the input loop and toasts the result. The
-   desktop plans on a background thread and applies through
-   `phux_client_runtime::organize::Sequencer`, a sans-IO sequencer over the
-   runtime's asynchronous organization lane, writing the same journal. Jev's
-   whole run has one time budget (60 seconds, 8 in interactive clients)
-   before repository matching decides.
+8. **Surfaces.** The judge, the transport, the journal, and the one
+   apply/undo implementation (`Sequencer`, sans-IO,
+   [ADR-0171](./0171-one-transport-phux-client-rides-the-runtime.md)) live
+   in `phux_client_runtime::organize`, beside repository discovery, so
+   every client shares them. The CLI applies by default (`--dry-run`
+   previews); the MCP tool previews by default (`apply: true` applies),
+   since an agent should show a plan before moving a person's work. The TUI
+   runs on its own control connection off the input loop and toasts the
+   result. The desktop plans on a background thread and drives the
+   `Sequencer` over the runtime's asynchronous organization lane;
+   `phux_client::organize` drives it over request/reply, one request per
+   submission. Both write the same journal. Jev's whole run has one time
+   budget (60 seconds, 8 in interactive clients) before repository matching
+   decides.
 
 ## Why
 

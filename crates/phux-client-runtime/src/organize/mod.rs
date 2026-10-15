@@ -50,7 +50,7 @@ const KEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(20);
 
 pub use phux_config::instance::local_host_name;
-pub use sequencer::{Report, Sequencer, Step, Submitter};
+pub use sequencer::{Records, Report, SKIPPED, Sequencer, Step, Submitter, UndoRefusal};
 
 /// One session record as the planner sees it; `intake` is the designated
 /// Intake session.

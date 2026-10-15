@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::organize::{self, Options, Outcome, StepFailure};
+use phux_client::organize::{self, Options, Outcome, Step};
 
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::server_target::ServerSpec;
@@ -123,13 +123,13 @@ fn report(outcome: &Outcome, request: &Request) -> ExitCode {
     }
 }
 
-fn print_skipped(skipped: &[StepFailure]) {
+fn print_skipped(skipped: &[Step]) {
     for step in skipped {
         info!("skipped {}: {}", step.step, step.message);
     }
 }
 
-fn print_failures(failures: &[StepFailure]) {
+fn print_failures(failures: &[Step]) {
     for failure in failures {
         warn!("{}: {} ({})", failure.step, failure.message, failure.code);
     }
@@ -197,12 +197,7 @@ async fn undo_on(conn: &mut phux_client::attach::connection::Connection, json: b
     }
     let failed = !undone.failures.is_empty();
     if json {
-        let code = crate::output::json(&serde_json::json!({
-            "schema_version": organize::DOCUMENT_SCHEMA,
-            "undone": undone.journal,
-            "failures": undone.failures,
-            "skipped": undone.skipped,
-        }));
+        let code = crate::output::json(&organize::undo_document(&undone));
         return if failed { ExitCode::from(2) } else { code };
     }
     outln!(

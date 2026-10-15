@@ -1,12 +1,20 @@
-//! Carry out an organize plan, or undo one, over the runtime's asynchronous
-//! organization lane: submissions now, outcomes later as events.
+//! The one implementation of applying an organize plan, and of undoing one
+//! (ADR-0170, ADR-0171): submissions now, outcomes later.
 //!
-//! [`Sequencer`] is sans-IO. A client hands it a [`Submitter`] (the runtime
-//! [`Client`](crate::runtime::Client) is one) and the replica, and feeds it
-//! every `OrganizationOperation` outcome; it answers with what finished.
-//! Ordering is the one `phux_client::organize::apply` follows: creates,
-//! then moves (re-checked against the replica) and renames; undo renames
-//! and moves back, then deletes the sessions the run created.
+//! [`Sequencer`] is sans-IO. A client hands it a [`Submitter`] and the
+//! [`Records`] it checks steps against, and feeds it every submission's
+//! [`OrgOutcome`]; it answers with what finished. The desktop drives it
+//! over the runtime's asynchronous organization lane (the runtime
+//! [`Client`](crate::runtime::Client) is a [`Submitter`], its
+//! [`OrganizationReplica`] the [`Records`]); `phux_client::organize` drives
+//! it over request/reply, sending each submission as a request and feeding
+//! the reply back.
+//!
+//! Apply creates sessions, then moves (each re-checked against the records:
+//! a terminal no longer where the plan saw it is skipped) and renames. Undo
+//! renames back and moves back what is still where the run put it, then
+//! deletes the sessions the run created; a delete refused because the
+//! session holds work, or because it is gone, is skipped, not failed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -16,6 +24,9 @@ use phux_protocol::ids::{AuthorityId, OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Command, MAX_ORG_BATCH, Refusal, SessionLifetime};
 
 use crate::control::OrganizationReplica;
+
+/// The [`Step::code`] of a step left alone because the records changed.
+pub const SKIPPED: &str = "skipped";
 
 /// The organization submissions a [`Sequencer`] makes.
 pub trait Submitter {
@@ -71,11 +82,45 @@ impl Submitter for crate::runtime::Client {
     }
 }
 
+/// The organization records a [`Sequencer`] checks its steps against.
+///
+/// Three questions, so a live replica and a one-shot read both answer
+/// them without either becoming the other.
+pub trait Records {
+    /// The server the records belong to, once known.
+    fn authority(&self) -> Option<AuthorityId>;
+    /// The session `resource` is a member of now.
+    fn session_of(&self, resource: &ResourceKey) -> Option<SessionKey>;
+    /// `session`'s name, while it exists.
+    fn session_name(&self, session: &SessionKey) -> Option<&str>;
+}
+
+impl Records for OrganizationReplica {
+    fn authority(&self) -> Option<AuthorityId> {
+        Self::authority(self)
+    }
+
+    fn session_of(&self, resource: &ResourceKey) -> Option<SessionKey> {
+        self.resource(resource).map(|record| record.session)
+    }
+
+    fn session_name(&self, session: &SessionKey) -> Option<&str> {
+        self.session(session).map(|record| record.name.as_str())
+    }
+}
+
 /// One step that failed or was left alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "`step` is the field name the `--json` contract and every consumer use"
+)]
 pub struct Step {
     /// What the step was (`create web`, `move 3 terminals to web`).
     pub step: String,
+    /// A stable lowercase code: the refusal's name, [`SKIPPED`], or how the
+    /// step was lost (`outcome_unknown`, `not_sent`).
+    pub code: &'static str,
     /// Why it did not take effect.
     pub message: String,
 }
@@ -91,6 +136,35 @@ pub struct Report {
     pub skipped: Vec<Step>,
 }
 
+/// Why an undo cannot start against these records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoRefusal {
+    /// The records name no server yet.
+    NotConnected,
+    /// The run changed another server.
+    OtherServer,
+}
+
+impl UndoRefusal {
+    /// A stable lowercase code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotConnected => "not_connected",
+            Self::OtherServer => "other_server",
+        }
+    }
+
+    /// The refusal in words.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NotConnected => "not connected to the server yet",
+            Self::OtherServer => "the last organize run changed another server",
+        }
+    }
+}
+
 /// What an operation in flight will do when it lands.
 #[derive(Debug, Clone)]
 enum Pending {
@@ -101,6 +175,16 @@ enum Pending {
     },
     Rename(PlannedRename),
     Delete(CreatedSession),
+}
+
+/// One submitted step: a multi-batch move is one entry under each of its
+/// operations, finished when the last lands.
+#[derive(Debug, Clone)]
+struct Entry {
+    pending: Pending,
+    operations: HashSet<OperationId>,
+    /// The first outcome that did not commit.
+    failure: Option<OrgOutcome>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,10 +209,9 @@ enum Work {
 pub struct Sequencer {
     work: Work,
     phase: Phase,
-    /// Operations in flight; a multi-batch move shares one entry under each
-    /// of its ids, credited when the last lands.
+    /// Operations in flight, by their index into `entries`.
     pending: HashMap<OperationId, usize>,
-    entries: Vec<(Pending, HashSet<OperationId>, bool)>,
+    entries: Vec<Entry>,
     new_keys: HashMap<String, SessionKey>,
     report: Report,
 }
@@ -174,99 +257,114 @@ impl Sequencer {
         self.pending.contains_key(operation)
     }
 
-    /// Submit the first phase. Returns the report when nothing was left to
-    /// wait for.
-    pub fn start(
-        &mut self,
-        replica: &OrganizationReplica,
-        submitter: &impl Submitter,
-    ) -> Option<Report> {
-        if let Work::Undo(journal) = &self.work
-            && let Some(authority) = journal.authority
-        {
-            let refusal = match replica.authority() {
-                None => Some("not connected to the server yet"),
-                Some(current) if current != authority => {
-                    Some("the last organize run changed another server")
-                }
-                Some(_) => None,
-            };
-            if let Some(message) = refusal {
-                self.report.failures.push(Step {
-                    step: "undo".to_owned(),
-                    message: message.to_owned(),
-                });
-                self.phase = Phase::Done;
-                return Some(self.report.clone());
-            }
+    /// Why this undo cannot run against `records`: its journal names
+    /// another server, or `records` name none yet. `None` for an apply, and
+    /// for a journal that names no server.
+    #[must_use]
+    pub fn refusal(&self, records: &impl Records) -> Option<UndoRefusal> {
+        let Work::Undo(journal) = &self.work else {
+            return None;
+        };
+        let wanted = journal.authority?;
+        match records.authority() {
+            None => Some(UndoRefusal::NotConnected),
+            Some(current) if current != wanted => Some(UndoRefusal::OtherServer),
+            Some(_) => None,
         }
-        self.enter(replica, submitter)
+    }
+
+    /// Submit the first phase. Returns the report when nothing was left to
+    /// wait for, or when [`Self::refusal`] stops an undo before it sends
+    /// anything.
+    pub fn start(&mut self, records: &impl Records, submitter: &impl Submitter) -> Option<Report> {
+        if let Some(refusal) = self.refusal(records) {
+            self.fail("undo".to_owned(), refusal.code(), refusal.message());
+            self.phase = Phase::Done;
+            return Some(self.report.clone());
+        }
+        self.enter(records, submitter)
     }
 
     /// Record `outcome` for `operation`; submits the next phase when this
-    /// one is done. Returns the report once the run is finished.
+    /// one is done, checking it against `records`. Returns the report once
+    /// the run is finished.
     pub fn on_outcome(
         &mut self,
         operation: OperationId,
         outcome: &OrgOutcome,
-        replica: &OrganizationReplica,
+        records: &impl Records,
         submitter: &impl Submitter,
     ) -> Option<Report> {
         let index = self.pending.remove(&operation)?;
-        let (pending, ops, ok) = &mut self.entries[index];
-        ops.remove(&operation);
-        *ok &= matches!(outcome, OrgOutcome::Committed(_));
-        if let (Pending::Create(name), OrgOutcome::Committed(receipt)) = (&*pending, outcome)
-            && let Some(key) = receipt.session
-        {
-            self.new_keys.insert(name.clone(), key);
-        }
-        if ops.is_empty() {
-            let (pending, _, ok) = self.entries[index].clone();
-            self.settle(pending, ok, outcome);
+        if let Some(entry) = self.land(index, operation, outcome) {
+            self.settle(entry);
         }
         if !self.pending.is_empty() {
             return None;
         }
+        self.advance();
+        self.enter(records, submitter)
+    }
+
+    /// Note `outcome` on entry `index`; the entry once its last operation
+    /// has landed.
+    fn land(
+        &mut self,
+        index: usize,
+        operation: OperationId,
+        outcome: &OrgOutcome,
+    ) -> Option<Entry> {
+        let entry = &mut self.entries[index];
+        entry.operations.remove(&operation);
+        match (&entry.pending, outcome) {
+            (Pending::Create(name), OrgOutcome::Committed(receipt)) => {
+                if let Some(key) = receipt.session {
+                    self.new_keys.insert(name.clone(), key);
+                }
+            }
+            (_, OrgOutcome::Committed(_)) => {}
+            _ => {
+                entry.failure.get_or_insert_with(|| outcome.clone());
+            }
+        }
+        entry.operations.is_empty().then(|| entry.clone())
+    }
+
+    /// Submit the current phase, skipping empty ones.
+    fn enter(&mut self, records: &impl Records, submitter: &impl Submitter) -> Option<Report> {
+        while self.phase != Phase::Done {
+            self.submit_phase(records, submitter);
+            if !self.pending.is_empty() {
+                return None;
+            }
+            self.advance();
+        }
+        Some(self.report.clone())
+    }
+
+    fn submit_phase(&mut self, records: &impl Records, submitter: &impl Submitter) {
+        match (self.work.clone(), self.phase) {
+            (Work::Apply(plan), Phase::Creating) => self.submit_creates(&plan, submitter),
+            (Work::Apply(plan), Phase::Editing) => {
+                self.submit_moves(&plan, records, submitter);
+                self.submit_renames(&plan.renames, submitter);
+            }
+            (Work::Undo(journal), Phase::Editing) => {
+                let back = self.reversed_renames(&journal, records);
+                self.submit_renames(&back, submitter);
+                self.submit_moves_back(&journal, records, submitter);
+            }
+            (Work::Undo(journal), Phase::Deleting) => self.submit_deletes(&journal, submitter),
+            _ => {}
+        }
+    }
+
+    const fn advance(&mut self) {
         self.phase = match (&self.work, self.phase) {
             (Work::Apply(_), Phase::Creating) => Phase::Editing,
             (Work::Undo(_), Phase::Editing) => Phase::Deleting,
             _ => Phase::Done,
         };
-        self.enter(replica, submitter)
-    }
-
-    /// Submit the current phase, skipping empty ones.
-    fn enter(
-        &mut self,
-        replica: &OrganizationReplica,
-        submitter: &impl Submitter,
-    ) -> Option<Report> {
-        loop {
-            match (self.work.clone(), self.phase) {
-                (_, Phase::Done) => return Some(self.report.clone()),
-                (Work::Apply(plan), Phase::Creating) => self.submit_creates(&plan, submitter),
-                (Work::Apply(plan), Phase::Editing) => {
-                    self.submit_moves(&plan, replica, submitter);
-                    self.submit_renames(&plan.renames, submitter);
-                }
-                (Work::Undo(journal), Phase::Editing) => {
-                    let back = reversed_renames(&journal, replica, &mut self.report);
-                    self.submit_renames(&back, submitter);
-                    self.submit_moves_back(&journal, replica, submitter);
-                }
-                (Work::Undo(journal), Phase::Deleting) => self.submit_deletes(&journal, submitter),
-                (Work::Apply(_), Phase::Deleting) | (Work::Undo(_), Phase::Creating) => {}
-            }
-            if !self.pending.is_empty() {
-                return None;
-            }
-            self.phase = match (&self.work, self.phase) {
-                (Work::Apply(_), Phase::Creating) => Phase::Editing,
-                (Work::Undo(_), Phase::Editing) => Phase::Deleting,
-                _ => Phase::Done,
-            };
-        }
     }
 
     fn track(&mut self, pending: Pending, operations: Vec<OperationId>) {
@@ -274,8 +372,11 @@ impl Sequencer {
         for operation in &operations {
             self.pending.insert(*operation, index);
         }
-        self.entries
-            .push((pending, operations.into_iter().collect(), true));
+        self.entries.push(Entry {
+            pending,
+            operations: operations.into_iter().collect(),
+            failure: None,
+        });
     }
 
     fn submit_creates(&mut self, plan: &Plan, submitter: &impl Submitter) {
@@ -289,21 +390,16 @@ impl Sequencer {
             };
             match submitter.submit(command) {
                 Ok(operation) => self.track(Pending::Create(new.name.clone()), vec![operation]),
-                Err(err) => self.fail(format!("create {}", new.name), &err.to_string()),
+                Err(err) => self.not_sent(format!("create {}", new.name), &err),
             }
         }
     }
 
-    fn submit_moves(
-        &mut self,
-        plan: &Plan,
-        replica: &OrganizationReplica,
-        submitter: &impl Submitter,
-    ) {
+    fn submit_moves(&mut self, plan: &Plan, records: &impl Records, submitter: &impl Submitter) {
         let mut batches: BTreeMap<SessionKey, (String, Vec<MovedPane>)> = BTreeMap::new();
         for step in &plan.moves {
             let label = format!("move {} to {}", step.label, step.to_name);
-            if replica.resource(&step.pane).map(|r| r.session) != Some(step.from) {
+            if records.session_of(&step.pane) != Some(step.from) {
                 self.skip(label, "moved or gone since the plan");
                 continue;
             }
@@ -311,16 +407,14 @@ impl Sequencer {
                 .to
                 .or_else(|| self.new_keys.get(&step.to_name).copied())
             else {
-                self.fail(
-                    label,
-                    &format!("session {:?} was not created", step.to_name),
-                );
+                let why = format!("session {:?} was not created", step.to_name);
+                self.fail(label, Refusal::NotFound.as_str(), &why);
                 continue;
             };
-            let entry = batches
+            let (_, panes) = batches
                 .entry(to)
                 .or_insert_with(|| (step.to_name.clone(), Vec::new()));
-            entry.1.push(MovedPane {
+            panes.push(MovedPane {
                 pane: step.pane,
                 from: step.from,
                 to,
@@ -349,10 +443,9 @@ impl Sequencer {
                     operations,
                 ),
                 Ok(_) => {}
-                Err(err) => self.fail(
-                    format!("move {} terminals to {to_name}", keys.len()),
-                    &err.to_string(),
-                ),
+                Err(err) => {
+                    self.not_sent(format!("move {} terminals to {to_name}", keys.len()), &err);
+                }
             }
         }
     }
@@ -361,24 +454,44 @@ impl Sequencer {
         for rename in renames {
             match submitter.rename_session(rename.session, &rename.to) {
                 Ok(operation) => self.track(Pending::Rename(rename.clone()), vec![operation]),
-                Err(err) => self.fail(
-                    format!("rename {} to {}", rename.from, rename.to),
-                    &err.to_string(),
-                ),
+                Err(err) => self.not_sent(format!("rename {} to {}", rename.from, rename.to), &err),
             }
         }
+    }
+
+    /// The renames that put `journal`'s sessions back, for sessions still
+    /// carrying the name the run gave them; the rest are skipped.
+    fn reversed_renames(
+        &mut self,
+        journal: &Journal,
+        records: &impl Records,
+    ) -> Vec<PlannedRename> {
+        let mut back = Vec::new();
+        for rename in journal.renamed.iter().rev() {
+            if records.session_name(&rename.session) == Some(rename.to.as_str()) {
+                back.push(PlannedRename {
+                    session: rename.session,
+                    from: rename.to.clone(),
+                    to: rename.from.clone(),
+                });
+            } else {
+                let step = format!("rename {} back to {}", rename.to, rename.from);
+                self.skip(step, "changed since");
+            }
+        }
+        back
     }
 
     fn submit_moves_back(
         &mut self,
         journal: &Journal,
-        replica: &OrganizationReplica,
+        records: &impl Records,
         submitter: &impl Submitter,
     ) {
         let mut back: BTreeMap<SessionKey, Vec<MovedPane>> = BTreeMap::new();
         for moved in &journal.moved {
-            let still_there = replica.resource(&moved.pane).map(|r| r.session) == Some(moved.to);
-            if still_there && replica.session(&moved.from).is_some() {
+            let still_there = records.session_of(&moved.pane) == Some(moved.to);
+            if still_there && records.session_name(&moved.from).is_some() {
                 back.entry(moved.from).or_default().push(MovedPane {
                     pane: moved.pane,
                     from: moved.to,
@@ -389,9 +502,9 @@ impl Sequencer {
             }
         }
         for (to, panes) in back {
-            let name = replica
-                .session(&to)
-                .map_or_else(|| to.to_string(), |session| session.name.clone());
+            let name = records
+                .session_name(&to)
+                .map_or_else(|| to.to_string(), str::to_owned);
             self.submit_move(to, &name, &panes, submitter);
         }
     }
@@ -400,42 +513,64 @@ impl Sequencer {
         for created in &journal.created {
             match submitter.delete_session(created.key) {
                 Ok(operation) => self.track(Pending::Delete(created.clone()), vec![operation]),
-                Err(err) => self.fail(format!("delete {}", created.name), &err.to_string()),
+                Err(err) => self.not_sent(format!("delete {}", created.name), &err),
             }
         }
     }
 
     /// Credit or report one finished entry.
-    fn settle(&mut self, pending: Pending, ok: bool, last: &OrgOutcome) {
-        let journal = &mut self.report.journal;
-        match (pending, ok) {
-            (Pending::Create(name), true) => match self.new_keys.get(&name).copied() {
-                Some(key) => journal.created.push(CreatedSession { key, name }),
-                None => self.fail(
-                    format!("create {name}"),
-                    "the server answered without the new session's key",
-                ),
-            },
-            (Pending::Move { panes, .. }, true) => journal.moved.extend(panes),
-            (Pending::Rename(rename), true) => journal.renamed.push(rename),
-            (Pending::Delete(created), true) => journal.created.push(created),
-            (Pending::Delete(created), false) if is_not_empty(last) => self.skip(
-                format!("delete {}", created.name),
-                "it holds work now; left in place",
-            ),
-            (Pending::Delete(created), false) if is_not_found(last) => {
-                self.skip(format!("delete {}", created.name), "already gone");
-            }
-            (pending, false) => {
-                let step = describe(&pending);
-                self.fail(step, &outcome_text(last));
-            }
+    fn settle(&mut self, entry: Entry) {
+        match entry.failure {
+            None => self.credit(entry.pending),
+            Some(outcome) => self.refused(&entry.pending, &outcome),
         }
     }
 
-    fn fail(&mut self, step: String, message: &str) {
+    fn credit(&mut self, pending: Pending) {
+        let journal = &mut self.report.journal;
+        match pending {
+            Pending::Create(name) => self.credit_create(name),
+            Pending::Move { panes, .. } => journal.moved.extend(panes),
+            Pending::Rename(rename) => journal.renamed.push(rename),
+            Pending::Delete(created) => journal.created.push(created),
+        }
+    }
+
+    fn credit_create(&mut self, name: String) {
+        match self.new_keys.get(&name).copied() {
+            Some(key) => self
+                .report
+                .journal
+                .created
+                .push(CreatedSession { key, name }),
+            None => self.fail(
+                format!("create {name}"),
+                "unexpected_reply",
+                "the server answered without the new session's key",
+            ),
+        }
+    }
+
+    fn refused(&mut self, pending: &Pending, outcome: &OrgOutcome) {
+        let step = describe(pending);
+        match (pending, delete_left_alone(outcome)) {
+            (Pending::Delete(_), Some(why)) => self.skip(step, why),
+            _ => self.fail(step, outcome_code(outcome), &outcome_text(outcome)),
+        }
+    }
+
+    fn not_sent(&mut self, step: String, err: &SubmitError) {
+        let code = match err {
+            SubmitError::Unsupported => "unsupported",
+            _ => "not_sent",
+        };
+        self.fail(step, code, &err.to_string());
+    }
+
+    fn fail(&mut self, step: String, code: &'static str, message: &str) {
         self.report.failures.push(Step {
             step,
+            code,
             message: message.to_owned(),
         });
     }
@@ -443,35 +578,10 @@ impl Sequencer {
     fn skip(&mut self, step: String, message: &str) {
         self.report.skipped.push(Step {
             step,
+            code: SKIPPED,
             message: message.to_owned(),
         });
     }
-}
-
-/// The renames that put `journal`'s sessions back, for sessions still
-/// carrying the name the run gave them; the rest are skipped.
-fn reversed_renames(
-    journal: &Journal,
-    replica: &OrganizationReplica,
-    report: &mut Report,
-) -> Vec<PlannedRename> {
-    let mut back = Vec::new();
-    for rename in journal.renamed.iter().rev() {
-        let current = replica.session(&rename.session).map(|s| s.name.as_str());
-        if current == Some(rename.to.as_str()) {
-            back.push(PlannedRename {
-                session: rename.session,
-                from: rename.to.clone(),
-                to: rename.from.clone(),
-            });
-        } else {
-            report.skipped.push(Step {
-                step: format!("rename {} back to {}", rename.to, rename.from),
-                message: "changed since".to_owned(),
-            });
-        }
-    }
-    back
 }
 
 fn describe(pending: &Pending) -> String {
@@ -483,12 +593,26 @@ fn describe(pending: &Pending) -> String {
     }
 }
 
-const fn is_not_found(outcome: &OrgOutcome) -> bool {
-    matches!(outcome, OrgOutcome::Refused(Refusal::NotFound))
+/// Why undo leaves a created session alone rather than failing to delete
+/// it: it holds work now, or it is already gone.
+const fn delete_left_alone(outcome: &OrgOutcome) -> Option<&'static str> {
+    match outcome {
+        OrgOutcome::Refused(Refusal::NotEmpty { .. }) => Some("it holds work now; left in place"),
+        OrgOutcome::Refused(Refusal::NotFound) => Some("already gone"),
+        _ => None,
+    }
 }
 
-const fn is_not_empty(outcome: &OrgOutcome) -> bool {
-    matches!(outcome, OrgOutcome::Refused(Refusal::NotEmpty { .. }))
+const fn outcome_code(outcome: &OrgOutcome) -> &'static str {
+    match outcome {
+        OrgOutcome::Refused(refusal) => refusal.as_str(),
+        OrgOutcome::Error { .. } => "server_error",
+        OrgOutcome::Unknown { .. } => "outcome_unknown",
+        OrgOutcome::NotSent { .. } => "not_sent",
+        OrgOutcome::Committed(_) | OrgOutcome::Accepted | OrgOutcome::Value(_) => {
+            "unexpected_reply"
+        }
+    }
 }
 
 fn outcome_text(outcome: &OrgOutcome) -> String {
@@ -496,7 +620,7 @@ fn outcome_text(outcome: &OrgOutcome) -> String {
         OrgOutcome::Refused(refusal) => refusal_sentence(refusal),
         OrgOutcome::Error { message, .. } => message.clone(),
         OrgOutcome::Unknown { reason } | OrgOutcome::NotSent { reason } => reason.clone(),
-        other => format!("{other:?}"),
+        other => format!("unexpected reply: {other:?}"),
     }
 }
 
@@ -740,7 +864,10 @@ mod tests {
             .on_outcome(fake.op(0), &committed(None), &seeded, &fake)
             .expect("nothing left to move");
         assert!(
-            report.failures.iter().any(|f| f.step == "create web"),
+            report
+                .failures
+                .iter()
+                .any(|f| f.step == "create web" && f.code == "unexpected_reply"),
             "{report:?}"
         );
     }
@@ -756,6 +883,7 @@ mod tests {
             .start(&replica, &fake)
             .expect("done");
         assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].code, "other_server");
         assert!(fake.sent().is_empty());
     }
 }
