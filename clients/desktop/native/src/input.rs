@@ -150,6 +150,15 @@ pub struct InputNotice {
     pub body: String,
 }
 
+/// A clipboard result the shell has to finish. File bytes are not pasted here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputEvent {
+    /// Show a notice. Nothing was pasted.
+    Notice(InputNotice),
+    /// Upload these local bytes, then paste only the server path.
+    Upload(crate::attach::UploadBatch),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
     StaleHandle,
@@ -167,7 +176,7 @@ pub enum KeyDisposition {
     Consumed,
 }
 
-impl EventEmitter<InputNotice> for TerminalInput {}
+impl EventEmitter<InputEvent> for TerminalInput {}
 
 pub struct TerminalInput {
     client: Weak<Client>,
@@ -942,8 +951,11 @@ impl EntityInputHandler for TerminalInput {
                 let result = self.paste_text(&text, window, cx).map(|_| ());
                 self.record(result);
             }
+            Some(crate::attach::PathAttach::Upload(batch)) => {
+                cx.emit(InputEvent::Upload(batch));
+            }
             Some(crate::attach::PathAttach::Refuse { title, body }) => {
-                cx.emit(InputNotice { title, body });
+                cx.emit(InputEvent::Notice(InputNotice { title, body }));
             }
             None => {}
         }
@@ -964,6 +976,10 @@ impl TerminalInput {
             Some(crate::attach::PathAttach::Paste(text)) => {
                 let result = self.paste_requested(&text);
                 self.record(result.map(|_| ()));
+                None
+            }
+            Some(crate::attach::PathAttach::Upload(batch)) => {
+                cx.emit(InputEvent::Upload(batch));
                 None
             }
             Some(crate::attach::PathAttach::Refuse { title, body }) => {
