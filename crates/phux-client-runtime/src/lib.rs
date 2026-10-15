@@ -10,10 +10,13 @@
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
 //! - [`perf`]: owner-thread apply and publication telemetry.
 //! - `publication` (feature `engine`): the double-buffered grid.
+//! - [`handshake`]: `HELLO` and `HELLO_OK` acceptance, shared by every lane.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`project_identity`]: a checkout's repository identity, from git files.
 //! - [`organize`]: the organize judge, its Jev transport, and the undo
 //!   journal (ADR-0170).
+//! - [`session`]: one-shot sessions: a verb's negotiated connection, with
+//!   correlated requests and QUIC per-Terminal streams (ADR-0171).
 //! - [`runtime`]: [`runtime::Runtime::connect`] and the thread-safe
 //!   [`runtime::Client`] a binding drives.
 //!
@@ -29,6 +32,7 @@ pub mod control;
 pub mod dial;
 pub mod engine;
 pub mod enroll;
+pub mod handshake;
 pub mod organize;
 pub mod perf;
 pub mod project_identity;
@@ -36,6 +40,7 @@ pub mod project_identity;
 pub mod publication;
 pub mod reconnect;
 pub mod runtime;
+pub mod session;
 pub mod target;
 pub mod tunnel;
 

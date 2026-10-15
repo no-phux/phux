@@ -268,13 +268,13 @@ impl ControlPlane {
                 server_id,
                 selected_profile,
                 bootstrap_limits,
-            } => self.hello_ok(
-                (protocol_major, protocol_minor, protocol_patch),
-                &server_id,
+            } => self.hello_ok(crate::handshake::HelloOk {
+                protocol: (protocol_major, protocol_minor, protocol_patch),
+                server_id,
                 server_caps,
-                selected_profile,
-                bootstrap_limits,
-            )?,
+                profile: selected_profile,
+                limits: bootstrap_limits,
+            })?,
             FrameKind::Ping { nonce } => self.queue_frame(&FrameKind::Pong { nonce }),
             // The answer to a liveness probe: its arrival was the point.
             FrameKind::Pong { .. } => {}

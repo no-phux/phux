@@ -7,7 +7,8 @@ use bytes::Bytes;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::io::{Io, dial};
+use super::establish::dial;
+use super::io::{Io, LinkError};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
 use crate::reconnect::{earned_immediate, ladder_for};
 use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
@@ -369,7 +370,7 @@ impl<'a> Pump<'a> {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
-            inbound = self.io.read_frames(self.name), if reading => self.accept_inbound(inbound).await,
+            inbound = self.io.read_frames(), if reading => self.accept_inbound(inbound).await,
             // Re-checked every loop, so a session that attaches while this
             // select is parked starts its quiet clock on the next wake.
             () = tokio::time::sleep_until(self.quiet_probe_at), if self.quiet_probe_due(reading) => {
@@ -414,9 +415,9 @@ impl<'a> Pump<'a> {
 
     async fn start_probe(&mut self) -> Result<(), ConnectionEnd> {
         self.io
-            .probe(self.name)
+            .probe()
             .await
-            .map_err(|error| ConnectionEnd::Dropped(Some(error)))?;
+            .map_err(|error| self.dropped(&error))?;
         if self.probe_deadline.is_none() {
             self.probe_deadline = Some(Box::pin(tokio::time::sleep(self.options.probe_timeout)));
         }
@@ -457,13 +458,13 @@ impl<'a> Pump<'a> {
 
     async fn accept_inbound(
         &mut self,
-        inbound: Result<Option<Vec<Bytes>>, String>,
+        inbound: Result<Option<Vec<Bytes>>, LinkError>,
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
         self.probe_deadline = None;
         self.note_inbound();
         let mut frames = inbound
-            .map_err(|error| ConnectionEnd::Dropped(Some(error)))?
+            .map_err(|error| self.dropped(&error))?
             .ok_or_else(|| {
                 ConnectionEnd::Dropped(Some(format!("{} closed the connection", self.name)))
             })?;
@@ -508,9 +509,14 @@ impl<'a> Pump<'a> {
 
     async fn write_all(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ConnectionEnd> {
         self.io
-            .write_frames(self.name, &frames)
+            .write_frames(&frames)
             .await
-            .map_err(|error| ConnectionEnd::Dropped(Some(error)))
+            .map_err(|error| self.dropped(&error))
+    }
+
+    /// A link failure ends this connection; the ladder decides what next.
+    fn dropped(&self, error: &LinkError) -> ConnectionEnd {
+        ConnectionEnd::Dropped(Some(error.describe(self.name)))
     }
 }
 
@@ -593,12 +599,7 @@ mod tests {
             let (close, close_rx) = watch::channel(false);
             let (rebind, rebind_rx) = watch::channel(0);
             Self {
-                io: Io::Stream {
-                    reader: Box::new(reader),
-                    writer: Box::new(writer),
-                    pending: BytesMut::new(),
-                    quic: None,
-                },
+                io: Io::stream(Box::new(reader), Box::new(writer)),
                 peer,
                 shared: Arc::new(Mutex::new(ControlPlane::new(ControlOptions::default()))),
                 signals: Signals {

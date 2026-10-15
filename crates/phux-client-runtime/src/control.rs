@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use phux_client_core::handshake::validate_hello_ok;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
     INPUT_RETRY_HORIZON, InputReplayJournal, ReplayDisposition, ReplayReport,
@@ -27,10 +26,9 @@ use phux_client_core::input_replay::{
 use phux_client_core::session::{
     HistoryRejectionReason, HistoryUnavailableReason, KernelEffect, KernelSend, KernelStatus,
 };
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, ImageProtocolSet,
-    Layer, LayerSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    Layer, LayerSet, ServerFeature, ServerFeatureExt,
 };
 #[cfg(not(feature = "engine"))]
 use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet};
@@ -50,6 +48,7 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::engine::{EngineApplyError, EngineConfig, EngineEvent, EngineHandle, EngineOutcome};
 #[cfg(feature = "engine")]
 use crate::engine::{EngineError, Scroll};
+pub use crate::handshake::ServerInfo;
 #[cfg(feature = "engine")]
 use crate::publication::Publication;
 
@@ -217,39 +216,6 @@ impl ControlOptions {
                 BootstrapProfileKind::SynthesizedVtRaw,
             ]))
             .with_limits(self.bootstrap_limits)
-    }
-}
-
-/// What `HELLO_OK` negotiated.
-#[derive(Debug, Clone)]
-pub struct ServerInfo {
-    /// The server's incarnation identity.
-    pub id: Vec<u8>,
-    /// The features the server advertised.
-    pub features: ServerFeatureSet,
-    /// Capabilities from the trailing extension word (absent on older servers).
-    pub features_ext: ServerFeatureExtSet,
-    /// The layers the server advertised.
-    pub layers: LayerSet,
-    /// The protocol triple the server selected.
-    pub protocol: (u16, u16, u16),
-    /// The bootstrap profile the server selected.
-    pub profile: BootstrapProfile,
-    /// The payload limits the server selected.
-    pub limits: BootstrapLimits,
-}
-
-impl ServerInfo {
-    /// Whether the server advertised `feature`.
-    #[must_use]
-    pub const fn has(&self, feature: ServerFeature) -> bool {
-        self.features.contains(feature)
-    }
-
-    /// Whether the server advertised an extended feature.
-    #[must_use]
-    pub const fn has_ext(&self, feature: ServerFeatureExt) -> bool {
-        self.features_ext.contains(feature)
     }
 }
 
@@ -861,13 +827,10 @@ impl ControlPlane {
             connection_epoch: self.connection_epoch,
         });
         self.set_status(Status::Connecting);
-        self.queue_frame(&FrameKind::Hello {
-            client_name: self.options.client_name.clone(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: self.offered_caps,
-        });
+        self.queue_frame(&crate::handshake::hello(
+            self.options.client_name.clone(),
+            self.offered_caps,
+        ));
     }
 
     /// The transport dropped; the driver will walk the ladder.

@@ -15,7 +15,7 @@ use phux_dial::TlsClientIdentity;
 use tokio::sync::{Notify, watch};
 
 use crate::control::ControlPlane;
-use crate::dial::DIAL_TIMEOUT;
+use crate::dial::{DIAL_TIMEOUT, Dial, load_token, plan_quic_with_token, plan_ws};
 use crate::reconnect::Ladder;
 use crate::target::{AuthorityPin, Resolved, Transport as Lane};
 
@@ -125,16 +125,49 @@ impl Target {
         crate::target::resolve(raw, config_path).map(Self::from)
     }
 
+    /// Plan this target's dial under the CLI's trust rules (see
+    /// [`crate::dial`]): a routable host needs its pin, and its token is
+    /// read now, from [`Self::token`] or else the token file.
+    ///
+    /// # Errors
+    ///
+    /// The operator-facing reason the plan was refused (a missing pin or
+    /// token, an unresolvable host). No retry changes it.
+    pub async fn plan(&self) -> Result<Dial, String> {
+        match &self.transport {
+            Transport::Uds(path) => Ok(Dial::Uds(path.clone())),
+            Transport::Ws(url) => {
+                let resolved = self.remote(url.clone(), Lane::Ws(url.clone()));
+                let token = match self.token.clone() {
+                    Some(token) => Some(token),
+                    None => load_token(&resolved)?,
+                };
+                plan_ws(&resolved, url, token).map(Dial::Ws)
+            }
+            Transport::Quic(authority) => {
+                let resolved =
+                    self.remote(format!("quic://{authority}"), Lane::Quic(authority.clone()));
+                plan_quic_with_token(&resolved, authority, self.token.clone())
+                    .await
+                    .map(Dial::Quic)
+            }
+        }
+    }
+
     /// The registry entry a WebSocket or QUIC dial is planned from.
     pub(crate) fn resolved(&self) -> Option<Resolved> {
-        let (endpoint, transport) = match &self.transport {
-            Transport::Uds(_) => return None,
-            Transport::Ws(url) => (url.clone(), Lane::Ws(url.clone())),
+        match &self.transport {
+            Transport::Uds(_) => None,
+            Transport::Ws(url) => Some(self.remote(url.clone(), Lane::Ws(url.clone()))),
             Transport::Quic(authority) => {
-                (format!("quic://{authority}"), Lane::Quic(authority.clone()))
+                Some(self.remote(format!("quic://{authority}"), Lane::Quic(authority.clone())))
             }
-        };
-        Some(Resolved {
+        }
+    }
+
+    /// This target as the registry entry for `endpoint` over `transport`.
+    fn remote(&self, endpoint: String, transport: Lane) -> Resolved {
+        Resolved {
             name: self.name.clone(),
             endpoint,
             session: None,
@@ -144,7 +177,7 @@ impl Target {
             authority: self.authority.clone(),
             tls_server_name: self.tls_server_name.clone(),
             client_identity: self.client_identity.clone(),
-        })
+        }
     }
 }
 
@@ -239,6 +272,9 @@ enum ConnectionEnd {
 }
 
 mod driver;
-mod io;
+mod establish;
+pub(crate) mod io;
+
+pub(crate) use establish::{DialFailure, establish};
 
 pub use driver::run_session;

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-15
 ---
 
 # Module structure
@@ -265,8 +265,9 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 - **`phux-client-runtime`** — the one client orchestration layer (ADR-0133;
   [`client-runtime.md`](./client-runtime.md)): registry target resolution,
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
-  `ControlPlane`, the engine owner thread, grid publication, and
-  `Runtime::connect`. Rust API only. `control/organization.rs` is the
+  `ControlPlane`, the engine owner thread, grid publication,
+  `Runtime::connect`, and the one-shot `session::Session` that verbs ride
+  (ADR-0171). Rust API only. `control/organization.rs` is the
   organization replica: seeded by paged `GetOrganization`, advanced by
   journal events in sequence, refetched on a gap; it retries pending
   operations with the same operation id after reconnect, reports the

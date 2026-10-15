@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-15
 ---
 
 # The client runtime
@@ -121,6 +121,21 @@ Every acknowledged submission (`apply_line`, `apply_paste`,
 `apply_tab_completion`) that waits on the wire nudges too, so a half-open
 link is dropped within `probe_timeout` and its receipt follows the
 reconnect, instead of waiting for an idle timeout.
+
+## One-shot sessions
+
+`session::Session` is a verb's connection (ADR-0171): it establishes a planned
+`dial::Dial` (or plans a `Target` first), negotiates `HELLO` with the caller's
+name and capabilities, and never redials. It shares the driver's transport,
+not a copy: `connection::establish` turns a `Dial` into the framed link both
+read and write (same send budgets, WebSocket liveness, and typed link errors),
+and `handshake` builds `HELLO` and accepts `HELLO_OK` for the control plane and
+the session alike. On top it adds what request/reply callers need: correlated
+requests that return the frames interleaved ahead of each answer, corked
+batches on a Unix socket, the QUIC per-terminal streams of proto.md §4.2 with
+the viewport ordering barrier, and `SessionError`, whose variants mirror
+`phux-client`'s transport errors one for one. A relayed QUIC dial stays on the
+single-stream shape, so only a plain QUIC link offers `quic_streams`.
 
 ## Where a connected binding takes delivery
 
