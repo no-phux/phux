@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.75.0](https://github.com/no-phux/phux/compare/v0.74.4...v0.75.0) (2026-10-15)
+
+
+### Features
+
+* projects v2 - remote-keyed project identity in session attrs, grouped sidebar, picker, and ls ([#1300](https://github.com/no-phux/phux/issues/1300)) ([45eeb70](https://github.com/no-phux/phux/commit/45eeb7009c74d474eedcdb0224773a14c0fcc0cb))
+
 ## [0.74.4](https://github.com/no-phux/phux/compare/v0.74.3...v0.74.4) (2026-10-15)
 
 
