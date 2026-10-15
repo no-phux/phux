@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # The phux agent CLI
@@ -411,6 +411,12 @@ content gets a notice rather than invented text parity. Optional mode/model/conf
 controls are not advertised as phux controls. ACP v1 has no standard structured
 elicitation callback; supported Cursor extension dialogs use explicit human
 answers. Unknown extension methods fail explicitly.
+
+The host enables only the pinned SDK's
+[`unstable_session_usage`](https://docs.rs/crate/agent-client-protocol/0.10.4/features#unstable_session_usage)
+feature to decode informational `usage_update` notifications, including those
+emitted by OMP 18.10.3. Usage does not mutate the native projection, finish a turn,
+or acknowledge prompt consumption. Other experimental SDK features remain disabled.
 
 `phux agent native-command @AGENT --activation ACTIVATION --operation-id ID
 --intent '{"type":"prompt","text":"hello"}' --json` targets the exact
