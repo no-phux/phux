@@ -81,7 +81,8 @@ and no local reflow of a narrower observer.
 
 One calculation maps font metrics, content bounds, scale, cell counts, hit
 testing, the IME rectangle, and clipping. The focused writable view, or the
-only visible view, proposes whole cells that fit its painted bounds. Observer
+only visible view, proposes whole cells that fit its painted bounds and the
+integer cell size those cells were measured at. Observer
 views crop or letterbox the authoritative grid. The desktop connects with a
 zero viewport and casts no window-size vote. Quitting leaves explicit sizes in
 place. Read back the size the server actually applied.
