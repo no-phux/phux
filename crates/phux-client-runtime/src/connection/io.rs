@@ -1,5 +1,7 @@
 //! Transport establishment and framed I/O for one connection attempt.
 
+use std::time::Duration;
+
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use phux_dial::ws::{WsActivity, WsReader, WsWriter, recv_activity_alive};
@@ -15,6 +17,20 @@ use crate::dial::{
 use crate::reconnect::is_fatal_refusal;
 
 const MAX_INBOUND_BATCH: usize = 256;
+
+/// How long a send may go without the kernel accepting another chunk.
+///
+/// A shut window trips this. A slow link that keeps taking chunks does not:
+/// each accepted chunk starts a fresh budget. A WebSocket message is one
+/// send, so the budget covers that whole message.
+pub(super) const SEND_BUDGET: Duration = Duration::from_secs(15);
+
+/// Bytes the kernel must accept before [`SEND_BUDGET`] resets. Smaller than
+/// a typical socket buffer, so a live link finishes a chunk and a shut
+/// window does not.
+const SEND_STALL_CHUNK: usize = 16 * 1024;
+
+const SEND_STALLED: &str = "send stalled";
 
 /// One established lane, read and written as SPEC section 5 frames.
 pub(super) enum Io {
@@ -59,14 +75,12 @@ impl Io {
 
     pub(super) async fn write_frame(&mut self, name: &str, frame: &[u8]) -> Result<(), String> {
         match self {
-            Self::Stream { writer, .. } => writer
-                .write_all(frame)
+            Self::Stream { writer, .. } => write_all_within_budget(writer.as_mut(), frame)
                 .await
-                .map_err(|error| format!("{name}: send failed: {error}")),
-            Self::Ws { writer, .. } => writer
-                .send(frame)
-                .await
-                .map_err(|error| dial_message(name, &error)),
+                .map_err(|error| name_send_error(name, error)),
+            Self::Ws { writer, .. } => {
+                budgeted(writer.send(frame), |error| dial_message(name, &error)).await
+            }
         }
     }
 
@@ -94,10 +108,9 @@ impl Io {
                 self.write_frame(name, &encode(&FrameKind::Ping { nonce: 1 }))
                     .await
             }
-            Self::Ws { writer, .. } => writer
-                .send_ping()
-                .await
-                .map_err(|error| dial_message(name, &error)),
+            Self::Ws { writer, .. } => {
+                budgeted(writer.send_ping(), |error| dial_message(name, &error)).await
+            }
         }
     }
 
@@ -140,12 +153,52 @@ async fn write_stream_batch(
     name: &str,
     frames: &[Vec<u8>],
 ) -> Result<(), String> {
-    let failed = |error| format!("{name}: send failed: {error}");
+    let failed = |error| name_send_error(name, error);
     match frames {
         [] => Ok(()),
-        [frame] => writer.write_all(frame).await.map_err(failed),
-        many => writer.write_all(&join_frames(many)).await.map_err(failed),
+        [frame] => write_all_within_budget(writer, frame).await.map_err(failed),
+        many => {
+            let joined = join_frames(many);
+            write_all_within_budget(writer, &joined)
+                .await
+                .map_err(failed)
+        }
     }
+}
+
+/// Write `bytes`, restarting [`SEND_BUDGET`] every [`SEND_STALL_CHUNK`].
+async fn write_all_within_budget(
+    writer: &mut (dyn AsyncWrite + Unpin + Send),
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let end = offset.saturating_add(SEND_STALL_CHUNK).min(bytes.len());
+        budgeted(writer.write_all(&bytes[offset..end]), |error| {
+            format!("send failed: {error}")
+        })
+        .await?;
+        offset = end;
+    }
+    Ok(())
+}
+
+async fn budgeted<T, E>(
+    work: impl std::future::Future<Output = Result<T, E>>,
+    map_err: impl FnOnce(E) -> String,
+) -> Result<T, String> {
+    match tokio::time::timeout(SEND_BUDGET, work).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(map_err(error)),
+        Err(_elapsed) => Err(SEND_STALLED.to_owned()),
+    }
+}
+
+fn name_send_error(name: &str, error: String) -> String {
+    if error == SEND_STALLED {
+        return error;
+    }
+    format!("{name}: {error}")
 }
 
 /// Several frames, in order, as one buffer.
@@ -432,5 +485,59 @@ mod tests {
     fn joined_frames_keep_order() {
         assert_eq!(join_frames(&[]), Vec::<u8>::new());
         assert_eq!(join_frames(&[vec![1, 2], vec![], vec![3]]), vec![1, 2, 3]);
+    }
+
+    /// Three chunks, each accepted just inside the budget. The whole write
+    /// takes longer than one budget, which is what a slow live link does.
+    #[tokio::test(start_paused = true)]
+    async fn a_link_that_keeps_taking_chunks_survives_past_one_budget() {
+        use futures_util::FutureExt;
+
+        let chunk = SEND_STALL_CHUNK;
+        let (mut client, mut peer) = tokio::io::duplex(chunk);
+        let payload = vec![7u8; chunk * 3];
+        let writing = write_all_within_budget(&mut client, &payload);
+        tokio::pin!(writing);
+
+        assert!(
+            writing.as_mut().now_or_never().is_none(),
+            "the second chunk waits on a full buffer"
+        );
+        tokio::time::advance(almost_one_budget()).await;
+        assert!(
+            writing.as_mut().now_or_never().is_none(),
+            "the first wait stays inside one budget"
+        );
+        read_one_chunk(&mut peer, chunk).await;
+
+        assert!(
+            writing.as_mut().now_or_never().is_none(),
+            "the third chunk waits"
+        );
+        tokio::time::advance(almost_one_budget()).await;
+        assert!(
+            writing.as_mut().now_or_never().is_none(),
+            "a fresh chunk restarts the budget"
+        );
+        read_one_chunk(&mut peer, chunk).await;
+
+        let end = writing
+            .as_mut()
+            .now_or_never()
+            .expect("the last chunk fits once the peer reads");
+        assert!(end.is_ok(), "{end:?}");
+    }
+
+    fn almost_one_budget() -> Duration {
+        SEND_BUDGET
+            .checked_sub(Duration::from_secs(1))
+            .expect("the send budget is longer than one second")
+    }
+
+    async fn read_one_chunk(peer: &mut tokio::io::DuplexStream, n: usize) {
+        let mut buf = vec![0u8; n];
+        peer.read_exact(&mut buf)
+            .await
+            .expect("the chunk is buffered");
     }
 }
