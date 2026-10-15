@@ -40,6 +40,37 @@ the pristine archives. `--export` writes each commit back as
 `patches/<subject>.patch`, removes patch files no commit names, and rewrites
 `source.json`. The round trip is byte-identical when nothing changed.
 
+## Menu glass preview
+
+The main menu uses `NSGlassEffectView` on supported macOS versions, with a
+solid Kit popover surface as the fallback. The platform patch preserves the
+existing GPUI rendering view and Metal layer inside the native material.
+AppKit hierarchy changes run outside the window-state mutex because they can
+synchronously call back into GPUI.
+
+Run the production menu component as a standalone native preview:
+
+```sh
+mise exec -- cargo run --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example glass_menu
+```
+
+The fixture needs no daemon, socket, installed app, or production state.
+It starts in dark mode; set `PHUX_GLASS_PREVIEW_LIGHT=1` for light mode. Host
+and pane pages are interactive; command choices dismiss the fixture. The
+`ui-fixtures` feature is excluded from shipping builds. Append `-- --bench`
+to measure menu creation after warming a GPUI window. This opens no visible
+windows and reports elapsed creation time including the initial draw; it does not
+measure compositor presentation latency or frame rate.
+
+Surface height and selection use interruptible springs. Entrance and exit
+opacity affect the complete native window, including the material. All motion
+respects GPUI’s reduced-motion preference and stops scheduling frames once settled. The popup
+has its own render tree, so its animation does not redraw the terminal.
+
+GPUI offscreen captures omit native compositor effects. Inspect the live
+window for material QA; a scene-only pixel fixture proves layout, not glass.
+
 ## Upgrading GPUI Kit
 
 Kit pins its GPUI snapshot exactly. Bump `gpui-kit`, `gpui-pre` and

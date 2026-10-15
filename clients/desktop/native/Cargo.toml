@@ -20,6 +20,12 @@ path = "src/main.rs"
 # Record where each glyph landed in `terminal::PaintedFrame` for pixel
 # fixtures; off in shipping builds.
 terminal-fixtures = []
+# Native material preview. Excluded from the shipping binary.
+ui-fixtures = []
+
+[[example]]
+name = "glass_menu"
+required-features = ["ui-fixtures"]
 
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }

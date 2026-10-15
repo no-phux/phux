@@ -1,0 +1,133 @@
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 4d0b160..9fc3c95 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -660,6 +660,7 @@ struct MacWindowState {
+     native_window: id,
+     native_view: NonNull<Object>,
+     blurred_view: Option<id>,
++    glass_view: Option<id>,
+     background_appearance: WindowBackgroundAppearance,
+     cursor_style: CursorStyle,
+     cursor_visible: Arc<AtomicBool>,
+@@ -1093,6 +1094,7 @@ impl MacWindow {
+                 native_window,
+                 native_view: NonNull::new_unchecked(native_view),
+                 blurred_view: None,
++                glass_view: None,
+                 background_appearance: WindowBackgroundAppearance::Opaque,
+                 cursor_style: CursorStyle::Arrow,
+                 cursor_visible,
+@@ -1919,6 +1921,71 @@ impl PlatformWindow for MacWindow {
+         }
+     }
+ 
++    fn set_glass_effect(&self, corner_radius: Pixels, appearance: WindowAppearance) -> bool {
++        let Some(class) = Class::get("NSGlassEffectView") else {
++            return false;
++        };
++        let (native_window, native, existing, blur) = {
++            let mut this = self.0.lock();
++            this.renderer.update_transparency(true);
++            (
++                this.native_window,
++                this.native_view.as_ptr(),
++                this.glass_view,
++                this.blurred_view.take(),
++            )
++        };
++        // SAFETY: this method runs on the main thread and the window owns these
++        // views. Do not hold the state mutex across AppKit calls: reparenting or
++        // changing appearance can synchronously reenter GPUIView callbacks.
++        unsafe {
++            let name = match appearance {
++                WindowAppearance::Light | WindowAppearance::VibrantLight => "NSAppearanceNameAqua",
++                WindowAppearance::Dark | WindowAppearance::VibrantDark => {
++                    "NSAppearanceNameDarkAqua"
++                }
++            };
++            let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
++            let _: () = msg_send![native_window, setAppearance: appearance];
++            if let Some(glass) = existing {
++                let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
++                return true;
++            }
++            let root = native_window.contentView();
++            let glass: id = msg_send![class, alloc];
++            let glass = NSView::initWithFrame_(glass, NSView::bounds(root));
++            glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
++            let _: () = msg_send![glass, setStyle: 0isize];
++            let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
++            let interactive: BOOL =
++                msg_send![glass, respondsToSelector: sel!(setEffectIsInteractive:)];
++            if interactive == YES {
++                let _: () = msg_send![glass, setEffectIsInteractive: YES];
++            }
++            // Keep GPUI's view alive while contentView moves it between owners.
++            let _: id = msg_send![native, retain];
++            let _: () = msg_send![glass, setContentView: native];
++            root.addSubview_(glass);
++            // Moving through a detached contentView can clear first responder.
++            native_window.makeFirstResponder_(native);
++            let _: () = msg_send![native, release];
++            if let Some(blur) = blur {
++                NSView::removeFromSuperview(blur);
++            }
++            self.0.lock().glass_view = Some(glass.autorelease());
++        }
++        true
++    }
++
++    fn set_window_opacity(&self, opacity: f32) {
++        // SAFETY: the native window is alive for this call; UI methods
++        // are called on the main thread and the alpha argument is a scalar.
++        let native_window = self.0.lock().native_window;
++        unsafe {
++            let _: () = msg_send![native_window, setAlphaValue: opacity as f64];
++        }
++    }
++
+     fn background_appearance(&self) -> WindowBackgroundAppearance {
+         self.0.as_ref().lock().background_appearance
+     }
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index c78829b..21e03c1 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1211,6 +1211,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn background_appearance(&self) -> WindowBackgroundAppearance;
+     fn set_title(&mut self, title: &str);
+     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
++    /// Installs a compositor-backed glass surface when the platform supports it.
++    /// Returns false when callers should use their ordinary popover surface.
++    fn set_glass_effect(&self, _corner_radius: Pixels, _appearance: WindowAppearance) -> bool {
++        false
++    }
++    /// Changes native window opacity, including its compositor material.
++    fn set_window_opacity(&self, _opacity: f32) {}
+     fn minimize(&self);
+     fn zoom(&self);
+     fn toggle_fullscreen(&self);
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index c6f2dec..c0c056f 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3019,6 +3019,18 @@ impl Window {
+             .set_background_appearance(background_appearance);
+     }
+ 
++    /// Installs a native compositor glass surface, returning whether it is supported.
++    pub fn set_glass_effect(&self, corner_radius: Pixels, appearance: WindowAppearance) -> bool {
++        self.platform_window
++            .set_glass_effect(corner_radius, appearance)
++    }
++
++    /// Changes the opacity of the complete native window and its material.
++    pub fn set_window_opacity(&self, opacity: f32) {
++        self.platform_window
++            .set_window_opacity(opacity.clamp(0.0, 1.0));
++    }
++
+     /// Mark the window as dirty at the platform level.
+     pub fn set_window_edited(&mut self, edited: bool) {
+         self.platform_window.set_edited(edited);
