@@ -376,7 +376,6 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
       openQuestion(options.requestId, signal);
       const response = await context.question({ id: options.requestId, kind: 'form', title: request.title ?? request.serverName,
         message: request.message, options: [], questions: [], fields: boundedJson(request.requestedSchema) }, signal);
-      submitted(options.requestId);
       if (signal.aborted || (record(response) && response.cancelled === true)) return { action: 'cancel' };
       if (!record(response) || !record(response.values) || !validate(response.values).valid) {
         notice('warning', 'Claude MCP form answer failed provider schema validation');
@@ -384,9 +383,15 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
       }
       return protocol.ElicitResultSchema.parse({ action: 'accept', content: response.values });
     } catch {
-      submitted(options.requestId);
       notice('warning', 'Claude MCP elicitation cancelled: unsupported schema, UI, or answer');
       return { action: 'cancel' };
+    } finally {
+      // Forms have no tool outcome to await, and SDK callback completion does
+      // not abort its signal. Submission is not proof of provider consumption.
+      // A cancelled request ID may have been reused while this callback settled.
+      if (questions.get(options.requestId)?.signal === signal) {
+        closeQuestion(options.requestId, 'Claude MCP form response submitted to SDK callback');
+      }
     }
   };
 
