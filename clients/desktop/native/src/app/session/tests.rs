@@ -169,8 +169,8 @@ fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAp
     }
     let bounds = cx.debug_bounds("main-menu-rail").unwrap();
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-    // Ten command entries, ignoring separators: Settings is the last one.
-    cx.simulate_keystrokes("down down down down down down down down down down enter");
+    // Creation, pane submenu, navigation, and Settings: eight selectable rows.
+    cx.simulate_keystrokes("down down down down down down down down enter");
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.modal.clone()),
         crate::app::Modal::Settings
@@ -198,7 +198,18 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         .unwrap()
     });
     let cx = &mut gpui::VisualTestContext::from_window(focus_window, cx);
-    for (input, escape) in [(false, true), (true, true), (false, false), (true, false)] {
+    for (input, escape, submenu) in [
+        (false, true, None),
+        (true, true, None),
+        (false, false, None),
+        (true, false, None),
+        (false, true, Some("down down down down down right")),
+        (
+            true,
+            true,
+            Some("down down down down down down down down down right"),
+        ),
+    ] {
         cx.update(|window, cx| {
             fixture.read(cx).terminal.clone().focus(window, cx);
             if input {
@@ -221,6 +232,17 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
                 "popup actually took focus before dismissal"
             );
         });
+        if let Some(keys) = submenu {
+            let parent_focus = cx.update(|window, cx| window.focused(cx));
+            cx.simulate_keystrokes(keys);
+            cx.update(|window, cx| {
+                assert_ne!(
+                    window.focused(cx),
+                    parent_focus,
+                    "keyboard entered the submenu"
+                );
+            });
+        }
         if escape {
             cx.simulate_keystrokes("escape");
         } else {
@@ -243,7 +265,7 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         cx.simulate_input("x");
     }
     fixture.read_with(cx, |fixture, cx| {
-        assert_eq!(fixture.inputs[0].read(cx).value(), "xx");
+        assert_eq!(fixture.inputs[0].read(cx).value(), "xxx");
         assert!(
             !fixture.keys.is_empty(),
             "terminal still receives keys after Escape"
