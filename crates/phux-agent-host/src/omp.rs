@@ -62,10 +62,10 @@ pub(super) fn run(
     view.connected = true;
     view.provider_session_id = Some(state.session_id);
     view.capabilities = NativeCapabilities {
-        prompt: true,
-        interrupt: true,
-        questions: true,
-        follow_up: true,
+        prompt: true.into(),
+        interrupt: true.into(),
+        questions: true.into(),
+        follow_up: true.into(),
     };
     sink.update(NativeUpdate::View { view })?;
     let dialog = Arc::new(Mutex::new(()));

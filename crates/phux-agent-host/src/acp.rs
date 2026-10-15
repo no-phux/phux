@@ -30,7 +30,7 @@ impl Callback {
         if !self.sink.view().connected {
             let mut view = self.sink.view();
             view.connected = true;
-            view.capabilities.questions = true;
+            view.capabilities.questions = true.into();
             self.sink
                 .update(NativeUpdate::View { view })
                 .map_err(host_to_acp)?;
@@ -437,7 +437,7 @@ pub(super) fn run(
                 id
             } else { connection.new_session(sdk::NewSessionRequest::new(spec.cwd.clone())).await.map_err(|error| HostError::Sdk(format!("ACP session initialization failed (authenticate externally if required): {error}")))?.session_id };
             let mut view = sink.view(); view.connected = true; view.provider_session_id = Some(id.to_string());
-            view.capabilities = NativeCapabilities { prompt: true, interrupt: true, questions: true, follow_up: false };
+            view.capabilities = NativeCapabilities { prompt: true.into(), interrupt: true.into(), questions: true.into(), follow_up: false.into() };
             sink.update(NativeUpdate::View { view })?;
             Ok::<_, HostError>(id)
         };

@@ -357,7 +357,7 @@ impl Desk {
                 .native
                 .as_ref()
                 .ok_or("This is an attached TUI, not a native SDK session")?;
-            if !view.capabilities.questions
+            if !view.capabilities.questions.is_supported()
                 || !view.questions.iter().any(|item| item == &request.question)
             {
                 return Err("The provider request closed or changed. Nothing was sent.".into());
@@ -486,7 +486,8 @@ pub(super) fn focus(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> bool {
-    let Some(view) = view.filter(|view| view.connected && view.capabilities.questions) else {
+    let Some(view) = view.filter(|view| view.connected && view.capabilities.questions.is_supported())
+    else {
         return false;
     };
     for question in &view.questions {
@@ -516,7 +517,7 @@ pub(super) fn render(
     let Some(view) = view else { return Vec::new() };
     view.questions.iter().map(|question| {
         let status = face.question_status.get(&question.id);
-        let disabled = !ready || !view.connected || !view.capabilities.questions || status.is_some();
+        let disabled = !ready || !view.connected || !view.capabilities.questions.is_supported() || status.is_some();
         let mut panel = div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(8.)).border_1().border_color(from_hex(&colors.border))
             .child(div().text_sm().child(format!("{} · {}", question.title, question.kind)))
             .child(TextView::markdown(SharedString::from(format!("native-question-{}", question.id)), question.message.clone()).selectable(true).scrollable(false));

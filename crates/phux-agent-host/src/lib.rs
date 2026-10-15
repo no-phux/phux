@@ -409,16 +409,17 @@ pub async fn run(spec: HostSpec) -> Result<(), HostError> {
                 refusal = Some("provider SDK is not ready".into());
             }
             match &command.intent {
-                NativeIntent::Prompt { .. } if !view.capabilities.prompt => {
+                NativeIntent::Prompt { .. } if !view.capabilities.prompt.is_supported() => {
                     refusal = Some("provider prompt unsupported".into())
                 }
                 NativeIntent::Prompt { .. }
-                    if view.turn_id.is_some() && !view.capabilities.follow_up =>
+                    if view.turn_id.is_some() && !view.capabilities.follow_up.is_supported() =>
                 {
                     refusal = Some("provider turn is active; follow-up unsupported".into())
                 }
                 NativeIntent::Interrupt { turn_id }
-                    if !view.capabilities.interrupt || view.turn_id.as_ref() != Some(turn_id) =>
+                    if !view.capabilities.interrupt.is_supported()
+                        || view.turn_id.as_ref() != Some(turn_id) =>
                 {
                     refusal = Some("stale turn or interrupt unsupported".into())
                 }
@@ -431,7 +432,10 @@ pub async fn run(spec: HostSpec) -> Result<(), HostError> {
                         .questions
                         .iter()
                         .find(|question| &question.id == question_id);
-                    if !current.connected || !current.capabilities.questions || question.is_none() {
+                    if !current.connected
+                        || !current.capabilities.questions.is_supported()
+                        || question.is_none()
+                    {
                         refusal = Some("question no longer pending".into());
                     } else if let Err(message) =
                         common::validate_answer(question.expect("checked question"), response)

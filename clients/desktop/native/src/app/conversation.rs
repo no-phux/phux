@@ -464,7 +464,7 @@ impl Desk {
                         .into(),
                 );
             }
-            if stop && (!native.capabilities.interrupt || native.turn_id.is_none()) {
+            if stop && (!native.capabilities.interrupt.is_supported() || native.turn_id.is_none()) {
                 return Err("This provider has no interruptible turn.".into());
             }
         } else if conversation.state.status == AgentSessionStatus::Blocked {
@@ -667,9 +667,9 @@ fn receipt_message(disposition: NativeDisposition, detail: Option<&str>) -> Stri
 
 fn prompt_available(view: &NativeView, state: AgentSessionStatus) -> bool {
     view.connected
-        && view.capabilities.prompt
+        && view.capabilities.prompt.is_supported()
         && view.questions.is_empty()
-        && (state != AgentSessionStatus::Working || view.capabilities.follow_up)
+        && (state != AgentSessionStatus::Working || view.capabilities.follow_up.is_supported())
 }
 
 fn resolve_prompt_receipt(
@@ -1098,10 +1098,10 @@ mod tests {
             backend: "omp-rpc".into(),
             connected: true,
             capabilities: NativeCapabilities {
-                prompt: true,
-                interrupt: true,
-                questions: true,
-                follow_up: false,
+                prompt: true.into(),
+                interrupt: true.into(),
+                questions: true.into(),
+                follow_up: false.into(),
             },
             turn_id: None,
             provider_session_id: None,
@@ -1109,7 +1109,7 @@ mod tests {
         };
         assert!(prompt_available(&view, AgentSessionStatus::Idle));
         assert!(!prompt_available(&view, AgentSessionStatus::Working));
-        view.capabilities.follow_up = true;
+        view.capabilities.follow_up = true.into();
         assert!(prompt_available(&view, AgentSessionStatus::Working));
         view.questions.push(NativeQuestion {
             id: "real-question".into(),
