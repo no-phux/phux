@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.2](https://github.com/no-phux/phux/compare/v0.74.1...v0.74.2) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
 ## [0.74.1](https://github.com/no-phux/phux/compare/v0.74.0...v0.74.1) (2026-10-14)
 
 
