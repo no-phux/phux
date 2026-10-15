@@ -19,7 +19,7 @@
     # GHOSTTY_COMMIT names in the pinned libghostty-rs's build.rs (the rev in
     # Cargo.toml); `just ghostty-pin-check` fails when the two differ.
     ghostty = {
-      url = "github:phall1/ghostty/ff896fea333f954c8ba1f8932a4871aaf927a5e9";
+      url = "github:phall1/ghostty/11e797c05f162911fb64804d37337e7224ab501f";
       flake = false;
     };
   };
@@ -231,14 +231,17 @@
         # `zig build` flags, Zig, and Ghostty source, with the optimize mode
         # read from .cargo/config.toml and Zig's `baseline` CPU, the build
         # script's default. Zig's packages come from Ghostty's own zon2nix
-        # manifest, so the build never touches the network. It names the
-        # glibc target instead of letting Zig probe the sandbox, where it
+        # manifest, so the build never touches the network. On Linux it names
+        # the glibc target instead of letting Zig probe the sandbox, where it
         # cannot find the host's dynamic linker.
         #
-        # Linux only. Ghostty's Darwin build links its dylib through the
-        # host's /usr/bin/xcrun, outside the Nix store and the sandbox, so
-        # macOS keeps building the library from source.
-        libghosttyVtPrebuilt = pkgs.stdenv.hostPlatform.isLinux;
+        # On Darwin the target stays native, as in a Cargo build, so Ghostty
+        # applies its own macOS deployment floor. Ghostty finds the SDK and
+        # the archive tools through `xcrun`; here that is xcbuild's, which
+        # resolves the SDK from the stdenv's apple-sdk (DEVELOPER_DIR) and
+        # tools such as `nmedit` from cctools on PATH, so no host Xcode or
+        # Command Line Tools take part.
+        libghosttyVtPrebuilt = true;
         libghosttyVtOptimize =
           (builtins.fromTOML (builtins.readFile ./.cargo/config.toml)).env.LIBGHOSTTY_VT_SYS_OPTIMIZE;
         libghosttyVtCpu = "baseline";
@@ -250,6 +253,10 @@
           nativeBuildInputs = [
             zigPinned
             pkgs.removeReferencesTo
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+            pkgs.xcbuild
+            pkgs.cctools
           ];
           dontConfigure = true;
           dontBuild = true;
@@ -264,18 +271,19 @@
               -Dcpu=${libghosttyVtCpu} \
               -Demit-xcframework=false \
               -Dapp-runtime=none \
-              -Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "-Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"} \
               --prefix "$out" \
               --cache-dir "$TMPDIR/zig-cache" \
               --system "$deps" \
               --global-cache-dir "$TMPDIR/zig-global-cache"
             test -f "$out/lib/libghostty-vt.a"
             test -f "$out/include/ghostty/vt.h"
-            # Debug info names the Zig, source, and package paths it was built
-            # from. Left in, they would make every substitution of this
-            # library download Zig and Ghostty's sources with it.
+            # Debug info names the Zig, source, package, and (on Darwin) SDK
+            # paths it was built from. Left in, they would make every
+            # substitution of this library download them with it.
             find "$out/lib" -type f -exec remove-references-to \
-              -t ${zigPinned} -t "$src" -t "$deps" {} +
+              -t ${zigPinned} -t "$src" -t "$deps" \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "-t ${pkgs.apple-sdk}"} {} +
             runHook postInstall
           '';
           passthru = {
