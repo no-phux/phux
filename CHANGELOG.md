@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.76.1](https://github.com/no-phux/phux/compare/v0.76.0...v0.76.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** answer handshake frames to the connection that asked ([ac6e3b6](https://github.com/no-phux/phux/commit/ac6e3b6c9e4f78dab9c94a72217ccea4942575e9))
+* **site:** keep command results on the view that asked ([74d26d0](https://github.com/no-phux/phux/commit/74d26d087f0d325cca8fbb930e2e5834bd1eeaef))
+
 ## [0.76.0](https://github.com/no-phux/phux/compare/v0.75.0...v0.76.0) (2026-10-15)
 
 

@@ -6,7 +6,7 @@ FROM --platform=linux/amd64 rust:1.99.0-bookworm@sha256:59037199c44290f2befcdd58
 # release-please extra-files rewrites the annotated version literals; its
 # sync job refreshes the immutable source/lock pins with site_source_pin.py.
 # x-release-please-start-version
-ARG PHUX_VERSION=0.76.0
+ARG PHUX_VERSION=0.76.1
 # x-release-please-end
 ARG PHUX_REVISION=71c654ae025aa505dd6ad72ef3e78235924f1aa4
 ARG PHUX_SOURCE_SHA256=2a1a5d32d4db32c849117bf793f248758b1028e0c8a6bf7c334238dedacf7763
@@ -28,7 +28,7 @@ ADD --checksum=sha256:9f28838ef45aa710568a94ef61c0211af61df230c1e0038d88e16b4d90
 ADD --checksum=sha256:5aa5167344978edd1c91e8a36d100ae33872793ccb81d48dfec77f66aa9fd013 \
     https://github.com/phall1/ghostty/archive/ff896fea333f954c8ba1f8932a4871aaf927a5e9.tar.gz /tmp/ghostty.tar.gz
 # x-release-please-start-version
-RUN test "$PHUX_VERSION" = "0.76.0"
+RUN test "$PHUX_VERSION" = "0.76.1"
 # x-release-please-end
 RUN test "$PHUX_REVISION" = "71c654ae025aa505dd6ad72ef3e78235924f1aa4" \
     && test "$PHUX_SOURCE_SHA256" = "2a1a5d32d4db32c849117bf793f248758b1028e0c8a6bf7c334238dedacf7763" \
@@ -119,7 +119,7 @@ COPY --chmod=0644 container/bashrc /etc/phux/bashrc
 COPY --chmod=0644 container/profile /etc/profile
 
 # x-release-please-start-version
-ARG PHUX_VERSION=0.76.0
+ARG PHUX_VERSION=0.76.1
 # x-release-please-end
 RUN test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION" \
     && cp /usr/bin/socat /opt/internal/socat \
