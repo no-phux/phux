@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/no-phux/phux/compare/desktop-v0.12.0...desktop-v0.12.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** align menus and quiet workspace chrome ([#1418](https://github.com/no-phux/phux/issues/1418)) ([b17dad3](https://github.com/no-phux/phux/commit/b17dad3a38dbb882ef8be3f1795e9d43551c4210))
+
 ## [0.12.0](https://github.com/no-phux/phux/compare/desktop-v0.11.1...desktop-v0.12.0) (2026-10-15)
 
 
