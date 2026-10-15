@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.77.0](https://github.com/no-phux/phux/compare/v0.76.2...v0.77.0) (2026-10-15)
+
+
+### Features
+
+* **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
+* **site:** make the product tour a front door to the live demo ([#1401](https://github.com/no-phux/phux/issues/1401)) ([be2182a](https://github.com/no-phux/phux/commit/be2182a0897da61803f2db41151efe198d522538))
+* **site:** put the live demo at the center of the product tour ([be2182a](https://github.com/no-phux/phux/commit/be2182a0897da61803f2db41151efe198d522538))
+
+
+### Bug Fixes
+
+* **release:** publish next pointers when retarget is refused ([#1398](https://github.com/no-phux/phux/issues/1398)) ([eea23ca](https://github.com/no-phux/phux/commit/eea23cad7f60cc92a7f40d1c5bf859294a38503f))
+
 ## [0.76.2](https://github.com/no-phux/phux/compare/v0.76.1...v0.76.2) (2026-10-15)
 
 
