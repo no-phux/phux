@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.76.0](https://github.com/no-phux/phux/compare/v0.75.0...v0.76.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** add live native performance monitoring ([e60e87e](https://github.com/no-phux/phux/commit/e60e87e5c05be81c30c1ffb9e167b178f07b181f))
+
+
+### Performance
+
+* **runtime:** keep the last frame across reconnect and size the websocket send budget ([#1392](https://github.com/no-phux/phux/issues/1392)) ([b33f042](https://github.com/no-phux/phux/commit/b33f0426c1b661fd216df75739a032b47be96b5b))
+
 ## [0.75.0](https://github.com/no-phux/phux/compare/v0.74.4...v0.75.0) (2026-10-15)
 
 
