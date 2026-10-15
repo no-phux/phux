@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.76.2](https://github.com/no-phux/phux/compare/v0.76.1...v0.76.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** keep the bootstrap generation broadcast ([0de6695](https://github.com/no-phux/phux/commit/0de6695588643ac1a75acd7440f586b4b43d0d6f))
+
+
+### Documentation
+
+* **site:** name the per-connection routing rule in the worker guide ([447ef0c](https://github.com/no-phux/phux/commit/447ef0ce2a68bf0b124b3d848b955fbdc35ff901))
+
 ## [0.76.1](https://github.com/no-phux/phux/compare/v0.76.0...v0.76.1) (2026-10-15)
 
 
