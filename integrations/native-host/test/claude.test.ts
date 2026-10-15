@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk/core';
+import { Ajv } from 'ajv';
 import { createAdapter, claudeEnvironment } from '../src/claude.js';
+import { QuestionRegistry } from '../src/questions.js';
 import type { AdapterContext, Json, NativeCommandResult, NativeQuestion, NativeUpdate } from '../src/types.js';
 
 class Events {
@@ -269,10 +271,11 @@ test('MCP forms preserve original JSON schema and validate required fields, enum
   assert.deepEqual(f.questions.at(-1)!.question.fields, requestedSchema);
   f.questions.at(-1)!.resolve({ values: { count: 2, email: 'person@example.com', choice: 'actual-id' } });
   assert.deepEqual(await pending, { action: 'accept', content: { count: 2, email: 'person@example.com', choice: 'actual-id' } });
-  assert.equal(f.updates.some((update) => update.type === 'question_closed'), false);
+  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['actual-elicitation-control-id']);
   f.events.send(assistant('actual-turn'));
   await drained();
-  assert.equal(f.updates.some((update) => update.type === 'question_closed'), false, 'unrelated assistant output cannot consume a form');
+  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['actual-elicitation-control-id'],
+    'unrelated assistant output must not duplicate callback completion');
   const invalidValues: Json[] = [
     { count: 1.5, email: 'person@example.com', choice: 'actual-id' },
     { count: 2, email: 'not-an-email', choice: 'actual-id' },
@@ -448,38 +451,82 @@ test('source closure reports exact queued and admitted operations unknown withou
   await adapter.close();
 });
 
-test('concurrent submitted forms survive unrelated output and turn results until their own cancellation or source closure', async () => {
+test('completed MCP callbacks reclaim the bounded native registry without aborting or retiring independent requests', async (t) => {
   const f = fixture();
+  const ajv = new Ajv();
+  const published: NativeQuestion[] = [];
+  const emit = f.context.emit;
+  const registry = new QuestionRegistry(schema => ajv.compile(schema), question => {
+    published.push(question);
+    emit({ type: 'question_opened', question });
+  }, (id, reason) => emit({ type: 'question_closed', id, reason }));
+  // Match the bridge's real registry wiring: only an adapter-emitted close
+  // retires a submitted answer. The fixture must not manufacture that close.
+  f.context.emit = update => {
+    if (update.type === 'question_closed') registry.closed(update.id);
+    emit(update);
+  };
+  f.context.question = (question, signal) => registry.open(question, signal);
+  f.context.closeQuestions = reason => registry.closeAll(reason);
   const adapter = await createAdapter(f.context, f.factory);
+  t.after(() => adapter.close());
   const schema = { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] };
-  const request = { serverName: 'server', message: 'Settings', mode: 'form' as const, requestedSchema: schema };
-  const firstSignal = new AbortController();
-  const secondSignal = new AbortController();
-  const first = f.options.onElicitation!(request, { signal: firstSignal.signal, requestId: 'form-one' });
-  const second = f.options.onElicitation!(request, { signal: secondSignal.signal, requestId: 'form-two' });
-  f.questions[0]!.resolve({ values: { value: 'first' } });
-  f.questions[1]!.resolve({ values: { value: 'second' } });
-  assert.equal((await first)?.action, 'accept');
-  assert.equal((await second)?.action, 'accept');
+  const request = { serverName: 'server', message: `Settings ${'Provider field details. '.repeat(8)}`,
+    mode: 'form' as const, requestedSchema: schema };
+  const independentSignal = new AbortController();
+  const independent = f.options.onElicitation!(request, { signal: independentSignal.signal, requestId: 'independent-form' });
   const tool = f.options.canUseTool!('Read', { path: '/tmp/example' }, permission('other-tool-request'));
-  f.questions[2]!.resolve({ option_id: 'allow' });
-  await tool;
+  assert.equal(registry.answer('other-tool-request', { option_id: 'allow' }).accepted, true);
+  assert.equal((await tool)?.behavior, 'allow');
+
+  const completed: string[] = [];
+  for (let index = 0; index < 40; index++) {
+    const id = `completed-form-${index}`;
+    const signal = new AbortController();
+    const callback = f.options.onElicitation!(request, { signal: signal.signal, requestId: id });
+    const submission = registry.answer(id, { values: { value: String(index) } });
+    assert.equal(submission.accepted, true, `form ${index} must remain answerable after earlier callbacks finished`);
+    assert.match(submission.detail, /queued.*provider consumption is not yet confirmed/);
+    assert.equal(registry.pending.get(id)?.settled, true, 'answer queueing alone must not synchronously close the form');
+    assert.deepEqual(await callback, { action: 'accept', content: { value: String(index) } });
+    // Pinned SDK 0.3.300 writes this callback result, then deletes its
+    // cancellation controller WITHOUT aborting the signal.
+    assert.equal(signal.signal.aborted, false);
+    completed.push(id);
+  }
+  assert.ok(completed.length > 32);
+  assert.ok(published.filter(question => completed.includes(question.id))
+    .reduce((bytes, question) => bytes + Buffer.byteLength(JSON.stringify(question)), 0) > 12 * 1024);
+  assert.deepEqual([...registry.pending.keys()], ['independent-form', 'other-tool-request'],
+    'completed callbacks must release both retained question slots and schema bytes');
+  const closures = f.updates.flatMap(update => update.type === 'question_closed' ? [update] : []);
+  assert.deepEqual(closures.map(update => update.id), completed);
+  for (const update of closures) {
+    assert.match(update.reason, /callback.*submitt|submitt.*callback/i);
+    assert.doesNotMatch(update.reason, /consum|tool outcome/i);
+  }
+  assert.deepEqual(f.results, [], 'submitting callback answers must not invent provider consumption receipts');
+
+  const later = f.options.canUseTool!('Write', { file_path: '/tmp/later' },
+    { ...permission('later-tool-request'), toolUseID: 'later-tool-call' });
+  assert.equal(registry.pending.get('later-tool-request')?.settled, false,
+    'a new permission must still open after more than the retained registry bounds were submitted');
+  assert.equal(registry.answer('later-tool-request', { option_id: 'allow' }).accepted, true);
+  assert.equal((await later)?.behavior, 'allow');
   f.events.send(assistant('other-turn'));
-  f.events.send({ type: 'stream_event', event: { type: 'message_stop' }, parent_tool_use_id: null,
-    uuid: '00000000-0000-4000-8000-000000000009', session_id: 'actual-provider-session' } as SDKMessage);
+  await drained();
+  assert.equal((await adapter.interrupt('other-turn')).disposition, 'completed');
+  f.events.send(result('other-turn'));
+  await drained();
+  assert.deepEqual([...registry.pending.keys()], ['independent-form', 'other-tool-request', 'later-tool-request'],
+    'assistant output, interrupt acknowledgments and turn completion do not close independent requests');
   f.events.send({ type: 'tool_progress', tool_use_id: 'actual-tool-call', tool_name: 'Read', parent_tool_use_id: null,
     elapsed_time_seconds: 1, uuid: '00000000-0000-4000-8000-000000000010', session_id: 'actual-provider-session' });
   await drained();
-  assert.equal((await adapter.interrupt('other-turn')).disposition, 'completed');
-  assert.deepEqual(f.closeReasons, [], 'interrupt acknowledgment is not cancellation of independent form requests');
-  f.events.send(result('other-turn'));
-  await drained();
-  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['other-tool-request']);
-  firstSignal.abort();
-  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['other-tool-request', 'form-one']);
-  f.events.send(result('yet-another-turn'));
-  await drained();
-  assert.equal(f.updates.some((update) => update.type === 'question_closed' && update.id === 'form-two'), false);
+  assert.deepEqual([...registry.pending.keys()], ['independent-form', 'later-tool-request'],
+    'tool outcome closure must still match its own submitted permission request');
+  assert.equal(registry.pending.get('independent-form')?.settled, false);
+  assert.equal(independentSignal.signal.aborted, false);
   await adapter.close();
-  assert.ok(f.updates.some((update) => update.type === 'question_closed' && update.id === 'form-two' && update.reason.includes('cancelled')));
+  assert.deepEqual(await independent, { action: 'cancel' });
 });
