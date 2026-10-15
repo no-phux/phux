@@ -129,6 +129,7 @@ impl Home {
             cmd.env(key, value);
         }
         cmd.env("TERM", "xterm-256color");
+        cmd.env("PHUX_NO_UPDATE_CHECK", "1");
         let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
         drop(pty.slave);
         let mut reader = pty.master.try_clone_reader().expect("clone reader");

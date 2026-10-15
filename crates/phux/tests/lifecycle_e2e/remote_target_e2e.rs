@@ -113,6 +113,7 @@ impl RemoteHome {
         // auto-bind the overlay port (ADR-0081).
         cmd.env("PHUX_SOCKET", self.dir.path().join("phux.sock"));
         cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+        cmd.env("PHUX_NO_UPDATE_CHECK", "1");
 
         let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
         drop(pty.slave);
