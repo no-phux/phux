@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.3](https://github.com/no-phux/phux/compare/v0.74.2...v0.74.3) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** probe quiet links and echo keys before the round trip ([#1385](https://github.com/no-phux/phux/issues/1385)) ([ec9a265](https://github.com/no-phux/phux/commit/ec9a265e63322b12de8f39b441a9577d4892e72f))
+
 ## [0.74.2](https://github.com/no-phux/phux/compare/v0.74.1...v0.74.2) (2026-10-15)
 
 

@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.74.2"
+version = "0.74.3"
 dependencies = [
  "bitflags",
  "bytes",
