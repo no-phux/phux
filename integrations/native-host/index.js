@@ -579,18 +579,32 @@ function attachPiSession(context, session) {
     },
     async prompt(text, operationId) {
       if (closed) return { disposition: "refused", detail: "Pi session is closed." };
+      let preflight;
       const task = session.prompt(text, {
         streamingBehavior: "followUp",
         source: "interactive",
-        preflightResult: (disposition) => context.emit({
-          type: "notice",
-          level: "info",
-          text: `Pi operation ${operationId}: SDK preflight ${disposition}.`
-        })
+        preflightResult: (disposition) => {
+          preflight = disposition;
+          context.result({
+            operation_id: operationId,
+            disposition: disposition === "handled" ? "completed" : disposition === "started" ? "admitted" : "queued",
+            detail: disposition === "handled" ? "Pi SDK extension/input handler handled the input; no model prompt admission is asserted." : disposition === "started" ? "Pi SDK accepted the prompt and started its agent run; model response completion is pending." : "Pi SDK queued the input for follow-up; provider consumption is not confirmed."
+          });
+        }
       });
       const observed = task.then(() => {
         identity();
+        if (preflight === "started") context.result({
+          operation_id: operationId,
+          disposition: "completed",
+          detail: "Pi SDK prompt run settled; this does not assert a successful model response."
+        });
       }, () => {
+        context.result({
+          operation_id: operationId,
+          disposition: "unknown",
+          detail: "Pi SDK prompt failed after invocation; input was not retried."
+        });
         if (!closed) {
           context.emit({ type: "notice", level: "error", text: `Pi operation ${operationId} failed in the SDK.` });
         }
@@ -890,9 +904,9 @@ async function createAdapter2(context, startQuery) {
     capabilities: { prompt: true, interrupt: true, questions: true, follow_up: true },
     async prompt(text, operationId) {
       if (closed) return { disposition: "refused", detail: "Claude query is closed" };
-      if (pending.size >= MAX_PENDING) return { disposition: "refused", detail: "Claude has 64 unconsumed prompts" };
+      if (pending.size >= MAX_PENDING) return { disposition: "refused", detail: "Claude has 64 prompts awaiting correlated results" };
       const uuid = randomUUID2();
-      pending.set(uuid, operationId);
+      pending.set(uuid, { operationId, admitted: false });
       input.push({
         type: "user",
         uuid,
@@ -908,7 +922,6 @@ async function createAdapter2(context, startQuery) {
       if (closed || !currentTurn || currentTurn !== turnId) return { disposition: "refused", detail: "Claude turn is no longer current" };
       try {
         const receipt = await conversation.interrupt();
-        context.closeQuestions("Claude acknowledged interrupt");
         return { disposition: "completed", detail: receipt ? `Claude acknowledged interrupt; ${receipt.still_queued.length} queued prompts remain. Turn termination is reported separately.` : "Claude acknowledged interrupt; turn termination is reported separately" };
       } catch {
         return { disposition: "unknown", detail: "Claude interrupt outcome is unknown; it was not resent" };
@@ -943,10 +956,6 @@ async function createAdapter2(context, startQuery) {
           if (!question.submitted) continue;
           if (question.toolId && outcomeToolIds.includes(question.toolId)) {
             closeQuestion(id, "Claude SDK reported the requested tool outcome");
-          } else if (!question.toolId && (message.type === "assistant" || message.type === "stream_event" || message.type === "tool_progress")) {
-            closeQuestion(id, "Claude SDK continued after submitted elicitation");
-          } else if (message.type === "result") {
-            closeQuestion(id, "Claude SDK turn ended after submitted response");
           }
         }
         if ((message.type === "assistant" || message.type === "stream_event") && message.parent_tool_use_id === null) {
@@ -956,9 +965,13 @@ async function createAdapter2(context, startQuery) {
           }
           for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) {
             const operation = pending.get(id);
-            if (operation !== void 0) {
-              pending.delete(id);
-              notice("info", `Claude consumed prompt operation ${operation} (${id})`);
+            if (operation && !operation.admitted) {
+              operation.admitted = true;
+              context.result({
+                operation_id: operation.operationId,
+                disposition: "admitted",
+                detail: "Claude SDK confirmed prompt consumption with its exact user-message UUID"
+              });
             }
           }
           let waitingForAnswer = false;
@@ -972,7 +985,16 @@ async function createAdapter2(context, startQuery) {
         }
         transcript.message(message);
         if (message.type === "result") {
-          for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) pending.delete(id);
+          for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) {
+            const operation = pending.get(id);
+            if (!operation) continue;
+            pending.delete(id);
+            context.result({
+              operation_id: operation.operationId,
+              disposition: "completed",
+              detail: message.is_error ? `Claude SDK returned a correlated error result (${message.subtype})` : "Claude SDK returned a correlated successful result"
+            });
+          }
           if (message.is_error) notice("error", `Claude turn ended with ${message.subtype}`);
           currentTurn = void 0;
           context.turn(void 0);
@@ -992,6 +1014,13 @@ async function createAdapter2(context, startQuery) {
       closed = true;
       context.connection(false);
       input.finish();
+      for (const operation of pending.values()) {
+        context.result({
+          operation_id: operation.operationId,
+          disposition: "unknown",
+          detail: "Claude SDK stream closed without a correlated result; input was not resent"
+        });
+      }
       pending.clear();
       shutdown.abort();
       context.closeQuestions("Claude SDK stream closed");
@@ -22698,7 +22727,7 @@ import { createRequire } from "node:module";
 import { readFile as readFile2, access as access2, open } from "node:fs/promises";
 import { dirname, join as join2 } from "node:path";
 import { constants as constants2 } from "node:fs";
-async function createAdapter5(context) {
+async function createAdapter5(context, startExecution) {
   if (context.command.length !== 1 || context.command[0] !== "node") throw new Error('Amp in-process SDK requires command ["node"]; additional CLI arguments are unsupported and were not applied');
   const { execute: execute2, createUserMessage } = await import("@ampcode/sdk");
   const require2 = createRequire(join2(context.runtime, "package.json"));
@@ -22736,29 +22765,48 @@ async function createAdapter5(context) {
       async function* input() {
         yield createUserMessage(text, { requestId: requestId2 });
       }
-      const done = (async () => {
+      const finished = Promise.withResolvers();
+      active = { requestId: requestId2, abort, done: finished.promise };
+      context.turn(requestId2);
+      void (async () => {
+        let resultSeen = false;
         try {
-          let resultSeen = false;
-          for await (const message of execute2({ prompt: input(), options: { cwd: context.cwd, ...projection.sessionId ? { continue: projection.sessionId } : {}, dangerouslyAllowAll: false }, signal: abort.signal })) {
-            if (message.type === "result") resultSeen = true;
+          for await (const message of (startExecution ?? execute2)({ prompt: input(), options: {
+            cwd: context.cwd,
+            ...projection.sessionId ? { continue: projection.sessionId } : { visibility: "private" },
+            dangerouslyAllowAll: false
+          }, signal: abort.signal })) {
             projection.emit(message, requestId2);
+            if (message.type === "result" && !resultSeen) {
+              resultSeen = true;
+              context.result({
+                operation_id: operationId,
+                disposition: "completed",
+                detail: message.is_error ? `Amp SDK returned an execution error result (${message.subtype})` : "Amp SDK returned a successful execution result"
+              });
+            }
           }
           if (!resultSeen) context.emit({ type: "notice", level: "warning", text: "Amp SDK stream ended without a provider result; no command retry was attempted." });
         } catch {
           context.emit({ type: "notice", level: abort.signal.aborted ? "warning" : "error", text: abort.signal.aborted ? "Amp SDK execution aborted locally; no provider semantic cancellation acknowledgment is available." : "Amp SDK execution failed; no input retry was attempted." });
           context.emit({ type: "state", state: "done" });
         } finally {
+          if (!resultSeen) context.result({
+            operation_id: operationId,
+            disposition: "unknown",
+            detail: abort.signal.aborted ? "Amp SDK execution aborted locally without a provider result; input was not resent" : "Amp SDK execution ended without a provider result; input was not resent"
+          });
           active = void 0;
           context.turn(void 0);
           projection.tools.clear();
           if (!projection.confirmed) {
+            closed = true;
             context.emit({ type: "notice", level: "error", text: "Amp ended before confirming a thread ID. Controls are unavailable rather than silently creating a replacement conversation." });
             context.connection(false);
           }
+          finished.resolve();
         }
       })();
-      active = { requestId: requestId2, abort, done };
-      context.turn(requestId2);
       return { disposition: "queued", detail: "Input queued to Amp SDK execute; this SDK exposes no provider admission receipt" };
     },
     async interrupt(turnId) {
@@ -22840,6 +22888,7 @@ var init_amp = __esm({
 // src/bridge.ts
 var bridge_exports = {};
 __export(bridge_exports, {
+  NativeOperationLedger: () => NativeOperationLedger,
   nativeUpdate: () => nativeUpdate,
   parseCommand: () => parseCommand,
   runBridge: () => runBridge
@@ -22939,6 +22988,7 @@ async function runBridge(startup, writeProtocol) {
     ...startup,
     env: { ...process.env },
     emit,
+    result: (result) => ledger.result(result),
     connection(value) {
       available = value;
       publishView();
@@ -22958,7 +23008,6 @@ async function runBridge(startup, writeProtocol) {
       publishView();
     }
   };
-  const ledger = /* @__PURE__ */ new Map();
   const dispatch = async (command2) => {
     if (command2.activation !== startup.activation) return { operation_id: command2.operation_id, disposition: "refused", detail: "Native activation is stale" };
     if (!connected || !available) return { operation_id: command2.operation_id, disposition: "refused", detail: "SDK source is unavailable" };
@@ -22971,36 +23020,14 @@ async function runBridge(startup, writeProtocol) {
     if (!adapter) return { operation_id: command2.operation_id, disposition: "refused", detail: "SDK initialization has not completed" };
     if (intent.type === "interrupt" && (!capabilities2.interrupt || turnId !== intent.turn_id)) return { operation_id: command2.operation_id, disposition: "refused", detail: "Provider turn is stale or interruption is unsupported" };
     if (intent.type === "prompt" && !capabilities2.prompt) return { operation_id: command2.operation_id, disposition: "refused", detail: "Provider prompts are unsupported" };
-    try {
-      const outcome = intent.type === "prompt" ? await adapter.prompt(intent.text, command2.operation_id) : await adapter.interrupt(intent.turn_id);
-      return { operation_id: command2.operation_id, ...outcome };
-    } catch {
-      return { operation_id: command2.operation_id, disposition: "unknown", detail: "SDK command failed after dispatch; input was not retried" };
-    }
+    const outcome = intent.type === "prompt" ? await adapter.prompt(intent.text, command2.operation_id) : await adapter.interrupt(intent.turn_id);
+    return { operation_id: command2.operation_id, ...outcome };
   };
-  const commandReceived = (command2) => {
-    const fingerprint = createHash("sha256").update(JSON.stringify(command2)).digest("hex");
-    const previous = ledger.get(command2.operation_id);
-    if (previous) {
-      if (previous.fingerprint !== fingerprint) send({ type: "result", result: { operation_id: command2.operation_id, disposition: "refused", detail: "Operation ID was reused with a changed command" } });
-      else void previous.result.then((result2) => send({ type: "result", result: result2 }));
-      return;
-    }
-    if (ledger.size >= 4096) {
-      send({ type: "result", result: { operation_id: command2.operation_id, disposition: "refused", detail: "Native operation ledger is full; input was not dispatched" } });
-      return;
-    }
-    let complete;
-    const result = new Promise((resolve2) => {
-      complete = resolve2;
-    });
-    ledger.set(command2.operation_id, { fingerprint, result });
-    void dispatch(command2).then(complete);
-    void result.then((result2) => send({ type: "result", result: result2 }));
-  };
+  const ledger = new NativeOperationLedger(dispatch, (result) => send({ type: "result", result }));
   function shutdown() {
     if (closing) return closing;
     connected = false;
+    ledger.close();
     questions.closeAll("host_closed");
     publishView();
     process.stdin.pause();
@@ -23033,7 +23060,7 @@ async function runBridge(startup, writeProtocol) {
           void shutdown();
           return;
         }
-        commandReceived(packet);
+        ledger.receive(packet);
       } catch {
         fatal("Malformed native SDK input packet; no terminal fallback is available");
         return;
@@ -23099,7 +23126,7 @@ async function runBridge(startup, writeProtocol) {
     fatal("Native SDK initialization failed; verify isolated runtime assets and compatible provider executable on the executing host");
   }
 }
-var MAX_PACKET_BYTES, MAX_BUFFER_BYTES;
+var MAX_PACKET_BYTES, MAX_BUFFER_BYTES, NativeOperationLedger;
 var init_bridge = __esm({
   "src/bridge.ts"() {
     "use strict";
@@ -23107,6 +23134,57 @@ var init_bridge = __esm({
     init_questions();
     MAX_PACKET_BYTES = 16 * 1024;
     MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+    NativeOperationLedger = class {
+      constructor(dispatch, publish) {
+        this.dispatch = dispatch;
+        this.publish = publish;
+      }
+      dispatch;
+      publish;
+      entries = /* @__PURE__ */ new Map();
+      closed = false;
+      receive(command2) {
+        const fingerprint = createHash("sha256").update(JSON.stringify(command2)).digest("hex");
+        const previous = this.entries.get(command2.operation_id);
+        if (previous) {
+          if (previous.fingerprint !== fingerprint) this.publish({ operation_id: command2.operation_id, disposition: "refused", detail: "Operation ID was reused with a changed command" });
+          else if (previous.result) this.publish({ ...previous.result });
+          else previous.waiting++;
+          return;
+        }
+        if (this.closed || this.entries.size >= 4096) {
+          this.publish({ operation_id: command2.operation_id, disposition: "refused", detail: this.closed ? "SDK source is unavailable" : "Native operation ledger is full; input was not dispatched" });
+          return;
+        }
+        this.entries.set(command2.operation_id, { fingerprint, waiting: 1 });
+        void this.invoke(command2);
+      }
+      result(result) {
+        const entry = this.entries.get(result.operation_id);
+        if (!entry) return;
+        const previous = entry.result;
+        if (previous?.disposition === "completed" || previous?.disposition === "refused") return;
+        if (result.disposition === "queued" && previous && previous.disposition !== "queued") return;
+        if (previous?.disposition === result.disposition && previous.detail === result.detail) return;
+        entry.result = { ...result };
+        const copies = Math.max(1, entry.waiting);
+        entry.waiting = 0;
+        for (let index = 0; index < copies; index++) this.publish({ ...entry.result });
+      }
+      close() {
+        this.closed = true;
+        for (const operation_id of this.entries.keys()) {
+          this.result({ operation_id, disposition: "unknown", detail: "SDK source closed before a terminal command outcome was observed; input was not retried" });
+        }
+      }
+      async invoke(command2) {
+        try {
+          this.result(await this.dispatch(command2));
+        } catch {
+          this.result({ operation_id: command2.operation_id, disposition: "unknown", detail: "SDK command failed after dispatch; input was not retried" });
+        }
+      }
+    };
   }
 });
 

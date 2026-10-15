@@ -329,7 +329,7 @@ test('Pi queued follow-ups and unrelated events never fabricate admission or com
   sdk.emit({ type: 'agent_end', messages: [], willRetry: false });
   sdk.emit({ type: 'agent_settled', aborted: false });
   await drained();
-  assert.deepEqual(h.results, [], 'uncorrelated lifecycle/transcript evidence cannot consume either captured draft');
+  assert.equal(h.results.length, 0, 'uncorrelated lifecycle/transcript evidence cannot consume either captured draft');
   preflights.get('second')!('queued');
   completions.get('second')!.resolve();
   await drained();
@@ -350,7 +350,7 @@ test('Pi deferred prompt promise resolution does not invent completion before it
   const adapter = attachPiSession(h.context, sdk.session);
   assert.equal((await adapter.prompt('deferred', '51')).disposition, 'queued');
   await drained();
-  assert.deepEqual(h.results, []);
+  assert.equal(h.results.length, 0);
   assert.ok(preflight);
   preflight('started');
   await drained();

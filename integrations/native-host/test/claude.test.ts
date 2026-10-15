@@ -405,7 +405,7 @@ test('batched consumed UUIDs retain exact operations until results and ignore du
   f.events.send(assistant('unrelated-uuid'));
   f.events.send(result('unrelated-uuid'));
   await drained();
-  assert.deepEqual(f.results, []);
+  assert.equal(f.results.length, 0);
   const batch = { ...assistant(second.uuid!), user_message_uuids: [first.uuid!, second.uuid!] } as SDKMessage;
   f.events.send(batch);
   f.events.send(batch);
@@ -465,7 +465,7 @@ test('concurrent submitted forms survive unrelated output and turn results until
   f.questions[2]!.resolve({ option_id: 'allow' });
   await tool;
   f.events.send(assistant('other-turn'));
-  f.events.send({ type: 'stream_event', event: { type: 'ping' }, parent_tool_use_id: null,
+  f.events.send({ type: 'stream_event', event: { type: 'message_stop' }, parent_tool_use_id: null,
     uuid: '00000000-0000-4000-8000-000000000009', session_id: 'actual-provider-session' } as SDKMessage);
   f.events.send({ type: 'tool_progress', tool_use_id: 'actual-tool-call', tool_name: 'Read', parent_tool_use_id: null,
     elapsed_time_seconds: 1, uuid: '00000000-0000-4000-8000-000000000010', session_id: 'actual-provider-session' });

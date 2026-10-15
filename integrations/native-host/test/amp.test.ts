@@ -128,10 +128,10 @@ test('new Amp threads are private, correlated results finish exact operations, a
     assert.equal(first.params.options?.continue, undefined);
     assert.equal(first.params.options?.dangerouslyAllowAll, false);
     assert.equal(first.input[0]?.requestId, 'activation:18446744073709551615');
-    assert.deepEqual(f.results, []);
+    assert.equal(f.results.length, 0);
     first.events.send(init());
     await drained();
-    assert.deepEqual(f.results, [], 'thread initialization is not prompt admission');
+    assert.equal(f.results.length, 0, 'thread initialization is not prompt admission');
     assert.equal((await f.adapter.prompt('concurrent input must not run', '2')).disposition, 'refused');
     assert.equal(f.calls.length, 1);
     first.events.send(result());
