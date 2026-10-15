@@ -17,7 +17,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 const installs = [
   { id: "cli", label: "CLI", command: cliInstall, note: "macOS and Linux · installs phux and phux-mcp" },
   { id: "desktop", label: "Desktop", command: desktopInstall, note: "Apple-silicon macOS · installs the CLI too, then opens Phux.app" },
-  { id: "mobile", label: "Mobile", command: "", note: "iPhone · TestFlight beta · App Store Connect emails the invite" },
+  { id: "mobile", label: "Mobile", command: "", note: "No install: open the demo, scan its code, drive the shell from your phone. App in TestFlight." },
 ];
 // Build-time snapshot; site-deploy.yml rebuilds on every published release.
 const day = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });

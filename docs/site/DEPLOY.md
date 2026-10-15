@@ -90,6 +90,31 @@ also hold `MEMBER_CLAIM_KEY_PREVIOUS`. The private MCP operator surface uses
 `OPS_MCP_KEY`; the service-bound producer receives no operator credential. All
 of this is disclosed on `/telemetry`.
 
+### Pairing a phone (`/session/pair`, `?attach=`)
+
+The hosted demo shell can be driven from a second screen without an install or a
+sign-in. The landing's dialog receives one single-use **attach code** in its
+session envelope and shows it as a QR for `https://phux.sh/phone#CODE`; the phone
+attaches to the same session through `wss://shell.phux.sh/session?attach=CODE`.
+
+- Worker side: `GET /session/pair?code=…` answers "has this code been spent yet?"
+  for the pairing panel. It sets CORS only for the origins in `ALLOWED_ORIGINS`
+  (the one list the websocket handshake also checks), answers `no-store`, and
+  leaks nothing a code holder could not do anyway.
+- Session side: the code is single-use, lives at most five minutes, never
+  outlives its session, and is spent inside the session object's
+  single-threaded window. An attachment reserves no slot, so pairing consumes no
+  capacity, no native admission, and no launch or daily budget.
+- Scope: a pairing code is an `attach`-scoped token and cannot open a session; a
+  session token cannot attach. `worker/src/token.test.ts` pins both directions.
+- Logs: the code is in the pairing page's URL fragment (never sent to a server)
+  but does appear in the websocket upgrade's query string, which this Worker's
+  invocation logs persist. That is the same bearer-in-URL trade the CLI's
+  `phux pair` link makes; single-use, a five-minute life, and attach-only scope
+  bound it. Do not extend the code's lifetime without revisiting this.
+- Native sessions refuse an attach (`pairing covers the edge shell only`), so a
+  future container offering must add its own path rather than inherit this one.
+
 ### TestFlight access requests (`/api/beta`)
 
 The "phux for iPhone" request is the landing's third install target (`Mobile`)

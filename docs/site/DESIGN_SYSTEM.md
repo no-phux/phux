@@ -82,6 +82,16 @@ touch devices show the invitation as a bottom chip so the story stays visible.
 Activating the scene opens the live shell. `/more` retains its opt-in, pausable,
 scrubbable explainer.
 
+The live shell's dialog offers one more thing: **Pair your phone**, a single line
+that expands into a QR (a white tile, the only light surface in the dialog) with
+the status beneath it. The phone opens `/phone#CODE` — a page that is a terminal
+and almost nothing else — and lands in the same shell, thumb key bar included, in
+about a second. The link is single-use and expires with the session; the pairing
+code never appears in a URL the site's own logs would keep. While a phone is
+attached the shared shell follows the newest screen's size, which is the tmux
+rule and the honest reading of "one shell, two screens"; the pairing line says
+"Phone linked" so the beat is visible on the big screen.
+
 The live dialog uses one rounded glass shell with a blurred backdrop, not stacked
 outer frames. The terminal canvas is inset within it; pane controls sit below the
 canvas, using icons with accessible names and a labelled primary Split pane action.

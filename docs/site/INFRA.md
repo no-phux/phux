@@ -105,6 +105,13 @@ purely anti-abuse:
 - `NATIVE_ENABLED` is parked (unset means off; see DEPLOY.md "Kill switch").
   False skips native allocation and serves the honest edge fallback. It is a
   deploy-time Worker variable, not a public API.
+- `SessionDO` owns one session and every view attached to it. A session mints
+  one single-use pairing code (`attach`-scoped, five minutes, never past the
+  session); the code's second screen attaches through the same object, which
+  routes attachment frames to the view that asked, broadcasts session frames,
+  and lets only the newest view resize the shared terminal. An attachment takes
+  no slot: only the opening view's reservation, idle clock, and hard expiry
+  govern the session's life. See worker/README.md "Pairing a phone".
 
 ## The edge shell (phux-edge)
 

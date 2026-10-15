@@ -156,6 +156,15 @@ shell supports independent split panes with visible controls and keyboard
 shortcuts; the browser interaction contract lives in
 [the web client guide](../consumers/web.md#in-the-page).
 
+The live shell also pairs: the dialog hands out one single-use code, a phone
+opens `/phone#CODE` in its browser, and both screens drive the same session with
+no install and no sign-in. This is the mobile story while the iOS build is in
+TestFlight — the phone's browser is the front door, and the app pairing link
+(Universal Link, `host/pairing.ts`) remains a bonus path rather than a
+requirement. Keep it honest: the shared shell follows the newest screen's size,
+an attached phone reserving nothing, and a spent or stale link failing loudly
+rather than silently serving a different session.
+
 Closing the dialog or switching runtime releases the hosted session, including
 an in-flight attach; hosted demo sessions are intentionally disposable.
 JavaScript-disabled visitors still see the picture, the standalone-shell link,

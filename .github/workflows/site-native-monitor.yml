@@ -53,3 +53,11 @@ jobs:
           else
             bun run scripts/smoke-native.ts --expect-edge
           fi
+      # Pairing is the anonymous edge demo, so it is verified whatever native
+      # admission is doing.
+      - name: Verify the demo pairing link
+        working-directory: docs/site
+        env:
+          PHUX_NATIVE_WS: wss://shell.phux.sh/session?mode=demo
+          PHUX_ALLOWED_ORIGIN: https://phux.sh
+        run: bun run worker:smoke-pair

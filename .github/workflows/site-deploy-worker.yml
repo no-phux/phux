@@ -110,6 +110,8 @@ jobs:
             else
               bun run scripts/smoke-native.ts --expect-edge
             fi
+            # Pairing rides the edge shell, so it is always part of the surface.
+            bun run worker:smoke-pair
           }
           for attempt in {1..30}; do
             if curl --fail --silent --show-error https://shell.phux.sh/healthz >/dev/null; then
