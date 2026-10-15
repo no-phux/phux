@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.79.0](https://github.com/no-phux/phux/compare/v0.78.1...v0.79.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** smooth opening and unify the main menu ([#1413](https://github.com/no-phux/phux/issues/1413)) ([c30c413](https://github.com/no-phux/phux/commit/c30c413de4765ffd2c40e1f2bcba1a380cccfbff))
+
+## [0.78.1](https://github.com/no-phux/phux/compare/v0.78.0...v0.78.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** map pointer hits onto the painted cell ([2ea27b3](https://github.com/no-phux/phux/commit/2ea27b3a6fa0d6f27decb086b4a72e267bc3fa4b))
+
 ## [0.78.0](https://github.com/no-phux/phux/compare/v0.77.0...v0.78.0) (2026-10-15)
 
 

@@ -184,7 +184,7 @@ versions different without changing the routing contract.
 |---|---|
 | Handwritten docs | Docs guards only (`docs-check`, `install-surface-check`; no Nix) |
 | Docs that code reads: `docs/spec/**`, `docs/reference/**`, `docs/assets/**`, `docs/consumers/agents.md` | Root Rust check/test (full pool) |
-| `docs/site/**`, root `CHANGELOG.md` | Compile-free guards |
+| root `CHANGELOG.md` | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
 | Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
@@ -442,11 +442,10 @@ components do not mirror the Rust workspace version.
 conventional-commit log and writes it into `[workspace.package].version` on the
 release PR (via a TOML jsonpath updater configured in
 `release-please-config.json`). The same extra-files list rewrites annotated
-`PHUX_VERSION` literals in `docs/site/worker/Dockerfile`, which
-`just toolchain-check` compares. The `sync-lockfile` job processes every release
-PR (including when desktop has a separate PR). For a root release it runs
-`cargo update --workspace` in the root and standalone browser workspace, then
-synchronizes root path-crate versions in the desktop and site-edge lockfiles.
+version lines in the product skills. The `sync-lockfile` job processes every
+release PR (including when desktop has a separate PR). For a root release it
+runs `cargo update --workspace` in the root and standalone browser workspace,
+then synchronizes root path-crate versions in the desktop lockfile.
 Release-please cannot update those lockfiles itself. It also force-pushes the
 release branch on later main commits, which drops the lockfile commit.
 main does not require status checks on the latest push, so that unsynced head
@@ -454,20 +453,15 @@ stays mergeable until sync runs. The release-please job returns a ready PR to
 draft before it exits, and sync marks it ready again only after the lockfile
 push lands. Do not merge the PR while that hold is on.
 
-The same job pushes the synchronized source commit before regenerating the
-native demo's `PHUX_REVISION`, archive checksum, and original/patched lockfile
-checksums. It commits those pins separately: an immutable source commit cannot
-contain its own SHA. `python3 scripts/ci/site_source_pin.py --check` reads the
-pinned commit's real manifest and lockfile, so a version-only Dockerfile bump
-cannot pass while still building the previous release. CI uses a full-history
-checkout to read source metadata locally when possible. When squash/rebase
-merging or a shallow checkout omits the pinned commit, the check downloads its
-archive and verifies `PHUX_SOURCE_SHA256` before reading its manifest and lock.
-To refresh a pin manually, push the source commit first, then run
-`python3 scripts/ci/site_source_pin.py --revision <source-sha>`.
+The native demo image is not in this repo. [no-phux/website](https://github.com/no-phux/website)
+pins `PHUX_VERSION`, `PHUX_REVISION`, and the archive checksum in its
+`worker/Dockerfile`. Refresh that pin there, with `PHUX_ROOT` pointing at a
+phux checkout: `python3 scripts/ci/site_source_pin.py --revision <source-sha>`.
+A published release dispatches that repo (`.github/workflows/website-dispatch.yml`).
+This release PR does not rewrite the Dockerfile.
 
 The required compile-free workflow gate also checks every standalone lockfile
-that consumes root path crates. It rejects stale browser, desktop, or edge
+that consumes root path crates. It rejects stale browser or desktop
 versions before any `--locked` consumer build starts.
 
 Pre-1.0 bump rules, set in `release-please-config.json`:
@@ -570,10 +564,12 @@ curl -fsSL https://phux.sh/install | sh
 ```
 
 `phux.sh/install` and `phux.sh/install.sh` are `scripts/install.sh` served
-verbatim: `docs/site/scripts/sync-docs.ts` copies it into the site's
-gitignored `public/` at build time and refuses a script without a `#!/bin/sh`
-shebang. `site-deploy.yml` lists `scripts/install.sh` in its path filter, and
-the script must stay POSIX `sh`.
+verbatim. [no-phux/website](https://github.com/no-phux/website) copies the
+script into the site's gitignored `public/` at build time and refuses a
+script without a `#!/bin/sh` shebang.
+`.github/workflows/website-dispatch.yml` lists `scripts/install.sh` in its
+path filter so an installer change rebuilds the site, and the script must
+stay POSIX `sh`.
 
 The installer downloads the target tarball and `.sha256` sidecar, verifies the
 checksum before unpacking, and installs `phux` + `phux-mcp` into

@@ -68,6 +68,15 @@ pub struct Palette {
 /// Built-in themes, in picker order.
 #[must_use]
 pub fn themes() -> Vec<Theme> {
+    builtins().to_vec()
+}
+
+fn builtins() -> &'static [Theme] {
+    static THEMES: std::sync::LazyLock<Vec<Theme>> = std::sync::LazyLock::new(build_themes);
+    &THEMES
+}
+
+fn build_themes() -> Vec<Theme> {
     vec![
         theme(
             "midnight",
@@ -215,10 +224,10 @@ pub const fn default_theme_id() -> &'static str {
 pub fn theme_by_id(id: &str, extra: &[Theme]) -> Theme {
     extra
         .iter()
-        .chain(themes().iter())
+        .chain(builtins().iter())
         .find(|theme| theme.id == id)
         .cloned()
-        .unwrap_or_else(|| themes().into_iter().next().expect("built-in theme"))
+        .unwrap_or_else(|| builtins()[0].clone())
 }
 
 /// Expand a theme into every chrome token.
@@ -313,3 +322,21 @@ pub const UI_FONT: f32 = 12.5;
 pub const UI_FONT_SMALL: f32 = 11.0;
 /// Title chrome font.
 pub const UI_FONT_TITLE: f32 = 13.0;
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn cached_builtins_preserve_override_order_and_return_independent_themes() {
+        let builtin = theme_by_id(default_theme_id(), &[]);
+        let mut custom = builtin.clone();
+        custom.background = "#123456".into();
+        assert_eq!(theme_by_id(&custom.id, &[custom.clone()]), custom);
+        assert_eq!(theme_by_id(default_theme_id(), &[]), builtin);
+        assert_eq!(theme_by_id("missing", &[]), builtin);
+        let mut choices = themes();
+        choices[0].background = "#abcdef".into();
+        assert_eq!(theme_by_id(default_theme_id(), &[]), builtin);
+    }
+}

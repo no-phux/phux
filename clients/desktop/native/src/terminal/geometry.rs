@@ -1,7 +1,7 @@
 use super::Settings;
 use gpui::{self, Bounds, Pixels, Point, point, px, size};
 
-/// One logical-pixel geometry for painting and future IME/mouse hit testing.
+/// One logical-pixel geometry for painting, hit testing, and the IME rectangle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Geometry {
     pub bounds: Bounds<Pixels>,
@@ -114,6 +114,125 @@ impl Geometry {
         )?;
         Some((row, col))
     }
+
+    /// The cell under `position`, or the nearest cell when the point misses
+    /// the grid. `None` when the grid has no cells. Drags that leave the
+    /// surface keep a real cell instead of the padding.
+    pub fn hit_clamped(self, position: Point<Pixels>) -> Option<(u16, u16)> {
+        if self.cols == 0 || self.rows == 0 {
+            return None;
+        }
+        if let Some(cell) = self.hit(position) {
+            return Some(cell);
+        }
+        Some((
+            clamp_index(
+                self.bounds.top(),
+                self.cell_height,
+                position.y,
+                self.rows,
+                self.scale,
+            ),
+            clamp_index(
+                self.bounds.left(),
+                self.cell_width,
+                position.x,
+                self.cols,
+                self.scale,
+            ),
+        ))
+    }
+}
+
+/// A pointer position in the integer cell grid a resize reports as `cell_px`.
+///
+/// `x` / `cell_width` and `y` / `cell_height` name `col` and `row`. That is the
+/// grid the server divides `INPUT_MOUSE` pixels by, and the grid the selection
+/// gesture uses for its intra-cell threshold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfacePoint {
+    pub row: u16,
+    pub col: u16,
+    pub x: f64,
+    pub y: f64,
+    pub cell_width: u32,
+    pub cell_height: u32,
+}
+
+/// Map a window point onto [`SurfacePoint`].
+///
+/// The cell comes from the same device-pixel edges as paint. The fraction
+/// inside that painted cell is then placed inside the rounded integer cell, so
+/// a non-integer painted size still names the cell under the pointer. `clamped`
+/// keeps a drag that leaves the grid on the nearest cell.
+pub fn surface_at(
+    geometry: Geometry,
+    position: Point<Pixels>,
+    clamped: bool,
+) -> Option<SurfacePoint> {
+    let (row, col) = if clamped {
+        geometry.hit_clamped(position)?
+    } else {
+        geometry.hit(position)?
+    };
+    let (width, height) = cell_px(geometry.cell_width, geometry.cell_height);
+    let bounds = geometry.cell_bounds(row, col, 1);
+    Some(SurfacePoint {
+        row,
+        col,
+        x: surface_axis(
+            col,
+            geometry.cols,
+            width,
+            position.x,
+            bounds.left(),
+            bounds.size.width,
+        ),
+        y: surface_axis(
+            row,
+            geometry.rows,
+            height,
+            position.y,
+            bounds.top(),
+            bounds.size.height,
+        ),
+        cell_width: u32::from(width),
+        cell_height: u32::from(height),
+    })
+}
+
+/// Rounded cell size reported with a resize. The server divides mouse pixels
+/// by this pair.
+pub(crate) fn cell_px(width: Pixels, height: Pixels) -> (u16, u16) {
+    (rounded_px(width), rounded_px(height))
+}
+
+fn rounded_px(pixels: Pixels) -> u16 {
+    f32::from(pixels).round().clamp(1.0, f32::from(u16::MAX)) as u16
+}
+
+/// Whole pixels of the reported cell, from the fraction inside the painted
+/// cell. Floored and clamped to the grid, matching the web `surface_pixel`
+/// contract: `floor(x / cell)` stays on `index`.
+fn surface_axis(
+    index: u16,
+    count: u16,
+    cell: u16,
+    value: Pixels,
+    origin: Pixels,
+    span: Pixels,
+) -> f64 {
+    let frac = if f32::from(span) <= f32::EPSILON {
+        0.0
+    } else {
+        // Stay strictly inside this cell. The shared far edge belongs to the
+        // next cell, and a drag past the grid must not spill into it either.
+        ((f32::from(value) - f32::from(origin)) / f32::from(span)).clamp(0.0, 0.999)
+    };
+    let cell = f64::from(cell);
+    let pixel = (f64::from(u32::from(index)) * cell + f64::from(frac) * cell).floor();
+    let max = (f64::from(u32::from(count)) * cell - 1.0).max(0.0);
+    pixel.clamp(0.0, max)
 }
 
 fn snap(value: Pixels, scale: f32) -> Pixels {
@@ -136,6 +255,18 @@ fn hit_index(origin: Pixels, step: Pixels, value: Pixels, count: u16, scale: f32
         index = index.saturating_add(1);
     }
     (index < u32::from(count)).then_some(index as u16)
+}
+
+/// `hit_index`, or the nearest in-range cell when the point is outside the grid.
+fn clamp_index(origin: Pixels, step: Pixels, value: Pixels, count: u16, scale: f32) -> u16 {
+    if let Some(index) = hit_index(origin, step, value, count, scale) {
+        return index;
+    }
+    if value < origin {
+        0
+    } else {
+        count.saturating_sub(1)
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +292,16 @@ mod tests {
         assert_eq!(geometry.hit(point(px(9.), px(20.))), None);
         assert_eq!(geometry.hit(point(px(36.), px(20.))), None);
         assert_eq!(geometry.hit(point(px(12.), px(55.))), None);
+        assert_eq!(geometry.hit_clamped(point(px(9.), px(20.))), Some((0, 0)));
+        assert_eq!(geometry.hit_clamped(point(px(36.), px(20.))), Some((0, 2)));
+        assert_eq!(geometry.hit_clamped(point(px(12.), px(55.))), Some((1, 0)));
+        assert_eq!(geometry.hit_clamped(point(px(0.), px(0.))), Some((0, 0)));
+        let empty = Geometry {
+            cols: 0,
+            rows: 2,
+            ..geometry
+        };
+        assert_eq!(empty.hit_clamped(point(px(12.), px(20.))), None);
         assert_eq!(
             geometry.cell_bounds(0, 1, 2).size.width,
             geometry.cell_width * 2.
@@ -206,5 +347,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn surface_pixels_name_the_painted_cell_not_the_pane() {
+        let geometry = Geometry {
+            bounds: Bounds::new(point(px(0.), px(0.)), size(px(2000.), px(800.))),
+            cell_width: px(9.5),
+            cell_height: px(17.3),
+            scale: 2.,
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        };
+        let cell = geometry.cell_bounds(3, 40, 1);
+        let surface = surface_at(geometry, cell.center(), false).expect("center hits");
+        assert_eq!((surface.row, surface.col), (3, 40));
+        assert_eq!((surface.cell_width, surface.cell_height), (10, 17));
+        assert_eq!(surface.x.fract(), 0.0);
+        assert_eq!(surface.y.fract(), 0.0);
+        assert_eq!(
+            (surface.x / f64::from(surface.cell_width)).floor() as u16,
+            40
+        );
+        assert_eq!(
+            (surface.y / f64::from(surface.cell_height)).floor() as u16,
+            3
+        );
+        let grid_bottom = geometry.cell_bounds(23, 0, 1).bottom();
+        assert!(geometry.bounds.bottom() > grid_bottom);
+        let below = point(cell.center().x, grid_bottom + px(4.));
+        assert_eq!(surface_at(geometry, below, false), None);
+        let clamped = surface_at(geometry, below, true).expect("drag stays on the grid");
+        assert_eq!(clamped.row, 23);
+        assert_eq!(
+            (clamped.y / f64::from(clamped.cell_height)).floor() as u16,
+            23
+        );
+        assert!(clamped.y < f64::from(u32::from(geometry.rows) * clamped.cell_height));
     }
 }

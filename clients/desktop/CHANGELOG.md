@@ -25,6 +25,34 @@
 - Restore the focused SDK guardian after a daemon handoff even when it is not
   the session's home terminal, retaining the original editor and draft.
 
+## [0.12.2](https://github.com/no-phux/phux/compare/desktop-v0.12.1...desktop-v0.12.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** isolate the project-window fixture from the test scheduler ([#1417](https://github.com/no-phux/phux/issues/1417)) ([33fcd17](https://github.com/no-phux/phux/commit/33fcd17726f493b6e22c987a712f91545f7f5c5f))
+
+## [0.12.1](https://github.com/no-phux/phux/compare/desktop-v0.12.0...desktop-v0.12.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** align menus and quiet workspace chrome ([#1418](https://github.com/no-phux/phux/issues/1418)) ([b17dad3](https://github.com/no-phux/phux/commit/b17dad3a38dbb882ef8be3f1795e9d43551c4210))
+
+## [0.12.0](https://github.com/no-phux/phux/compare/desktop-v0.11.1...desktop-v0.12.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** smooth opening and unify the main menu ([#1413](https://github.com/no-phux/phux/issues/1413)) ([c30c413](https://github.com/no-phux/phux/commit/c30c413de4765ffd2c40e1f2bcba1a380cccfbff))
+
+## [0.11.1](https://github.com/no-phux/phux/compare/desktop-v0.11.0...desktop-v0.11.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** map pointer hits onto the painted cell ([2ea27b3](https://github.com/no-phux/phux/commit/2ea27b3a6fa0d6f27decb086b4a72e267bc3fa4b))
+
 ## [0.11.0](https://github.com/no-phux/phux/compare/desktop-v0.10.0...desktop-v0.11.0) (2026-10-15)
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Release-please version bumps are not compile inputs.
 
-A root release PR rewrites version fields, the changelog, and the hosted
-PHUX_VERSION pin. Those bytes do not change Rust, Zig, or the coordinator.
+A root release PR rewrites version fields, the changelog, and skill version
+lines. Those bytes do not change Rust, Zig, or the coordinator.
 Treating them as shared binary inputs rebuilds FFI, the Zig test graph, and
 the CLI (PR 853: 18 minutes, cancelled still linking). Fail closed: any other
 hunk, path, or unreadable side keeps the normal classifier.
@@ -21,10 +21,6 @@ DESKTOP_VERSION = re.compile(
 SKILL_VERSION = re.compile(
     r'^(\s*)version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*#\s*x-release-please-version\s*$'
 )
-DOCKER_VERSION = re.compile(
-    r'^(ARG PHUX_VERSION=[0-9]+\.[0-9]+\.[0-9]+'
-    r'|RUN test "\$PHUX_VERSION" = "[0-9]+\.[0-9]+\.[0-9]+")$'
-)
 
 EXACT = {
     "Cargo.toml": "workspace_manifest",
@@ -32,7 +28,6 @@ EXACT = {
     "clients/phux-web/Cargo.lock": "workspace_lock",
     "clients/desktop/package.json": "desktop_package",
     ".release-please-manifest.json": "manifest",
-    "docs/site/worker/Dockerfile": "dockerfile",
     ".agents/skills/using-phux/SKILL.md": "skill",
     ".agents/skills/using-phux-mcp/SKILL.md": "skill",
 }
@@ -151,17 +146,12 @@ def skill_only(before, after):
     return _version_lines_only(before, after, SKILL_VERSION)
 
 
-def dockerfile_only(before, after):
-    return _version_lines_only(before, after, DOCKER_VERSION)
-
-
 CHECKS = {
     "changelog": changelog_only,
     "workspace_manifest": workspace_manifest_only,
     "workspace_lock": workspace_lock_only,
     "manifest": manifest_only,
     "desktop_package": desktop_package_only,
-    "dockerfile": dockerfile_only,
     "skill": skill_only,
 }
 

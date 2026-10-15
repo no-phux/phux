@@ -1746,6 +1746,13 @@ fn cursor_head(frame: &GridFrame) -> (u16, u16) {
     )
 }
 
+/// Painted cursor as `(row, col, width)`. A wide tail reports the head cell.
+pub(super) fn cursor_span(frame: &GridFrame) -> (u16, u16, u16) {
+    let (row, col) = cursor_head(frame);
+    let width = if frame.cursor.width.is_wide() { 2 } else { 1 };
+    (row, col, width)
+}
+
 fn outline(bounds: Bounds<Pixels>, thickness: Pixels) -> [Bounds<Pixels>; 4] {
     [
         Bounds::new(bounds.origin, size(bounds.size.width, thickness)),
@@ -2250,6 +2257,11 @@ mod tests {
             blinking: false,
         };
         assert_eq!(cursor_head(&frame), (1, 3));
+        assert_eq!(cursor_span(&frame), (1, 3, 2));
+        frame.cursor.width = CursorWidth::Wide;
+        assert_eq!(cursor_span(&frame), (1, 4, 2));
+        frame.cursor.width = CursorWidth::Narrow;
+        assert_eq!(cursor_span(&frame), (1, 4, 1));
         assert!(solid_cursor(&frame, &Settings::default()));
         assert!(!solid_cursor(
             &frame,

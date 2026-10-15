@@ -54,13 +54,13 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
         let kit = &mut state.colors;
         kit.background = from_hex(&theme.background);
         kit.foreground = fg;
-        kit.border = border;
+        kit.border = fg.opacity(0.08);
         kit.input = border;
         kit.ring = accent;
         kit.caret = from_hex(&theme.cursor);
         kit.selection = from_hex(&theme.selection);
         kit.overlay = from_hex(&colors.backdrop);
-        kit.popover = raised;
+        kit.popover = surface;
         kit.popover_foreground = fg;
         kit.muted = surface;
         kit.muted_foreground = muted;

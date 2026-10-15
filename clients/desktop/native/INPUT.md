@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Native terminal input
@@ -30,8 +30,12 @@ There is no string registry and no second listener.
   key-down until the platform commits text. Control characters, including
   Enter's newline and Tab's tab character on macOS, send key atoms on key-down.
   Control/Option-as-Alt keys also send on key-down.
-- Pointer and scroll use the painter's hitbox and GPUI capture so releases and
-  drags reach the originating view. Initial hits in grid padding are rejected.
+- Pointer and scroll use `Geometry::hit`, the same device-pixel edges as
+  paint. GPUI capture keeps releases and drags on the originating view.
+  Initial hits in grid padding are rejected. The selection gesture and
+  `INPUT_MOUSE` carry that cell in the integer pixel grid the resize reports
+  as `cell_px`, so selection, copy, and a program's cursor land on the painted
+  cell on both screens.
 - Copy/Paste bind to `copy_selection` and `paste_text`. `Terminal::request`
   runs Copy, Paste, CopyText and Open once on this entity, without a keyboard
   focus check, and does not retain the action for a later render. A clipboard
@@ -63,7 +67,7 @@ reports are capped at 100 ticks per event.
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
 copies a truncated string. The editable text model holds only pending IME text
 (4096 UTF-8 bytes). UTF-16 ranges snap to complete graphemes. Candidate bounds
-are the painted cursor rectangle.
+are the painted cursor rectangle. A wide tail uses the head cell.
 
 ## Limits
 

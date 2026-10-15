@@ -33,12 +33,21 @@ use std::{
 /// A settling proposal requests frames, so the final size always goes out.
 const FIT_SETTLE: Duration = Duration::from_millis(60);
 
+/// Server `DEFAULT_CELL_PX` and the TUI `HOST_CELL_PX_FALLBACK`. Desktop must
+/// not import that private constant. A first look at this pitch sends nothing.
+const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
+
+/// `(cols, rows)` plus the integer cell pitch reported with them.
+type FitProposal = ((u16, u16), (u16, u16));
+
 /// Geometry already computed by the painter, in logical window pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct InputMetrics {
     pub bounds: Bounds<Pixels>,
     pub cell_width: Pixels,
     pub line_height: Pixels,
+    /// Window scale the painter snapped this grid to.
+    pub scale: f32,
     pub cursor_bounds: Bounds<Pixels>,
 }
 
@@ -125,10 +134,10 @@ pub struct TerminalInput {
     scroll_remainder: f32,
     option_as_alt: bool,
     last_error: Option<InputError>,
-    /// The size this view last proposed.
-    fitted: Option<(u16, u16)>,
-    /// A capacity waiting to hold still for `FIT_SETTLE`.
-    settling: Option<((u16, u16), Instant)>,
+    /// The size and cell pitch this view last proposed.
+    fitted: Option<FitProposal>,
+    /// A proposal waiting to hold still for `FIT_SETTLE`.
+    settling: Option<(FitProposal, Instant)>,
     fit_active: bool,
     /// Output sequence of the last frame painted, and the key-to-paint probe.
     painted_seq: u64,
@@ -243,13 +252,15 @@ impl TerminalInput {
         self.scroll_remainder = 0.0;
     }
 
-    /// Propose this pane's cell capacity as the terminal's PTY size while this
-    /// view owns the terminal's geometry (desktop architecture, "Geometry").
-    /// The shell names one owner per terminal: its only view, or the view the
-    /// user focused last. Other views crop or leave space. Proposals are
-    /// edge-triggered: an unchanged capacity sends nothing, so views cannot
-    /// oscillate. Gaining ownership or re-activating the window forgets the
-    /// last proposal, so the owner reclaims a size another client changed.
+    /// Propose this pane's cell capacity and integer cell pitch as the
+    /// terminal's PTY geometry while this view owns it (desktop architecture,
+    /// "Geometry"). The shell names one owner per terminal: its only view, or
+    /// the view the user focused last. Other views crop or leave space.
+    /// Proposals are edge-triggered: an unchanged proposal sends nothing, so
+    /// views cannot oscillate. Gaining ownership or re-activating the window
+    /// forgets the last proposal, so the owner reclaims a size another client
+    /// changed. The first look also sends nothing when the grid already matches
+    /// and the pitch is the server default of 8×16.
     pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
         let active = self.window_active(window);
         let reactivated = active && !self.fit_active;
@@ -266,22 +277,21 @@ impl TerminalInput {
         let Some(capacity) = capacity(metrics) else {
             return;
         };
-        // Already proposed, or (first look) already the authoritative size, as
-        // for a terminal spawned at its predicted geometry.
-        if self.fitted == Some(capacity) || (self.fitted.is_none() && capacity == self.dimensions) {
-            self.fitted = Some(capacity);
+        let cell = cell_px(metrics);
+        let Some(proposal) = pending_fit(self.fitted, capacity, cell, self.dimensions) else {
+            self.fitted = Some((capacity, cell));
             self.settling = None;
             return;
-        }
+        };
         if self
             .settling
-            .is_some_and(|(pending, _)| pending == capacity)
+            .is_some_and(|(pending, _)| pending == proposal)
         {
             return;
         }
         // A timer, not the next frame, sends the settled size: a background or
         // occluded window may not paint again, and the resize must still go out.
-        self.settling = Some((capacity, Instant::now()));
+        self.settling = Some((proposal, Instant::now()));
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FIT_SETTLE).await;
             let _ = this.update(cx, |state, _| state.flush_fit());
@@ -289,10 +299,10 @@ impl TerminalInput {
         .detach();
     }
 
-    /// Send the pending capacity once it has held still for `FIT_SETTLE`. A
-    /// newer capacity restarts the clock and its own timer sends it.
+    /// Send the pending proposal once it has held still for `FIT_SETTLE`. A
+    /// newer proposal restarts the clock and its own timer sends it.
     fn flush_fit(&mut self) {
-        let Some((capacity, since)) = self.settling else {
+        let Some((proposal, since)) = self.settling else {
             return;
         };
         if since.elapsed() < FIT_SETTLE {
@@ -301,12 +311,17 @@ impl TerminalInput {
         let Ok(client) = self.client() else {
             return;
         };
-        let (cols, rows) = capacity;
+        let ((cols, rows), cell_px) = proposal;
         let outcome = client.with_control(|control| {
-            control.resize_terminal(&self.terminal, cols.into(), rows.into())
+            control.resize_terminal_with_cell(
+                &self.terminal,
+                cols.into(),
+                rows.into(),
+                Some(cell_px),
+            )
         });
         if outcome == TerminalResizeOutcome::Queued {
-            self.fitted = Some(capacity);
+            self.fitted = Some(proposal);
         }
         self.settling = None;
     }
@@ -789,6 +804,30 @@ fn clamp(cells: f32) -> u16 {
     cells.min(f32::from(u16::MAX)) as u16
 }
 
+fn cell_px(metrics: InputMetrics) -> (u16, u16) {
+    crate::terminal::geometry::cell_px(metrics.cell_width, metrics.line_height)
+}
+
+/// `None` when this proposal was already sent, or on the first look when the
+/// grid matches and the pitch is [`DEFAULT_CELL_PX`]. Any other pitch is
+/// reported so mouse pixels and the encoder share one cell. Sending a new
+/// pitch tombstones native history once; that is the server's resize contract.
+fn pending_fit(
+    fitted: Option<FitProposal>,
+    capacity: (u16, u16),
+    cell_px: (u16, u16),
+    dimensions: (u16, u16),
+) -> Option<FitProposal> {
+    let proposal = (capacity, cell_px);
+    if fitted == Some(proposal) {
+        return None;
+    }
+    if fitted.is_none() && capacity == dimensions && cell_px == DEFAULT_CELL_PX {
+        return None;
+    }
+    Some(proposal)
+}
+
 /// The text a key should draw locally, if it is a guess the predictor can own.
 /// Control and super chords are commands. Alt stays: Option types a character.
 fn echo_guess(event: &KeyEvent) -> Option<String> {
@@ -817,7 +856,8 @@ fn nonempty_text(text: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Admit, InputError, InputMetrics, admit_presentation, capacity, echo_guess, upgrade_client,
+        Admit, InputError, InputMetrics, admit_presentation, capacity, cell_px, echo_guess,
+        pending_fit, upgrade_client,
     };
     use gpui::{Bounds, point, px, size};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -828,8 +868,46 @@ mod tests {
             bounds,
             cell_width: px(8.),
             line_height: px(17.),
+            scale: 1.,
             cursor_bounds: bounds,
         }
+    }
+
+    #[test]
+    fn fit_skips_a_matching_grid_at_the_default_cell() {
+        assert_eq!(pending_fit(None, (80, 24), (8, 16), (80, 24)), None);
+    }
+
+    #[test]
+    fn fit_reports_a_nondefault_cell_and_a_changed_pitch() {
+        assert_eq!(
+            pending_fit(None, (80, 24), (9, 20), (80, 24)),
+            Some(((80, 24), (9, 20)))
+        );
+        assert_eq!(
+            pending_fit(Some(((80, 24), (8, 16))), (80, 24), (9, 20), (80, 24)),
+            Some(((80, 24), (9, 20)))
+        );
+        assert_eq!(
+            pending_fit(Some(((80, 24), (9, 20))), (80, 24), (9, 20), (10, 4)),
+            None
+        );
+    }
+
+    #[test]
+    fn fit_reports_a_different_capacity_at_the_default_cell() {
+        assert_eq!(
+            pending_fit(None, (100, 40), (8, 16), (80, 24)),
+            Some(((100, 40), (8, 16)))
+        );
+    }
+
+    #[test]
+    fn cell_pitch_rounds_the_painted_cell() {
+        let mut sample = metrics(800., 400.);
+        sample.cell_width = px(9.5);
+        sample.line_height = px(17.3);
+        assert_eq!(cell_px(sample), (10, 17));
     }
 
     #[test]

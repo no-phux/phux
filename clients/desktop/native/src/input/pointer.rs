@@ -1,22 +1,14 @@
-use super::{InputError, InputMetrics, TerminalInput, engine_error, input_ready, keys, queued};
+use super::{InputError, TerminalInput, engine_error, input_ready, keys, queued};
+use crate::terminal::geometry::{self, Geometry, SurfacePoint};
 use gpui::{
     App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollWheelEvent, Window,
+    ScrollWheelEvent, Window, px,
 };
 use phux_client_runtime::{
     control::ControlPlane,
     engine::{MouseMode, Scroll, SelectionGestureEvent},
 };
 use phux_protocol::input::mouse::{MouseAction, MouseButton as WireButton, MouseEvent};
-
-impl InputMetrics {
-    fn local(&self, point: Point<Pixels>) -> (f64, f64) {
-        (
-            f32::from(point.x - self.bounds.origin.x).max(0.0).into(),
-            f32::from(point.y - self.bounds.origin.y).max(0.0).into(),
-        )
-    }
-}
 
 impl TerminalInput {
     fn repeated_motion(&mut self, position: Point<Pixels>) -> bool {
@@ -28,28 +20,36 @@ impl TerminalInput {
         false
     }
 
-    /// The grid cell under `position`, or `None` when the point is outside it.
-    fn cell_at(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
-        if !self.hit(position) {
-            return None;
-        }
+    /// The painted grid, in the same geometry the painter hit-tests.
+    fn geometry(&self) -> Option<Geometry> {
         let metrics = self.metrics?;
-        let (x, y) = metrics.local(position);
-        let col = (x / f64::from(f32::from(metrics.cell_width))) as u16;
-        let row = (y / f64::from(f32::from(metrics.line_height))) as u16;
-        Some((row, col))
+        Some(Geometry {
+            bounds: metrics.bounds,
+            cell_width: metrics.cell_width,
+            cell_height: metrics.line_height,
+            baseline: px(0.),
+            scale: metrics.scale,
+            cols: self.dimensions.0,
+            rows: self.dimensions.1,
+        })
+    }
+
+    /// The grid cell under `position`, or `None` when the point misses it.
+    fn cell_at(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
+        self.geometry()?.hit(position)
     }
 
     fn hit(&self, position: Point<Pixels>) -> bool {
-        let Some(metrics) = self.metrics else {
-            return false;
-        };
-        if !metrics.bounds.contains(&position) {
-            return false;
-        }
-        let (x, y) = metrics.local(position);
-        x < f64::from(f32::from(metrics.cell_width)) * f64::from(self.dimensions.0)
-            && y < f64::from(f32::from(metrics.line_height)) * f64::from(self.dimensions.1)
+        self.cell_at(position).is_some()
+    }
+
+    fn surface(&self, position: Point<Pixels>, clamped: bool) -> Result<SurfacePoint, InputError> {
+        geometry::surface_at(
+            self.geometry().ok_or(InputError::StalePresentation)?,
+            position,
+            clamped,
+        )
+        .ok_or(InputError::StalePresentation)
     }
 
     /// The link under a Command-click, resolved against the live frame.
@@ -150,21 +150,9 @@ impl TerminalInput {
         position: Point<Pixels>,
         modifiers: Modifiers,
     ) -> Result<(), InputError> {
-        let (x, y) = self
-            .metrics
-            .ok_or(InputError::StalePresentation)?
-            .local(position);
+        let surface = self.surface(position, true)?;
         self.with_current(true, |control| {
-            queued(control.send_mouse(
-                &self.terminal,
-                MouseEvent {
-                    action,
-                    button,
-                    mods: keys::modifiers(modifiers),
-                    x,
-                    y,
-                },
-            ))
+            queued(control.send_mouse(&self.terminal, mouse_at(action, button, modifiers, surface)))
         })
     }
 
@@ -175,10 +163,7 @@ impl TerminalInput {
         position: Point<Pixels>,
         modifiers: Modifiers,
     ) -> Result<bool, InputError> {
-        let (x, y) = self
-            .metrics
-            .ok_or(InputError::StalePresentation)?
-            .local(position);
+        let surface = self.surface(position, false)?;
         self.with_current(false, |control| {
             if !reporting(control, &self.terminal, modifiers)? {
                 return Ok(false);
@@ -186,16 +171,9 @@ impl TerminalInput {
             if !input_ready(control, &self.terminal) {
                 return Err(InputError::NotReady);
             }
-            queued(control.send_mouse(
-                &self.terminal,
-                MouseEvent {
-                    action,
-                    button,
-                    mods: keys::modifiers(modifiers),
-                    x,
-                    y,
-                },
-            ))?;
+            queued(
+                control.send_mouse(&self.terminal, mouse_at(action, button, modifiers, surface)),
+            )?;
             Ok(true)
         })
     }
@@ -207,24 +185,25 @@ impl TerminalInput {
         position: Point<Pixels>,
         modifiers: Modifiers,
     ) -> Result<(), InputError> {
-        let metrics = self.metrics.ok_or(InputError::StalePresentation)?;
-        let (x, y) = metrics.local(position);
-        let width = f32::from(metrics.cell_width).max(1.0);
-        let height = f32::from(metrics.line_height).max(1.0);
+        // Clamped: a drag that leaves the pane stays on the edge cell. Pixels
+        // are the integer grid `cell_px` reports, not the pane's logical size.
+        let surface = self.surface(position, true)?;
         let result = self.with_current(false, |control| {
             let frame = self.live_frame(control)?;
             let event = SelectionGestureEvent {
                 phase,
                 clicks: clicks.clamp(1, 3),
                 handle: self.gesture,
-                column: ((x / f64::from(width)) as u16).min(frame.cols.saturating_sub(1)),
-                row: ((y / f64::from(height)) as u32).min(u32::from(frame.rows.saturating_sub(1))),
+                column: surface.col,
+                row: u32::from(surface.row),
                 rectangle: modifiers.alt,
-                x,
-                y,
-                columns: frame.cols.into(),
-                cell_width: width.round() as u32,
-                screen_height: f32::from(metrics.bounds.size.height).max(1.0) as u32,
+                x: surface.x,
+                y: surface.y,
+                columns: u32::from(frame.cols),
+                cell_width: surface.cell_width,
+                screen_height: u32::from(frame.rows)
+                    .saturating_mul(surface.cell_height)
+                    .max(1),
                 padding_left: 0,
             };
             control
@@ -257,7 +236,7 @@ impl TerminalInput {
         }
         self.with_current(false, |control| {
             if reporting(control, &self.terminal, event.modifiers)? {
-                self.report_scroll(control, lines, event, metrics)?;
+                self.report_scroll(control, lines, event)?;
             } else {
                 control
                     .scroll_view(self.view, Scroll::Delta(-lines))
@@ -272,7 +251,6 @@ impl TerminalInput {
         control: &mut ControlPlane,
         lines: i64,
         event: &ScrollWheelEvent,
-        metrics: InputMetrics,
     ) -> Result<(), InputError> {
         if !input_ready(control, &self.terminal) {
             return Err(InputError::NotReady);
@@ -282,17 +260,11 @@ impl TerminalInput {
         } else {
             WireButton::Five
         };
-        let (x, y) = metrics.local(event.position);
+        let surface = self.surface(event.position, false)?;
         for _ in 0..lines.unsigned_abs().min(100) {
             queued(control.send_mouse(
                 &self.terminal,
-                MouseEvent {
-                    action: MouseAction::Press,
-                    button,
-                    mods: keys::modifiers(event.modifiers),
-                    x,
-                    y,
-                },
+                mouse_at(MouseAction::Press, button, event.modifiers, surface),
             ))?;
         }
         Ok(())
@@ -302,6 +274,21 @@ impl TerminalInput {
 /// A motion event the last one already covered. Leaving the grid is not a repeat.
 fn repeats_cell(last: Option<(u16, u16)>, next: Option<(u16, u16)>) -> bool {
     next.is_some() && next == last
+}
+
+fn mouse_at(
+    action: MouseAction,
+    button: WireButton,
+    modifiers: Modifiers,
+    surface: SurfacePoint,
+) -> MouseEvent {
+    MouseEvent {
+        action,
+        button,
+        mods: keys::modifiers(modifiers),
+        x: surface.x,
+        y: surface.y,
+    }
 }
 
 fn button(button: MouseButton) -> WireButton {

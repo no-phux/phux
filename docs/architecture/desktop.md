@@ -63,6 +63,11 @@ Layout files stay at
 Unscoped layouts are imported without overwrite. Malformed or future versions
 are not rewritten.
 
+Layout and recent-folder saves enqueue immutable snapshots to ordered background
+writers. Pending saves to the same path coalesce; serialization, file sync, and
+atomic replacement do not block pane placement or command repaint. Window close
+and app quit flush outstanding saves. Save failures still surface as errors.
+
 ## Identity and independent views
 
 - A qualified terminal is endpoint, serving authority, server incarnation, and
@@ -81,7 +86,8 @@ and no local reflow of a narrower observer.
 
 One calculation maps font metrics, content bounds, scale, cell counts, hit
 testing, the IME rectangle, and clipping. The focused writable view, or the
-only visible view, proposes whole cells that fit its painted bounds. Observer
+only visible view, proposes whole cells that fit its painted bounds and the
+integer cell size those cells were measured at. Observer
 views crop or letterbox the authoritative grid. The desktop connects with a
 zero viewport and casts no window-size vote. Quitting leaves explicit sizes in
 place. Read back the size the server actually applied.

@@ -63,52 +63,32 @@ forbid_fixed .github/workflows/next-release.yml 'LICENSE-MIT LICENSE-APACHE'
 # --- phux.sh serves the installers -------------------------------------------
 #
 # Installer behavior is proven by the executable tests at the bottom of this
-# script, which CI runs under dash, and by shellcheck in sh mode. What no test
-# exercises is the wiring that publishes them.
-# The site publishes the script from this repo instead of keeping a copy. Both
-# halves are load-bearing: sync-docs.ts does the copying, and site-deploy.yml's
-# path filter is what makes an installer change redeploy the site at all. Miss
-# the second and phux.sh keeps serving the old script with nothing to show for
-# it in any diff.
-require_fixed docs/site/scripts/sync-docs.ts 'scripts/install.sh'
-require_fixed docs/site/scripts/sync-docs.ts '"public/install", "public/install.sh"'
-forbid_fixed docs/site/scripts/sync-docs.ts 'scripts/install-cockpit.sh'
+# script, which CI runs under dash, and by shellcheck in sh mode. The site
+# that publishes them lives in no-phux/website; its check-publish.sh owns the
+# copy, the cache headers, and the deploy-side byte compare. What this repo
+# still has to prove is that an installer change tells that repo to rebuild.
+# Miss a path and phux.sh keeps serving the old script.
 require_absent scripts/install-cockpit.sh
 require_absent scripts/cockpit-self-update.sh
 require_absent scripts/test-cockpit-self-update.sh
-require_fixed docs/site/scripts/sync-docs.ts 'must start with #!/bin/sh'
-require_fixed .github/workflows/site-deploy.yml '- "scripts/install.sh"'
-forbid_fixed .github/workflows/site-deploy.yml 'install-cockpit'
-# Both release streams move a landing badge now, so both must redeploy it.
-require_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'desktop-v')"
-forbid_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'cockpit-v')"
-# The route itself is unprovable before a deploy, so the deploy asserts it.
-require_fixed .github/workflows/site-deploy.yml 'Verify the installers are served'
-require_fixed .github/workflows/site-deploy.yml 'if [ "$shebang" != '"'"'#!/bin/sh'"'"' ]; then'
-# A committed copy is a second source of truth waiting to go stale.
-require_fixed docs/site/.gitignore 'public/install'
-require_fixed docs/site/.gitignore 'public/install.sh'
-forbid_fixed docs/site/public/_headers '/install-cockpit'
-# The GPUI desktop installer is the other served script, and the landing hands
-# it out for the Desktop target. Pin the same halves as the CLI: the
-# copy, the ignore, the cache header, the deploy path filter, and the
-# deploy-side byte-for-byte reachability proof.
-require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-desktop.sh'
-require_fixed docs/site/scripts/sync-docs.ts '"public/install-desktop", "public/install-desktop.sh"'
-require_fixed docs/site/.gitignore 'public/install-desktop'
-require_fixed docs/site/public/_headers '/install-desktop'
-require_fixed .github/workflows/site-deploy.yml '- "scripts/install-desktop.sh"'
-require_fixed .github/workflows/site-deploy.yml 'for path in install-desktop install-desktop.sh; do'
-require_fixed .github/workflows/site-deploy.yml 'cmp scripts/install-desktop.sh "$downloaded"'
-# The landing's third target is Mobile. It carries no command: the hero swaps
-# the command line for the TestFlight request in #install .install-request
-# (#beta-form), wired through wireBetaRequest. Desktop still serves
-# install-desktop.sh. The hero does not offer the desktop next channel.
-require_fixed docs/site/src/pages/index.astro 'install-desktop | sh'
-require_fixed docs/site/src/pages/index.astro 'id: "mobile", label: "Mobile", command: ""'
-require_fixed docs/site/src/pages/index.astro 'class="install-request" id="beta-form"'
-require_fixed docs/site/src/pages/index.astro 'wireBetaRequest('
-forbid_fixed docs/site/src/pages/index.astro '-s -- --channel next'
+require_fixed .github/workflows/website-dispatch.yml '- "docs/**"'
+require_fixed .github/workflows/website-dispatch.yml '- ".agents/skills/using-phux/**"'
+require_fixed .github/workflows/website-dispatch.yml '- ".agents/skills/using-phux-mcp/**"'
+require_fixed .github/workflows/website-dispatch.yml '- ".agents/skills/using-phux-tools/**"'
+require_fixed .github/workflows/website-dispatch.yml '- "scripts/product-skills"'
+require_fixed .github/workflows/website-dispatch.yml '- "scripts/install.sh"'
+require_fixed .github/workflows/website-dispatch.yml '- "scripts/install-desktop.sh"'
+require_fixed .github/workflows/website-dispatch.yml '- ".github/workflows/website-dispatch.yml"'
+forbid_fixed .github/workflows/website-dispatch.yml 'install-cockpit'
+require_fixed .github/workflows/website-dispatch.yml 'event_type=phux-content'
+require_fixed .github/workflows/website-dispatch.yml 'repos/no-phux/website/dispatches'
+require_fixed .github/workflows/website-dispatch.yml 'client_payload[sha]'
+require_fixed .github/workflows/website-dispatch.yml 'repositories: website'
+# A published release moves the landing badge even when the release commit
+# does not match the path filter. GITHUB_TOKEN cannot raise that event into
+# the other repo, so the workflow uses the release App.
+require_fixed .github/workflows/website-dispatch.yml 'release:'
+require_fixed .github/workflows/website-dispatch.yml 'types: [published]'
 
 # Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
 # read the releases/latest redirect before falling back to the release list.
@@ -123,7 +103,6 @@ require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=fals
 # decision to revoke. An installed phux resolves its own updates through these
 # constants, so a dropped redirect would strand every existing install.
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
-forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
 # The CLI next-channel pointer must be an asset named channel.json.
 # gh's `file#label` syntax labels the asset;
 # it does not rename it, so the pointer is written under its real basename.
@@ -232,10 +211,9 @@ forbid_fixed .github/workflows/release-please.yml 'toolchain install .'
 require_fixed release-please-config.json '"release-type": "simple"'
 forbid_fixed release-please-config.json '"release-type": "rust"'
 require_fixed release-please-config.json '"jsonpath": "$.workspace.package.version"'
-# Site native pin. Without this extra-files entry, the release PR bumps
-# Cargo.toml and leaves docs/site/worker/Dockerfile stale, which fails
-# just toolchain-check on main (#700, #711).
-require_fixed release-please-config.json '"path": "docs/site/worker/Dockerfile"'
+# The native demo image lives in no-phux/website. A release PR must not grow
+# an extra-files entry that points back at a Dockerfile in this repo.
+forbid_fixed release-please-config.json 'docs/site/worker/Dockerfile'
 # Without this, the first `feat!:` bumps 0.x straight to 1.0.0.
 require_fixed release-please-config.json '"bump-minor-pre-major": true'
 

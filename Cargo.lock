@@ -2421,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "anstyle",
  "base64 0.23.1",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-host"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "regex",
  "serde",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -2544,7 +2544,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2599,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "chrono",
  "insta",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "phux-client",
  "phux-client-runtime",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "libc",
  "nix 0.31.3",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "phux-config",
  "serde",
@@ -2697,7 +2697,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "phux-relay"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
@@ -2746,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "phux-tui"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "bytes",
  "insta",
@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "anyhow",
  "libc",

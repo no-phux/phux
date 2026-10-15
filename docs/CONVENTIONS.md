@@ -188,8 +188,9 @@ home. File a bd ticket against the `[epic]` docs-restructure (phux-dfz)
 or its successor before inventing a new top-level `.md`.
 
 Public navigation follows reader tasks, not these storage directories. The
-site's [content contract](./site/CONTENT.md) defines the reading paths, and
-`docs/site/scripts/sync-docs.ts` publishes them without moving canonical URLs.
+published site is [no-phux/website](https://github.com/no-phux/website); its
+content contract defines the reading paths, and that repo copies these docs
+at build time without moving canonical URLs.
 An onboarding guide may summarize a concept and link to its authority; “one
 fact, one home” prevents competing contracts, not necessary explanation.
 
@@ -405,10 +406,9 @@ scope.
   `docs/spec/`. Outside the spec, prefer plain prose.
 - **Cross-reference by relative path**, not by URL. The dead-link gate
   checks relative paths; URLs are not verified and silently rot.
-- **`docs/site/` is outside this contract.** The Astro site imported from
-  `phall1/phux-site` keeps its own conventions (`docs/site/FUMADOCS.md`,
-  `docs/site/AGENTS.md`); `check-docs.sh` excludes the subtree. Do not
-  add site files to the doc-system gates and do not apply phux
+- **The site is not in this repo.** phux.sh, the docs site, and the demo
+  worker live in `no-phux/website`. This tree's doc contract does not cover
+  that repository. Do not add site files here and do not apply this
   frontmatter to site content.
 - **Don't restate the type system.** Module and item docs explain
   *intent* (why this exists, what the constraint is, who calls it).

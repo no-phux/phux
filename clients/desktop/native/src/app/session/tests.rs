@@ -35,6 +35,11 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut TestAppContext) {
+    // The role check does not need a server. A missing socket still makes
+    // `Runtime::connect` spawn its driver, and that driver's ActivityListener
+    // wakes GPUI's TestScheduler off the test thread. Hold an embedded client
+    // for this fixture only.
+    let _dial = crate::connection::DeterministicDial::arm();
     let desktop = cx.update(|cx| {
         gpui_kit::init(cx);
         Desktop::install(cx)
@@ -116,6 +121,162 @@ struct FocusFixture {
     keys: Vec<String>,
     commands: Vec<String>,
     inputs: [Entity<InputState>; 2],
+    menu_desk: Option<Entity<crate::app::Desk>>,
+}
+
+#[gpui::test]
+fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAppContext) {
+    // Kit's popup uses a platform timer; allow its real wake just as the
+    // runtime-backed window journeys do.
+    cx.executor().allow_parking();
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-main-menu-{}", std::process::id()));
+    let handle = desktop.update(cx, |desktop, cx| {
+        desktop
+            .launch(
+                crate::app::AppOptions {
+                    socket: path.join("isolated.sock"),
+                    session: String::new(),
+                    phux: path.join("not-installed-phux"),
+                    layout_path: path.join("layout.json"),
+                    fresh: false,
+                    initial_terminal: None,
+                    quick: false,
+                    startup_error: Some("Isolated menu fixture".into()),
+                    dev_telemetry: false,
+                },
+                cx,
+            )
+            .unwrap()
+    });
+    let desk = desktop.read_with(cx, |desktop, _| desktop.windows[0].desk.clone());
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    for visible in [true, false] {
+        desk.update(cx, |desk, cx| {
+            desk.prefs.sidebar_visible = visible;
+            desk.remote = Some("a-host-name-longer-than-the-sidebar".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds("main-menu-rail")
+            .expect("persistent main menu");
+        assert!(bounds.origin.x >= gpui::px(78.), "clears traffic lights");
+        assert!(
+            bounds.right() <= gpui::px(240.),
+            "menu stays in the left rail"
+        );
+        assert!(bounds.size.width > gpui::px(40.));
+    }
+    let bounds = cx.debug_bounds("main-menu-rail").unwrap();
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    // Creation, pane submenu, navigation, and Settings: eight selectable rows.
+    cx.simulate_keystrokes("down down down down down down down down enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.modal.clone()),
+        crate::app::Modal::Settings
+    );
+    check_menu_focus(desk, cx);
+}
+
+fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestContext) {
+    desk.update(cx, |desk, window_cx| {
+        desk.modal = crate::app::Modal::None;
+        window_cx.notify();
+    });
+    // Mount the real main menu alongside terminal/find-like focus targets.
+    // This checks popup cancellation without needing a daemon for key routing.
+    let (focus_window, fixture) = cx.update(|_, cx| {
+        gpui_kit::open_window(Default::default(), cx, |window, cx| {
+            cx.new(|cx| FocusFixture {
+                terminal: cx.focus_handle(),
+                keys: Vec::new(),
+                commands: Vec::new(),
+                inputs: std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx))),
+                menu_desk: Some(desk.clone()),
+            })
+        })
+        .unwrap()
+    });
+    let cx = &mut gpui::VisualTestContext::from_window(focus_window, cx);
+    for (input, escape, submenu) in [
+        (false, true, None),
+        (true, true, None),
+        (false, false, None),
+        (true, false, None),
+        (false, true, Some("down down down down down right")),
+        (
+            true,
+            true,
+            Some("down down down down down down down down down right"),
+        ),
+    ] {
+        cx.update(|window, cx| {
+            fixture.read(cx).terminal.clone().focus(window, cx);
+            if input {
+                fixture.read(cx).inputs[0]
+                    .focus_handle(cx)
+                    .focus(window, cx);
+            }
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("main-menu-rail").unwrap();
+        cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        cx.update(|window, cx| {
+            let target = if input {
+                fixture.read(cx).inputs[0].focus_handle(cx)
+            } else {
+                fixture.read(cx).terminal.clone()
+            };
+            assert!(
+                !target.is_focused(window),
+                "popup actually took focus before dismissal"
+            );
+        });
+        if let Some(keys) = submenu {
+            let parent_focus = cx.update(|window, cx| window.focused(cx));
+            cx.simulate_keystrokes(keys);
+            cx.update(|window, cx| {
+                assert_ne!(
+                    window.focused(cx),
+                    parent_focus,
+                    "keyboard entered the submenu"
+                );
+            });
+        }
+        if escape {
+            cx.simulate_keystrokes("escape");
+        } else {
+            cx.simulate_click(
+                gpui::point(gpui::px(700.), gpui::px(500.)),
+                gpui::Modifiers::none(),
+            );
+        }
+        cx.update(|window, cx| {
+            let target = if input {
+                fixture.read(cx).inputs[0].focus_handle(cx)
+            } else {
+                fixture.read(cx).terminal.clone()
+            };
+            assert!(
+                target.is_focused(window),
+                "menu cancellation restores the original input target"
+            );
+        });
+        cx.simulate_input("x");
+    }
+    fixture.read_with(cx, |fixture, cx| {
+        assert_eq!(fixture.inputs[0].read(cx).value(), "xxx");
+        assert!(
+            !fixture.keys.is_empty(),
+            "terminal still receives keys after Escape"
+        );
+    });
+    desk.update(cx, |desk, cx| desk.prepare_close(cx));
 }
 
 impl gpui::Render for FocusFixture {
@@ -128,6 +289,15 @@ impl gpui::Render for FocusFixture {
             .size_full()
             .flex()
             .flex_col()
+            .when_some(self.menu_desk.clone(), |root, desk| {
+                root.child(
+                    div()
+                        .h(gpui::px(32.))
+                        .w(gpui::px(192.))
+                        .flex()
+                        .child(desk.update(cx, |desk, cx| super::super::view::main_menu(desk, cx))),
+                )
+            })
             .child(
                 div()
                     .id("terminal")
@@ -157,6 +327,7 @@ fn tab_keeps_terminal_input_but_navigates_text_fields(cx: &mut TestAppContext) {
                 keys: Vec::new(),
                 commands: Vec::new(),
                 inputs: std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx))),
+                menu_desk: None,
             })
         })
         .unwrap()

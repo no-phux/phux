@@ -14,6 +14,8 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) mod writer;
+
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -611,6 +613,7 @@ fn read_json(path: &Path) -> StoreValue {
 pub struct RecentProjects {
     store: FileLayoutStore,
     entries: Vec<PathBuf>,
+    writer: writer::Writer,
 }
 
 impl RecentProjects {
@@ -630,7 +633,11 @@ impl RecentProjects {
                 .collect(),
             StoreValue::Missing | StoreValue::Damaged => Vec::new(),
         };
-        Self { store, entries }
+        Self {
+            store,
+            entries,
+            writer: writer::Writer::default(),
+        }
     }
 
     #[must_use]
@@ -638,9 +645,29 @@ impl RecentProjects {
         &self.entries
     }
 
+    pub(crate) fn errors(&self) -> async_channel::Receiver<String> {
+        self.writer.errors()
+    }
+
+    pub(crate) fn flush(&self) -> Vec<String> {
+        let mut errors = self.writer.flush();
+        if self.writer.failed(&self.store.path) {
+            // One final attempt on close/quit also recovers an error the UI
+            // listener already consumed. A persistent refusal never spins.
+            match serde_json::to_value(&self.entries) {
+                Ok(value) => {
+                    self.writer.json(self.store.clone(), value);
+                    errors.extend(self.writer.flush());
+                }
+                Err(error) => errors.push(error.to_string()),
+            }
+        }
+        errors
+    }
+
     pub fn record(&mut self, path: PathBuf) -> io::Result<()> {
         if self.entries.first() == Some(&path) {
-            return Ok(());
+            return self.retry_failed_save();
         }
         let mut next: Vec<_> = self
             .entries
@@ -655,7 +682,7 @@ impl RecentProjects {
 
     pub fn forget(&mut self, path: &Path) -> io::Result<()> {
         if !self.entries.iter().any(|old| old == path) {
-            return Ok(());
+            return self.retry_failed_save();
         }
         self.save(
             self.entries
@@ -668,8 +695,15 @@ impl RecentProjects {
 
     fn save(&mut self, entries: Vec<PathBuf>) -> io::Result<()> {
         let value = serde_json::to_value(&entries).map_err(io::Error::other)?;
-        self.store.write(&value)?;
+        self.writer.json(self.store.clone(), value);
         self.entries = entries;
+        Ok(())
+    }
+
+    fn retry_failed_save(&mut self) -> io::Result<()> {
+        if self.writer.failed(&self.store.path) {
+            self.save(self.entries.clone())?;
+        }
         Ok(())
     }
 }
@@ -915,10 +949,12 @@ mod tests {
         history
             .record(PathBuf::from("/checkouts/4"))
             .expect("reorder");
+        assert!(history.flush().is_empty());
         let mut restarted = RecentProjects::from_store(store);
         assert_eq!(restarted.entries()[0], Path::new("/checkouts/4"));
         assert_eq!(restarted.entries().len(), 8);
         restarted.forget(Path::new("/checkouts/4")).expect("forget");
+        assert!(restarted.flush().is_empty());
         assert!(
             !RecentProjects::from_store(FileLayoutStore::new(&path, None))
                 .entries()

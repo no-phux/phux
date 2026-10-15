@@ -22,10 +22,9 @@
 rust = { version = "1.99.0", mr_boxington = true }
 zig = "0.16.0"
 node = "24"
-# docs/site builds, tests and type-checks against this exact Bun, and
-# docs/site/worker/Dockerfile pins the same tag for production builds.
 # flake.nix reads this value directly, so the Nix shell cannot lag behind it
-# the way it did at 1.3.13 while this said 1.4.0.
+# the way it did at 1.3.13 while this said 1.4.0. The demo image in
+# no-phux/website pins the same tag; this file does not check that image.
 bun = "1.4.2"
 
 # --- Root gate tools --------------------------------------------------------

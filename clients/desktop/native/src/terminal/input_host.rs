@@ -1,10 +1,9 @@
 //! Route GPUI focus, keys, and pointer events into the shared input adapter.
 //! Painting supplies geometry; this module does not acquire frames or drain events.
 
-use super::paint::Observation;
+use super::paint::{self, Observation};
 use crate::input::{InputMetrics, KeyDisposition, TerminalInput};
 use gpui;
-use phux_client_runtime::publication::CursorWidth;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,17 +22,13 @@ pub(super) fn present(
         return false;
     }
     let _timed = crate::perf::PRESENT.timer();
-    let width = match frame.cursor.width {
-        CursorWidth::Narrow => 1,
-        CursorWidth::Wide | CursorWidth::WideTail => 2,
-    };
+    let (row, col, width) = paint::cursor_span(&frame);
     let metrics = InputMetrics {
         bounds: report.geometry.bounds,
         cell_width: report.geometry.cell_width,
         line_height: report.geometry.cell_height,
-        cursor_bounds: report
-            .geometry
-            .cell_bounds(frame.cursor.row, frame.cursor.col, width),
+        scale: report.geometry.scale,
+        cursor_bounds: report.geometry.cell_bounds(row, col, width),
     };
     let accepted = input.update(cx, |state, _| {
         state.presented_at(epoch, &frame, metrics).is_ok()

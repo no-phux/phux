@@ -136,6 +136,31 @@ impl Workspace {
         self.spawns.len() + self.awaiting.len()
     }
 
+    /// Only an awaited terminal's bootstrap can land pending work. Unrelated
+    /// output must not turn a busy background pane into full chrome rebuilds.
+    pub(crate) fn awaiting_output(&self, events: &[Event]) -> bool {
+        events.iter().any(|event| match event {
+            Event::TerminalChanged { terminal_id } => {
+                let label = terminal_label(terminal_id);
+                self.awaiting.contains_key(&label) || self.awaiting_view(terminal_id)
+            }
+            _ => false,
+        })
+    }
+
+    fn awaiting_view(&self, terminal: &ResourceId) -> bool {
+        if self.unresolved.is_empty() {
+            return false;
+        }
+        self.tabs
+            .iter()
+            .flat_map(|tab| placements(&tab.root))
+            .any(|placement| {
+                self.unresolved.contains(&placement.id)
+                    && placement.terminal_id.as_ref() == Some(terminal)
+            })
+    }
+
     /// Incarnation that owns the current tabs.
     #[must_use]
     pub fn server_id(&self) -> Option<&str> {
@@ -1135,7 +1160,40 @@ pub fn snapshot_layout(
 
 #[cfg(test)]
 mod home_tests {
-    use super::{Workspace, WorkspaceOptions};
+    use super::*;
+
+    #[test]
+    fn unrelated_output_does_not_promote_pending_spawns_or_restored_views() {
+        let mut workspace = Workspace::new("Intake".to_owned(), WorkspaceOptions::default());
+        let event = |id| Event::TerminalChanged {
+            terminal_id: ResourceId::local(id),
+        };
+        workspace.spawns.insert(1, Destination::Tab);
+        assert!(!workspace.awaiting_output(&[event(1)]));
+        workspace
+            .awaiting
+            .insert(terminal_label(&ResourceId::local(2)), Destination::Tab);
+        assert!(!workspace.awaiting_output(&[event(1)]));
+        assert!(workspace.awaiting_output(&[event(2)]));
+        let placement = LeafPlacement {
+            id: "restored-placement".into(),
+            terminal_id: Some(ResourceId::local(3)),
+            terminal_label: "@3".into(),
+            view_id: None,
+        };
+        workspace.unresolved.insert(placement.id.clone());
+        workspace.tabs.push(Tab {
+            id: "tab".into(),
+            title: None,
+            focused_id: placement.id.clone(),
+            zoomed_id: None,
+            root: leaf(placement),
+        });
+        assert!(workspace.awaiting_output(&[event(3)]));
+        assert!(!workspace.awaiting_output(&[event(4)]));
+        workspace.unresolved.clear();
+        assert!(!workspace.awaiting_output(&[event(3)]));
+    }
 
     #[test]
     fn home_session_name_tracks_the_same_renamed_session() {

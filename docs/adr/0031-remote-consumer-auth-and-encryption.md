@@ -153,7 +153,7 @@ iOS reads any 3xx while fetching the association as no association at all.
 `phux.phall.io` is a zone Redirect Rule to `phux.sh` and therefore can never
 satisfy that, so every scanned QR opened a browser instead of the app, with
 no diagnostic on either side. Serving the association is part of this
-decision, not deployment trivia: `docs/site/host/pairing.ts` answers it ahead
+decision, not deployment trivia: `host/pairing.ts` in [no-phux/website](https://github.com/no-phux/website) answers it ahead
 of all routing so nothing can redirect it, and pins the claimed paths to
 `/connect` alone — claiming a domain routes *every* matching https URL into
 the app.

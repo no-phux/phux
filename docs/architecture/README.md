@@ -18,6 +18,7 @@ normative; consumer docs describe user-facing behavior.
 | File | Owns |
 |---|---|
 | [DIAGRAM.md](./DIAGRAM.md) | Glance sketch: PTY and producer in, resource engines, the frame seam, client replicas and chrome |
+| [resource-atlas.html](./resource-atlas.html) | Standalone interactive concept: generalized substrate, resource-kind slots, and federation; proposed extensions are marked, not shipped capabilities |
 | [phux-and-herdr.md](./phux-and-herdr.md) | Stable system-shape comparison: application projections versus a peer-consumer resource wire |
 | [process-model.md](./process-model.md) | Per-user server, single process, current-thread runtime; supervision (ADR-0003, ADR-0014) |
 | [usage-collector.md](./usage-collector.md) | Optional usage collector: supervision, Claude Code source, delivery, budgets (ADR-0166). Designed, not built |
