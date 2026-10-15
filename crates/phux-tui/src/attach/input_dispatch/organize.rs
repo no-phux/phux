@@ -3,6 +3,8 @@
 //! on the attached server's dedicated control dial, never on the
 //! output-bearing attach connection. The result is a toast.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use phux_client::organize::{self, Options, Outcome};
 use phux_config::keybind::ResolvedAction;
 
@@ -39,6 +41,10 @@ pub(super) fn queue(action: &ResolvedAction, ctx: &DispatchCtx<'_>, effects: &mu
     });
 }
 
+/// Whether a background run is in flight: two at once would race on the
+/// shared undo record.
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
 /// A finished background organize run, for the driver to toast.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundToast {
@@ -72,6 +78,14 @@ pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
         )));
         return;
     };
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        ctx.overlays.push(Box::new(ToastOverlay::new(
+            "Organize",
+            vec!["An organize run is still in progress; wait for its result.".to_owned()],
+            ctx.theme,
+        )));
+        return;
+    }
     let notice = match intent {
         Intent::Undo => "Undoing the last organize run…",
         Intent::Run { .. } => "Organizing… the result will appear here.",
@@ -82,7 +96,9 @@ pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
         ctx.theme,
     )));
     tokio::spawn(async move {
-        let _ = tx.send(perform(dial, intent).await);
+        let done = perform(dial, intent).await;
+        RUNNING.store(false, Ordering::Release);
+        let _ = tx.send(done);
     });
 }
 

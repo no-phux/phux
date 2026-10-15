@@ -6,6 +6,8 @@
 //! outcome, and keeps the shared undo record `phux organize --undo` and the
 //! TUI read too.
 
+use std::sync::Arc;
+
 use gpui::Context;
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::organize::{
@@ -17,7 +19,7 @@ use phux_client_runtime::organize::{
     pane_facts, session_facts,
 };
 use phux_protocol::ResourceId;
-use phux_protocol::ids::{OperationId, ResourceKind};
+use phux_protocol::ids::{AuthorityId, OperationId, ResourceKind};
 
 use super::desk::Desk;
 use super::notifications::Kind;
@@ -30,6 +32,8 @@ pub(crate) struct Run {
     sequencer: Sequencer,
     judge: Option<JudgeKind>,
     lines: Vec<String>,
+    /// The client the run submits through; outcomes arrive only there.
+    client: Arc<phux_client_runtime::Client>,
 }
 
 impl Desk {
@@ -44,7 +48,9 @@ impl Desk {
             .remote
             .is_none()
             .then(phux_client_runtime::organize::local_host_name);
-        let facts = self.organize_facts(&client.organization(), host.as_deref());
+        let replica = client.organization();
+        let facts = self.organize_facts(&replica, host.as_deref());
+        let planned_on = (Arc::clone(&client), replica.authority());
         self.organization.planning = true;
         self.post(Kind::Info, "Organizing…", None);
         cx.notify();
@@ -52,7 +58,7 @@ impl Desk {
             let planned = smol::unblock(move || plan(&facts)).await;
             let _ = this.update(cx, |desk, cx| {
                 desk.organization.planning = false;
-                desk.apply_organize(planned, cx);
+                desk.apply_organize(planned, &planned_on, cx);
                 cx.notify();
             });
         })
@@ -93,7 +99,7 @@ impl Desk {
         let Some(run) = self.organization.run.as_mut() else {
             return false;
         };
-        if !run.sequencer.owns(&operation) {
+        if !Arc::ptr_eq(&run.client, &client) || !run.sequencer.owns(&operation) {
             return false;
         }
         let replica = client.organization();
@@ -106,11 +112,47 @@ impl Desk {
         true
     }
 
+    /// Drop the run in flight when its client is replaced, keeping an undo
+    /// record of whatever already landed.
+    pub(crate) fn abandon_organize(&mut self) {
+        let Some(run) = self.organization.run.take() else {
+            return;
+        };
+        let partial = run.sequencer.report_so_far();
+        if run.judge.is_some()
+            && !partial.journal.is_empty()
+            && let Err(err) = phux_client_runtime::organize::save_journal(&partial.journal)
+        {
+            self.post(
+                Kind::Error,
+                "Couldn't keep the organize undo record",
+                Some(err.to_string()),
+            );
+        }
+        self.post(
+            Kind::Error,
+            "Organize stopped: this window switched servers",
+            Some("What already landed can be undone with Undo Organize Everything.".to_owned()),
+        );
+    }
+
     fn apply_organize(
         &mut self,
         planned: Result<(Plan, Option<String>), PlanError>,
+        planned_on: &(Arc<phux_client_runtime::Client>, Option<AuthorityId>),
         _cx: &mut Context<Self>,
     ) {
+        let same_server = self.client().is_some_and(|client| {
+            Arc::ptr_eq(&client, &planned_on.0) && client.organization().authority() == planned_on.1
+        });
+        if !same_server {
+            self.post(
+                Kind::Refusal,
+                "Organize discarded: the window switched servers while it planned",
+                None,
+            );
+            return;
+        }
         let (plan, judge_error) = match planned {
             Ok(planned) => planned,
             Err(err) => {
@@ -142,6 +184,7 @@ impl Desk {
             sequencer,
             judge,
             lines,
+            client: Arc::clone(&client),
         };
         let replica = client.organization();
         let finished = run.sequencer.start(&replica, client.as_ref());

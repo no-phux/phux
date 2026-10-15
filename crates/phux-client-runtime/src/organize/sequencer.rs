@@ -162,6 +162,12 @@ impl Sequencer {
         }
     }
 
+    /// What has landed so far, for a run abandoned before it finished.
+    #[must_use]
+    pub fn report_so_far(&self) -> Report {
+        self.report.clone()
+    }
+
     /// Whether `operation` is one of this run's.
     #[must_use]
     pub fn owns(&self, operation: &OperationId) -> bool {
@@ -176,16 +182,23 @@ impl Sequencer {
         submitter: &impl Submitter,
     ) -> Option<Report> {
         if let Work::Undo(journal) = &self.work
-            && journal
-                .authority
-                .is_some_and(|authority| replica.authority() != Some(authority))
+            && let Some(authority) = journal.authority
         {
-            self.report.failures.push(Step {
-                step: "undo".to_owned(),
-                message: "the last organize run changed another server".to_owned(),
-            });
-            self.phase = Phase::Done;
-            return Some(self.report.clone());
+            let refusal = match replica.authority() {
+                None => Some("not connected to the server yet"),
+                Some(current) if current != authority => {
+                    Some("the last organize run changed another server")
+                }
+                Some(_) => None,
+            };
+            if let Some(message) = refusal {
+                self.report.failures.push(Step {
+                    step: "undo".to_owned(),
+                    message: message.to_owned(),
+                });
+                self.phase = Phase::Done;
+                return Some(self.report.clone());
+            }
         }
         self.enter(replica, submitter)
     }
@@ -396,11 +409,13 @@ impl Sequencer {
     fn settle(&mut self, pending: Pending, ok: bool, last: &OrgOutcome) {
         let journal = &mut self.report.journal;
         match (pending, ok) {
-            (Pending::Create(name), true) => {
-                if let Some(key) = self.new_keys.get(&name) {
-                    journal.created.push(CreatedSession { key: *key, name });
-                }
-            }
+            (Pending::Create(name), true) => match self.new_keys.get(&name).copied() {
+                Some(key) => journal.created.push(CreatedSession { key, name }),
+                None => self.fail(
+                    format!("create {name}"),
+                    "the server answered without the new session's key",
+                ),
+            },
             (Pending::Move { panes, .. }, true) => journal.moved.extend(panes),
             (Pending::Rename(rename), true) => journal.renamed.push(rename),
             (Pending::Delete(created), true) => journal.created.push(created),
@@ -408,6 +423,9 @@ impl Sequencer {
                 format!("delete {}", created.name),
                 "it holds work now; left in place",
             ),
+            (Pending::Delete(created), false) if is_not_found(last) => {
+                self.skip(format!("delete {}", created.name), "already gone");
+            }
             (pending, false) => {
                 let step = describe(&pending);
                 self.fail(step, &outcome_text(last));
@@ -463,6 +481,10 @@ fn describe(pending: &Pending) -> String {
         Pending::Rename(rename) => format!("rename {} to {}", rename.from, rename.to),
         Pending::Delete(created) => format!("delete {}", created.name),
     }
+}
+
+const fn is_not_found(outcome: &OrgOutcome) -> bool {
+    matches!(outcome, OrgOutcome::Refused(Refusal::NotFound))
 }
 
 const fn is_not_empty(outcome: &OrgOutcome) -> bool {
@@ -688,6 +710,39 @@ mod tests {
         assert_eq!(report.journal.moved.len(), 1);
         assert!(report.failures.is_empty(), "{report:?}");
         assert_eq!(report.skipped.len(), 1);
+    }
+
+    /// A created session someone already deleted is skipped on undo, and
+    /// a create answered without a key is a failure, not silence.
+    #[test]
+    fn undo_skips_a_vanished_session_and_keyless_creates_fail() {
+        let seeded = replica(&[], &[(skey(1), "misc")]);
+        let mut journal = Journal::new();
+        journal.created.push(CreatedSession {
+            key: skey(7),
+            name: "web".into(),
+        });
+        let fake = Fake::default();
+        let mut run = Sequencer::undo(journal);
+        assert_eq!(run.start(&seeded, &fake), None);
+        let gone = OrgOutcome::Refused(Refusal::NotFound);
+        let report = run
+            .on_outcome(fake.op(0), &gone, &seeded, &fake)
+            .expect("done");
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(report.skipped.len(), 1);
+
+        let seeded = replica(&[(rkey(10), skey(1))], &[(skey(1), "misc")]);
+        let fake = Fake::default();
+        let mut run = Sequencer::apply(plan(), seeded.authority());
+        assert_eq!(run.start(&seeded, &fake), None);
+        let report = run
+            .on_outcome(fake.op(0), &committed(None), &seeded, &fake)
+            .expect("nothing left to move");
+        assert!(
+            report.failures.iter().any(|f| f.step == "create web"),
+            "{report:?}"
+        );
     }
 
     /// Another server's record is refused before anything is sent.

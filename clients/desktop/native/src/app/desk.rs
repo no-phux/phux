@@ -3019,6 +3019,7 @@ impl Desk {
     /// The in-place half of [`Self::switch_host`], once the target's home is known.
     fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
         self.persist();
+        self.abandon_organize();
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
