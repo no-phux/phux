@@ -10,7 +10,7 @@ use gpui::{
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
@@ -25,7 +25,66 @@ use super::color::from_hex;
 use super::desk::Desk;
 use super::keys::gpui_stroke;
 
-type FontSelect = SelectState<SearchableVec<SharedString>>;
+type FontSelect = SelectState<SearchableVec<FontChoice>>;
+
+/// Keep Kit's search, keyboard cursor and committed checkmark while previewing
+/// each installed family in its own face.
+#[derive(Clone)]
+struct FontChoice(SharedString);
+
+impl SelectItem for FontChoice {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.0.clone()
+    }
+
+    fn value(&self) -> &SharedString {
+        &self.0
+    }
+
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mut font = gpui::font(self.0.clone());
+        crate::fonts::resolve(&mut font, cx);
+        let bundled = self.0.as_ref() == crate::fonts::BUNDLED
+            || self.0.as_ref() == crate::fonts::SYMBOLS;
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .py(px(5.))
+            .child(
+                div()
+                    .w(px(42.))
+                    .h(px(36.))
+                    .flex_shrink_0()
+                    .rounded(px(8.))
+                    .bg(cx.theme().foreground.opacity(0.05))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(font.family)
+                    .text_size(px(19.))
+                    .child("Ag"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().text_sm().truncate().child(self.0.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if bundled { "Bundled with Phux" } else { "Font family" }),
+                    ),
+            )
+    }
+}
 
 /// Slider and select state for one window's Settings. Built on first open.
 pub(crate) struct SettingsControls {
@@ -91,7 +150,9 @@ impl Knob {
 
 /// Installed families, with the bundled default and current choice kept easy to find.
 fn font_families(desk: &Desk, cx: &App) -> Vec<SharedString> {
-    let installed = cx.text_system().all_font_names();
+    let mut installed = cx.text_system().all_font_names();
+    installed.sort_unstable();
+    installed.dedup();
     let ghostty = desk
         .ghostty()
         .font_family
@@ -161,13 +222,18 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             .position(|family| family.as_ref() == desk.prefs.font_family)
             .map(|row| IndexPath::default().row(row));
         let font = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(fonts.clone()), selected, window, cx)
+            SelectState::new(
+                SearchableVec::new(fonts.iter().cloned().map(FontChoice).collect::<Vec<_>>()),
+                selected,
+                window,
+                cx,
+            )
                 .searchable(true)
         });
         subs.push(cx.subscribe_in(
             &font,
             window,
-            |desk, _, event: &SelectEvent<SearchableVec<SharedString>>, _, cx| {
+            |desk, _, event: &SelectEvent<SearchableVec<FontChoice>>, _, cx| {
                 let SelectEvent::Confirm(Some(family)) = event else {
                     return;
                 };
@@ -203,7 +269,11 @@ fn sync_font(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     if !controls.fonts.contains(&current) {
         controls.fonts.push(current.clone());
         controls.font.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(controls.fonts.clone()), window, cx)
+            state.set_items(
+                SearchableVec::new(controls.fonts.iter().cloned().map(FontChoice).collect::<Vec<_>>()),
+                window,
+                cx,
+            )
         });
     }
     controls.font.update(cx, |state, cx| {
@@ -234,7 +304,11 @@ pub(crate) fn panel(
     sync_font(desk, window, cx);
     sync_sliders(desk, window, cx);
     let handle = cx.weak_entity();
-    let height = (window.viewport_size().height - px(112.)).max(px(320.));
+    let viewport = window.viewport_size();
+    let height = (viewport.height - px(112.)).max(px(240.));
+    let width = (viewport.width - px(48.)).min(px(880.)).max(px(280.));
+    let light = colors.theme.appearance == "light";
+    let ink = from_hex(&colors.theme.foreground);
     let settings = Settings::new("phux-settings")
         .sidebar_width(px(190.))
         .with_group_variant(GroupBoxVariant::Outline)
@@ -247,13 +321,26 @@ pub(crate) fn panel(
         .page(connection_page(desk, &handle));
     div()
         .mt(px(56.))
-        .w(px(880.))
+        .w(width)
         .h(height)
-        .rounded(px(12.))
-        .bg(from_hex(&colors.theme.surface))
+        .rounded(px(14.))
+        .bg(from_hex(&colors.raised).opacity(0.97))
         .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_lg()
+        .border_color(ink.opacity(if light { 0.12 } else { 0.14 }))
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
+                offset: gpui::point(px(0.), px(20.)),
+                blur_radius: px(64.),
+                spread_radius: px(-8.),
+            },
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
+                offset: gpui::point(px(0.), px(2.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+            },
+        ])
         .overflow_hidden()
         .occlude()
         .flex()
@@ -263,15 +350,29 @@ pub(crate) fn panel(
                 .flex()
                 .items_center()
                 .justify_between()
-                .px(px(16.))
-                .h(px(44.))
+                .px(px(20.))
+                .h(px(64.))
+                .flex_shrink_0()
+                .bg(ink.opacity(0.025))
                 .border_b_1()
-                .border_color(from_hex(&colors.border))
+                .border_color(ink.opacity(0.08))
                 .child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(from_hex(&colors.theme.foreground))
-                        .child("Settings"),
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(ink)
+                                .child("Settings"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(from_hex(&colors.muted))
+                                .child("Appearance, layout & keyboard"),
+                        ),
                 )
                 .child(
                     Button::new("settings-close")
@@ -406,7 +507,28 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
             SettingItem::new(
                 "Font family",
                 SettingField::render(move |_, _, _| {
-                    Select::new(&font).small().w(px(260.)).menu_max_h(px(280.))
+                    Select::new(&font)
+                        .id("font-family")
+                        .accessibility_label("Terminal font family")
+                        .w(px(260.))
+                        .rounded(px(10.))
+                        .menu_width(px(340.))
+                        .menu_max_h(px(360.))
+                        .search_placeholder("Find a font family…")
+                        .empty(|_, cx| {
+                            div()
+                                .p(px(20.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(div().text_sm().child("No matching fonts"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Try another family name."),
+                                )
+                        })
                 })
                 .on_reset(
                     move |cx| {
