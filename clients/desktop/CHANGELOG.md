@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/no-phux/phux/compare/desktop-v0.14.2...desktop-v0.15.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** filter Go To by agent state ([#1438](https://github.com/no-phux/phux/issues/1438)) ([24180f2](https://github.com/no-phux/phux/commit/24180f28f18201d0cb48507666524014e3810565))
+
 ## [0.14.2](https://github.com/no-phux/phux/compare/desktop-v0.14.1...desktop-v0.14.2) (2026-10-15)
 
 
