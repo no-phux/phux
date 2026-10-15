@@ -207,10 +207,13 @@ fn main_menu_stays_left_with_a_hidden_sidebar_and_opens_settings(cx: &mut TestAp
     }
     let bounds = cx.debug_bounds("main-menu-rail").unwrap();
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-    // Creation, pane submenu, navigation, and Settings: eight selectable rows.
     let menu = desk.read_with(cx, |desk, _| desk.main_menu.unwrap());
-    gpui::VisualTestContext::from_window(menu.into(), cx)
-        .simulate_keystrokes("down down down down down down down down enter");
+    let menu_cx = &mut gpui::VisualTestContext::from_window(menu.into(), cx);
+    menu_cx.run_until_parked();
+    let settings = menu_cx
+        .debug_bounds("glass-menu-settings")
+        .expect("Settings command");
+    menu_cx.simulate_click(settings.center(), gpui::Modifiers::none());
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.modal.clone()),
         crate::app::Modal::Settings
@@ -243,8 +246,8 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
         (true, true, None),
         (false, false, None),
         (true, false, None),
-        (false, true, Some("down down down down down right")),
-        (true, true, Some("right")),
+        (false, true, Some("panes")),
+        (true, true, Some("hosts")),
     ] {
         cx.update(|window, cx| {
             fixture.read(cx).terminal.clone().focus(window, cx);
@@ -267,11 +270,22 @@ fn check_menu_focus(desk: Entity<crate::app::Desk>, cx: &mut gpui::VisualTestCon
                 assert!(window.focused(cx).is_some(), "popup receives its own focus");
             });
             menu_cx.run_until_parked();
-            if let Some(keys) = submenu {
-                menu_cx.simulate_keystrokes(keys);
-                assert!(menu_cx.debug_bounds("glass-menu-row-0").is_some());
+            if let Some(page) = submenu {
+                if page == "panes" {
+                    let pane = menu_cx
+                        .debug_bounds("glass-menu-panes")
+                        .expect("Pane layout");
+                    menu_cx.simulate_mouse_move(pane.center(), None, gpui::Modifiers::none());
+                }
+                menu_cx.simulate_keystrokes("right");
+                let first = if page == "panes" {
+                    "glass-menu-split-right"
+                } else {
+                    "glass-menu-local"
+                };
+                assert!(menu_cx.debug_bounds(first).is_some());
                 assert!(
-                    menu_cx.debug_bounds("glass-menu-row-3").is_none(),
+                    menu_cx.debug_bounds("glass-menu-settings").is_none(),
                     "child page replaced command rows"
                 );
             }
