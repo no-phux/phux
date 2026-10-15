@@ -23,7 +23,10 @@ use phux_protocol::{
 use std::{
     collections::BTreeMap,
     ops::Range,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, LazyLock, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -39,6 +42,45 @@ const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
 
 /// `(cols, rows)` plus the integer cell pitch reported with them.
 type FitProposal = ((u16, u16), (u16, u16));
+
+/// A proposal waiting out [`FIT_SETTLE`], armed for one presentation generation.
+#[derive(Clone, Copy)]
+struct PendingFit {
+    proposal: FitProposal,
+    since: Instant,
+    identity: Identity,
+}
+
+/// Token of the view that last painted as the visible size owner.
+///
+/// Hiding releases paint state and keeps this input, including a fit timer.
+/// The timer delivers only while the token still matches, so a hidden former
+/// owner cannot resize over the view that has since taken ownership.
+fn fit_claims() -> &'static Mutex<BTreeMap<(usize, ResourceId), u64>> {
+    static CLAIMS: LazyLock<Mutex<BTreeMap<(usize, ResourceId), u64>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    &CLAIMS
+}
+
+fn next_fit_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn claim_key(client: &Arc<Client>, terminal: &ResourceId) -> (usize, ResourceId) {
+    (Arc::as_ptr(client) as usize, terminal.clone())
+}
+
+/// Whether a settled fit may still be delivered. `claimed` is the visible
+/// size owner's token and `live` is the generation published now.
+fn admit_delayed_fit(
+    claimed: Option<u64>,
+    token: u64,
+    armed: Identity,
+    live: Option<Identity>,
+) -> bool {
+    claimed == Some(token) && live == Some(armed)
+}
 
 /// Geometry already computed by the painter, in logical window pixels.
 #[derive(Clone, Copy, Debug)]
@@ -137,7 +179,9 @@ pub struct TerminalInput {
     /// The size and cell pitch this view last proposed.
     fitted: Option<FitProposal>,
     /// A proposal waiting to hold still for `FIT_SETTLE`.
-    settling: Option<(FitProposal, Instant)>,
+    settling: Option<PendingFit>,
+    /// Distinguishes this input from a later one bound to the same view.
+    fit_token: u64,
     fit_active: bool,
     /// Output sequence of the last frame painted, and the key-to-paint probe.
     painted_seq: u64,
@@ -172,6 +216,7 @@ impl TerminalInput {
             last_error: None,
             fitted: None,
             settling: None,
+            fit_token: next_fit_token(),
             fit_active: false,
             painted_seq: 0,
             key_probe: crate::perf::KeyProbe::default(),
@@ -229,6 +274,7 @@ impl TerminalInput {
                 self.cancel();
                 self.metrics = None;
                 self.fitted = None;
+                self.revoke_fit();
                 self.key_probe.forget();
                 Err(InputError::StalePresentation)
             }
@@ -261,19 +307,30 @@ impl TerminalInput {
     /// forgets the last proposal, so the owner reclaims a size another client
     /// changed. The first look also sends nothing when the grid already matches
     /// and the pitch is the server default of 8×16.
+    ///
+    /// A timer, not the next frame, sends the settled size: a background or
+    /// occluded window may not paint again, and the resize must still go out.
+    /// Hiding keeps this input and that timer. Delivery rechecks that this
+    /// view is still the visible size owner of the generation that armed the
+    /// proposal, so a hidden former owner cannot override the focused view.
     pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
         let active = self.window_active(window);
         let reactivated = active && !self.fit_active;
         self.fit_active = active;
+        if !owner {
+            self.fitted = None;
+            self.revoke_fit();
+            return;
+        }
+        // Claim before deciding whether a resize is needed, so a focused view
+        // whose grid already fits still retires a hidden owner's pending fit.
+        self.claim_fit();
+        if reactivated {
+            self.fitted = None;
+        }
         let Some(metrics) = self.metrics else {
             return;
         };
-        if !owner || reactivated {
-            self.fitted = None;
-        }
-        if !owner {
-            return;
-        }
         let Some(capacity) = capacity(metrics) else {
             return;
         };
@@ -285,13 +342,19 @@ impl TerminalInput {
         };
         if self
             .settling
-            .is_some_and(|(pending, _)| pending == proposal)
+            .is_some_and(|pending| pending.proposal == proposal)
         {
             return;
         }
-        // A timer, not the next frame, sends the settled size: a background or
-        // occluded window may not paint again, and the resize must still go out.
-        self.settling = Some((proposal, Instant::now()));
+        let Some(identity) = self.identity else {
+            self.settling = None;
+            return;
+        };
+        self.settling = Some(PendingFit {
+            proposal,
+            since: Instant::now(),
+            identity,
+        });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FIT_SETTLE).await;
             let _ = this.update(cx, |state, _| state.flush_fit());
@@ -301,29 +364,79 @@ impl TerminalInput {
 
     /// Send the pending proposal once it has held still for `FIT_SETTLE`. A
     /// newer proposal restarts the clock and its own timer sends it.
+    ///
+    /// Admission is the current visible owner and the armed generation.
+    /// Nothing here acknowledges an unknown-delivery fence. A viewer role
+    /// is refused by the resize itself, which sends nothing.
     fn flush_fit(&mut self) {
-        let Some((proposal, since)) = self.settling else {
+        let Some(pending) = self.settling else {
             return;
         };
-        if since.elapsed() < FIT_SETTLE {
+        if pending.since.elapsed() < FIT_SETTLE {
             return;
         }
         let Ok(client) = self.client() else {
             return;
         };
-        let ((cols, rows), cell_px) = proposal;
+        let claimed = self.claimed_token(&client);
         let outcome = client.with_control(|control| {
-            control.resize_terminal_with_cell(
+            let live = self
+                .live_frame(control)
+                .ok()
+                .map(|frame| Identity::of(control.connection_epoch(), &frame));
+            if !admit_delayed_fit(claimed, self.fit_token, pending.identity, live) {
+                return None;
+            }
+            let ((cols, rows), cell_px) = pending.proposal;
+            Some(control.resize_terminal_with_cell(
                 &self.terminal,
                 cols.into(),
                 rows.into(),
                 Some(cell_px),
-            )
+            ))
         });
-        if outcome == TerminalResizeOutcome::Queued {
-            self.fitted = Some(proposal);
+        if outcome == Some(TerminalResizeOutcome::Queued) {
+            self.fitted = Some(pending.proposal);
         }
         self.settling = None;
+    }
+
+    fn claim_fit(&self) {
+        let Ok(client) = self.client() else {
+            return;
+        };
+        fit_claims()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(claim_key(&client, &self.terminal), self.fit_token);
+    }
+
+    fn claimed_token(&self, client: &Arc<Client>) -> Option<u64> {
+        fit_claims()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&claim_key(client, &self.terminal))
+            .copied()
+    }
+
+    /// Drop a pending fit and release visible ownership when this input holds it.
+    fn revoke_fit(&mut self) {
+        self.settling = None;
+        self.release_fit_claim();
+    }
+
+    fn release_fit_claim(&mut self) {
+        let mut claims = fit_claims()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(client) = self.client() {
+            let key = claim_key(&client, &self.terminal);
+            if claims.get(&key) == Some(&self.fit_token) {
+                claims.remove(&key);
+            }
+            return;
+        }
+        claims.retain(|_, token| *token != self.fit_token);
     }
 
     fn client(&self) -> Result<Arc<Client>, InputError> {
@@ -636,6 +749,12 @@ impl TerminalInput {
     }
 }
 
+impl Drop for TerminalInput {
+    fn drop(&mut self) {
+        self.release_fit_claim();
+    }
+}
+
 fn queued(success: bool) -> Result<(), InputError> {
     success.then_some(()).ok_or(InputError::NotReady)
 }
@@ -856,8 +975,8 @@ fn nonempty_text(text: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Admit, InputError, InputMetrics, admit_presentation, capacity, cell_px, echo_guess,
-        pending_fit, upgrade_client,
+        Admit, Identity, InputError, InputMetrics, admit_delayed_fit, admit_presentation, capacity,
+        cell_px, echo_guess, pending_fit, upgrade_client,
     };
     use gpui::{Bounds, point, px, size};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -1021,5 +1140,368 @@ mod tests {
         let mut release = press(PhysicalKey::Unidentified, ModSet::empty(), Some("a"));
         release.action = KeyAction::Release;
         assert_eq!(echo_guess(&release), None);
+    }
+
+    fn generation(epoch: u64) -> Identity {
+        Identity {
+            epoch,
+            stream: 1,
+            bootstrap: 1,
+        }
+    }
+
+    /// Pressing another pane, switching tabs, or zooming a sibling moves the
+    /// visible-owner claim. The hidden view's token no longer matches.
+    #[test]
+    fn press_tab_switch_and_zoom_retire_a_hidden_owners_fit() {
+        let armed = generation(1);
+        assert!(
+            !admit_delayed_fit(Some(2), 1, armed, Some(armed)),
+            "the focused writable view holds the claim"
+        );
+        assert!(
+            !admit_delayed_fit(None, 1, armed, Some(armed)),
+            "a painted non-owner released the claim"
+        );
+    }
+
+    /// Blur and occlusion leave the same view as the visible owner.
+    #[test]
+    fn blur_keeps_the_visible_owners_claim() {
+        let armed = generation(1);
+        assert!(admit_delayed_fit(Some(7), 7, armed, Some(armed)));
+    }
+
+    /// Coming back to that owner, still on the armed generation, may settle.
+    #[test]
+    fn returning_the_visible_owner_is_admitted() {
+        let armed = generation(4);
+        assert!(admit_delayed_fit(Some(7), 7, armed, Some(armed)));
+    }
+
+    #[test]
+    fn reconnect_replaces_the_armed_generation() {
+        let armed = generation(1);
+        assert!(!admit_delayed_fit(Some(7), 7, armed, Some(generation(2))));
+        assert!(!admit_delayed_fit(Some(7), 7, armed, None));
+    }
+}
+
+/// Drives [`TerminalInput::fit`] and [`TerminalInput::flush_fit`] against an
+/// embedded runtime. Press, tab switch, and zoom are one handoff: the newly
+/// focused writable view claims ownership while the previous timer is still
+/// running, and hiding does not call `fit(false)`.
+#[cfg(test)]
+mod delivery {
+    use super::{FIT_SETTLE, InputMetrics, TerminalInput};
+    use gpui::{AppContext, Bounds, Entity, TestAppContext, Window, point, px, size};
+    use phux_client_runtime::control::{ControlOptions, ControlPlane};
+    use phux_client_runtime::{Client, Runtime, ViewId};
+    use phux_protocol::{
+        PROTOCOL_VERSION, ResourceId,
+        caps::{
+            BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+            ServerFeature, ServerFeatureSet,
+        },
+        ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+        wire::{
+            frame::{AttachTarget, Command, CommandResult, ErrorCode, FrameKind, RolePolicy},
+            info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
+        },
+    };
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn terminal() -> ResourceId {
+        ResourceId::local(7)
+    }
+
+    fn metrics(width: f32, height: f32) -> InputMetrics {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+        InputMetrics {
+            bounds,
+            cell_width: px(8.),
+            line_height: px(17.),
+            scale: 1.,
+            cursor_bounds: bounds,
+        }
+    }
+
+    fn session(role: Option<RolePolicy>) -> Arc<Client> {
+        let client = Arc::new(Runtime::embedded(ControlOptions {
+            attach: Some(AttachTarget::ByName("fit".into())),
+            attach_role: role,
+            ..ControlOptions::default()
+        }));
+        open_session(&client, 1);
+        client
+    }
+
+    fn open_session(client: &Client, generation: u64) {
+        client.with_control(ControlPlane::connection_opened);
+        let _ = client.take_outbound();
+        client
+            .feed(FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new()
+                    .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+                server_id: vec![1; 16],
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            })
+            .expect("hello");
+        let attach_id = client
+            .take_outbound()
+            .iter()
+            .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                FrameKind::Attach { attach_id, .. } => Some(attach_id),
+                _ => None,
+            })
+            .expect("attach request");
+        let stream_id = StreamId::new(generation).unwrap();
+        let bootstrap_id = BootstrapId::new(generation).unwrap();
+        let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
+            .with_sessions(vec![SessionInfo::new(SessionId::new(1), "fit")])
+            .with_windows(vec![WindowInfo::new(
+                WindowId::new(1),
+                SessionId::new(1),
+                "shell",
+            )])
+            .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
+        for frame in [
+            FrameKind::Attached {
+                attach_id,
+                snapshot,
+                initial_client_id: ClientId::new(1),
+            },
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 20,
+                rows: 4,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"ready".to_vec().into(),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            FrameKind::AttachReady { attach_id },
+        ] {
+            client.feed(frame).expect("bootstrap");
+        }
+        let _ = client.take_outbound();
+        let _ = client.take_events();
+    }
+
+    fn fence(client: &Client) -> Option<phux_client_runtime::control::ProjectionFence> {
+        client.with_control(|control| {
+            control.apply_line(&terminal(), "command");
+            let request_id = control
+                .take_outbound()
+                .iter()
+                .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                    FrameKind::Command {
+                        request_id,
+                        command: Command::ApplyInput { .. },
+                    } => Some(request_id),
+                    _ => None,
+                })
+                .expect("apply input");
+            control
+                .feed(FrameKind::CommandResult {
+                    request_id,
+                    result: CommandResult::Error {
+                        code: ErrorCode::InputDeliveryUnknown,
+                        message: "ambiguous fixture delivery".into(),
+                    },
+                })
+                .expect("unknown");
+            let _ = control.take_outbound();
+            control.projection_fence(&terminal())
+        })
+    }
+
+    fn resizes(client: &Client) -> Vec<(u16, u16)> {
+        client
+            .take_outbound()
+            .iter()
+            .filter_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                FrameKind::ResizeTerminal { cols, rows, .. } => Some((cols, rows)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn bind(
+        client: &Arc<Client>,
+        view: ViewId,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Entity<TerminalInput> {
+        let focus = cx.focus_handle();
+        let weak = Arc::downgrade(client);
+        let terminal = terminal();
+        cx.new(move |_cx| TerminalInput::new(weak, view, terminal, focus, window))
+    }
+
+    fn arm(
+        input: &Entity<TerminalInput>,
+        owner: bool,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        input.update(cx, |state, cx| {
+            let client = state.client().expect("client");
+            let frame = client.acquire_view(state.view).expect("frame");
+            let epoch = client.connection_epoch();
+            state
+                .presented_at(epoch, &frame, metrics(width, height))
+                .expect("present");
+            state.fit(owner, window, cx);
+        });
+    }
+
+    fn settle(input: &Entity<TerminalInput>, cx: &mut gpui::App) {
+        input.update(cx, |state, _| {
+            if let Some(pending) = &mut state.settling {
+                pending.since = Instant::now() - FIT_SETTLE;
+            }
+            state.flush_fit();
+        });
+    }
+
+    #[gpui::test]
+    fn a_hidden_owners_delayed_fit_does_not_override_the_focused_view(cx: &mut TestAppContext) {
+        let client = session(None);
+        let older = client.create_view(&terminal()).expect("hidden view");
+        let focused = client.create_view(&terminal()).expect("focused view");
+        cx.add_empty_window().update(|window, cx| {
+            // Press, tab switch, and zoom all end here: the newly focused
+            // writable view fits, and the previous owner is no longer painted.
+            let hidden = bind(&client, older, window, cx);
+            let shown = bind(&client, focused, window, cx);
+            arm(&hidden, true, 800., 408., window, cx);
+            arm(&shown, true, 400., 204., window, cx);
+            settle(&hidden, cx);
+            assert!(
+                resizes(&client).is_empty(),
+                "a delayed fit from the hidden owner must not resize"
+            );
+            settle(&shown, cx);
+            assert_eq!(resizes(&client), vec![(50, 12)]);
+
+            // Returning to the first view settles that view's geometry.
+            arm(&hidden, true, 800., 408., window, cx);
+            settle(&hidden, cx);
+            assert_eq!(resizes(&client), vec![(100, 24)]);
+
+            // A later paint that is no longer the owner drops its timer.
+            arm(&hidden, true, 560., 272., window, cx);
+            arm(&hidden, false, 560., 272., window, cx);
+            settle(&hidden, cx);
+            assert!(resizes(&client).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn blur_of_an_inactive_window_still_settles_the_visible_owner(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, true, 800., 408., window, cx);
+            window.blur(cx);
+            assert!(
+                !window.is_window_active(),
+                "occlusion and blur keep the visible owner"
+            );
+            input.update(cx, |state, _| {
+                state.flush_fit();
+                assert!(state.settling.is_some(), "the clock has not settled");
+            });
+            assert!(resizes(&client).is_empty());
+            settle(&input, cx);
+            assert_eq!(resizes(&client), vec![(100, 24)]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_resize_burst_sends_only_the_settled_proposal(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, true, 800., 408., window, cx);
+            arm(&input, true, 640., 340., window, cx);
+            input.update(cx, |state, _| state.flush_fit());
+            assert!(resizes(&client).is_empty());
+            settle(&input, cx);
+            assert_eq!(resizes(&client), vec![(80, 20)]);
+        });
+    }
+
+    #[gpui::test]
+    fn reconnect_drops_the_hidden_fit_until_the_new_generation_is_shown(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let stale = bind(&client, view, window, cx);
+            arm(&stale, true, 800., 408., window, cx);
+            open_session(&client, 2);
+            settle(&stale, cx);
+            assert!(
+                resizes(&client).is_empty(),
+                "the pre-reconnect proposal is a replaced generation"
+            );
+            let view = client
+                .create_view(&terminal())
+                .expect("view after reconnect");
+            let fresh = bind(&client, view, window, cx);
+            arm(&fresh, true, 800., 408., window, cx);
+            settle(&fresh, cx);
+            assert_eq!(resizes(&client), vec![(100, 24)]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_viewer_is_not_resized(cx: &mut TestAppContext) {
+        let client = session(Some(RolePolicy::VIEWER));
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, true, 800., 408., window, cx);
+            settle(&input, cx);
+            assert!(resizes(&client).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn a_settled_fit_does_not_acknowledge_an_unknown_delivery_fence(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let armed = fence(&client).expect("fence");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, true, 800., 408., window, cx);
+            settle(&input, cx);
+            assert_eq!(resizes(&client), vec![(100, 24)]);
+            let current = client.with_control(|control| control.projection_fence(&terminal()));
+            assert_eq!(current, Some(armed));
+        });
     }
 }
