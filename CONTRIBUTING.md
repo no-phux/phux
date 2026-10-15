@@ -121,6 +121,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
+| Ghostty source pin | `scripts/check-ghostty-pin.sh` | `just ghostty-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |

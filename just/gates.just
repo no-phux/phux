@@ -175,6 +175,15 @@ zig-pin-check:
     bash scripts/check-zig-pins.sh
 
 
+# flake.nix's Ghostty input vs the commit the pinned libghostty-rs builds.
+# Skips (exit 0) when GitHub is unreachable, so it is safe offline.
+[group('gates')]
+[private]
+[doc('Flake Ghostty input vs the pinned libghostty-rs GHOSTTY_COMMIT.')]
+ghostty-pin-check:
+    bash scripts/check-ghostty-pin.sh
+
+
 # No env!("CARGO_MANIFEST_DIR") / env!("CARGO_BIN_EXE_*") in library or test
 # code: a compiled-in checkout path defeats the shared build cache.
 [group('gates')]
@@ -246,7 +255,7 @@ ci-static: ci-cargo-gates ci-repo-gates
 ci-cargo-gates: fmt-check lint doc deny build-features-check build-features-compile skill-contract binding-uniffi-test
 
 [private]
-ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check cache-portable-check agent-integrations-check
+ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check ghostty-pin-check toolchain-check install-surface-check cache-portable-check agent-integrations-check
 
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.
