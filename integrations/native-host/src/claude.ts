@@ -288,7 +288,7 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
   const shutdown = new AbortController();
   const input = new PromptStream();
   const transcript = new Transcript(context);
-  const pending = new Map<string, string>();
+  const pending = new Map<string, { operationId: string; admitted: boolean }>();
   const questions = new Map<string, { toolId?: string; submitted: boolean; signal: AbortSignal; abort: () => void }>();
   let currentTurn: string | undefined;
   let closed = false;
@@ -419,9 +419,9 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
     capabilities: { prompt: true, interrupt: true, questions: true, follow_up: true },
     async prompt(text, operationId) {
       if (closed) return { disposition: 'refused', detail: 'Claude query is closed' };
-      if (pending.size >= MAX_PENDING) return { disposition: 'refused', detail: 'Claude has 64 unconsumed prompts' };
+      if (pending.size >= MAX_PENDING) return { disposition: 'refused', detail: 'Claude has 64 prompts awaiting correlated results' };
       const uuid = randomUUID();
-      pending.set(uuid, operationId);
+      pending.set(uuid, { operationId, admitted: false });
       input.push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null,
         origin: { kind: 'human' }, ...(adapter.providerSessionId ? { session_id: adapter.providerSessionId } : {}) });
       transcript.emit({ id: uuid, role: 'user', text, truncated: false, final: true });
@@ -431,7 +431,6 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
       if (closed || !currentTurn || currentTurn !== turnId) return { disposition: 'refused', detail: 'Claude turn is no longer current' };
       try {
         const receipt = await conversation.interrupt();
-        context.closeQuestions('Claude acknowledged interrupt');
         return { disposition: 'completed', detail: receipt
           ? `Claude acknowledged interrupt; ${receipt.still_queued.length} queued prompts remain. Turn termination is reported separately.`
           : 'Claude acknowledged interrupt; turn termination is reported separately' };
@@ -471,11 +470,6 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
           if (!question.submitted) continue;
           if (question.toolId && outcomeToolIds.includes(question.toolId)) {
             closeQuestion(id, 'Claude SDK reported the requested tool outcome');
-          } else if (!question.toolId && (message.type === 'assistant' || message.type === 'stream_event' || message.type === 'tool_progress')) {
-            // Form callbacks have no consumption acknowledgment in this SDK.
-            closeQuestion(id, 'Claude SDK continued after submitted elicitation');
-          } else if (message.type === 'result') {
-            closeQuestion(id, 'Claude SDK turn ended after submitted response');
           }
         }
         if ((message.type === 'assistant' || message.type === 'stream_event') && message.parent_tool_use_id === null) {
@@ -487,7 +481,11 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
           }
           for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) {
             const operation = pending.get(id);
-            if (operation !== undefined) { pending.delete(id); notice('info', `Claude consumed prompt operation ${operation} (${id})`); }
+            if (operation && !operation.admitted) {
+              operation.admitted = true;
+              context.result({ operation_id: operation.operationId, disposition: 'admitted',
+                detail: 'Claude SDK confirmed prompt consumption with its exact user-message UUID' });
+            }
           }
           let waitingForAnswer = false;
           for (const question of questions.values()) {
@@ -497,7 +495,16 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
         }
         transcript.message(message);
         if (message.type === 'result') {
-          for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) pending.delete(id);
+          for (const id of message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])) {
+            const operation = pending.get(id);
+            if (!operation) continue;
+            pending.delete(id);
+            // A result is terminal, including an execution error. Do not claim
+            // earlier admission: error results can also report delivery failure.
+            context.result({ operation_id: operation.operationId, disposition: 'completed',
+              detail: message.is_error ? `Claude SDK returned a correlated error result (${message.subtype})`
+                : 'Claude SDK returned a correlated successful result' });
+          }
           if (message.is_error) notice('error', `Claude turn ended with ${message.subtype}`);
           currentTurn = undefined;
           context.turn(undefined);
@@ -515,6 +522,10 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
       closed = true;
       context.connection(false);
       input.finish();
+      for (const operation of pending.values()) {
+        context.result({ operation_id: operation.operationId, disposition: 'unknown',
+          detail: 'Claude SDK stream closed without a correlated result; input was not resent' });
+      }
       pending.clear();
       shutdown.abort();
       context.closeQuestions('Claude SDK stream closed');

@@ -1,4 +1,4 @@
-import type { StreamMessage, UserInputMessage } from '@ampcode/sdk';
+import type { StreamMessage, UserInputMessage, execute as sdkExecute } from '@ampcode/sdk';
 import { createRequire } from 'node:module';
 import { readFile, access, open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -62,7 +62,7 @@ export class AmpTranscript {
 
 /** This SDK has no interactive approval callback. Default policy remains active;
  * permission_denials are reported, never converted into implicit approval. */
-export async function createAdapter(context: AdapterContext): Promise<NativeAdapter> {
+export async function createAdapter(context: AdapterContext, startExecution?: typeof sdkExecute): Promise<NativeAdapter> {
   if (context.command.length !== 1 || context.command[0] !== 'node') throw new Error('Amp in-process SDK requires command ["node"]; additional CLI arguments are unsupported and were not applied');
   // SDK loading must follow the isolated-runtime hook and sanitized process env.
   const { execute, createUserMessage } = await import('@ampcode/sdk');
@@ -97,12 +97,23 @@ export async function createAdapter(context: AdapterContext): Promise<NativeAdap
       const requestId = `${context.activation}:${operationId}`;
       const abort = new AbortController();
       async function* input(): AsyncIterable<UserInputMessage> { yield createUserMessage(text, { requestId }); }
-      const done = (async () => {
+      const finished = Promise.withResolvers<void>();
+      active = { requestId, abort, done: finished.promise };
+      context.turn(requestId); // The exact requestId sent through createUserMessage.
+      void (async () => {
+        let resultSeen = false;
         try {
-          let resultSeen = false;
-          for await (const message of execute({ prompt: input(), options: { cwd: context.cwd, ...(projection.sessionId ? { continue: projection.sessionId } : {}), dangerouslyAllowAll: false }, signal: abort.signal })) {
-            if (message.type === 'result') resultSeen = true;
+          for await (const message of (startExecution ?? execute)({ prompt: input(), options: {
+            cwd: context.cwd, ...(projection.sessionId ? { continue: projection.sessionId } : { visibility: 'private' }),
+            dangerouslyAllowAll: false,
+          }, signal: abort.signal })) {
             projection.emit(message, requestId);
+            if (message.type === 'result' && !resultSeen) {
+              resultSeen = true;
+              context.result({ operation_id: operationId, disposition: 'completed',
+                detail: message.is_error ? `Amp SDK returned an execution error result (${message.subtype})`
+                  : 'Amp SDK returned a successful execution result' });
+            }
           }
           if (!resultSeen) context.emit({ type: 'notice', level: 'warning', text: 'Amp SDK stream ended without a provider result; no command retry was attempted.' });
         } catch {
@@ -110,17 +121,20 @@ export async function createAdapter(context: AdapterContext): Promise<NativeAdap
           // SDK throws after local teardown; that is not a provider semantic receipt.
           context.emit({ type: 'state', state: 'done' });
         } finally {
+          if (!resultSeen) context.result({ operation_id: operationId, disposition: 'unknown',
+            detail: abort.signal.aborted ? 'Amp SDK execution aborted locally without a provider result; input was not resent'
+              : 'Amp SDK execution ended without a provider result; input was not resent' });
           active = undefined;
           context.turn(undefined);
           projection.tools.clear();
           if (!projection.confirmed) {
+            closed = true;
             context.emit({ type: 'notice', level: 'error', text: 'Amp ended before confirming a thread ID. Controls are unavailable rather than silently creating a replacement conversation.' });
             context.connection(false);
           }
+          finished.resolve();
         }
       })();
-      active = { requestId, abort, done };
-      context.turn(requestId); // This is the real requestId sent through createUserMessage, not a fabricated provider turn ID.
       return { disposition: 'queued', detail: 'Input queued to Amp SDK execute; this SDK exposes no provider admission receipt' };
     },
     async interrupt(turnId) {

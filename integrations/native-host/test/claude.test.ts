@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk/core';
 import { createAdapter, claudeEnvironment } from '../src/claude.js';
-import type { AdapterContext, Json, NativeQuestion, NativeUpdate } from '../src/types.js';
+import type { AdapterContext, Json, NativeCommandResult, NativeQuestion, NativeUpdate } from '../src/types.js';
 
 class Events {
   private queued: SDKMessage[] = [];
@@ -47,9 +47,11 @@ async function drained(): Promise<void> {
 function fixture(version = '2.1.300') {
   const events = new Events();
   const updates: NativeUpdate[] = [];
+  const results: NativeCommandResult[] = [];
   const identities: string[] = [];
   const turns: (string | undefined)[] = [];
   const connections: boolean[] = [];
+  const closeReasons: string[] = [];
   const questions: { question: NativeQuestion; resolve: (value: Json) => void; reject: (error: Error) => void }[] = [];
   let options: Options | undefined;
   let input: AsyncIterable<SDKUserMessage> | undefined;
@@ -60,6 +62,7 @@ function fixture(version = '2.1.300') {
     env: { PATH: '/usr/bin', PHUX_NATIVE_BINDING: 'must-not-reach-cli', PHUX_AGENT_TRANSCRIPT: 'full' },
     connection: (connected) => { connections.push(connected); },
     emit: (update) => { updates.push(update); },
+    result: (result) => { results.push(result); },
     identity: (id) => { identities.push(id); },
     turn: (id) => { turns.push(id); },
     question: (question, signal) => {
@@ -70,7 +73,7 @@ function fixture(version = '2.1.300') {
       questions.push({ question, resolve, reject });
       return promise.finally(() => signal?.removeEventListener('abort', abort));
     },
-    closeQuestions: () => { for (const question of questions) question.reject(new Error('source closed')); },
+    closeQuestions: (reason) => { closeReasons.push(reason); for (const question of questions) question.reject(new Error('source closed')); },
   };
   const factory: typeof sdkQuery = (params) => {
     assert.notEqual(typeof params.prompt, 'string', 'Claude must use live streaming input');
@@ -86,7 +89,7 @@ function fixture(version = '2.1.300') {
     }) as unknown as Query;
   };
   return {
-    context, events, updates, identities, turns, connections, questions, factory,
+    context, events, updates, results, identities, turns, connections, closeReasons, questions, factory,
     get options(): Options { assert.ok(options); return options; },
     get input(): AsyncIterable<SDKUserMessage> { assert.ok(input); return input; },
     get interruptCalls(): number { return interruptCalls; },
@@ -162,10 +165,13 @@ test('prompt queueing is not provider acceptance; real echoed IDs bind turns and
   assert.equal(adapter.providerSessionId, 'actual-provider-session');
   assert.deepEqual(f.identities, ['actual-provider-session']);
   assert.equal(f.turns.at(-1), first.uuid);
-  assert.ok(f.updates.some((update) => update.type === 'notice' && update.text.includes('consumed prompt operation 1')));
+  assert.deepEqual(f.results.map(({ operation_id, disposition }) => ({ operation_id, disposition })),
+    [{ operation_id: '1', disposition: 'admitted' }]);
   f.events.send(result(first.uuid!));
   await drained();
   assert.equal(f.turns.at(-1), undefined);
+  assert.equal(f.results.at(-1)?.operation_id, '1');
+  assert.equal(f.results.at(-1)?.disposition, 'completed');
   assert.equal((await adapter.prompt('follow-up turn', '2')).disposition, 'queued');
   const second = (await input.next()).value!;
   assert.equal(second.message.content, 'follow-up turn');
@@ -266,7 +272,7 @@ test('MCP forms preserve original JSON schema and validate required fields, enum
   assert.equal(f.updates.some((update) => update.type === 'question_closed'), false);
   f.events.send(assistant('actual-turn'));
   await drained();
-  assert.ok(f.updates.some((update) => update.type === 'question_closed' && update.reason === 'Claude SDK continued after submitted elicitation'));
+  assert.equal(f.updates.some((update) => update.type === 'question_closed'), false, 'unrelated assistant output cannot consume a form');
   const invalidValues: Json[] = [
     { count: 1.5, email: 'person@example.com', choice: 'actual-id' },
     { count: 2, email: 'not-an-email', choice: 'actual-id' },
@@ -355,7 +361,8 @@ test('maximum u64 operation identity survives queueing and provider consumption 
   const message = (await f.input[Symbol.asyncIterator]().next()).value!;
   f.events.send(assistant(message.uuid!));
   await drained();
-  assert.ok(f.updates.some((update) => update.type === 'notice' && update.text.includes('operation 18446744073709551615')));
+  assert.deepEqual(f.results.map(({ operation_id, disposition }) => ({ operation_id, disposition })),
+    [{ operation_id: '18446744073709551615', disposition: 'admitted' }]);
   await adapter.close();
 });
 
@@ -382,4 +389,97 @@ test('provider aborted assistant evidence finalizes interrupted streaming blocks
   assert.ok(f.updates.some((update) => update.type === 'transcript' && update.entry.id === 'interrupted-message:0' &&
     update.entry.text === 'Incomplete reply' && update.entry.final && update.entry.truncated));
   await adapter.close();
+});
+
+test('batched consumed UUIDs retain exact operations until results and ignore duplicates, subagents and unrelated turns', async () => {
+  const f = fixture();
+  const adapter = await createAdapter(f.context, f.factory);
+  const input = f.input[Symbol.asyncIterator]();
+  await adapter.prompt('first private input', '18446744073709551615');
+  await adapter.prompt('second private input', '2');
+  await adapter.prompt('still queued private input', '3');
+  const first = (await input.next()).value!;
+  const second = (await input.next()).value!;
+  const queued = (await input.next()).value!;
+  f.events.send(assistant(first.uuid!, [], 'subagent-tool'));
+  f.events.send(assistant('unrelated-uuid'));
+  f.events.send(result('unrelated-uuid'));
+  await drained();
+  assert.deepEqual(f.results, []);
+  const batch = { ...assistant(second.uuid!), user_message_uuids: [first.uuid!, second.uuid!] } as SDKMessage;
+  f.events.send(batch);
+  f.events.send(batch);
+  await drained();
+  assert.deepEqual(f.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [['18446744073709551615', 'admitted'], ['2', 'admitted']]);
+  const completion = { ...result(second.uuid!), user_message_uuids: [first.uuid!, second.uuid!] } as SDKMessage;
+  f.events.send(completion);
+  f.events.send(completion);
+  f.events.send(batch);
+  await drained();
+  assert.deepEqual(f.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [['18446744073709551615', 'admitted'], ['2', 'admitted'],
+      ['18446744073709551615', 'completed'], ['2', 'completed']]);
+  f.events.send({ ...result(queued.uuid!), is_error: true, subtype: 'error_during_execution',
+    errors: ['provider-private-diagnostics'] } as SDKMessage);
+  await drained();
+  assert.equal(f.results.at(-1)?.operation_id, '3');
+  assert.equal(f.results.at(-1)?.disposition, 'completed');
+  assert.match(f.results.at(-1)!.detail!, /error_during_execution/);
+  assert.equal(f.results.filter((receipt) => receipt.operation_id === '3').length, 1, 'a delivery-error result is not invented admission');
+  assert.doesNotMatch(JSON.stringify(f.results), /private input|provider-private-diagnostics/);
+  await adapter.close();
+  assert.equal(f.results.length, 5, 'source closure must not overwrite terminal results');
+});
+
+test('source closure reports exact queued and admitted operations unknown without resending input', async () => {
+  const f = fixture();
+  const adapter = await createAdapter(f.context, f.factory);
+  await adapter.prompt('admitted', '41');
+  await adapter.prompt('queued', '42');
+  const first = (await f.input[Symbol.asyncIterator]().next()).value!;
+  f.events.send(assistant(first.uuid!));
+  await drained();
+  f.events.finish();
+  await drained();
+  assert.deepEqual(f.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [['41', 'admitted'], ['41', 'unknown'], ['42', 'unknown']]);
+  assert.equal((await adapter.prompt('do not retry', '43')).disposition, 'refused');
+  await adapter.close();
+});
+
+test('concurrent submitted forms survive unrelated output and turn results until their own cancellation or source closure', async () => {
+  const f = fixture();
+  const adapter = await createAdapter(f.context, f.factory);
+  const schema = { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] };
+  const request = { serverName: 'server', message: 'Settings', mode: 'form' as const, requestedSchema: schema };
+  const firstSignal = new AbortController();
+  const secondSignal = new AbortController();
+  const first = f.options.onElicitation!(request, { signal: firstSignal.signal, requestId: 'form-one' });
+  const second = f.options.onElicitation!(request, { signal: secondSignal.signal, requestId: 'form-two' });
+  f.questions[0]!.resolve({ values: { value: 'first' } });
+  f.questions[1]!.resolve({ values: { value: 'second' } });
+  assert.equal((await first)?.action, 'accept');
+  assert.equal((await second)?.action, 'accept');
+  const tool = f.options.canUseTool!('Read', { path: '/tmp/example' }, permission('other-tool-request'));
+  f.questions[2]!.resolve({ option_id: 'allow' });
+  await tool;
+  f.events.send(assistant('other-turn'));
+  f.events.send({ type: 'stream_event', event: { type: 'ping' }, parent_tool_use_id: null,
+    uuid: '00000000-0000-4000-8000-000000000009', session_id: 'actual-provider-session' } as SDKMessage);
+  f.events.send({ type: 'tool_progress', tool_use_id: 'actual-tool-call', tool_name: 'Read', parent_tool_use_id: null,
+    elapsed_time_seconds: 1, uuid: '00000000-0000-4000-8000-000000000010', session_id: 'actual-provider-session' });
+  await drained();
+  assert.equal((await adapter.interrupt('other-turn')).disposition, 'completed');
+  assert.deepEqual(f.closeReasons, [], 'interrupt acknowledgment is not cancellation of independent form requests');
+  f.events.send(result('other-turn'));
+  await drained();
+  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['other-tool-request']);
+  firstSignal.abort();
+  assert.deepEqual(f.updates.flatMap((update) => update.type === 'question_closed' ? [update.id] : []), ['other-tool-request', 'form-one']);
+  f.events.send(result('yet-another-turn'));
+  await drained();
+  assert.equal(f.updates.some((update) => update.type === 'question_closed' && update.id === 'form-two'), false);
+  await adapter.close();
+  assert.ok(f.updates.some((update) => update.type === 'question_closed' && update.id === 'form-two' && update.reason.includes('cancelled')));
 });
