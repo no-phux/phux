@@ -85,6 +85,16 @@ command above. Offscreen rendering requires neither screen-capture permission
 nor a frontmost window; it does not qualify live presentation, accessibility,
 IME or cross-view provider control.
 
+A separate isolated journey used the genuine installed OMP SDK through **New
+Agent**, the configured picker, keyboard prompts and two native confirmation
+callbacks. It preserved the guardian process identity, SDK activation,
+provider-native session and original editor/draft across a daemon upgrade,
+including a guardian that was not the session's home terminal. No external model
+requests were made. The offscreen driver delivered GPUI's supported next-frame
+callbacks before clicking a newly scrolled question; this is not live AX/IME,
+mobile or another provider's qualification. The temporary journey was removed
+after this proof.
+
 Native SDK acceptance additionally requires an isolated same-checkout server and
 the genuine installed/pinned provider SDK. Launch from **New Agent** and verify the
 returned guardian/AgentSession/activation; desktop and mobile must control that

@@ -819,8 +819,8 @@ mod tests {
     use super::{
         Admit, InputError, InputMetrics, admit_presentation, capacity, echo_guess, upgrade_client,
     };
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
     use gpui::{Bounds, point, px, size};
+    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
     fn metrics(width: f32, height: f32) -> InputMetrics {
         let bounds = Bounds::new(point(px(10.), px(20.)), size(px(width), px(height)));
@@ -917,7 +917,11 @@ mod tests {
     #[test]
     fn local_echo_guesses_typed_text_and_skips_commands() {
         assert_eq!(
-            echo_guess(&press(PhysicalKey::Unidentified, ModSet::empty(), Some("é"))),
+            echo_guess(&press(
+                PhysicalKey::Unidentified,
+                ModSet::empty(),
+                Some("é")
+            )),
             Some("é".to_owned())
         );
         assert_eq!(

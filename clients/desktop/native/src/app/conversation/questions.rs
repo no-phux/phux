@@ -486,7 +486,8 @@ pub(super) fn focus(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> bool {
-    let Some(view) = view.filter(|view| view.connected && view.capabilities.questions.is_supported())
+    let Some(view) =
+        view.filter(|view| view.connected && view.capabilities.questions.is_supported())
     else {
         return false;
     };

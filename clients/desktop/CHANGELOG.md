@@ -18,6 +18,13 @@
   replacement owner never inherits the old draft.
 - Keep native draft editing and Stop available while a provider question blocks
   another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+- Keep New Agent clicks out of the titlebar's window-drag region.
+- Reveal a newly launched SDK guardian from its authoritative catalog identity
+  before waiting for the resulting agent subscription. Native controls still
+  require the exact returned AgentSession and activation.
+- Restore the focused SDK guardian after a daemon handoff even when it is not
+  the session's home terminal, retaining the original editor and draft.
+
 ## [0.11.0](https://github.com/no-phux/phux/compare/desktop-v0.10.0...desktop-v0.11.0) (2026-10-15)
 
 

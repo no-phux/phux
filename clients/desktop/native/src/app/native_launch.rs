@@ -10,6 +10,7 @@ use super::color::from_hex;
 use super::desk::{Desk, Modal};
 use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
+use crate::connection::Connection;
 use crate::settings::theme::Palette;
 
 #[derive(Default)]
@@ -25,12 +26,34 @@ struct Pending {
     owner: std::sync::Weak<phux_client_runtime::Client>,
     session: String,
     terminal: ResourceId,
-    agent: String,
+    agent: ResourceId,
     activation: String,
     revealed: bool,
 }
 
 impl Desk {
+    pub(crate) fn resume_native_conversation(
+        &mut self,
+        terminal: ResourceId,
+        agent: ResourceId,
+        activation: String,
+    ) {
+        if self.native_launch.pending.is_some() || self.native_launch.launching.is_some() {
+            return;
+        }
+        let Some(link) = self.link.as_ref() else {
+            return;
+        };
+        self.native_launch.pending = Some(Pending {
+            owner: std::sync::Arc::downgrade(&link.connection.client),
+            session: self.session.clone(),
+            terminal,
+            agent,
+            activation,
+            revealed: false,
+        });
+    }
+
     pub(crate) fn open_native_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = Modal::NativeLaunch;
         if let Some(remote) = self.remote.as_deref() {
@@ -138,7 +161,7 @@ impl Desk {
         if pending.revealed {
             return;
         }
-        if !pending_matches(self, pending) {
+        if !pending_guardian_ready(self, pending) {
             return;
         }
         let terminal = pending.terminal.clone();
@@ -177,22 +200,40 @@ impl Desk {
     }
 }
 
-fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
-    desk.session == pending.session
-        && desk.link.as_ref().is_some_and(|link| {
-            std::ptr::eq(
-                pending.owner.as_ptr(),
-                std::sync::Arc::as_ptr(&link.connection.client),
-            ) && link
-                .connection
-                .conversation(&pending.terminal)
-                .is_some_and(|conversation| {
-                    conversation.resource.to_string() == pending.agent
-                        && conversation
-                            .native
-                            .as_ref()
-                            .is_some_and(|view| view.activation == pending.activation)
+fn pending_connection<'a>(desk: &'a Desk, pending: &Pending) -> Option<&'a Connection> {
+    let connection = &desk.link.as_ref()?.connection;
+    (desk.session == pending.session
+        && std::ptr::eq(
+            pending.owner.as_ptr(),
+            std::sync::Arc::as_ptr(&connection.client),
+        ))
+    .then_some(connection)
+}
+
+fn pending_guardian_ready(desk: &Desk, pending: &Pending) -> bool {
+    pending_connection(desk, pending).is_some_and(|connection| {
+        // Opening the exact catalogued guardian establishes the agent subscription.
+        // Requiring its not-yet-subscribed conversation here deadlocks new launches.
+        connection.status == phux_client_runtime::control::Status::Attached
+            && connection.pane(&pending.terminal).is_some()
+            && connection.topology.as_ref().is_some_and(|topology| {
+                topology.agent_sessions.iter().any(|session| {
+                    session.id == pending.agent
+                        && session.parent.as_ref() == Some(&pending.terminal)
                 })
+            })
+    })
+}
+
+fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
+    pending_connection(desk, pending)
+        .and_then(|connection| connection.conversation(&pending.terminal))
+        .is_some_and(|conversation| {
+            conversation.resource == pending.agent
+                && conversation
+                    .native
+                    .as_ref()
+                    .is_some_and(|view| view.activation == pending.activation)
         })
 }
 

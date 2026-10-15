@@ -491,6 +491,9 @@ impl Desk {
             }
             self.note_event(event);
         }
+        // A reexec resets layout placements, not the SDK owner or its editor.
+        // Reopen its guardian before waiting for the exact fresh activation.
+        self.remember_native_focus();
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(&events, &link.connection);
             link.workspace.settle(&link.connection);

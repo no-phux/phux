@@ -138,6 +138,39 @@ fn subscribe_input(
 }
 
 impl Desk {
+    pub(crate) fn remember_native_focus(&mut self) {
+        let Some(face) = self
+            .focused_placement()
+            .and_then(|placement| self.conversation_faces.get(&placement.id))
+            .filter(|face| face.visible)
+        else {
+            return;
+        };
+        let Some(activation) = face.binding.activation.as_ref() else {
+            return;
+        };
+        let Some(connection) = self.link.as_ref().map(|link| &link.connection) else {
+            return;
+        };
+        let Some(server) = connection.server_id() else {
+            return;
+        };
+        if server == face.binding.server
+            || !std::ptr::eq(
+                face.binding.client.as_ptr(),
+                std::sync::Arc::as_ptr(&connection.client),
+            )
+        {
+            return;
+        }
+        let (terminal, agent, activation) = (
+            face.binding.terminal.clone(),
+            face.binding.session.clone(),
+            activation.clone(),
+        );
+        self.resume_native_conversation(terminal, agent, activation);
+    }
+
     pub(crate) fn conversation_visible(&self, placement: &str) -> bool {
         if let Some(face) = self.conversation_faces.get(placement) {
             return face.visible;

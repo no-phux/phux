@@ -115,8 +115,25 @@ pub fn native_integrations(phux: &Path, socket: &Path) -> Result<Vec<NativeInteg
 #[derive(serde::Deserialize)]
 pub struct NativeLaunch {
     pub terminal_id: u32,
-    pub agent_session_id: String,
+    #[serde(deserialize_with = "deserialize_local_launch_id")]
+    pub agent_session_id: phux_protocol::ResourceId,
     pub activation: String,
+}
+
+fn deserialize_local_launch_id<'de, D>(
+    deserializer: D,
+) -> Result<phux_protocol::ResourceId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .strip_prefix('@')
+        .and_then(|id| id.parse::<u32>().ok())
+        .map(phux_protocol::ResourceId::local)
+        .ok_or_else(|| {
+            serde::de::Error::custom("native launch must name a local @N agent resource")
+        })
 }
 
 pub fn launch_native(
