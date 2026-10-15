@@ -9,6 +9,10 @@ import {
   TYPE_ERROR,
   TYPE_RESIZE_TERMINAL,
 } from "./wire";
+// The pinned bytes the smoke client sends, which a Rust test keeps in lockstep
+// with the protocol encoder. These are one half of the contract; hand-built
+// frames are the other half and can agree with a wrong field id.
+import { ATTACH_FRAME, HELLO_FRAME } from "../../scripts/phux-wire";
 
 function varint(value: number): number[] {
   const out: number[] = [];
@@ -87,8 +91,16 @@ describe("phux frame reader", () => {
     expect(attachIdOf(frame(TYPE_ERROR, [[2, [1]]]))).toBeUndefined();
   });
 
-  test("tolerates a malformed field stream without throwing", () => {
-    // A field whose declared length runs past the end of the frame.
+  test("reads the real client's pinned ATTACH and HELLO frames", () => {
+    // The encoder is the authority: if the field id this reader uses is wrong,
+    // these pinned bytes disagree, which is how a single-view session silently
+    // stopped attaching in production.
+    expect(frameType(HELLO_FRAME)).toBe(0x01);
+    expect(frameType(ATTACH_FRAME)).toBe(TYPE_ATTACH);
+    expect(attachIdOf(ATTACH_FRAME)).toBe(1);
+  });
+
+  test("tolerates a malformed field stream without throwing", () => {    // A field whose declared length runs past the end of the frame.
     const truncated = Uint8Array.from([0, 0, 0, 7, TYPE_ATTACH, 4, 4, 200, 1]);
     expect(frameFields(truncated)).toEqual([]);
     expect(attachIdOf(truncated)).toBeUndefined();
