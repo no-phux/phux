@@ -35,7 +35,7 @@ mod bridge;
 pub(crate) mod model;
 mod snapshot;
 
-use model::{ARCHIVE_SCHEMA_VERSION, RestoreSummary, WorkspaceWindow, parse_archive, restore_plan};
+use model::{RestoreSummary, WorkspaceWindow, parse_archive, restore_plan};
 use snapshot::archive_from_snapshot;
 
 /// `phux archive <action>`.
@@ -117,10 +117,15 @@ async fn capture_archive(
         .map_err(|err| {
             CaptureError::Failed(format!("could not capture native agent sessions: {err}"))
         })?;
+    let native_launches = capture_native_launches(socket_path, &snapshot).await?;
     // Agents started inside an existing shell carry a live `AgentSession`
     // instead of a launch record (ADR-0151).
-    let (agent_sessions, bridge_warnings) =
-        bridge::bridge_live_agent_sessions(&snapshot, recorded, bridge::resolve_resume_owner);
+    let (agent_sessions, bridge_warnings) = bridge::bridge_live_agent_sessions(
+        &snapshot,
+        recorded,
+        &native_launches,
+        bridge::resolve_resume_owner,
+    );
     // `GET_STATE` never carries window layouts, so each session's split tree is
     // read from its L3 layout envelope (best-effort; missing or undecodable falls
     // back to the pane-list projection).
@@ -167,7 +172,10 @@ async fn capture_archive(
     }
     let (archive, reconcile_warnings) = archive_from_snapshot(
         &snapshot,
-        &agent_sessions,
+        snapshot::AgentRecords {
+            attached: &agent_sessions,
+            native: &native_launches,
+        },
         &layouts,
         &projects,
         &hosts,
@@ -182,6 +190,65 @@ async fn capture_archive(
     }
     serde_json::to_string_pretty(&archive)
         .map_err(|err| CaptureError::Failed(format!("could not render the archive: {err}")))
+}
+
+async fn capture_native_launches(
+    socket: &Path,
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+) -> Result<HashMap<ResourceId, phux_protocol::native_agent::SpawnNativeAgent>, CaptureError> {
+    use phux_client::attach::connection::Answer;
+    let mut connection = Connection::connect(socket)
+        .await
+        .map_err(CaptureError::NoServer)?;
+    let mut records = HashMap::new();
+    for (index, resource) in phux_client::resource::terminals(snapshot)
+        .filter(|resource| resource.id.is_local())
+        .enumerate()
+    {
+        let request_id = u32::try_from(index)
+            .map_err(|_| CaptureError::Failed("too many native archive resources".into()))?
+            .saturating_add(1);
+        let (answer, interleaved) = connection
+            .request_metadata(
+                request_id,
+                phux_protocol::wire::frame::Scope::Resource(resource.id.clone()),
+                "phux.native-launch/v1".to_owned(),
+            )
+            .await
+            .map_err(CaptureError::NoServer)?
+            .into_parts();
+        partial::warn_partial_view(
+            "archive export",
+            &phux_client::state::Degradation::from_interleaved(&interleaved),
+        );
+        let bytes = match answer {
+            Answer::Ok(Some(bytes)) => bytes,
+            Answer::Ok(None) => continue,
+            Answer::Err(refusal) => {
+                return Err(CaptureError::Failed(format!(
+                    "could not capture native SDK recipe for {}: {refusal}",
+                    resource.id
+                )));
+            }
+        };
+        let mut spec: phux_protocol::native_agent::SpawnNativeAgent =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                CaptureError::Failed(format!(
+                    "invalid native SDK recipe for {}: {error}",
+                    resource.id
+                ))
+            })?;
+        // Export intent, never a source binding, host-local package tree or
+        // process environment. The destination mints all of those afresh.
+        spec.session.clear();
+        spec.guardian = None;
+        spec.guardian_key = None;
+        spec.guardian_expected = None;
+        spec.env.clear();
+        records.insert(resource.id.clone(), spec);
+    }
+    drop(connection);
+    Ok(records)
 }
 
 /// The `phux server --autosave` archiver (ADR-0150), now an export schedule:
@@ -393,7 +460,7 @@ impl Imported {
     /// recreated, none of them started.
     fn summary(&self) -> RestoreSummary {
         RestoreSummary {
-            schema_version: ARCHIVE_SCHEMA_VERSION,
+            schema_version: model::RESTORE_SUMMARY_SCHEMA_VERSION,
             restored: self
                 .sessions
                 .iter()
@@ -524,7 +591,7 @@ pub(crate) async fn relaunch_imported(socket_path: &Path, imported: Imported) ->
         }
     }
     RestoreSummary {
-        schema_version: ARCHIVE_SCHEMA_VERSION,
+        schema_version: model::RESTORE_SUMMARY_SCHEMA_VERSION,
         restored,
         skipped_existing: imported.skipped_existing,
         failed,
@@ -545,6 +612,16 @@ async fn organization_supported(
 /// before anything is created. Any other resolution gap is the relaunch's
 /// concern (it falls back to a plain shell with a warning).
 fn check_agent_ownership(create: &model::CreateRequest) -> Result<(), String> {
+    if create.host.as_deref().is_some_and(|host| !host.is_empty())
+        && (create.native_launch.is_some()
+            || create
+                .windows
+                .iter()
+                .flat_map(|window| &window.panes)
+                .any(|pane| pane.native_launch.is_some()))
+    {
+        return Err("restore native SDK recipes on their executing host; no local terminal or SDK fallback was attempted".to_owned());
+    }
     let seed = create
         .agent_session
         .as_ref()
@@ -664,6 +741,7 @@ struct PaneSource<'a> {
     cwd: Option<&'a str>,
     env: &'a std::collections::BTreeMap<String, String>,
     agent_session: Option<&'a model::WorkspaceAgentSession>,
+    native_launch: Option<&'a phux_protocol::native_agent::SpawnNativeAgent>,
     role: &'static str,
 }
 
@@ -674,6 +752,7 @@ impl<'a> PaneSource<'a> {
             cwd: create.cwd.as_deref(),
             env: &create.env,
             agent_session: create.agent_session.as_ref(),
+            native_launch: create.native_launch.as_ref(),
             role: "seed pane",
         }
     }
@@ -684,6 +763,7 @@ impl<'a> PaneSource<'a> {
             cwd: pane.cwd.as_deref(),
             env: &pane.env,
             agent_session: pane.agent_session.as_ref(),
+            native_launch: pane.native_launch.as_ref(),
             role: "restored pane",
         }
     }
@@ -692,7 +772,23 @@ impl<'a> PaneSource<'a> {
 /// The launch spec one archived pane is stored with: its resolved native
 /// agent session (argv, directory, environment, and the provenance the
 /// server installs at each launch) when it has one, else its own command.
-fn pane_launch(source: &PaneSource<'_>, warnings: &mut Vec<String>) -> Result<LaunchSpec, String> {
+fn pane_launch(
+    source: &PaneSource<'_>,
+    session: &str,
+    warnings: &mut Vec<String>,
+) -> Result<LaunchSpec, String> {
+    if let Some(native) = source.native_launch {
+        let mut spec = native.clone();
+        session.clone_into(&mut spec.session);
+        spec.guardian = None;
+        spec.guardian_key = None;
+        spec.guardian_expected = None;
+        let marker = serde_json::to_string(&spec)
+            .map_err(|error| format!("could not encode native launch: {error}"))?;
+        return Ok(LaunchSpec::new(Vec::new())
+            .with_cwd(source.cwd.map(str::to_owned))
+            .with_env(vec![("PHUX_NATIVE_HOST_SPEC".to_owned(), marker)]));
+    }
     let prepared = prepare_pane_agent(source.agent_session, source.cwd, source.role, warnings)?;
     let Some(session) = prepared else {
         return Ok(LaunchSpec::new(source.command.cloned().unwrap_or_default())
@@ -776,14 +872,18 @@ async fn create_dormant_records(
                 .collect()
         })
         .collect();
-    if create.windows.is_empty() && (create.command.is_some() || create.agent_session.is_some()) {
+    if create.windows.is_empty()
+        && (create.command.is_some()
+            || create.agent_session.is_some()
+            || create.native_launch.is_some())
+    {
         rows.push(vec![PaneSource::seed(create)]);
     }
     let mut keys = Vec::with_capacity(rows.len());
     for row in rows {
         let mut row_keys = Vec::with_capacity(row.len());
         for source in row {
-            let launch = pane_launch(&source, warnings)?;
+            let launch = pane_launch(&source, &create.name, warnings)?;
             let committed = phux_client::org::create_resource(
                 conn,
                 session,
@@ -1450,6 +1550,7 @@ fn prepare_archived_agent(
         &record.integration_id,
         &[],
         &workspace_cwd,
+        phux_plugin::LaunchMode::Terminal,
     )
     .map_err(|err| {
         format!(
@@ -1577,6 +1678,7 @@ mod tests {
                     cwd: None,
                     command: None,
                     agent_session: None,
+                    native_launch: None,
                     env: std::collections::BTreeMap::new(),
                     cols: 0,
                     rows: 0,

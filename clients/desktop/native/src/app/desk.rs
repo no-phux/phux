@@ -88,6 +88,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    NativeLaunch,
     Path,
     MoveResources,
     Rename {
@@ -178,6 +179,7 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -339,6 +341,7 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
@@ -397,6 +400,8 @@ impl Desk {
     }
 
     fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
+        // Native launch completions belong to the client that initiated them.
+        self.native_launch = Default::default();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
             self.connect_error = Some("No session to open".into());
@@ -497,11 +502,15 @@ impl Desk {
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
         self.note_activity(events, epoch);
+        // A reexec resets layout placements, not the SDK owner or its editor.
+        // Reopen its guardian before waiting for the exact fresh activation.
+        self.remember_native_focus();
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
         self.settle_project_terminal();
+        self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -894,6 +903,7 @@ impl Desk {
             "rename-session" => self.open_rename_session(),
             "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
+            "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
                 self.workspace_call(|link| link.workspace.split(&link.connection, Axis::Row, false))
@@ -2929,8 +2939,10 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
-        self.conversation_faces
-            .retain(|placement, _| live.contains(placement));
+        let connection = self.link.as_ref().map(|link| &link.connection);
+        self.conversation_faces.retain(|placement, face| {
+            face.retain_for_placement(live.contains(placement), connection)
+        });
     }
 
     pub fn panes(&self) -> &Panes {

@@ -36,6 +36,23 @@ impl ControlPlane {
         event: AgentEvent,
     ) -> Result<(), ControlError> {
         self.observe_roster_event(&event);
+        let event = match event {
+            AgentEvent::NativeAgentResult {
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
+            } => {
+                self.push_event(Event::NativeAgentResult {
+                    agent_session_id,
+                    operation_id,
+                    disposition,
+                    detail,
+                });
+                return Ok(());
+            }
+            event => event,
+        };
         // Server-scoped events carry no terminal; the server always scopes
         // the kinds this build folds.
         let Some(terminal_id) = terminal else {

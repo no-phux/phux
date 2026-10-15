@@ -416,6 +416,18 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
+                .child(
+                    div().occlude().child(
+                        Button::new("launch-native-agent")
+                            .label("New Agent")
+                            .ghost()
+                            .small()
+                            .tooltip("Launch a server-owned native SDK conversation")
+                            .on_click(cx.listener(|desk, _, window, cx| {
+                                desk.execute("native-agent", window, cx)
+                            })),
+                    ),
+                )
                 .child(icon_button(
                     "new-tab",
                     IconName::Plus,
@@ -2080,6 +2092,7 @@ fn pane_view(
     // The terminal holds the keyboard only while no modal or find field does.
     let settings = desk.terminal_settings(placement, focused && !desk.text_field_has_keys());
     let client = desk.client();
+    desk.prepare_pending_native(&placement_id, window, cx);
     let body = if desk.conversation_visible(&placement_id) {
         super::conversation::render(desk, &placement_id, &colors, window, cx)
     } else if let (Some(terminal), Some(view), Some(settings), Some(client)) =

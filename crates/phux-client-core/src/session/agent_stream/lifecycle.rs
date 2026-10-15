@@ -43,6 +43,7 @@ pub(in crate::session) struct AgentStream {
     /// baseline every published generation folds its records onto.
     declared: AgentSessionState,
     state: AgentSessionState,
+    native_view: Option<phux_protocol::native_agent::NativeView>,
     log: AgentLog,
     published: Option<AgentGeneration>,
     staging: Option<AgentStaging>,
@@ -55,6 +56,7 @@ impl AgentStream {
             parent: None,
             declared: AgentSessionState::default(),
             state: AgentSessionState::default(),
+            native_view: None,
             log: AgentLog::default(),
             published: None,
             staging: None,
@@ -68,6 +70,12 @@ impl AgentStream {
 
     pub(in crate::session) const fn state(&self) -> &AgentSessionState {
         &self.state
+    }
+
+    pub(in crate::session) const fn native_view(
+        &self,
+    ) -> Option<&phux_protocol::native_agent::NativeView> {
+        self.native_view.as_ref()
     }
 
     pub(in crate::session) const fn log(&self) -> &AgentLog {
@@ -450,6 +458,7 @@ impl AgentStream {
         if mode == AgentRecordMode::Replace {
             let declared = self.declared.clone();
             self.state = declared;
+            self.native_view = None;
             self.log.clear();
         }
         self.fold_and_append(&records);
@@ -477,6 +486,29 @@ impl AgentStream {
     fn fold_and_append(&mut self, records: &[AgentEventRecord]) {
         for record in records {
             self.state.fold(record);
+            if record.kind == super::AgentEventKind::ProviderRaw
+                && record.data_str("schema") == Some(phux_protocol::native_agent::NATIVE_SCHEMA)
+            {
+                // Only a registered controller's complete view is authoritative.
+                // A malformed replacement retracts controls instead of keeping
+                // an earlier activation or inferring capability from the provider.
+                self.native_view = record
+                    .data
+                    .get("update")
+                    .and_then(|update| {
+                        <phux_protocol::native_agent::NativeUpdate as serde::Deserialize<'_>>::deserialize(update).ok()
+                    })
+                    .and_then(|update| match update {
+                        phux_protocol::native_agent::NativeUpdate::View { view }
+                            if !view.activation.is_empty()
+                                && view.questions.len()
+                                    <= phux_protocol::native_agent::MAX_NATIVE_QUESTIONS =>
+                        {
+                            Some(view)
+                        }
+                        _ => None,
+                    });
+            }
         }
         self.log.append(records);
     }

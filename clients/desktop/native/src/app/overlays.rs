@@ -119,6 +119,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             target.update(cx, |input, cx| input.focus(window, cx));
         }
         Modal::KillSession { .. }
+        | Modal::NativeLaunch
         | Modal::Terminate { .. }
         | Modal::RemoveHost { .. }
         | Modal::Notifications => window.focus(&desk.focus, cx),
@@ -362,6 +363,7 @@ pub fn layer(
         Modal::Path => path_panel(desk, colors, window, cx),
         Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, colors, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
         Modal::KillSession { name, .. } => confirm(

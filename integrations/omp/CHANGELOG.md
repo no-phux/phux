@@ -17,7 +17,6 @@
 ### Features
 
 * **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
-
 ## 0.1.0 (2026-10-14)
 
 

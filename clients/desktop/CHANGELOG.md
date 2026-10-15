@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add an explicit configured native-agent launch picker, server-owned SDK
+  conversation commands and native provider dialogs. Keep terminal-attached
+  conversations explicitly labeled, with independent draft/scroll preservation.
+- Surface SDK runtime/license setup and queued/admitted/refused/unknown outcomes
+  without silent installs, automatic approvals or terminal-key fallback.
+
+### Bug Fixes
+
+- Preserve an SDK conversation's editor, pending receipts and question drafts
+  when a graceful server handoff recreates desktop layout placements. Rebind
+  only to the same endpoint, parent, AgentSession and SDK activation; a
+  replacement owner never inherits the old draft.
+- Keep native draft editing and Stop available while a provider question blocks
+  another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+- Keep New ACP Agent clicks out of the titlebar's window-drag region.
+- Reveal a newly launched SDK guardian from its authoritative catalog identity
+  before waiting for the resulting agent subscription. Native controls still
+  require the exact returned AgentSession and activation.
+- Restore the focused SDK guardian after a daemon handoff even when it is not
+  the session's home terminal, retaining the original editor and draft.
+
 ## [0.12.2](https://github.com/no-phux/phux/compare/desktop-v0.12.1...desktop-v0.12.2) (2026-10-15)
 
 

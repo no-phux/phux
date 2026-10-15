@@ -1085,6 +1085,8 @@ pub enum ServerFeatureExt {
     /// command ends every member of a session and deletes it. Advertised
     /// only beside [`Self::Organization`].
     SessionKill = 0x0000_0020,
+    /// Dedicated SDK-owned `AgentSession` creation and typed native commands.
+    NativeAgent = 0x0000_0040,
 }
 
 impl ServerFeatureExt {
@@ -1096,6 +1098,7 @@ impl ServerFeatureExt {
         Self::AgentStreamResume,
         Self::Organization,
         Self::SessionKill,
+        Self::NativeAgent,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -1108,6 +1111,7 @@ impl ServerFeatureExt {
             Self::AgentStreamResume => "AGENT_STREAM_RESUME",
             Self::Organization => "ORGANIZATION",
             Self::SessionKill => "SESSION_KILL",
+            Self::NativeAgent => "NATIVE_AGENT",
         }
     }
 
@@ -1128,7 +1132,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::CommittedTeardown as u32
         | ServerFeatureExt::AgentStreamResume as u32
         | ServerFeatureExt::Organization as u32
-        | ServerFeatureExt::SessionKill as u32;
+        | ServerFeatureExt::SessionKill as u32
+        | ServerFeatureExt::NativeAgent as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

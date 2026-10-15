@@ -38,3 +38,11 @@ kind = "pi"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "pi", "--kind", "pi", "--", "pi"]
 required_executables = ["pi"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "pi"
+command = ["pi-acp"]
+required_executables = ["pi-acp"]
+working_directory = "workspace"

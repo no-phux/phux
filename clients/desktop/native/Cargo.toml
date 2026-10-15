@@ -37,6 +37,7 @@ anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smol = "2"
 unicode-segmentation = "1"
