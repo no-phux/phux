@@ -124,6 +124,7 @@ impl Server {
                         fresh: false,
                         initial_terminal: None,
                         quick: false,
+                        dev_telemetry: false,
                         startup_error: None,
                     },
                     cx,

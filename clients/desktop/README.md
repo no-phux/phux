@@ -75,6 +75,38 @@ server behind the supervisor.
 
 ## Using it
 
+### Developer performance monitor
+
+Choose **Developer > Performance Monitor** at any time to opt in. It opens a
+separate native window and starts sampling immediately; neither the desktop nor
+the server needs a restart. Reopening the command raises the same window.
+
+**Developer > Stop Performance Monitoring** closes the monitor and stops its
+sampler. Closing the window does the same. You can enable it again immediately;
+each new monitor starts a fresh CPU and metric interval.
+
+For automatic opening at launch, the native executable accepts `--dev-telemetry`
+or `PHUX_DESKTOP_DEV_TELEMETRY=1`. These are conveniences, not prerequisites for
+the runtime controls.
+
+The monitor samples the **desktop process**, not the server or terminal child
+processes, once per second. CPU is measured over the actual elapsed interval
+(one fully occupied core is 100%, so multiple cores can exceed 100%). Current
+resident memory and lifetime peak resident memory are separate readings.
+An em dash means unavailable or no interval yet, not zero.
+
+The scrollable metric table shows the existing kernel, runtime, renderer, and
+UI-thread instrumentation as interval rates, mean timings, and estimated p95.
+**Pause** freezes the readings and stops sampling; **Resume** starts a fresh
+interval. **Copy JSON** copies the displayed process readings, interval metrics,
+and cumulative report. Sampling stops when the monitor closes; use the
+Developer menu to reopen it. This is local instrumentation: no telemetry is
+uploaded and no metrics history is written by the monitor.
+
+Without opening the monitor, there is no monitor sampling loop. The Developer
+menu remains available, and the existing cheap atomic render/runtime counters
+remain on. Nothing about enabling or stopping this monitor changes the server.
+
 ### Updates
 
 **Settings > Updates** checks releases at launch and every six hours without
