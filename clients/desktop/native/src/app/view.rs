@@ -422,7 +422,7 @@ fn titlebar(
                             .label("New Agent")
                             .ghost()
                             .small()
-                            .tooltip("Launch a server-owned native SDK conversation")
+                            .tooltip("Launch a server-owned ACP conversation")
                             .on_click(cx.listener(|desk, _, window, cx| {
                                 desk.execute("native-agent", window, cx)
                             })),

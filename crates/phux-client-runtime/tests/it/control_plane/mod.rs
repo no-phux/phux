@@ -35,8 +35,8 @@ use crate::embedded::*;
 
 mod agent_sessions;
 mod geometry;
-mod observation;
 mod native_agent;
+mod observation;
 mod recovery;
 mod roster;
 mod views;

@@ -362,7 +362,7 @@ impl Desk {
         let view = identity
             .native
             .as_ref()
-            .ok_or("This is an attached TUI, not a native SDK session")?;
+            .ok_or("This is an attached TUI, not a native ACP session")?;
         if !view.capabilities.questions.is_supported()
             || !view.questions.iter().any(|item| item == &request.question)
         {
@@ -419,7 +419,7 @@ impl Desk {
                         .insert(operation, Some(question.to_owned()));
                     face.question_status.insert(
                         question.to_owned(),
-                        "Submitting response; waiting for SDK receipt…".into(),
+                        "Submitting response; waiting for ACP receipt…".into(),
                     );
                     face.error = None;
                 }
