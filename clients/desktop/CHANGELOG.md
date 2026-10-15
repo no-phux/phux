@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/no-phux/phux/compare/desktop-v0.9.4...desktop-v0.10.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** add live native performance monitoring ([e60e87e](https://github.com/no-phux/phux/commit/e60e87e5c05be81c30c1ffb9e167b178f07b181f))
+
 ## [0.9.4](https://github.com/no-phux/phux/compare/desktop-v0.9.3...desktop-v0.9.4) (2026-10-15)
 
 
