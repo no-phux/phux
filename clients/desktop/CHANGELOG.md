@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/no-phux/phux/compare/desktop-v0.14.1...desktop-v0.14.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** keep remote terminals from pasting local file paths ([#1437](https://github.com/no-phux/phux/issues/1437)) ([2f31362](https://github.com/no-phux/phux/commit/2f3136264d67e69764f934feded3bd9bddbc3860))
+
 ## [0.14.1](https://github.com/no-phux/phux/compare/desktop-v0.14.0...desktop-v0.14.1) (2026-10-15)
 
 
