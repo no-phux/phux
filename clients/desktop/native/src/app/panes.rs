@@ -75,11 +75,16 @@ impl Panes {
         entity
     }
 
-    pub fn request(&self, placement_id: &str, action: HostAction, cx: &mut Context<Desk>) {
-        if let Some(slot) = self.by_placement.get(placement_id) {
+    pub fn request(
+        &self,
+        placement_id: &str,
+        action: HostAction,
+        cx: &mut Context<Desk>,
+    ) -> Option<crate::input::InputNotice> {
+        self.by_placement.get(placement_id).and_then(|slot| {
             slot.entity
-                .update(cx, |terminal, cx| terminal.request(action, cx));
-        }
+                .update(cx, |terminal, cx| terminal.request(action, cx))
+        })
     }
 
     pub fn focus(&self, placement_id: &str, window: &mut Window, cx: &mut Context<Desk>) {
