@@ -59,7 +59,7 @@ const CONTROLS_EDGE: f32 = 36.;
 const TRAFFIC_LIGHTS: f32 = 78.;
 /// Room for the host-labelled main menu and sidebar toggle, even with the
 /// navigator hidden. Long host names truncate instead of pushing tabs away.
-const MENU_RAIL: f32 = 192.;
+const MENU_RAIL: f32 = 224.;
 const TAB_RAIL: f32 = 212.;
 
 /// Paint values for the glass sheet and the cards on it, from the theme.

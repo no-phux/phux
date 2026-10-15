@@ -165,11 +165,12 @@ theme-aware glass treatment. **Settings > Appearance > Font family** previews
 each face in the searchable dropdown, with bundled fonts pinned first.
 
 The titlebar's host picker shows the machine this window is on — **Local**, or a
-registered remote. Picking another machine points this window at it in place: it
-releases the current views and opens that host's home session with its saved
-layout. No new window is opened. A plain click on a host in the sidebar's
-**Hosts** section does the same; its context menu's **Open Window** still opens a
-separate window for a host.
+registered remote. The picker remains visible with the navigator hidden; long
+host names truncate within its capsule. Picking another machine points this
+window at it in place: it releases the current views and opens that host's home
+session with its saved layout. No new window is opened. A plain click on a host
+in the sidebar's **Hosts** section does the same; its context menu's **Open
+Window** still opens a separate window for a host.
 
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |
