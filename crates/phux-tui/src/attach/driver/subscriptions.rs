@@ -85,6 +85,9 @@ pub(super) struct PeerWatch {
     pub(super) stored_project_tag: Option<(String, String)>,
     /// In-flight `GET` of `phux.session.project/v1`.
     pub(super) project_tag_pending: Option<u32>,
+    /// ADR-0168: project groups collapsed in this client's sidebar, read
+    /// from and written to the state dir.
+    pub(super) collapsed_projects: std::collections::BTreeSet<String>,
     /// The peer sweep waits for the first paint: set at construction and
     /// consumed at the first frame-burst drain, so a bootstrap (including a
     /// session switch, which drops all subscriptions) does not queue peer
@@ -111,6 +114,7 @@ impl PeerWatch {
             foreign_agents: &self.foreign_agents,
             foreign_attention: &self.foreign_attention,
             project_tags: &self.project_tags,
+            collapsed_projects: &self.collapsed_projects,
             review,
         }
     }

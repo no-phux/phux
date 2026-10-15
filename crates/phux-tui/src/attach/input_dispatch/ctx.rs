@@ -157,6 +157,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// hands the terminal to `phux attach` on that machine; dispatch cannot
     /// do it because the terminal it would restore belongs to the driver.
     pub host_switch_request: &'a mut Option<(String, String)>,
+    /// ADR-0168: out-channel for a dispatched `toggle-project-group`; the
+    /// driver owns the collapsed set and its file.
+    pub project_toggle_request: &'a mut Option<String>,
     /// phux-foz.7 / ADR-0040: the driver's decoded `phux.agent/v1` records
     /// (`AgentMetaIndex::records`), kept live by the per-pane metadata
     /// subscriptions. The `agent-fleet` action projects them into the

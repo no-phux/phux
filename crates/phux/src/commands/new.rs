@@ -569,6 +569,16 @@ pub(crate) async fn create_session_via_metadata(
         None => reject_duplicate_session_name(&mut conn, server, name, json).await?,
     }
 
+    // ADR-0168: a session made in a checkout on this machine carries the
+    // checkout's project identity from its first record.
+    let attrs = match (cwd.as_deref(), server.is_remote()) {
+        (Some(dir), false) => phux_client::project_identity::creation_attrs(
+            std::path::Path::new(dir),
+            &super::ls::local_hostname(),
+            None,
+        ),
+        _ => Vec::new(),
+    };
     let request = CreateSessionRequest {
         name,
         command: command.as_deref(),
@@ -577,6 +587,7 @@ pub(crate) async fn create_session_via_metadata(
         agent_session: agent_session.as_deref(),
         idempotency_key,
         lifetime,
+        attrs: &attrs,
     };
     let mut notices = Vec::new();
     let result = phux_client::session::create_session(&mut conn, &request, &mut notices).await;

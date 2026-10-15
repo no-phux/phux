@@ -509,6 +509,8 @@ pub(super) struct SessionLoop {
     /// ADR-0140: a `switch-host` committed in the last batch, as
     /// `(host, session)`.
     host_switch_request: Option<(String, String)>,
+    /// ADR-0168: a `toggle-project-group` committed in the last batch.
+    project_toggle_request: Option<String>,
     /// phux-c2td.3: did the server advertise
     /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
     /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
@@ -686,6 +688,7 @@ impl SessionLoop {
                     Vec::new()
                 },
                 origin,
+                collapsed_projects: crate::attach::project_collapse::load(),
                 ..PeerWatch::default()
             },
             pick: initial_pick,
@@ -704,6 +707,7 @@ impl SessionLoop {
             switch_request: None,
             reload_request: false,
             host_switch_request: None,
+            project_toggle_request: None,
             onboarding_claim,
             settings,
             notifier: crate::attach::notify::Notifier::new(tokio::time::Instant::now()),

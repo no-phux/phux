@@ -767,6 +767,29 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
         Some(SessionLifetime::Ephemeral)
     );
     assert_eq!(decoded.sessions[0].key, Some(key));
+    assert!(decoded.sessions[0].attrs.is_empty());
+
+    // Descriptive attributes (ADR-0168) ride the same SESSION_STATE.
+    let attrs = vec![
+        (
+            "project.id".to_owned(),
+            "github.com/no-phux/phux".to_owned(),
+        ),
+        ("project.linked_worktree".to_owned(), "true".to_owned()),
+    ];
+    let mut attributed = organized.clone();
+    attributed.sessions[0] = attributed.sessions[0].clone().with_attrs(attrs.clone());
+    let frame = state(attributed);
+    assert_round_trip(&frame);
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::State(decoded)),
+        ..
+    } = decode(&encode(&frame)).unwrap()
+    else {
+        panic!("state reply");
+    };
+    assert_eq!(decoded.sessions[0].attrs, attrs);
+    assert_eq!(decoded.sessions[0].key, Some(key));
 
     // keep_empty is still written as the legacy facet.
     let keep = base();
