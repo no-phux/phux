@@ -1,4 +1,4 @@
-//! One server-owned conversation. SDK controls are typed; attached TUI controls remain explicit.
+//! One server-owned conversation. Native controls are typed; attached TUI controls remain explicit.
 
 use gpui::prelude::*;
 use gpui::{
@@ -36,7 +36,7 @@ pub(crate) struct Binding {
 
 impl PartialEq for Binding {
     fn eq(&self, other: &Self) -> bool {
-        // SDK activation survives daemon incarnation changes; endpoint and
+        // ACP activation survives daemon incarnation changes; endpoint and
         // exact parent/session/activation still identify the same owner.
         (self.server == other.server || self.activation.is_some())
             && self.terminal == other.terminal
@@ -229,7 +229,7 @@ impl Desk {
             questions::prepare(self, placement, window, cx);
             return;
         }
-        // A daemon reexec recreates layout placements, not the SDK owner.
+        // A daemon reexec recreates layout placements, not the ACP owner.
         // Move the original editor, receipts, and question drafts together.
         if let Some((_, mut face)) = self
             .conversation_faces
@@ -381,7 +381,7 @@ impl Desk {
                         face.interrupted_turn = None;
                     }
                     if let Some(question) = question {
-                        // Do not optimistically close SDK UI: queued is not provider consumption.
+                        // Do not optimistically close native UI: queued is not provider consumption.
                         if matches!(disposition, NativeDisposition::Refused) {
                             face.question_status.remove(question);
                         } else if let Some(status) = face.question_status.get_mut(question) {
@@ -891,7 +891,7 @@ pub(crate) fn render(
         cx,
     );
     let native = conversation.native.is_some();
-    // SDK drafts are local: a provider question or delivery fence blocks Send,
+    // Native drafts are local: a provider question or delivery fence blocks Send,
     // not composing the next message.
     let editable = if native {
         !conversation.closed && conversation.state.status != AgentSessionStatus::Ended

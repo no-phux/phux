@@ -8,7 +8,7 @@
 //! carries it and is not retained, so a later render cannot repeat it and an
 //! unbound surface cannot store one for a future bind.
 
-use crate::input::TerminalInput;
+use crate::input::{InputNotice, LinkAdmit, TerminalInput, admit_path};
 use gpui::{self, ClipboardItem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,24 +32,31 @@ pub(super) fn accept(bound: bool, action: HostAction) -> Option<HostAction> {
 /// Failures are as quiet as Command-C with nothing selected: the terminal's
 /// own state already shows why (no selection, not ready). Copy and Paste are
 /// addressed to this terminal, so they do not need its keyboard focus.
-pub(super) fn run(action: HostAction, input: &gpui::Entity<TerminalInput>, cx: &mut gpui::App) {
+/// `Some` when the shell should show a refusal. The action is not kept.
+pub(super) fn run(
+    action: HostAction,
+    input: &gpui::Entity<TerminalInput>,
+    cx: &mut gpui::App,
+) -> Option<InputNotice> {
     match action {
-        HostAction::Copy => input.update(cx, |state, cx| {
-            let _ = state.copy_requested(cx);
-        }),
-        HostAction::Paste => {
-            let text = cx
-                .read_from_clipboard()
-                .and_then(|item| crate::attach::clipboard_paste(&item))
-                .unwrap_or_default();
-            if !text.is_empty() {
-                input.update(cx, |state, _| {
-                    let _ = state.paste_requested(&text);
-                });
-            }
+        HostAction::Copy => {
+            input.update(cx, |state, cx| {
+                let _ = state.copy_requested(cx);
+            });
+            None
         }
-        HostAction::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-        HostAction::Open(path) => cx.open_with_system(std::path::Path::new(&path)),
+        HostAction::Paste => input.update(cx, |state, cx| state.paste_command(cx)),
+        HostAction::CopyText(text) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            None
+        }
+        HostAction::Open(path) => match admit_path(std::path::Path::new(&path)) {
+            LinkAdmit::Open => {
+                cx.open_with_system(std::path::Path::new(&path));
+                None
+            }
+            LinkAdmit::Refuse { title, body } => Some(InputNotice { title, body }),
+        },
     }
 }
 

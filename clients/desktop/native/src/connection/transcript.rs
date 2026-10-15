@@ -22,7 +22,7 @@ pub struct Conversation {
     pub epoch: u64,
     pub stream: AgentStreamInfo,
     pub state: AgentSessionState,
-    /// Cached shared SDK projection, absent for explicitly terminal-attached streams.
+    /// Cached shared native projection, absent for explicitly terminal-attached streams.
     pub native: Option<phux_protocol::native_agent::NativeView>,
     pub entries: VecDeque<TranscriptEntry>,
     pub closed: bool,
@@ -91,7 +91,7 @@ impl Conversation {
             self.last_activity_ms = self.last_activity_ms.max(record.ts_ms);
             if let Some(entry) = record.transcript_entry() {
                 if !self.has_transcript {
-                    // SDK setup/auth/capability notices must not disappear when prose starts.
+                    // ACP setup/auth/capability notices must not disappear when prose starts.
                     self.entries
                         .retain(|entry| entry.id.starts_with("notification:"));
                     self.bytes = self.entries.iter().map(entry_bytes).sum();

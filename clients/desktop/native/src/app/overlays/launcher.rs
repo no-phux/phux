@@ -18,8 +18,10 @@ use crate::app::color::from_hex;
 use crate::app::desk::{Desk, Modal};
 use crate::settings::theme::Palette;
 
+use super::goto_filter::GotoFilter;
 use super::{
-    Row, Target, command_sections, goto_sections, move_sections, rank_sections, session_sections,
+    Row, Target, command_sections, filter_sections, goto_sections, move_sections, rank_sections,
+    session_sections,
 };
 
 pub(super) fn palette(
@@ -54,7 +56,13 @@ pub(super) fn palette(
             command_sections(desk, cx),
         ),
     };
+    let sections = if desk.modal == Modal::Goto {
+        filter_sections(sections, desk.goto.filter)
+    } else {
+        sections
+    };
     let sections = rank_sections(sections, &query);
+    desk.align_goto_highlight(&sections, &state, window, cx);
     let count: usize = sections.iter().map(|section| section.rows.len()).sum();
     let targets: Vec<Vec<Target>> = sections
         .iter()
@@ -77,6 +85,13 @@ pub(super) fn palette(
         format!("{host} / {}", desk.session)
     });
     let empty_query = query.trim().is_empty();
+    let filter = desk.goto.filter;
+    let narrowed = desk.modal == Modal::Goto && filter != GotoFilter::All;
+    let chrome = if desk.modal == Modal::Goto {
+        160.
+    } else {
+        124.
+    };
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
     let height = (viewport.height.as_f32() - top - 24.).clamp(180., 536.);
@@ -93,8 +108,17 @@ pub(super) fn palette(
         .h(px(height))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
-        .max_h(px((height - 124.).max(56.)))
-        .header(move |_, _, _| header(&modal, &context, remote, &header_colors, &header_handle))
+        .max_h(px((height - chrome).max(56.)))
+        .header(move |_, _, _| {
+            header(
+                &modal,
+                &context,
+                remote,
+                filter,
+                &header_colors,
+                &header_handle,
+            )
+        })
         .empty(move |_, _, _| {
             div()
                 .w_full()
@@ -112,7 +136,9 @@ pub(super) fn palette(
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(from_hex(&empty_colors.theme.foreground))
-                        .child(if empty_query {
+                        .child(if empty_query && narrowed {
+                            "No agents in this state"
+                        } else if empty_query {
                             "Nothing to navigate to yet"
                         } else {
                             "No matching results"
@@ -239,89 +265,125 @@ fn header(
     modal: &Modal,
     context: &SharedString,
     remote: bool,
+    filter: GotoFilter,
     colors: &Palette,
     desk: &WeakEntity<Desk>,
 ) -> AnyElement {
     let navigation = *modal == Modal::Goto;
     let commands = desk.clone();
     let goto = desk.clone();
-    div()
-        .h(px(48.))
+    let modes = div()
         .flex_shrink_0()
-        .px(px(12.))
         .flex()
         .items_center()
-        .justify_between()
-        .gap(px(16.))
-        .child(
-            div()
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .when(matches!(modal, Modal::Commands | Modal::Goto), |this| {
-                    this.child(
-                        div()
-                            .debug_selector(|| "palette-mode-commands".into())
-                            .child(
-                                Button::new("palette-mode-commands")
-                                    .label("Commands")
-                                    .small()
-                                    .ghost()
-                                    .toggled(!navigation)
-                                    .when(!navigation, |this| this.bg(from_hex(&colors.active)))
-                                    .on_click(move |_, window, cx| {
-                                        let _ = commands.update(cx, |desk, cx| {
-                                            if desk.modal != Modal::Commands {
-                                                desk.execute("palette", window, cx);
-                                            }
-                                        });
-                                    }),
-                            ),
-                    )
+        .gap(px(2.))
+        .when(matches!(modal, Modal::Commands | Modal::Goto), |this| {
+            this.child(
+                div()
+                    .debug_selector(|| "palette-mode-commands".into())
                     .child(
-                        div().debug_selector(|| "palette-mode-goto".into()).child(
-                            Button::new("palette-mode-goto")
-                                .label("Go To")
-                                .small()
-                                .ghost()
-                                .toggled(navigation)
-                                .when(navigation, |this| this.bg(from_hex(&colors.active)))
-                                .on_click(move |_, window, cx| {
-                                    let _ = goto.update(cx, |desk, cx| {
-                                        if desk.modal != Modal::Goto {
-                                            desk.execute("goto", window, cx);
-                                        }
-                                    });
-                                }),
-                        ),
-                    )
-                })
-                .when(*modal == Modal::WindowSession, |this| {
-                    this.child("Open Session")
-                })
-                .when(*modal == Modal::MoveResources, |this| {
-                    this.child("Move Selected Work")
-                }),
+                        Button::new("palette-mode-commands")
+                            .label("Commands")
+                            .small()
+                            .ghost()
+                            .toggled(!navigation)
+                            .when(!navigation, |this| this.bg(from_hex(&colors.active)))
+                            .on_click(move |_, window, cx| {
+                                let _ = commands.update(cx, |desk, cx| {
+                                    if desk.modal != Modal::Commands {
+                                        desk.execute("palette", window, cx);
+                                    }
+                                });
+                            }),
+                    ),
+            )
+            .child(
+                div().debug_selector(|| "palette-mode-goto".into()).child(
+                    Button::new("palette-mode-goto")
+                        .label("Go To")
+                        .small()
+                        .ghost()
+                        .toggled(navigation)
+                        .when(navigation, |this| this.bg(from_hex(&colors.active)))
+                        .on_click(move |_, window, cx| {
+                            let _ = goto.update(cx, |desk, cx| {
+                                if desk.modal != Modal::Goto {
+                                    desk.execute("goto", window, cx);
+                                }
+                            });
+                        }),
+                ),
+            )
+        })
+        .when(*modal == Modal::WindowSession, |this| {
+            this.child("Open Session")
+        })
+        .when(*modal == Modal::MoveResources, |this| {
+            this.child("Move Selected Work")
+        });
+    let context = div()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(11.))
+        .text_color(from_hex(&colors.theme.foreground).opacity(0.9))
+        .child(
+            Icon::new(if remote {
+                IconName::Globe
+            } else {
+                IconName::HardDrive
+            })
+            .xsmall(),
         )
+        .child(div().truncate().child(context.clone()));
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
         .child(
             div()
-                .min_w_0()
+                .h(px(48.))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .text_size(px(11.))
-                .text_color(from_hex(&colors.theme.foreground).opacity(0.9))
-                .child(
-                    Icon::new(if remote {
-                        IconName::Globe
-                    } else {
-                        IconName::HardDrive
-                    })
-                    .xsmall(),
-                )
-                .child(div().truncate().child(context.clone())),
+                .justify_between()
+                .gap(px(16.))
+                .child(modes)
+                .child(context),
         )
+        .when(navigation, |this| {
+            this.child(state_filters(filter, colors, desk))
+        })
+        .into_any_element()
+}
+
+fn state_filters(filter: GotoFilter, colors: &Palette, desk: &WeakEntity<Desk>) -> AnyElement {
+    div()
+        .h(px(36.))
+        .flex_shrink_0()
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .children(GotoFilter::ALL.map(|choice| {
+            let desk = desk.clone();
+            let active = choice == filter;
+            let wash = colors.active.clone();
+            div().debug_selector(|| choice.id().into()).child(
+                Button::new(choice.id())
+                    .label(choice.label())
+                    .small()
+                    .ghost()
+                    .toggled(active)
+                    .when(active, move |this| this.bg(from_hex(&wash)))
+                    .on_click(move |_, window, cx| {
+                        let _ = desk.update(cx, |desk, cx| {
+                            desk.set_goto_filter(choice, window, cx);
+                        });
+                    }),
+            )
+        }))
         .into_any_element()
 }
 
