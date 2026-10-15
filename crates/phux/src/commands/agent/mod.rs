@@ -57,12 +57,12 @@ pub(crate) enum AgentAction {
         #[usage(long)]
         json: bool,
     },
-    /// Send a typed SDK intent to the exact AgentSession and activation.
+    /// Send a typed SDK intent to the exact `AgentSession` and activation.
     ///
     /// This never pastes, sends keys, takes another viewer's lease, or
     /// assumes that a queued dialog response was consumed.
     NativeCommand {
-        /// AgentSession resource @N, not its parent Terminal.
+        /// `AgentSession` resource @N, not its parent Terminal.
         target: String,
         /// Exact native activation from the session's structured view.
         #[usage(long)]

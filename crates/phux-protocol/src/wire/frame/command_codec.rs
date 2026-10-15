@@ -42,22 +42,6 @@ use super::{
     encode_terminal_id,
 };
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct NativeResultEvent {
-    agent_session_id: crate::ids::ResourceId,
-    operation_id: u64,
-    disposition: crate::native_agent::NativeDisposition,
-    detail: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct NativeResultEventRef<'a> {
-    agent_session_id: &'a crate::ids::ResourceId,
-    operation_id: u64,
-    disposition: crate::native_agent::NativeDisposition,
-    detail: Option<&'a str>,
-}
-
 // `Command` and `CommandResult`: a tag, then a positional body.
 
 #[allow(
@@ -68,11 +52,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
     match command {
         Command::NativeAgent { request } => {
             enc.write_u8(super::COMMAND_TAG_NATIVE_AGENT);
-            // Serialization of these DTOs is infallible (string-keyed maps).
-            // Like other command encoders, admission limits are enforced by
-            // the decoder rather than silently truncating outgoing requests.
-            let bytes = serde_json::to_vec(request).expect("native request serialization");
-            enc.write_bytes(&bytes);
+            enc.write_bytes(request.encoded());
         }
         Command::AttachResource {
             terminal_id,
@@ -346,11 +326,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
             return Err(DecodeError::NativeAgentLimitExceeded);
         }
-        let request =
-            serde_json::from_slice(bytes).map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
-        return Ok(Command::NativeAgent {
-            request: Box::new(request),
-        });
+        let request = crate::native_agent::NativeRequestPayload::decode(bytes)
+            .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+        return Ok(Command::NativeAgent { request });
     }
     // Each family claims a disjoint tag set and returns `None` (reading
     // nothing) for the rest.
@@ -986,14 +964,12 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 disposition,
                 detail,
             } => {
-                let value = NativeResultEventRef {
-                    agent_session_id,
-                    operation_id: *operation_id,
-                    disposition: *disposition,
-                    detail: detail.as_deref(),
-                };
-                let json = serde_json::to_vec(&value).expect("native result serialization");
-                body_enc.write_bytes(&json);
+                encode_terminal_id(agent_session_id, &mut body_enc);
+                body_enc.write_u64_be(*operation_id);
+                body_enc.write_u8(disposition.to_u8());
+                if let Some(detail) = detail {
+                    body_enc.write_str(detail);
+                }
                 super::EVENT_TAG_NATIVE_AGENT_RESULT
             }
             AgentEvent::CommandStarted => EVENT_TAG_COMMAND_STARTED,
@@ -1161,6 +1137,32 @@ fn encode_asked_fields(
     }
 }
 
+fn decode_native_result_event(body: &[u8]) -> Result<AgentEvent, DecodeError> {
+    if body.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+        return Err(DecodeError::NativeAgentLimitExceeded);
+    }
+    let mut dec = Decoder::new(body);
+    let agent_session_id = decode_terminal_id(&mut dec)?;
+    let operation_id = dec.read_u64_be()?;
+    let Some(disposition) = crate::native_agent::NativeDisposition::from_u8(dec.read_u8()?) else {
+        return Ok(AgentEvent::Unknown {
+            tag: super::EVENT_TAG_NATIVE_AGENT_RESULT,
+            body: body.to_vec(),
+        });
+    };
+    let detail = if dec.remaining_in_body() == 0 {
+        None
+    } else {
+        Some(dec.read_str()?.to_owned())
+    };
+    Ok(AgentEvent::NativeAgentResult {
+        agent_session_id,
+        operation_id,
+        disposition,
+        detail,
+    })
+}
+
 pub(in crate::wire) fn decode_agent_event(
     dec: &mut Decoder<'_>,
 ) -> Result<AgentEvent, DecodeError> {
@@ -1169,24 +1171,7 @@ pub(in crate::wire) fn decode_agent_event(
 
     let mut body_dec = Decoder::new(body);
     let event = match tag {
-        super::EVENT_TAG_NATIVE_AGENT_RESULT => {
-            // Bound the enclosing body as well as the JSON before allocation.
-            if body.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES + 4 {
-                return Err(DecodeError::NativeAgentLimitExceeded);
-            }
-            let bytes = body_dec.read_bytes()?;
-            if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
-                return Err(DecodeError::NativeAgentLimitExceeded);
-            }
-            let value: NativeResultEvent = serde_json::from_slice(bytes)
-                .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
-            AgentEvent::NativeAgentResult {
-                agent_session_id: value.agent_session_id,
-                operation_id: value.operation_id,
-                disposition: value.disposition,
-                detail: value.detail,
-            }
-        }
+        super::EVENT_TAG_NATIVE_AGENT_RESULT => decode_native_result_event(body)?,
         EVENT_TAG_COMMAND_STARTED => AgentEvent::CommandStarted,
         EVENT_TAG_COMMAND_FINISHED => AgentEvent::CommandFinished {
             exit_code: decode_optional_i32(&mut body_dec)?,

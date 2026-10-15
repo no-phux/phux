@@ -288,47 +288,56 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
     vec![
         (
             Command::NativeAgent {
-                request: Box::new(crate::native_agent::NativeRequest::Spawn {
-                    spec: crate::native_agent::SpawnNativeAgent {
-                        session: "session".into(),
-                        backend: "omp-rpc".into(),
-                        provider: "omp".into(),
-                        command: vec!["omp".into()],
-                        cwd: None,
-                        env: Default::default(),
-                        sdk_runtime: None,
-                        node_bridge: None,
-                        native_id: None,
-                        guardian: None,
-                        guardian_key: None,
-                        guardian_expected: None,
+                request: crate::native_agent::NativeRequestPayload::new(
+                    crate::native_agent::NativeRequest::Spawn {
+                        spec: crate::native_agent::SpawnNativeAgent {
+                            session: "session".into(),
+                            backend: "omp-rpc".into(),
+                            provider: "omp".into(),
+                            command: vec!["omp".into()],
+                            cwd: None,
+                            env: Default::default(),
+                            sdk_runtime: None,
+                            node_bridge: None,
+                            native_id: None,
+                            guardian: None,
+                            guardian_key: None,
+                            guardian_expected: None,
+                        },
                     },
-                }),
+                )
+                .unwrap(),
             },
             &C_NATIVE_SPAWN,
         ),
         (
             Command::NativeAgent {
-                request: Box::new(crate::native_agent::NativeRequest::Command {
-                    agent_session_id: terminal(),
-                    command: crate::native_agent::NativeCommand {
-                        operation_id: 1,
-                        activation: "activation".into(),
-                        intent: crate::native_agent::NativeIntent::Prompt {
-                            text: "hello".into(),
+                request: crate::native_agent::NativeRequestPayload::new(
+                    crate::native_agent::NativeRequest::Command {
+                        agent_session_id: terminal(),
+                        command: crate::native_agent::NativeCommand {
+                            operation_id: 1,
+                            activation: "activation".into(),
+                            intent: crate::native_agent::NativeIntent::Prompt {
+                                text: "hello".into(),
+                            },
                         },
                     },
-                }),
+                )
+                .unwrap(),
             },
             &C_NATIVE_COMMAND,
         ),
         (
             Command::NativeAgent {
-                request: Box::new(crate::native_agent::NativeRequest::Register {
-                    agent_session_id: terminal(),
-                    activation: "activation".into(),
-                    binding_proof: "proof".into(),
-                }),
+                request: crate::native_agent::NativeRequestPayload::new(
+                    crate::native_agent::NativeRequest::Register {
+                        agent_session_id: terminal(),
+                        activation: "activation".into(),
+                        binding_proof: "proof".into(),
+                    },
+                )
+                .unwrap(),
             },
             &C_NATIVE_CONTROLLER,
         ),

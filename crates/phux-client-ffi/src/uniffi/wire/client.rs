@@ -1053,6 +1053,9 @@ impl RemoteClient {
             Ok(lifecycle) => return projected.extend(Option::<WireEvent>::from(lifecycle)),
             Err(event) => event,
         };
+        let Some(event) = project_agent_control(event, projected) else {
+            return;
+        };
         match event {
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
@@ -1062,25 +1065,6 @@ impl RemoteClient {
                     .lock()
                     .unwrap()
                     .insert(terminal_id);
-            }
-            Event::AgentAsked {
-                terminal_id,
-                question_id,
-                text,
-                suggestions,
-                waiting_seconds,
-            } => projected.push(WireEvent::AgentAsked {
-                terminal_id: id::encode(&terminal_id),
-                question_id,
-                text,
-                suggestions,
-                waiting_seconds,
-            }),
-            Event::AgentAskedState { terminal_id, asked } => {
-                projected.push(WireEvent::AgentAskedState {
-                    terminal_id: id::encode(&terminal_id),
-                    asked,
-                });
             }
             Event::InputDelivery {
                 delivery_id,
@@ -1096,24 +1080,6 @@ impl RemoteClient {
                 }
                 .into(),
             ),
-            Event::NativeAgentResult {
-                agent_session_id,
-                operation_id,
-                disposition,
-                detail,
-            } => projected.push(WireEvent::NativeAgentResult {
-                agent_session_id: id::encode(&agent_session_id),
-                operation_id,
-                disposition: match disposition {
-                    phux_protocol::native_agent::NativeDisposition::Admitted => "admitted",
-                    phux_protocol::native_agent::NativeDisposition::Queued => "queued",
-                    phux_protocol::native_agent::NativeDisposition::Completed => "completed",
-                    phux_protocol::native_agent::NativeDisposition::Refused => "refused",
-                    phux_protocol::native_agent::NativeDisposition::Unknown => "unknown",
-                }
-                .into(),
-                detail,
-            }),
             Event::AgentMetadata { terminal_id, value } => {
                 projected.push(agent::badge(&terminal_id, value.as_deref()).into());
             }
@@ -1161,6 +1127,50 @@ impl RemoteClient {
             _ => {}
         }
     }
+}
+
+/// Project human-facing agent controls, returning any unhandled event unchanged.
+fn project_agent_control(event: Event, projected: &mut Vec<WireEvent>) -> Option<Event> {
+    let event = match event {
+        Event::AgentAsked {
+            terminal_id,
+            question_id,
+            text,
+            suggestions,
+            waiting_seconds,
+        } => WireEvent::AgentAsked {
+            terminal_id: id::encode(&terminal_id),
+            question_id,
+            text,
+            suggestions,
+            waiting_seconds,
+        },
+        Event::AgentAskedState { terminal_id, asked } => WireEvent::AgentAskedState {
+            terminal_id: id::encode(&terminal_id),
+            asked,
+        },
+        Event::NativeAgentResult {
+            agent_session_id,
+            operation_id,
+            disposition,
+            detail,
+        } => WireEvent::NativeAgentResult {
+            agent_session_id: id::encode(&agent_session_id),
+            operation_id,
+            disposition: match disposition {
+                phux_protocol::native_agent::NativeDisposition::Admitted => "admitted",
+                phux_protocol::native_agent::NativeDisposition::Queued => "queued",
+                phux_protocol::native_agent::NativeDisposition::Completed => "completed",
+                phux_protocol::native_agent::NativeDisposition::Refused => "refused",
+                phux_protocol::native_agent::NativeDisposition::Unknown => "unknown",
+            }
+            .into(),
+            detail,
+        },
+        event => return Some(event),
+    };
+    projected.push(event);
+    None
 }
 
 /// Lower one agent session's records, or its end, to the foreign event.

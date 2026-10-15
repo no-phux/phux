@@ -189,12 +189,12 @@ impl ApprovalOutcome {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
-    /// Dedicated SDK-owned AgentSession broker request. The wire body is
+    /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.
     NativeAgent {
         /// Exact typed native launch, control, or controller operation.
-        request: Box<crate::native_agent::NativeRequest>,
+        request: crate::native_agent::NativeRequestPayload,
     },
     /// Subscribe to one resource's content stream (SPEC §5.1): a fresh
     /// bootstrap generation, then `RESOURCE_OUTPUT`. Does not resize.
@@ -1185,7 +1185,7 @@ pub enum AgentEvent {
     },
     /// A later native SDK operation outcome, distinct from PTY delivery.
     NativeAgentResult {
-        /// Exact SDK-owned AgentSession.
+        /// Exact SDK-owned `AgentSession`.
         agent_session_id: ResourceId,
         /// Original native operation identity.
         operation_id: u64,

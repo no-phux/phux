@@ -5,7 +5,7 @@ mod common;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::*;
 use phux_protocol::wire::error::DecodeError;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
+use phux_protocol::wire::frame::{AgentEvent, Command, FrameKind};
 
 fn frame(request: NativeRequest) -> FrameKind {
     FrameKind::Command {
@@ -110,23 +110,18 @@ fn all_native_request_roles_round_trip() {
 }
 
 #[test]
-fn request_payload_admits_before_encoding_and_preserves_the_typed_request() {
-    let request = NativeRequest::Register {
+fn request_payload_bounds_the_encoded_envelope_not_unescaped_text() {
+    let request = NativeRequest::Command {
         agent_session_id: ResourceId::local(9),
-        activation: "activation".into(),
-        binding_proof: "proof".into(),
+        command: NativeCommand {
+            operation_id: 1,
+            activation: "activation".into(),
+            intent: NativeIntent::Prompt {
+                text: "\0".repeat(MAX_NATIVE_PAYLOAD_BYTES / 3),
+            },
+        },
     };
-    let payload = NativeRequestPayload::new(request.clone()).unwrap();
-    assert_eq!(payload.request(), &request);
-    assert_eq!(payload.into_request(), request);
-    assert!(
-        NativeRequestPayload::new(NativeRequest::Register {
-            agent_session_id: ResourceId::local(9),
-            activation: "x".repeat(MAX_NATIVE_PAYLOAD_BYTES),
-            binding_proof: "proof".into(),
-        })
-        .is_err()
-    );
+    assert!(NativeRequestPayload::new(request).is_err());
 }
 
 #[test]
@@ -157,40 +152,56 @@ fn native_json_rejects_malformed_and_wrong_dto() {
 }
 
 #[test]
-fn native_receipts_use_existing_json_result_envelope() {
-    let receipt = NativePublicationReceipt {
-        publication_id: 4,
-        first_seq: 20,
-        last_seq: 21,
-    };
-    common::assert_round_trip(&FrameKind::CommandResult {
-        request_id: 7,
-        result: CommandResult::OkWith(CommandValue::Json(serde_json::to_string(&receipt).unwrap())),
-    });
+fn native_outcomes_match_the_typed_wire_contract() {
+    for (tag, disposition, detail) in [
+        (0, NativeDisposition::Admitted, None),
+        (1, NativeDisposition::Queued, Some("")),
+        (2, NativeDisposition::Completed, Some("SDK completion")),
+        (3, NativeDisposition::Refused, Some("Refused · 原因")),
+        (4, NativeDisposition::Unknown, None),
+    ] {
+        let mut body = vec![0, 0, 0, 0, 9]; // local ResourceId @9
+        body.extend_from_slice(&u64::MAX.to_be_bytes());
+        body.push(tag);
+        if let Some(detail) = detail {
+            body.extend_from_slice(&u32::try_from(detail.len()).unwrap().to_be_bytes());
+            body.extend_from_slice(detail.as_bytes());
+        }
+        let wire = FrameKind::Event {
+            terminal: Some(ResourceId::local(8)),
+            event: AgentEvent::Unknown { tag: 0x1c, body },
+            stamp: None,
+        };
+        let expected = FrameKind::Event {
+            terminal: Some(ResourceId::local(8)),
+            event: AgentEvent::NativeAgentResult {
+                agent_session_id: ResourceId::local(9),
+                operation_id: u64::MAX,
+                disposition,
+                detail: detail.map(str::to_owned),
+            },
+            stamp: None,
+        };
+        let encoded = common::encode(&wire);
+        assert_eq!(common::encode(&expected), encoded);
+        assert_eq!(common::decode(&encoded).unwrap(), expected);
+    }
 }
 
 #[test]
-fn later_native_outcomes_have_a_dedicated_event() {
-    for disposition in [
-        NativeDisposition::Admitted,
-        NativeDisposition::Completed,
-        NativeDisposition::Refused,
-        NativeDisposition::Unknown,
-    ] {
-        common::assert_round_trip(&FrameKind::Event {
-            terminal: Some(ResourceId::local(8)),
-            event: phux_protocol::wire::frame::AgentEvent::NativeAgentResult {
-                agent_session_id: ResourceId::local(9),
-                operation_id: 3,
-                disposition,
-                detail: Some("actual SDK outcome".into()),
-            },
-            stamp: None,
-        });
-    }
+fn future_native_outcome_is_opaque_but_oversized_body_is_refused() {
+    let mut body = vec![0, 0, 0, 0, 9];
+    body.extend_from_slice(&u64::MAX.to_be_bytes());
+    body.extend_from_slice(&[0xFE, 0xAA, 0xBB]);
+    let future = FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::Unknown { tag: 0x1c, body },
+        stamp: None,
+    };
+    common::assert_round_trip(&future);
     let oversized = FrameKind::Event {
         terminal: None,
-        event: phux_protocol::wire::frame::AgentEvent::NativeAgentResult {
+        event: AgentEvent::NativeAgentResult {
             agent_session_id: ResourceId::local(9),
             operation_id: 3,
             disposition: NativeDisposition::Unknown,

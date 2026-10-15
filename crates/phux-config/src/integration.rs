@@ -103,7 +103,7 @@ impl NativeBackend {
 pub struct IntegrationNativeLaunch {
     /// SDK transport, selected explicitly by the template.
     pub backend: NativeBackend,
-    /// Harness slug carried by the structured AgentSession.
+    /// Harness slug carried by the structured `AgentSession`.
     pub provider: String,
     /// Native executable argv, prerequisites, and working-directory policy.
     pub launch: IntegrationLaunch,

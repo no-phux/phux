@@ -1,8 +1,10 @@
-use crate::{HostError, HostSpec, Sink};
+use super::{HostError, HostSpec, Sink};
 use phux_client_core::session::agent_transcript::{
     ToolStatus, TranscriptEntry, TranscriptRole, TranscriptTool,
 };
-use phux_protocol::native_agent::*;
+use phux_protocol::native_agent::{
+    NativeCommandResult, NativeDisposition, NativeQuestion, NativeUpdate,
+};
 use serde_json::Value;
 use std::process::{Child, Command, Stdio};
 
@@ -76,6 +78,7 @@ impl WatchedChild {
                         let _ = child.kill();
                     }
                     let _ = child.wait();
+                    drop(child);
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -95,7 +98,7 @@ impl Drop for WatchedChild {
     }
 }
 /// An inherited stdout in an upstream background process must not deadlock
-/// AgentSession-only close. Direct child reaping remains unconditional.
+/// `AgentSession`-only close. Direct child reaping remains unconditional.
 pub(super) fn join_reader(
     thread: std::thread::JoinHandle<Result<(), HostError>>,
     name: &str,
@@ -166,24 +169,24 @@ fn transcript(sink: &Sink, provider: &str, mut entry: TranscriptEntry) -> Result
     if sink.0.transcript_mode == TranscriptMode::Off {
         return Ok(());
     }
-    if sink.0.transcript_mode != TranscriptMode::Full {
-        if let Some(tool) = &mut entry.tool {
-            tool.output.clear();
-        }
+    if sink.0.transcript_mode != TranscriptMode::Full
+        && let Some(tool) = &mut entry.tool
+    {
+        tool.output.clear();
     }
     let mut update = NativeUpdate::Transcript {
         entry: entry.into_data(provider),
     };
     loop {
-        let bytes = crate::json_size(&update)?;
-        if bytes <= crate::UPDATE_BYTES {
+        let bytes = super::json_size(&update)?;
+        if bytes <= super::UPDATE_BYTES {
             return sink.update(update);
         }
         let NativeUpdate::Transcript { entry: data } = &mut update else {
             unreachable!()
         };
         let entry = &mut data["entry"];
-        let over = bytes - crate::UPDATE_BYTES;
+        let over = bytes - super::UPDATE_BYTES;
         let field = if entry["text"].as_str().is_some_and(|text| !text.is_empty()) {
             &mut entry["text"]
         } else if entry["tool"]["output"]
@@ -196,7 +199,9 @@ fn transcript(sink: &Sink, provider: &str, mut entry: TranscriptEntry) -> Result
                 "transcript metadata exceeds native record bounds".into(),
             ));
         };
-        let text = field.as_str().expect("text field");
+        let text = field
+            .as_str()
+            .ok_or_else(|| HostError::Invalid("transcript text field is not a string".into()))?;
         *field = Value::String(head(text, text.len().saturating_sub(over)));
         entry["truncated"] = Value::Bool(true);
     }
@@ -221,10 +226,12 @@ impl TranscriptMode {
 /// Match the runtime's content-excluding argument summary; never dump raw args.
 pub(super) fn summarize_args(args: &Value) -> String {
     fn line(text: &str, limit: usize) -> String {
-        text.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        let mut words = text.split_whitespace();
+        words
+            .next()
+            .unwrap_or_default()
             .chars()
+            .chain(words.flat_map(|word| std::iter::once(' ').chain(word.chars())))
             .take(limit)
             .collect()
     }
@@ -369,6 +376,7 @@ pub(super) fn validate_answer(question: &NativeQuestion, response: &Value) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_protocol::native_agent::NativeOption;
     #[test]
     fn worker_process_receives_only_sanitized_explicit_environment() {
         let mut command = Command::new("/usr/bin/env");

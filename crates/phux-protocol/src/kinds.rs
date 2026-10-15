@@ -975,7 +975,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
 #[must_use]
 pub fn command_rule(command: &Command) -> &'static Rule {
     match command {
-        Command::NativeAgent { request } => match request.as_ref() {
+        Command::NativeAgent { request } => match request.request() {
             crate::native_agent::NativeRequest::Spawn { .. } => &C_NATIVE_SPAWN,
             crate::native_agent::NativeRequest::Command { .. } => &C_NATIVE_COMMAND,
             crate::native_agent::NativeRequest::Register { .. }

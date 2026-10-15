@@ -67,7 +67,7 @@ impl ClientError {
 
 struct PendingPublication {
     id: u64,
-    request: Box<NativeRequestPayload>,
+    request: NativeRequestPayload,
 }
 
 struct ControlLane {
@@ -152,17 +152,8 @@ impl NativeController {
             binding_proof: binding_proof.clone(),
         };
         let request = NativeRequestPayload::new(request).map_err(ClientError::Invalid)?;
-        let mut connection = Connection::connect(socket.as_ref())
-            .await
-            .map_err(transport_error)?;
-        let registration: Registration =
-            json_reply(round_trip(&mut connection, 1, request).await?)?;
-        if registration.generation == 0 {
-            return Err(ClientError::Protocol(
-                "registration returned a zero generation".into(),
-            ));
-        }
-        let (generation, _) = watch::channel(registration.generation);
+        let (connection, generation) = register_connection(socket.as_ref(), 1, request).await?;
+        let (generation, _) = watch::channel(generation);
         Ok(Self {
             socket: socket.as_ref().to_owned(),
             agent: precreated_agent,
@@ -228,7 +219,10 @@ impl NativeController {
             // before asking the broker under the new generation.
             let result = tokio::select! {
                 result = round_trip(&mut connection, request_id, request) => result,
-                _ = generations.changed() => continue,
+                _ = generations.changed() => {
+                    drop(connection);
+                    continue;
+                },
             };
             match result {
                 Ok(result) => {
@@ -244,13 +238,16 @@ impl NativeController {
                     }
                     command.intent.validate().map_err(ClientError::Protocol)?;
                     lane.connection = Some(connection);
+                    drop(lane);
                     return Ok(command);
                 }
                 Err(error) if error.is_retryable() && !retried => {
+                    drop(connection);
                     retried = true;
                     self.reconnect_generation(generation).await?;
                 }
                 Err(error) => {
+                    drop(connection);
                     if matches!(
                         error,
                         ClientError::Refused {
@@ -288,7 +285,7 @@ impl NativeController {
         self.ensure_open()?;
         let request = NativeRequestPayload::new(self.complete_request(result))
             .map_err(ClientError::Invalid)?;
-        ok_reply(self.control_request(&mut lane, request).await?)
+        ok_reply(&self.control_request(&mut lane, request).await?)
     }
 
     /// Publish output in order, retaining its original id until acknowledged.
@@ -343,6 +340,7 @@ impl NativeController {
             }
             lane.pending.pop_front();
             if expected_id == id {
+                drop(lane);
                 return Ok(receipt);
             }
         }
@@ -366,7 +364,7 @@ impl NativeController {
             generation: *self.generation.borrow(),
         })
         .map_err(ClientError::Invalid)?;
-        ok_reply(self.control_request(&mut lane, request).await?)?;
+        ok_reply(&self.control_request(&mut lane, request).await?)?;
         self.closed.store(true, Ordering::Release);
         lane.connection = None;
         self.generation.send_modify(|_| {});
@@ -408,21 +406,12 @@ impl NativeController {
         })
         .map_err(ClientError::Invalid)?;
         lane.connection = None;
-        let mut connection = Connection::connect(&self.socket)
-            .await
-            .map_err(transport_error)?;
-        let registration: Registration = json_reply(
-            round_trip(&mut connection, lane.request_id(), request)
+        let (connection, generation) =
+            register_connection(&self.socket, lane.request_id(), request)
                 .await
-                .map_err(|error| self.record_error(error))?,
-        )?;
-        if registration.generation == 0 {
-            return Err(ClientError::Protocol(
-                "registration returned a zero generation".into(),
-            ));
-        }
+                .map_err(|error| self.record_error(error))?;
         lane.connection = Some(connection);
-        self.generation.send_replace(registration.generation);
+        self.generation.send_replace(generation);
         Ok(())
     }
 
@@ -437,12 +426,12 @@ impl NativeController {
     async fn control_request(
         &self,
         lane: &mut ControlLane,
-        request: Box<NativeRequestPayload>,
+        request: NativeRequestPayload,
     ) -> Result<CommandResult, ClientError> {
         self.ensure_connected(lane).await?;
         let request = set_generation(request, *self.generation.borrow())?;
         match self.control_once(lane, request.clone()).await {
-            Err(error) if matches!(error, ClientError::Transport(_)) => {
+            Err(ClientError::Transport(_)) => {
                 self.register(lane).await?;
                 let request = set_generation(request, *self.generation.borrow())?;
                 self.control_once(lane, request).await
@@ -454,7 +443,7 @@ impl NativeController {
     async fn control_once(
         &self,
         lane: &mut ControlLane,
-        request: Box<NativeRequestPayload>,
+        request: NativeRequestPayload,
     ) -> Result<CommandResult, ClientError> {
         let request_id = lane.request_id();
         // Taking ownership before awaiting makes cancellation safe: the
@@ -502,9 +491,9 @@ impl NativeController {
 }
 
 fn set_generation(
-    request: Box<NativeRequestPayload>,
+    request: NativeRequestPayload,
     current: u64,
-) -> Result<Box<NativeRequestPayload>, ClientError> {
+) -> Result<NativeRequestPayload, ClientError> {
     let generation = match request.request() {
         NativeRequest::Complete { generation, .. }
         | NativeRequest::Publish { generation, .. }
@@ -551,10 +540,27 @@ fn transport_error(error: AttachError) -> ClientError {
     }
 }
 
+/// Return a usable transport only after validating the broker's generation.
+async fn register_connection(
+    socket: &Path,
+    request_id: u32,
+    request: NativeRequestPayload,
+) -> Result<(Connection, u64), ClientError> {
+    let mut connection = Connection::connect(socket).await.map_err(transport_error)?;
+    let registration: Registration =
+        json_reply(round_trip(&mut connection, request_id, request).await?)?;
+    if registration.generation == 0 {
+        return Err(ClientError::Protocol(
+            "registration returned a zero generation".into(),
+        ));
+    }
+    Ok((connection, registration.generation))
+}
+
 async fn round_trip(
     connection: &mut Connection,
     request_id: u32,
-    request: Box<NativeRequestPayload>,
+    request: NativeRequestPayload,
 ) -> Result<CommandResult, ClientError> {
     let mutation = matches!(
         request.request(),
@@ -591,7 +597,7 @@ fn json_reply<T: DeserializeOwned>(result: CommandResult) -> Result<T, ClientErr
     }
 }
 
-fn ok_reply(result: CommandResult) -> Result<(), ClientError> {
+fn ok_reply(result: &CommandResult) -> Result<(), ClientError> {
     match result {
         CommandResult::Ok => Ok(()),
         _ => Err(ClientError::Protocol(

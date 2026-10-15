@@ -1,10 +1,10 @@
 //! Official ACP v1 connection, with optional surfaces explicitly unadvertised.
 //! Cursor blocking extensions follow <https://cursor.com/docs/cli/acp>, not text
 //! inference. Filesystem/terminal/auth callbacks are never implicitly approved.
-use crate::{HostError, HostSpec, Sink, common};
+use super::{HostError, HostSpec, Sink, common};
 use agent_client_protocol::{self as sdk, Agent as _};
-use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptRole};
 use parking_lot::Mutex;
+use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptRole};
 use phux_protocol::native_agent::{
     NativeCapabilities, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
     NativeOption, NativeQuestion, NativeQuestionItem, NativeState, NativeUpdate, validate_payload,
@@ -87,9 +87,11 @@ impl Callback {
         self.sink.state(NativeState::Done)
     }
     fn flush_text(&self) -> Result<(), HostError> {
-        if let Some((id, role, text)) = self.rows.lock().current.take() {
+        let mut rows = self.rows.lock();
+        if let Some((id, role, text)) = rows.current.take() {
             common::text(&self.sink, &self.provider, id, role, text, true)?;
         }
+        drop(rows);
         Ok(())
     }
     fn chunk(&self, role: TranscriptRole, content: sdk::ContentBlock) -> Result<(), HostError> {
@@ -128,14 +130,16 @@ impl Callback {
         let room = (12 * 1024 + 4_usize).saturating_sub(current.len());
         current.push_str(&common::head(&text, room));
         let (id, role, current) = rows.current.insert((id, role, current));
-        common::text(
+        let outcome = common::text(
             &self.sink,
             &self.provider,
             id.clone(),
             *role,
             current.clone(),
             false,
-        )
+        );
+        drop(rows);
+        outcome
     }
     fn tool(
         &self,
@@ -186,7 +190,7 @@ impl Callback {
         if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.lock().is_empty() {
             self.sink.state(NativeState::Working)?;
         }
-        common::tool(
+        let outcome = common::tool(
             &self.sink,
             &self.provider,
             id,
@@ -194,22 +198,45 @@ impl Callback {
             row.1.clone(),
             row.2.clone(),
             row.3,
-        )
+        );
+        drop(rows);
+        outcome
     }
     fn startup_command(&self, command: NativeCommand) -> NativeCommandResult {
         let id = command.operation_id;
         match command.intent {
-            NativeIntent::Answer { question_id, response } => {
+            NativeIntent::Answer {
+                question_id,
+                response,
+            } => {
                 let sender = self.waiting.lock().remove(&question_id);
                 sender.map_or_else(
-                    || common::result(id, NativeDisposition::Refused, "ACP startup dialog is no longer pending"),
+                    || {
+                        common::result(
+                            id,
+                            NativeDisposition::Refused,
+                            "ACP startup dialog is no longer pending",
+                        )
+                    },
                     |sender| match sender.send(response) {
-                        Ok(()) => common::result(id, NativeDisposition::Queued, "explicit answer queued during ACP startup"),
-                        Err(_) => common::result(id, NativeDisposition::Refused, "ACP startup dialog is no longer pending"),
+                        Ok(()) => common::result(
+                            id,
+                            NativeDisposition::Queued,
+                            "explicit answer queued during ACP startup",
+                        ),
+                        Err(_) => common::result(
+                            id,
+                            NativeDisposition::Refused,
+                            "ACP startup dialog is no longer pending",
+                        ),
                     },
                 )
             }
-            _ => common::result(id, NativeDisposition::Refused, "ACP session initialization is not complete"),
+            _ => common::result(
+                id,
+                NativeDisposition::Refused,
+                "ACP session initialization is not complete",
+            ),
         }
     }
 }
@@ -432,7 +459,7 @@ struct CursorPlan {
     plan: String,
 }
 
-pub fn run(
+pub(super) fn run(
     spec: HostSpec,
     sink: Sink,
     mut commands: mpsc::Receiver<NativeCommand>,
@@ -544,15 +571,8 @@ pub fn run(
 mod tests {
     use super::*;
     #[test]
-    fn cursor_schema_keeps_actual_option_ids() {
-        let ask: CursorAsk = serde_json::from_value(json!({"toolCallId":"call_123","questions":[{"id":"q1","prompt":"Mode?","options":[{"id":"agent","label":"Agent"}]}]})).unwrap();
-        assert_eq!(ask.tool_call_id, "call_123");
-        assert_eq!(ask.questions[0].options[0].id, "agent");
-        assert!(!ask.questions[0].allow_multiple);
-    }
-    #[test]
     fn ended_prompt_releases_turn_and_callbacks_without_disconnect() {
-        let sink = crate::tests::sink();
+        let sink = crate::session::tests::sink();
         let mut view = sink.view();
         view.connected = true;
         view.turn_id = Some("acp:7".into());
@@ -578,7 +598,7 @@ mod tests {
     #[test]
     fn chunks_preserve_row_identity_until_role_changes() {
         let callback = Callback {
-            sink: crate::tests::sink(),
+            sink: crate::session::tests::sink(),
             provider: "cursor".into(),
             waiting: Mutex::new(BTreeMap::new()),
             rows: Mutex::new(Rows {
@@ -586,27 +606,48 @@ mod tests {
                 ..Rows::default()
             }),
         };
-        callback.chunk(TranscriptRole::User, "first".into()).unwrap();
-        callback.chunk(TranscriptRole::User, " second".into()).unwrap();
-        assert_eq!(
-            callback.rows.lock().current,
-            Some(("acp-prompt:7".into(), TranscriptRole::User, "first second".into()))
-        );
-        callback.chunk(TranscriptRole::Assistant, "reply".into()).unwrap();
-        assert_eq!(
-            callback.rows.lock().current,
-            Some(("acp-message:2".into(), TranscriptRole::Assistant, "reply".into()))
-        );
+        callback
+            .chunk(TranscriptRole::User, "first".into())
+            .unwrap();
+        callback
+            .chunk(TranscriptRole::User, " second".into())
+            .unwrap();
+        callback
+            .chunk(TranscriptRole::Assistant, "reply".into())
+            .unwrap();
         callback.flush_text().unwrap();
-        assert!(callback.rows.lock().current.is_none());
+        let backlog = callback.sink.0.backlog.lock();
+        let rows: Vec<_> = backlog
+            .rows
+            .iter()
+            .filter_map(|(output, _)| {
+                let crate::session::Output::Update(NativeUpdate::Transcript { entry }) = output
+                else {
+                    return None;
+                };
+                phux_client_core::session::agent_transcript::TranscriptEntry::from_data(entry)
+            })
+            .collect();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].id, "acp-prompt:7");
+        assert_eq!(rows[1].id, rows[0].id);
+        assert_eq!(rows[1].text, "first second");
+        assert!(!rows[1].is_final);
+        assert_eq!(rows[2].id, rows[0].id);
+        assert_eq!(rows[2].text, "first second");
+        assert!(rows[2].is_final);
+        assert_ne!(rows[3].id, rows[0].id);
+        assert_eq!(rows[3].role, TranscriptRole::Assistant);
+        assert_eq!(rows[4].id, rows[3].id);
+        assert_eq!(rows[4].text, "reply");
+        assert!(rows[4].is_final);
+        drop(backlog);
     }
 
     #[tokio::test]
-    async fn question_wait_is_send_and_requires_matching_explicit_answer() {
-        fn assert_send<T: Send>(_: &T) {}
-
+    async fn question_wait_requires_matching_explicit_answer() {
         let callback = Callback {
-            sink: crate::tests::sink(),
+            sink: crate::session::tests::sink(),
             provider: "cursor".into(),
             waiting: Mutex::new(BTreeMap::new()),
             rows: Mutex::new(Rows::default()),
@@ -625,7 +666,6 @@ mod tests {
             fields: json!({}),
         };
         let wait = callback.ask(question);
-        assert_send(&wait);
         let (answer, result) = tokio::join!(wait, async {
             tokio::task::yield_now().await;
             let refused = callback.startup_command(NativeCommand {

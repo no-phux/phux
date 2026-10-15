@@ -115,7 +115,7 @@ pub(super) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
         return result;
     }
     match request {
-        NativeRequest::Spawn { spec } => spawn(ctx, spec),
+        NativeRequest::Spawn { spec } => spawn(ctx, &spec),
         NativeRequest::Command {
             agent_session_id,
             command,
@@ -132,7 +132,16 @@ pub(super) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
             activation,
             binding_proof,
             generation,
-        } => receive(ctx, &agent_session_id, &activation, &binding_proof, generation).await,
+        } => {
+            receive(
+                ctx,
+                &agent_session_id,
+                &activation,
+                &binding_proof,
+                generation,
+            )
+            .await
+        }
         NativeRequest::Complete {
             agent_session_id,
             activation,
@@ -140,7 +149,15 @@ pub(super) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
             generation,
             result,
         } => state.with_mut(|s| {
-            complete(s, client, agent_session_id, &activation, &binding_proof, generation, result)
+            complete(
+                s,
+                client,
+                agent_session_id,
+                &activation,
+                &binding_proof,
+                generation,
+                result,
+            )
         }),
         NativeRequest::Publish {
             agent_session_id,
@@ -166,7 +183,16 @@ pub(super) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
             activation,
             binding_proof,
             generation,
-        } => close(ctx, &agent_session_id, &activation, &binding_proof, generation).await,
+        } => {
+            close(
+                ctx,
+                &agent_session_id,
+                &activation,
+                &binding_proof,
+                generation,
+            )
+            .await
+        }
     }
 }
 
@@ -213,7 +239,9 @@ fn submit_command(
     let Some(binding) = s.native_agents().bindings.get(agent) else {
         return refused_command(operation_id, "resource has no native controller");
     };
-    if s.authenticated_credential(client).is_some_and(|credential| credential.id == binding.credential) {
+    if s.authenticated_credential(client)
+        .is_some_and(|credential| credential.id == binding.credential)
+    {
         return refused_command(
             operation_id,
             "SDK model tools cannot send native input to their own provider session",
@@ -223,18 +251,24 @@ fn submit_command(
         return if prior.command == command {
             prior.result.clone()
         } else {
-            refused_command(operation_id, "operation identity conflicts with its reserved payload")
+            refused_command(
+                operation_id,
+                "operation identity conflicts with its reserved payload",
+            )
         };
     }
     let parent = binding.parent.clone();
     let Some(core_parent) = s.terminal_from_wire(&parent) else {
         return refused_command(operation_id, "native guardian is closed");
     };
-    let source_live = s.terminal_from_wire(agent)
+    let source_live = s
+        .terminal_from_wire(agent)
         .and_then(|core| s.resource_handle(core))
         .and_then(|handle| handle.agent_session().ok())
         .is_some_and(|session| !session.ended.load(std::sync::atomic::Ordering::Relaxed));
-    let guardian_live = s.registry().record(core_parent)
+    let guardian_live = s
+        .registry()
+        .record(core_parent)
         .and_then(|record| record.activation.as_ref())
         .is_some_and(|activation| activation.state.is_current());
     if !source_live || !guardian_live {
@@ -244,13 +278,23 @@ fn submit_command(
         );
     }
     let answer_requires_human = matches!(command.intent, NativeIntent::Answer { .. });
-    if native_input_blocked(s, client, core_parent, &parent, agent, answer_requires_human) {
+    if native_input_blocked(
+        s,
+        client,
+        core_parent,
+        &parent,
+        agent,
+        answer_requires_human,
+    ) {
         return s.native_agents_mut().bindings.get_mut(agent).map_or_else(
             || refused_command(operation_id, "native controller disappeared"),
             |binding| binding.refuse(command, client.0, "input authority, human permission role, or shared guardian lease refused the native command"),
         );
     }
-    let result = s.native_agents_mut().bindings.get_mut(agent)
+    let result = s
+        .native_agents_mut()
+        .bindings
+        .get_mut(agent)
         .map(|binding| binding.submit(command, client.0));
     if let Some(wake) = s.native_agents().wakes.get(agent) {
         wake.notify_waiters();
@@ -271,7 +315,8 @@ fn native_input_blocked(
         || s.is_viewer(client, parent)
         || s.is_viewer(client, agent)
         || (answer_requires_human
-            && !s.connection_grant(client)
+            && !s
+                .connection_grant(client)
                 .is_some_and(|grant| grant.kind() == phux_core::actor::PrincipalKind::Human))
 }
 
@@ -317,11 +362,15 @@ async fn receive(
         notified.as_mut().enable();
         let received = state.with_mut(|s| {
             let sealed = s.native_agents().sealed;
-            let binding = host_binding(s, ctx.client_id, agent, activation, proof, Some(generation))?;
+            let binding =
+                host_binding(s, ctx.client_id, agent, activation, proof, Some(generation))?;
             // Do not dispatch against stale questions/turns while an
             // accepted SDK update is crossing the actor/registry seam.
-            if sealed || binding.publications.back()
-                .is_some_and(|publication| publication.receipt.is_none())
+            if sealed
+                || binding
+                    .publications
+                    .back()
+                    .is_some_and(|publication| publication.receipt.is_none())
             {
                 return Ok(None);
             }
@@ -355,7 +404,9 @@ fn complete(
             Ok(binding) => binding,
             Err(error) => return error,
         };
-        let changed = binding.operations.get(&result.operation_id)
+        let changed = binding
+            .operations
+            .get(&result.operation_id)
             .is_none_or(|operation| operation.result != result);
         if let Err(error) = binding.complete(result.clone()) {
             return refusal(error);
@@ -394,7 +445,10 @@ fn close_controller(
         binding.pending.clear();
         let mut results = Vec::new();
         for operation in binding.operations.values_mut().filter(|operation| {
-            !matches!(operation.result.disposition, NativeDisposition::Completed | NativeDisposition::Refused)
+            !matches!(
+                operation.result.disposition,
+                NativeDisposition::Completed | NativeDisposition::Refused
+            )
         }) {
             operation.result.disposition = if operation.delivered {
                 NativeDisposition::Unknown
@@ -416,7 +470,8 @@ fn close_controller(
                     disposition: result.disposition,
                     detail: result.detail,
                 },
-            ).with_parent(Some(parent.clone())),
+            )
+            .with_parent(Some(parent.clone())),
         );
     }
     Ok(view)
@@ -430,9 +485,9 @@ async fn close(
     generation: u64,
 ) -> CommandResult {
     let state = &ctx.state;
-    let view = match state.with_mut(|s| {
-        close_controller(s, ctx.client_id, agent, activation, proof, generation)
-    }) {
+    let view = match state
+        .with_mut(|s| close_controller(s, ctx.client_id, agent, activation, proof, generation))
+    {
         Ok(view) => view,
         Err(error) => return error,
     };
@@ -452,7 +507,7 @@ async fn close(
     sync_ask_inventory(state, agent);
     result.map_or_else(|error| error, |_| CommandResult::Ok)
 }
-fn spawn(ctx: &CommandContext, spec: SpawnNativeAgent) -> CommandResult {
+fn spawn(ctx: &CommandContext, spec: &SpawnNativeAgent) -> CommandResult {
     spawn_transaction(ctx, spec, None).map_or_else(|error| error, |spawned| json(&spawned))
 }
 
@@ -481,7 +536,7 @@ pub(super) fn spawn_relaunch(
     let NativeRequest::Spawn { spec } = request.into_request() else {
         return refusal("invalid native relaunch request");
     };
-    match spawn_transaction(ctx, spec, Some(operation)) {
+    match spawn_transaction(ctx, &spec, Some(operation)) {
         Ok(_) => CommandResult::Accepted { operation },
         Err(error) => error,
     }
@@ -508,21 +563,31 @@ struct NativeSpawnResources {
 
 fn spawn_transaction(
     ctx: &CommandContext,
-    spec: SpawnNativeAgent,
+    spec: &SpawnNativeAgent,
     operation: Option<phux_protocol::ids::OperationId>,
 ) -> Result<SpawnedNativeAgent, CommandResult> {
-    validate_spawn_spec(&spec)?;
+    validate_spawn_spec(spec)?;
     let state = &ctx.state;
-    let target = state.with(|s| resolve_spawn_target(s, &spec))?;
-    let PreparedNativeHost { mut command, launch, recipe, public_spec } =
-        prepare_native_host(state, &spec)?;
+    let target = state.with(|s| resolve_spawn_target(s, spec))?;
+    let PreparedNativeHost {
+        mut command,
+        launch,
+        recipe,
+        public_spec,
+    } = prepare_native_host(state, spec)?;
     let mut random = [0_u8; 32];
     getrandom::fill(&mut random).map_err(|error| refusal(error.to_string()))?;
     let proof = hex::encode(random);
     let activation = hex::encode(&random[..16]);
     let delegation = delegate_native_host(ctx, target.session)?;
     let resources = match create_native_resources(
-        ctx, &spec, &target, launch, &mut command, &public_spec, operation,
+        ctx,
+        spec,
+        &target,
+        launch,
+        &mut command,
+        &public_spec,
+        operation,
     ) {
         Ok(resources) => resources,
         Err(error) => {
@@ -535,11 +600,21 @@ fn spawn_transaction(
     command.env("PHUX_NATIVE_ACTIVATION", &activation);
     command.env("PHUX_NATIVE_BINDING", &proof);
     let binding = reserved_binding(
-        &spec, recipe, &resources, &activation, proof, &delegation.credential.id,
+        spec,
+        recipe,
+        &resources,
+        &activation,
+        proof,
+        &delegation.credential.id,
     );
-    install_native_session(ctx, &spec, &resources, binding, operation);
+    install_native_session(ctx, spec, &resources, binding, operation);
     launch_native_guardian(
-        ctx, &resources, command, operation, target.existing.is_some(), &delegation.credential.id,
+        ctx,
+        &resources,
+        command,
+        operation,
+        target.existing.is_some(),
+        &delegation.credential.id,
     )?;
     Ok(SpawnedNativeAgent {
         parent: resources.parent_wire,
@@ -554,23 +629,31 @@ fn validate_spawn_spec(spec: &SpawnNativeAgent) -> Result<(), CommandResult> {
         || spec.provider.is_empty()
         || spec.command.first().is_none_or(String::is_empty)
     {
-        return Err(refusal("native backend/provider/executable is unsupported or absent"));
+        return Err(refusal(
+            "native backend/provider/executable is unsupported or absent",
+        ));
     }
     if spec.env.keys().any(|key| {
         key.starts_with("PHUX_NATIVE_")
             || matches!(key.as_str(), "PHUX_SOCKET" | "PHUX_TERMINAL_ID")
     }) {
-        return Err(refusal("native launch environment cannot override private host binding"));
+        return Err(refusal(
+            "native launch environment cannot override private host binding",
+        ));
     }
     validate_guardian_selection(spec)
 }
 
 fn validate_guardian_selection(spec: &SpawnNativeAgent) -> Result<(), CommandResult> {
     if spec.guardian.is_some() && spec.guardian_key.is_some() {
-        return Err(refusal("guardian wire id and organization key are mutually exclusive"));
+        return Err(refusal(
+            "guardian wire id and organization key are mutually exclusive",
+        ));
     }
     if spec.guardian_expected.is_some() && spec.guardian.is_none() && spec.guardian_key.is_none() {
-        return Err(refusal("an observed guardian revision requires an exact guardian target"));
+        return Err(refusal(
+            "an observed guardian revision requires an exact guardian target",
+        ));
     }
     Ok(())
 }
@@ -585,23 +668,33 @@ fn resolve_spawn_target(
             message: "native broker upgrade cut is sealed; no guardian was created".into(),
         });
     }
-    let session = s.find_session_by_name(&spec.session)
+    let session = s
+        .find_session_by_name(&spec.session)
         .ok_or_else(|| refusal("native launch requires an existing organization session"))?;
     let guardian = if let Some(wire) = &spec.guardian {
         if !wire.is_local() {
             return Err(refusal("native insertion requires a local guardian"));
         }
-        Some(s.terminal_from_wire(wire).ok_or_else(|| refusal("guardian does not exist"))?)
+        Some(
+            s.terminal_from_wire(wire)
+                .ok_or_else(|| refusal("guardian does not exist"))?,
+        )
     } else if let Some(key) = &spec.guardian_key {
-        Some(s.registry().resource_id(&crate::org_wire::core_resource_key(key))
-            .ok_or_else(|| refusal("guardian record does not exist"))?)
+        Some(
+            s.registry()
+                .resource_id(&crate::org_wire::core_resource_key(key))
+                .ok_or_else(|| refusal("guardian record does not exist"))?,
+        )
     } else {
         None
     };
     if let Some(guardian) = guardian {
         validate_existing_guardian(s, spec, session, guardian)?;
     }
-    Ok(NativeSpawnTarget { session, existing: guardian })
+    Ok(NativeSpawnTarget {
+        session,
+        existing: guardian,
+    })
 }
 
 fn validate_existing_guardian(
@@ -610,25 +703,33 @@ fn validate_existing_guardian(
     session: phux_core::ids::SessionId,
     guardian: phux_core::ids::ResourceId,
 ) -> Result<(), CommandResult> {
-    let record = s.registry().record(guardian)
+    let record = s
+        .registry()
+        .record(guardian)
         .ok_or_else(|| refusal("guardian record does not exist"))?;
     if record.kind != phux_core::ResourceKind::Terminal
         || s.registry().session_of(guardian) != Some(session)
     {
-        return Err(refusal("guardian must be a Terminal in the exact organization session"));
+        return Err(refusal(
+            "guardian must be a Terminal in the exact organization session",
+        ));
     }
     if s.resource_handle(guardian).is_some()
         || record.activation.as_ref().is_some_and(|activation| {
             activation.state.is_current() || activation.state == phux_core::ExecState::Lost
         })
     {
-        return Err(refusal("guardian has a current, lost, or retained engine; no process may be replaced"));
+        return Err(refusal(
+            "guardian has a current, lost, or retained engine; no process may be replaced",
+        ));
     }
     if let Some(expected) = spec.guardian_expected
         && crate::org_wire::core_revision(expected) != record.revision
     {
         return Err(CommandResult::Refused(crate::org_wire::refusal(
-            &phux_core::Refusal::Conflict { current: record.revision },
+            &phux_core::Refusal::Conflict {
+                current: record.revision,
+            },
         )));
     }
     Ok(())
@@ -638,7 +739,8 @@ fn prepare_native_host(
     state: &SharedState,
     spec: &SpawnNativeAgent,
 ) -> Result<PreparedNativeHost, CommandResult> {
-    let executable = state.with(crate::state::ServerState::native_host_executable)
+    let executable = state
+        .with(crate::state::ServerState::native_host_executable)
         .map_err(|error| refusal(error.to_string()))?;
     let mut command = portable_pty::CommandBuilder::new(&executable);
     command.args(["agent", "host"]);
@@ -661,8 +763,15 @@ fn prepare_native_host(
     recipe.env.clear();
     let public_spec = serde_json::to_string(&recipe).map_err(|error| refusal(error.to_string()))?;
     let mut launch = super::commands::launch_of(Some(&command));
-    launch.env.push((NATIVE_HOST_SPEC_ENV.into(), public_spec.clone()));
-    Ok(PreparedNativeHost { command, launch, recipe, public_spec })
+    launch
+        .env
+        .push((NATIVE_HOST_SPEC_ENV.into(), public_spec.clone()));
+    Ok(PreparedNativeHost {
+        command,
+        launch,
+        recipe,
+        public_spec,
+    })
 }
 
 fn delegate_native_host(
@@ -675,9 +784,13 @@ fn delegate_native_host(
         use phux_protocol::kinds::{Verb, Verbs};
         let mut verbs = Verbs::of(&[Verb::Bind]);
         if let Some(grant) = s.connection_grant(ctx.client_id) {
-            let group = s.idspace.session_wire(session).map(phux_protocol::ids::SessionId::get);
+            let group = s
+                .idspace
+                .session_wire(session)
+                .map(phux_protocol::ids::SessionId::get);
             for verb in [Verb::Inventory, Verb::Observe, Verb::Input] {
-                if grant.is_owner() || group.is_some_and(|group| grant.admits_session(verb, group)) {
+                if grant.is_owner() || group.is_some_and(|group| grant.admits_session(verb, group))
+                {
                     verbs = verbs.union(Verbs::of(&[verb]));
                 }
             }
@@ -694,7 +807,8 @@ fn delegate_native_host(
         },
         ctx.input_lane.clone(),
         &ctx.root_token,
-    ).map_err(|error| denied(error.to_string()))
+    )
+    .map_err(|error| denied(error.to_string()))
 }
 
 fn create_native_resources(
@@ -715,7 +829,8 @@ fn create_native_resources(
                 ctx.client_id,
                 operation.as_ref().map(crate::org_wire::core_operation),
                 spec.guardian_expected.map(crate::org_wire::core_revision),
-            ).map_err(|error| CommandResult::Refused(crate::org_wire::refusal(&error)))?;
+            )
+            .map_err(|error| CommandResult::Refused(crate::org_wire::refusal(&error)))?;
             parent
         } else {
             s.create_terminal(
@@ -723,7 +838,9 @@ fn create_native_resources(
                 launch,
                 phux_core::ExitPolicy::Retain,
                 &actor,
-            ).map_err(|error| CommandResult::Refused(crate::org_wire::refusal(&error)))?.1
+            )
+            .map_err(|error| CommandResult::Refused(crate::org_wire::refusal(&error)))?
+            .1
         };
         let facet = phux_core::AgentFacet {
             provider: spec.provider.clone(),
@@ -748,7 +865,12 @@ fn create_native_resources(
             "phux.native-launch/v1",
             public_spec.as_bytes().to_vec(),
         );
-        Ok(NativeSpawnResources { parent, agent, parent_wire, agent_wire })
+        Ok(NativeSpawnResources {
+            parent,
+            agent,
+            parent_wire,
+            agent_wire,
+        })
     })
 }
 
@@ -804,9 +926,18 @@ fn install_native_session(
         state.with(crate::state::ServerState::agent_log_bytes),
     );
     state.with_mut(|s| {
-        s.native_agents_mut().bindings.insert(resources.agent_wire.clone(), binding);
-        s.native_agents_mut().wakes.insert(resources.agent_wire.clone(), Arc::new(Notify::new()));
-        s.spawn_resource_actor(resources.agent, bundle.handle.clone(), token, bundle.actor.run());
+        s.native_agents_mut()
+            .bindings
+            .insert(resources.agent_wire.clone(), binding);
+        s.native_agents_mut()
+            .wakes
+            .insert(resources.agent_wire.clone(), Arc::new(Notify::new()));
+        s.spawn_resource_actor(
+            resources.agent,
+            bundle.handle.clone(),
+            token,
+            bundle.actor.run(),
+        );
         s.record_spawn(resources.parent, ctx.client_id);
         s.record_spawn(resources.agent, ctx.client_id);
         s.mark_if_viewer_session(ctx.client_id, &resources.parent_wire);
@@ -824,7 +955,11 @@ fn install_native_session(
         s.record_and_fanout(announcement);
     });
     super::client::spawn_terminal_exit_watcher(
-        state.clone(), resources.agent, Some(bundle.exit_notify), ctx.root_token.clone(), None,
+        state.clone(),
+        resources.agent,
+        Some(bundle.exit_notify),
+        ctx.root_token.clone(),
+        None,
     );
 }
 
@@ -922,17 +1057,17 @@ async fn publish(
         first_seq: accepted.first_seq,
         last_seq: accepted.last_seq,
     };
-    acknowledge_publication(&ctx.state, &agent, view, receipt, &update)
+    acknowledge_publication(&ctx.state, &agent, view, &receipt, &update)
 }
 
 fn acknowledge_publication(
     state: &SharedState,
     agent: &ResourceId,
     view: NativeView,
-    receipt: NativePublicationReceipt,
+    receipt: &NativePublicationReceipt,
     update: &NativeUpdate,
 ) -> CommandResult {
-    if let Err(error) = persist_publication(state, agent, receipt.publication_id, view, &receipt) {
+    if let Err(error) = persist_publication(state, agent, receipt.publication_id, view, receipt) {
         return CommandResult::Error {
             code: ErrorCode::Overflow,
             message: format!("native publication accepted but durable recipe pending: {error}"),
@@ -940,10 +1075,13 @@ fn acknowledge_publication(
     }
     // A question closing while the turn remains blocked must still
     // update the ask inventory, rather than leaving a stale question.
-    if matches!(update, NativeUpdate::QuestionClosed { .. } | NativeUpdate::View { .. }) {
+    if matches!(
+        update,
+        NativeUpdate::QuestionClosed { .. } | NativeUpdate::View { .. }
+    ) {
         sync_ask_inventory(state, agent);
     }
-    json(&receipt)
+    json(receipt)
 }
 
 fn reserve_publication(
@@ -952,7 +1090,11 @@ fn reserve_publication(
     fingerprint: &str,
     update: &NativeUpdate,
 ) -> Result<NativeView, CommandResult> {
-    if let Some(prior) = binding.publications.iter().find(|publication| publication.id == id) {
+    if let Some(prior) = binding
+        .publications
+        .iter()
+        .find(|publication| publication.id == id)
+    {
         if prior.fingerprint != fingerprint {
             return Err(refusal("publication identity conflicts with its payload"));
         }
@@ -961,13 +1103,21 @@ fn reserve_publication(
         }
         // The actor, not the requesting connection, owns append dedupe.
         // A cancelled/lost acknowledgment can retry exactly this identity.
-        return prior.view.clone()
+        return prior
+            .view
+            .clone()
             .ok_or_else(|| refusal("pending publication has no saved projection"));
     }
     if id <= binding.publication_high_water {
-        return Err(refusal("publication receipt expired; old identity cannot be replayed"));
+        return Err(refusal(
+            "publication receipt expired; old identity cannot be replayed",
+        ));
     }
-    if binding.publications.back().is_some_and(|publication| publication.receipt.is_none()) {
+    if binding
+        .publications
+        .back()
+        .is_some_and(|publication| publication.receipt.is_none())
+    {
         return Err(refusal("prior publication still pending"));
     }
     let view = binding.project(update).map_err(refusal)?;
@@ -1005,7 +1155,9 @@ fn encode_publication(update: &NativeUpdate, view: &NativeView) -> Result<Bytes,
             records.push(serde_json::json!({"type":"provider_raw","data":entry}));
         }
         NativeUpdate::Notice { level, text } => {
-            records.push(serde_json::json!({"type":"notification","data":{"level":level,"message":text}}));
+            records.push(
+                serde_json::json!({"type":"notification","data":{"level":level,"message":text}}),
+            );
         }
         _ => {}
     }
@@ -1030,7 +1182,9 @@ fn persist_publication(
     state.with_mut(|s| {
         s.persist_native_recipe(agent, &view)?;
         if let Some(binding) = s.native_agents_mut().bindings.get_mut(agent) {
-            if let Some(publication) = binding.publications.iter_mut()
+            if let Some(publication) = binding
+                .publications
+                .iter_mut()
                 .find(|publication| publication.id == id)
             {
                 publication.receipt = Some(receipt.clone());
@@ -1038,10 +1192,15 @@ fn persist_publication(
             }
             binding.view = view;
         }
-        let native_id = s.native_agents().bindings.get(agent)
+        let native_id = s
+            .native_agents()
+            .bindings
+            .get(agent)
             .and_then(|binding| binding.view.provider_session_id.clone());
         if let Some(core) = s.terminal_from_wire(agent)
-            && let Some(facet) = s.registry_mut().resource_mut(core)
+            && let Some(facet) = s
+                .registry_mut()
+                .resource_mut(core)
                 .and_then(|resource| resource.agent.as_mut())
         {
             facet.native_id = native_id;
@@ -1066,12 +1225,15 @@ fn persist_publication(
 fn rollback_publication(state: &SharedState, agent: &ResourceId, id: u64) {
     state.with_mut(|s| {
         if let Some(binding) = s.native_agents_mut().bindings.get_mut(agent)
-            && binding.publications.back().is_some_and(|publication| {
-                publication.id == id && publication.receipt.is_none()
-            })
+            && binding
+                .publications
+                .back()
+                .is_some_and(|publication| publication.id == id && publication.receipt.is_none())
         {
             binding.publications.pop_back();
-            binding.publication_high_water = binding.publications.back()
+            binding.publication_high_water = binding
+                .publications
+                .back()
                 .map_or(0, |publication| publication.id);
         }
         if let Some(wake) = s.native_agents().wakes.get(agent) {
@@ -1175,7 +1337,8 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
             detail: Some(match wire_command {
                 Err(message) => message,
                 Ok(_) => {
-                    "caller authority, lease, source, turn, or question changed before dispatch".into()
+                    "caller authority, lease, source, turn, or question changed before dispatch"
+                        .into()
                 }
             }),
         };

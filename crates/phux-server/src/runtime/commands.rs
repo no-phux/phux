@@ -1,6 +1,7 @@
 //! Control-plane command handlers and pane spawning.
 
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::RolePolicy;
 use phux_protocol::wire::frame::{
@@ -925,7 +926,7 @@ async fn route_command(
             match state.with(|s| super::organization::native_relaunch_spec(s, resource, *expected))
             {
                 Ok(Some(spec)) => {
-                    let result = super::native_agent::spawn_relaunch(ctx, spec, *operation).await;
+                    let result = super::native_agent::spawn_relaunch(ctx, spec, *operation);
                     send_result(out_tx, request_id, result).await;
                     return None;
                 }
@@ -1025,15 +1026,13 @@ async fn dispatch_local(
             role_policy,
             agent_after_seq,
         } => {
-            // Absent is `{ PRIMARY, NEVER }` (ADR-0127); an invalid policy
-            // was refused before routing.
-            let role = role_policy.unwrap_or_default();
-            if uses_deferred_terminal_attach(ctx, &terminal_id) {
-                // Content starts at STREAM_BIND on the stream's mailbox.
-                subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
-            } else {
-                handle_attach_terminal(ctx, &terminal_id, role, agent_after_seq).await
-            }
+            dispatch_attach_resource(
+                ctx,
+                &terminal_id,
+                role_policy.unwrap_or_default(),
+                agent_after_seq,
+            )
+            .await
         }
         Command::DetachResource { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id).await
@@ -1223,15 +1222,24 @@ async fn dispatch_local(
     }
 }
 
-fn uses_deferred_terminal_attach(ctx: &CommandContext, terminal_id: &ResourceId) -> bool {
-    // AgentSession streams keep their replay cursor and never enter the
-    // Terminal-only deferred STREAM_BIND subscription path.
+async fn dispatch_attach_resource(
+    ctx: &CommandContext,
+    terminal_id: &ResourceId,
+    role: RolePolicy,
+    agent_after_seq: Option<u64>,
+) -> CommandResult {
+    // AgentSession streams retain their replay cursor; only Terminals defer
+    // content subscription until STREAM_BIND. Kind resolution precedes routing.
     let is_terminal = ctx.state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
             .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
     });
-    ctx.defer_subscription && is_terminal
+    if ctx.defer_subscription && is_terminal {
+        subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await
+    } else {
+        handle_attach_terminal(ctx, terminal_id, role, agent_after_seq).await
+    }
 }
 
 /// The attribution a kill stamps on the `pane_closed` of everything it

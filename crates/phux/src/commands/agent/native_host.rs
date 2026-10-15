@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_agent_host::HostSpec;
+use phux_agent_host::session::HostSpec;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::SpawnNativeAgent;
 
@@ -23,7 +23,7 @@ pub(super) fn run() -> ExitCode {
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    match runtime.block_on(phux_agent_host::run(spec)) {
+    match runtime.block_on(phux_agent_host::session::run(spec)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("native agent host failed: {error}");

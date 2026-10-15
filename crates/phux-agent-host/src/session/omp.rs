@@ -1,4 +1,4 @@
-use crate::{HostError, HostSpec, Sink, common};
+use super::{HostError, HostSpec, Sink, common};
 use omp_rpc::{
     Client, ClientOptions, Event, ExtensionUiRequest, ExtensionUiResponse, RpcAgentEvent,
     RpcInbound, RpcNotification,
@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::{process::Command, sync::Arc, thread, time::Duration};
 use tokio::sync::{mpsc, watch};
 
-pub fn run(
+pub(super) fn run(
     spec: &HostSpec,
     sink: &Sink,
     mut commands: mpsc::Receiver<NativeCommand>,
@@ -189,7 +189,10 @@ fn execute(
                 common::result(id, NativeDisposition::Refused, "turn already ended")
             }
         }
-        NativeIntent::Answer { question_id, response } => {
+        NativeIntent::Answer {
+            question_id,
+            response,
+        } => {
             let _dialog = dialog.lock();
             match answer(sink, &question_id, &response) {
                 Err(error) => common::result(id, NativeDisposition::Refused, &error.to_string()),
@@ -199,7 +202,9 @@ fn execute(
                         NativeDisposition::Queued,
                         "queued to OMP SDK writer; provider consumption is not acknowledged",
                     ),
-                    Err(error) => common::result(id, NativeDisposition::Unknown, &error.to_string()),
+                    Err(error) => {
+                        common::result(id, NativeDisposition::Unknown, &error.to_string())
+                    }
                 },
             }
         }
@@ -354,7 +359,9 @@ fn project(
                 event.tool_call_id,
                 event.tool_name,
                 summary,
-                event.partial_result.map_or_else(String::new, |value| value.to_string()),
+                event
+                    .partial_result
+                    .map_or_else(String::new, |value| value.to_string()),
                 ToolStatus::Running,
             )
         }
@@ -371,7 +378,9 @@ fn project(
                 event.tool_call_id,
                 event.tool_name,
                 summary,
-                event.result.map_or_else(String::new, |value| value.to_string()),
+                event
+                    .result
+                    .map_or_else(String::new, |value| value.to_string()),
                 status,
             )
         }

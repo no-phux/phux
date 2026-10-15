@@ -1,7 +1,10 @@
 //! Own-code packet transport only. Provider execution stays inside the official
 //! Node SDKs loaded by the bridge from the parent-supplied isolated runtime.
-use crate::{HostError, HostSpec, Sink, common};
-use phux_protocol::native_agent::*;
+use super::{HostError, HostSpec, Sink, common};
+use phux_protocol::native_agent::{
+    MAX_NATIVE_PAYLOAD_BYTES, MAX_NATIVE_PENDING, NativeCapabilities, NativeCommand,
+    NativeCommandResult, NativeDisposition, NativeUpdate,
+};
 use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -54,7 +57,7 @@ impl NodeResult {
     }
 }
 pub(super) fn run(
-    spec: HostSpec,
+    spec: &HostSpec,
     sink: Sink,
     mut commands: mpsc::Receiver<NativeCommand>,
     mut shutdown: watch::Receiver<bool>,
@@ -77,7 +80,7 @@ pub(super) fn run(
     }
     let mut command = Command::new(executable);
     command.arg(bridge);
-    common::configure(&mut command, &spec);
+    common::configure(&mut command, spec);
     command
         .env("PHUX_NATIVE_PROVIDER", &spec.provider)
         .env(
@@ -97,74 +100,16 @@ pub(super) fn run(
         .stdout
         .take()
         .ok_or_else(|| HostError::Sdk("missing bridge stdout".into()))?;
-    let mut stdin = child
+    let stdin = child
         .0
         .stdin
         .take()
         .ok_or_else(|| HostError::Sdk("missing bridge stdin".into()))?;
-    let output_sink = sink.clone();
-    let reader = thread::spawn(move || -> Result<(), HostError> {
-        let mut reader = BufReader::new(stdout);
-        let mut bytes = Vec::with_capacity(16 * 1024);
-        loop {
-            bytes.clear();
-            let count = Read::by_ref(&mut reader)
-                .take((MAX_NATIVE_PAYLOAD_BYTES + 1) as u64)
-                .read_until(b'\n', &mut bytes)?;
-            if count == 0 {
-                return Ok(());
-            }
-            if bytes.len() > MAX_NATIVE_PAYLOAD_BYTES || bytes.last() != Some(&b'\n') {
-                return Err(HostError::Sdk(
-                    "bridge packet exceeds 16 KiB or has incomplete framing".into(),
-                ));
-            }
-            let packet: Packet = serde_json::from_slice(&bytes).map_err(|error| {
-                HostError::Sdk(format!("bridge stdout is not typed protocol: {error}"))
-            })?;
-            match packet {
-                Packet::Ready {
-                    provider_session_id,
-                    capabilities,
-                } => {
-                    let mut view = output_sink.view();
-                    view.connected = true;
-                    view.capabilities = capabilities;
-                    if provider_session_id.is_some() {
-                        view.provider_session_id = provider_session_id;
-                    }
-                    output_sink.update(NativeUpdate::View { view })?;
-                }
-                Packet::Update { update } => output_sink.update(update)?,
-                Packet::Result { result } => output_sink.result(result.into_native()?)?,
-                Packet::Failed { message } => return Err(HostError::Sdk(message)),
-            }
-        }
-    });
+    let reader = thread::spawn(move || read_packets(stdout, &sink));
     let (send, receive) = std::sync::mpsc::sync_channel::<NativeCommand>(MAX_NATIVE_PENDING);
     let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writer_stopping = stopping.clone();
-    let writer = thread::spawn(move || -> Result<(), HostError> {
-        while let Ok(command) = receive.recv() {
-            if writer_stopping.load(std::sync::atomic::Ordering::Acquire) {
-                break;
-            }
-            let packet = serde_json::json!({"type":"command", "operation_id":command.operation_id.to_string(), "activation":command.activation,"intent":command.intent});
-            serde_json::to_writer(&mut stdin, &packet)
-                .map_err(|error| HostError::Sdk(error.to_string()))?;
-            stdin.write_all(b"\n")?;
-            stdin.flush()?;
-        }
-        if let Err(error) = stdin
-            .write_all(b"{\"type\":\"shutdown\"}\n")
-            .and_then(|()| stdin.flush())
-        {
-            if error.kind() != std::io::ErrorKind::BrokenPipe {
-                return Err(error.into());
-            }
-        }
-        Ok(())
-    });
+    let writer = thread::spawn(move || write_commands(stdin, &receive, &writer_stopping));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -176,7 +121,7 @@ pub(super) fn run(
                     let Some(command) = command else { return Ok(()); };
                     send.try_send(command).map_err(|_| HostError::Sdk("bridge command writer unavailable or bounded queue full".into()))?;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
                     if reader.is_finished() || writer.is_finished() || child.0.try_wait()?.is_some() { return Ok(()); }
                 }
             }
@@ -192,6 +137,70 @@ pub(super) fn run(
     let read = common::join_reader(reader, "bridge reader")?;
     let write = common::join_reader(writer, "bridge writer")?;
     outcome.and(read).and(write)
+}
+
+fn read_packets(stdout: std::process::ChildStdout, sink: &Sink) -> Result<(), HostError> {
+    let mut reader = BufReader::new(stdout);
+    let mut bytes = Vec::with_capacity(16 * 1024);
+    loop {
+        bytes.clear();
+        let count = Read::by_ref(&mut reader)
+            .take((MAX_NATIVE_PAYLOAD_BYTES + 1) as u64)
+            .read_until(b'\n', &mut bytes)?;
+        if count == 0 {
+            return Ok(());
+        }
+        if bytes.len() > MAX_NATIVE_PAYLOAD_BYTES || bytes.last() != Some(&b'\n') {
+            return Err(HostError::Sdk(
+                "bridge packet exceeds 16 KiB or has incomplete framing".into(),
+            ));
+        }
+        let packet: Packet = serde_json::from_slice(&bytes).map_err(|error| {
+            HostError::Sdk(format!("bridge stdout is not typed protocol: {error}"))
+        })?;
+        match packet {
+            Packet::Ready {
+                provider_session_id,
+                capabilities,
+            } => {
+                let mut view = sink.view();
+                view.connected = true;
+                view.capabilities = capabilities;
+                if provider_session_id.is_some() {
+                    view.provider_session_id = provider_session_id;
+                }
+                sink.update(NativeUpdate::View { view })?;
+            }
+            Packet::Update { update } => sink.update(update)?,
+            Packet::Result { result } => sink.result(result.into_native()?)?,
+            Packet::Failed { message } => return Err(HostError::Sdk(message)),
+        }
+    }
+}
+
+fn write_commands(
+    mut stdin: std::process::ChildStdin,
+    receive: &std::sync::mpsc::Receiver<NativeCommand>,
+    stopping: &std::sync::atomic::AtomicBool,
+) -> Result<(), HostError> {
+    while let Ok(command) = receive.recv() {
+        if stopping.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+        let packet = serde_json::json!({"type":"command", "operation_id":command.operation_id.to_string(), "activation":command.activation,"intent":command.intent});
+        serde_json::to_writer(&mut stdin, &packet)
+            .map_err(|error| HostError::Sdk(error.to_string()))?;
+        stdin.write_all(b"\n")?;
+        stdin.flush()?;
+    }
+    if let Err(error) = stdin
+        .write_all(b"{\"type\":\"shutdown\"}\n")
+        .and_then(|()| stdin.flush())
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

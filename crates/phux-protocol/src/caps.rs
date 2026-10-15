@@ -1085,7 +1085,7 @@ pub enum ServerFeatureExt {
     /// command ends every member of a session and deletes it. Advertised
     /// only beside [`Self::Organization`].
     SessionKill = 0x0000_0020,
-    /// Dedicated SDK-owned AgentSession creation and typed native commands.
+    /// Dedicated SDK-owned `AgentSession` creation and typed native commands.
     NativeAgent = 0x0000_0040,
 }
 
