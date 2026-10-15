@@ -195,6 +195,23 @@ impl Listener for ActivityListener {
     }
 }
 
+/// Dial `target`, unless a deterministic window fixture is armed. That fixture
+/// has no server; `Runtime::connect` would still spawn the driver, and
+/// `ActivityListener` would wake GPUI's test scheduler from that thread.
+fn open_client(target: Target, control: ControlOptions) -> anyhow::Result<Client> {
+    #[cfg(test)]
+    if deterministic_dial::armed() {
+        return Ok(Runtime::embedded(control));
+    }
+    Ok(Runtime::connect(
+        target,
+        ClientOptions {
+            control,
+            ..ClientOptions::default()
+        },
+    )?)
+}
+
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
@@ -234,19 +251,16 @@ impl Connection {
         if session.is_empty() || session.len() > 4096 || session.contains('\0') {
             anyhow::bail!("InvalidSessionName");
         }
-        let client = Runtime::connect(
+        let client = open_client(
             target,
-            ClientOptions {
-                control: ControlOptions {
-                    client_name: "phux-desktop".to_owned(),
-                    viewport: (0, 0),
-                    attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
-                    attach_role: Some(RolePolicy::PRIMARY),
-                    auto_attach_foreign_spawns: false,
-                    subscribe_agent_sessions: true,
-                    ..ControlOptions::default()
-                },
-                ..ClientOptions::default()
+            ControlOptions {
+                client_name: "phux-desktop".to_owned(),
+                viewport: (0, 0),
+                attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
+                attach_role: Some(RolePolicy::PRIMARY),
+                auto_attach_foreign_spawns: false,
+                subscribe_agent_sessions: true,
+                ..ControlOptions::default()
             },
         )?;
         let mut connection = Self::from_client(client, session);
@@ -1189,6 +1203,42 @@ pub fn own_spawn(event: &Event) -> Option<&ResourceId> {
             ..
         } => Some(id),
         _ => None,
+    }
+}
+
+/// Keeps [`open_client`] on [`Runtime::embedded`] for the current thread.
+///
+/// Dropping the guard restores [`Runtime::connect`]. Unit tests run on a
+/// thread pool, so the flag is thread-local and cleared on unwind.
+#[cfg(test)]
+#[must_use = "dropping the guard starts the runtime driver again"]
+pub(crate) struct DeterministicDial;
+
+#[cfg(test)]
+mod deterministic_dial {
+    use std::cell::Cell;
+
+    use super::DeterministicDial;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    impl DeterministicDial {
+        pub(crate) fn arm() -> Self {
+            ARMED.with(|armed| armed.set(true));
+            Self
+        }
+    }
+
+    impl Drop for DeterministicDial {
+        fn drop(&mut self) {
+            ARMED.with(|armed| armed.set(false));
+        }
+    }
+
+    pub(super) fn armed() -> bool {
+        ARMED.with(Cell::get)
     }
 }
 

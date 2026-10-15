@@ -35,6 +35,11 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut TestAppContext) {
+    // The role check does not need a server. A missing socket still makes
+    // `Runtime::connect` spawn its driver, and that driver's ActivityListener
+    // wakes GPUI's TestScheduler off the test thread. Hold an embedded client
+    // for this fixture only.
+    let _dial = crate::connection::DeterministicDial::arm();
     let desktop = cx.update(|cx| {
         gpui_kit::init(cx);
         Desktop::install(cx)
