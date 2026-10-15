@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.6.0](https://github.com/no-phux/phux/compare/pi-extension-v0.5.1...pi-extension-v0.6.0) (2026-10-15)
+
+
+### Features
+
+* **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
+
 ## [0.5.1](https://github.com/no-phux/phux/compare/pi-extension-v0.5.0...pi-extension-v0.5.1) (2026-10-15)
 
 
