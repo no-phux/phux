@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
 import { CODEX_VERSION, createAdapter, questionId } from '../src/codex.js';
-import { runBridge, type OutputPacket } from '../src/bridge.js';
-import type { AdapterContext, Json, NativeQuestion, NativeUpdate } from '../src/types.js';
+import { NativeOperationLedger, runBridge, type OutputPacket } from '../src/bridge.js';
+import type { AdapterContext, Json, NativeCommand, NativeCommandResult, NativeQuestion, NativeUpdate } from '../src/types.js';
 import type { ServerRequest } from '../src/codex-protocol/generated/ServerRequest.js';
 import type { ServerNotification } from '../src/codex-protocol/generated/ServerNotification.js';
 import type { Thread } from '../src/codex-protocol/generated/v2/Thread.js';
@@ -43,10 +43,14 @@ interface FixtureOptions {
   resolveOnInterrupt?: boolean;
   closeOnPrompt?: boolean;
   completionBeforeResponse?: boolean;
+  completion?: Turn;
+  completeOnReply?: boolean;
+  interruptAcknowledgementOnly?: boolean;
 }
 
 async function openFixture(t: TestContext, options: FixtureOptions = {}) {
   const updates: NativeUpdate[] = [];
+  const results: NativeCommandResult[] = [];
   const identities: string[] = [];
   const turns: Array<string | undefined> = [];
   const connections: boolean[] = [];
@@ -61,6 +65,7 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
     const turn = ${JSON.stringify(turn)};
     const send = packet => process.stdout.write(JSON.stringify(packet) + '\\n');
     const notice = message => send({ method: 'warning', params: { threadId: thread.thread.id, message } });
+    const complete = () => send({ method: 'turn/completed', params: { threadId: thread.thread.id, turn: settings.completion ?? { ...turn, status: 'completed' } } });
     if (process.argv.includes('--version')) {
       process.stdout.write('codex-cli ' + (settings.version ?? '${CODEX_VERSION}') + '\\n');
     } else {
@@ -96,7 +101,7 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
           assert.equal(Object.hasOwn(m.params, 'sandboxPolicy'), false);
           if (settings.closeOnPrompt) { process.exit(0); return; }
           send({ method: 'turn/started', params: { threadId: thread.thread.id, turn } });
-          if (settings.completionBeforeResponse) send({ method: 'turn/completed', params: { threadId: thread.thread.id, turn: { ...turn, status: 'completed' } } });
+          if (settings.completionBeforeResponse) complete();
           send({ id: m.id, result: { turn } });
           for (const packet of settings.packets ?? []) send(packet);
         } else if (m.method === 'turn/interrupt') {
@@ -104,10 +109,11 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
           assert.equal(m.params.turnId, turn.id);
           send({ id: m.id, result: {} });
           if (settings.resolveOnInterrupt) send({ method: 'serverRequest/resolved', params: { threadId: thread.thread.id, requestId: 7 } });
-          send({ method: 'turn/completed', params: { threadId: thread.thread.id, turn: { ...turn, status: 'interrupted' } } });
+          if (!settings.interruptAcknowledgementOnly) send({ method: 'turn/completed', params: { threadId: thread.thread.id, turn: { ...turn, status: 'interrupted' } } });
         } else if (Object.hasOwn(m, 'id') && !m.method) {
           notice('reply:' + JSON.stringify(m));
           send({ method: 'serverRequest/resolved', params: { threadId: thread.thread.id, requestId: m.id } });
+          if (settings.completeOnReply) complete();
         } else throw new Error('Unexpected client packet');
       });
     }
@@ -119,7 +125,7 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
     emit: (update) => updates.push(update), identity: (id) => identities.push(id),
     turn: (id) => turns.push(id), connection: (connected) => connections.push(connected),
     closeQuestions: () => {},
-    result: () => {},
+    result: (result) => results.push(result),
     question: async (question, signal) => {
       questions.push(question);
       if (!options.question) throw new Error('Fixture has no human answer');
@@ -128,7 +134,43 @@ async function openFixture(t: TestContext, options: FixtureOptions = {}) {
   };
   const adapter = await createAdapter(context);
   t.after(() => adapter.close());
-  return { adapter, context, updates, identities, turns, questions, connections };
+  return { adapter, context, updates, results, identities, turns, questions, connections };
+}
+
+async function openOperationFixture(t: TestContext, options: FixtureOptions = {}) {
+  const fixture = await openFixture(t, options);
+  const receipts: NativeCommandResult[] = [];
+  const dispatched: string[] = [];
+  const ledger = new NativeOperationLedger(async (command) => {
+    dispatched.push(command.operation_id);
+    const intent = command.intent;
+    if (intent.type === 'answer') throw new Error('Operation fixture dispatches provider prompts and interrupts only');
+    const outcome = intent.type === 'prompt'
+      ? await fixture.adapter.prompt(intent.text, command.operation_id)
+      : await fixture.adapter.interrupt(intent.turn_id);
+    return { operation_id: command.operation_id, ...outcome };
+  }, (result) => receipts.push(result));
+  const recordResult = fixture.context.result;
+  fixture.context.result = (result) => { recordResult(result); ledger.result(result); };
+  t.after(() => ledger.close());
+  return { ...fixture, ledger, receipts, dispatched };
+}
+
+async function observedTurnEnd(updates: NativeUpdate[]): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    if (updates.some((update) => update.type === 'state' && update.state === 'done' && update.turn_id === turn.id)) return;
+    await delay(5);
+  }
+  throw new Error('Fixture did not observe the exact provider turn ending');
+}
+
+async function observedReceipt(receipts: NativeCommandResult[], operationId: string): Promise<NativeCommandResult> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const receipt = receipts.find((result) => result.operation_id === operationId);
+    if (receipt) return receipt;
+    await delay(5);
+  }
+  throw new Error('Fixture did not observe the exact native operation receipt');
 }
 
 async function observedReply(updates: NativeUpdate[]): Promise<Record<string, unknown>> {
@@ -298,6 +340,140 @@ test('does not reopen a completed turn when its turn/start response arrives late
   assert.equal((await fixture.adapter.prompt('fast turn', '9')).disposition, 'admitted');
   assert.equal(fixture.turns.at(-1), undefined);
   assert.equal(fixture.updates.filter((u) => u.type === 'state').at(-1)?.state, 'done');
+});
+
+test('completed Codex prompt receipts ignore unrelated turns and survive ledger replay and shutdown', { timeout: 10_000 }, async (t) => {
+  const opened = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<Json>();
+  const fixture = await openOperationFixture(t, {
+    packets: [
+      { method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, id: 'unrelated-turn', status: 'completed' } } },
+      { method: 'turn/completed', params: { threadId: 'unrelated-thread', turn: { ...turn, status: 'completed' } } },
+      commandPermission,
+    ],
+    completeOnReply: true,
+    question: async () => { opened.resolve(); return answer.promise; },
+  });
+  const command: NativeCommand = {
+    operation_id: '18446744073709551615', activation: fixture.context.activation,
+    intent: { type: 'prompt', text: 'Finish only the correlated provider turn' },
+  };
+  fixture.ledger.receive(command);
+  await opened.promise;
+  assert.deepEqual(fixture.results, [], 'Neither an unrelated turn nor another thread can complete this operation');
+  assert.equal(fixture.turns.at(-1), turn.id);
+  answer.resolve({ option_id: 'decline' });
+  await observedTurnEnd(fixture.updates);
+  assert.deepEqual(fixture.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [[command.operation_id, 'completed']]);
+  const terminal = fixture.results[0];
+  assert.match(terminal.detail ?? '', /turn-exact/);
+  assert.match(terminal.detail ?? '', /completed/i);
+  fixture.ledger.receive(command);
+  assert.deepEqual(fixture.receipts.at(-1), terminal);
+  const beforeShutdown = fixture.receipts.length;
+  fixture.ledger.close();
+  await fixture.adapter.close();
+  assert.equal(fixture.receipts.length, beforeShutdown, 'Shutdown must not downgrade a factual terminal receipt to unknown');
+  fixture.ledger.receive(command);
+  assert.deepEqual(fixture.receipts.at(-1), terminal);
+  assert.deepEqual(fixture.dispatched, [command.operation_id]);
+});
+
+test('failed Codex completion before turn/start response retains the exact terminal receipt without reopening or success', { timeout: 10_000 }, async (t) => {
+  const failed: Turn = {
+    ...turn, status: 'failed', completedAt: 2, durationMs: 1000,
+    error: { message: 'Fixture provider execution failed', codexErrorInfo: null, additionalDetails: null, misalignment: null },
+  };
+  const fixture = await openOperationFixture(t, {
+    completionBeforeResponse: true, completion: failed,
+    packets: [{ method: 'turn/completed', params: { threadId: thread.id, turn: failed } }],
+  });
+  const command: NativeCommand = {
+    operation_id: '9007199254740993', activation: fixture.context.activation,
+    intent: { type: 'prompt', text: 'A provider error is terminal evidence, not success' },
+  };
+  fixture.ledger.receive(command);
+  await observedTurnEnd(fixture.updates);
+  assert.equal(fixture.turns.at(-1), undefined);
+  assert.equal(fixture.updates.filter((update) => update.type === 'state').at(-1)?.state, 'done');
+  assert.deepEqual(fixture.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [[command.operation_id, 'completed']], 'The early and duplicate notification must produce one exact terminal callback');
+  const terminal = fixture.results[0];
+  assert.match(terminal.detail ?? '', /turn-exact/);
+  assert.match(terminal.detail ?? '', /failed|error/i);
+  assert.doesNotMatch(terminal.detail ?? '', /success/i);
+  fixture.ledger.receive(command);
+  assert.deepEqual(fixture.receipts.at(-1), terminal, 'A late admitted return must not overwrite the early terminal callback');
+  const beforeShutdown = fixture.receipts.length;
+  fixture.ledger.close();
+  await fixture.adapter.close();
+  assert.equal(fixture.receipts.length, beforeShutdown);
+  fixture.ledger.receive(command);
+  assert.deepEqual(fixture.receipts.at(-1), terminal);
+  assert.deepEqual(fixture.dispatched, [command.operation_id]);
+});
+
+test('Codex interrupt ACK is terminal only for its operation while the interrupted prompt and independent question retain their own lifecycles', { timeout: 10_000 }, async (t) => {
+  const opened = Promise.withResolvers<void>();
+  const permissionAnswer = Promise.withResolvers<Json>();
+  const independentAnswer = Promise.withResolvers<Json>();
+  let independentAborted = false;
+  let questionCount = 0;
+  const independent: ServerRequest = {
+    method: 'item/tool/requestUserInput', id: 'independent-after-interrupt',
+    params: { threadId: thread.id, turnId: turn.id, itemId: 'independent-item', isBlocking: false, autoResolutionMs: null,
+      questions: [{ id: 'independent-input', header: 'Input', question: 'Later?', isOther: true, isSecret: false, options: null }] },
+  };
+  const fixture = await openOperationFixture(t, {
+    packets: [commandPermission, independent], interruptAcknowledgementOnly: true,
+    completeOnReply: true, completion: { ...turn, status: 'interrupted', completedAt: 2 },
+    question: async (question, signal) => {
+      if (++questionCount === 2) opened.resolve();
+      if (question.id === questionId(commandPermission.id)) return permissionAnswer.promise;
+      signal?.addEventListener('abort', () => {
+        independentAborted = true;
+        independentAnswer.reject(new Error('Independent question closed'));
+      }, { once: true });
+      return independentAnswer.promise;
+    },
+  });
+  const prompt: NativeCommand = {
+    operation_id: '18446744073709551613', activation: fixture.context.activation,
+    intent: { type: 'prompt', text: 'Interrupt without claiming prompt success or independent answer consumption' },
+  };
+  const interrupt: NativeCommand = {
+    operation_id: '18446744073709551614', activation: fixture.context.activation,
+    intent: { type: 'interrupt', turn_id: turn.id },
+  };
+  fixture.ledger.receive(prompt);
+  await opened.promise;
+  fixture.ledger.receive(interrupt);
+  const acknowledgement = await observedReceipt(fixture.receipts, interrupt.operation_id);
+  assert.deepEqual(fixture.results, [], 'An interrupt RPC ACK is not evidence of prompt termination');
+  assert.equal(fixture.turns.at(-1), turn.id);
+  assert.equal(fixture.updates.some((update) => update.type === 'state' && update.state === 'done'), false);
+  assert.equal(acknowledgement.disposition, 'completed');
+  assert.match(acknowledgement.detail ?? '', /acknowledg/i);
+  assert.match(acknowledgement.detail ?? '', /separately|not.*terminat|awaiting.*turn\/completed/i);
+  permissionAnswer.resolve({ option_id: 'decline' });
+  await observedTurnEnd(fixture.updates);
+  assert.deepEqual(fixture.results.map(({ operation_id, disposition }) => [operation_id, disposition]),
+    [[prompt.operation_id, 'completed']]);
+  const terminal = fixture.results[0];
+  assert.match(terminal.detail ?? '', /turn-exact/);
+  assert.match(terminal.detail ?? '', /interrupted/i);
+  assert.doesNotMatch(terminal.detail ?? '', /success/i);
+  assert.equal(independentAborted, false);
+  assert.equal(fixture.updates.some((update) => update.type === 'question_closed' && update.id === questionId(independent.id)), false);
+  const beforeShutdown = fixture.receipts.length;
+  fixture.ledger.close();
+  await fixture.adapter.close();
+  assert.equal(fixture.receipts.length, beforeShutdown);
+  fixture.ledger.receive(prompt);
+  fixture.ledger.receive(interrupt);
+  assert.deepEqual(fixture.receipts.slice(-2), [terminal, acknowledgement]);
+  assert.deepEqual(fixture.dispatched, [prompt.operation_id, interrupt.operation_id]);
 });
 
 test('source loss marks connectivity false and admission unknown, never successful completion', async (t) => {
