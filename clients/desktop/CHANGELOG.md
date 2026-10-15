@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/no-phux/phux/compare/desktop-v0.11.1...desktop-v0.12.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** smooth opening and unify the main menu ([#1413](https://github.com/no-phux/phux/issues/1413)) ([c30c413](https://github.com/no-phux/phux/commit/c30c413de4765ffd2c40e1f2bcba1a380cccfbff))
+
 ## [0.11.1](https://github.com/no-phux/phux/compare/desktop-v0.11.0...desktop-v0.11.1) (2026-10-15)
 
 
