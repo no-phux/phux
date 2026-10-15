@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/no-phux/phux/compare/desktop-v0.9.0...desktop-v0.9.1) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
 ## [0.9.0](https://github.com/no-phux/phux/compare/desktop-v0.8.6...desktop-v0.9.0) (2026-10-14)
 
 
