@@ -1,4 +1,4 @@
-//! Action-dispatch tests: `run_action` arms, pickers, attention
+//! Action-dispatch tests: registry handlers, pickers, attention
 //! navigation, and session flows.
 #![allow(clippy::expect_used, reason = "tests")]
 
@@ -14,6 +14,7 @@ use toml::Value;
 use crate::attach::actions::SplitHost;
 use crate::attach::directory_picker::{DirectorySupport, ListingHost};
 use crate::attach::focus::FocusHistory;
+use crate::attach::jobs::{Job, JobDone, JobKind, Start};
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::{HostedPlacement, PluginPaneEntry};
 use crate::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir, split_at};
@@ -955,19 +956,96 @@ fn plugin_action_records_run_intent_or_bells() {
     );
     let effects = run(&action, &mut ArrangementDoc::single(tid(1)));
     assert_eq!(
-        effects.run_plugin,
-        Some(("com.example.tools".to_owned(), "summarize".to_owned()))
+        effects.job.as_ref().map(Job::kind),
+        Some(JobKind::PluginAction)
     );
     assert!(
         !effects.bell && !effects.layout_mutated,
-        "the async caller spawns the run"
+        "the effect pass starts the run"
     );
 
     let effects = run(
         &bare_action("plugin-action"),
         &mut ArrangementDoc::single(tid(1)),
     );
-    assert!(effects.bell && effects.run_plugin.is_none());
+    assert!(effects.bell && effects.job.is_none());
+}
+
+// ---- organize: a background job (ADR-0172) ---------------------------------
+
+/// A dial nothing listens on: an organize run fails at connect.
+fn dead_dial() -> crate::attach::Dial {
+    crate::attach::Dial::uds(std::path::Path::new("/nonexistent/phux-organize-test.sock"))
+}
+
+/// Run `action` with `dial` as the dedicated control dial.
+fn run_with_dial(f: &mut CtxFixture, action: &str, dial: &crate::attach::Dial) -> ActionEffects {
+    let mut ctx = f.ctx();
+    ctx.control_dial = Some(dial);
+    run_action(&bare_action(action), &mut ctx, None, &HashMap::new())
+}
+
+/// With no control dial there is nothing to run on: a toast, no job.
+#[test]
+fn organize_without_a_control_dial_toasts_and_starts_nothing() {
+    for action in ["organize", "organize-session", "organize-undo"] {
+        let mut f = CtxFixture::default();
+        let effects = f.run(&bare_action(action));
+        assert!(effects.job.is_none(), "{action}");
+        assert_eq!(f.overlays.depth(), 1, "{action} toasts why");
+        assert!(!f.overlays.top_is_passthrough(), "{action}");
+    }
+}
+
+/// Every organize action is one exclusive job: a passthrough notice when it
+/// starts, its result toast and an inventory refresh when it lands.
+#[tokio::test(flavor = "current_thread")]
+async fn organize_runs_as_a_job_noticed_now_and_toasted_when_done() {
+    let dial = dead_dial();
+    for action in ["organize", "organize-session", "organize-undo"] {
+        let mut f = CtxFixture::default();
+        let effects = run_with_dial(&mut f, action, &dial);
+        assert_eq!(
+            effects.job.as_ref().map(Job::kind),
+            Some(JobKind::Organize),
+            "{action}"
+        );
+        f.apply(effects).await;
+        assert!(
+            f.overlays.top_is_passthrough(),
+            "{action}: the run announces itself without taking the keyboard"
+        );
+        let done = f.jobs.next().await;
+        assert!(done.refresh_inventory, "{action}");
+        assert_eq!(
+            done.toast.expect("a result toast").title,
+            "Organize failed",
+            "{action}: the dead dial fails the run"
+        );
+    }
+}
+
+/// A second organize or undo while one runs is refused with a toast, and
+/// nothing new starts.
+#[tokio::test(flavor = "current_thread")]
+async fn a_second_organize_while_one_runs_is_refused() {
+    let dial = dead_dial();
+    for action in ["organize", "organize-undo"] {
+        let mut f = CtxFixture::default();
+        let (_hold, gate) = tokio::sync::oneshot::channel::<()>();
+        let running = Job::new(JobKind::Organize, async move {
+            let _ = gate.await;
+            JobDone::quiet()
+        });
+        assert!(matches!(f.jobs.start(running), Start::Running(None)));
+        let effects = run_with_dial(&mut f, action, &dial);
+        f.apply(effects).await;
+        assert_eq!(f.overlays.depth(), 1, "{action}: one toast");
+        assert!(
+            !f.overlays.top_is_passthrough(),
+            "{action}: the refusal, not the run notice"
+        );
+    }
 }
 
 fn board(placement: HostedPlacement) -> PluginPaneEntry {

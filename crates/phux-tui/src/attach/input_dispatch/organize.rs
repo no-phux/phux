@@ -1,26 +1,26 @@
 //! `organize`, `organize-session`, and `organize-undo`: the magic button
 //! (ADR-0170). The same [`phux_client::organize`] path `phux organize` runs,
 //! on the attached server's dedicated control dial, never on the
-//! output-bearing attach connection. The result is a toast.
-
-use std::sync::atomic::{AtomicBool, Ordering};
+//! output-bearing attach connection. The run is a background job
+//! (ADR-0172): a passthrough notice now, the result as a toast when it
+//! lands, then a host inventory refresh.
 
 use phux_client::organize::{self, Options, Outcome};
 use phux_config::keybind::ResolvedAction;
 
 use crate::attach::Dial;
 use crate::attach::connection::Connection;
+use crate::attach::jobs::{Job, JobDone, JobKind, Toast};
 use crate::render::overlay::ToastOverlay;
 
-use super::ctx::DispatchCtx;
-use super::effects::ActionEffects;
+use super::run_action::ActionCall;
 
 /// Plan lines a toast shows before summarizing the rest.
 const TOAST_PLAN_LINES: usize = 8;
 
 /// What the button was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Intent {
+enum Intent {
     /// Organize every pane, or only `session`'s.
     Run {
         /// Only this session's panes may move.
@@ -30,38 +30,35 @@ pub(super) enum Intent {
     Undo,
 }
 
-/// Turn the action into an [`Intent`] for the async effect pass.
-pub(super) fn queue(action: &ResolvedAction, ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
-    effects.organize = Some(match action.action.as_str() {
-        "organize-undo" => Intent::Undo,
-        "organize-session" => Intent::Run {
-            session: Some(ctx.session_name.clone()),
-        },
-        _ => Intent::Run { session: None },
-    });
+impl Intent {
+    fn of(action: &ResolvedAction, session_name: &str) -> Self {
+        match action.action.as_str() {
+            "organize-undo" => Self::Undo,
+            "organize-session" => Self::Run {
+                session: Some(session_name.to_owned()),
+            },
+            _ => Self::Run { session: None },
+        }
+    }
+
+    const fn notice(&self) -> &'static str {
+        match self {
+            Self::Undo => "Undoing the last organize run…",
+            Self::Run { .. } => "Organizing… the result will appear here.",
+        }
+    }
 }
 
-/// Whether a background run is in flight: two at once would race on the
-/// shared undo record.
-static RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// A finished background organize run, for the driver to toast.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackgroundToast {
-    /// The toast title.
-    pub title: String,
-    /// Its lines.
-    pub lines: Vec<String>,
-}
-
-/// Start the run off the input loop: a passthrough notice now, the result
-/// as a toast through `ctx.background_tx` when it lands. Without a channel
-/// (tests) the run is awaited here.
-#[allow(clippy::future_not_send, reason = "TUI state is current-thread bound")]
-pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
-    let Some(intent) = intent else {
-        return;
-    };
+/// The handler for all three actions: hand the effect pass the run as a
+/// job, or toast that there is no control dial to run it on.
+pub(in crate::attach) fn organize(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
+) {
     let Some(dial) = ctx.control_dial.cloned() else {
         ctx.overlays.push(Box::new(ToastOverlay::new(
             "Organize failed",
@@ -70,40 +67,13 @@ pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
         )));
         return;
     };
-    let Some(tx) = ctx.background_tx.cloned() else {
-        let done = perform(dial, intent).await;
-        *ctx.host_refresh_request = true;
-        ctx.overlays.push(Box::new(ToastOverlay::new(
-            done.title, done.lines, ctx.theme,
-        )));
-        return;
-    };
-    if RUNNING.swap(true, Ordering::AcqRel) {
-        ctx.overlays.push(Box::new(ToastOverlay::new(
-            "Organize",
-            vec!["An organize run is still in progress; wait for its result.".to_owned()],
-            ctx.theme,
-        )));
-        return;
-    }
-    let notice = match intent {
-        Intent::Undo => "Undoing the last organize run…",
-        Intent::Run { .. } => "Organizing… the result will appear here.",
-    };
-    ctx.overlays.push(Box::new(ToastOverlay::passthrough(
-        "Organize",
-        vec![notice.to_owned()],
-        ctx.theme,
-    )));
-    tokio::spawn(async move {
-        let done = perform(dial, intent).await;
-        RUNNING.store(false, Ordering::Release);
-        let _ = tx.send(done);
-    });
+    let intent = Intent::of(resolved, ctx.session_name);
+    let notice = Toast::new("Organize", intent.notice());
+    effects.job = Some(Job::new(JobKind::Organize, perform(dial, intent)).with_notice(notice));
 }
 
 /// Run `intent` on its own control connection to `dial`.
-async fn perform(dial: Dial, intent: Intent) -> BackgroundToast {
+async fn perform(dial: Dial, intent: Intent) -> JobDone {
     let host = matches!(dial, Dial::Uds(_)).then(phux_config::instance::local_host_name);
     let result = async {
         let mut conn = Connection::connect_dial(&dial)
@@ -116,7 +86,7 @@ async fn perform(dial: Dial, intent: Intent) -> BackgroundToast {
     }
     .await;
     let (title, lines) = result.unwrap_or_else(|error| ("Organize failed".to_owned(), vec![error]));
-    BackgroundToast { title, lines }
+    JobDone::toast(Toast::lines(title, lines)).refreshing_inventory()
 }
 
 async fn run(

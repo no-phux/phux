@@ -1,5 +1,7 @@
-//! The action interpreter: one arm per canonical action name, plus the
-//! action-finder overlay push.
+//! The action interpreter and its handlers. [`run_action`] looks the
+//! action up in the registry ([`crate::attach::action_registry::ACTIONS`])
+//! and calls the handler its row names; each handler here takes one
+//! [`ActionCall`] (ADR-0172).
 
 use std::collections::HashMap;
 
@@ -38,7 +40,7 @@ use super::pickers::{
 /// `command-palette` are entry aliases so users never have to choose between
 /// a reference modal and an executable finder. The recording marker row
 /// shows only while a recording is live.
-pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
+pub(in crate::attach) fn push_action_finder(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     let mut items = crate::attach::action_registry::palette_items(
         ctx.keybindings,
         ctx.plugin_actions,
@@ -51,93 +53,91 @@ pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
         .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
 }
 
-/// Dispatch a resolved action: one arm per canonical action name. Sync by
-/// design; the caller does the frame I/O, so a send failure never leaves
-/// layout state half-mutated.
+/// Everything a handler may read or change for one action: the action, the
+/// lent driver state, the focused pane, the read-only pane slots (lent apart
+/// from `ctx` because the driver lends `panes` mutably beside it), and the
+/// effects the async pass applies.
+pub(in crate::attach) struct ActionCall<'a, 'c> {
+    pub(super) resolved: &'a phux_config::keybind::ResolvedAction,
+    pub(super) ctx: &'a mut DispatchCtx<'c>,
+    pub(super) focused: Option<&'a ResourceId>,
+    pub(super) panes: &'a HashMap<ResourceId, PaneSlot>,
+    pub(super) effects: &'a mut ActionEffects,
+}
+
+/// A registry row's handler.
+pub(in crate::attach) type ActionHandler = fn(ActionCall<'_, '_>);
+
+/// Dispatch a resolved action through the handler its registry row names.
+/// Sync by design; the caller does the frame I/O, so a send failure never
+/// leaves layout state half-mutated.
 pub(super) fn run_action(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
-    // Read-only pane slots (the fleet reads them); passed apart from `ctx`
-    // because the driver lends `panes` mutably beside it.
     panes: &HashMap<ResourceId, PaneSlot>,
 ) -> ActionEffects {
     tracing::info!(action = %resolved.action, "input: running resolved action");
     let mut effects = ActionEffects::default();
-    let e = &mut effects;
-    match resolved.action.as_str() {
-        "split-pane" => split_pane(resolved, ctx, focused, panes, e),
-        "move-pane" => move_pane(resolved, ctx, focused, e),
-        "kill-pane" => kill_focused_pane(ctx, focused, e),
-        "close-view" => close_view(ctx, focused, e),
-        "reopen-views" => reopen_views(ctx, panes, e),
-        "take-input" => take_input(ctx, focused, e),
-        "give-input" => give_input(ctx, focused, e),
-        "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
-        "set-pane" => set_pane(resolved, ctx, focused, e),
-        "new-window" => new_window(resolved, ctx, focused, panes, e),
-        "go-to-directory" => go_to_directory(resolved, ctx, focused, panes, e),
-        "find-path" => find_path(resolved, ctx, focused, panes, e),
-        "insert-path" => insert_path(resolved, ctx, focused, panes, e),
-        "kill-window" => kill_window(resolved, ctx, e),
-        "next-window" => switch_window(ctx, e, ArrangementDoc::next),
-        "previous-window" => switch_window(ctx, e, ArrangementDoc::prev),
-        "select-window" => select_window(resolved, ctx, e),
-        "move-window" => move_window(resolved, ctx, e),
-        "rename-window" => rename_window(resolved, ctx, e),
-        "rename-session" => rename_session(resolved, ctx, e),
-        "session-actions" => super::session_management::push_actions(resolved, ctx),
-        "kill-session" | "delete-empty-session" => {
-            super::session_management::queue(resolved, ctx, e);
-        }
-        "organize" | "organize-session" | "organize-undo" => {
-            super::organize::queue(resolved, ctx, e);
-        }
-        "focus-direction" => focus_direction(resolved, ctx, e),
-        "resize-pane" => resize_pane(resolved, ctx, e),
-        "reload-config" => reload_config(e),
-        "show-help" | "command-palette" => push_action_finder(ctx),
-        "getting-started" => push_getting_started(ctx),
-        "settings" => push_settings(ctx),
-        "report-bug" => report_bug(resolved, ctx, focused, e),
-        "rec-mark" => rec_mark(resolved, e),
-        "copy-mode" => push_copy_mode(ctx, focused),
-        "context-menu" => push_context_menu(ctx, focused),
-        "window-picker" => push_window_picker(ctx, e),
-        "session-picker" => push_session_picker(ctx),
-        "agent-fleet" => push_agent_fleet(ctx, panes, e),
-        "next-attention" => next_attention(ctx, focused, panes, e),
-        "return-from-attention" => return_from_attention(ctx, e),
-        "focus-pane" => focus_pane(resolved, ctx, e),
-        "switch-session" => switch_session(resolved, ctx, e),
-        "switch-host" => switch_host(resolved, e),
-        "toggle-project-group" => toggle_project_group(resolved, e),
-        "new-session" => new_session(resolved, ctx, focused, panes, e),
-        "last-session" => last_session(ctx, e),
-        "next-session" => step_session(ctx, e, 1),
-        "previous-session" => step_session(ctx, e, -1),
-        "detach" => e.detach = true,
-        "plugin-action" => plugin_action(resolved, e),
-        "plugin-pane" => plugin_pane(resolved, ctx, focused, e),
-        "next-pane" => cycle_pane(ctx, e, actions::apply_next_pane),
-        "previous-pane" => cycle_pane(ctx, e, actions::apply_previous_pane),
-        "last-pane" => last_pane(ctx, focused, e),
-        "toggle-zoom" => toggle_zoom(ctx, e),
-        "toggle-sidebar" => toggle_sidebar(ctx, e),
-        other => {
-            tracing::debug!(action = other, "unhandled resolved action");
-        }
-    }
+    let Some(spec) = crate::attach::action_registry::find(&resolved.action) else {
+        tracing::debug!(action = %resolved.action, "unhandled resolved action");
+        return effects;
+    };
+    (spec.run)(ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects: &mut effects,
+    });
     effects
+}
+
+/// `next-window`: activate the tab after the active one, wrapping.
+pub(in crate::attach) fn next_window(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    switch_window(ctx, effects, ArrangementDoc::next);
+}
+
+/// `previous-window`: activate the tab before the active one, wrapping.
+pub(in crate::attach) fn previous_window(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    switch_window(ctx, effects, ArrangementDoc::prev);
+}
+
+/// `next-pane`: cycle focus forward through the active tab.
+pub(in crate::attach) fn next_pane(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    cycle_pane(ctx, effects, actions::apply_next_pane);
+}
+
+/// `previous-pane`: cycle focus backward through the active tab.
+pub(in crate::attach) fn previous_pane(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    cycle_pane(ctx, effects, actions::apply_previous_pane);
+}
+
+/// `next-session`: the session after this one by name.
+pub(in crate::attach) fn next_session(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    step_session(ctx, effects, 1);
+}
+
+/// `previous-session`: the session before this one by name.
+pub(in crate::attach) fn previous_session(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    step_session(ctx, effects, -1);
+}
+
+/// `detach`: the effect pass sends `DETACH`.
+pub(in crate::attach) const fn detach(ActionCall { effects, .. }: ActionCall<'_, '_>) {
+    effects.detach = true;
 }
 
 /// Open the all-session destination picker, or commit its exact selected row.
 /// Side-by-side at 0.5 is the single keyboard-fast placement policy.
-fn move_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn move_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(source) = focused.cloned() else {
         effects.bell = true;
@@ -185,12 +185,14 @@ fn move_pane(
 /// Park a `PendingSplit` and send `SPAWN_RESOURCE`; the reply handler splits.
 /// A satellite pane splits on its satellite at its cwd, applying once the
 /// relayed pane's attach succeeds; see [`split_host`] for older hubs.
-fn split_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn split_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     let Some(dir) = split_dir_arg(resolved) else {
         tracing::warn!(
@@ -336,10 +338,13 @@ fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHo
 /// Close the focused pane with one correlated `KILL_RESOURCE`. A
 /// `TerminalNotFound` refusal folds the leaf out too, so a pane whose
 /// resource died under us can still be dismissed.
-fn kill_focused_pane(
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn kill_focused_pane(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
@@ -375,10 +380,13 @@ fn focused_command(
 }
 
 /// ADR-0033: seize the focused pane's input lease (preempting any holder).
-fn take_input(
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn take_input(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     focused_command(ctx, focused, effects, |terminal_id| Command::AcquireInput {
         terminal_id,
@@ -388,10 +396,13 @@ fn take_input(
 }
 
 /// ADR-0033: release the focused pane's input lease.
-fn give_input(
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn give_input(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     focused_command(ctx, focused, effects, |terminal_id| Command::ReleaseInput {
         terminal_id,
@@ -401,11 +412,14 @@ fn give_input(
 /// ADR-0033: deliver a POSIX signal to the focused pane's process
 /// group. `freeze`/`resume` is the reversible brake; distinct from
 /// `kill-pane`, which removes the pane.
-fn signal_terminal(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn signal_terminal(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(signal) = signal_arg(resolved) else {
         tracing::warn!(
@@ -426,11 +440,14 @@ fn signal_terminal(
 
 /// Flip the focused pane's client-local mouse opt-out (ADR-0048): off means
 /// no synthesized `INPUT_MOUSE` and outer capture dropped while focused.
-fn set_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn set_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(mode) = mouse_arg(resolved) else {
         tracing::warn!(
@@ -468,12 +485,14 @@ fn set_pane(
 /// Open a new window: spawn a Terminal and park a `PendingWindow`; the reply
 /// opens and activates the window. `cwd` starts the shell there; `host`
 /// spawns on that satellite through the hub (`cwd` is then a satellite path).
-fn new_window(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn new_window(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     let request_id = ctx.take_request_id();
     let name = ctx.workspace.default_group_name();
@@ -501,12 +520,14 @@ fn new_window(
 /// Request a directory listing (`docs/spec/L3.md` §4) on [`listing_host`],
 /// starting at `path`, else the focused pane's cwd when it lives on that
 /// host, else home. Bells when the server lacks `LIST_DIRECTORY`.
-fn go_to_directory(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn go_to_directory(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     if ctx.directory_support == DirectorySupport::Unsupported {
         tracing::warn!(
@@ -538,12 +559,14 @@ fn go_to_directory(
 }
 
 /// Browse a host path while preserving the pane captured at first open.
-fn find_path(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn find_path(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     if !ctx.path_query_supported {
         effects.bell = true;
@@ -600,12 +623,14 @@ fn find_path(
     ));
 }
 
-fn insert_path(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn insert_path(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     let Some(pending) = ctx.pending_path.take() else {
         effects.bell = true;
@@ -675,10 +700,13 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
 /// folds out of its window, an emptied window goes, and the terminal keeps
 /// running and stays a member of the session. Never a kill, never a detach;
 /// with nothing left arranged the empty state offers `reopen-views`.
-fn close_view(
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn close_view(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(target) = focused.cloned() else {
         tracing::warn!("close-view: no focused view to close; dropping action");
@@ -709,10 +737,13 @@ fn close_view(
 
 /// Show every member of the session that has no view: one window each, the
 /// first of them active.
-fn reopen_views(
-    ctx: &mut DispatchCtx<'_>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn reopen_views(
+    ActionCall {
+        ctx,
+        panes,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let hidden = crate::attach::session_mirror::unarranged_members(
         ctx.session_members,
@@ -740,10 +771,13 @@ fn reopen_views(
 /// elsewhere; with the `terminals` set the confirm committed, kill exactly
 /// those, one correlated `KILL_RESOURCE` each, and let the closes fold the
 /// window away.
-fn kill_window(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn kill_window(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     match confirmed_targets(resolved) {
         Some(targets) => kill_targets(ctx, effects, targets),
@@ -881,10 +915,13 @@ fn kill_targets(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, leaves: 
 }
 
 /// Switch the client-local active window to an explicit `index` arg.
-fn select_window(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn select_window(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(index) = index_arg(resolved) else {
         tracing::warn!(args = ?resolved.args, "select-window missing/bad `index` arg");
@@ -898,10 +935,13 @@ fn select_window(
 
 /// Move the active window to `index`, else `delta` slots along, clamped.
 /// It stays active; order is shared state, so the move broadcasts.
-fn move_window(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn move_window(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let from = ctx.workspace.active;
     let last = ctx.workspace.groups.len().saturating_sub(1);
@@ -936,10 +976,13 @@ fn offset_index(from: usize, delta: i64, len: usize) -> usize {
 }
 
 /// Rename the active window, directly or through the interactive prompt.
-fn rename_window(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn rename_window(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     if ctx.workspace.active_group().is_none() {
         tracing::warn!("rename-window: no active window; dropping action");
@@ -970,10 +1013,13 @@ fn rename_window(
 
 /// Rename the attached session (`name`), or prompt for a name that commits
 /// back through here. The send happens in `apply_action_effects`.
-fn rename_session(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn rename_session(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     if let Some(name) = name_arg(resolved) {
         effects.rename_session = Some(name);
@@ -987,10 +1033,13 @@ fn rename_session(
 }
 
 /// Move focus to the neighbouring pane in the requested direction.
-fn focus_direction(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn focus_direction(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(dir) = direction_arg(resolved) else {
         tracing::warn!(args = ?resolved.args, "focus-direction missing/bad `direction` arg");
@@ -1002,10 +1051,13 @@ fn focus_direction(
 }
 
 /// Move the focused pane's boundary by `amount` along `direction`.
-fn resize_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn resize_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let (Some(dir), Some(amount)) = (direction_arg(resolved), amount_arg(resolved)) else {
         tracing::warn!(args = ?resolved.args, "resize-pane missing args");
@@ -1036,12 +1088,12 @@ fn resize_pane(
 
 /// Explicit reload; the driver re-reads after the batch because `ctx`
 /// borrows exactly the state a reload replaces.
-const fn reload_config(effects: &mut ActionEffects) {
+pub(in crate::attach) const fn reload_config(ActionCall { effects, .. }: ActionCall<'_, '_>) {
     effects.reload_config = true;
 }
 
 /// ADR-0101: open the settings page; a saved edit returns as `reload-config`.
-fn push_settings(ctx: &mut DispatchCtx<'_>) {
+pub(in crate::attach) fn push_settings(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     ctx.overlays
         .push(Box::new(crate::render::overlay::SettingsOverlay::open(
             phux_config::loader::config_path(),
@@ -1053,7 +1105,11 @@ fn push_settings(ctx: &mut DispatchCtx<'_>) {
 ///
 /// The bare chord writes an empty label. Nothing is recording when the
 /// inbox directory has no live file, and that bells.
-fn rec_mark(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+pub(in crate::attach) fn rec_mark(
+    ActionCall {
+        resolved, effects, ..
+    }: ActionCall<'_, '_>,
+) {
     let label = str_arg(resolved, "label").unwrap_or_default();
     match phux_record::post_mark(&label) {
         Ok(0) | Err(_) => effects.bell = true,
@@ -1063,11 +1119,14 @@ fn rec_mark(resolved: &phux_config::keybind::ResolvedAction, effects: &mut Actio
 
 /// Capture a local bug-report bundle, copy its path (OSC 52), and toast it.
 /// A write failure bells and toasts instead of panicking.
-fn report_bug(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn report_bug(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let screen = focused.and_then(|id| {
         let terminal = published_terminal(ctx.engine_kernel, id)?;
@@ -1139,7 +1198,7 @@ fn pane_selector(id: &ResourceId) -> String {
 }
 
 /// Push the first-run onboarding hint card.
-fn push_getting_started(ctx: &mut DispatchCtx<'_>) {
+pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     ctx.overlays
         .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
@@ -1151,7 +1210,7 @@ fn push_getting_started(ctx: &mut DispatchCtx<'_>) {
 /// phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
 /// the cursor without extending the selection unless Shift is held;
 /// mouse drag can select and copy in one gesture.
-fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
+pub(in crate::attach) fn push_copy_mode(ActionCall { ctx, focused, .. }: ActionCall<'_, '_>) {
     let pane_rect = focused_pane_rect(ctx, focused);
     let overlay = Box::new(crate::render::overlay::CopyModeOverlay::new(
         0,
@@ -1164,7 +1223,7 @@ fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
 
 /// ADR-0058: the keyboard route to the pane menu (the only one when the app
 /// owns the mouse), anchored inside the focused pane's corner.
-fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
+pub(in crate::attach) fn push_context_menu(ActionCall { ctx, focused, .. }: ActionCall<'_, '_>) {
     let rect = focused_pane_rect(ctx, focused);
     let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
     let zoomed = ctx.zoomed.is_some();
@@ -1174,7 +1233,7 @@ fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
 
 /// Push the grouped window picker (sessions as headers, one-step rows for
 /// peers with cached layouts). Bells with no rows.
-fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+pub(in crate::attach) fn push_window_picker(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
     let items = window_picker_items(
         ctx.workspace,
         ctx.peers.sessions,
@@ -1192,7 +1251,7 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// Push the session picker (grouped by host when a hub satellite or another
 /// machine is known), with a "+ New session" row, and ask the driver for a
 /// fresh host inventory.
-fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
+pub(in crate::attach) fn push_session_picker(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     let items = session_picker_rows(&ctx.peers, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
@@ -1205,10 +1264,13 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
 /// Push the live agent-fleet dashboard: every pane with its agent record,
 /// attention, and branch; peers with cached layouts list one-step rows.
 /// Bells with nothing to list.
-fn push_agent_fleet(
-    ctx: &mut DispatchCtx<'_>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn push_agent_fleet(
+    ActionCall {
+        ctx,
+        panes,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let meta = crate::attach::fleet::collect_pane_meta(
         panes,
@@ -1244,11 +1306,14 @@ fn push_agent_fleet(
 
 /// ADR-0049: focus the next asking pane (window then DFS order, wrapping),
 /// saving one return origin. No attention: bell, no origin.
-fn next_attention(
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn next_attention(
+    ActionCall {
+        ctx,
+        focused,
+        panes,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let ordered = ordered_workspace_panes(ctx.workspace);
     let current = focused.and_then(|id| ordered.iter().position(|(_, pane)| pane == id));
@@ -1277,7 +1342,9 @@ fn next_attention(
 
 /// Jump back to the saved origin, consuming it even when that pane is gone
 /// (a bell, never a sticky origin that could resolve elsewhere).
-fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+pub(in crate::attach) fn return_from_attention(
+    ActionCall { ctx, effects, .. }: ActionCall<'_, '_>,
+) {
     let Some(origin) = ctx.attention_navigation.take_origin() else {
         effects.bell = true;
         return;
@@ -1296,10 +1363,13 @@ fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects)
 
 /// Focus the pane at (window, DFS ordinal), per-client; stale coordinates
 /// bell rather than focus the wrong pane.
-fn focus_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn focus_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let (Some(win), Some(ord)) = (usize_arg(resolved, "window"), usize_arg(resolved, "pane"))
     else {
@@ -1332,10 +1402,13 @@ fn focus_pane(
 /// Re-attach to another session. Optional `window`/`pane` make it a
 /// one-step cross-session pick, `id`/`resource` pin identity, and `host`
 /// takes the [`open_satellite_session`] path.
-fn switch_session(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn switch_session(
+    ActionCall {
+        resolved,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(name) = name_arg(resolved) else {
         tracing::warn!(
@@ -1367,9 +1440,10 @@ fn switch_session(
 /// commit it.
 /// ADR-0168: `toggle-project-group { project }` — collapse or expand one
 /// project group in the sidebar. The driver owns the collapsed set.
-fn toggle_project_group(
-    resolved: &phux_config::keybind::ResolvedAction,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn toggle_project_group(
+    ActionCall {
+        resolved, effects, ..
+    }: ActionCall<'_, '_>,
 ) {
     let Some(project) = str_arg(resolved, "project") else {
         tracing::warn!(args = ?resolved.args, "toggle-project-group needs a `project` arg");
@@ -1379,7 +1453,11 @@ fn toggle_project_group(
     effects.toggle_project = Some(project);
 }
 
-fn switch_host(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+pub(in crate::attach) fn switch_host(
+    ActionCall {
+        resolved, effects, ..
+    }: ActionCall<'_, '_>,
+) {
     let (Some(host), Some(name)) = (str_arg(resolved, "host"), name_arg(resolved)) else {
         tracing::warn!(args = ?resolved.args, "switch-host needs `host` and `name` args");
         effects.bell = true;
@@ -1558,7 +1636,7 @@ fn step_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, step: i3
 }
 
 /// Switch to the session this client attached to before the current one.
-fn last_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+pub(in crate::attach) fn last_session(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
     let history: Vec<&str> = ctx
         .focus_history
         .session_names()
@@ -1577,12 +1655,14 @@ fn last_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// selector could address again is refused with a notice, not created.
 /// The seed directory and host follow the focused pane unless `cwd` or
 /// `host` is set.
-fn new_session(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn new_session(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        panes,
+        effects,
+    }: ActionCall<'_, '_>,
 ) {
     let place = spawn_place(resolved, focused, panes);
     match name_arg(resolved) {
@@ -1605,8 +1685,12 @@ fn new_session(
     }
 }
 
-/// Record a plugin action run; the async caller spawns it off the input loop.
-fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+/// Hand the effect pass a plugin action run as a background job (ADR-0172).
+pub(in crate::attach) fn plugin_action(
+    ActionCall {
+        resolved, effects, ..
+    }: ActionCall<'_, '_>,
+) {
     let (Some(plugin), Some(action)) = (str_arg(resolved, "plugin"), str_arg(resolved, "action"))
     else {
         tracing::warn!(
@@ -1616,17 +1700,20 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
         effects.bell = true;
         return;
     };
-    effects.run_plugin = Some((plugin, action));
+    effects.job = Some(crate::attach::plugin_actions::plugin_job(plugin, action));
 }
 
 /// Open a plugin `[[panes]]` entry as a Terminal via the ordinary spawn
 /// (ADR-0017): `split`/`zoomed` park a split, `tab` a window, `overlay` a
 /// floating box (ADR-0147). An unknown pair (disabled, typo) bells.
-fn plugin_pane(
-    resolved: &phux_config::keybind::ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    focused: Option<&ResourceId>,
-    effects: &mut ActionEffects,
+pub(in crate::attach) fn plugin_pane(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     let (Some(plugin), Some(pane)) = (str_arg(resolved, "plugin"), str_arg(resolved, "pane"))
     else {
@@ -1722,7 +1809,14 @@ fn cycle_pane(
 
 /// One-entry MRU jump-back, across windows; applying it records the pane
 /// left, so repeats toggle.
-fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &mut ActionEffects) {
+pub(in crate::attach) fn last_pane(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
+) {
     let Some(target) = ctx.focus_history.target(focused, ctx.workspace) else {
         effects.bell = true;
         return;
@@ -1748,7 +1842,7 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
 
 /// Zoom needs more than one pane (tmux bells); the same check permits
 /// un-zooming, since the real tree keeps its leaves.
-fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
+pub(in crate::attach) fn toggle_zoom(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
     let multi = ctx
         .workspace
         .active_group()
@@ -1764,7 +1858,7 @@ fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
 
 /// Show/hide the sidebar. Showing it where it cannot fit would change
 /// nothing on screen, so that bells instead; hiding is always allowed.
-const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
+pub(in crate::attach) const fn toggle_sidebar(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
     if !*ctx.sidebar_enabled
         && crate::attach::paint::sidebar_reservation(
             ctx.viewport.0,

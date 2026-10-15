@@ -1,18 +1,25 @@
-//! Canonical action registry: the palette's human-facing catalogue of the
-//! actions `run_action` handles.
+//! The action registry: one row per action the TUI dispatches, and the
+//! single declaration of it (ADR-0172).
 //!
-//! [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES) is the one list of
-//! names. [`REGISTRY`] gives each palette-offered action its presentation;
-//! [`NON_PALETTE_ACTIONS`] gives every other one the reason it has no row. A
-//! test asserts the two partition `ACTION_NAMES` exactly, and the generated
-//! `docs/reference/actions.md` renders from their union. Bound chords resolve
-//! from the live [`KeybindingsCfg`] at build time.
+//! Each [`ActionSpec`] carries the action's name, its reference-page
+//! description and parameters, its [`Palette`] placement (a titled row with
+//! the args it commits, or the reason it has none), and the handler
+//! `run_action` calls. The palette, the which-key labels, and the generated
+//! `docs/reference/actions.md` all render from [`ACTIONS`].
+//!
+//! The names themselves are config vocabulary and live in phux-config
+//! ([`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES)), which validates
+//! keybindings and hooks without depending on this crate; a test pins
+//! [`ACTIONS`] to that list exactly. Bound chords resolve from the live
+//! [`KeybindingsCfg`] at build time.
 
 use std::collections::BTreeMap;
 
 use phux_config::keybind::ResolvedAction;
 use phux_config::{Action, KeybindingsCfg};
 
+use super::input_dispatch::run_action::{self as run, ActionHandler};
+use super::input_dispatch::{organize, session_management};
 use super::plugin_actions::PluginActionEntry;
 use super::plugin_panes::PluginPaneEntry;
 use crate::render::overlay::select_list::SelectItem;
@@ -47,25 +54,44 @@ impl Category {
     }
 }
 
-/// A registry row: an action the palette can offer.
+/// A registry row: one dispatched action, declared once.
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
-    /// Canonical action name (matches a `run_action` arm and an
-    /// [`phux_config::vocab::ACTION_NAMES`] entry).
+    /// Canonical action name (an
+    /// [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES) entry).
     pub name: &'static str,
-    /// Short title the palette lists, in the sentence case of a menu item
-    /// (`Split right`); a trailing ellipsis marks one that asks for more.
-    pub title: &'static str,
-    /// The section the palette groups this action under.
-    pub category: Category,
     /// One-line human description for the generated actions reference.
     pub description: &'static str,
     /// The parameter surface for the generated reference page (`""` for a
     /// bare action); documentation only.
     pub params: &'static str,
-    /// Inline args the palette-committed action carries, so a row commits a
-    /// runnable action rather than a half-specified one that would bell.
-    pub args: &'static [(&'static str, ArgValue)],
+    /// Where the command palette offers it, if anywhere.
+    pub palette: Palette,
+    /// What dispatching it does.
+    pub(in crate::attach) run: ActionHandler,
+}
+
+/// An action's place in the command palette.
+#[derive(Debug, Clone, Copy)]
+pub enum Palette {
+    /// A row under `category`.
+    Row {
+        /// Short title the palette lists, in the sentence case of a menu
+        /// item (`Split right`); a trailing ellipsis marks one that asks
+        /// for more.
+        title: &'static str,
+        /// The section the row groups under.
+        category: Category,
+        /// Inline args the row commits, so it commits a runnable action
+        /// rather than a half-specified one that would bell.
+        args: &'static [(&'static str, ArgValue)],
+    },
+    /// Deliberately no row, for `reason` (rendered in the generated
+    /// reference so the omission reads as deliberate).
+    Hidden {
+        /// Why the palette has no row for it.
+        reason: &'static str,
+    },
 }
 
 /// A `const`-constructible argument value (`toml::Value` is not).
@@ -87,452 +113,604 @@ impl ArgValue {
 }
 
 impl ActionSpec {
-    /// The [`ResolvedAction`] this row commits, the same shape a keybinding
-    /// produces.
+    /// The [`ResolvedAction`] this action's palette row commits, the same
+    /// shape a keybinding produces (no args for a hidden action).
     #[must_use]
     pub fn resolved_action(&self) -> ResolvedAction {
-        let mut args = BTreeMap::new();
-        for (k, v) in self.args {
-            args.insert((*k).to_owned(), v.to_toml());
-        }
+        let args = match self.palette {
+            Palette::Row { args, .. } => args,
+            Palette::Hidden { .. } => &[],
+        };
         ResolvedAction {
             action: self.name.to_owned(),
-            args,
+            args: args
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), v.to_toml()))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    /// The palette title and section, when the palette offers this action.
+    #[must_use]
+    pub const fn palette_row(&self) -> Option<(&'static str, Category)> {
+        match self.palette {
+            Palette::Row {
+                title, category, ..
+            } => Some((title, category)),
+            Palette::Hidden { .. } => None,
         }
     }
 }
 
-/// The palette-offerable actions. Every name must have a `run_action` arm
-/// and an `ACTION_NAMES` entry (enforced by a test).
-pub const REGISTRY: &[ActionSpec] = &[
+/// The registry row named `name`, if any.
+#[must_use]
+pub fn find(name: &str) -> Option<&'static ActionSpec> {
+    ACTIONS.iter().find(|spec| spec.name == name)
+}
+
+/// Every dispatched action: the palette's rows in palette order, then the
+/// actions it deliberately omits. A test pins the names to `ACTION_NAMES`.
+pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "split-pane",
-        title: "Split right",
-        category: Category::Pane,
         description: "Split the focused pane side-by-side (vertical divider)",
         params: "`direction` = `horizontal` | `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`)",
-        args: &[("direction", ArgValue::Str("vertical"))],
+        palette: Palette::Row {
+            title: "Split right",
+            category: Category::Pane,
+            args: &[("direction", ArgValue::Str("vertical"))],
+        },
+        run: run::split_pane,
     },
     ActionSpec {
         name: "move-pane",
-        title: "Move pane…",
-        category: Category::Pane,
         description: "Move the focused pane beside another pane…",
         params: "`target` (local Terminal id; picker-supplied)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Move pane…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::move_pane,
     },
     ActionSpec {
         name: "kill-pane",
-        title: "Kill pane",
-        category: Category::Pane,
         description: "Kill the focused pane's terminal",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Kill pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::kill_focused_pane,
     },
     ActionSpec {
         name: "close-view",
-        title: "Hide pane (keeps running)",
-        category: Category::Pane,
         description: "Hide the focused pane; its terminal keeps running",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Hide pane (keeps running)",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::close_view,
     },
     ActionSpec {
         name: "reopen-views",
-        title: "Reopen hidden terminals",
-        category: Category::Window,
         description: "Show hidden terminals, one tab each",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Reopen hidden terminals",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::reopen_views,
     },
     ActionSpec {
         name: "focus-direction",
-        title: "Focus pane on the left",
-        category: Category::Pane,
         description: "Move focus to the pane on the left",
         params: "`direction` = `left` | `right` | `up` | `down`",
-        args: &[("direction", ArgValue::Str("left"))],
+        palette: Palette::Row {
+            title: "Focus pane on the left",
+            category: Category::Pane,
+            args: &[("direction", ArgValue::Str("left"))],
+        },
+        run: run::focus_direction,
     },
     ActionSpec {
         name: "resize-pane",
-        title: "Grow pane left",
-        category: Category::Pane,
         description: "Grow the focused pane to the left",
         params: "`direction` = `left` | `right` | `up` | `down`; `amount` (cells)",
-        args: &[
-            ("direction", ArgValue::Str("left")),
-            ("amount", ArgValue::Int(5)),
-        ],
+        palette: Palette::Row {
+            title: "Grow pane left",
+            category: Category::Pane,
+            args: &[
+                ("direction", ArgValue::Str("left")),
+                ("amount", ArgValue::Int(5)),
+            ],
+        },
+        run: run::resize_pane,
     },
     ActionSpec {
         name: "next-pane",
-        title: "Next pane",
-        category: Category::Pane,
         description: "Cycle focus to the next pane",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Next pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::next_pane,
     },
     ActionSpec {
         name: "next-attention",
-        title: "Next waiting pane",
-        category: Category::Pane,
         description: "Jump to the next pane waiting for an answer",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Next waiting pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::next_attention,
     },
     ActionSpec {
         name: "return-from-attention",
-        title: "Back where you were",
-        category: Category::Pane,
         description: "Return to where attention navigation started",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Back where you were",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::return_from_attention,
     },
     ActionSpec {
         name: "previous-pane",
-        title: "Previous pane",
-        category: Category::Pane,
         description: "Cycle focus to the previous pane",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Previous pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::previous_pane,
     },
     ActionSpec {
         name: "last-pane",
-        title: "Last pane",
-        category: Category::Pane,
         description: "Jump back to the previously focused pane",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Last pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::last_pane,
     },
     ActionSpec {
         name: "toggle-zoom",
-        title: "Zoom pane",
-        category: Category::Pane,
         description: "Zoom the focused pane to fill the tab (toggle)",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Zoom pane",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::toggle_zoom,
     },
     ActionSpec {
         name: "context-menu",
-        title: "Pane menu",
-        category: Category::Pane,
         description: "Open the context menu for the focused pane",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Pane menu",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::push_context_menu,
     },
     ActionSpec {
         name: "new-window",
-        title: "New tab",
-        category: Category::Window,
         description: "Open a new tab",
         params: "`cwd?` (working directory on the attached server's host)",
-        args: &[],
+        palette: Palette::Row {
+            title: "New tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::new_window,
     },
     ActionSpec {
         name: "go-to-directory",
-        title: "New tab in folder…",
-        category: Category::Window,
         description: "Browse directories on the attached server's host and open a new tab in one",
         params: "`path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory)",
-        args: &[],
+        palette: Palette::Row {
+            title: "New tab in folder…",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::go_to_directory,
     },
     ActionSpec {
         name: "find-path",
-        title: "Insert path…",
-        category: Category::Pane,
         description: "Browse or fuzzy-search host paths and insert a literal path into the focused pane",
         params: "`path?` (directory to browse; defaults to the focused pane's directory)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Insert path…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::find_path,
     },
     ActionSpec {
         name: "insert-path",
-        title: "Insert selected path",
-        category: Category::Pane,
         description: "Insert a selected host path without running the command",
         params: "`path` (selected absolute path)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Insert selected path",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::insert_path,
     },
     ActionSpec {
         name: "kill-window",
-        title: "Kill tab…",
-        category: Category::Window,
         description: "Kill the active tab's terminals…",
         params: "`terminals?` (selectors the confirm committed; omitted opens the confirm)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Kill tab…",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::kill_window,
     },
     ActionSpec {
         name: "next-window",
-        title: "Next tab",
-        category: Category::Window,
         description: "Switch to the next tab",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Next tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::next_window,
     },
     ActionSpec {
         name: "previous-window",
-        title: "Previous tab",
-        category: Category::Window,
         description: "Switch to the previous tab",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Previous tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::previous_window,
     },
     ActionSpec {
         name: "window-picker",
-        title: "Go to tab…",
-        category: Category::Window,
         description: "Pick a tab from all sessions (grouped)",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Go to tab…",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::push_window_picker,
     },
     ActionSpec {
         name: "rename-window",
-        title: "Rename tab…",
-        category: Category::Window,
         description: "Rename the active tab (interactive prompt)",
         params: "`name?` (bare opens an interactive prompt)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Rename tab…",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::rename_window,
     },
     ActionSpec {
         name: "session-picker",
-        title: "Go to session…",
-        category: Category::Session,
         description: "Browse sessions and live host availability",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Go to session…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::push_session_picker,
     },
     ActionSpec {
         name: "kill-session",
-        title: "Kill session…",
-        category: Category::Session,
         description: "Confirm ending all session work, including resources added meanwhile, and delete it",
         params: "`id`, `name` (optional pinned session; defaults to current)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Kill session…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: session_management::queue,
     },
     ActionSpec {
         name: "delete-empty-session",
-        title: "Delete empty session…",
-        category: Category::Session,
         description: "Confirm deletion of an empty session; never terminates members",
         params: "`id`, `name` (optional pinned session; defaults to current)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Delete empty session…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: session_management::queue,
     },
     ActionSpec {
         name: "organize",
-        title: "Organize everything",
-        category: Category::Session,
         description: "Put every pane in the session it belongs in (`phux organize`); moves membership only",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Organize everything",
+            category: Category::Session,
+            args: &[],
+        },
+        run: organize::organize,
     },
     ActionSpec {
         name: "organize-session",
-        title: "Organize this session",
-        category: Category::Session,
         description: "Move this session's panes to the sessions they belong in; other sessions stay",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Organize this session",
+            category: Category::Session,
+            args: &[],
+        },
+        run: organize::organize,
     },
     ActionSpec {
         name: "organize-undo",
-        title: "Undo organize",
-        category: Category::Session,
         description: "Reverse the last organize run: panes move back, renames revert, created sessions go",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Undo organize",
+            category: Category::Session,
+            args: &[],
+        },
+        run: organize::organize,
     },
     ActionSpec {
         name: "new-session",
-        title: "New session…",
-        category: Category::Session,
         description: "Create a new session and switch to it",
         params: "`name?` (bare opens an interactive prompt); `cwd?`; `host?`",
-        args: &[],
+        palette: Palette::Row {
+            title: "New session…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::new_session,
     },
     ActionSpec {
         name: "last-session",
-        title: "Last session",
-        category: Category::Session,
         description: "Switch back to the previous session",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Last session",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::last_session,
     },
     ActionSpec {
         name: "next-session",
-        title: "Next session",
-        category: Category::Session,
         description: "Switch to the next session by name",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Next session",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::next_session,
     },
     ActionSpec {
         name: "previous-session",
-        title: "Previous session",
-        category: Category::Session,
         description: "Switch to the previous session by name",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Previous session",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::previous_session,
     },
     ActionSpec {
         name: "rename-session",
-        title: "Rename session…",
-        category: Category::Session,
         description: "Rename the current session (interactive prompt)",
         params: "`name?` (bare opens an interactive prompt)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Rename session…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::rename_session,
     },
     ActionSpec {
         name: "toggle-sidebar",
-        title: "Toggle sidebar",
-        category: Category::View,
         description: "Show or hide the sidebar (toggle)",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Toggle sidebar",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::toggle_sidebar,
     },
     ActionSpec {
         name: "agent-fleet",
-        title: "Agents",
-        category: Category::View,
         description: "Every agent, its state, and whether it needs you",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Agents",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::push_agent_fleet,
     },
     ActionSpec {
         name: "settings",
-        title: "Settings",
-        category: Category::View,
         description: "Settings: browse, search, and edit every option in place",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Settings",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::push_settings,
     },
     ActionSpec {
         name: "report-bug",
-        title: "Report a bug",
-        category: Category::View,
         description: "Write a local bug report (session, logs, screen) and copy its path",
         params: "`note?` (optional free-text description)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Report a bug",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::report_bug,
     },
     ActionSpec {
         name: "rec-mark",
-        title: "Mark recording",
-        category: Category::View,
         description: "Drop an asciicast marker into the recording in progress",
         params: "`label?` (bare chord writes an empty marker)",
-        args: &[],
+        palette: Palette::Row {
+            title: "Mark recording",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::rec_mark,
     },
     ActionSpec {
         name: "getting-started",
-        title: "Getting started",
-        category: Category::View,
         description: "Getting started: detach, return, the Agents list, and command discovery",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Getting started",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::push_getting_started,
     },
     ActionSpec {
         name: "detach",
-        title: "Detach",
-        category: Category::View,
         description: "Detach this client from the session",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Detach",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::detach,
     },
     ActionSpec {
         name: "reload-config",
-        title: "Reload config",
-        category: Category::View,
         description: "Reload the config file (keybindings, theme, status bar)",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Reload config",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::reload_config,
     },
     ActionSpec {
         name: "take-input",
-        title: "Take the wheel",
-        category: Category::Pane,
         description: "Take the wheel: seize exclusive input over the focused pane",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Take the wheel",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::take_input,
     },
     ActionSpec {
         name: "give-input",
-        title: "Give back the wheel",
-        category: Category::Pane,
         description: "Give back the wheel: release the focused pane's input lease",
         params: "",
-        args: &[],
+        palette: Palette::Row {
+            title: "Give back the wheel",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::give_input,
     },
     ActionSpec {
         name: "signal-terminal",
-        title: "Freeze pane",
-        category: Category::Pane,
         description: "Signal the focused pane's process group (freeze, resume, kill)",
         params: "`signal` = `interrupt` | `freeze` | `resume` | `terminate` | `kill`",
-        args: &[("signal", ArgValue::Str("freeze"))],
+        palette: Palette::Row {
+            title: "Freeze pane",
+            category: Category::Pane,
+            args: &[("signal", ArgValue::Str("freeze"))],
+        },
+        run: run::signal_terminal,
     },
     ActionSpec {
         name: "set-pane",
-        title: "Toggle mouse capture",
-        category: Category::Pane,
         description: "Toggle mouse capture for the focused pane",
         params: "`mouse` = `on` | `off` | `toggle`",
-        args: &[("mouse", ArgValue::Str("toggle"))],
+        palette: Palette::Row {
+            title: "Toggle mouse capture",
+            category: Category::Pane,
+            args: &[("mouse", ArgValue::Str("toggle"))],
+        },
+        run: run::set_pane,
     },
-];
-
-/// A dispatched action the palette deliberately does not offer, with the
-/// reason (rendered in the generated reference).
-#[derive(Debug, Clone, Copy)]
-pub struct NonPaletteAction {
-    /// Canonical action name (matches an
-    /// [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES) entry).
-    pub name: &'static str,
-    /// One-line human description, same register as
-    /// [`ActionSpec::description`].
-    pub description: &'static str,
-    /// Parameter surface, same register as [`ActionSpec::params`].
-    pub params: &'static str,
-    /// Why the palette has no row for it (surfaced in the generated
-    /// reference so the omission reads as deliberate).
-    pub reason: &'static str,
-}
-
-/// Dispatched-but-not-palette-offered actions.
-pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
-    NonPaletteAction {
+    ActionSpec {
         name: "command-palette",
         description: "Open the fuzzy commands and help finder",
         params: "",
-        reason: "it is an entry alias for the finder, so listing it inside the finder would recurse",
+        palette: Palette::Hidden {
+            reason: "it is an entry alias for the finder, so listing it inside the finder would recurse",
+        },
+        run: run::push_action_finder,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "show-help",
         description: "Open the fuzzy commands and help finder",
         params: "",
-        reason: "it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface",
+        palette: Palette::Hidden {
+            reason: "it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface",
+        },
+        run: run::push_action_finder,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "select-window",
         description: "Focus the tab at a given index",
         params: "`index` (0-based tab position)",
-        reason: "parameterized by `index`, which the palette has no UI to \
-                 collect; the tab picker is the surface for \"jump to \
-                 tab N\"",
+        palette: Palette::Hidden {
+            reason: "parameterized by `index`, which the palette has no UI to \
+                     collect; the tab picker is the surface for \"jump to \
+                     tab N\"",
+        },
+        run: run::select_window,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "move-window",
         description: "Move the active tab to another position in the tab order",
         params: "`index` (0-based destination) or `delta` (signed slots, e.g. `-1`); \
                  clamped to the ends",
-        reason: "parameterized by direction; bound to `<` and `>` under the leader, \
-                 offered in the tab context menu, and done by dragging a tab \
-                 or a sidebar tab row",
+        palette: Palette::Hidden {
+            reason: "parameterized by direction; bound to `<` and `>` under the leader, \
+                     offered in the tab context menu, and done by dragging a tab \
+                     or a sidebar tab row",
+        },
+        run: run::move_window,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "session-actions",
         description: "Open management for the selected session row",
         params: "`id`, `name`, `host` (pinned picker identity)",
-        reason: "opened by Tab in the session picker or right-click on a sidebar session",
+        palette: Palette::Hidden {
+            reason: "opened by Tab in the session picker or right-click on a sidebar session",
+        },
+        run: session_management::push_actions,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "switch-session",
         description: "Re-attach this client to another session",
         params: "`name`; `window?` (window index to select after the \
@@ -540,64 +718,85 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
                  window); `host?` (a satellite of this hub: opens that \
                  session's active pane here through the relay instead of \
                  re-attaching)",
-        reason: "requires a `name` arg supplied by the session picker (or \
-                 the fleet's foreign rows), so a bare palette row would \
-                 have no target to act on",
+        palette: Palette::Hidden {
+            reason: "requires a `name` arg supplied by the session picker (or \
+                     the fleet's foreign rows), so a bare palette row would \
+                     have no target to act on",
+        },
+        run: run::switch_session,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "switch-host",
         description: "Re-attach this terminal to a session on another machine",
         params: "`host` (a registered host name, or `local` for this \
                  machine); `name` (the session there)",
-        reason: "requires `host` and `name` args supplied by the sidebar's \
-                 machine segments or the session picker's machine groups, \
-                 so a bare palette row would have no target to act on",
+        palette: Palette::Hidden {
+            reason: "requires `host` and `name` args supplied by the sidebar's \
+                     machine segments or the session picker's machine groups, \
+                     so a bare palette row would have no target to act on",
+        },
+        run: run::switch_host,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "toggle-project-group",
         description: "Collapse or expand one project group in the sidebar's \
                       Sessions zone (ADR-0168)",
         params: "`project` (the group's key, as the sidebar header carries it)",
-        reason: "requires the `project` arg the sidebar's group header supplies, \
-                 so a bare palette row would have no group to act on",
+        palette: Palette::Hidden {
+            reason: "requires the `project` arg the sidebar's group header supplies, \
+                     so a bare palette row would have no group to act on",
+        },
+        run: run::toggle_project_group,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "copy-mode",
         description: "Enter copy-mode on the focused pane (scrollback \
                       navigation, search, selection, yank)",
         params: "",
-        reason: "a modal input surface entered from its keybinding, not a \
-                 one-shot command the palette can commit",
+        palette: Palette::Hidden {
+            reason: "a modal input surface entered from its keybinding, not a \
+                     one-shot command the palette can commit",
+        },
+        run: run::push_copy_mode,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "plugin-action",
         description: "Run an enabled plugin's manifest action",
         params: "`plugin`, `action`",
-        reason: "its palette rows are built dynamically from enabled \
-                 plugins' manifests, one per manifest action, carrying \
-                 `plugin`/`action` args a static row could not supply",
+        palette: Palette::Hidden {
+            reason: "its palette rows are built dynamically from enabled \
+                     plugins' manifests, one per manifest action, carrying \
+                     `plugin`/`action` args a static row could not supply",
+        },
+        run: run::plugin_action,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "plugin-pane",
         description: "Open an enabled plugin's manifest pane",
         params: "`plugin`, `pane`",
-        reason: "same shape as `plugin-action`: dynamic rows from enabled \
-                 plugins' manifest `[[panes]]`, carrying `plugin`/`pane` \
-                 args",
+        palette: Palette::Hidden {
+            reason: "same shape as `plugin-action`: dynamic rows from enabled \
+                     plugins' manifest `[[panes]]`, carrying `plugin`/`pane` \
+                     args",
+        },
+        run: run::plugin_pane,
     },
-    NonPaletteAction {
+    ActionSpec {
         name: "focus-pane",
         description: "Focus a pane by window index and DFS leaf ordinal",
         params: "`window` (window index), `pane` (DFS leaf ordinal)",
-        reason: "parameterized by coordinates only the agent-fleet \
-                 dashboard's rows can supply (the `select-window` \
-                 precedent)",
+        palette: Palette::Hidden {
+            reason: "parameterized by coordinates only the agent-fleet \
+                     dashboard's rows can supply (the `select-window` \
+                     precedent)",
+        },
+        run: run::focus_pane,
     },
 ];
 
 /// The palette rows.
 ///
-/// [`REGISTRY`] grouped under [`Category`] headers, each row annotated by its
+/// The [`ACTIONS`] with a [`Palette::Row`] grouped under [`Category`] headers, each row annotated by its
 /// bound chord (nothing without one or without a config: a menu is not a
 /// table), then enabled plugins' actions and panes under a trailing
 /// **Plugin** header.
@@ -610,14 +809,18 @@ pub fn palette_items(
     let mut items = Vec::new();
     for &category in Category::ORDER {
         let mut header_pushed = false;
-        for spec in REGISTRY.iter().filter(|s| s.category == category) {
+        let rows = ACTIONS
+            .iter()
+            .filter_map(|spec| Some((spec, spec.palette_row()?)))
+            .filter(|(_, (_, section))| *section == category);
+        for (spec, (title, _)) in rows {
             if !header_pushed {
                 items.push(SelectItem::header(category.header()));
                 header_pushed = true;
             }
             let resolved = spec.resolved_action();
             items.push(
-                chord_annotated(SelectItem::new(spec.title, resolved), keybindings)
+                chord_annotated(SelectItem::new(title, resolved), keybindings)
                     .keywords(spec.name)
                     .indented(),
             );
@@ -780,49 +983,54 @@ mod tests {
         );
     }
 
-    /// [`REGISTRY`] and [`NON_PALETTE_ACTIONS`] partition `ACTION_NAMES`
-    /// exactly, so a new `run_action` arm forces a documented home.
+    /// [`ACTIONS`] declares every `ACTION_NAMES` entry exactly once and
+    /// nothing else, so config validation and dispatch agree.
     #[test]
-    fn every_action_has_exactly_one_doc_home() {
-        let dispatched: BTreeSet<&str> = phux_config::vocab::ACTION_NAMES.iter().copied().collect();
-        let registered: BTreeSet<&str> = REGISTRY.iter().map(|s| s.name).collect();
-        let non_palette: BTreeSet<&str> = NON_PALETTE_ACTIONS.iter().map(|s| s.name).collect();
-
-        // Disjoint: an action is palette-offered or reasoned-out, never both.
-        if let Some(name) = registered.intersection(&non_palette).next() {
-            panic!("`{name}` is both a REGISTRY row and a NON_PALETTE_ACTIONS entry");
-        }
-
-        // Every documented action is dispatched.
-        for name in registered.union(&non_palette) {
+    fn the_registry_declares_every_action_name_exactly_once() {
+        let names: BTreeSet<&str> = phux_config::vocab::ACTION_NAMES.iter().copied().collect();
+        assert_eq!(
+            names.len(),
+            phux_config::vocab::ACTION_NAMES.len(),
+            "ACTION_NAMES repeats a name",
+        );
+        let mut declared = BTreeSet::new();
+        for spec in ACTIONS {
             assert!(
-                dispatched.contains(name),
-                "`{name}` is documented but run_action has no arm (or ACTION_NAMES omits it)",
+                declared.insert(spec.name),
+                "`{}` is declared twice",
+                spec.name
+            );
+            assert!(
+                names.contains(spec.name),
+                "`{}` is declared but missing from phux_config::vocab::ACTION_NAMES, \
+                 so config validation would reject a binding to it",
+                spec.name,
             );
         }
-        // Every dispatched action is documented exactly once.
-        for name in &dispatched {
+        for name in &names {
             assert!(
-                registered.contains(name) || non_palette.contains(name),
-                "run_action handles `{name}` but it has no doc home \
-                 (add a REGISTRY ActionSpec or a NON_PALETTE_ACTIONS entry)",
+                declared.contains(name),
+                "`{name}` is in ACTION_NAMES but has no ActionSpec in ACTIONS",
             );
         }
     }
 
+    /// Every row documents itself, and a hidden one says why.
     #[test]
-    fn non_palette_entries_carry_description_and_reason() {
-        for spec in NON_PALETTE_ACTIONS {
+    fn every_action_is_documented() {
+        for spec in ACTIONS {
             assert!(
                 !spec.description.trim().is_empty(),
                 "`{}` has an empty description",
                 spec.name
             );
-            assert!(
-                !spec.reason.trim().is_empty(),
-                "`{}` has an empty reason",
-                spec.name
-            );
+            if let Palette::Hidden { reason } = spec.palette {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "`{}` has an empty reason",
+                    spec.name
+                );
+            }
         }
     }
 
@@ -830,10 +1038,7 @@ mod tests {
     fn signal_terminal_palette_default_is_the_reversible_freeze() {
         // ADR-0033: signals are not lease-gated server-side, so the palette
         // default must stay the reversible `freeze`.
-        let sig = REGISTRY
-            .iter()
-            .find(|s| s.name == "signal-terminal")
-            .expect("signal-terminal registered");
+        let sig = find("signal-terminal").expect("signal-terminal registered");
         assert_eq!(
             sig.resolved_action().args.get("signal"),
             Some(&toml::Value::String("freeze".to_owned())),

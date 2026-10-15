@@ -12,10 +12,11 @@ mod chrome_drag;
 mod ctx;
 mod dispatch;
 mod effects;
-mod organize;
+// The handler modules the action registry's rows name (ADR-0172).
+pub(super) mod organize;
 mod pickers;
-mod run_action;
-mod session_management;
+pub(super) mod run_action;
+pub(super) mod session_management;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -32,4 +33,3 @@ pub(super) use effects::{PendingSessionRename, encode_layout_or_log};
 pub(super) use pickers::{SESSION_PICKER_LIVE_KEY, session_picker_rows};
 
 pub(super) use dispatch::{send_replay_frames, terminal_in_alt_screen};
-pub use organize::BackgroundToast;

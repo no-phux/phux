@@ -1,12 +1,11 @@
 //! Chrome, overlays, and the status bar.
 
 use super::{
-    ChromeCtx, PaneScene, PluginRunResult, RepaintAccumulator, RepaintLevel, ResourceId,
+    ChromeCtx, JobDone, PaneScene, RepaintAccumulator, RepaintLevel, ResourceId,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay,
     adopt_config_reload, content_rect, finish_return_onboarding_after_paint, paint_active_overlay,
-    paint_chrome_in_place, paint_full_frame, paint_panes_in_place, plugin_actions,
-    push_which_key_overlay, refresh_window_chrome, sidebar_reservation,
-    sync_overlays_to_focused_pane,
+    paint_chrome_in_place, paint_full_frame, paint_panes_in_place, push_which_key_overlay,
+    refresh_window_chrome, sidebar_reservation, sync_overlays_to_focused_pane,
 };
 
 impl super::SessionLoop {
@@ -683,48 +682,32 @@ impl super::SessionLoop {
         self.drain_repaint(out, sidebar, &mut repaint);
     }
 
-    /// A background run finished: toast its result, then refresh the
-    /// inventory its moves changed.
-    pub(super) async fn on_background_done<W: crate::attach::RenderSink>(
+    /// A background job finished (ADR-0172): toast its result, and when it
+    /// changed the session graph, dirty the session chrome and ask for a
+    /// fresh host inventory.
+    pub(super) async fn on_job_done<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut crate::attach::connection::Connection,
         out: &mut W,
         sidebar: Option<SidebarReservation>,
-        done: crate::attach::input_dispatch::BackgroundToast,
+        done: JobDone,
     ) -> Result<super::Step, crate::attach::AttachError> {
-        self.overlays.push(Box::new(ToastOverlay::new(
-            done.title,
-            done.lines,
-            &self.settings.theme,
-        )));
-        self.peers.chrome_dirty = true;
-        self.session_picker_dirty = true;
-        self.paint_overlay(out, sidebar);
-        self.request_host_inventory(conn).await?;
-        Ok(super::Step::Continue)
-    }
-
-    /// A spawned plugin action finished: log it, and toast a failure.
-    pub(super) fn on_plugin_result<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-        result: &PluginRunResult,
-    ) {
-        tracing::info!(
-            plugin = %result.plugin_id,
-            action = %result.action_id,
-            ok = plugin_actions::run_succeeded(result),
-            "plugin action finished",
-        );
-        if let Some((title, lines)) = plugin_actions::failure_toast(result) {
+        if done.refresh_inventory {
+            self.peers.chrome_dirty = true;
+            self.session_picker_dirty = true;
+        }
+        if let Some(toast) = done.toast {
             self.overlays.push(Box::new(ToastOverlay::new(
-                title,
-                lines,
+                toast.title,
+                toast.lines,
                 &self.settings.theme,
             )));
             self.paint_overlay(out, sidebar);
         }
+        if done.refresh_inventory {
+            self.request_host_inventory(conn).await?;
+        }
+        Ok(super::Step::Continue)
     }
 
     /// Surface the background update check once it lands, polled on the bar

@@ -12,11 +12,12 @@ use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
 use crate::attach::directory_picker::PendingDirectory;
 use crate::attach::focus::FocusHistory;
+use crate::attach::jobs::{Job, Start};
 use crate::attach::outcome::AttachError;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
-use crate::attach::plugin_actions::PluginRunResult;
 use crate::layout::{ArrangementDoc, SplitDir};
 use crate::predict::PredictionState;
+use crate::render::overlay::ToastOverlay;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::ctx::DispatchCtx;
@@ -96,7 +97,6 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     )
     .await?;
     send_command_frames(effects.command_frames, conn).await?;
-    spawn_plugin_run(effects.run_plugin, ctx.plugin_tx);
     layout_changed |= Box::pin(apply_pane_move(
         effects.move_pane,
         ctx,
@@ -106,7 +106,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     ))
     .await;
     super::session_management::apply(effects.session_management, ctx).await;
-    super::organize::apply(effects.organize, ctx).await;
+    start_job(effects.job, ctx);
     // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
@@ -400,24 +400,20 @@ async fn send_command_frames(
     Ok(())
 }
 
-/// Spawn a plugin action as a child-process task off the input loop
-/// (ADR-0017: nothing on the wire); the driver toasts failures.
-fn spawn_plugin_run(
-    run_plugin: Option<(String, String)>,
-    plugin_tx: Option<&tokio::sync::mpsc::UnboundedSender<PluginRunResult>>,
-) {
-    let Some((plugin_id, action_id)) = run_plugin else {
+/// Start a background job (ADR-0172): its notice shows as a passthrough
+/// toast; a refusal (its kind is exclusive and already running) toasts why.
+fn start_job(job: Option<Job>, ctx: &mut DispatchCtx<'_>) {
+    let Some(job) = job else {
         return;
     };
-    let Some(tx) = plugin_tx else {
-        tracing::warn!(
-            plugin = %plugin_id,
-            action = %action_id,
-            "plugin-action dispatched with no plugin runtime channel; dropping",
-        );
-        return;
+    let toast = match ctx.jobs.start(job) {
+        Start::Running(None) => return,
+        Start::Running(Some(notice)) => {
+            ToastOverlay::passthrough(notice.title, notice.lines, ctx.theme)
+        }
+        Start::Busy(busy) => ToastOverlay::new(busy.title, busy.lines, ctx.theme),
     };
-    crate::attach::plugin_actions::spawn_plugin_action(tx.clone(), plugin_id, action_id);
+    ctx.overlays.push(Box::new(toast));
 }
 
 /// Hand an in-process re-attach to the driver via `ctx.switch_request`.
@@ -615,8 +611,9 @@ pub(super) struct ActionEffects {
     pub(super) move_pane: Option<PaneMoveIntent>,
     /// A session management request, prepared or confirmed on a control connection.
     pub(super) session_management: Option<phux_config::keybind::ResolvedAction>,
-    /// An organize request (ADR-0170), run on a control connection.
-    pub(super) organize: Option<super::organize::Intent>,
+    /// Background work to start off the input loop (ADR-0172): a plugin
+    /// action or an organize run. Its result returns as a toast.
+    pub(super) job: Option<Job>,
     /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
@@ -648,8 +645,6 @@ pub(super) struct ActionEffects {
     /// so a rejected rename cannot lie. Peers learn the new name from the
     /// same subscribed broadcast rather than waiting for a re-attach.
     pub(super) rename_session: Option<String>,
-    /// A `plugin-action` run `(plugin_id, action_id)`, spawned off the loop.
-    pub(super) run_plugin: Option<(String, String)>,
     /// A requested live config reload, run by the driver after the batch.
     pub(super) reload_config: bool,
     /// OSC 52 clipboard payload to emit on the host terminal after this

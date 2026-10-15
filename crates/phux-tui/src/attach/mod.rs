@@ -33,6 +33,8 @@ mod path_picker;
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod ghost_stress_tests;
 pub mod input_dispatch;
+// ADR-0172: background work that reports back as a toast.
+mod jobs;
 mod notify;
 mod onboarding;
 pub mod paint;

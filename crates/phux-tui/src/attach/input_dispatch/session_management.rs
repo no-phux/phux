@@ -14,10 +14,16 @@ use crate::render::{ChromeBreakpoints, Theme};
 
 use super::args::{session_id_arg, str_arg};
 use super::ctx::DispatchCtx;
-use super::effects::ActionEffects;
+use super::run_action::ActionCall;
 
 /// Tab on a session row offers operations without first attaching to it.
-pub(super) fn push_actions(action: &ResolvedAction, ctx: &mut DispatchCtx<'_>) {
+pub(in crate::attach) fn push_actions(
+    ActionCall {
+        resolved: action,
+        ctx,
+        ..
+    }: ActionCall<'_, '_>,
+) {
     let Some(name) = str_arg(action, "name") else {
         return;
     };
@@ -52,10 +58,15 @@ pub(super) fn push_actions(action: &ResolvedAction, ctx: &mut DispatchCtx<'_>) {
     )));
 }
 
-pub(super) fn queue(
-    action: &ResolvedAction,
-    ctx: &mut DispatchCtx<'_>,
-    effects: &mut ActionEffects,
+/// `kill-session` and `delete-empty-session`: queue the request for the
+/// effect pass, or say why nothing was sent.
+pub(in crate::attach) fn queue(
+    ActionCall {
+        resolved: action,
+        ctx,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
 ) {
     // Even a remote row with a colliding local id/name must never reach our dial.
     if action.args.contains_key("host") {
@@ -703,10 +714,9 @@ mod tests {
                 "switch-action".to_owned(),
                 toml::Value::String(verb.to_owned()),
             );
-            let mut ctx = fixture.ctx();
-            push_actions(&action, &mut ctx);
+            fixture.run(&action);
             let crate::render::overlay::OverlayOutcome::RunAction(selected) =
-                ctx.overlays.handle_key(&key(PhysicalKey::Enter))
+                fixture.overlays.handle_key(&key(PhysicalKey::Enter))
             else {
                 panic!("switch")
             };
@@ -725,8 +735,7 @@ mod tests {
         action.args.insert("id".to_owned(), toml::Value::Integer(1));
         for verb in ["kill-session", "delete-empty-session"] {
             verb.clone_into(&mut action.action);
-            let mut effects = ActionEffects::default();
-            queue(&action, &mut fixture.ctx(), &mut effects);
+            let effects = fixture.run(&action);
             assert!(effects.session_management.is_none());
         }
     }

@@ -160,6 +160,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0172](./0172-tui-actions-and-jobs-are-declared-once.md) A TUI action is one registry row carrying its handler, pinned by test to phux-config's `ACTION_NAMES`; background work is a `Job` on one facility with a per-kind in-flight guard, delivered to the driver's one job arm as a toast plus an optional inventory refresh.
 - [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) A plugin `[[sidebar]]` section is a fixed band between Agents and Sessions; its rows are session panes rendered from a closed token vocabulary, and a pane rows only when every token resolves.
 - [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) A plugin `overlay` pane is a Terminal in no window, drawn by the client as a modal box; any action dismisses it by killing its Terminal, and it closes when its process exits.
 - [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) While attached the TUI pushes kitty keyboard flag 1 on the host and pops it in the shared terminal reset; hosts without the protocol stay on the legacy decoder.

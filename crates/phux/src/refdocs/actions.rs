@@ -1,10 +1,10 @@
 //! The generated actions reference: every dispatcher action with its
-//! parameters, description, and palette placement, from `ACTION_NAMES` plus
-//! phux-tui's `REGISTRY` and `NON_PALETTE_ACTIONS` (a phux-tui test pins that
-//! the latter two partition the former).
+//! parameters, description, and palette placement, in `ACTION_NAMES` order
+//! from phux-tui's action registry `ACTIONS` (a phux-tui test pins the two
+//! to the same names).
 
 use phux_config::vocab::ACTION_NAMES;
-use phux_tui::attach::action_registry::{NON_PALETTE_ACTIONS, REGISTRY};
+use phux_tui::attach::action_registry::{ACTIONS, Palette, find};
 
 use super::Page;
 
@@ -32,30 +32,26 @@ pub(crate) fn page() -> Page {
          | Action | Palette | Parameters | Description |\n\
          |---|---|---|---|\n",
     );
-    for &name in ACTION_NAMES {
-        if let Some(spec) = REGISTRY.iter().find(|spec| spec.name == name) {
-            let _ = writeln!(
-                body,
-                "| `{name}` | {} | {} | {} |",
-                spec.category.header(),
-                cell(spec.params),
-                cell(spec.description),
-            );
-        } else if let Some(spec) = NON_PALETTE_ACTIONS.iter().find(|spec| spec.name == name) {
-            let _ = writeln!(
-                body,
-                "| `{name}` | — | {} | {} |",
-                cell(spec.params),
-                cell(spec.description),
-            );
-        }
-        // A name in neither inventory is unreachable: the partition test
-        // in phux-client fails first.
+    // A name with no row is unreachable: the registry test in phux-tui
+    // fails first.
+    for spec in ACTION_NAMES.iter().filter_map(|name| find(name)) {
+        let placement = spec
+            .palette_row()
+            .map_or("—", |(_, category)| category.header());
+        let _ = writeln!(
+            body,
+            "| `{}` | {placement} | {} | {} |",
+            spec.name,
+            cell(spec.params),
+            cell(spec.description),
+        );
     }
 
     body.push_str("\nWhy the dash rows have no palette entry:\n\n");
-    for spec in NON_PALETTE_ACTIONS {
-        let _ = writeln!(body, "- `{}` — {}.", spec.name, spec.reason);
+    for spec in ACTIONS {
+        if let Palette::Hidden { reason } = spec.palette {
+            let _ = writeln!(body, "- `{}` — {reason}.", spec.name);
+        }
     }
 
     Page {
@@ -78,7 +74,7 @@ mod tests {
     use super::{ACTION_NAMES, page};
 
     /// The page carries one table row per canonical action name — the
-    /// page-level face of the partition test in phux-client.
+    /// page-level face of the registry test in phux-tui.
     #[test]
     fn actions_page_has_a_row_for_every_action_name() {
         let page = page();

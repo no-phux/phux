@@ -41,6 +41,7 @@ pub(super) use crate::attach::input_dispatch::{
 /// The QUIC connection keeps one of its 128 bidi streams for control.
 pub(super) const MAX_PENDING_STREAM_BINDS: usize = 127;
 pub(super) use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
+pub(super) use crate::attach::jobs::{JobDone, Jobs};
 pub(super) use crate::attach::onboarding::{AttachClaim, AttachMoment};
 pub(super) use crate::attach::outcome::{AttachEnd, AttachError};
 pub(super) use crate::attach::paint::{
@@ -51,7 +52,6 @@ pub(super) use crate::attach::pane_state::{
     AttentionNavigation, VcsIndex, reanchor_predict_to_pane,
 };
 pub(super) use crate::attach::path_picker;
-pub(super) use crate::attach::plugin_actions::{self, PluginRunResult};
 pub(super) use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
 pub(super) use crate::attach::server_frame::{
     FrameEnv, FrameOutcome, ProjectTagFrame, attach_participants, handle_server_frame,
@@ -418,16 +418,10 @@ pub(super) struct SessionLoop {
     /// Everything derived from the config file; the reloadable subset is
     /// swapped whole by `reload_config`.
     settings: TuiSettings,
-    /// Plugin-action tasks report completion here.
-    plugin_tx: tokio::sync::mpsc::UnboundedSender<PluginRunResult>,
-    /// Receiving half; the `plugin_rx` arm toasts failures.
-    plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
-    /// Background runs (organize) report their toast here.
-    background_tx:
-        tokio::sync::mpsc::UnboundedSender<crate::attach::input_dispatch::BackgroundToast>,
-    /// Receiving half; the `background_rx` arm toasts and refreshes.
-    background_rx:
-        tokio::sync::mpsc::UnboundedReceiver<crate::attach::input_dispatch::BackgroundToast>,
+    /// Background jobs (ADR-0172) actions start; the job arm toasts each
+    /// result. The production loop shares the process's facility
+    /// ([`Jobs::process`]) so a job outlives a session switch or reconnect.
+    jobs: Jobs,
     /// A pane's QUIC stream bound after the bootstrap reflow skipped it
     /// (it had none yet); the next outcome drain sizes every restored leaf.
     bind_reflow_owed: bool,
@@ -546,6 +540,11 @@ impl SessionLoop {
         self.control_dial = Some(Box::new(dial));
     }
 
+    /// Run background jobs on `jobs` instead of this loop's own facility.
+    pub(super) fn set_jobs(&mut self, jobs: Jobs) {
+        self.jobs = jobs;
+    }
+
     /// Allocate the next L3/command correlation id.
     const fn take_request_id(&mut self) -> u32 {
         let id = self.next_request_id;
@@ -596,8 +595,6 @@ impl SessionLoop {
             settings.sidebar.width = width;
         }
         let server_features = negotiated.server_features;
-        let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
-        let (background_tx, background_rx) = tokio::sync::mpsc::unbounded_channel();
         let (hosts_tx, hosts_rx) = tokio::sync::mpsc::unbounded_channel();
         let origin = crate::attach::hosts::recorded_origin();
         if origin.is_some() {
@@ -666,10 +663,7 @@ impl SessionLoop {
             sidebar_painter: SidebarPainter::new(settings.theme)
                 .with_plugin_specs(settings.plugin_sidebar.clone())
                 .with_agents_share(settings.sidebar.agents_share),
-            plugin_tx,
-            plugin_rx,
-            background_tx,
-            background_rx,
+            jobs: Jobs::new(),
             bind_reflow_owed: false,
             _hosts_tx: hosts_tx,
             hosts_rx,

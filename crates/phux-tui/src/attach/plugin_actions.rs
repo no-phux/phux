@@ -3,8 +3,8 @@
 //! [`entries_from_manifests`] flattens the load-once manifest snapshot, the
 //! palette lists them under a "Plugin" header, [`merge_plugin_bindings`]
 //! folds their `keys` into the prefix table (user config always wins), and
-//! [`spawn_plugin_action`] runs one through the `phux-plugin` runtime off
-//! the input loop, toasting failures ([`failure_toast`]). Rows and bindings
+//! `plugin_job` runs one through the `phux-plugin` runtime off
+//! the input loop, toasting failures (`failure_toast`). Rows and bindings
 //! both commit [`PLUGIN_ACTION_NAME`], sharing the `run_action` path.
 
 use std::collections::BTreeMap;
@@ -13,7 +13,8 @@ use std::time::Duration;
 use phux_config::keybind::{ResolvedAction, Resolver};
 use phux_config::plugin::PluginManifest;
 use phux_config::{Action, KeybindingsCfg, ParamAction};
-use tokio::sync::mpsc::UnboundedSender;
+
+use super::jobs::{Job, JobDone, JobKind, Toast};
 
 /// The dispatcher action plugin palette rows and merged bindings commit
 /// (built dynamically, so exempt from the static registry).
@@ -136,8 +137,7 @@ pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEnt
     }
 }
 
-/// Completion report for one spawned plugin action, delivered to the
-/// driver's `select!` loop over the plugin-events channel.
+/// The outcome of one plugin action run, as its failure toast reads it.
 #[derive(Debug)]
 pub struct PluginRunResult {
     /// Configured plugin id.
@@ -150,32 +150,39 @@ pub struct PluginRunResult {
     pub result: Result<phux_plugin::PluginActionOutput, String>,
 }
 
-/// Run one plugin action off the input loop through
+/// One plugin action as a background job (ADR-0172), run through
 /// [`phux_plugin::run_configured_action_logged`] (the `phux config run`
-/// runtime, which also records the run for `phux plugin log`), reporting on
-/// `tx`.
-pub fn spawn_plugin_action(
-    tx: UnboundedSender<PluginRunResult>,
-    plugin_id: String,
-    action_id: String,
-) {
-    tokio::spawn(async move {
-        let config_path = phux_config::loader::config_path();
-        let request = phux_plugin::PluginActionRequest {
-            plugin_id: plugin_id.clone(),
-            action_id: action_id.clone(),
-            timeout: Some(PLUGIN_ACTION_TIMEOUT),
-            cwd: None,
-        };
-        let result = phux_plugin::run_configured_action_logged(&config_path, &request)
+/// runtime, which also records the run for `phux plugin log`). A failure
+/// finishes with its toast; a success only logs.
+pub(in crate::attach) fn plugin_job(plugin_id: String, action_id: String) -> Job {
+    Job::new(
+        JobKind::PluginAction,
+        run_plugin_action(plugin_id, action_id),
+    )
+}
+
+async fn run_plugin_action(plugin_id: String, action_id: String) -> JobDone {
+    let config_path = phux_config::loader::config_path();
+    let request = phux_plugin::PluginActionRequest {
+        plugin_id: plugin_id.clone(),
+        action_id: action_id.clone(),
+        timeout: Some(PLUGIN_ACTION_TIMEOUT),
+        cwd: None,
+    };
+    let result = PluginRunResult {
+        result: phux_plugin::run_configured_action_logged(&config_path, &request)
             .await
-            .map_err(|err| err.to_string());
-        let _ = tx.send(PluginRunResult {
-            plugin_id,
-            action_id,
-            result,
-        });
-    });
+            .map_err(|err| err.to_string()),
+        plugin_id,
+        action_id,
+    };
+    tracing::info!(
+        plugin = %result.plugin_id,
+        action = %result.action_id,
+        ok = run_succeeded(&result),
+        "plugin action finished",
+    );
+    failure_toast(&result).map_or_else(JobDone::quiet, JobDone::toast)
 }
 
 /// `true` when the run completed with exit code 0.
@@ -193,11 +200,10 @@ pub fn run_succeeded(result: &PluginRunResult) -> bool {
 /// the tail of stderr usually carries the actual error).
 const TOAST_MAX_LINES: usize = 12;
 
-/// Build the failure toast `(title, body_lines)` for a finished run, or
-/// `None` when the run succeeded (successes only log — no modal to
-/// dismiss for the happy path).
+/// Build the failure toast for a finished run, or `None` when the run
+/// succeeded (successes only log — no modal to dismiss for the happy path).
 #[must_use]
-pub fn failure_toast(result: &PluginRunResult) -> Option<(String, Vec<String>)> {
+pub(in crate::attach) fn failure_toast(result: &PluginRunResult) -> Option<Toast> {
     if run_succeeded(result) {
         return None;
     }
@@ -224,7 +230,7 @@ pub fn failure_toast(result: &PluginRunResult) -> Option<(String, Vec<String>)> 
             append_output_tail(&mut lines, "stdout", &output.stdout);
         }
     }
-    Some((title, lines))
+    Some(Toast::lines(title, lines))
 }
 
 /// Append the tail of a captured stream to `lines`, respecting
@@ -415,7 +421,7 @@ mod tests {
                 duration_ms: 1,
             }),
         };
-        let (title, lines) = failure_toast(&result).expect("failure produces a toast");
+        let Toast { title, lines } = failure_toast(&result).expect("failure produces a toast");
         assert!(title.contains("p a failed"), "title was {title}");
         assert!(lines.iter().any(|l| l.contains("exit code 2")));
         assert!(lines.iter().any(|l| l.contains("boom: file not found")));
@@ -444,7 +450,7 @@ mod tests {
                 duration_ms: 1,
             }),
         };
-        let (_, lines) = failure_toast(&result).expect("toast");
+        let lines = failure_toast(&result).expect("toast").lines;
         assert!(lines.len() <= TOAST_MAX_LINES + 1, "got {}", lines.len());
         assert!(
             lines.iter().any(|l| l.contains("line 99")),
@@ -460,7 +466,7 @@ mod tests {
             action_id: "a".to_owned(),
             result: Err("plugin \"p\" is not configured".to_owned()),
         };
-        let (_, lines) = failure_toast(&result).expect("toast");
+        let lines = failure_toast(&result).expect("toast").lines;
         assert!(lines[0].contains("not configured"));
     }
 

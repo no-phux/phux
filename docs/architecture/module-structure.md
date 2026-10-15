@@ -183,7 +183,9 @@ src/
   attach/
     driver/       — the tokio::select! lifecycle; nothing imports from it
     server_frame/ — server frames to client-side effects
-    input_dispatch/, action_registry.rs, actions.rs — keybinding pipeline
+    input_dispatch/, action_registry.rs, actions.rs — keybinding pipeline;
+                    each action is one registry row with its handler (ADR-0172)
+    jobs.rs       — background jobs and their one driver arm (ADR-0172)
     render.rs, paint.rs, repaint.rs, reflow.rs — TerminalRenderer
     pane_state.rs, fleet.rs, focus.rs, copy.rs, directory_picker.rs, ...
   render/         — ratatui chrome
