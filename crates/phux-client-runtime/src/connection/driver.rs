@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use super::io::{Io, dial};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
@@ -13,6 +14,10 @@ use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 
 use crate::control::{ControlError, InboundDelivery, Status, encode};
+
+/// How long an attached session may sit with no inbound bytes before a probe.
+/// A busy session never reaches it: any inbound frame pushes the deadline out.
+const QUIET_PROBE: Duration = Duration::from_secs(10);
 
 enum Decision {
     Stop,
@@ -278,6 +283,8 @@ struct Pump<'a> {
     signals: &'a mut Signals,
     wake: &'a Wake,
     probe_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// When a quiet attached session should send its next liveness probe.
+    quiet_probe_at: Instant,
 }
 
 impl<'a> Pump<'a> {
@@ -297,6 +304,7 @@ impl<'a> Pump<'a> {
             signals,
             wake,
             probe_deadline: None,
+            quiet_probe_at: Instant::now() + QUIET_PROBE,
         }
     }
 
@@ -347,6 +355,8 @@ impl<'a> Pump<'a> {
         // proves the peer is alive. Clear it; do not only skip start_probe.
         if !reading {
             self.probe_deadline = None;
+            // The backlog is proof of life. Don't probe the moment reads resume.
+            self.note_inbound();
         }
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
@@ -360,7 +370,30 @@ impl<'a> Pump<'a> {
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
             inbound = self.io.read_frames(self.name), if reading => self.accept_inbound(inbound).await,
+            // Re-checked every loop, so a session that attaches while this
+            // select is parked starts its quiet clock on the next wake.
+            () = tokio::time::sleep_until(self.quiet_probe_at), if self.quiet_probe_due(reading) => {
+                self.arm_quiet_probe().await
+            }
         }
+    }
+
+    /// An attached session with room to read, and no probe already in flight.
+    fn quiet_probe_due(&self, reading: bool) -> bool {
+        reading && self.probe_deadline.is_none() && self.session_attached()
+    }
+
+    fn session_attached(&self) -> bool {
+        lock(self.shared).status() == Status::Attached
+    }
+
+    fn note_inbound(&mut self) {
+        self.quiet_probe_at = Instant::now() + QUIET_PROBE;
+    }
+
+    async fn arm_quiet_probe(&mut self) -> Result<(), ConnectionEnd> {
+        self.quiet_probe_at = Instant::now() + QUIET_PROBE;
+        self.start_probe().await
     }
 
     /// Backpressure: a queued-delivery consumer that has fallen behind
@@ -428,6 +461,7 @@ impl<'a> Pump<'a> {
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
         self.probe_deadline = None;
+        self.note_inbound();
         let mut frames = inbound
             .map_err(|error| ConnectionEnd::Dropped(Some(error)))?
             .ok_or_else(|| {
@@ -539,6 +573,7 @@ mod tests {
     use tokio::sync::{Notify, watch};
 
     use super::*;
+    use crate::connection::io::SEND_BUDGET;
     use crate::control::{ControlOptions, ControlPlane};
 
     struct WriteFixture {
@@ -679,6 +714,73 @@ mod tests {
             .await
             .expect("close must interrupt a selected outbound write");
         assert!(matches!(end, ConnectionEnd::Closed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_makes_no_progress_drops_the_link() {
+        let mut fixture = WriteFixture::new(1);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "stalled-send",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        tokio::time::advance(SEND_BUDGET).await;
+        let end = running
+            .as_mut()
+            .now_or_never()
+            .expect("a shut window must end the attempt");
+        match end {
+            ConnectionEnd::Dropped(Some(message)) if message == "send stalled" => {}
+            other => panic!("a shut window must drop the attempt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_attached_session_probes() {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut fixture = WriteFixture::new(64 * 1024);
+        let outbound = Arc::clone(&fixture.signals.outbound);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "quiet",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        lock(&fixture.shared).set_status_for_test(Status::Attached);
+        outbound.notify_one();
+        assert!(running.as_mut().now_or_never().is_none());
+        tokio::time::advance(QUIET_PROBE).await;
+        assert!(running.as_mut().now_or_never().is_none());
+
+        let mut written = BytesMut::with_capacity(4096);
+        let mut peer = fixture.peer;
+        while let Some(Ok(read)) = peer.read_buf(&mut written).now_or_never() {
+            if read == 0 {
+                break;
+            }
+        }
+        let mut types = Vec::new();
+        while let Ok(Some(frame)) = phux_protocol::wire::framing::split_frame(&mut written) {
+            types.push(frame[LENGTH_PREFIX_LEN]);
+        }
+        assert!(
+            types.contains(&TYPE_PING),
+            "a quiet attached session must probe; wrote {types:?}"
+        );
     }
 
     /// Pings are answered on the driver; every other frame, and a ping that
