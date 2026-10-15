@@ -77,12 +77,18 @@ if gh release view next >/dev/null 2>&1; then
   rm -f "$tmp"
   gh release upload next "${assets[@]}" --clobber
   # Clients resolve assets by release name, so the tag position is cosmetic.
-  # GITHUB_TOKEN can be refused moving it (HTTP 403); never let that strand
-  # uploaded archives without their pointer.
+  # Moving the tag, and `gh release edit --target`, both return HTTP 403
+  # "Resource not accessible by integration" when this commit's
+  # .github/workflows tree differs from the default branch. That update
+  # requires workflows:write, which GITHUB_TOKEN cannot hold; contents:write
+  # is not enough, and the release is not immutable. Never let the refusal
+  # strand uploaded archives without their pointer.
   if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$sha" -F force=true >/dev/null; then
     echo "::warning::could not move the next tag to ${sha}; publishing the pointer anyway"
   fi
-  gh release edit next --prerelease --latest=false --target "$sha" --title "next"
+  if ! gh release edit next --prerelease --latest=false --target "$sha" --title "next"; then
+    echo "::warning::could not retarget the next release to ${sha}; publishing the pointer anyway"
+  fi
 else
   gh release create next "${assets[@]}" \
     --prerelease --latest=false --target "$sha" --title "next" \
