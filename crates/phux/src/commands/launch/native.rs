@@ -4,12 +4,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
-use phux_client::attach::connection::Connection;
 use phux_plugin::{LaunchableIntegration, ResolvedLaunch};
-use phux_protocol::native_agent::{
-    NativeRequest, NativeRequestPayload, SpawnNativeAgent, SpawnedNativeAgent,
-};
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
+use phux_protocol::native_agent::SpawnNativeAgent;
 
 use crate::commands::cli_runtime;
 
@@ -58,7 +54,7 @@ pub(super) fn spawn(
         Err(code) => return code,
     };
     runtime.block_on(async {
-        match spawn_request(&socket, spec).await {
+        match phux_client::native_agent::spawn(&socket, spec).await {
             Ok(spawned) => {
                 let terminal_id = match spawned.parent {
                     phux_protocol::ids::ResourceId::Local { id } | phux_protocol::ids::ResourceId::Satellite { id, .. } => id,
@@ -75,29 +71,17 @@ pub(super) fn spawn(
                     ExitCode::SUCCESS
                 }
             }
-            Err(message) => { error!("native launch refused: {message}"); ExitCode::FAILURE }
+            Err(error) => { error!("native launch refused: {}", launch_error(error)); ExitCode::FAILURE }
         }
     })
 }
 
-pub(crate) async fn spawn_request(
-    socket: &Path,
-    spec: SpawnNativeAgent,
-) -> Result<SpawnedNativeAgent, String> {
-    let request = NativeRequestPayload::new(NativeRequest::Spawn { spec })?;
-    let mut connection = Connection::connect(socket)
-        .await
-        .map_err(|error| error.to_string())?;
-    let (result, _) = connection
-        .request(1, Command::NativeAgent { request })
-        .await
-        .map_err(|error| error.to_string())?
-        .into_parts();
-    drop(connection);
-    match result {
-        CommandResult::OkWith(CommandValue::Json(value)) => serde_json::from_str(&value)
-            .map_err(|error| format!("invalid native spawn reply: {error}")),
-        CommandResult::Error { code, message } => Err(format!("{code:?}: {message}")),
-        _ => Err("server returned no native spawn transaction result".to_owned()),
+fn launch_error(error: phux_client::native_agent::ClientError) -> String {
+    use phux_client::native_agent::ClientError;
+    match error {
+        ClientError::Transport(error) => error.to_string(),
+        ClientError::Invalid(message) | ClientError::Protocol(message) => message,
+        ClientError::Refused { code, message } => format!("{code:?}: {message}"),
+        error => error.to_string(),
     }
 }

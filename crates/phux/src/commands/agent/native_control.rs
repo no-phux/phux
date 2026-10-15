@@ -1,20 +1,10 @@
 //! Exact SDK command ingress; never translates into terminal key atoms.
 use crate::commands::json_err::{self, CliError, codes};
 use crate::exit_codes::EXIT_USAGE;
-use phux_client::attach::connection::Connection;
-use phux_protocol::{
-    caps::ServerFeatureExt,
-    ids::ResourceId,
-    native_agent::{
-        NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativeRequest,
-        NativeRequestPayload,
-    },
-    wire::frame::{AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind},
+use phux_protocol::native_agent::{
+    NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
 };
-use std::{
-    path::{Path, PathBuf},
-    process::ExitCode,
-};
+use std::{path::PathBuf, process::ExitCode};
 
 pub(super) fn run(
     target: &str,
@@ -85,131 +75,12 @@ pub(super) fn run(
         activation: activation.to_owned(),
         intent,
     };
-    let result = runtime.block_on(submit(&socket, id, command, json));
+    let result = runtime
+        .block_on(phux_client::native_agent::submit_command(
+            &socket, id, command,
+        ))
+        .map_err(|error| json_err::report_no_server(json, &error, &socket, "agent native-command"));
     report(result, target, activation, json)
-}
-
-async fn submit(
-    socket: &Path,
-    id: u32,
-    command: NativeCommand,
-    json: bool,
-) -> Result<NativeCommandResult, ExitCode> {
-    let operation_id = command.operation_id;
-    let request = match NativeRequestPayload::new(NativeRequest::Command {
-        agent_session_id: ResourceId::local(id),
-        command,
-    }) {
-        Ok(request) => Command::NativeAgent { request },
-        Err(message) => {
-            return Ok(NativeCommandResult {
-                operation_id,
-                disposition: NativeDisposition::Refused,
-                detail: Some(message),
-            });
-        }
-    };
-    let mut connection = Connection::connect(socket).await.map_err(|error| {
-        json_err::report_no_server(json, &error, socket, "agent native-command")
-    })?;
-    let result = request_receipt(&mut connection, id, operation_id, request, json, socket).await;
-    drop(connection);
-    result
-}
-
-async fn request_receipt(
-    connection: &mut Connection,
-    id: u32,
-    operation_id: u64,
-    request: Command,
-    json: bool,
-    socket: &Path,
-) -> Result<NativeCommandResult, ExitCode> {
-    if !connection.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features_ext
-            .contains(ServerFeatureExt::NativeAgent)
-    }) {
-        return Ok(NativeCommandResult {
-            operation_id,
-            disposition: NativeDisposition::Refused,
-            detail: Some("The executing host does not support native SDK commands; upgrade phux. Nothing was submitted.".into()),
-        });
-    }
-    connection
-        .send(&FrameKind::SubscribeEvents {
-            terminal: Some(ResourceId::local(id)),
-            after_seq: Some(0),
-        })
-        .await
-        .map_err(|error| {
-            json_err::report_no_server(json, &error, socket, "agent native-command")
-        })?;
-    let (reply, frames) = match connection.request(1, request).await {
-        Ok(reply) => reply.into_parts(),
-        Err(error) => return Ok(uncertain(operation_id, &error.to_string())),
-    };
-    let receipt = command_receipt(reply, operation_id);
-    if receipt.disposition != NativeDisposition::Queued {
-        return Ok(receipt);
-    }
-    for frame in frames {
-        if let Some(result) = native_result(frame, id, operation_id) {
-            return Ok(result);
-        }
-    }
-    Ok(await_receipt(connection, id, operation_id).await)
-}
-
-fn command_receipt(reply: CommandResult, operation_id: u64) -> NativeCommandResult {
-    match reply {
-        CommandResult::OkWith(CommandValue::Json(value)) => {
-            match serde_json::from_str::<NativeCommandResult>(&value) {
-                Ok(receipt) if receipt.operation_id == operation_id => receipt,
-                _ => uncertain(
-                    operation_id,
-                    "server returned an invalid or mismatched native receipt",
-                ),
-            }
-        }
-        CommandResult::Error { code, message } => NativeCommandResult {
-            operation_id,
-            disposition: if matches!(
-                code,
-                ErrorCode::InputDeliveryUnknown
-                    | ErrorCode::IncarnationChanged
-                    | ErrorCode::InternalError
-            ) {
-                NativeDisposition::Unknown
-            } else {
-                NativeDisposition::Refused
-            },
-            detail: Some(message),
-        },
-        _ => uncertain(operation_id, "server did not return a native receipt"),
-    }
-}
-
-async fn await_receipt(
-    connection: &mut Connection,
-    id: u32,
-    operation_id: u64,
-) -> NativeCommandResult {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            let frame = match connection.recv().await {
-                Ok(frame) => frame,
-                Err(error) => return uncertain(operation_id, &error.to_string()),
-            };
-            if let Some(result) = native_result(frame, id, operation_id) {
-                return result;
-            }
-        }
-    }).await.unwrap_or_else(|_| NativeCommandResult {
-        operation_id,
-        disposition: NativeDisposition::Unknown,
-        detail: Some("controller receipt was not observed before timeout; retain this exact operation identity, do not issue a replacement prompt".into()),
-    })
 }
 
 fn report(
@@ -249,37 +120,5 @@ fn report(
             }
         }
         Err(code) => code,
-    }
-}
-
-fn native_result(frame: FrameKind, id: u32, operation: u64) -> Option<NativeCommandResult> {
-    match frame {
-        FrameKind::Event {
-            event:
-                AgentEvent::NativeAgentResult {
-                    agent_session_id,
-                    operation_id,
-                    disposition,
-                    detail,
-                },
-            ..
-        } if agent_session_id == ResourceId::local(id) && operation_id == operation => {
-            Some(NativeCommandResult {
-                operation_id,
-                disposition,
-                detail,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn uncertain(operation_id: u64, reason: &str) -> NativeCommandResult {
-    NativeCommandResult {
-        operation_id,
-        disposition: NativeDisposition::Unknown,
-        detail: Some(format!(
-            "controller receipt unavailable: {reason}; retain the exact operation identity, do not send a replacement intent"
-        )),
     }
 }

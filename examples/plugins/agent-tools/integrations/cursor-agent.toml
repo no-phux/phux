@@ -17,6 +17,12 @@ env = "PHUX_AGENT_TOOLS_DETECT"
 mode = "state-file"
 default_session = "agent-bench-cursor-agent"
 
+# Terminal launches have only a phux identity, not a provider resume claim.
+[session_identity]
+mode = "phux"
+native_env = "PHUX_CURSOR_AGENT_SESSION_ID"
+restore = "phux-session"
+
 [agent_identity]
 name = "cursor-agent"
 kind = "cursor-agent"

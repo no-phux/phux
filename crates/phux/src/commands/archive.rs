@@ -196,48 +196,19 @@ async fn capture_native_launches(
     socket: &Path,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
 ) -> Result<HashMap<ResourceId, phux_protocol::native_agent::SpawnNativeAgent>, CaptureError> {
-    use phux_client::attach::connection::Answer;
-    let mut connection = Connection::connect(socket)
-        .await
-        .map_err(CaptureError::NoServer)?;
-    let mut records = HashMap::new();
-    for (index, resource) in phux_client::resource::terminals(snapshot)
-        .filter(|resource| resource.id.is_local())
-        .enumerate()
-    {
-        let request_id = u32::try_from(index)
-            .map_err(|_| CaptureError::Failed("too many native archive resources".into()))?
-            .saturating_add(1);
-        let (answer, interleaved) = connection
-            .request_metadata(
-                request_id,
-                phux_protocol::wire::frame::Scope::Resource(resource.id.clone()),
-                "phux.native-launch/v1".to_owned(),
-            )
-            .await
-            .map_err(CaptureError::NoServer)?
-            .into_parts();
-        partial::warn_partial_view(
-            "archive export",
-            &phux_client::state::Degradation::from_interleaved(&interleaved),
-        );
-        let bytes = match answer {
-            Answer::Ok(Some(bytes)) => bytes,
-            Answer::Ok(None) => continue,
-            Answer::Err(refusal) => {
-                return Err(CaptureError::Failed(format!(
-                    "could not capture native SDK recipe for {}: {refusal}",
-                    resource.id
-                )));
-            }
-        };
-        let mut spec: phux_protocol::native_agent::SpawnNativeAgent =
-            serde_json::from_slice(&bytes).map_err(|error| {
-                CaptureError::Failed(format!(
-                    "invalid native SDK recipe for {}: {error}",
-                    resource.id
-                ))
-            })?;
+    use phux_client::native_agent::{ClientError, fetch_launch_recipes};
+    let mut records = fetch_launch_recipes(socket, snapshot, |degradation| {
+        partial::warn_partial_view("archive export", degradation);
+    })
+    .await
+    .map_err(|error| match error {
+        ClientError::Transport(error) => CaptureError::NoServer(error),
+        ClientError::Invalid(message) | ClientError::Protocol(message) => {
+            CaptureError::Failed(message)
+        }
+        error => CaptureError::Failed(error.to_string()),
+    })?;
+    for spec in records.values_mut() {
         // Export intent, never a source binding, host-local package tree or
         // process environment. The destination mints all of those afresh.
         spec.session.clear();
@@ -245,9 +216,7 @@ async fn capture_native_launches(
         spec.guardian_key = None;
         spec.guardian_expected = None;
         spec.env.clear();
-        records.insert(resource.id.clone(), spec);
     }
-    drop(connection);
     Ok(records)
 }
 

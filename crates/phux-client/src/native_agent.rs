@@ -3,7 +3,12 @@
 //! Receive has its own connection; a held receive cannot block publication or
 //! completion. Re-registration fences old generations without spawning a worker.
 //! Publications retain bounded unacknowledged payloads and retry their original
-//! identities. This module never submits or replays a provider prompt.
+//! identities. The controller never submits or replays a provider prompt.
+//! Typed launch and command ingress submit once, without transport retries.
+
+mod operations;
+
+pub use operations::{fetch_launch_recipes, spawn, submit_command};
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
