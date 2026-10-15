@@ -17,12 +17,13 @@ use gpui::{
     StyleRefinement, Styled, WeakEntity, Window, canvas, div, linear_color_stop, linear_gradient,
     point, px, relative,
 };
-use gpui_kit::base::Disableable;
+use gpui_kit::assets::IconName;
+use gpui_kit::base::{Disableable, Side};
+use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status};
 use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{ExecState, ResourceRecord};
@@ -42,13 +43,15 @@ use super::motion;
 use super::notifications::{Kind, Notification};
 use super::overlays;
 
-const TITLEBAR: f32 = 40.;
+const TITLEBAR: f32 = 44.;
 const STATUS: f32 = 26.;
 /// The glass between panes, which is also the split's grab area.
-const GAP: f32 = 8.;
+const GAP: f32 = 12.;
 /// The glass around the pane canvas.
-const GUTTER: f32 = 10.;
+const GUTTER: f32 = 12.;
 const RADIUS: f32 = 12.;
+const SIDEBAR_ROW: f32 = 32.;
+const SIDEBAR_ICON: f32 = 16.;
 /// How far down a pane the pointer reveals its controls.
 const CONTROLS_EDGE: f32 = 36.;
 /// Left inset that clears the traffic lights.
@@ -65,7 +68,7 @@ struct Glass {
     sheen: Hsla,
     /// A pane card: the terminal background at the terminal opacity.
     card: Hsla,
-    /// A card's hairline, and a focused card's brighter one.
+    /// Neutral and focused edges. Quiet cards keep their edge transparent.
     edge: Hsla,
     lit: Hsla,
     shadow: Hsla,
@@ -82,9 +85,9 @@ impl Glass {
                 &colors.theme.background,
                 terminal_opacity,
             )),
-            edge: ink.opacity(0.08),
+            edge: gpui::transparent_black(),
             lit: ink.opacity(0.22),
-            shadow: gpui::black().opacity(if light { 0.14 } else { 0.34 }),
+            shadow: gpui::black().opacity(if light { 0.08 } else { 0.18 }),
         }
     }
 }
@@ -610,10 +613,10 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .flex_grow(1.)
         .overflow_y_scroll()
         .px(px(8.))
-        .pb(px(8.))
+        .py(px(GUTTER))
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .gap(px(4.))
         .child(organization_bar(desk, colors, cx))
         .when(!agent_panes.is_empty(), |list| {
             list.child(section_label("Needs you", colors))
@@ -707,13 +710,12 @@ fn host_row(
     let click = name.clone();
     div()
         .id(SharedString::from(format!("host-{name}")))
-        .min_h(px(28.))
-        .pl(px(10.))
-        .pr(px(6.))
+        .min_h(px(SIDEBAR_ROW))
+        .px(px(8.))
         .py(px(4.))
         .flex()
         .items_center()
-        .gap(px(9.))
+        .gap(px(8.))
         .rounded(px(6.))
         .cursor_pointer()
         .bg(if here {
@@ -724,7 +726,7 @@ fn host_row(
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
             div()
-                .w(px(14.))
+                .w(px(SIDEBAR_ICON))
                 .flex()
                 .justify_center()
                 .flex_shrink_0()
@@ -770,10 +772,24 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
     if sidebar { sidebar_width } else { MENU_RAIL }
 }
 
-const MAIN_COMMANDS: &[&[&str]] = &[
-    &["new", "new-session", "folder", "new-window"],
-    &["split-right", "split-down", "view"],
-    &["goto", "palette", "settings"],
+const MAIN_COMMANDS: &[&[(&str, IconName)]] = &[
+    &[
+        ("new", IconName::Plus),
+        ("new-session", IconName::Folder),
+        ("folder", IconName::FolderOpen),
+        ("new-window", IconName::Frame),
+    ],
+    &[
+        ("goto", IconName::ArrowRight),
+        ("palette", IconName::Search),
+        ("settings", IconName::Settings),
+    ],
+];
+
+const PANE_COMMANDS: &[(&str, IconName)] = &[
+    ("split-right", IconName::PanelRight),
+    ("split-down", IconName::PanelBottom),
+    ("view", IconName::Copy),
 ];
 
 /// One persistent entry to workspace actions and host navigation. Building the
@@ -785,30 +801,62 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
     let handle = cx.weak_entity();
     let menu = move |mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
-        for group in MAIN_COMMANDS {
-            menu = menu.separator();
-            for command in *group {
-                menu = menu.item(main_command(command, &handle));
-            }
+        menu = menu
+            .min_w(px(256.))
+            .max_w(px(320.))
+            .scrollable(true)
+            .max_h((window.viewport_size().height - px(TITLEBAR + GUTTER * 2.)).max(px(80.)));
+        for (command, icon) in MAIN_COMMANDS[0] {
+            menu = menu.item(main_command(command, *icon, &handle));
+        }
+        let pane_handle = handle.clone();
+        menu = menu.submenu_with_icon(
+            Some(IconName::LayoutDashboard.into()),
+            "Pane Layout",
+            window,
+            cx,
+            move |mut menu, _, _| {
+                for (command, icon) in PANE_COMMANDS {
+                    menu = menu.item(main_command(command, *icon, &pane_handle));
+                }
+                menu.min_w(px(224.))
+            },
+        );
+        menu = menu.separator();
+        for (command, icon) in MAIN_COMMANDS[1] {
+            menu = menu.item(main_command(command, *icon, &handle));
         }
         let (current, hosts, switch) = (current.clone(), hosts.clone(), handle.clone());
         menu.separator()
-            .submenu("Switch Host", window, cx, move |mut menu, _, _| {
-                menu = menu.item(host_choice(None, "Local", current.is_none(), &switch));
-                for name in &hosts {
-                    let here = current.as_deref() == Some(name.as_str());
-                    menu = menu.item(host_choice(Some(name.clone()), name, here, &switch));
-                }
-                menu
-            })
+            .submenu_with_icon(
+                Some(IconName::Network.into()),
+                "Switch Host",
+                window,
+                cx,
+                move |mut menu, _, _| {
+                    menu = menu
+                        .min_w(px(224.))
+                        .max_w(px(320.))
+                        .scrollable(true)
+                        .check_side(Side::Right)
+                        .item(host_choice(None, "Local", current.is_none(), &switch));
+                    for name in &hosts {
+                        let here = current.as_deref() == Some(name.as_str());
+                        menu = menu.item(host_choice(Some(name.clone()), name, here, &switch));
+                    }
+                    menu
+                },
+            )
             .item({
                 let handle = handle.clone();
-                PopupMenuItem::new("Add Host…").on_click(move |_, window, cx| {
-                    let _ =
-                        handle.update(cx, |desk, cx| desk.open_modal(Modal::AddHost, window, cx));
-                })
+                PopupMenuItem::new("Add Host…")
+                    .icon(IconName::Plus)
+                    .on_click(move |_, window, cx| {
+                        let _ = handle
+                            .update(cx, |desk, cx| desk.open_modal(Modal::AddHost, window, cx));
+                    })
             })
-            .item(main_command("reconnect", &handle))
+            .item(main_command("reconnect", IconName::RefreshCw, &handle))
     };
     div()
         .flex_1()
@@ -823,19 +871,19 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .ghost()
                 .small()
                 .w_full()
-                .tooltip("Main menu · workspace actions and hosts")
                 .dropdown_menu(menu),
         )
         .into_any_element()
 }
 
-fn main_command(command: &'static str, handle: &WeakEntity<Desk>) -> PopupMenuItem {
+fn main_command(command: &'static str, icon: IconName, handle: &WeakEntity<Desk>) -> PopupMenuItem {
     let spec = crate::settings::builtin_commands()
         .iter()
         .find(|spec| spec.id == command)
         .expect("main menu command is in the catalogue");
     let handle = handle.clone();
     PopupMenuItem::new(spec.title)
+        .icon(icon)
         .action(Box::new(Run {
             id: command.to_owned(),
         }))
@@ -857,10 +905,35 @@ mod menu_tests {
     }
 
     #[test]
+    fn menu_icons_are_in_the_shipping_asset_bundle() {
+        use gpui::AssetSource;
+
+        let assets = gpui_kit::assets::Assets;
+        for icon in MAIN_COMMANDS
+            .iter()
+            .flat_map(|group| group.iter())
+            .chain(PANE_COMMANDS.iter())
+            .map(|(_, icon)| *icon)
+            .chain([
+                IconName::LayoutDashboard,
+                IconName::Network,
+                IconName::Plus,
+                IconName::RefreshCw,
+            ])
+        {
+            assert!(
+                assets.load(&icon.path()).unwrap().is_some(),
+                "missing menu icon: {icon:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_main_menu_action_uses_the_existing_catalogue() {
         for command in MAIN_COMMANDS
             .iter()
-            .flat_map(|group| group.iter())
+            .flat_map(|group| group.iter().map(|(command, _)| command))
+            .chain(PANE_COMMANDS.iter().map(|(command, _)| command))
             .chain([&"reconnect"])
         {
             assert!(
@@ -880,6 +953,7 @@ fn host_choice(
 ) -> PopupMenuItem {
     let handle = handle.clone();
     PopupMenuItem::new(label.to_owned())
+        .icon(IconName::Network)
         .checked(checked)
         .on_click(move |_, _, cx| {
             let name = name.clone();
@@ -1231,17 +1305,18 @@ fn session_block(
     );
     let header = div()
         .id(SharedString::from(format!("session-{id}")))
-        .h(px(28.))
-        .px(px(6.))
+        .group("session")
+        .h(px(SIDEBAR_ROW))
+        .px(px(8.))
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(px(8.))
         .rounded(px(6.))
         .cursor_pointer()
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
             div()
-                .w(px(10.))
+                .w(px(SIDEBAR_ICON))
                 .text_xs()
                 .text_color(from_hex(&colors.faint))
                 .child(if collapsed { "▸" } else { "▾" }),
@@ -1255,8 +1330,8 @@ fn session_block(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(name.to_owned()),
         )
-        .when_some(intake_badge(designated, awaiting), |row, badge| {
-            row.child(pill(badge, &colors.accent_wash, &colors.theme.accent))
+        .when(awaiting && !designated, |row| {
+            row.child(pill("imported", &colors.accent_wash, &colors.theme.accent))
         })
         .when_some(project_path, |header, path| {
             header.child(
@@ -1272,15 +1347,20 @@ fn session_block(
             )
         })
         .child(
-            Button::new(SharedString::from(format!("session-new-{id}")))
-                .icon(IconName::Plus)
-                .ghost()
-                .xsmall()
-                .tooltip("New terminal in this session")
-                .on_click(cx.listener(move |desk, _, window, cx| {
-                    cx.stop_propagation();
-                    desk.new_terminal_in(id, window, cx);
-                })),
+            div()
+                .invisible()
+                .group_hover("session", |style| style.visible())
+                .child(
+                    Button::new(SharedString::from(format!("session-new-{id}")))
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("New terminal in this session")
+                        .on_click(cx.listener(move |desk, _, window, cx| {
+                            cx.stop_propagation();
+                            desk.new_terminal_in(id, window, cx);
+                        })),
+                ),
         )
         .child(
             Button::new(SharedString::from(format!("session-menu-{id}")))
@@ -1377,11 +1457,12 @@ fn record_row(
     };
     div()
         .id(SharedString::from(format!("resource-{key}")))
-        .px(px(10.))
-        .py(px(6.))
+        .min_h(px(SIDEBAR_ROW))
+        .px(px(8.))
+        .py(px(4.))
         .flex()
         .items_center()
-        .gap(px(9.))
+        .gap(px(8.))
         .rounded(px(6.))
         .cursor_pointer()
         .bg(if selected {
@@ -1392,10 +1473,16 @@ fn record_row(
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
             div()
-                .size(px(6.))
+                .w(px(SIDEBAR_ICON))
                 .flex_shrink_0()
-                .rounded_full()
-                .bg(from_hex(&colors.muted)),
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(from_hex(&colors.muted)),
+                ),
         )
         .child(div().flex_1().min_w_0().truncate().text_sm().child(label))
         .when(state != "Running", |row| {
@@ -1462,13 +1549,12 @@ fn pane_row(
     let handle = cx.weak_entity();
     div()
         .id(SharedString::from(format!("pane-{terminal}")))
-        .min_h(px(28.))
-        .pl(px(10.))
-        .pr(px(8.))
+        .min_h(px(SIDEBAR_ROW))
+        .px(px(8.))
         .py(px(4.))
         .flex()
         .items_center()
-        .gap(px(9.))
+        .gap(px(8.))
         .rounded(px(6.))
         .cursor_pointer()
         .bg(if focused || selected {
@@ -1479,7 +1565,7 @@ fn pane_row(
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
             div()
-                .w(px(14.))
+                .w(px(SIDEBAR_ICON))
                 .flex()
                 .justify_center()
                 .flex_shrink_0()
@@ -1541,13 +1627,12 @@ fn agent_row(
     let handle = cx.weak_entity();
     div()
         .id(SharedString::from(format!("agent-{terminal}")))
-        .min_h(px(28.))
-        .pl(px(10.))
-        .pr(px(8.))
+        .min_h(px(SIDEBAR_ROW))
+        .px(px(8.))
         .py(px(4.))
         .flex()
         .items_center()
-        .gap(px(9.))
+        .gap(px(8.))
         .rounded(px(6.))
         .border_1()
         .border_color(if urgent {
@@ -1566,7 +1651,7 @@ fn agent_row(
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
             div()
-                .w(px(14.))
+                .w(px(SIDEBAR_ICON))
                 .flex()
                 .justify_center()
                 .child(div().size(px(8.)).rounded_full().bg(from_hex(tint))),
@@ -1694,14 +1779,12 @@ fn workspace_body(
 ) -> impl IntoElement {
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
-    let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     div()
         .flex_grow(1.)
         .min_h(px(0.))
         .relative()
-        .pt(px(2.))
-        .pr(px(GUTTER))
-        .pl(px(if sidebar { 2. } else { GUTTER }))
+        .pt(px(GUTTER))
+        .px(px(GUTTER))
         .child(if let Some(id) = zoomed {
             zoomed_pane(desk, &id, window, cx).into_any_element()
         } else if let Some(root) = root {
@@ -2094,8 +2177,8 @@ fn pane_view(
         .border_color(edge)
         .shadow(vec![BoxShadow {
             color: glass.shadow,
-            offset: point(px(0.), px(10.)),
-            blur_radius: px(30.),
+            offset: point(px(0.), px(4.)),
+            blur_radius: px(16.),
             spread_radius: px(-8.),
             inset: false,
         }])
@@ -2654,9 +2737,9 @@ fn section_label(title: &str, colors: &Palette) -> gpui::Div {
         .flex()
         .items_center()
         .text_xs()
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_color(from_hex(&colors.faint))
-        .child(div().flex_1().child(title.to_uppercase()))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(from_hex(&colors.muted))
+        .child(div().flex_1().child(title.to_owned()))
 }
 
 fn pill(text: &str, background: &str, color: &str) -> gpui::Div {
