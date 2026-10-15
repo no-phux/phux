@@ -161,4 +161,21 @@ mod tests {
         assert!(sentence.starts_with("unexpected HELLO reply"), "{sentence}");
         assert!(sentence.contains("phux doctor"), "{sentence}");
     }
+
+    #[test]
+    fn error_code_labels_are_spaced_lowercase() {
+        assert_eq!(
+            error_code_label(ErrorCode::TerminalNotFound),
+            "terminal not found"
+        );
+        assert_eq!(
+            error_code_label(ErrorCode::PermissionDenied),
+            "permission denied"
+        );
+        assert_eq!(error_code_label(ErrorCode::InternalError), "internal error");
+        assert_eq!(
+            error_code_label(ErrorCode::UnsupportedSatelliteRoute),
+            "unsupported satellite route"
+        );
+    }
 }

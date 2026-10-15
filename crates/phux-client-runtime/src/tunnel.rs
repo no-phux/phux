@@ -447,8 +447,8 @@ async fn serve_quic(
 pub(crate) fn host_halves(
     stream: phux_dial::quic::DialedStream,
 ) -> (
-    Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-    Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>,
+    Box<dyn tokio::io::AsyncWrite + Send + Sync + Unpin>,
 ) {
     match stream {
         phux_dial::quic::DialedStream::Plain { send, recv } => (Box::new(recv), Box::new(send)),

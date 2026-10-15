@@ -107,8 +107,8 @@ impl Drop for QuicLink {
 /// One established lane, read and written as SPEC section 5 frames.
 pub(crate) enum Io {
     Stream {
-        reader: Box<dyn AsyncRead + Unpin + Send>,
-        writer: Box<dyn AsyncWrite + Unpin + Send>,
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
         pending: BytesMut,
         /// Kept so the QUIC endpoint's driver outlives the connection and a
         /// clean close can be issued.
@@ -137,8 +137,8 @@ impl Io {
     /// A byte-stream lane over `reader` and `writer`.
     #[cfg(test)]
     pub(crate) fn stream(
-        reader: Box<dyn AsyncRead + Unpin + Send>,
-        writer: Box<dyn AsyncWrite + Unpin + Send>,
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
     ) -> Self {
         Self::framed(reader, writer, None, None)
     }
@@ -169,8 +169,8 @@ impl Io {
     }
 
     fn framed(
-        reader: Box<dyn AsyncRead + Unpin + Send>,
-        writer: Box<dyn AsyncWrite + Unpin + Send>,
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
         quic: Option<QuicLink>,
         peer_pid: Option<i32>,
     ) -> Self {
@@ -424,7 +424,7 @@ const fn unspecified_like(addr: std::net::SocketAddr) -> std::net::SocketAddr {
 }
 
 async fn read_stream_frames(
-    reader: &mut Box<dyn AsyncRead + Unpin + Send>,
+    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
     pending: &mut BytesMut,
     quic: Option<&QuicLink>,
 ) -> Result<Option<Vec<Bytes>>, LinkError> {
@@ -448,7 +448,7 @@ async fn read_stream_frames(
 /// (against a no-op waker) adds. Sound because these reads are cancel-safe
 /// and the next `read_frames().await` re-polls with a real waker.
 fn try_read_stream_frames(
-    reader: &mut Box<dyn AsyncRead + Unpin + Send>,
+    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
     pending: &mut BytesMut,
 ) -> Result<Vec<Bytes>, LinkError> {
     let frames = take_complete_frames(pending)?;

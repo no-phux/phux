@@ -27,8 +27,8 @@
 //!
 //! # Facade mapping
 //!
-//! `phux_client::attach::connection::Connection` is meant to become a thin
-//! facade over this type. Each of its methods maps to one call here:
+//! `phux_client::attach::connection::Connection` is a thin facade over this
+//! type. Each of its methods maps to one call here:
 //!
 //! | `Connection`                         | `Session`                                       |
 //! |--------------------------------------|-------------------------------------------------|
@@ -60,7 +60,7 @@
 //! | `Reply`, `Answer`, `Refusal`, `METADATA_WINDOW` | [`Reply`], [`Answer`], [`Refusal`], [`METADATA_WINDOW`] |
 //! | `NegotiatedBootstrap`                | [`NegotiatedBootstrap`]                         |
 //! | `AttachError` (transport variants)   | [`SessionError`], one variant each, by name     |
-//! | `explain::error_code_label` / `unexpected_reply` | [`error_code_label`] / [`unexpected_reply`] |
+//! | `explain::unexpected_reply`          | [`unexpected_reply`], re-exported                |
 
 use std::collections::VecDeque;
 
@@ -114,6 +114,13 @@ pub struct Session {
     /// A write found the server already gone.
     write_hit_closed_peer: bool,
 }
+
+// A verb borrows its session across awaits, and `phux-client`'s facade
+// is held in `Send` futures, so the session stays `Send + Sync`.
+const _: () = {
+    const fn send_and_sync<T: Send + Sync>() {}
+    send_and_sync::<Session>();
+};
 
 impl Session {
     /// Dial `dial` within [`DIAL_TIMEOUT`] and negotiate `HELLO` as
