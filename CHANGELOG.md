@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.4](https://github.com/no-phux/phux/compare/v0.74.3...v0.74.4) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** route attachment frames by their real attach id ([e6181ed](https://github.com/no-phux/phux/commit/e6181ede29b8c259ff770a5bb0d467459a403467))
+
 ## [0.74.3](https://github.com/no-phux/phux/compare/v0.74.2...v0.74.3) (2026-10-15)
 
 
