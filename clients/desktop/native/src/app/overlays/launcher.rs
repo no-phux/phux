@@ -20,7 +20,7 @@ use crate::settings::theme::Palette;
 
 use super::goto_filter::GotoFilter;
 use super::{
-    Row, Target, command_sections, filter_sections, goto_sections, move_sections, rank_sections,
+    Row, Target, command_sections, move_sections, prepare_goto, query_terms, rank_sections,
     session_sections,
 };
 
@@ -35,33 +35,30 @@ pub(super) fn palette(
     };
     let query = state.read(cx).query(cx).to_string();
     let (placeholder, verb, sections) = match desk.modal {
-        Modal::Goto => (
-            "Search terminals, agents and tabs…",
-            "Go to",
-            goto_sections(desk),
-        ),
+        Modal::Goto => {
+            prepare_goto(desk, &query);
+            (
+                "Search terminals, agents and tabs…",
+                "Go to",
+                desk.goto_search.cloned_sections(),
+            )
+        }
         Modal::WindowSession => (
             "Find a session to open in a window…",
             "Open window",
-            session_sections(desk),
+            rank_sections(session_sections(desk), &query),
         ),
         Modal::MoveResources => (
             "Find a destination for selected work…",
             "Move work",
-            move_sections(desk),
+            rank_sections(move_sections(desk), &query),
         ),
         _ => (
             "What would you like to do?",
             "Run command",
-            command_sections(desk, cx),
+            rank_sections(command_sections(desk, cx), &query),
         ),
     };
-    let sections = if desk.modal == Modal::Goto {
-        filter_sections(sections, desk.goto.filter)
-    } else {
-        sections
-    };
-    let sections = rank_sections(sections, &query);
     desk.align_goto_highlight(&sections, &state, window, cx);
     let count: usize = sections.iter().map(|section| section.rows.len()).sum();
     let targets: Vec<Vec<Target>> = sections
@@ -219,8 +216,8 @@ pub(super) fn palette(
                 let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
             }
         });
-    let folded_query = query.to_lowercase();
-    let tokens: Vec<&str> = folded_query.split_whitespace().collect();
+    let terms = query_terms(&query);
+    let tokens: Vec<&str> = terms.iter().map(String::as_str).collect();
     for (section_index, section) in sections.into_iter().enumerate() {
         let mut group = CommandGroup::new();
         if let Some(label) = section.label {
