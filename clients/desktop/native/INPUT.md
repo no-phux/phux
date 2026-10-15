@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-15
 ---
 
 # Native terminal input
@@ -36,6 +36,15 @@ There is no string registry and no second listener.
   `INPUT_MOUSE` carry that cell in the integer pixel grid the resize reports
   as `cell_px`, so selection, copy, and a program's cursor land on the painted
   cell on both screens.
+- A Command-click link is captured from the painted frame on press and opened
+  on release only when the pointer is still on that same link. The address is
+  the cell's OSC 8 target, or a URL written in the row, limited to the schemes
+  in `input/link.rs`. It is never read from a publication newer than the
+  paint. Dragging off the link, a scroll or resize, or a replaced connection
+  cancels the gesture. Output that leaves the link and the viewport unchanged
+  does not. A captured application-mouse release is still sent when the live
+  frame is briefly missing or a different size; a replaced connection or an
+  unknown-delivery fence is not.
 - Copy/Paste bind to `copy_selection` and `paste_text`. `Terminal::request`
   runs Copy, Paste, CopyText and Open once on this entity, without a keyboard
   focus check, and does not retain the action for a later render. A clipboard
@@ -71,4 +80,4 @@ qualified**. Option-as-Alt defaults off. Manual acceptance remains for real OS
 IMEs (CJK, dead keys), candidate placement under scale changes, focus loss
 mid-composition, menus, cross-app clipboard, VoiceOver and hardware layouts.
 Selection autoscroll and search UI are not implemented here. Link activation
-is the view's Command-click.
+is the painted-frame Command-click described above.

@@ -128,6 +128,9 @@ pub struct TerminalInput {
     pressed: BTreeMap<PhysicalKey, KeyEvent>,
     gesture: u64,
     reported_button: Option<phux_protocol::input::mouse::MouseButton>,
+    /// OSC 8 and row URLs for the frame last painted, plus a Command-click
+    /// captured from that frame.
+    painted_links: link::PaintedLinks,
     /// The cell the last motion event already delivered. A later move inside
     /// that cell is not a new event.
     last_motion_cell: Option<(u16, u16)>,
@@ -166,6 +169,7 @@ impl TerminalInput {
             pressed: BTreeMap::new(),
             gesture: 0,
             reported_button: None,
+            painted_links: link::PaintedLinks::default(),
             last_motion_cell: None,
             scroll_remainder: 0.0,
             option_as_alt: false,
@@ -199,7 +203,7 @@ impl TerminalInput {
     /// an unknown-delivery fence. That authority belongs to the presenter.
     pub fn presented(
         &mut self,
-        frame: &GridFrame,
+        frame: &Arc<GridFrame>,
         metrics: InputMetrics,
     ) -> Result<(), InputError> {
         let client = self.client()?;
@@ -220,19 +224,24 @@ impl TerminalInput {
     pub fn presented_at(
         &mut self,
         epoch: u64,
-        frame: &GridFrame,
+        frame: &Arc<GridFrame>,
         metrics: InputMetrics,
     ) -> Result<(), InputError> {
         match admit_presentation(&self.terminal, self.identity, epoch, frame) {
             Admit::WrongTerminal => Err(InputError::StalePresentation),
             Admit::Replaced => {
                 self.cancel();
+                self.painted_links.forget();
                 self.metrics = None;
                 self.fitted = None;
                 self.key_probe.forget();
                 Err(InputError::StalePresentation)
             }
             Admit::Accept(identity) => {
+                self.painted_links.present(
+                    link::FrameStamp::new(identity.epoch, frame),
+                    Arc::clone(frame),
+                );
                 self.identity = Some(identity);
                 self.painted_seq = frame.last_seq;
                 self.key_probe.painted(frame.last_seq);
@@ -249,6 +258,7 @@ impl TerminalInput {
         self.pressed.clear();
         self.gesture = 0;
         self.reported_button = None;
+        self.painted_links.cancel();
         self.scroll_remainder = 0.0;
     }
 

@@ -247,10 +247,11 @@ impl Render for Terminal {
             .on_mouse_down(MouseButton::Left, {
                 let press = press.clone();
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    // Capture the painted link. The URL opens on release, if
+                    // that release is still on the same link.
                     if event.modifiers.platform
-                        && let Some(url) = press.read(cx).link_at(event.position)
+                        && press.update(cx, |state, _| state.press_link(event.position))
                     {
-                        cx.open_url(&url);
                         cx.stop_propagation();
                         return;
                     }
@@ -268,18 +269,26 @@ impl Render for Terminal {
             })
             .on_mouse_up(MouseButton::Left, {
                 let release = release.clone();
-                cx.listener(move |_this, event, window, cx| {
-                    release.update(cx, |state, cx| {
-                        let _ = state.mouse_up(event, window, cx);
-                    });
+                cx.listener(move |_this, event: &gpui::MouseUpEvent, window, cx| {
+                    if let Some(url) = release.update(cx, |state, _| {
+                        state.release_link(event.position, event.modifiers.platform)
+                    }) {
+                        cx.open_url(&url);
+                    } else {
+                        release.update(cx, |state, cx| {
+                            let _ = state.mouse_up(event, window, cx);
+                        });
+                    }
                     cx.emit(TerminalEvent::Activated);
                 })
             })
-            // A drag-select or reported press released outside the pane still ends.
+            // A drag-select, reported press, or link gesture released outside
+            // the pane still ends. The link does not open.
             .on_mouse_up_out(MouseButton::Left, {
                 let release = release.clone();
                 move |event, window, cx| {
                     release.update(cx, |state, cx| {
+                        state.cancel_link();
                         let _ = state.mouse_up(event, window, cx);
                     });
                 }
