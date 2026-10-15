@@ -1236,7 +1236,11 @@ fn dispatch(
             integration,
             list,
             print,
-            native,
+            if native {
+                phux_plugin::LaunchMode::Native
+            } else {
+                phux_plugin::LaunchMode::Terminal
+            },
             session.as_deref(),
             json.json,
             target,

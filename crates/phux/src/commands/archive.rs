@@ -249,6 +249,7 @@ async fn capture_native_launches(
         spec.env.clear();
         records.insert(resource.id.clone(), spec);
     }
+    drop(connection);
     Ok(records)
 }
 
@@ -780,7 +781,7 @@ fn pane_launch(
 ) -> Result<LaunchSpec, String> {
     if let Some(native) = source.native_launch {
         let mut spec = native.clone();
-        spec.session = session.to_owned();
+        session.clone_into(&mut spec.session);
         spec.guardian = None;
         spec.guardian_key = None;
         spec.guardian_expected = None;

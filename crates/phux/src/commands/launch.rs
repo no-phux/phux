@@ -32,7 +32,7 @@ pub(crate) fn run_launch(
     integration: Option<String>,
     list: bool,
     print: bool,
-    native: bool,
+    mode: LaunchMode,
     session: Option<&str>,
     json: bool,
     target: Option<String>,
@@ -44,11 +44,6 @@ pub(crate) fn run_launch(
     extra: &[String],
 ) -> ExitCode {
     let config_path = config_loader::config_path();
-    let mode = if native {
-        LaunchMode::Native
-    } else {
-        LaunchMode::Terminal
-    };
     if list {
         return run_list(&config_path, mode, json);
     }
@@ -76,7 +71,7 @@ pub(crate) fn run_launch(
         Ok(resolved) => resolved,
         Err(err) => return report_launch_error(&err),
     };
-    if native {
+    if mode == LaunchMode::Native {
         if print {
             return print_resolved(&resolved, &resolved.argv, json);
         }

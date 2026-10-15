@@ -105,6 +105,7 @@ pub(crate) async fn spawn_request(
         .await
         .map_err(|error| error.to_string())?
         .into_parts();
+    drop(connection);
     match result {
         CommandResult::OkWith(CommandValue::Json(value)) => serde_json::from_str(&value)
             .map_err(|error| format!("invalid native spawn reply: {error}")),

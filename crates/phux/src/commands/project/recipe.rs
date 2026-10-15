@@ -296,102 +296,14 @@ fn compile_panes(
                 return Err(format!("{label}: duplicate pane id {id:?}"));
             }
         }
-        let mut env = recipe.env.clone();
-        env.extend(window.env.clone());
-        env.extend(pane.env.clone());
-        if pane.integration.is_some() && (pane.command.is_some() || pane.exec) {
-            return Err(format!(
-                "{pane_label}: `integration` cannot be combined with `command` or `exec`"
-            ));
-        }
-        let cwd = resolve_cwd(
-            root,
-            pane.cwd.as_deref().or(window.cwd.as_deref()),
+        compiled.push(compile_pane(
+            recipe,
+            window,
+            pane,
             &pane_label,
-        )?;
-        if pane
-            .integration
-            .as_deref()
-            .is_some_and(|id| id.is_empty() || id.contains('\0'))
-        {
-            return Err(format!(
-                "{pane_label}: `integration` must name a declared integration"
-            ));
-        }
-        let resolved = if preference == LaunchPreference::Validate {
-            None
-        } else {
-            pane.integration
-                .as_deref()
-                .map(|integration| {
-                    let mode = if preference == LaunchPreference::Native {
-                        phux_plugin::LaunchMode::Native
-                    } else {
-                        phux_plugin::LaunchMode::Terminal
-                    };
-                    let config = phux_config::loader::config_path();
-                    let resolved = phux_plugin::resolve_launch(
-                        &config,
-                        integration,
-                        &[],
-                        Path::new(&cwd),
-                        mode,
-                    );
-                    let resolved = match resolved {
-                        Err(phux_plugin::LaunchError::NoNativeLaunch { .. })
-                            if preference == LaunchPreference::Native =>
-                        {
-                            phux_plugin::resolve_launch(
-                                &config,
-                                integration,
-                                &[],
-                                Path::new(&cwd),
-                                phux_plugin::LaunchMode::Terminal,
-                            )
-                        }
-                        result => result,
-                    };
-                    resolved.map_err(|err| format!("{pane_label}: {err}"))
-                })
-                .transpose()?
-        };
-        let native_launch = resolved.as_ref().and_then(|launch| {
-            launch
-                .native
-                .as_ref()
-                .map(|native| phux_protocol::native_agent::SpawnNativeAgent {
-                    session: String::new(),
-                    backend: native.backend.as_str().to_owned(),
-                    provider: native.provider.clone(),
-                    command: launch.argv.clone(),
-                    cwd: Some(cwd.clone()),
-                    env: env.clone(),
-                    sdk_runtime: None,
-                    node_bridge: None,
-                    native_id: None,
-                    guardian: None,
-                    guardian_key: None,
-                    guardian_expected: None,
-                })
-        });
-        compiled.push(WorkspacePane {
-            active: false,
-            title: None,
-            cwd: Some(cwd),
-            command: if native_launch.is_some() {
-                None
-            } else {
-                match resolved {
-                    Some(launch) => Some(launch.argv),
-                    None => pane_command(pane, &pane_label)?,
-                }
-            },
-            native_launch,
-            agent_session: None,
-            env,
-            cols: 0,
-            rows: 0,
-        });
+            root,
+            preference,
+        )?);
     }
     let active = match focus_pane {
         Some(id) => {
@@ -416,6 +328,106 @@ fn compile_panes(
         layout: Some(layout),
         panes: compiled,
     })
+}
+
+fn compile_pane(
+    recipe: &Recipe,
+    window: &RecipeWindow,
+    pane: &RecipePane,
+    label: &str,
+    root: &Path,
+    preference: LaunchPreference,
+) -> Result<WorkspacePane, String> {
+    let mut env = recipe.env.clone();
+    env.extend(window.env.clone());
+    env.extend(pane.env.clone());
+    if pane.integration.is_some() && (pane.command.is_some() || pane.exec) {
+        return Err(format!(
+            "{label}: `integration` cannot be combined with `command` or `exec`"
+        ));
+    }
+    let cwd = resolve_cwd(
+        root,
+        pane.cwd.as_deref().or(window.cwd.as_deref()),
+        label,
+    )?;
+    let resolved =
+        resolve_pane_integration(pane.integration.as_deref(), &cwd, label, preference)?;
+    let mut compiled = WorkspacePane {
+        active: false,
+        title: None,
+        cwd: Some(cwd),
+        command: None,
+        native_launch: None,
+        agent_session: None,
+        env,
+        cols: 0,
+        rows: 0,
+    };
+    match resolved {
+        Some(launch) => {
+            if let Some(native) = launch.native {
+                compiled.native_launch = Some(phux_protocol::native_agent::SpawnNativeAgent {
+                    session: String::new(),
+                    backend: native.backend.as_str().to_owned(),
+                    provider: native.provider,
+                    command: launch.argv,
+                    cwd: compiled.cwd.clone(),
+                    env: compiled.env.clone(),
+                    sdk_runtime: None,
+                    node_bridge: None,
+                    native_id: None,
+                    guardian: None,
+                    guardian_key: None,
+                    guardian_expected: None,
+                });
+            } else {
+                compiled.command = Some(launch.argv);
+            }
+        }
+        None => compiled.command = pane_command(pane, label)?,
+    }
+    Ok(compiled)
+}
+
+fn resolve_pane_integration(
+    integration: Option<&str>,
+    cwd: &str,
+    label: &str,
+    preference: LaunchPreference,
+) -> Result<Option<phux_plugin::ResolvedLaunch>, String> {
+    let Some(integration) = integration else {
+        return Ok(None);
+    };
+    if integration.is_empty() || integration.contains('\0') {
+        return Err(format!(
+            "{label}: `integration` must name a declared integration"
+        ));
+    }
+    let mode = match preference {
+        LaunchPreference::Validate => return Ok(None),
+        LaunchPreference::Terminal => phux_plugin::LaunchMode::Terminal,
+        LaunchPreference::Native => phux_plugin::LaunchMode::Native,
+    };
+    let config = phux_config::loader::config_path();
+    let resolved = phux_plugin::resolve_launch(&config, integration, &[], Path::new(cwd), mode);
+    let resolved = match resolved {
+        Err(phux_plugin::LaunchError::NoNativeLaunch { .. })
+            if preference == LaunchPreference::Native =>
+        {
+            phux_plugin::resolve_launch(
+                &config,
+                integration,
+                &[],
+                Path::new(cwd),
+                phux_plugin::LaunchMode::Terminal,
+            )
+        }
+        result => result,
+    };
+    resolved
+        .map(Some)
+        .map_err(|err| format!("{label}: {err}"))
 }
 
 /// Splice pane `index` into `layout` beside its split target. The first pane
