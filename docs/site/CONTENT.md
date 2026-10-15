@@ -121,9 +121,10 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The landing at `src/pages/index.astro` stays minimal: a short top bar, headline,
-one product tour, three capabilities, and the floating CLI / Desktop / Mobile
-install switcher. Mobile is the iPhone TestFlight request; the release-update
+The landing at `src/pages/index.astro` stays minimal: a short top bar, an
+outcome-led headline with a direct live-demo link, one product tour with its
+sandbox invitation, three capabilities, and the floating CLI / Desktop / Mobile
+install switcher below the tour. Mobile is the iPhone TestFlight request; the release-update
 signup lives on `/more`. Add a section only when it replaces one.
 
 `<HeroDemo client:load>` renders the product tour and owns the hosted
@@ -140,10 +141,11 @@ timings, not latency or benchmark claims. Selecting a chapter skips straight to
 walkthrough pacing. Playback runs only while visible with motion allowed and
 can be paused. Reduced motion and no-JS show each
 chapter's settled state without playback. Faint background hosts supply depth,
-not live telemetry or additional story steps. Hovering or focusing the artwork
-fades a full-bleed overlay over the reel with a shell invitation, and downloads
-only the React terminal wrapper; it never authenticates, downloads WASM, or
-allocates a session. Clicking the artwork
+not live telemetry or additional story steps. Chapter headings, output entrances,
+and client emphasis follow the scripted state. The invitation stays visible
+below the artwork on every input type; it never blurs or covers the story.
+Hovering or focusing the artwork downloads only the React terminal wrapper;
+it never authenticates, downloads WASM, or allocates a session. Clicking the artwork
 or any `[data-demo-launch]` link opens the dialog; without JavaScript the link falls through to the
 standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The
@@ -165,8 +167,10 @@ requirement. Keep it honest: the shared shell follows the newest screen's size,
 an attached phone reserving nothing, and a spent or stale link failing loudly
 rather than silently serving a different session.
 
-Closing the dialog or switching runtime releases the hosted session, including
-an in-flight attach; hosted demo sessions are intentionally disposable.
+The live dialog suspends the illustrated tour. Closing it or switching runtime
+releases the hosted session, including an in-flight attach; hosted demo sessions
+are intentionally disposable. Stopping a session retires its pairing panel, and
+a replacement session starts with a fresh, collapsed panel.
 JavaScript-disabled visitors still see the picture, the standalone-shell link,
 and installation. An empty `PUBLIC_PHUX_DEMO_WS` produces an explicit not-configured state; an unreachable backend gets an
 actionable error and recovery controls. Neither failure disables the

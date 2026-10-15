@@ -345,7 +345,7 @@ function DistantHosts() {
   </div>;
 }
 
-export default function Tour({ prepare }: { prepare?: () => void }) {
+export default function Tour({ prepare, suspended = false }: { prepare?: () => void; suspended?: boolean }) {
   const root = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
   const [visible, setVisible] = useState(false);
@@ -371,7 +371,7 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
   }, []);
 
   useEffect(() => {
-    if (!playing || reduced || !visible) return;
+    if (!playing || reduced || !visible || suspended) return;
     let frame = 0;
     let previous = performance.now();
     const tick = (now: number) => {
@@ -383,14 +383,21 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing, reduced, visible]);
+  }, [playing, reduced, visible, suspended]);
 
   const frame = frameAt(position.chapter, position.time);
   const progress = Math.min(1, position.time / chapter.seconds);
 
   return (
-    <div ref={root} className="tour" data-pace={position.pace}>
+    <div ref={root} className="tour" data-pace={position.pace} data-chapter={chapter.id} data-playing={playing && !reduced && visible && !suspended}>
       <div className="tour-frame terminal-surface">
+        <header className="tour-heading">
+          <div>
+            <p className="tour-eyebrow">The phux workflow <span>0{position.chapter + 1} / 0{CHAPTERS.length}</span></p>
+            <h3 key={chapter.id}>{chapter.title}</h3>
+          </div>
+          <span className="tour-illustration">Illustrated tour</span>
+        </header>
         <div className="tour-canvas" onPointerEnter={prepare}>
           <div className="tour-stage" aria-hidden="true">
             <DistantHosts />
@@ -408,8 +415,8 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
             <span className="tour-invitation">
               <span className="tour-invitation-copy">
                 <span className="tour-invitation-glyph" aria-hidden="true">↳</span>
-                <b>This one is real.</b>
-                <span className="tour-invitation-cta">Open a shell<span aria-hidden="true"> ↗</span></span>
+                <b>Take the controls.</b>
+                <span className="tour-invitation-cta">Try the real demo<span aria-hidden="true"> ↗</span></span>
               </span>
             </span>
           </a>
@@ -446,7 +453,7 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
         </div>
       </div>
       <p className="tour-caption">
-        <strong>{chapter.title}</strong> {chapter.text}{" "}
+        {chapter.text}{" "}
         <a href={docsHref(chapter.href)}>Learn more<span className="tour-sr"> about {chapter.label.toLowerCase()}</span></a>
       </p>
       <p className="tour-note">
