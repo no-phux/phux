@@ -82,17 +82,24 @@ describe("session view fan-out", () => {
     expect(fanout.targets(frame(TYPE_ERROR, [[2, [1]]]), "phone")).toEqual(["phone"]);
   });
 
-  test("keeps one view's handshake and bootstrap out of the other view", () => {
+  test("keeps one view's handshake reply out of the other view", () => {
     const fanout = new ViewFanout<string>();
     fanout.add("desktop", 1);
     fanout.add("phone", 2);
-    // A second HELLO_OK is a protocol error to a client that already greeted,
-    // and one view's bootstrap is not the other view's screen.
+    // A second HELLO_OK is a protocol error to a client that already greeted.
     expect(fanout.targets(helloOk(), "phone")).toEqual(["phone"]);
-    expect(fanout.targets(bootstrap(), "phone")).toEqual(["phone"]);
-    expect(fanout.targets(bootstrap(), "desktop")).toEqual(["desktop"]);
     // A command result answers the request id of the view that asked.
     expect(fanout.targets(commandResult(), "phone")).toEqual(["phone"]);
+  });
+
+  test("broadcasts the bootstrap generation every view has to follow", () => {
+    const fanout = new ViewFanout<string>();
+    fanout.add("desktop", 1);
+    fanout.add("phone", 2);
+    // Output is tagged with the generation these frames declare, so a view that
+    // misses one stops accepting that terminal's output entirely.
+    expect(fanout.targets(bootstrap(), "phone")).toEqual(["desktop", "phone"]);
+    expect(fanout.targets(bootstrap(), "desktop")).toEqual(["desktop", "phone"]);
   });
 
   test("lets only the newest connection resize the shared terminal", () => {

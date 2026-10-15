@@ -23,24 +23,27 @@ import {
   attachIdOf,
   frameType,
   TYPE_ATTACH,
-  TYPE_BOOTSTRAP_BEGIN,
-  TYPE_BOOTSTRAP_CHUNK,
-  TYPE_BOOTSTRAP_READY,
   TYPE_COMMAND_RESULT,
   TYPE_DETACHED,
+  TYPE_PONG,
   TYPE_ERROR,
   TYPE_HELLO_OK,
-  TYPE_PONG,
   TYPE_RESIZE_TERMINAL,
 } from "./wire";
 
 /**
  * Frames that answer the connection that asked, not the session: a handshake
- * reply, a command result keyed by the requester's correlation id, or the
- * bootstrap one view streams for itself. A second view either cannot use them
- * (its request ids are its own) or is actively wrong to receive them — a
- * broadcast `HELLO_OK` is a protocol error to a client that already greeted,
- * which is how a second view once took the first one down.
+ * reply, a command result keyed by the requester's correlation id, or a detach
+ * acknowledgement. A second view cannot use them (its request ids are its own)
+ * or is actively wrong to receive them — a broadcast `HELLO_OK` is a protocol
+ * error to a client that already greeted, which is how a second view once took
+ * the first one down.
+ *
+ * Bootstrap frames are deliberately NOT here. They declare the replica
+ * generation a terminal's output is tagged with, and every subscribed view has
+ * to follow it: a view that misses a generation stops accepting that terminal's
+ * `ResourceOutput` (the kernel validates `bootstrap_id`/`stream_id`/`seq`), which
+ * is exactly what starves a screen when a second view attaches.
  */
 const PER_CONNECTION = new Set([
   TYPE_HELLO_OK,
@@ -48,9 +51,6 @@ const PER_CONNECTION = new Set([
   TYPE_COMMAND_RESULT,
   TYPE_PONG,
   TYPE_DETACHED,
-  TYPE_BOOTSTRAP_BEGIN,
-  TYPE_BOOTSTRAP_CHUNK,
-  TYPE_BOOTSTRAP_READY,
 ]);
 
 export class ViewFanout<T> {

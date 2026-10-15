@@ -25,7 +25,27 @@ function report(name: string, ok: boolean, detail = "") {
 const paneCount = (page: Page) =>
   page.locator(".pterm-pane-count").first().innerText();
 
-async function waitFor(found: () => Promise<boolean>, what: string, timeoutMs = 15_000) {
+/** Raw terminal output this page's WebSocket has received (VT bytes as text). */
+function trackedOutput(page: Page): () => string {
+  let text = "";
+  page.on("websocket", (socket) => {
+    socket.on("framereceived", ({ payload }) => {
+      text += payload.toString();
+    });
+  });
+  return () => text;
+}
+
+/** Type at the terminal in this view, as a person would. */
+async function typeIn(page: Page, text: string): Promise<void> {
+  const canvas = page.locator("canvas[data-phux-pane-count]").first();
+  await canvas.waitFor({ timeout: 20_000 });
+  await canvas.click();
+  await page.keyboard.type(text);
+  await page.keyboard.press("Enter");
+}
+
+async function waitFor(found: () => boolean | Promise<boolean>, what: string, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await found()) return true;
@@ -69,6 +89,7 @@ try {
   const desktop: BrowserContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await desktop.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
   const wide = await desktop.newPage();
+  const desktopText = trackedOutput(wide);
   await openHostedShell(wide);
   report("desktop: hosted shell is live", true);
 
@@ -96,6 +117,7 @@ try {
     isMobile: true,
   });
   const handset = await phone.newPage();
+  const phoneText = trackedOutput(handset);
   await handset.goto(link);
   await liveTerminal(handset);
   report("phone: the paired shell renders", await handset.locator(".pterm").first().isVisible());
@@ -116,19 +138,18 @@ try {
     ),
   );
 
-  // One session, two screens: what the phone spawns, the desktop sees.
-  await handset.getByRole("button", { name: "Split pane left/right" }).click();
+  // One session, two screens: what one view types, the other view receives. The
+  // panes are per view (each screen keeps its own layout over the shared
+  // terminals), so terminal output — not pane count — is what crosses.
+  await typeIn(handset, "echo PHUX_FROM_PHONE");
   report(
-    "phone → desktop: a pane spawned on the phone appears on the desktop",
-    await waitFor(async () => (await paneCount(wide)).startsWith("2 / 4"), "the desktop pane count"),
-    await paneCount(wide),
+    "phone → desktop: output typed on the phone reaches the desktop shell",
+    await waitFor(() => desktopText().includes("PHUX_FROM_PHONE"), "the phone's output on the desktop"),
   );
-
-  await wide.getByRole("button", { name: "Split pane left/right" }).click();
+  await typeIn(wide, "echo PHUX_FROM_DESKTOP");
   report(
-    "desktop → phone: a pane spawned on the desktop appears on the phone",
-    await waitFor(async () => (await paneCount(handset)).startsWith("3 / 4"), "the phone pane count"),
-    await paneCount(handset),
+    "desktop → phone: output typed on the desktop reaches the phone shell",
+    await waitFor(() => phoneText().includes("PHUX_FROM_DESKTOP"), "the desktop's output on the phone"),
   );
 
   await phone.close();
