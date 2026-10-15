@@ -692,6 +692,7 @@ fn native_conversation_face_is_rendered() {
             phux_desktop::app::AppOptions {
                 socket: socket.clone(),
                 session: "conversation-pixels".into(),
+                dev_telemetry: false,
                 phux: binary.clone(),
                 layout_path: root.join("layout.json"),
                 fresh: false,

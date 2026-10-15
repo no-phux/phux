@@ -17,6 +17,7 @@
 //!   drawable-presented evidence for qualification runs.
 
 pub mod app;
+pub mod assets;
 pub mod attach;
 pub mod chrome;
 pub mod connection;
