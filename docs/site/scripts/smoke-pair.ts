@@ -13,12 +13,11 @@ import {
   ATTACH_FRAME,
   HELLO_FRAME,
   TYPE_ERROR,
-  TYPE_HELLO_OK,
   frameType,
   inputTextFrames,
   parseTerminalPayload,
 } from "./phux-wire";
-import { TYPE_ATTACHED, TYPE_ATTACH_READY } from "../worker/src/wire";
+import { TYPE_ATTACHED, TYPE_ATTACH_READY, TYPE_HELLO_OK } from "../worker/src/wire";
 import { parseSessionInfo, type SessionInfo } from "../worker/src/session-info";
 
 const endpoint =
@@ -90,6 +89,8 @@ interface View {
   envelope: SessionInfo;
   terminalId: Uint8Array;
   output: () => string;
+  /** Count of frames of one type this view has received. */
+  seen: (type: number) => number;
   close: () => void;
 }
 
@@ -111,6 +112,7 @@ function open(label: string, attach: string, attachId: number): Promise<View> {
   let terminalId: Uint8Array | undefined;
   let helloOk = false;
   let addressed = 0;
+  const counts = new Map<number, number>();
 
   return new Promise<View>((resolve, reject) => {
     const timeout = setTimeout(
@@ -122,6 +124,21 @@ function open(label: string, attach: string, attachId: number): Promise<View> {
         ),
       timeoutMs,
     );
+    // A view is ready when the session has addressed it *and* it has painted
+    // something. Those arrive in different frames in either order, so this is
+    // checked after each one rather than inside the output branch.
+    const settle = () => {
+      if (!envelope || !terminalId || addressed < 2) return;
+      clearTimeout(timeout);
+      resolve({
+        socket,
+        envelope,
+        terminalId,
+        output: () => text,
+        seen: (type: number) => counts.get(type) ?? 0,
+        close: () => socket.close(1000, "smoke complete"),
+      });
+    };
     socket.addEventListener("message", (event) => {
       if (!envelope) {
         if (typeof event.data !== "string") {
@@ -139,6 +156,7 @@ function open(label: string, attach: string, attachId: number): Promise<View> {
       if (!(event.data instanceof ArrayBuffer)) return;
       const frame = new Uint8Array(event.data);
       const type = frameType(frame);
+      if (type !== undefined) counts.set(type, (counts.get(type) ?? 0) + 1);
       if (type === TYPE_ERROR) {
         reject(new Error(`${label} received a protocol error`));
         return;
@@ -158,23 +176,15 @@ function open(label: string, attach: string, attachId: number): Promise<View> {
       }
       // The session answers ATTACH with ATTACHED, this view's bootstrap, and
       // ATTACH_READY. Those two addressed frames must reach *this* view: if the
-      // routing loses them the real client stalls on "protocol attach timed out",
-      // so the smoke refuses to call a view ready without them.
+      // routing loses them the real client stalls on "protocol attach timed
+      // out", so the smoke refuses to call a view ready without them.
       if (type === TYPE_ATTACHED || type === TYPE_ATTACH_READY) addressed += 1;
       const payload = parseTerminalPayload(frame);
-      if (!payload) return;
-      terminalId ??= payload.terminalId;
-      text += new TextDecoder().decode(payload.bytes);
-      if (terminalId && envelope && addressed >= 2) {
-        clearTimeout(timeout);
-        resolve({
-          socket,
-          envelope,
-          terminalId,
-          output: () => text,
-          close: () => socket.close(1000, "smoke complete"),
-        });
+      if (payload) {
+        terminalId ??= payload.terminalId;
+        text += new TextDecoder().decode(payload.bytes);
       }
+      settle();
     });
     socket.addEventListener("error", () =>
       reject(new Error(`${label} failed to connect`)),
@@ -228,6 +238,15 @@ if (phone.envelope.pair) fail("the paired view was handed its own attach code");
 if (phone.envelope.backend !== desktop.envelope.backend)
   fail("the two views disagree about their backend");
 console.log(`pair_smoke attached_second_view backend=${phone.envelope.backend}`);
+
+// A handshake reply belongs to the connection that asked. Broadcasting one
+// view's HELLO_OK to another is a protocol error to the real client, which then
+// closes the socket and takes the session with it.
+if (desktop.seen(TYPE_HELLO_OK) !== 1)
+  fail(`the first view saw ${desktop.seen(TYPE_HELLO_OK)} handshake replies`);
+if (phone.seen(TYPE_HELLO_OK) !== 1)
+  fail(`the paired view saw ${phone.seen(TYPE_HELLO_OK)} handshake replies`);
+console.log("pair_smoke handshake_frames_addressed=true");
 
 // Typing on the phone has to come back on the desktop: one shell, two screens.
 for (const frame of inputTextFrames(phone.terminalId, command)) {

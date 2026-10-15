@@ -4,7 +4,9 @@ import {
   TYPE_ATTACH,
   TYPE_ATTACHED,
   TYPE_ATTACH_READY,
+  TYPE_BOOTSTRAP_CHUNK,
   TYPE_ERROR,
+  TYPE_HELLO_OK,
   TYPE_RESIZE_TERMINAL,
 } from "./wire";
 
@@ -48,6 +50,8 @@ const attached = (id: number) => frame(TYPE_ATTACHED, [[3, u32(id)]]);
 const attachReady = (id: number) => frame(TYPE_ATTACH_READY, [[1, u32(id)]]);
 const output = () => frame(0x90, [[1, u32(3)], [3, [104, 105]]]);
 const resize = () => frame(TYPE_RESIZE_TERMINAL, [[1, u32(3)], [2, u32(46)]]);
+const helloOk = () => frame(TYPE_HELLO_OK, [[1, [1]]]);
+const bootstrap = () => frame(TYPE_BOOTSTRAP_CHUNK, [[1, u32(3)], [5, [27, 91, 50, 74]]]);
 
 describe("session view fan-out", () => {
   test("addresses attachment frames to the socket that attached", () => {
@@ -69,11 +73,22 @@ describe("session view fan-out", () => {
     expect(fanout.targets(output(), "phone")).toEqual(["desktop", "phone"]);
   });
 
-  test("sends protocol errors back to the view that caused them", () => {
+  test("sends errors back to the view that caused them", () => {
     const fanout = new ViewFanout<string>();
     fanout.add("desktop", 1);
     fanout.add("phone", 2);
     expect(fanout.targets(frame(TYPE_ERROR, [[2, [1]]]), "phone")).toEqual(["phone"]);
+  });
+
+  test("keeps one view's handshake and bootstrap out of the other view", () => {
+    const fanout = new ViewFanout<string>();
+    fanout.add("desktop", 1);
+    fanout.add("phone", 2);
+    // A second HELLO_OK is a protocol error to a client that already greeted,
+    // and one view's bootstrap is not the other view's screen.
+    expect(fanout.targets(helloOk(), "phone")).toEqual(["phone"]);
+    expect(fanout.targets(bootstrap(), "phone")).toEqual(["phone"]);
+    expect(fanout.targets(bootstrap(), "desktop")).toEqual(["desktop"]);
   });
 
   test("lets only the newest connection resize the shared terminal", () => {

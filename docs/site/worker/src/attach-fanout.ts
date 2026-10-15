@@ -23,9 +23,31 @@ import {
   attachIdOf,
   frameType,
   TYPE_ATTACH,
+  TYPE_BOOTSTRAP_BEGIN,
+  TYPE_BOOTSTRAP_CHUNK,
+  TYPE_BOOTSTRAP_READY,
+  TYPE_DETACHED,
   TYPE_ERROR,
+  TYPE_HELLO_OK,
+  TYPE_PONG,
   TYPE_RESIZE_TERMINAL,
 } from "./wire";
+
+/**
+ * Frames that answer the connection that asked, not the session: one view's
+ * handshake reply (`HELLO_OK`) or one view's bootstrap is meaningless or
+ * actively wrong for another view. A broadcast `HELLO_OK` is a protocol error
+ * to the real client, which is how a second view once took the first one down.
+ */
+const PER_CONNECTION = new Set([
+  TYPE_HELLO_OK,
+  TYPE_ERROR,
+  TYPE_PONG,
+  TYPE_DETACHED,
+  TYPE_BOOTSTRAP_BEGIN,
+  TYPE_BOOTSTRAP_CHUNK,
+  TYPE_BOOTSTRAP_READY,
+]);
 
 export class ViewFanout<T> {
   private readonly views = new Map<T, number>();
@@ -92,7 +114,10 @@ export class ViewFanout<T> {
 
   /** Where one server frame goes: one socket, every view, or nowhere. */
   targets(frame: Uint8Array, sender: T): T[] {
-    if (frameType(frame) === TYPE_ERROR) return [sender];
+    const type = frameType(frame);
+    // Replies to the connection that asked: they answer this view's handshake or
+    // describe this view's bootstrap, so another view must never see them.
+    if (type !== undefined && PER_CONNECTION.has(type)) return [sender];
     const attachId = attachIdOf(frame);
     if (attachId === undefined) return this.all();
     const owner = this.owners.get(attachId);

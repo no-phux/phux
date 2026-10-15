@@ -38,16 +38,38 @@ async function waitFor(found: () => Promise<boolean>, what: string, timeoutMs = 
 }
 
 async function liveTerminal(page: Page) {
-  await page.locator('.pterm[data-status="live"]').first().waitFor({ timeout: 30_000 });
+  try {
+    await page.locator('.pterm[data-status="live"]').first().waitFor({ timeout: 30_000 });
+  } catch (error) {
+    // Say what the screen was actually doing instead of only "not live".
+    const status = await page.locator(".pterm").first().getAttribute("data-status").catch(() => "no .pterm");
+    const overlay = (await page.locator(".pterm-overlay").first().innerText().catch(() => "")).replace(/\n/g, " | ");
+    const dialog = await page.locator("dialog[open]").count();
+    console.error(
+      `verify-pair: no live terminal — status=${status} dialog=${dialog} overlay="${overlay.slice(0, 120)}" url=${page.url()}`,
+    );
+    throw error;
+  }
+}
+
+/**
+ * Open the hosted shell from the landing page. The dialog is opened by a
+ * hydrated island's document listener, so the click has to come after hydration:
+ * before that the link falls through to its href (/embed, sign-in mode).
+ */
+async function openHostedShell(page: Page) {
+  await page.goto(BASE);
+  await page.locator("astro-island:not([ssr])").first().waitFor({ timeout: 20_000 });
+  await page.getByRole("link", { name: /Try it in your browser/ }).click();
+  await page.locator("dialog[open]").waitFor({ timeout: 10_000 });
+  await liveTerminal(page);
 }
 
 try {
   const desktop: BrowserContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await desktop.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
   const wide = await desktop.newPage();
-  await wide.goto(BASE);
-  await wide.getByRole("link", { name: /Try it in your browser/ }).click();
-  await liveTerminal(wide);
+  await openHostedShell(wide);
   report("desktop: hosted shell is live", true);
 
   // The pairing line appears with the session envelope, before anyone asks.

@@ -164,7 +164,11 @@ export class SessionDO extends DurableObject<Env> {
 
     const boot = await this.ctx.storage.get<BootRecord>(BOOT_KEY);
     if (!boot || boot.version !== 1 || boot.sid !== sid) {
-      return this.reject(CLOSE.UNAUTHORIZED, "session was not prepared");
+      // A pairing link outliving its session should send the visitor back to the
+      // landing page, not to a sign-in prompt: the session is what ended.
+      return attach
+        ? this.reject(CLOSE.BAD_REQUEST, "the session has ended")
+        : this.reject(CLOSE.UNAUTHORIZED, "session was not prepared");
     }
     if (attach) return this.attachView(boot, token);
     if (boot.status !== "prepared") {
