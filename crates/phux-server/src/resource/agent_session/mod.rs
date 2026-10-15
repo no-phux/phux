@@ -340,6 +340,32 @@ impl AgentSessionActor {
         }
     }
 
+    /// Resolve a native identity before seal and record validation: acknowledged
+    /// retries return their original stamps without projecting evidence again.
+    fn native_append_replay(
+        &self,
+        identity: &NativeAppendIdentity,
+    ) -> Option<Result<AppendAccepted, AppendRejection>> {
+        if let Some(prior) = self
+            .native_publications
+            .iter()
+            .find(|prior| prior.identity.id == identity.id)
+        {
+            return Some(if prior.identity == *identity {
+                Ok(prior.accepted.clone())
+            } else {
+                Err(AppendRejection::Overflow(
+                    "native publication identity conflicts with its payload".into(),
+                ))
+            });
+        }
+        (identity.id <= self.native_publication_high_water).then(|| {
+            Err(AppendRejection::Overflow(
+                "native publication receipt expired; identity cannot be replayed".into(),
+            ))
+        })
+    }
+
     /// Validate, stamp, retain, and broadcast one append, all-or-nothing.
     /// Records share the append's timestamp and ship in one
     /// [`PaneOutput::Live`] sequenced by the last record.
@@ -349,28 +375,12 @@ impl AgentSessionActor {
             reply,
             publication,
         } = request;
-        if let Some(identity) = &publication {
-            if let Some(prior) = self
-                .native_publications
-                .iter()
-                .find(|prior| prior.identity.id == identity.id)
-            {
-                let result = if prior.identity == *identity {
-                    Ok(prior.accepted.clone())
-                } else {
-                    Err(AppendRejection::Overflow(
-                        "native publication identity conflicts with its payload".into(),
-                    ))
-                };
-                let _ = reply.send(result);
-                return;
-            }
-            if identity.id <= self.native_publication_high_water {
-                let _ = reply.send(Err(AppendRejection::Overflow(
-                    "native publication receipt expired; identity cannot be replayed".into(),
-                )));
-                return;
-            }
+        if let Some(result) = publication
+            .as_ref()
+            .and_then(|identity| self.native_append_replay(identity))
+        {
+            let _ = reply.send(result);
+            return;
         }
         if self.sealed {
             let _ = reply.send(Err(AppendRejection::Overflow(

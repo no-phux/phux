@@ -1028,12 +1028,7 @@ async fn dispatch_local(
             // Absent is `{ PRIMARY, NEVER }` (ADR-0127); an invalid policy
             // was refused before routing.
             let role = role_policy.unwrap_or_default();
-            let is_terminal = state.with(|s| {
-                s.terminal_from_wire(&terminal_id)
-                    .and_then(|core| s.resource_handle(core))
-                    .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
-            });
-            if ctx.defer_subscription && is_terminal {
+            if uses_deferred_terminal_attach(ctx, &terminal_id) {
                 // Content starts at STREAM_BIND on the stream's mailbox.
                 subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
@@ -1226,6 +1221,17 @@ async fn dispatch_local(
             message: "command not supported by this server".to_owned(),
         },
     }
+}
+
+fn uses_deferred_terminal_attach(ctx: &CommandContext, terminal_id: &ResourceId) -> bool {
+    // AgentSession streams keep their replay cursor and never enter the
+    // Terminal-only deferred STREAM_BIND subscription path.
+    let is_terminal = ctx.state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .and_then(|core| s.resource_handle(core))
+            .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
+    });
+    ctx.defer_subscription && is_terminal
 }
 
 /// The attribution a kill stamps on the `pane_closed` of everything it

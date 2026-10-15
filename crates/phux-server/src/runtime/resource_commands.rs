@@ -280,11 +280,10 @@ pub(crate) async fn handle_append_resource_output(
     }
     // A non-native producer cannot masquerade as a registered SDK controller
     // merely by emitting the reserved provider_raw schema on an attached stream.
-    let forged = std::str::from_utf8(&bytes).ok().is_some_and(|text| {
+    let forged = std::str::from_utf8(&bytes).is_ok_and(|text| {
         text.lines().any(|line| {
             serde_json::from_str::<serde_json::Value>(line)
-                .ok()
-                .is_some_and(|record| {
+                .is_ok_and(|record| {
                     record["data"]["schema"].as_str()
                         == Some(phux_protocol::native_agent::NATIVE_SCHEMA)
                 })

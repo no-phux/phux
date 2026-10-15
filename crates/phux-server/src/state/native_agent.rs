@@ -1,7 +1,12 @@
 //! SDK controller reservations, operation identity, and upgrade recovery.
 use super::{ClientId, ServerState};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::native_agent::*;
+use phux_protocol::native_agent::{
+    MAX_NATIVE_OPERATIONS, MAX_NATIVE_PENDING, MAX_NATIVE_QUESTIONS, NATIVE_HOST_SPEC_ENV,
+    NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativePublicationReceipt,
+    NativeQuestion, NativeState, NativeUpdate, NativeView, SpawnNativeAgent, validate_answer,
+    validate_payload,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -18,7 +23,7 @@ pub struct NativeOperation {
     pub submitted: bool,
     pub requester: u64,
 }
-fn assume_submitted() -> bool {
+const fn assume_submitted() -> bool {
     true
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,18 +237,15 @@ impl NativeBinding {
         if result.disposition == NativeDisposition::Refused
             && operation.command.activation == self.activation
             && !operation.submitted
+            && let NativeIntent::Answer { question_id, .. } = &operation.command.intent
+            && self
+                .view
+                .questions
+                .iter()
+                .any(|question| &question.id == question_id)
+            && self.answered.get(question_id) == Some(&result.operation_id)
         {
-            if let NativeIntent::Answer { question_id, .. } = &operation.command.intent {
-                if self
-                    .view
-                    .questions
-                    .iter()
-                    .any(|question| &question.id == question_id)
-                    && self.answered.get(question_id) == Some(&result.operation_id)
-                {
-                    self.answered.remove(question_id);
-                }
-            }
+            self.answered.remove(question_id);
         }
         if matches!(
             result.disposition,
@@ -324,10 +326,10 @@ fn validate_question(question: &NativeQuestion) -> Result<(), String> {
     validate_payload(question)
 }
 impl ServerState {
-    pub(crate) fn native_agents(&self) -> &NativeAgents {
+    pub(crate) const fn native_agents(&self) -> &NativeAgents {
         &self.native_agents
     }
-    pub(crate) fn native_agents_mut(&mut self) -> &mut NativeAgents {
+    pub(crate) const fn native_agents_mut(&mut self) -> &mut NativeAgents {
         &mut self.native_agents
     }
     pub(crate) fn native_owned_terminal(&self, parent: phux_core::ids::ResourceId) -> bool {
@@ -368,7 +370,10 @@ impl ServerState {
                 ) {
                     continue;
                 }
-                if !operation.delivered {
+                if operation.delivered {
+                    operation.result.disposition = NativeDisposition::Unknown;
+                    operation.result.detail = Some("daemon upgraded after dispatch; host receipt required, no automatic replay".into());
+                } else {
                     operation.result.disposition = NativeDisposition::Refused;
                     operation.result.detail = Some(
                         "daemon upgraded before dispatch; original connection authority ended"
@@ -377,9 +382,6 @@ impl ServerState {
                     if let NativeIntent::Answer { question_id, .. } = &operation.command.intent {
                         binding.answered.remove(question_id);
                     }
-                } else {
-                    operation.result.disposition = NativeDisposition::Unknown;
-                    operation.result.detail = Some("daemon upgraded after dispatch; host receipt required, no automatic replay".into());
                 }
             }
             if let Some(publication) = binding
