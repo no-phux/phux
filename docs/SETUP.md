@@ -165,14 +165,17 @@ Two things keep a crate reusable across worktrees, and both are enforced:
   that is set, else `~/Library/Caches` (macOS) or `~/.cache`, and copies the
   install tree into `OUT_DIR`.
   `LIBGHOSTTY_VT_SYS_CACHE_DIR` moves it; set it empty to build in `OUT_DIR`.
-- On Linux the Nix devshell skips that build: it sets
-  `LIBGHOSTTY_VT_SYS_LIB_DIR` to the flake's `libghostty-vt` package, which
-  Cachix serves, and the build script links that archive without running Zig.
-  The package is the default flavor (`baseline` CPU, the optimize mode in
-  `.cargo/config.toml`), so a shell that sets another `LIBGHOSTTY_VT_SYS_CPU`
-  or `LIBGHOSTTY_VT_SYS_OPTIMIZE` builds from source. `just ghostty-pin-check`
-  keeps its Ghostty input on the commit the pinned libghostty-rs builds.
-  macOS always builds from source.
+- The Nix devshell skips that build: it sets `LIBGHOSTTY_VT_SYS_LIB_DIR` to
+  the flake's `libghostty-vt` package, which Cachix serves, and the build
+  script links that archive without running Zig. The package is the default
+  flavor (`baseline` CPU, the optimize mode in `.cargo/config.toml`, and on
+  macOS Ghostty's own deployment floor), so a shell that sets another
+  `LIBGHOSTTY_VT_SYS_CPU` or `LIBGHOSTTY_VT_SYS_OPTIMIZE` builds from source.
+  `just ghostty-pin-check` keeps its Ghostty input on the commit the pinned
+  libghostty-rs builds. On macOS the package builds against nixpkgs' Apple SDK
+  with no host Xcode, and the Apple cross-compile scripts
+  (`scripts/lib/apple-toolchain-env.sh`) drop the variable so iOS and
+  Xcode-SDK slices still build their own.
 
 On Linux, keep mbx's cache directory on a filesystem with reflinks (ext4 falls
 back to read-only hard links). Rust build output compresses well, so a

@@ -70,6 +70,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 |---|---|---|
 | Pull request CI | `pull_request`, `merge_group` | Compile-free guards always run; Rust and Node integration lanes run for their dependency inputs. Draft PRs skip until ready. |
 | Browser CI | shared classifier on PR/main, manual | Node adapters/session tests, shipping package, and three real Chrome canvas/live-server tests. Only engine inputs reproduce the committed WASM binary. |
+| Darwin Nix cache | flake or Zig-pin inputs on PR/main, manual | `nix-darwin-cache.yml` builds the flake's `libghostty-vt` on `xcode-27` and pushes it to Cachix; the Linux archive rides the Rust lanes' devshell. |
 | Native setup | setup inputs, weekly, manual | Uncached native setup/linker assurance; ordinary Rust source changes use the product lanes. |
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title. Live rules require `ci` and `commitlint` (verified 2026-09-09). |
 | pr-janitor | `pull_request` `closed`, or manual dispatch with a PR number | Cancels the closed PR's still-live runs to free standard/macOS concurrency, then deletes its `refs/pull/N/merge` caches to free the 10 GB repository cap. See "Cache budget". |
