@@ -1,17 +1,17 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-18
+last-reviewed: 2026-10-15
 ---
 
 # Transport abstraction
 
 **TL;DR.** One length-prefixed frame codec runs over Unix domain sockets,
 WebSocket, QUIC, WebTransport, and SSH-stdio. Server listeners yield
-`FrameReader` / `FrameWriter` pairs; the client wraps its three lanes in
-enums behind `Connection`. There is no shared `Transport` trait. The attach
-loop and federation hub share outbound QUIC and WebSocket establishment
-through `phux-dial`.
+`FrameReader` / `FrameWriter` pairs; the client runtime wraps its three
+lanes in one framed link behind its driver and one-shot `Session`. There is
+no shared `Transport` trait. The client runtime and the federation hub share
+outbound QUIC and WebSocket establishment through `phux-dial`.
 
 ---
 
@@ -38,12 +38,14 @@ without naming a concrete stream.
   coverage checks, and the rustls / quinn / wtransport server configs the
   TLS listeners share.
 
-**Client side** (`phux-client::attach::connection`). `Dial` names the lane
-(`Uds(PathBuf)`, `Quic(QuicDial)`, `Ws(WsDial)`); `Connection` holds a
-`FrameReader` and `FrameWriter` enum with one variant per lane and does
-HELLO negotiation, length-prefixed I/O, and the bootstrap-profile bookkeeping
-over them. `phux-tui` drives that connection; every headless verb and
-`phux-mcp` reach it through `phux-client`.
+**Client side** (`phux-client-runtime`, ADR-0171). `dial::Dial` names the
+lane (`Uds(PathBuf)`, `Quic(QuicDial)`, `Ws(WsDial)`) and
+`connection::establish` turns it into the one framed link that the
+reconnecting driver and the one-shot `session::Session` both read and write
+([`client-runtime.md`](./client-runtime.md)). `phux-client`'s
+`attach::connection::Connection` is a facade over a `Session`; `phux-tui`
+drives it, and every headless verb and `phux-mcp` reach it through
+`phux-client`.
 
 **On-demand QUIC listeners** (ADR-0120). Besides the listeners bound at
 startup, a server opens a QUIC listener at runtime when its owner sends

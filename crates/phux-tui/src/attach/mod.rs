@@ -67,7 +67,7 @@ pub mod update_notice;
 // The headless attach vocabulary, owned by `phux_client` (ADR-0100).
 pub use phux_client::attach::{
     AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial, connection,
-    input, input_replay, outcome, quic, ws,
+    input, input_replay, outcome,
 };
 
 pub use driver::{

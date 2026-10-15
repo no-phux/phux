@@ -134,7 +134,8 @@ the session alike. On top it adds what request/reply callers need: correlated
 requests that return the frames interleaved ahead of each answer, corked
 batches on a Unix socket, the QUIC per-terminal streams of proto.md §4.2 with
 the viewport ordering barrier, and `SessionError`, whose variants mirror
-`phux-client`'s transport errors one for one. A relayed QUIC dial stays on the
+`phux-client`'s transport errors one for one. `phux-client`'s `Connection` is
+a facade over this type and holds no transport of its own. A relayed QUIC dial stays on the
 single-stream shape, so only a plain QUIC link offers `quic_streams`.
 
 ## Where a connected binding takes delivery

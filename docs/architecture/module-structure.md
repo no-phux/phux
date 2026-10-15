@@ -150,8 +150,10 @@ over its functions ([`../consumers/sdk.md`](../consumers/sdk.md)).
 
 ```
 src/
-  attach/         — Dial (UDS / QUIC / WS), frame I/O, HELLO, stdin parser,
-                    acknowledged-input replay journal, AttachError / AttachEnd
+  attach/         — Connection, the facade over the runtime's one-shot
+                    session (ADR-0171: no socket, framing, or handshake
+                    code here), stdin parser, acknowledged-input replay
+                    journal, AttachError / AttachEnd
   selector.rs     — TARGET resolution (ADR-0021)
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs, ask.rs,
   spatial.rs, layout_ops.rs, spawn.rs, kill.rs, signal.rs, detach.rs,

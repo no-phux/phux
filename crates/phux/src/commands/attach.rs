@@ -1448,7 +1448,7 @@ fn quic_trust(
 /// Decode a hex bearer token for the QUIC preamble.
 fn parsed_quic_token(token: Option<String>) -> Result<Option<Vec<u8>>, DialRefusal> {
     token
-        .map(|token| attach::quic::parse_token_hex(&token))
+        .map(|token| phux_dial::quic::parse_token_hex(&token))
         .transpose()
         .map_err(|err| DialRefusal::BadToken(err.to_string()))
 }
@@ -1461,8 +1461,8 @@ pub(crate) fn plan_ws_dial(
     cert_fingerprint: Option<String>,
     tls_server_name: Option<String>,
 ) -> Result<DialPlan, DialRefusal> {
-    let target =
-        attach::ws::WsTarget::parse(&url).map_err(|err| DialRefusal::Malformed(err.to_string()))?;
+    let target = phux_dial::ws::WsTarget::parse(&url)
+        .map_err(|err| DialRefusal::Malformed(err.to_string()))?;
     require_ws_dial_credentials(&target, &url, token.as_deref(), cert_fingerprint.as_deref())?;
     let token = validated_ws_token(token)?;
     let trust = cert_fingerprint.map_or(CertTrust::SkipVerify, CertTrust::Pinned);
@@ -1545,7 +1545,7 @@ fn run_attach_ws_outcome(
 /// Refuse a WebSocket dial that leaves the machine without a TLS pin or a
 /// bearer token (or at all in plaintext), naming the flag that clears each.
 fn require_ws_dial_credentials(
-    target: &attach::ws::WsTarget,
+    target: &phux_dial::ws::WsTarget,
     url: &str,
     token: Option<&str>,
     cert_fingerprint: Option<&str>,
@@ -1572,7 +1572,7 @@ fn validated_ws_token(token: Option<String>) -> Result<Option<String>, DialRefus
     let Some(token) = token else {
         return Ok(None);
     };
-    attach::quic::parse_token_hex(&token)
+    phux_dial::quic::parse_token_hex(&token)
         .map(|_| Some(token.trim().to_owned()))
         .map_err(|err| DialRefusal::BadToken(err.to_string()))
 }
@@ -1605,7 +1605,7 @@ fn dial_leaves_the_machine(dial: &Dial) -> bool {
         Dial::Uds(_) => false,
         Dial::Quic(quic) => !quic.addr.ip().is_loopback(),
         Dial::Ws(ws) => {
-            attach::ws::WsTarget::parse(&ws.url).is_ok_and(|target| !target.is_loopback())
+            phux_dial::ws::WsTarget::parse(&ws.url).is_ok_and(|target| !target.is_loopback())
         }
     }
 }

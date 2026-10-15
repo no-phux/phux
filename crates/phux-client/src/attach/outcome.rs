@@ -6,7 +6,8 @@
 
 use std::io;
 
-use phux_client_runtime::reconnect::{TOKEN_REFUSED, is_fatal_refusal_detail};
+use phux_client_runtime::reconnect::is_fatal_refusal_detail;
+use phux_client_runtime::session::SessionError;
 use phux_protocol::wire::frame::DetachReason;
 use phux_protocol::wire::framing::FramingError;
 
@@ -37,9 +38,8 @@ pub enum AttachError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
-    /// A SPEC §5 framing violation. Kept typed so
-    /// [`super::connection::Connection::recv`] can answer it with
-    /// `ERROR { FRAME_TOO_LARGE }` before closing, as §5 requires.
+    /// A SPEC §5 framing violation, already answered with
+    /// `ERROR { FRAME_TOO_LARGE }` as §5 requires.
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 
@@ -72,24 +72,18 @@ impl From<io::Error> for AttachError {
     }
 }
 
-impl From<phux_dial::DialError> for AttachError {
-    fn from(value: phux_dial::DialError) -> Self {
-        match value {
-            phux_dial::DialError::Io(err) => Self::Io(err),
-            phux_dial::DialError::Connect(msg) => Self::Connect(msg),
-            // The host refused the token: re-pair, not an overlay loss.
-            phux_dial::DialError::AuthRefused(msg) => {
-                Self::Connect(format!("{TOKEN_REFUSED} ({msg})"))
-            }
-            phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
-            // Carries the AUTHORITY_CHANGED phrase, so it stays fatal.
-            phux_dial::DialError::AuthorityChanged(change) => Self::Connect(change.to_string()),
-            // A stalled lane is a disconnection; mapping it here routes a
-            // half-open `wss://` socket into the bounded reconnect.
-            phux_dial::DialError::Stalled(msg) => {
-                tracing::info!(reason = %msg, "WebSocket lane stalled; treating it as a disconnect");
-                Self::Disconnected
-            }
+/// Total and lossless: every transport failure is classified once, by the
+/// runtime session, and keeps its variant here.
+impl From<SessionError> for AttachError {
+    fn from(error: SessionError) -> Self {
+        match error {
+            SessionError::Io(error) => Self::Io(error),
+            SessionError::Connect(detail) => Self::Connect(detail),
+            SessionError::Unreachable(detail) => Self::Unreachable(detail),
+            SessionError::Disconnected => Self::Disconnected,
+            SessionError::Protocol(detail) => Self::Protocol(detail),
+            SessionError::Framing(violation) => Self::Framing(violation),
+            SessionError::Refused(message) => Self::Refused(message),
         }
     }
 }
@@ -159,64 +153,29 @@ pub fn describe_exit(exit_status: Option<i32>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use phux_dial::DialError;
+    use phux_client_runtime::session::SessionError;
 
     use super::AttachError;
 
-    /// The reconnect loop retries on `Disconnected` and nothing else, so a
-    /// stalled WebSocket lane must map there, and faults worth reporting
-    /// (pin mismatch, unreachable host) must not.
+    /// The conversion keeps each variant, so the reconnect loop's
+    /// `Disconnected` and the fatal-refusal rule mean what the runtime
+    /// classified.
     #[test]
-    fn a_stalled_lane_maps_to_disconnected_and_nothing_else_does() {
-        let err = |e: DialError| AttachError::from(e);
+    fn session_errors_keep_their_variant_and_fatality() {
         assert!(matches!(
-            err(DialError::Stalled("no pong".to_owned())),
+            AttachError::from(SessionError::Disconnected),
             AttachError::Disconnected
         ));
         assert!(matches!(
-            err(DialError::Unreachable("no route".to_owned())),
+            AttachError::from(SessionError::Unreachable("no route".to_owned())),
             AttachError::Unreachable(_)
         ));
-        assert!(matches!(
-            err(DialError::Connect("pin mismatch".to_owned())),
-            AttachError::Connect(_)
-        ));
-        assert!(matches!(
-            err(DialError::AuthRefused("unauthorized".to_owned())),
-            AttachError::Connect(msg) if msg.contains("pairing token refused")
-        ));
-        assert!(matches!(
-            err(DialError::Io(std::io::ErrorKind::BrokenPipe.into())),
-            AttachError::Io(_)
-        ));
-    }
-
-    /// Refusals no retry can satisfy stay fatal after flattening; everything
-    /// the reconnect ladder could heal stays retryable.
-    #[test]
-    fn only_the_refusals_no_retry_can_satisfy_are_fatal() {
-        let http =
-            |status: &str| DialError::Connect(format!("WebSocket handshake: HTTP error: {status}"));
-        let cases = [
-            (DialError::AuthRefused("unauthorized".to_owned()), true),
-            (http("401 Unauthorized"), true),
-            (http("403 Forbidden"), true),
-            (http("503 Service Unavailable"), false),
-            (DialError::Unreachable("no route".to_owned()), false),
-            (DialError::Stalled("no pong".to_owned()), false),
-            (
-                DialError::Io(std::io::ErrorKind::ConnectionRefused.into()),
-                false,
-            ),
-        ];
-        for (error, fatal) in cases {
-            let rendered = error.to_string();
-            assert_eq!(
-                AttachError::from(error).is_fatal_refusal(),
-                fatal,
-                "{rendered}"
-            );
-        }
-        assert!(!AttachError::Refused("no such session".to_owned()).is_fatal_refusal());
+        let refused = SessionError::Connect("pairing token refused (unauthorized)".to_owned());
+        assert!(refused.is_fatal_refusal());
+        assert!(AttachError::from(refused).is_fatal_refusal());
+        assert!(
+            !AttachError::from(SessionError::Refused("no such session".to_owned()))
+                .is_fatal_refusal()
+        );
     }
 }

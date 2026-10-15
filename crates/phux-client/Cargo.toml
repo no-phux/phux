@@ -1,6 +1,6 @@
 [package]
 name = "phux-client"
-description = "phux headless client library: connection, transports, and the control-plane verbs behind the agent CLI and MCP."
+description = "phux headless client library: the connection facade over the client runtime and the control-plane verbs behind the agent CLI and MCP."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -16,7 +16,7 @@ workspace = true
 # Exposes `phux_client::testkit`, the scripted server client-side tests
 # speak to. Test scaffolding: downstream crates enable it from
 # dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
-testkit = []
+testkit = ["phux-client-runtime/testing"]
 
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
@@ -37,12 +37,12 @@ tokio.workspace = true
 bytes.workspace = true
 phux-perf.workspace = true
 serde = { workspace = true }
-# QUIC/WS dialing, TLS pinning, and bearer auth shared with the server.
+# The dial plan types `attach::connection` re-exports (`QuicDial`, `WsDial`,
+# `CertTrust`); the dialing itself is the runtime's.
 phux-dial.workspace = true
-# Reconnect policy (ADR-0133).
+# The one transport (ADR-0171): `Connection` is a facade over its one-shot
+# session, and reconnect policy (ADR-0133).
 phux-client-runtime.workspace = true
-quinn = { workspace = true }
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # `phux wait --regex`: linear-time matching of operator patterns.
 regex = "1"
 # Input operation ids (ADR-0053).
@@ -52,7 +52,10 @@ uuid = { workspace = true }
 phux-server.workspace = true
 sha2 = "0.11"
 tempfile.workspace = true
+# The scripted QUIC and WebSocket servers in `tests/connection`.
+quinn = { workspace = true }
 rustls = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `test-util` for paused clocks; `fs` for `command_isolation`.
 tokio = { workspace = true, features = ["test-util", "fs"] }
