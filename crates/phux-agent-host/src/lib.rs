@@ -160,7 +160,7 @@ impl Sink {
         let mut ledger = self.0.ledger.lock();
         if let Some((_, saved)) = ledger.entries.get_mut(&result.operation_id) {
             if saved.as_ref().is_some_and(|old| matches!(old.disposition, NativeDisposition::Completed | NativeDisposition::Refused) && old != &result) { return Ok(()); }
-            if result.disposition == NativeDisposition::Refused && saved.as_ref().is_none_or(|old| old.disposition == NativeDisposition::Refused) {
+            if result.disposition == NativeDisposition::Refused && saved.is_none() {
                 self.0.responders.lock().retain(|_, operation_id| *operation_id != result.operation_id);
             }
             *saved = Some(result.clone());
