@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { desktopReleaseProblems, isCockpitImportBaseline, recoveryFor } from "./release-drift-policy.mjs";
+import { desktopReleaseProblems, isArchivedRelease, recoveryFor } from "./release-drift-policy.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -134,7 +134,7 @@ const releases = gh([
   "--paginate",
   "--jq",
   ".[] | {tag: .tag_name, draft: .draft, prerelease: .prerelease, assets: (.assets | length), assetNames: [.assets[].name], created: .created_at}",
-]);
+]).filter((release) => !isArchivedRelease(release.tag));
 
 // 1. A draft that outlived the grace window is a release whose publish step
 //    never completed. This is the agent-integration-release.yml failure mode:
@@ -192,7 +192,6 @@ for (const pr of pendingPrs) {
 //    tag is a release that was prepared and then dropped on the floor.
 const manifest = JSON.parse(await readFile(join(root, ".release-please-manifest.json"), "utf8"));
 const config = JSON.parse(await readFile(join(root, "release-please-config.json"), "utf8"));
-const cockpitHistoryTip = (await readFile(join(root, ".github/cockpit-history-tip"), "utf8")).trim();
 const manifestTouched = Date.parse(
   execFileSync("git", ["log", "-1", "--format=%cI", "--", ".release-please-manifest.json"], {
     cwd: root,
@@ -204,17 +203,7 @@ if (Number.isFinite(manifestTouched) && now - manifestTouched > graceMs) {
   for (const [path, version] of Object.entries(manifest)) {
     const component = config.packages?.[path]?.component;
     const tag = component ? `${component}-v${version}` : `v${version}`;
-    // Cockpit 0.16.1 shipped from the standalone repository immediately before
-    // its history moved here. The temporary bootstrap SHA deliberately treats
-    // that external release as the baseline; the first monorepo Cockpit release
-    // replaces this exception with an ordinary local component tag/release.
-    const isExternalBaseline = isCockpitImportBaseline({
-      path,
-      version,
-      bootstrapSha: config["bootstrap-sha"],
-      historyTip: cockpitHistoryTip,
-    });
-    if (!tags.has(tag) && !isExternalBaseline) {
+    if (!tags.has(tag)) {
       failures.push(`${path} is at ${version} in the manifest, but ${tag} has no GitHub release.`);
     }
   }

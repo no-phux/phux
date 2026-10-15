@@ -73,10 +73,6 @@ const INSTALLERS: { src: string; dests: readonly [string, string] }[] = [
     dests: ["public/install", "public/install.sh"],
   },
   {
-    src: join(PHUX_ROOT, "scripts/install-cockpit.sh"),
-    dests: ["public/install-cockpit", "public/install-cockpit.sh"],
-  },
-  {
     src: join(PHUX_ROOT, "scripts/install-desktop.sh"),
     dests: ["public/install-desktop", "public/install-desktop.sh"],
   },
@@ -95,7 +91,7 @@ const GH_BLOB = `https://github.com/no-phux/phux/blob/${SOURCE_REVISION}`;
 const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
 
 /**
- * Publish the CLI, Cockpit and GPUI desktop installers (also with .sh suffix).
+ * Publish the CLI and GPUI desktop installers (also with .sh suffix).
  *
  * Nothing here is committed — every destination is gitignored and rewritten on
  * every build — so the bytes a stranger pipes to `sh` cannot drift from the
@@ -105,6 +101,9 @@ const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
  * user's machine rather than in CI.
  */
 async function syncInstaller(): Promise<void> {
+  // A rebuild of an existing checkout must not republish retired generated assets.
+  await rm(join(ROOT, "public/install-cockpit"), { force: true });
+  await rm(join(ROOT, "public/install-cockpit.sh"), { force: true });
   for (const { src, dests } of INSTALLERS) {
     const script = await readFile(src, "utf8");
     if (!script.startsWith("#!/bin/sh\n")) {
@@ -116,7 +115,7 @@ async function syncInstaller(): Promise<void> {
       await writeFile(join(ROOT, dest), script, { mode: 0o755 });
     }
   }
-  console.log("sync-docs: published /install, /install-cockpit and /install-desktop (+.sh)");
+  console.log("sync-docs: published /install and /install-desktop (+.sh)");
 }
 
 /** Nav groups, in sidebar render order. */
@@ -723,7 +722,6 @@ const GUIDE_PAGES = [
   "index",
   "tui",
   "desktop",
-  "cockpit",
   "agents",
   "opencode",
   "pi-in-60-seconds",

@@ -7,6 +7,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 failures=0
 
+require_absent() {
+  local file="$1"
+  if [[ -e "$ROOT/$file" ]]; then
+    phux_error "retired surface: $file"
+    failures=$((failures + 1))
+  fi
+}
+
 require_fixed() {
   local file="$1"
   local needle="$2"
@@ -64,24 +72,25 @@ forbid_fixed .github/workflows/next-release.yml 'LICENSE-MIT LICENSE-APACHE'
 # it in any diff.
 require_fixed docs/site/scripts/sync-docs.ts 'scripts/install.sh'
 require_fixed docs/site/scripts/sync-docs.ts '"public/install", "public/install.sh"'
-require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-cockpit.sh'
-require_fixed docs/site/scripts/sync-docs.ts '"public/install-cockpit", "public/install-cockpit.sh"'
+forbid_fixed docs/site/scripts/sync-docs.ts 'scripts/install-cockpit.sh'
+require_absent scripts/install-cockpit.sh
+require_absent scripts/cockpit-self-update.sh
+require_absent scripts/test-cockpit-self-update.sh
 require_fixed docs/site/scripts/sync-docs.ts 'must start with #!/bin/sh'
 require_fixed .github/workflows/site-deploy.yml '- "scripts/install.sh"'
-require_fixed .github/workflows/site-deploy.yml '- "scripts/install-cockpit.sh"'
+forbid_fixed .github/workflows/site-deploy.yml 'install-cockpit'
 # Both release streams move a landing badge now, so both must redeploy it.
-require_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'cockpit-v')"
+require_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'desktop-v')"
+forbid_fixed .github/workflows/site-deploy.yml "startsWith(github.event.release.tag_name, 'cockpit-v')"
 # The route itself is unprovable before a deploy, so the deploy asserts it.
 require_fixed .github/workflows/site-deploy.yml 'Verify the installers are served'
 require_fixed .github/workflows/site-deploy.yml 'if [ "$shebang" != '"'"'#!/bin/sh'"'"' ]; then'
 # A committed copy is a second source of truth waiting to go stale.
 require_fixed docs/site/.gitignore 'public/install'
 require_fixed docs/site/.gitignore 'public/install.sh'
-require_fixed docs/site/.gitignore 'public/install-cockpit'
-require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
-require_fixed docs/site/public/_headers '/install-cockpit'
-# The GPUI desktop installer is the third served script, and the landing hands
-# it out for the Desktop target. Pin the same halves as the other two: the
+forbid_fixed docs/site/public/_headers '/install-cockpit'
+# The GPUI desktop installer is the other served script, and the landing hands
+# it out for the Desktop target. Pin the same halves as the CLI: the
 # copy, the ignore, the cache header, the deploy path filter, and the
 # deploy-side byte-for-byte reachability proof.
 require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-desktop.sh'
@@ -104,7 +113,6 @@ forbid_fixed docs/site/src/pages/index.astro '-s -- --channel next'
 # Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
 # read the releases/latest redirect before falling back to the release list.
 require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=false --latest'
-require_fixed .github/workflows/cockpit-release.yml '--draft=false --latest=false'
 require_fixed .github/workflows/agent-integration-release.yml '--draft=false --latest=false'
 require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=false'
 
@@ -116,11 +124,10 @@ require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=fals
 # constants, so a dropped redirect would strand every existing install.
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
-# The next-channel pointers must be assets named channel.json (phux) and
-# cockpit-channel.json (Cockpit). gh's `file#label` syntax labels the asset;
+# The CLI next-channel pointer must be an asset named channel.json.
+# gh's `file#label` syntax labels the asset;
 # it does not rename it, so the pointer is written under its real basename.
 require_fixed scripts/publish-next-channel.sh 'pointer_name="channel.json"'
-require_fixed scripts/publish-next-channel.sh 'pointer_name="cockpit-channel.json"'
 require_fixed scripts/publish-next-channel.sh 'channel_json="$pointer_dir/$pointer_name"'
 require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
 # A refused retarget (workflows:write, which GITHUB_TOKEN cannot hold) must
@@ -129,12 +136,7 @@ require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_
 require_fixed scripts/publish-next-channel.sh 'could not retarget the next release to ${sha}; publishing the pointer anyway'
 require_fixed .github/workflows/next-release.yml 'could not retarget the next release to ${SHA}; publishing the pointer anyway'
 forbid_fixed scripts/publish-next-channel.sh 'channel_json#'
-# Cockpit rides the same moving prerelease: the workflow publishes it, the
-# installer and in-app driver follow it, and `phux update` drives the driver.
-require_fixed .github/workflows/next-release.yml 'bash scripts/publish-next-channel.sh --cockpit'
 require_fixed .github/workflows/next-release.yml 'PHUX_BUILD_CHANNEL: next'
-require_fixed clients/cockpit/scripts/package-macos.sh 'PhuxChannel'
-require_fixed crates/phux/src/commands/update/cockpit.rs 'scripts/cockpit-self-update.sh'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
 require_fixed just/release.just "release-preflight TAG:"
@@ -189,15 +191,6 @@ require_fixed scripts/check-binary-portability.sh 'check_macho'
 require_fixed scripts/check-binary-portability.sh 'x86-64-v[234]'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'
-# Remaining setup-zig callers must disable the action's Zig-cache post
-# step: it keys each save on run_id, so restores never hit and every job
-# writes up to 2 GiB (phux-6khi). Our actions/cache keys must stay
-# reusable too — a commit-SHA suffix is the same single-use pattern.
-require_fixed .github/workflows/cockpit-sdk-head.yml 'use-cache: false'
-require_fixed .github/workflows/cockpit-release.yml 'use-cache: false'
-forbid_regex .github/workflows/cockpit-ci.yml 'cockpit-zig-.*github\.sha'
-forbid_regex .github/workflows/cockpit-sdk-head.yml 'cockpit-zig-.*github\.sha'
-forbid_regex .github/workflows/cockpit-release.yml 'cockpit-zig-.*github\.sha'
 forbid_fixed .github/workflows/release.yml 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5'
 forbid_fixed .github/workflows/release.yml 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 forbid_fixed .github/workflows/release.yml 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
@@ -334,7 +327,6 @@ bash "$ROOT/scripts/check-product-skills-export.sh"
 bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-publish-next-channel.sh"
 bash "$ROOT/scripts/test-install.sh"
-bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check
 bash "$ROOT/scripts/test-install-resolution.sh"
 python3 "$ROOT/scripts/test-install-desktop.py"

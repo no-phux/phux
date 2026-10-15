@@ -297,13 +297,10 @@ not narrate setup or prompt through SSH. Three limits apply:
 like the local form. With no `--cwd`, a remote session starts in the far
 server's default directory: a path on this machine names nothing there.
 
-### From Cockpit
+### Archived Cockpit
 
-Cockpit's Machines view (`cmd+shift+O`) uses the same `[[remote]]` registry
-and QUIC/WSS stack. It only dials saved hosts; enrollment and repair stay in
-the terminal; Add Machine… opens that terminal for a new host.
-See [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md) for the
-`phux-remote` setting and relaunch behavior.
+The Zig client is no longer maintained in this tree. Its remote-host
+implementation and tests remain on the [archive refs](./consumers/cockpit.md).
 
 ### The mosh-style way: `phux attach --ssh`
 

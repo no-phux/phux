@@ -27,7 +27,7 @@ CHANGELOG = """# Changelog
 class ExtractChangelogSectionTests(unittest.TestCase):
     def test_version_from_root_and_component_tags(self):
         self.assertEqual(version_from_tag("v0.36.0"), "0.36.0")
-        self.assertEqual(version_from_tag("cockpit-v0.23.3"), "0.23.3")
+        self.assertEqual(version_from_tag("desktop-v0.2.0"), "0.2.0")
         self.assertEqual(version_from_tag("opencode-plugin-v0.3.0"), "0.3.0")
         with self.assertRaises(ValueError):
             version_from_tag("next")

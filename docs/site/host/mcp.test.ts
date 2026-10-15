@@ -18,7 +18,7 @@ const SEARCH_INDEX = {
   ],
   release: {
     phux: { tag: "v0.37.0", url: "https://example.test/v0.37.0", publishedAt: "2026-09-13" },
-    cockpit: { tag: "cockpit-v0.24.0", url: "https://example.test/c0.24.0", publishedAt: "2026-09-13" },
+    desktop: { tag: "desktop-v0.1.0", url: "https://example.test/d0.1.0", publishedAt: "2026-10-14" },
   },
 };
 
@@ -163,7 +163,6 @@ describe("MCP JSON-RPC", () => {
     expect(install.inputSchema.properties.target.enum).toEqual([
       "cli",
       "desktop",
-      "cockpit",
       "skills",
     ]);
   });
@@ -252,10 +251,10 @@ describe("MCP JSON-RPC", () => {
   test("get_install_command and latest_release", async () => {
     const install = await rpc("tools/call", {
       name: "get_install_command",
-      arguments: { target: "cockpit" },
+      arguments: { target: "desktop" },
     });
     expect(install.body.result.content[0].text).toBe(
-      "curl -fsSL https://phux.sh/install-cockpit | sh",
+      "curl -fsSL https://phux.sh/install-desktop | sh",
     );
     const skills = await rpc("tools/call", {
       name: "get_install_command",
@@ -264,6 +263,6 @@ describe("MCP JSON-RPC", () => {
     expect(skills.body.result.content[0].text).toBe("npx skills add no-phux/skills");
     const release = await rpc("tools/call", { name: "latest_release", arguments: {} });
     expect(release.body.result.content[0].text).toContain("v0.37.0");
-    expect(release.body.result.content[0].text).toContain("cockpit-v0.24.0");
+    expect(release.body.result.content[0].text).toContain("desktop-v0.1.0");
   });
 });

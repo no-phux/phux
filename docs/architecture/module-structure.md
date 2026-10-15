@@ -272,8 +272,8 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   projects the owner-local Intake, separately from attention Inbox.
 - **`phux-client-ffi`** — the one binding crate (ADR-0135). `projection/`
   derives the product vocabulary from the runtime once; `c/` (feature
-  `c-abi`, default) is the C ABI in `include/phux/client.h` that Cockpit
-  links; `uniffi/` (feature `uniffi`) is the Swift/Kotlin surface
+  `c-abi`, default) is the C ABI in `include/phux/client.h` for native
+  embedders; `uniffi/` (feature `uniffi`) is the Swift/Kotlin surface
   phux-mobile consumes. The projection is lossless: keys, revisions,
   lifetime, members, arrangements, and execution state all cross.
   `c/arrangement/` wraps the shared arrangement and `c/organization.rs`

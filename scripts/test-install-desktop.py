@@ -204,7 +204,7 @@ elif args[:2] == ['release', 'create']:
         deleted = [call[3] for call in calls if call[:2] == ["release", "delete-asset"]]
         self.assertEqual(deleted, [f"phux-desktop-next.{'c' * 40}-macos-arm64.zip"])
 
-    def test_desktop_can_create_next_without_cli_or_cockpit(self):
+    def test_desktop_can_create_next_without_cli(self):
         result, calls = self.publish(existing=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(call[:2] == ["release", "create"] for call in calls))
@@ -274,7 +274,7 @@ if args[0] == 'diff':
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(f"desktop_build={expected}\n", output.read_text())
                     self.assertIn("should_build=false\n", output.read_text())
-                    self.assertIn("cockpit_build=false\n", output.read_text())
+                    self.assertNotIn("cockpit_build=", output.read_text())
 
 
 @unittest.skipUnless(platform.system() == "Darwin" and platform.machine() == "arm64", "macOS arm64 app installer")

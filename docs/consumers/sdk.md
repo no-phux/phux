@@ -20,7 +20,7 @@ contract. External callers should use the CLI or MCP adapter.
 `phux-protocol` codec and the selection, snapshot, run, and wait functions
 behind the CLI agent verbs and [MCP adapter](./mcp.md).
 
-Native embedders use `phux-client-ffi`: the C ABI for Cockpit or UniFFI for
+Native embedders use `phux-client-ffi`: the C ABI or UniFFI for
 phux-mobile. Both project `phux-client-runtime`, which owns dialing,
 reconnect, the session kernel, acknowledged-input replay, and grid publication.
 See the [client runtime](../architecture/client-runtime.md) (ADR-0133,
@@ -70,3 +70,31 @@ surface described in the [agent CLI guide](./agents.md) and
 
 The JSON shapes and exit codes are [`agents.md`](./agents.md); the codec is
 [`../spec/appendix-encoding.md`](../spec/appendix-encoding.md).
+
+## Native status effects
+
+After each attach barrier releases, `phux-client-ffi` subscribes to the
+connection-wide `AgentEvent` stream (`SUBSCRIBE_EVENTS`). Cwd changes,
+command boundaries, process exits, and terminal closes become typed
+`PhuxClientEffect` status kinds: `PHUX_CLIENT_STATUS_CWD`,
+`_COMMAND_STARTED`, `_COMMAND_FINISHED`, and `_EXITED` in
+`include/phux/client.h`. The subscription covers Terminals local to the
+connected server; satellite panes need explicit per-terminal subscriptions.
+Missing status is unknown, not an error.
+
+`PHUX_CLIENT_STATUS_INPUT_HOLDER` reports the server's input-lease holder.
+Use correlated `phux_client_queue_acquire_input` and
+`phux_client_queue_release_input` operations to move the lease. Focus and
+reconnect never acquire it implicitly (L1 §8.1).
+
+## Native terminal theme
+
+`phux_client_set_terminal_theme` installs the default ANSI-16 palette,
+foreground, background, and cursor for every remote replica, including
+after reconnect; NULL clears them. Program OSC color changes still win.
+`PhuxTerminalGridMetadata.palette` carries the resolved palette.
+
+The `colors.toml` mapping is: 0 `background`, 1..6 `red`, `green`, `yellow`,
+`blue`, `magenta`, `cyan`, 7 `foreground`, 8 `muted`, 9..14 the `bright_*`
+variants, and 15 `bright_foreground`. The cursor is `bright_foreground`.
+`phux theme show NAME --json` prints this as `ansi16`.

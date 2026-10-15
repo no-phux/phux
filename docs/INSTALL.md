@@ -163,26 +163,18 @@ tar -xzf "phux-${tag}-${target}.tar.gz"
 Put the extracted `phux` and `phux-mcp` on `PATH`. In `~/.local/bin`,
 `phux update` maintains them like an installer install.
 
-### Cockpit (frozen)
+### Archived Zig Cockpit
 
-The Zig Cockpit is not maintained ([ADR-0167](adr/0167-cockpit-is-frozen.md)).
-The [desktop app](#desktop-app-macos) is the native macOS client. The last
-published Cockpit release still installs:
-
-```sh
-curl -fsSL https://phux.sh/install-cockpit | sh
-phux cockpit
-```
-
-An already-installed copy can still check for updates. No new release is
-being cut. The [Cockpit guide](./consumers/cockpit.md#install) covers the
-Homebrew cask and pinning.
+The Zig Cockpit and its installer are removed from `main`. Use the
+[desktop app](#desktop-app-macos) for the maintained native macOS client.
+The [archive guide](./consumers/cockpit.md) preserves source and recovery
+instructions; existing releases and installed copies are not deleted.
 
 ## `phux update` in detail
 
 ```sh
 phux update --check            # what is installed, what is published
-phux update --check --json     # the same as a stable document (schema_version 1)
+phux update --check --json     # the same as a stable document (schema_version 2)
 phux update --dry-run          # download and verify, install nothing
 phux update --version vX.Y.Z   # a specific release, downgrades included
 phux update --no-restart       # replace binaries, leave the server alone
@@ -210,10 +202,8 @@ A refusal exits 2 with the remedy, and a fetch, verify, or install failure
 exits 1.
 
 The channel choice is stored in `<bindir>/.phux-channel`
-([ADR-0113](adr/0113-next-release-channel.md)). On macOS an installed
-Cockpit follows the CLI's channel
-([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)); `--check`
-reports it on its own `cockpit:` line.
+([ADR-0113](adr/0113-next-release-channel.md)). It no longer updates or
+switches archived Cockpit installations.
 
 On Nix, a live `phux upgrade` re-execs the same store path, so it only helps
 when the path is unchanged; a new path needs a server restart.

@@ -1,17 +1,13 @@
-export const COCKPIT_IMPORT_BASELINE_VERSION = "0.16.1";
-
 export function recoveryFor(tag) {
+  if (isArchivedRelease(tag)) return null;
   if (tag === "next") return { workflow: "next-release.yml", extraArgs: "" };
   return { workflow: "publish.yml", extraArgs: "" };
 }
 
-export function isCockpitImportBaseline({ path, version, bootstrapSha, historyTip }) {
-  return (
-    path === "clients/cockpit" &&
-    version === COCKPIT_IMPORT_BASELINE_VERSION &&
-    bootstrapSha !== undefined &&
-    bootstrapSha === historyTip
-  );
+export function isArchivedRelease(tag) {
+  // Historical releases remain on GitHub, but main no longer builds or repairs
+  // this product. Never recommend dispatching a surviving publisher for it.
+  return tag.startsWith("cockpit-v");
 }
 
 // The desktop train graduated out of `-alpha.N` prereleases: those published

@@ -60,7 +60,7 @@ just ci-full   # ci + the real-server lanes; the complete PR bar
 Use scoped gates while iterating, then expand for shared code and affected
 consumers. `just ci-full` adds real-server e2e and the agent example smoke; run
 it before pushing anything that touches the CLI surface, server lifecycle, or
-the example scripts. Cockpit and browser builds have their own additional
+the example scripts. Desktop and browser builds have their own additional
 checks; the root target does not build those clients.
 
 ### Build only what you are iterating on
@@ -72,9 +72,8 @@ checks; the root target does not build those clients.
 | `cargo build -p phux-mcp` | Headless MCP adapter, without the client's TUI chrome |
 | `just build-all` | All workspace targets, including integration tests, examples and benchmarks |
 | `just build-release` | Shipping executables with full release optimization |
-| `just cockpit-build`, `just cockpit-dev`, `just cockpit-test` | Cockpit with the unwind-safe, incremental `ffi-dev` profile |
-| `just cockpit-node-test` | Cockpit Node TypeScript tests (`src/tests/*.test.mjs`) |
-| `just cockpit-ffi-release` | Production FFI with unwind safety and full release optimization |
+| `just ffi-build`, `just ffi-abi` | Same-checkout C ABI archive and ABI checks with unwind-safe `ffi-dev` |
+| `just ffi-release` | Production FFI with unwind safety and full release optimization |
 
 The default executable still supports browser WebTransport. Lean builds opt out
 via `phux --no-default-features` at Cargo build time; workspace tests deliberately
@@ -138,8 +137,8 @@ with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 ### Gates that are CI-only or local-only
 
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
-`just native-smoke`). `cockpit-ci.yml` is manual only while the Zig Cockpit
-is frozen ([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)). The following have
+`just native-smoke`). The Zig Cockpit is [archived](./docs/consumers/cockpit.md).
+The following have
 no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
 mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
 `just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
@@ -178,8 +177,8 @@ unlabelled or double-labelled bead exits 1.
   argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
   The `ServerFeature` u32 is closed; the next bit is the trailing word in
   [`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md).
-  The desktop app and Cockpit link the protocol, so a `major.minor` bump also
-  updates `clients/desktop/phux-protocol` and `clients/cockpit/phux-protocol`
+  The desktop app links the protocol, so a `major.minor` bump also
+  updates `clients/desktop/phux-protocol`
   in the same commit. A test enforces it, and that edit is what makes
   release-please ship both apps with the new protocol, so their in-app
   updaters have a compatible build to offer.

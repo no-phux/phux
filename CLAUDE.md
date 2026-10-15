@@ -29,8 +29,8 @@ just check          # quick type-check
 just test           # cargo nextest run --workspace
 ```
 
-`just doctor cockpit` remains a local resume path. Cockpit CI is frozen
-([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)).
+The Zig Cockpit is archived outside `main`; see the
+[recovery guide](./docs/consumers/cockpit.md).
 
 **`just ci-full` is the full root PR bar; scoped gates are the inner loop.**
 CI's `e2e` job and workflow gate also run `just e2e` and
@@ -44,9 +44,7 @@ lints every commit in the PR, not just the title.
 request required, required checks `ci` and `commitlint`. Organization admins
 and the release App may bypass it; a bypass never replaces `just ci-full` and a
 PR with hosted checks, and still lands as a non-force fast-forward.
-Cockpit-only diffs skip the Rust compile lanes, and Cockpit CI is frozen
-([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)), so those diffs are not
-built in CI. See `docs/RELEASING.md` for the routing matrix.
+See `docs/RELEASING.md` for the routing matrix.
 
 ## Architecture Overview
 
@@ -86,7 +84,7 @@ behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
 ADR-0020 and ADR-0100), `phux-client-runtime` (the one client orchestration
 layer: registry resolution, dial planning, reconnect policy, the relay tunnel;
 ADR-0133), `phux-client-ffi` (the one binding crate: `projection/` plus the
-`c-abi` encoder for native embedders, including the frozen Cockpit, and the
+`c-abi` encoder for native embedders and the
 `uniffi` encoder for phux-mobile; ADR-0135), `phux-config` (TOML + widgets + the settings
 catalogue), `phux` (binary). Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)

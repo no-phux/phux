@@ -8,7 +8,7 @@
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
 # verified assets to an existing release, the same contract release.yml and
-# cockpit-release.yml follow, and publish.yml calls it for every root
+# desktop-release.yml follow, and publish.yml calls it for every root
 # release. It never gates the draft's publication: the CLI tarballs are the
 # release contract; the xcframework is the mobile pin's input.
 #
@@ -151,7 +151,7 @@ jobs:
       # No rust-cache for this job. Two dep archives, 978198846 and
       # 968319491 bytes, landed fifteen minutes apart on 2026-10-13 (runs
       # 38450850133 and 38450787572). Both compiles were already cold — the
-      # key suffix changed — and next to the 4.9 GB Cockpit zig cache they
+      # key suffix changed — and next to other large build caches they
       # LRU-evicted the 2.3 GB test-lane archive. The zig package cache
       # below is tens of MB and stays.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

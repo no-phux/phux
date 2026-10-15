@@ -37,6 +37,24 @@ interface GitHubRelease {
   prerelease?: boolean;
 }
 
+function newerVersion(version: bigint[], previous: bigint[] | null): boolean {
+  if (!previous) return true;
+  for (let i = 0; i < version.length; i++) {
+    if (version[i] !== previous[i]) return version[i]! > previous[i]!;
+  }
+  return false;
+}
+
+function releaseVersion(
+  release: GitHubRelease,
+  tagPattern: RegExp,
+  prerelease: boolean,
+): bigint[] | null {
+  if (release.draft || Boolean(release.prerelease) !== prerelease) return null;
+  const match = tagPattern.exec(release.tag_name ?? "");
+  return match ? match.slice(1).map((part) => BigInt(part)) : null;
+}
+
 function latestRelease(
   list: GitHubRelease[],
   tagPattern: RegExp,
@@ -45,21 +63,11 @@ function latestRelease(
   let latest: GitHubRelease | null = null;
   let latestVersion: bigint[] | null = null;
   for (const release of list) {
-    if (release.draft || Boolean(release.prerelease) !== prerelease) continue;
-    const match = tagPattern.exec(release.tag_name ?? "");
-    if (!match) continue;
-    const version = match.slice(1).map((part) => BigInt(part));
+    const version = releaseVersion(release, tagPattern, prerelease);
+    if (!version) continue;
     // GitHub's release order is not semantic version order. Compare each
     // numeric component in precedence order.
-    let newer = latestVersion === null;
-    if (latestVersion) {
-      for (let i = 0; i < version.length; i++) {
-        if (version[i] === latestVersion[i]) continue;
-        newer = version[i]! > latestVersion[i]!;
-        break;
-      }
-    }
-    if (newer) {
+    if (newerVersion(version, latestVersion)) {
       latest = release;
       latestVersion = version;
     }
@@ -77,10 +85,6 @@ export function latestCoreRelease(list: GitHubRelease[]): Release | null {
   return latestRelease(list, /^v(\d+)\.(\d+)\.(\d+)$/);
 }
 
-export function latestCockpitRelease(list: GitHubRelease[]): Release | null {
-  return latestRelease(list, /^cockpit-v(\d+)\.(\d+)\.(\d+)$/);
-}
-
 export function latestDesktopRelease(list: GitHubRelease[]): Release | null {
   // Desktop graduated out of alpha and now ships stable releases.
   return latestRelease(list, /^desktop-v(\d+)\.(\d+)\.(\d+)$/);
@@ -90,7 +94,6 @@ interface StampedReleases {
   tag: string | null;
   url: string | null;
   publishedAt: string | null;
-  cockpit: Release;
   desktop: Release;
 }
 
@@ -101,7 +104,7 @@ async function main() {
     const githubToken = process.env.GITHUB_TOKEN;
     const list: GitHubRelease[] = [];
     // Match the installer's bounded recent window; any later page can contain
-    // a higher version even when all three streams already have a candidate.
+    // a higher version even when both streams already have a candidate.
     for (let page = 1; page <= 10; page++) {
       const res = await fetch(`${API}&page=${page}`, {
         headers: {
@@ -120,18 +123,17 @@ async function main() {
     if (!release) throw new Error("no core phux release found in recent releases");
     const stamped: StampedReleases = {
       ...release,
-      cockpit: latestCockpitRelease(list) ?? { ...EMPTY },
       desktop: latestDesktopRelease(list) ?? { ...EMPTY },
     };
     await writeFile(OUT, JSON.stringify(stamped, null, 2) + "\n");
-    console.log(`fetch-release: stamped ${release.tag} + ${stamped.cockpit.tag ?? "no-cockpit"} + ${stamped.desktop.tag ?? "no-desktop"}`);
+    console.log(`fetch-release: stamped ${release.tag} + ${stamped.desktop.tag ?? "no-desktop"}`);
   } catch (err) {
     // Keep a previously stamped file if one exists; otherwise omit the badges.
     try {
       await readFile(OUT, "utf8");
       console.warn(`fetch-release: fetch failed (${err}); keeping existing release.json`);
     } catch {
-      const empty: StampedReleases = { ...EMPTY, cockpit: { ...EMPTY }, desktop: { ...EMPTY } };
+      const empty: StampedReleases = { ...EMPTY, desktop: { ...EMPTY } };
       await writeFile(OUT, JSON.stringify(empty, null, 2) + "\n");
       console.warn(`fetch-release: fetch failed (${err}); badges omitted this build`);
     }

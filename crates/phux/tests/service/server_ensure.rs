@@ -161,11 +161,11 @@ fn assert_success(output: &Output) {
 #[test]
 fn cold_profile_start_obeys_seed_policy_and_reuses_the_same_coordinator() {
     let mut fixture = Fixture::new();
-    fixture.config("[defaults]\nsession-name-template = 'cockpit-seed'\nspawn-on-attach = 'printf seeded > seed-marker; exec /bin/sh'\n");
+    fixture.config("[defaults]\nsession-name-template = 'bootstrap-seed'\nspawn-on-attach = 'printf seeded > seed-marker; exec /bin/sh'\n");
     assert_success(&fixture.ensure());
     UnixStream::connect(&fixture.socket).expect("accepting immediately after ensure exits");
     let first = fixture.status();
-    assert_eq!(first["sessions"][0]["name"], "cockpit-seed", "{first}");
+    assert_eq!(first["sessions"][0]["name"], "bootstrap-seed", "{first}");
     let deadline = Instant::now() + Duration::from_secs(3);
     while !fixture.dir.path().join("seed-marker").exists() {
         assert!(

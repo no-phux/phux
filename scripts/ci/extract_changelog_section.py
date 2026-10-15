@@ -41,7 +41,7 @@ def extract_section(text: str, version: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True, help="Release tag, e.g. v0.36.0 or cockpit-v0.23.3")
+    parser.add_argument("--tag", required=True, help="Release tag, e.g. v0.36.0 or desktop-v0.2.0")
     parser.add_argument("--changelog", required=True, help="Path to the Keep-a-Changelog file")
     parser.add_argument("--output", help="Write the section here instead of stdout")
     args = parser.parse_args(argv)

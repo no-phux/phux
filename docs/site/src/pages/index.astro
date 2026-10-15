@@ -7,7 +7,6 @@ import release from "../lib/release.json";
 
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
 const desktopInstall = "curl -fsSL https://phux.sh/install-desktop | sh";
-const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 // One hover/focus-driven switcher in the hero: CLI, Desktop, and the iPhone
 // beta. The first target is server rendered into #install-command, so a no-JS
 // visitor still sees the CLI curl. Command targets carry a command; the mobile
@@ -21,11 +20,12 @@ const installs = [
 ];
 // Build-time snapshot; site-deploy.yml rebuilds on every published release.
 const day = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
-const latest = [
+type ReleaseSnapshot = { tag: string | null; url: string | null; publishedAt: string | null };
+const releaseStreams: { name: string; release: ReleaseSnapshot }[] = [
   { name: "CLI", release },
   { name: "Desktop", release: release.desktop },
-  { name: "Cockpit", release: release.cockpit },
-].flatMap(({ name, release: r }) => r?.tag && r.url ? [{
+];
+const latest = releaseStreams.flatMap(({ name, release: r }) => r.tag && r.url ? [{
   name,
   version: r.tag.replace(/^[a-z]+-/, ""),
   url: r.url,
@@ -148,7 +148,7 @@ const features = [
     </section>
   </div>
   <div hidden data-webmcp data-product={SITE.name} data-cli={cliInstall}
-    data-desktop={desktopInstall} data-cockpit={cockpitInstall} data-docs={SITE.docsUrl}
+    data-desktop={desktopInstall} data-docs={SITE.docsUrl}
     data-release-tag={release.tag} data-release-url={release.url}></div>
 </BaseLayout>
 
@@ -160,7 +160,7 @@ const features = [
   if (facts && context) {
     void registerSiteTools(context, {
       productName: facts.dataset.product ?? "", cliInstall: facts.dataset.cli ?? "",
-      desktopInstall: facts.dataset.desktop ?? "", cockpitInstall: facts.dataset.cockpit ?? "",
+      desktopInstall: facts.dataset.desktop ?? "",
       docsUrl: facts.dataset.docs ?? "", releaseTag: facts.dataset.releaseTag ?? "",
       releaseUrl: facts.dataset.releaseUrl ?? "",
     });

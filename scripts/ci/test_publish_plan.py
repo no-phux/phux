@@ -3,7 +3,7 @@
 
 import unittest
 
-from publish_plan import decide, parse_tag, split_lanes, validation_state
+from publish_plan import decide, lane, parse_tag, split_lanes, validation_state
 
 
 def rel(tag, draft, sha):
@@ -15,9 +15,9 @@ def green(_sha):
 
 
 class ParseTagTests(unittest.TestCase):
-    def test_root_cockpit_and_integration_tags(self):
+    def test_root_desktop_and_integration_tags(self):
         self.assertEqual(parse_tag("v0.42.0")["component"], "phux")
-        self.assertEqual(parse_tag("cockpit-v0.28.0")["component"], "cockpit")
+        self.assertEqual(parse_tag("desktop-v0.28.0")["component"], "desktop")
         self.assertEqual(parse_tag("pi-extension-v0.3.0")["component"], "pi-extension")
 
     def test_moving_channel_is_not_a_version(self):
@@ -64,11 +64,11 @@ class DecideTests(unittest.TestCase):
     def test_event_publishes_every_component_on_a_green_commit(self):
         releases = [
             rel("v0.42.0", True, "abc"),
-            rel("cockpit-v0.28.0", True, "abc"),
+            rel("desktop-v0.28.0", True, "abc"),
             rel("v0.41.0", False, "old"),
         ]
         plan = decide(releases, green, event_sha="abc")
-        self.assertEqual(plan["publish"], ["v0.42.0", "cockpit-v0.28.0"])
+        self.assertEqual(plan["publish"], ["v0.42.0", "desktop-v0.28.0"])
         self.assertFalse(plan["wait"])
         self.assertIsNone(plan["fail"])
 
@@ -79,7 +79,7 @@ class DecideTests(unittest.TestCase):
         self.assertIsNone(plan["fail"])
 
     def test_event_does_not_publish_when_ci_failed(self):
-        plan = decide([rel("cockpit-v0.28.0", True, "abc")], lambda _sha: "cancelled", event_sha="abc")
+        plan = decide([rel("desktop-v0.28.0", True, "abc")], lambda _sha: "cancelled", event_sha="abc")
         self.assertEqual(plan["publish"], [])
         self.assertIn("cancelled", plan["fail"])
 
@@ -106,18 +106,18 @@ class DecideTests(unittest.TestCase):
         releases = [
             rel("v0.42.0", False, "new"),
             rel("v0.39.0", True, "old"),
-            rel("cockpit-v0.27.1", False, "pub"),
-            rel("cockpit-v0.24.0", True, "oldc"),
+            rel("desktop-v0.27.1", False, "pub"),
+            rel("desktop-v0.24.0", True, "oldd"),
             rel("next", True, "moving"),
         ]
         plan = decide(releases, green, event_sha="old")
         self.assertEqual(plan["publish"], [])
-        self.assertCountEqual(plan["delete"], ["v0.39.0", "cockpit-v0.24.0"])
+        self.assertCountEqual(plan["delete"], ["v0.39.0", "desktop-v0.24.0"])
 
     def test_reconcile_ships_the_newest_green_draft_and_reports_the_blocked_one(self):
         releases = [
-            rel("cockpit-v0.27.1", False, "pub"),
-            rel("cockpit-v0.28.0", True, "green"),
+            rel("desktop-v0.27.1", False, "pub"),
+            rel("desktop-v0.28.0", True, "green"),
             rel("pi-extension-v0.3.0", True, "red"),
         ]
 
@@ -125,7 +125,7 @@ class DecideTests(unittest.TestCase):
             return "success" if sha == "green" else "failure"
 
         plan = decide(releases, ci_state)
-        self.assertEqual(plan["publish"], ["cockpit-v0.28.0"])
+        self.assertEqual(plan["publish"], ["desktop-v0.28.0"])
         self.assertIn("pi-extension-v0.3.0", plan["blocked"])
         self.assertIsNone(plan["fail"])
 
@@ -150,9 +150,9 @@ class DecideTests(unittest.TestCase):
 
     def test_dispatch_refuses_a_tag_ci_did_not_pass(self):
         plan = decide(
-            [rel("cockpit-v0.28.0", True, "abc")],
+            [rel("desktop-v0.28.0", True, "abc")],
             lambda _sha: "failure",
-            dispatch_tag="cockpit-v0.28.0",
+            dispatch_tag="desktop-v0.28.0",
         )
         self.assertEqual(plan["publish"], [])
         self.assertIn("failure", plan["fail"])
@@ -162,10 +162,10 @@ class DecideTests(unittest.TestCase):
         plan = decide(releases, green, dispatch_tag="v0.39.0")
         self.assertIn("older", plan["fail"])
 
-    def test_lanes_split_root_cockpit_and_integrations(self):
-        lanes = split_lanes(["v0.42.0", "cockpit-v0.28.0", "pi-extension-v0.3.0"])
+    def test_lanes_split_root_desktop_and_integrations(self):
+        lanes = split_lanes(["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0"])
         self.assertEqual(lanes["phux"], "v0.42.0")
-        self.assertEqual(lanes["cockpit"], "cockpit-v0.28.0")
+        self.assertEqual(lanes["desktop"], "desktop-v0.28.0")
         self.assertEqual(lanes["integration"], ["pi-extension-v0.3.0"])
 
     def test_desktop_lane_takes_the_newest_stable_draft(self):
@@ -180,6 +180,36 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(lanes["desktop"], "desktop-v0.2.0")
         self.assertEqual(lanes["integration"], [])
         self.assertEqual(lanes["phux"], "")
+
+    def test_archived_cockpit_never_publishes_or_falls_through_to_integrations(self):
+        retired = [rel("cockpit-v0.28.0", True, "retired"),
+                   rel("cockpit-v0.27.0", False, "old"),
+                   rel("cockpit-v0.24.0", True, "older")]
+        for options in ({}, {"event_sha": "retired"}, {"dispatch_tag": "cockpit-v0.28.0"}):
+            with self.subTest(options=options):
+                plan = decide(retired, green, **options)
+                self.assertEqual(plan["publish"], [])
+                self.assertEqual(plan["delete"], [])
+        self.assertIn("no release", decide(retired, green, dispatch_tag="cockpit-v0.28.0")["fail"])
+        self.assertIsNone(parse_tag("cockpit-v0.28.0"))
+        self.assertEqual(split_lanes(["cockpit-v0.28.0"]),
+                         {"phux": "", "desktop": "", "integration": []})
+        with self.assertRaises(ValueError):
+            lane("cockpit")
+
+    def test_reconcile_ignores_retired_releases_but_recovers_surviving_lanes(self):
+        rows = [rel("cockpit-v0.28.0", True, "retired"),
+                rel("v0.42.0", True, "green"), rel("desktop-v0.2.0", True, "green"),
+                rel("pi-extension-v0.3.0", True, "green")]
+        seen = []
+
+        def ci_state(sha):
+            seen.append(sha)
+            return "success"
+
+        plan = decide(rows, ci_state)
+        self.assertNotIn("retired", seen)
+        self.assertCountEqual(plan["publish"], ["v0.42.0", "desktop-v0.2.0", "pi-extension-v0.3.0"])
 
     def test_stable_desktop_supersedes_an_older_stable_draft(self):
         stable = "desktop-v0.2.0"

@@ -16,7 +16,7 @@ CLI-observed command timings are not PTY-byte echo or input-to-pixel latency.
 
 | Product | Local terminal-client experiment | Native GUI experiment |
 |---|---|---|
-| **phux** | Server plus `phux attach`; UDS locally, optional loopback WebSocket and QUIC lanes | Cockpit, desktop, and browser clients are **not measured** by the TUI harness. |
+| **phux** | Server plus `phux attach`; UDS locally, optional loopback WebSocket and QUIC lanes | Desktop and browser clients are **not measured** by the TUI harness. |
 | **tmux** | Private tmux server plus `tmux attach-session`; no user configuration | The outer terminal application is **not measured**. |
 | **Herdr** | Private Herdr server plus its terminal UI | No GUI timing is inferred from the terminal-client result. |
 | **cmux** | Its native app is **not applicable** to this PTY-client probe. Running its CLI, a bare shell, or its optional tmux owner would measure a different boundary. | Native launch, CLI-observed terminal output, and process-tree RSS were recorded on a separate macOS runner. Input-to-pixel latency remains **unmeasured**. |

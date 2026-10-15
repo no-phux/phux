@@ -11,7 +11,7 @@ import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SURFACES = ("phux", "cockpit", "web", "web_engine", "integrations", "native")
+SURFACES = ("phux", "web", "web_engine", "integrations", "native")
 ALL = set(SURFACES)
 
 
@@ -34,13 +34,11 @@ class RoutingTests(unittest.TestCase):
             (["docs/reference/cli.md"], {"phux"}),
             (["docs/assets/pi-live-fleet.cast"], {"phux"}),
             (["docs/consumers/agents.md"], {"phux"}),
-            (["docs/dsr-release-fallback.md"], {"cockpit"}),
             (["docs/site/worker/Dockerfile"], set()),
             (["CHANGELOG.md"], set()),
-            (["clients/cockpit/README.md"], set()),
-            ([".agents/skills/using-phux/SKILL.md"], {"phux", "cockpit"}),
-            ([".agents/skills/using-phux-mcp/SKILL.md"], {"phux", "cockpit"}),
-            (["clients/cockpit/src/main.zig"], {"cockpit"}),
+            ([".agents/skills/using-phux/SKILL.md"], {"phux"}),
+            ([".agents/skills/using-phux-mcp/SKILL.md"], {"phux"}),
+            (["clients/desktop/native/src/main.rs"], ALL),
             (["clients/phux-web/src/lib.rs"], {"web"}),
             (["clients/phux-vt-web/src/lib.rs"], {"web"}),
             (["scripts/ci/web-browser.py"], {"web"}),
@@ -51,19 +49,19 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/agent-integrations.sh"], {"integrations"}),
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),
             ([".claude-plugin/marketplace.json"], {"integrations"}),
-            (["crates/phux-server/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux-protocol/Cargo.toml"], {"phux", "cockpit", "web", "native"}),
-            (["crates/phux-protocol/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux-client-core/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux-perf/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux/build.rs"], {"phux", "cockpit", "web", "native"}),
-            (["Cargo.toml"], {"phux", "cockpit", "web", "native"}),
-            (["Cargo.lock"], {"phux", "cockpit", "web", "native"}),
-            ([".cargo/config.toml"], {"phux", "cockpit", "web", "native"}),
-            ([".config/zig-toolchain.json"], {"phux", "cockpit", "web", "web_engine", "native"}),
-            (["scripts/install-zig.sh"], {"cockpit", "native", "web_engine"}),
-            (["scripts/lib/dev-toolchain.sh"], {"cockpit", "native", "web_engine"}),
+            (["crates/phux-server/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux-protocol/Cargo.toml"], {"phux", "web", "native"}),
+            (["crates/phux-protocol/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux-client-core/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux-perf/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux/build.rs"], {"phux", "web", "native"}),
+            (["Cargo.toml"], {"phux", "web", "native"}),
+            (["Cargo.lock"], {"phux", "web", "native"}),
+            ([".cargo/config.toml"], {"phux", "web", "native"}),
+            ([".config/zig-toolchain.json"], {"phux", "web", "web_engine", "native"}),
+            (["scripts/install-zig.sh"], {"native", "web_engine"}),
+            (["scripts/lib/dev-toolchain.sh"], {"native", "web_engine"}),
             (["scripts/setup-rust.sh"], {"native"}),
             (["scripts/doctor.sh"], {"native"}),
             (["scripts/test-dev-setup.sh"], {"native"}),
@@ -72,7 +70,6 @@ class RoutingTests(unittest.TestCase):
             (["just/gates.just"], {"phux"}),
             (["just/test.just"], {"phux"}),
             (["just/build.just"], {"phux"}),
-            (["just/cockpit.just"], {"cockpit"}),
             (["justfile"], set()),
             (["just/perf.just"], set()),
             (["just/release.just"], set()),
@@ -108,8 +105,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/test_runner_policy.py"], set()),
             (["scripts/ci/mbx-export-failed-lane.sh"], set()),
             (["scripts/check-release-orchestration.mjs"], set()),
-            (["scripts/ci/cockpit_artifacts.py"], {"cockpit"}),
-            (["clients/cockpit/src/main.zig", "integrations/pi/src/index.ts"], {"cockpit", "integrations"}),
+            (["scripts/ci/test_release_drift.py"], set()),
+            (["scripts/ci/test_next_channel.py"], set()),
             (["docs/SETUP.md", "clients/phux-web/src/lib.rs"], {"web"}),
         ]
         for paths, wanted in cases:
@@ -123,32 +120,25 @@ class RoutingTests(unittest.TestCase):
                     self.assertIn(outputs.get(key + "_needed"), ("true", "false"))
 
     def test_all_coordinator_crates(self):
-        # Library inputs in the phux binary or FFI closure rebuild Cockpit.
-        # The MCP binary and server testkit are not in either closure.
-        outside = {"phux-mcp", "phux-server-testkit"}
         for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
             with self.subTest(crate=manifest.parent.name):
                 outputs = classify([str(manifest.parent.relative_to(ROOT) / "src/lib.rs")])
                 self.assertEqual(outputs["phux_needed"], "true")
                 self.assertEqual(outputs["native_needed"], "false")
-                wanted = "false" if manifest.parent.name in outside else "true"
-                self.assertEqual(outputs["cockpit_needed"], wanted)
+                self.assertNotIn("cockpit_needed", outputs)
 
-    def test_server_test_file_does_not_rebuild_cockpit_or_the_workspace(self):
+    def test_server_test_file_does_not_rebuild_browser_or_the_workspace(self):
         test_file = classify(["crates/phux-server/tests/hub_relay_federation.rs"])
-        self.assertEqual(test_file["cockpit_needed"], "false")
         self.assertEqual(test_file["web_needed"], "false")
         self.assertEqual(test_file["unit_mode"], "narrow")
         self.assertEqual(test_file["unit_targets"], "phux-server:hub_relay_federation")
         self.assertEqual(test_file["e2e_needed"], "false")
         library = classify(["crates/phux-server/src/lib.rs"])
-        self.assertEqual(library["cli_needed"], "true")
-        self.assertEqual(library["shipping_needed"], "false")
         self.assertEqual(library["unit_mode"], "rdeps")
 
     def test_cheap_flags(self):
         for paths, docs, workflows in [
-            (["docs/SETUP.md", "clients/cockpit/README.md"], "true", "false"),
+            (["docs/SETUP.md", "clients/desktop/README.md"], "true", "false"),
             (["docs/adr/0001-x.md", "README.md", "docs/INSTALL.md"], "true", "false"),
             (["docs/SETUP.md", "docs/spec/proto.md"], "false", "false"),
             (["docs/reference/cli.md"], "false", "false"),
@@ -287,11 +277,11 @@ class EventTests(unittest.TestCase):
     def test_push_pr_and_merge_group_routes(self):
         for paths in [
             [], ["docs/SETUP.md"], ["integrations/pi/src/index.ts"],
-            ["clients/cockpit/src/main.zig"], ["clients/phux-web/src/lib.rs"],
+            ["clients/desktop/native/src/main.rs"], ["clients/phux-web/src/lib.rs"],
             ["crates/phux-server/src/lib.rs"], ["crates/phux-protocol/Cargo.toml"],
             ["Cargo.toml"], ["new-product/source.xyz"],
             [".github/workflows/release.yml"], [".agents/skills/using-phux/SKILL.md"],
-            ["clients/cockpit/src/main.zig", "clients/phux-web/src/lib.rs"],
+            ["integrations/pi/src/index.ts", "clients/phux-web/src/lib.rs"],
         ]:
             head = self.revision(paths)
             events = {
@@ -321,15 +311,15 @@ class EventTests(unittest.TestCase):
                 self.assertEqual(self.detect(name, payload), classify([]))
 
     def test_cross_surface_rename_checks_both_paths(self):
-        before = self.revision(["clients/cockpit/fixture.txt"])
+        before = self.revision(["integrations/pi/fixture.txt"])
         target = self.repo / "clients/phux-web/fixture.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
-        self.git("mv", "clients/cockpit/fixture.txt", str(target))
+        self.git("mv", "integrations/pi/fixture.txt", str(target))
         self.git("commit", "--quiet", "-m", "move")
         after = self.git("rev-parse", "HEAD").strip()
         self.assertEqual(
             self.detect("push", {"before": before, "after": after}),
-            classify(["clients/cockpit/fixture.txt", "clients/phux-web/fixture.txt"]),
+            classify(["integrations/pi/fixture.txt", "clients/phux-web/fixture.txt"]),
         )
 
     def test_unrepresentable_filename_fails_closed(self):
@@ -391,14 +381,11 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("uses: ./.github/actions/classify-changes", workflow)
                 self.assertIn("cancel-in-progress: true", workflow)
 
-    def test_cockpit_ci_is_manual_only(self):
-        workflow = (ROOT / ".github/workflows/cockpit-ci.yml").read_text()
-        triggers = workflow.split("concurrency:")[0]
-        self.assertIn("workflow_dispatch:", triggers)
-        self.assertNotIn("pull_request:", triggers)
-        self.assertNotIn("merge_group:", triggers)
-        self.assertNotIn("\n  push:", triggers)
-        self.assertNotIn("paths:", triggers)
+    def test_archived_cockpit_has_no_workflows_or_artifact_outputs(self):
+        self.assertEqual(list((ROOT / ".github/workflows").glob("cockpit-*.yml")), [])
+        outputs = classify([])
+        for key in ("cockpit_needed", "ffi_needed", "cli_needed", "zig_needed", "shipping_needed"):
+            self.assertNotIn(key, outputs)
 
     def test_aggregate_rejects_failed_and_cancelled_new_lanes(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

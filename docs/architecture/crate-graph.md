@@ -95,7 +95,7 @@ server, the client, and the TUI.
 
 `phux-client-ffi` is the one binding leaf above the runtime (ADR-0135),
 excluded on wasm: one `projection/` layer, a `c-abi` encoder for native
-embedders and Cockpit, and a `uniffi` encoder for Swift/Kotlin. It owns no
+embedders, and a `uniffi` encoder for Swift/Kotlin. It owns no
 terminal, session, topology, or transport state machine.
 
 ## Browser client crates (standalone wasm workspace)

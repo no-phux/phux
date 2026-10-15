@@ -79,7 +79,7 @@ built; see the Status table.
 
 ## Noninteractive coordinator startup
 
-Native consumers such as Cockpit can invoke the same startup owner without
+Native consumers can invoke the same startup owner without
 entering the TUI:
 
 ```sh
@@ -89,7 +89,7 @@ phux --socket /absolute/path/to/phux.sock server --ensure --json
 `--ensure` is availability-only: reuse a live server or auto-spawn one
 with the same session-name template and spawn-on-attach policy as naked
 `phux`, then exit. It does not attach, handshake, or reconcile a running
-coordinator's binary version. `--json` is the machine contract Cockpit
+coordinator's binary version. `--json` is the machine contract native clients
 and other peers use: a versioned availability document on success
 (`schema_version`, `running`, `socket`, `disposition`, `cli_version`,
 `server_log`) and a JSON error on stderr on failure

@@ -1,6 +1,6 @@
 //! PHA-406/PHA-284: the bridge subscribes to the connection-wide event
 //! stream after attach and folds cwd/command/exit events into typed status
-//! effects (`docs/consumers/cockpit.md` "Status effects").
+//! effects (`docs/consumers/sdk.md` "Native status effects").
 use super::*;
 use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
 use std::ptr;

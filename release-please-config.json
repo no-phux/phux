@@ -29,7 +29,6 @@
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "clients/cockpit",
         "clients/desktop",
         "integrations/runtime",
         "integrations/opencode-v2",

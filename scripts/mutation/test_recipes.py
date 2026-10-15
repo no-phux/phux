@@ -30,8 +30,6 @@ class RecipeArguments(unittest.TestCase):
             cases = {
                 "rust": ["--re", "validate_ratio|match guard.*with true", "--list",
                          "--file", "crates/**/*.rs", "--output", "reports with spaces"],
-                "zig": ["--scope", "module with spaces.zig", "--list",
-                        "--out", "reports; with $shell characters"],
             }
             for language, args in cases.items():
                 with self.subTest(language=language):

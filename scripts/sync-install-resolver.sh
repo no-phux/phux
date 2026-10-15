@@ -8,7 +8,7 @@ mode="${1:---check}"
 [[ $mode == --check || $mode == --write ]] || { phux_error 'usage: sync-install-resolver.sh [--check|--write]'; exit 2; }
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-for installer in install.sh install-cockpit.sh install-desktop.sh; do
+for installer in install.sh install-desktop.sh; do
   for library in output install-release; do
     case "$library" in
       output) marker='CLI output' ;;

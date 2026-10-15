@@ -109,7 +109,7 @@ class OutputTests(unittest.TestCase):
 
     def test_standalone_embeds_are_fresh_and_errors_keep_stdout_empty(self):
         subprocess.run(["bash", str(ROOT / "scripts/sync-install-resolver.sh"), "--check"], check=True)
-        for name in ("install.sh", "install-cockpit.sh", "install-desktop.sh"):
+        for name in ("install.sh", "install-desktop.sh"):
             for shell in SHELLS:
                 with self.subTest(script=name, shell=shell):
                     # Copy just the served script, proving there is no repo helper dependency.

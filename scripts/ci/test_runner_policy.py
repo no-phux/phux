@@ -129,9 +129,15 @@ class RunnerPolicyTests(unittest.TestCase):
                     self.assertTrue(group.startswith("mini-v1-"), group)
 
     def test_optional_scans_are_not_scheduled(self):
-        for name in ("stress.yml", "mutation.yml", "cockpit-sdk-head.yml"):
+        for name in ("stress.yml", "mutation.yml"):
             self.assertNotIn("  schedule:", (WORKFLOWS / name).read_text())
-        self.assertNotIn("  repository_dispatch:", (WORKFLOWS / "cockpit-sdk-head.yml").read_text())
+
+    def test_mutation_workflow_keeps_rust_without_archived_zig_pilot(self):
+        mutation = (WORKFLOWS / "mutation.yml").read_text()
+        self.assertIn("run: bash scripts/mutation/rust.sh", mutation)
+        self.assertNotIn("scripts/mutation/zig.sh", mutation)
+        self.assertNotIn("test_zig.py", mutation)
+        self.assertNotIn("inputs.language", mutation)
 
     def test_pr_janitor_reclaims_concurrency_and_cache_budget(self):
         """A closed PR holds queue slots and cache bytes until something frees them.
@@ -177,7 +183,7 @@ class RunnerPolicyTests(unittest.TestCase):
 
         Restores take only the newest entry for a prefix. sccache's GitHub
         backend writes one small object per compilation; those stay LRU-hot
-        and evict the test-lane mbx archive and the Cockpit zig cache.
+        and evict the test-lane dependency archives.
         The xcframework dep archive did the same at ~1 GB a copy.
         """
         ci = (WORKFLOWS / "ci.yml").read_text()
@@ -190,15 +196,11 @@ class RunnerPolicyTests(unittest.TestCase):
         for lane in ("test", "test-integration", "e2e", "uniffi"):
             self.assertIn(f"v0-rust-phux-{lane}-Linux-", prune)
         self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
-        self.assertIn("keep_newest zig mini-v3-cockpit-zig-0.16.0-macOS-ARM64-", prune)
         self.assertIn("drop_all sccache sccache", prune)
         self.assertIn("drop_all xcframework-deps v0-rust-mini-v1-ffi-xcframework-", prune)
         self.assertIn("keep_newest desktop-release v0-rust-mini-v1-desktop-release-", prune)
         self.assertIn("keep_newest xcframework-zig mini-v1-ffi-xcframework-zig-", prune)
         self.assertIn("tail -n +2", prune)
-        cockpit = (WORKFLOWS / "cockpit-ci.yml").read_text()
-        self.assertNotIn("SCCACHE_GHA_ENABLED", cockpit)
-        self.assertNotIn("mozilla-actions/sccache-action", cockpit)
         ffi = (WORKFLOWS / "ffi-xcframework.yml").read_text()
         self.assertNotIn("shared-key: mini-v1-ffi-xcframework", ffi)
         self.assertIn("mini-v1-ffi-xcframework-zig-", ffi)

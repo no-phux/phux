@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   BEAT_SECONDS,
+  CLIENTS,
   SCENARIOS,
   beatAt,
   duration,
@@ -10,6 +11,9 @@ import {
 import { curvePoint, port } from "./Diagram";
 
 describe("explainer clock", () => {
+  test("the explainer names the current clients", () => {
+    expect(CLIENTS).toEqual(["Desktop", "Terminal", "Browser", "iPhone"]);
+  });
   test("every scenario has four seekable beats and a documentation route", () => {
     for (const scenario of SCENARIOS) {
       expect(scenario.beats).toHaveLength(4);

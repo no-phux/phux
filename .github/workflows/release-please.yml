@@ -139,7 +139,7 @@ jobs:
 
       # `force-tag-creation: true` makes release-please create refs immediately
       # for draft releases. Do not recreate that behavior here: one owner keeps
-      # root, Cockpit, and integration component tags on the same code path.
+      # root, Desktop, and integration component tags on the same code path.
 
   sync-lockfile:
     name: sync release inputs (${{ matrix.pr.headBranchName }})

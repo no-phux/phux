@@ -834,6 +834,12 @@ on `RETAIN_ON_EXIT` (normative: [resource protocol](../spec/L1.md),
 
 ### Other `--json` verbs
 
+`logs`, `update`, and `channel` success documents are `schema_version` 2.
+Version 2 removes the archived Zig Cockpit's `cockpit_log` inventory field
+and `cockpit` updater/channel field; these commands no longer discover,
+launch, tail, or update that app. The standard error document remains
+`schema_version` 1.
+
 `config agents` is `schema_version` 2: top-level `state` / `attention`
 are *effective* values (runtime record first, declared manifest as
 fallback). `live` is whether a server answered; `source` is `"runtime"`

@@ -40,7 +40,7 @@ describe("path classification", () => {
     expect(isDocsPath("/")).toBe(false);
     expect(isDocsPath("/embed")).toBe(false);
     expect(isDocsPath("/install")).toBe(false);
-    expect(isDocsPath("/install-cockpit.sh")).toBe(false);
+    expect(isDocsPath("/install-desktop.sh")).toBe(false);
     expect(isDocsPath("/og.png")).toBe(false);
     expect(isMarketingOnlyPath("/embed")).toBe(true);
     expect(isMarketingOnlyPath("/install.sh")).toBe(true);
