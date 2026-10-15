@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/no-phux/phux/compare/desktop-v0.9.3...desktop-v0.9.4) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** keep the last frame across reconnect and size the websocket send budget ([#1392](https://github.com/no-phux/phux/issues/1392)) ([b33f042](https://github.com/no-phux/phux/commit/b33f0426c1b661fd216df75739a032b47be96b5b))
+
 ## [0.9.3](https://github.com/no-phux/phux/compare/desktop-v0.9.2...desktop-v0.9.3) (2026-10-15)
 
 
