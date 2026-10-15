@@ -14,12 +14,10 @@
 //! agent providers, and repository identities. Terminal contents never do.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 use phux_client_core::organize::{
-    self as planner, CreatedSession, MovedPane, PaneFacts, Plan, PlannedRename, SessionFacts,
+    self as planner, CreatedSession, MovedPane, PaneFacts, Plan, PlannedRename,
 };
-use phux_core::project_identity::SessionProject;
 use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Command, OrgFilter, Refusal, SessionLifetime};
 use serde::Serialize;
@@ -32,6 +30,8 @@ use crate::org::{self, OrgError, OrgInventory};
 pub use phux_client_core::organize::{
     DEFAULT_MIN_CONFIDENCE, Facts, JOURNAL_SCHEMA, Journal, count, plan_lines,
 };
+use phux_client_runtime::organize::{PaneSeen, ProjectCache, session_facts};
+
 pub use phux_client_runtime::organize::{
     API_KEY_ENV, INTERACTIVE_JEV_TIMEOUT, JEV_ENDPOINT, JEV_TIMEOUT, Judge, Options, PlanError,
     clear_journal, journal_path, load_journal, save_journal,
@@ -138,29 +138,9 @@ pub async fn gather(
     let sessions = inventory
         .sessions
         .iter()
-        .map(|record| session_facts(&inventory, record))
+        .map(|record| session_facts(record, inventory.intake()))
         .collect();
     Ok(Facts { sessions, panes })
-}
-
-fn session_facts(
-    inventory: &OrgInventory,
-    record: &phux_protocol::wire::frame::SessionRecord,
-) -> SessionFacts {
-    let project = SessionProject::from_attrs(
-        record
-            .attrs
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str())),
-    );
-    SessionFacts {
-        key: record.key,
-        name: record.name.clone(),
-        intake: inventory.intake() == Some(record.key),
-        project_id: project.as_ref().map(|p| p.id.clone()),
-        project_name: project.as_ref().map(|p| p.name.clone()),
-        checkout: project.map(|p| p.checkout),
-    }
 }
 
 fn pane_facts(
@@ -168,48 +148,20 @@ fn pane_facts(
     session: SessionKey,
     member: &glance::MemberGlance,
     key: ResourceKey,
-    projects: &mut ProjectCache<'_>,
+    projects: &mut ProjectCache,
 ) -> PaneFacts {
     let label = member.live.as_ref().map_or_else(
         || names.display(*key.as_bytes()),
         crate::selector::format_terminal_id,
     );
-    let project = member.cwd.as_deref().and_then(|cwd| projects.of(cwd));
-    PaneFacts {
-        key,
+    let seen = PaneSeen {
         label,
-        session,
         title: member.title.clone(),
         cwd: member.cwd.clone(),
         agent: member.agent.clone(),
         status: member.status.clone(),
-        project_id: project.as_ref().map(|p| p.id.clone()),
-        project_name: project.as_ref().map(|p| p.name.clone()),
-        checkout: project.map(|p| p.checkout),
-    }
-}
-
-/// Repository discovery per working directory, read once each.
-struct ProjectCache<'a> {
-    host: Option<&'a str>,
-    seen: HashMap<String, Option<SessionProject>>,
-}
-
-impl<'a> ProjectCache<'a> {
-    fn new(host: Option<&'a str>) -> Self {
-        Self {
-            host,
-            seen: HashMap::new(),
-        }
-    }
-
-    fn of(&mut self, cwd: &str) -> Option<SessionProject> {
-        let host = self.host?;
-        self.seen
-            .entry(cwd.to_owned())
-            .or_insert_with(|| crate::project_identity::discover(Path::new(cwd), host, None))
-            .clone()
-    }
+    };
+    phux_client_runtime::organize::pane_facts(key, session, seen, projects)
 }
 
 /// The judge `config` and `offline` allow ([`Judge::configured`]), resolved

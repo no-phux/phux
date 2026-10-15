@@ -13,15 +13,21 @@
 //! neither appears in a process listing, and the binary carries no HTTP or
 //! TLS stack for it.
 
+pub mod sequencer;
+
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use phux_client_core::organize::{
-    self as planner, Candidates, Facts, Journal, JudgeKind, NewSession, Plan, PlanInput, Scope,
-    Verdict,
+    self as planner, Candidates, Facts, Journal, JudgeKind, NewSession, PaneFacts, Plan, PlanInput,
+    Scope, SessionFacts, Verdict,
 };
+use phux_core::project_identity::SessionProject;
+use phux_protocol::ids::{ResourceKey, SessionKey};
+use phux_protocol::wire::frame::SessionRecord;
 use serde_json::Value;
 
 /// The Jev evaluation endpoint.
@@ -42,6 +48,97 @@ const KEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How often a blocking wait polls its child.
 const POLL: Duration = Duration::from_millis(20);
+
+pub use phux_config::instance::local_host_name;
+pub use sequencer::{Report, Sequencer, Step, Submitter};
+
+/// One session record as the planner sees it; `intake` is the designated
+/// Intake session.
+#[must_use]
+pub fn session_facts(record: &SessionRecord, intake: Option<SessionKey>) -> SessionFacts {
+    let project = SessionProject::from_attrs(
+        record
+            .attrs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
+    SessionFacts {
+        key: record.key,
+        name: record.name.clone(),
+        intake: intake == Some(record.key),
+        project_id: project.as_ref().map(|p| p.id.clone()),
+        project_name: project.as_ref().map(|p| p.name.clone()),
+        checkout: project.map(|p| p.checkout),
+    }
+}
+
+/// What a client knows about one terminal, before repository discovery.
+#[derive(Debug, Clone, Default)]
+pub struct PaneSeen {
+    /// How a person addresses it (`@3`, else `^ab23cd`).
+    pub label: String,
+    /// Its name or title.
+    pub title: Option<String>,
+    /// Its working directory.
+    pub cwd: Option<String>,
+    /// The agent running there and its state.
+    pub agent: Option<String>,
+    /// Its state in words.
+    pub status: String,
+}
+
+/// One terminal as the planner sees it, its repository read through
+/// `projects`.
+#[must_use]
+pub fn pane_facts(
+    key: ResourceKey,
+    session: SessionKey,
+    seen: PaneSeen,
+    projects: &mut ProjectCache,
+) -> PaneFacts {
+    let project = seen.cwd.as_deref().and_then(|cwd| projects.of(cwd));
+    PaneFacts {
+        key,
+        label: seen.label,
+        session,
+        title: seen.title,
+        cwd: seen.cwd,
+        agent: seen.agent,
+        status: seen.status,
+        project_id: project.as_ref().map(|p| p.id.clone()),
+        project_name: project.as_ref().map(|p| p.name.clone()),
+        checkout: project.map(|p| p.checkout),
+    }
+}
+
+/// Repository discovery per working directory, read once each, and only
+/// when the server shares this machine's filesystem.
+#[derive(Debug, Default)]
+pub struct ProjectCache {
+    host: Option<String>,
+    seen: HashMap<String, Option<SessionProject>>,
+}
+
+impl ProjectCache {
+    /// Discovery on `host` (this machine's name), or none for `None` (a
+    /// remote server, whose paths are not ours to read).
+    #[must_use]
+    pub fn new(host: Option<&str>) -> Self {
+        Self {
+            host: host.map(str::to_owned),
+            seen: HashMap::new(),
+        }
+    }
+
+    /// The repository `cwd` is in.
+    pub fn of(&mut self, cwd: &str) -> Option<SessionProject> {
+        let host = self.host.as_deref()?;
+        self.seen
+            .entry(cwd.to_owned())
+            .or_insert_with(|| crate::project_identity::discover(Path::new(cwd), host, None))
+            .clone()
+    }
+}
 
 /// Which judge to ask.
 #[derive(Debug, Clone)]
@@ -86,6 +183,14 @@ impl Judge {
                 Some(format!("organize.jev-key-command: {why}")),
             ),
         }
+    }
+
+    /// [`Self::configured`] with the `[organize]` table of the user's
+    /// config file (defaults when it does not load).
+    #[must_use]
+    pub fn from_config_file(offline: bool) -> (Self, Option<String>) {
+        let config = phux_config::loader::load().unwrap_or_default();
+        Self::configured(&config.organize, offline)
     }
 
     /// Which kind of judge this is.

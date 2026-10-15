@@ -84,7 +84,10 @@ repository fact, but not always: a pane titled `tail beta prod logs` in
    client shares them. The CLI applies by default (`--dry-run` previews);
    the MCP tool previews by default (`apply: true` applies), since an agent
    should show a plan before moving a person's work. The TUI runs on its
-   own control connection off the input loop and toasts the result. Jev's
+   own control connection off the input loop and toasts the result. The
+   desktop plans on a background thread and applies through
+   `phux_client_runtime::organize::Sequencer`, a sans-IO sequencer over the
+   runtime's asynchronous organization lane, writing the same journal. Jev's
    whole run has one time budget (60 seconds, 8 in interactive clients)
    before repository matching decides.
 

@@ -13,6 +13,7 @@ mod keys;
 mod motion;
 mod notifications;
 mod organization;
+mod organize;
 mod overlays;
 mod panes;
 mod performance;

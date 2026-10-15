@@ -39,6 +39,9 @@ mod roster_live;
 #[path = "support/scoped_live.rs"]
 mod scoped_live;
 
+#[path = "support/organize_live.rs"]
+mod organize_live;
+
 fn options() -> ClientOptions {
     ClientOptions {
         control: ControlOptions {

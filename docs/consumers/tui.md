@@ -220,6 +220,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a s` | `session-picker` |
 | `C-a A` | `agent-fleet` |
 | `C-a S` | `settings` |
+| `C-a O` | `organize` (put every pane in the session it belongs in; `organize-undo` reverses it) |
 | `C-a B` | `report-bug` (local bug-report bundle) |
 | `C-a q` / `C-a Q` | `next-attention` / `return-from-attention` |
 | `C-a C` | `new-session` (focused pane's host and directory, or `cwd` / `host`) |
@@ -767,6 +768,20 @@ phux report show         # print the newest report.md
 phux report show ID      # print a specific one
 phux report new "note"   # logs-and-version only, when the TUI itself is down
 ```
+
+### Organize
+
+`organize` (`C-a O`, also a palette row and a session-menu row) is
+`phux organize` from inside the attach
+([ADR-0170](../adr/0170-organize-asks-a-judge-and-code-decides.md)): panes
+join the session for their repository, a repository with no session gets
+one, and a numbered session holding one repository takes its name. It runs
+on its own control connection, so typing continues; a passthrough notice
+says it started and a toast lists what moved. `organize-session` limits it
+to the current session's panes; `organize-undo` reverses the last run from
+any surface. Jev judges when `TYPESAFE_API_KEY` is set or
+`organize.jev-key-command` prints a key, waiting at most 8 seconds before
+repository matching decides.
 
 ## Agent fleet
 

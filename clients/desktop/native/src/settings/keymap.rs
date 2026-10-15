@@ -186,6 +186,22 @@ fn catalog() -> Vec<CommandSpec> {
             &[],
         ),
         spec(
+            "organize-everything",
+            "Organize Everything",
+            "Organization",
+            Some("cmd+shift+o"),
+            "Move every pane into the session for its repository or task.",
+            &["tidy", "sort", "group"],
+        ),
+        spec(
+            "undo-organize-everything",
+            "Undo Organize Everything",
+            "Organization",
+            None,
+            "Reverse the last Organize Everything run.",
+            &[],
+        ),
+        spec(
             "kill-session",
             "Kill Session…",
             "Terminal",
