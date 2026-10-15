@@ -8,7 +8,8 @@
   "scripts": {
     "generate": "node scripts/generate.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs",
+    "gates": "node scripts/check.mjs"
   },
   "dependencies": {
     "@ampcode/cli": "0.0.1792008042-gef0030",

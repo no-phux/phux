@@ -269,15 +269,15 @@ test('fails closed for invalid form values and unsupported URL elicitation', asy
 test('projects real streaming messages and structured tool results using phux transcript entries', async (t) => {
   const packets: ServerNotification[] = [
     { method: 'item/agentMessage/delta', params: { threadId: thread.id, turnId: turn.id, itemId: 'message-exact', delta: 'Hello 🌍' } },
-    { method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item: {
+    { method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, completedAtMs: 2, item: {
       type: 'agentMessage', id: 'message-exact', text: 'Hello 🌍!', phase: null, memoryCitation: null, delivery: null, questions: null,
     } } },
-    { method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: {
+    { method: 'item/started', params: { threadId: thread.id, turnId: turn.id, startedAtMs: 1, item: {
       type: 'commandExecution', id: 'tool-exact', pluginId: null, scriptPath: null, command: 'echo fixture', cwd: '/tmp',
       processId: null, source: 'agent', status: 'inProgress', commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null,
     } } },
     { method: 'item/commandExecution/outputDelta', params: { threadId: thread.id, turnId: turn.id, itemId: 'tool-exact', delta: 'streaming output' } },
-    { method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item: {
+    { method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, completedAtMs: 3, item: {
       type: 'commandExecution', id: 'tool-exact', pluginId: null, scriptPath: null, command: 'echo fixture', cwd: '/tmp',
       processId: null, source: 'agent', status: 'completed', commandActions: [], aggregatedOutput: 'fixture output', exitCode: 0, durationMs: 1,
     } } },

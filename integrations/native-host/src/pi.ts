@@ -153,7 +153,7 @@ export function createPiUI(context: AdapterContext): ExtensionUIContext {
     setWorkingIndicator: () => unsupported('setWorkingIndicator'),
     setHiddenThinkingLabel: () => unsupported('setHiddenThinkingLabel'),
     setWidget: (key, content) => {
-      if (typeof content === 'function') unsupported('component widget');
+      if (typeof content === 'function') return unsupported('component widget');
       notice(`Pi widget ${key}: ${content?.join('\n') ?? '(cleared)'}`);
     },
     onTerminalInput: () => unsupported('onTerminalInput'),

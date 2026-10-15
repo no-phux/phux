@@ -319,7 +319,8 @@ export async function createAdapter(context: AdapterContext, startQuery?: typeof
     // 0.3.300 forwards this provider UI flag in core.mjs even though its public
     // CanUseTool declaration omits it. A permission click cannot replace the
     // unknown tool's required interactive renderer.
-    if (record(options) && options.requiresUserInteraction === true && toolName !== 'AskUserQuestion') {
+    const providerOptions: unknown = options;
+    if (record(providerOptions) && providerOptions.requiresUserInteraction === true && toolName !== 'AskUserQuestion') {
       notice('warning', 'Claude tool requires unsupported native provider UI; denied');
       return deny('Unsupported provider UI');
     }

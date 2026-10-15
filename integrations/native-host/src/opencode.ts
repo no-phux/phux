@@ -178,7 +178,7 @@ export class OpenCodeAdapter implements NativeAdapter {
           // The volatile feed is a wakeup, never our durable source of truth.
           // No human-response Promise or HTTP snapshot blocks this event drain.
           if ('data' in event && record(event.data) && (
-            event.data.sessionID === this.providerSessionId ||
+            ('sessionID' in event.data && event.data.sessionID === this.providerSessionId) ||
             (event.type === 'form.created' && record(event.data.form) && event.data.form.sessionID === this.providerSessionId)
           )) this.scheduleRefresh();
         }
@@ -277,7 +277,7 @@ export class OpenCodeAdapter implements NativeAdapter {
         if (item.type !== 'tool') continue;
         const state = item.state;
         const finished = state.status === 'completed' || state.status === 'error';
-        const output = finished ? (state.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n') : '';
+        const output = finished ? (state.content ?? []).flatMap((part) => part.type === 'text' && 'text' in part ? [part.text] : []).join('\n') : '';
         this.publish({ id: item.id, role: 'tool', text: state.status === 'error' ? state.error.message : '', truncated: false, final: finished,
           tool: { name: item.name, call_id: item.id, summary: summarizeArgs(state.input), status: state.status === 'error' ? 'error' : finished ? 'ok' : 'running', output },
         });
