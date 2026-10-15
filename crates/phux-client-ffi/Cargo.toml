@@ -37,9 +37,11 @@ required-features = ["uniffi"]
 name = "connected"
 required-features = ["c-abi"]
 
+# A measurement with `#[ignore]`d tests only; `measure` keeps it out of the
+# default test build.
 [[test]]
 name = "connected_flood"
-required-features = ["c-abi"]
+required-features = ["c-abi", "measure"]
 
 [[test]]
 name = "agent_resume_live"
@@ -67,6 +69,9 @@ uniffi = [
     "dep:thiserror",
     "libghostty-vt/kitty-graphics",
 ]
+
+# Builds the `connected_flood` measurement test target.
+measure = []
 
 [dependencies]
 libghostty-vt.workspace = true
