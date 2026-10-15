@@ -13,10 +13,12 @@ import {
   ATTACH_FRAME,
   HELLO_FRAME,
   TYPE_ERROR,
+  TYPE_HELLO_OK,
   frameType,
   inputTextFrames,
   parseTerminalPayload,
 } from "./phux-wire";
+import { TYPE_ATTACHED, TYPE_ATTACH_READY } from "../worker/src/wire";
 import { parseSessionInfo, type SessionInfo } from "../worker/src/session-info";
 
 const endpoint =
@@ -48,6 +50,20 @@ function originUrlOf(pathname: string): URL {
   return url;
 }
 
+/** The smoke client's pinned ATTACH, retargeted at one view's correlation id. */
+function attachFrame(attachId: number): Uint8Array {
+  const frame = ATTACH_FRAME.slice();
+  // The frame ends with `field 5 (attach id), wire type 4, length 4, u32 1`.
+  const header = frame.slice(frame.length - 7, frame.length - 4);
+  if (header[0] !== 5 || header[1] !== 4 || header[2] !== 4)
+    fail("the pinned ATTACH frame no longer ends with its attach id");
+  frame[frame.length - 4] = (attachId >>> 24) & 255;
+  frame[frame.length - 3] = (attachId >>> 16) & 255;
+  frame[frame.length - 2] = (attachId >>> 8) & 255;
+  frame[frame.length - 1] = attachId & 255;
+  return frame;
+}
+
 async function pairStatus(code: string): Promise<Response> {
   const probe = originUrlOf("/session/pair");
   probe.searchParams.set("code", code);
@@ -77,8 +93,12 @@ interface View {
   close: () => void;
 }
 
-/** Attach one view; resolves once its own attachment is rendering. */
-function open(label: string, attach: string): Promise<View> {
+/**
+ * Attach one view; resolves once its own attachment is rendering. `attachId` is
+ * the client-chosen correlation id this view's ATTACH carries, which is how the
+ * session knows which returned frames belong to it.
+ */
+function open(label: string, attach: string, attachId: number): Promise<View> {
   const target = new URL(sessionUrl);
   if (attach) target.searchParams.set("attach", attach);
   const socket = new BunWebSocket(target.toString(), {
@@ -89,10 +109,17 @@ function open(label: string, attach: string): Promise<View> {
   let text = "";
   let envelope: SessionInfo | undefined;
   let terminalId: Uint8Array | undefined;
+  let helloOk = false;
+  let addressed = 0;
 
   return new Promise<View>((resolve, reject) => {
     const timeout = setTimeout(
-      () => reject(new Error(`${label} timed out before rendering`)),
+      () =>
+        reject(
+          new Error(
+            `${label} timed out before rendering (addressed_frames=${addressed} bytes=${text.length})`,
+          ),
+        ),
       timeoutMs,
     );
     socket.addEventListener("message", (event) => {
@@ -111,15 +138,34 @@ function open(label: string, attach: string): Promise<View> {
       }
       if (!(event.data instanceof ArrayBuffer)) return;
       const frame = new Uint8Array(event.data);
-      if (frameType(frame) === TYPE_ERROR) {
+      const type = frameType(frame);
+      if (type === TYPE_ERROR) {
         reject(new Error(`${label} received a protocol error`));
         return;
       }
+      // HELLO first, then this view's own ATTACH; the session answers in order.
+      if (!helloOk) {
+        if (type !== TYPE_HELLO_OK) return;
+        helloOk = true;
+        const attach = attachFrame(attachId);
+        socket.send(
+          attach.buffer.slice(
+            attach.byteOffset,
+            attach.byteOffset + attach.byteLength,
+          ) as ArrayBuffer,
+        );
+        return;
+      }
+      // The session answers ATTACH with ATTACHED, this view's bootstrap, and
+      // ATTACH_READY. Those two addressed frames must reach *this* view: if the
+      // routing loses them the real client stalls on "protocol attach timed out",
+      // so the smoke refuses to call a view ready without them.
+      if (type === TYPE_ATTACHED || type === TYPE_ATTACH_READY) addressed += 1;
       const payload = parseTerminalPayload(frame);
       if (!payload) return;
       terminalId ??= payload.terminalId;
       text += new TextDecoder().decode(payload.bytes);
-      if (terminalId && envelope) {
+      if (terminalId && envelope && addressed >= 2) {
         clearTimeout(timeout);
         resolve({
           socket,
@@ -161,9 +207,11 @@ function expectRejected(attach: string): Promise<number> {
   });
 }
 
-const liveBefore = await liveSessions();
-const desktop = await open("desktop", "");
-console.log(`pair_smoke attached_session backend=${desktop.envelope.backend} live=${liveBefore}`);
+const desktop = await open("desktop", "", 5000);
+console.log(`pair_smoke attached_session backend=${desktop.envelope.backend}`);
+// Baseline with exactly one view attached: the second view must not add a slot.
+const liveWithOneView = await liveSessions();
+if (liveWithOneView < 1) fail("the session reserved no slot at all");
 
 const code = desktop.envelope.pair?.code;
 if (!code) fail("the session envelope carried no attach code");
@@ -175,7 +223,7 @@ if (!pending.ok) fail(`pairing status returned ${pending.status}`);
 if ((await pending.json() as { linked: boolean }).linked)
   fail("a fresh pairing code reported itself already linked");
 
-const phone = await open("phone", code);
+const phone = await open("phone", code, 6000);
 if (phone.envelope.pair) fail("the paired view was handed its own attach code");
 if (phone.envelope.backend !== desktop.envelope.backend)
   fail("the two views disagree about their backend");
@@ -208,8 +256,8 @@ const foreign = await expectRejected("not-a-real-code");
 if (foreign !== 4003) fail(`an invalid code was served (close ${foreign})`);
 
 const liveAfter = await liveSessions();
-if (liveAfter !== liveBefore)
-  fail(`pairing changed the live slot count: ${liveBefore} -> ${liveAfter}`);
+if (liveAfter !== liveWithOneView)
+  fail(`pairing changed the live slot count: ${liveWithOneView} -> ${liveAfter}`);
 console.log("pair_smoke verified=true single_use=true attach_reserves_nothing=true");
 
 phone.close();

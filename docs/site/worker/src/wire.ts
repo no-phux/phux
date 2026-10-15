@@ -20,7 +20,7 @@
 // Only the fields priced above are decoded; the rest of each frame stays opaque.
 
 /** Client-chosen attach correlation id (`field::attach::ATTACH_ID`). */
-const ATTACH_ATTACH_ID = 4;
+const ATTACH_ATTACH_ID = 5;
 /** `field::attached::ATTACH_ID`. */
 const ATTACHED_ATTACH_ID = 3;
 /** `field::attach_ready::ATTACH_ID`. */

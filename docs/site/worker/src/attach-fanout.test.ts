@@ -43,7 +43,7 @@ function u32(value: number): number[] {
   ];
 }
 
-const attach = (id: number) => frame(TYPE_ATTACH, [[4, u32(id)]]);
+const attach = (id: number) => frame(TYPE_ATTACH, [[5, u32(id)]]);
 const attached = (id: number) => frame(TYPE_ATTACHED, [[3, u32(id)]]);
 const attachReady = (id: number) => frame(TYPE_ATTACH_READY, [[1, u32(id)]]);
 const output = () => frame(0x90, [[1, u32(3)], [3, [104, 105]]]);

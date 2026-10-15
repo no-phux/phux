@@ -58,19 +58,26 @@ describe("phux frame reader", () => {
   test("decodes fields, including multi-byte field ids", () => {
     const frameWithWideId = frame(TYPE_ATTACH, [
       [300, [1, 2, 3]],
-      [4, u32(19)],
+      [5, u32(19)],
     ]);
     expect(frameFields(frameWithWideId)).toEqual([
       { id: 300, value: Uint8Array.from([1, 2, 3]) },
-      { id: 4, value: Uint8Array.from(u32(19)) },
+      { id: 5, value: Uint8Array.from(u32(19)) },
     ]);
     expect(attachIdOf(frameWithWideId)).toBe(19);
   });
 
   test("reads the correlation id from ATTACH, ATTACHED and ATTACH_READY", () => {
-    expect(attachIdOf(frame(TYPE_ATTACH, [[4, u32(5000)]]))).toBe(5000);
+    // `field::attach::ATTACH_ID` is 5; field 4 is `scrollback_limit_lines`, and
+    // reading that as an attach id routes an attachment's frames to nobody.
+    expect(attachIdOf(frame(TYPE_ATTACH, [[5, u32(19)]]))).toBe(19);
+    expect(attachIdOf(frame(TYPE_ATTACH, [[4, u32(5000)], [5, u32(1)]]))).toBe(1);
     expect(attachIdOf(frame(TYPE_ATTACHED, [[3, u32(9)]]))).toBe(9);
     expect(attachIdOf(frame(TYPE_ATTACH_READY, [[1, u32(9)]]))).toBe(9);
+  });
+
+  test("a scrollback limit is never mistaken for an attachment", () => {
+    expect(attachIdOf(frame(TYPE_ATTACH, [[4, u32(5000)]]))).toBeUndefined();
   });
 
   test("has no correlation id for session-wide or input frames", () => {
