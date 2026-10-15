@@ -48,6 +48,13 @@ impl Callback {
         let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
         for (_, sender) in waiting { let _ = sender.send(json!({"cancelled":true})); }
     }
+    fn finish_prompt(&self, id: u64) -> Result<(), HostError> {
+        self.cancel_questions();
+        self.flush_text()?;
+        self.rows.borrow_mut().prompt_user_id = None;
+        self.sink.reject_pending_turn(&format!("acp:{id}"))?;
+        self.sink.state(NativeState::Done)
+    }
     fn flush_text(&self) -> Result<(), HostError> {
         if let Some((id, role, text)) = self.rows.borrow_mut().current.take() { common::text(&self.sink, &self.provider, id, role, text, true)?; }
         Ok(())
@@ -86,8 +93,10 @@ impl Callback {
         }
         let row = rows.tools.entry(id.clone()).or_insert_with(|| (String::new(), String::new(), String::new(), ToolStatus::Running));
         if let Some(title) = title { row.0 = common::head(&title, 256); }
-        if let Some(input) = input { row.1 = common::head(&input.to_string(), 2048); }
-        if let Some(output) = output { row.2 = common::head(&output.to_string(), 4096); }
+        if let Some(input) = input { row.1 = common::summarize_args(&input); }
+        if self.sink.0.transcript_mode == common::TranscriptMode::Full {
+            if let Some(output) = output { row.2 = common::head(&output.to_string(), 4096); }
+        }
         if let Some(status) = status { row.3 = match status { sdk::ToolCallStatus::Completed => ToolStatus::Ok, sdk::ToolCallStatus::Failed => ToolStatus::Error, _ => ToolStatus::Running }; }
         if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.borrow().is_empty() { self.sink.state(NativeState::Working)?; }
         common::tool(&self.sink, &self.provider, id, row.0.clone(), row.1.clone(), row.2.clone(), row.3)
@@ -237,12 +246,16 @@ pub(super) fn run(spec: HostSpec, sink: Sink, mut commands: mpsc::Receiver<Nativ
                                 let _ = sink.result(common::result(id, NativeDisposition::Queued, "ACP prompt request scheduled; no admission receipt in ACP v1"));
                                 match response.await {
                                     Ok(_) => {
-                                        callback.cancel_questions();
-                                        let _ = callback.flush_text(); let _ = sink.state(NativeState::Done);
-                                        callback.rows.borrow_mut().prompt_user_id = None;
+                                        let _ = callback.finish_prompt(id);
                                         let _ = sink.result(common::result(id, NativeDisposition::Completed, "ACP provider returned actual prompt stop reason"));
                                     }
-                                    Err(error) => { let _ = sink.result(common::result(id, NativeDisposition::Unknown, &error.to_string())); let _ = sink.notice(error.to_string()); }
+                                    Err(error) => {
+                                        // The prompt RPC ended, not the transport. Its outcome can
+                                        // remain uncertain without fencing the next request forever.
+                                        let _ = callback.finish_prompt(id);
+                                        let _ = sink.result(common::result(id, NativeDisposition::Unknown, &error.to_string()));
+                                        let _ = sink.notice(error.to_string());
+                                    }
                                 }
                             });
                         }
@@ -279,5 +292,22 @@ mod tests {
         assert_eq!(ask.tool_call_id, "call_123");
         assert_eq!(ask.questions[0].options[0].id, "agent");
         assert!(!ask.questions[0].allow_multiple);
+    }
+    #[test]
+    fn ended_prompt_releases_turn_and_callbacks_without_disconnect() {
+        let sink = crate::tests::sink();
+        let mut view = sink.view(); view.connected = true; view.turn_id = Some("acp:7".into());
+        sink.update(NativeUpdate::View { view }).unwrap();
+        let (sender, mut receiver) = oneshot::channel();
+        let callback = Callback { sink: sink.clone(), provider: "cursor".into(),
+            waiting: RefCell::new(BTreeMap::from([("permission".into(), sender)])),
+            rows: RefCell::new(Rows { prompt_user_id: Some("acp-prompt:7".into()), ..Rows::default() }) };
+        callback.finish_prompt(7).unwrap();
+        assert!(sink.view().connected);
+        assert!(sink.view().turn_id.is_none());
+        assert!(callback.rows.borrow().prompt_user_id.is_none());
+        assert_eq!(receiver.try_recv().unwrap()["cancelled"], true);
+        assert!(!sink.begin_prompt("acp:8".into()).unwrap());
+        assert_eq!(sink.view().turn_id.as_deref(), Some("acp:8"));
     }
 }

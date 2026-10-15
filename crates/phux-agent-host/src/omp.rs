@@ -87,9 +87,12 @@ pub(super) fn run(spec: HostSpec, sink: Sink, mut commands: mpsc::Receiver<Nativ
                             }
                             NativeIntent::Answer { question_id, response } => {
                                 let _dialog = dialog.lock();
-                                match answer(&sink, &question_id, response).and_then(|answer| client.send(&RpcInbound::ExtensionUiResponse(answer)).map_err(|error| HostError::Sdk(error.to_string()))) {
-                                    Ok(()) => common::result(id, NativeDisposition::Queued, "queued to OMP SDK writer; provider consumption is not acknowledged"),
+                                match answer(&sink, &question_id, response) {
                                     Err(error) => common::result(id, NativeDisposition::Refused, &error.to_string()),
+                                    Ok(answer) => match client.send(&RpcInbound::ExtensionUiResponse(answer)) {
+                                        Ok(()) => common::result(id, NativeDisposition::Queued, "queued to OMP SDK writer; provider consumption is not acknowledged"),
+                                        Err(error) => common::result(id, NativeDisposition::Unknown, &error.to_string()),
+                                    },
                                 }
                             }
                         };
@@ -127,7 +130,7 @@ impl Rows {
             else { return Err(HostError::Sdk("too many active OMP tools".into())); }
         }
         let summary = self.tools.entry(id.clone()).or_insert_with(|| (String::new(), status));
-        if let Some(input) = input { summary.0 = common::head(&input.to_string(), 2048); }
+        if let Some(input) = input { summary.0 = common::summarize_args(&input); }
         summary.1 = status;
         common::tool(sink, provider, id, name, summary.0.clone(), output.map_or_else(String::new, |value| value.to_string()), status)
     }

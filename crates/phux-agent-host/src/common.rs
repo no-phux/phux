@@ -13,13 +13,14 @@ pub(super) fn head(text: &str, bytes: usize) -> String {
     text[..end].to_owned()
 }
 pub(super) fn configure(command: &mut Command, spec: &HostSpec) {
-    command.current_dir(&spec.cwd).envs(&spec.env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
-    for (name, _) in std::env::vars().chain(spec.env.iter().map(|(key, value)| (key.clone(), value.clone()))) {
-        if name.starts_with("PHUX_NATIVE_") { command.env_remove(name); }
-    }
+    worker_env(command, &spec.env);
+    command.current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     command.env("PHUX_AGENT_REPORTING", "0").env("PHUX_TERMINAL_ID", spec.parent.to_string());
     // PHUX_SOCKET stays the launcher's delegated tool socket, not an owner socket.
     command.env("PHUX_SOCKET", &spec.socket);
+}
+fn worker_env(command: &mut Command, env: &std::collections::BTreeMap<String, String>) {
+    command.env_clear().envs(env.iter().filter(|(name, _)| !name.starts_with("PHUX_NATIVE_") && !matches!(name.as_str(), "PHUX_WS_TOKENS" | "PHUX_WS_TLS_CERT" | "PHUX_WS_TLS_KEY")));
 }
 /// `from_io` does not own or reap a child. Kill the individual worker, NEVER
 /// its process group (it is the guardian's own group), before SDK reader drop.
@@ -75,28 +76,51 @@ pub(super) fn tool(sink: &Sink, provider: &str, id: String, name: String, summar
     transcript(sink, provider, TranscriptEntry { id: id.clone(), role: TranscriptRole::Tool, text: String::new(), truncated: false, is_final: status != ToolStatus::Running,
         tool: Some(TranscriptTool { name, call_id: id, summary, output, status }) })
 }
-fn transcript(sink: &Sink, provider: &str, entry: TranscriptEntry) -> Result<(), HostError> {
-    // Use the existing transcript sanitizer and size ceiling, with room for the
-    // native wrapper as well as the server-stamped record envelope.
-    let mut entry = entry;
-    if entry.text.len() > 12 * 1024 { entry.text = head(&entry.text, 12 * 1024); entry.truncated = true; }
-    let data = entry.into_data(provider);
-    let mut entry = data["entry"].clone();
-    loop {
-        let update = NativeUpdate::Transcript { entry: entry.clone() };
-        let encoded = serde_json::to_vec(&update).map_err(|error| HostError::Sdk(error.to_string()))?;
-        if encoded.len() <= 14 * 1024 { return sink.update(update); }
-        let over = encoded.len() - 14 * 1024;
-        if let Some(text) = entry["text"].as_str().filter(|text| !text.is_empty()) {
-            let text = head(text, text.len().saturating_sub(over));
-            entry["text"] = Value::String(text); entry["truncated"] = Value::Bool(true);
-        } else if let Some(output) = entry["tool"]["output"].as_str().filter(|output| !output.is_empty()) {
-            let mut start = output.len().min(over);
-            while !output.is_char_boundary(start) { start += 1; }
-            entry["tool"]["output"] = Value::String(output[start..].into());
-            entry["truncated"] = Value::Bool(true);
-        } else { return Err(HostError::Invalid("transcript metadata exceeds native record bounds".into())); }
+fn transcript(sink: &Sink, provider: &str, mut entry: TranscriptEntry) -> Result<(), HostError> {
+    if sink.0.transcript_mode == TranscriptMode::Off { return Ok(()); }
+    if sink.0.transcript_mode != TranscriptMode::Full {
+        if let Some(tool) = &mut entry.tool { tool.output.clear(); }
     }
+    let mut update = NativeUpdate::Transcript { entry: entry.into_data(provider) };
+    loop {
+        let bytes = crate::json_size(&update)?;
+        if bytes <= crate::UPDATE_BYTES { return sink.update(update); }
+        let NativeUpdate::Transcript { entry: data } = &mut update else { unreachable!() };
+        let entry = &mut data["entry"];
+        let over = bytes - crate::UPDATE_BYTES;
+        let field = if entry["text"].as_str().is_some_and(|text| !text.is_empty()) { &mut entry["text"] }
+            else if entry["tool"]["output"].as_str().is_some_and(|text| !text.is_empty()) { &mut entry["tool"]["output"] }
+            else { return Err(HostError::Invalid("transcript metadata exceeds native record bounds".into())); };
+        let text = field.as_str().expect("text field");
+        *field = Value::String(head(text, text.len().saturating_sub(over)));
+        entry["truncated"] = Value::Bool(true);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TranscriptMode { Off, Content, Full }
+impl TranscriptMode {
+    pub(super) fn from_env(value: Option<&str>) -> Self {
+        match value { Some("0") => Self::Off, Some("full") => Self::Full, _ => Self::Content }
+    }
+}
+
+/// Match the runtime's content-excluding argument summary; never dump raw args.
+pub(super) fn summarize_args(args: &Value) -> String {
+    fn line(text: &str, limit: usize) -> String { text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(limit).collect() }
+    let Some(args) = args.as_object() else { return args.as_str().map(|text| line(text, 512)).unwrap_or_default(); };
+    for key in ["command", "file_path", "notebook_path", "path", "pattern", "url", "query", "description", "prompt"] {
+        if let Some(text) = args.get(key).and_then(Value::as_str).filter(|text| !text.trim().is_empty()) { return line(text, 512); }
+    }
+    let mut pairs = String::new();
+    for (key, value) in args {
+        if matches!(key.as_str(), "content" | "contents" | "new_string" | "old_string" | "newText" | "oldText" | "new_source" | "edits" | "text" | "body" | "data" | "patch" | "diff") { continue; }
+        let value = match value { Value::String(text) => line(text, 80), Value::Array(_) | Value::Object(_) => "…".into(), _ => value.to_string() };
+        if !pairs.is_empty() { pairs.push(' '); }
+        pairs.push_str(key); pairs.push('='); pairs.push_str(&value);
+        if pairs.len() >= 2048 { break; }
+    }
+    line(&pairs, 512)
 }
 pub(super) fn validate_answer(question: &NativeQuestion, response: &Value) -> Result<(), String> {
     if response.get("cancelled").and_then(Value::as_bool) == Some(true) { return Ok(()); }
@@ -137,6 +161,21 @@ pub(super) fn validate_answer(question: &NativeQuestion, response: &Value) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_process_receives_only_sanitized_explicit_environment() {
+        let mut command = Command::new("/usr/bin/env");
+        let env = std::collections::BTreeMap::from([
+            ("PHUX_NATIVE_BINDING".into(), "secret".into()),
+            ("PHUX_WS_TOKENS".into(), "production".into()),
+            ("PHUX_WS_TLS_CERT".into(), "certificate".into()),
+            ("PHUX_WS_TLS_KEY".into(), "key".into()),
+            ("PHUX_SOCKET".into(), "delegated".into()),
+        ]);
+        worker_env(&mut command, &env);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "PHUX_SOCKET=delegated");
+    }
     #[test]
     fn permission_never_defaults_to_approval() {
         let question = NativeQuestion { id: "p".into(), kind: "permission".into(), title: String::new(), message: String::new(), options: vec![NativeOption { id: "actual-id".into(), label: "Allow once".into(), description: None }], questions: Vec::new(), fields: Value::Null };

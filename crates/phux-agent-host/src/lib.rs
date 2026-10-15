@@ -7,6 +7,12 @@
 //! availability; exhaustion terminates the worker rather than silently losing
 //! authoritative output. The same `NativeController` retains publication retry
 //! identities through daemon replacement.
+//!
+//! `PHUX_AGENT_TRANSCRIPT=0` suppresses transcript rows, not lifecycle or
+//! questions. The default retains content-excluding tool summaries without
+//! output; `full` explicitly opts into tool output. Worker environments are
+//! rebuilt from the launch specification without controller bootstrap proofs
+//! or production WebSocket credential/TLS overrides.
 #![forbid(unsafe_code)]
 
 mod acp;
@@ -14,7 +20,7 @@ mod common;
 mod node;
 mod omp;
 
-use std::{collections::{BTreeMap, BTreeSet, VecDeque}, path::PathBuf, sync::Arc};
+use std::{collections::{BTreeMap, VecDeque}, path::PathBuf, sync::Arc};
 use parking_lot::Mutex;
 use phux_client::native_agent::NativeController;
 use phux_protocol::{ids::ResourceId, native_agent::*};
@@ -54,6 +60,17 @@ pub enum HostError {
 }
 
 const OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const UPDATE_BYTES: usize = 14 * 1024;
+fn json_size(value: &impl serde::Serialize) -> Result<usize, HostError> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0 += bytes.len(); Ok(bytes.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(|error| HostError::Invalid(error.to_string()))?;
+    Ok(counter.0)
+}
 #[derive(Debug, Clone)]
 enum Output { Update(NativeUpdate), Result(NativeCommandResult) }
 #[derive(Debug, Default)]
@@ -63,7 +80,8 @@ struct Shared {
     backlog: Mutex<Backlog>,
     wake: Notify,
     view: Mutex<NativeView>,
-    responders: Mutex<BTreeSet<String>>,
+    responders: Mutex<BTreeMap<String, u64>>,
+    transcript_mode: common::TranscriptMode,
     ledger: Mutex<Ledger>,
 }
 #[derive(Debug, Clone)]
@@ -71,8 +89,11 @@ struct Sink(Arc<Shared>);
 impl Sink {
     fn update(&self, mut update: NativeUpdate) -> Result<(), HostError> {
         validate_payload(&update).map_err(HostError::Invalid)?;
-        if serde_json::to_vec(&update).map_err(|error| HostError::Invalid(error.to_string()))?.len() > 14 * 1024 {
+        if json_size(&update)? > UPDATE_BYTES {
             return Err(HostError::Invalid("native update exceeds bounded record envelope".into()));
+        }
+        if matches!(&update, NativeUpdate::Transcript { .. } | NativeUpdate::Notice { .. }) {
+            return self.push(Output::Update(update));
         }
         let mut current = self.0.view.lock();
         {
@@ -139,6 +160,9 @@ impl Sink {
         let mut ledger = self.0.ledger.lock();
         if let Some((_, saved)) = ledger.entries.get_mut(&result.operation_id) {
             if saved.as_ref().is_some_and(|old| matches!(old.disposition, NativeDisposition::Completed | NativeDisposition::Refused) && old != &result) { return Ok(()); }
+            if result.disposition == NativeDisposition::Refused && saved.as_ref().is_none_or(|old| old.disposition == NativeDisposition::Refused) {
+                self.0.responders.lock().retain(|_, operation_id| *operation_id != result.operation_id);
+            }
             *saved = Some(result.clone());
         }
         // Keep receipt ordering atomic with its ledger revision.
@@ -146,9 +170,9 @@ impl Sink {
     }
     fn push(&self, output: Output) -> Result<(), HostError> {
         let bytes = match &output {
-            Output::Update(value) => serde_json::to_vec(value),
-            Output::Result(value) => serde_json::to_vec(value),
-        }.map_err(|error| HostError::Sdk(error.to_string()))?.len();
+            Output::Update(value) => json_size(value)?,
+            Output::Result(value) => json_size(value)?,
+        };
         let mut backlog = self.0.backlog.lock();
         if backlog.failed || backlog.rows.len() >= 4096 || backlog.bytes.saturating_add(bytes) > OUTPUT_BYTES {
             backlog.failed = true;
@@ -202,7 +226,8 @@ pub async fn run(spec: HostSpec) -> Result<(), HostError> {
     // Bind before starting the provider; a refused binding cannot launch a model.
     let controller = Arc::new(NativeController::connect(&spec.socket, spec.agent.clone(), spec.activation.clone(), spec.binding_proof.clone()).await.map_err(|error| HostError::Controller(error.to_string()))?);
     let sink = Sink(Arc::new(Shared {
-        backlog: Mutex::new(Backlog::default()), wake: Notify::new(), responders: Mutex::new(BTreeSet::new()),
+        backlog: Mutex::new(Backlog::default()), wake: Notify::new(), responders: Mutex::new(BTreeMap::new()),
+        transcript_mode: common::TranscriptMode::from_env(spec.env.get("PHUX_AGENT_TRANSCRIPT").map(String::as_str)),
         ledger: Mutex::new(Ledger { entries: BTreeMap::new(), retired_through: 0 }),
         view: Mutex::new(NativeView { activation: spec.activation.clone(), backend: spec.backend.clone(), capabilities: NativeCapabilities::default(), connected: false, turn_id: None, provider_session_id: None, questions: Vec::new() }),
     }));
@@ -249,7 +274,11 @@ pub async fn run(spec: HostSpec) -> Result<(), HostError> {
                     let question = current.questions.iter().find(|question| &question.id == question_id);
                     if !current.connected || !current.capabilities.questions || question.is_none() { refusal = Some("question no longer pending".into()); }
                     else if let Err(message) = common::validate_answer(question.expect("checked question"), response) { refusal = Some(message); }
-                    else if !sink.0.responders.lock().insert(question_id.clone()) { refusal = Some("question already has a responder".into()); }
+                    else {
+                        let mut responders = sink.0.responders.lock();
+                        if responders.contains_key(question_id) { refusal = Some("question already has a responder".into()); }
+                        else if refusal.is_none() { responders.insert(question_id.clone(), command.operation_id); }
+                    }
                 }
                 _ => {}
             }
@@ -331,10 +360,11 @@ mod tests {
         ledger.entries.clear(); ledger.retired_through = 1;
         assert!(ledger.reserve(&command).is_err());
     }
-    fn sink() -> Sink {
+    pub(super) fn sink() -> Sink { sink_with_mode(common::TranscriptMode::Content) }
+    fn sink_with_mode(transcript_mode: common::TranscriptMode) -> Sink {
         Sink(Arc::new(Shared {
             backlog: Mutex::new(Backlog::default()), wake: Notify::new(),
-            responders: Mutex::new(BTreeSet::new()),
+            responders: Mutex::new(BTreeMap::new()), transcript_mode,
             ledger: Mutex::new(Ledger { entries: BTreeMap::new(), retired_through: 0 }),
             view: Mutex::new(NativeView { activation: "a".into(), backend: "omp-rpc".into(), capabilities: NativeCapabilities::default(), connected: false, turn_id: None, provider_session_id: None, questions: Vec::new() }),
         }))
@@ -359,5 +389,54 @@ mod tests {
         assert_eq!(sink.0.backlog.lock().rows.len(), 1);
         let receipt = sink.0.ledger.lock().reserve(&command).unwrap().unwrap();
         assert_eq!(receipt.disposition, NativeDisposition::Completed);
+    }
+    #[test]
+    fn transcript_boundary_preserves_envelope_privacy_and_escaped_budget() {
+        use phux_client_core::session::agent_transcript::{TranscriptEntry, TranscriptRole, ToolStatus};
+        let sink = sink();
+        common::text(&sink, "omp", "reply".into(), TranscriptRole::Assistant, "\"\\\né".repeat(20000), true).unwrap();
+        common::tool(&sink, "omp", "write".into(), "write".into(), common::summarize_args(&serde_json::json!({"path":"safe.rs","content":"PRIVATE BODY"})), "PRIVATE OUTPUT".into(), ToolStatus::Ok).unwrap();
+        let backlog = sink.0.backlog.lock();
+        for (row, _) in &backlog.rows {
+            let Output::Update(update @ NativeUpdate::Transcript { entry }) = row else { panic!("transcript expected"); };
+            assert!(json_size(update).unwrap() <= UPDATE_BYTES);
+            assert_eq!(entry["schema"], "phux.transcript/v1");
+            assert!(TranscriptEntry::from_data(entry).is_some());
+            assert!(!serde_json::to_string(update).unwrap().contains("PRIVATE"));
+        }
+        let Output::Update(NativeUpdate::Transcript { entry }) = &backlog.rows[0].0 else { unreachable!() };
+        assert_eq!(entry["entry"]["truncated"], true);
+    }
+    #[test]
+    fn transcript_off_retains_lifecycle_and_full_requires_opt_in() {
+        use phux_client_core::session::agent_transcript::{TranscriptRole, ToolStatus};
+        let off = sink_with_mode(common::TranscriptMode::Off);
+        common::text(&off, "omp", "p".into(), TranscriptRole::User, "private".into(), true).unwrap();
+        off.state(NativeState::Working).unwrap();
+        assert_eq!(off.0.backlog.lock().rows.len(), 1);
+        let full = sink_with_mode(common::TranscriptMode::Full);
+        common::tool(&full, "omp", "t".into(), "read".into(), String::new(), "opt-in output".into(), ToolStatus::Ok).unwrap();
+        let backlog = full.0.backlog.lock();
+        let Output::Update(NativeUpdate::Transcript { entry }) = &backlog.rows[0].0 else { unreachable!() };
+        assert_eq!(entry["entry"]["tool"]["output"], "opt-in output");
+    }
+    #[test]
+    fn only_matching_definitive_refusal_releases_responder() {
+        let sink = sink();
+        for operation_id in [1, 2] {
+            sink.0.ledger.lock().reserve(&NativeCommand { operation_id, activation: "a".into(), intent: NativeIntent::Answer { question_id: "q".into(), response: serde_json::json!({"values":{}}) } }).unwrap();
+        }
+        sink.0.responders.lock().insert("q".into(), 2);
+        sink.result(common::result(1, NativeDisposition::Refused, "old rejection")).unwrap();
+        assert_eq!(sink.0.responders.lock().get("q"), Some(&2));
+        sink.result(common::result(2, NativeDisposition::Unknown, "ambiguous dispatch")).unwrap();
+        assert_eq!(sink.0.responders.lock().get("q"), Some(&2));
+        sink.result(common::result(2, NativeDisposition::Refused, "not admitted")).unwrap();
+        assert_eq!(sink.0.responders.lock().get("q"), Some(&2));
+        let command = NativeCommand { operation_id: 3, activation: "a".into(), intent: NativeIntent::Answer { question_id: "correctable".into(), response: serde_json::json!({"values":{}}) } };
+        sink.0.ledger.lock().reserve(&command).unwrap();
+        sink.0.responders.lock().insert("correctable".into(), 3);
+        sink.result(common::result(3, NativeDisposition::Refused, "local schema rejection")).unwrap();
+        assert!(!sink.0.responders.lock().contains_key("correctable"));
     }
 }
