@@ -58,8 +58,8 @@ PHUX_WS_ADDR=127.0.0.1:47654 cargo run -p phux-server --example ws_demo_server
 ```
 
 Then serve the `pkg/` output and call `start("ws://127.0.0.1:47654/", canvasId,
-cols, rows)`. The site at `docs/site/` wires this into a `<PhuxTerminal>`
-island; see `docs/site/scripts/build-client.sh` for the copy-the-artifact step.
+cols, rows)`. [no-phux/website](https://github.com/no-phux/website) wires this
+into a `<PhuxTerminal>` island; `scripts/build-client.sh` there copies the artifact.
 
 **Expected:** your embedding page paints the seeded terminal and keystrokes
 reach it. A blank canvas is not proof of a server failure: first check that

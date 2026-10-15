@@ -305,7 +305,7 @@ Every output directory contains:
 
 Keep the original directory outside disposable build output before cleaning
 `target/`. When publishing a result, commit compact JSON samples and metadata
-under `docs/site/public/benchmarks/<run-id>/`, link them from the result, and
+under `public/benchmarks/<run-id>/` in [no-phux/website](https://github.com/no-phux/website), link them from the result, and
 retain the original logs privately. Review paths and logs for private hostnames,
 tokens, or unrelated output before publication. Binary hashes identify the
 artifact actually measured even when a source checkout and installed binary

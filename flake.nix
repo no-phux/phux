@@ -51,11 +51,10 @@
         miseTools = (builtins.fromTOML (builtins.readFile ./mise.toml)).tools;
 
         # Bun is pinned to an exact release rather than whatever nixpkgs
-        # carries. docs/site builds and tests with it, its `@types/bun` tracks
-        # that release, and docs/site/worker/Dockerfile pins the same tag for
-        # production builds. nixpkgs lagged at 1.3.13 while the pin was 1.4.0,
-        # so the dev shell was type-checking the site against a runtime nobody
-        # ships — the exact drift this whole block exists to prevent.
+        # carries. nixpkgs lagged at 1.3.13 while the pin was 1.4.0, so the
+        # dev shell was type-checking against a runtime nobody ships — the
+        # exact drift this whole block exists to prevent. The demo image in
+        # no-phux/website pins the same tag; that pin is checked there.
         #
         # The DIGESTS are updated by hand on a version bump, deliberately: a
         # bump that forgets them fails here loudly ("no digests pinned") rather

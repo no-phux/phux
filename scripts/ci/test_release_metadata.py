@@ -112,7 +112,6 @@ class DetectSkipTests(unittest.TestCase):
                 "Cargo.toml": "[workspace.package]\nversion = \"0.1.0\"\n",
                 "Cargo.lock": "version = 3\n\n[[package]]\nname = \"phux\"\nversion = \"0.1.0\"\n",
                 ".release-please-manifest.json": json.dumps({".": "0.1.0"}) + "\n",
-                "docs/site/worker/Dockerfile": "ARG PHUX_VERSION=0.1.0\n",
                 ".agents/skills/using-phux/SKILL.md": "  version: \"0.1.0\" # x-release-please-version\n",
             }
             for name, text in files.items():

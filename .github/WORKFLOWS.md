@@ -13,8 +13,8 @@ the known problems, and the daily health digest live in the private
 | PR validation | `ci`, `conventional-commits`, `web-check`, `native-setup` | every non-draft pull request, and `main` |
 | Opt-in checks | `stress` (label or dispatch), `mutation` (dispatch) | never automatically |
 | Release train | `release-please`, `publish` and its leaf workflows: `release`, `desktop-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
-| Site and worker | `site-deploy`, `site-deploy-worker`, `site-rollback-worker`, `site-native-control` | `main` pushes under `docs/`, or an operator |
-| Scheduled ops | `release-drift` (daily), `site-native-monitor` (6-hourly), `native-setup` (weekly), `perf-nightly` (nightly; artifacts only, not a required check) | cron |
+| Site publish | `website-dispatch` | `main` pushes that change docs, installers, or product skills; a published release; manual dispatch. phux.sh itself deploys from `no-phux/website`. |
+| Scheduled ops | `release-drift` (daily), `native-setup` (weekly), `perf-nightly` (nightly; artifacts only, not a required check) | cron |
 
 ## What gates `main`
 
@@ -56,21 +56,17 @@ successful run at that exact SHA.
 
 `web-check` and `native-setup` use the same SHA-keyed pattern as `ci` on
 `main`, so consecutive merges do not cancel each other's validation.
-`site-deploy` uses a single global group with `cancel-in-progress: false`
-(matching the Worker deploy lane) so a mid-wrangler deploy is never killed;
-new pushes queue instead.
 
 Publishing lanes set `cancel-in-progress: false` so an upload is never
 interrupted. `publish-crate` also declares an explicit per-tag concurrency
 group; the `crates-io` environment reviewer is not enough on its own.
-`site-deploy` still lists `release: [published]`, but GitHub suppresses
-events raised by `GITHUB_TOKEN`, so badge refresh after a release currently
-depends on the Monday cron or a manual dispatch (see private
-`no-phux/ops` `build-ops/known-problems.md` §5).
+`website-dispatch` tells `no-phux/website` to rebuild on a published
+release. GitHub suppresses `repository_dispatch` from `GITHUB_TOKEN`, so
+the dispatch uses the release App token. The site's Monday cron remains
+the backstop if a dispatch is missed.
 
-The three worker workflows share one group on purpose, so a deploy, a
-rollback and the kill switch can never mutate the Worker at the same time.
-Renaming any one of those groups breaks that guarantee.
+The site's deploy, rollback, and kill switch share one concurrency group
+in `no-phux/website`, so they cannot mutate the Worker at the same time.
 
 ## When something goes wrong
 

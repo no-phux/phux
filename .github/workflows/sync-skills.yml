@@ -7,7 +7,7 @@
 #
 # Every main push is wrong: it burns a runner and mints an App token even
 # when the inner `git diff --cached --quiet` no-ops. Path-filter like
-# site-deploy so we only run when product-skill publish inputs change.
+# website-dispatch so we only run when product-skill publish inputs change.
 # workflow_dispatch is the manual backstop. The export script still no-ops
 # if the mirror bytes are unchanged.
 #

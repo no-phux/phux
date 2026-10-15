@@ -27,12 +27,13 @@ ZIG = SHARED | {"web_engine"}
 # Documentation that code or a guard reads as an input. Each row leaves the
 # docs-only fast path and routes like its reader: Rust tests byte-compare the
 # spec, generated reference, agent guide and recorded casts; the full workflow
-# gate reads the site sources and root changelog. classify-changes-test.py fails
-# when a crate starts reading a doc that is missing here.
+# gate reads the root changelog. classify-changes-test.py fails
+# when a crate starts reading a doc that is missing here. The site sources
+# live in no-phux/website.
 DOC_INPUTS = (
     (("docs/spec/*", "docs/reference/*", "docs/assets/*",
       "docs/consumers/agents.md"), {"phux"}),
-    (("docs/site/*", "CHANGELOG.md"), set()),
+    (("CHANGELOG.md",), set()),
 )
 
 # Additive routes: a crate manifest matches its product and the native input
@@ -104,7 +105,6 @@ WORKFLOWS = (
     "scripts/check-release-orchestration.mjs",
     "scripts/ci/test_linear_release_workflow.py",
     "scripts/ci/test_release_drift.py", "scripts/ci/test_next_channel.py",
-    "scripts/ci/site_source_pin.py", "scripts/ci/test_site_source_pin.py",
     "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
