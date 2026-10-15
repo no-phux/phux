@@ -26,6 +26,7 @@ import {
   TYPE_BOOTSTRAP_BEGIN,
   TYPE_BOOTSTRAP_CHUNK,
   TYPE_BOOTSTRAP_READY,
+  TYPE_COMMAND_RESULT,
   TYPE_DETACHED,
   TYPE_ERROR,
   TYPE_HELLO_OK,
@@ -34,14 +35,17 @@ import {
 } from "./wire";
 
 /**
- * Frames that answer the connection that asked, not the session: one view's
- * handshake reply (`HELLO_OK`) or one view's bootstrap is meaningless or
- * actively wrong for another view. A broadcast `HELLO_OK` is a protocol error
- * to the real client, which is how a second view once took the first one down.
+ * Frames that answer the connection that asked, not the session: a handshake
+ * reply, a command result keyed by the requester's correlation id, or the
+ * bootstrap one view streams for itself. A second view either cannot use them
+ * (its request ids are its own) or is actively wrong to receive them — a
+ * broadcast `HELLO_OK` is a protocol error to a client that already greeted,
+ * which is how a second view once took the first one down.
  */
 const PER_CONNECTION = new Set([
   TYPE_HELLO_OK,
   TYPE_ERROR,
+  TYPE_COMMAND_RESULT,
   TYPE_PONG,
   TYPE_DETACHED,
   TYPE_BOOTSTRAP_BEGIN,

@@ -5,6 +5,7 @@ import {
   TYPE_ATTACHED,
   TYPE_ATTACH_READY,
   TYPE_BOOTSTRAP_CHUNK,
+  TYPE_COMMAND_RESULT,
   TYPE_ERROR,
   TYPE_HELLO_OK,
   TYPE_RESIZE_TERMINAL,
@@ -52,6 +53,7 @@ const output = () => frame(0x90, [[1, u32(3)], [3, [104, 105]]]);
 const resize = () => frame(TYPE_RESIZE_TERMINAL, [[1, u32(3)], [2, u32(46)]]);
 const helloOk = () => frame(TYPE_HELLO_OK, [[1, [1]]]);
 const bootstrap = () => frame(TYPE_BOOTSTRAP_CHUNK, [[1, u32(3)], [5, [27, 91, 50, 74]]]);
+const commandResult = () => frame(TYPE_COMMAND_RESULT, [[1, u32(7)], [2, [1]]]);
 
 describe("session view fan-out", () => {
   test("addresses attachment frames to the socket that attached", () => {
@@ -89,6 +91,8 @@ describe("session view fan-out", () => {
     expect(fanout.targets(helloOk(), "phone")).toEqual(["phone"]);
     expect(fanout.targets(bootstrap(), "phone")).toEqual(["phone"]);
     expect(fanout.targets(bootstrap(), "desktop")).toEqual(["desktop"]);
+    // A command result answers the request id of the view that asked.
+    expect(fanout.targets(commandResult(), "phone")).toEqual(["phone"]);
   });
 
   test("lets only the newest connection resize the shared terminal", () => {

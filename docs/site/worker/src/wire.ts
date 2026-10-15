@@ -30,6 +30,7 @@ export const TYPE_ATTACH = 0x02;
 export const TYPE_ATTACHED = 0x81;
 export const TYPE_ATTACH_READY = 0x83;
 export const TYPE_ERROR = 0xc1;
+export const TYPE_COMMAND_RESULT = 0xc2;
 export const TYPE_RESIZE_TERMINAL = 0x23;
 export const TYPE_HELLO_OK = 0x80;
 export const TYPE_DETACHED = 0x82;
