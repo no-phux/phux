@@ -21,9 +21,13 @@ const MAX_INBOUND_BATCH: usize = 256;
 /// How long a send may go without the kernel accepting another chunk.
 ///
 /// A shut window trips this. A slow link that keeps taking chunks does not:
-/// each accepted chunk starts a fresh budget. A WebSocket message is one
-/// send, so the budget covers that whole message.
+/// each accepted chunk starts a fresh budget.
 pub(super) const SEND_BUDGET: Duration = Duration::from_secs(15);
+
+/// Longest a single WebSocket message may take. The message is one send, so
+/// the budget grows by [`SEND_BUDGET`] per [`SEND_STALL_CHUNK`] and stops here.
+/// A shut window on a small frame still dies at [`SEND_BUDGET`].
+const SEND_BUDGET_CEILING: Duration = Duration::from_secs(60);
 
 /// Bytes the kernel must accept before [`SEND_BUDGET`] resets. Smaller than
 /// a typical socket buffer, so a live link finishes a chunk and a shut
@@ -79,7 +83,10 @@ impl Io {
                 .await
                 .map_err(|error| name_send_error(name, error)),
             Self::Ws { writer, .. } => {
-                budgeted(writer.send(frame), |error| dial_message(name, &error)).await
+                budgeted(message_budget(frame.len()), writer.send(frame), |error| {
+                    dial_message(name, &error)
+                })
+                .await
             }
         }
     }
@@ -109,7 +116,10 @@ impl Io {
                     .await
             }
             Self::Ws { writer, .. } => {
-                budgeted(writer.send_ping(), |error| dial_message(name, &error)).await
+                budgeted(SEND_BUDGET, writer.send_ping(), |error| {
+                    dial_message(name, &error)
+                })
+                .await
             }
         }
     }
@@ -174,20 +184,30 @@ async fn write_all_within_budget(
     let mut offset = 0;
     while offset < bytes.len() {
         let end = offset.saturating_add(SEND_STALL_CHUNK).min(bytes.len());
-        budgeted(writer.write_all(&bytes[offset..end]), |error| {
-            format!("send failed: {error}")
-        })
+        budgeted(
+            SEND_BUDGET,
+            writer.write_all(&bytes[offset..end]),
+            |error| format!("send failed: {error}"),
+        )
         .await?;
         offset = end;
     }
     Ok(())
 }
 
+/// [`SEND_BUDGET`] per chunk of a WebSocket message, never past the ceiling.
+fn message_budget(len: usize) -> Duration {
+    let chunks = len.div_ceil(SEND_STALL_CHUNK).max(1);
+    let chunks = u32::try_from(chunks).unwrap_or(u32::MAX);
+    SEND_BUDGET.saturating_mul(chunks).min(SEND_BUDGET_CEILING)
+}
+
 async fn budgeted<T, E>(
+    budget: Duration,
     work: impl std::future::Future<Output = Result<T, E>>,
     map_err: impl FnOnce(E) -> String,
 ) -> Result<T, String> {
-    match tokio::time::timeout(SEND_BUDGET, work).await {
+    match tokio::time::timeout(budget, work).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(map_err(error)),
         Err(_elapsed) => Err(SEND_STALLED.to_owned()),
@@ -485,6 +505,17 @@ mod tests {
     fn joined_frames_keep_order() {
         assert_eq!(join_frames(&[]), Vec::<u8>::new());
         assert_eq!(join_frames(&[vec![1, 2], vec![], vec![3]]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_websocket_message_budget_grows_with_its_size_and_then_caps() {
+        assert_eq!(message_budget(0), SEND_BUDGET);
+        assert_eq!(message_budget(SEND_STALL_CHUNK), SEND_BUDGET);
+        assert_eq!(
+            message_budget(SEND_STALL_CHUNK + 1),
+            SEND_BUDGET.saturating_mul(2)
+        );
+        assert_eq!(message_budget(16 * 1024 * 1024), SEND_BUDGET_CEILING);
     }
 
     /// Three chunks, each accepted just inside the budget. The whole write

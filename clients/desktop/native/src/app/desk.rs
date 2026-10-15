@@ -1340,13 +1340,9 @@ impl Desk {
                 link.workspace.restore(snapshot);
             }
         } else if let Some(link) = self.link.as_mut() {
-            link.workspace.release_all(&link.connection);
-            self.panes.clear();
-            self.agent_seen.clear();
-            self.feed.retain(|entry| entry.kind != Kind::Agent);
-            self.find = None;
-            self.find_input = None;
-            link.workspace.restore(snapshot);
+            // The last frame stays. resync redials under it. Releasing the
+            // views first is an empty window for the whole wait, and on a
+            // slow link that wait is the reconnect.
             if let Err(error) = link.connection.reconnect() {
                 self.post(Kind::Error, "Could not reconnect", Some(error.to_string()));
             }
