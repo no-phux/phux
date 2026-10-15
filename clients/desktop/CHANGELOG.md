@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.0](https://github.com/no-phux/phux/compare/desktop-v0.16.0...desktop-v0.17.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** prepare a bounded Unicode-safe Go To search ([#1445](https://github.com/no-phux/phux/issues/1445)) ([7d76576](https://github.com/no-phux/phux/commit/7d765769290845e9598c4bc4b305a770e99ed514))
+* **desktop:** upload remote drops and paste the server path ([#1442](https://github.com/no-phux/phux/issues/1442)) ([7e80053](https://github.com/no-phux/phux/commit/7e800537e2ffc191f7bcbe4e99e432cc807cbb1d))
+
 ## [0.16.0](https://github.com/no-phux/phux/compare/desktop-v0.15.0...desktop-v0.16.0) (2026-10-15)
 
 
