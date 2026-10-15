@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/no-phux/phux/compare/desktop-v0.14.0...desktop-v0.14.1) (2026-10-15)
+
+
+### Build System
+
+* **nix:** link a Cachix-served libghostty-vt instead of building Zig ([#1434](https://github.com/no-phux/phux/issues/1434)) ([baebc3a](https://github.com/no-phux/phux/commit/baebc3abd3798fcfb3180336d0de8e55e698cebb))
+
 ## [0.14.0](https://github.com/no-phux/phux/compare/desktop-v0.13.1...desktop-v0.14.0) (2026-10-15)
 
 
