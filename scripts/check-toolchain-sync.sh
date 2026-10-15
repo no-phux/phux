@@ -48,10 +48,9 @@ grep -Eq '^rust[[:space:]]*=.*mr_boxington[[:space:]]*=[[:space:]]*true' "$MISE"
 
 # The Nix shell must resolve the same compilers and runtimes as the Mise path.
 # Nothing checked this before, and the two had already parted: nixpkgs carried
-# Bun 1.3.13 while mise.toml, `@types/bun` and the site's production builder
-# were all on 1.4.0, so the Nix path type-checked docs/site against a runtime
-# nobody ships. These are string checks against flake.nix rather than an
-# evaluation, so they cost nothing and run without Nix installed.
+# Bun 1.3.13 while mise.toml was on 1.4.0, so the Nix path type-checked
+# against a runtime nobody ships. These are string checks against flake.nix
+# rather than an evaluation, so they cost nothing and run without Nix installed.
 #
 # Rust needs no check here: the flake reads rust-toolchain.toml directly.
 zig_attr="zig_$(printf '%s' "${zig_version%.*}" | tr '.' '_')"
@@ -85,72 +84,15 @@ grep -Fq 'libexec/mbx:$PATH' "$FLAKE" || fail 'flake.nix shellHook must put the 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"
     [[ "$version" == "$rust_msrv" ]] || fail "$file rust-version must be $rust_msrv"
-done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml "$ROOT"/docs/site/edge/Cargo.toml)
+done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml)
 grep -Fq "msrv = \"$rust_msrv\"" "$ROOT/clippy.toml" || fail "clippy MSRV must be $rust_msrv"
 
 bindgen_version="$(sed -n -E 's/^wasm-bindgen = "=([^"]+)"/\1/p' "$ROOT/clients/phux-web/Cargo.toml")"
 [[ -n "$bindgen_version" ]] || fail "phux-web must pin wasm-bindgen"
-for manifest in "$ROOT"/clients/phux-web/Cargo.toml "$ROOT"/clients/phux-vt-web/Cargo.toml "$ROOT"/docs/site/edge/Cargo.toml; do
+for manifest in "$ROOT"/clients/phux-web/Cargo.toml "$ROOT"/clients/phux-vt-web/Cargo.toml; do
     grep -Fq "wasm-bindgen = \"=$bindgen_version\"" "$manifest" || fail "$(basename "$(dirname "$manifest")") must pin wasm-bindgen $bindgen_version"
 done
 grep -Fq "wasm-bindgen-cli --version $bindgen_version" "$ROOT/docs/SETUP.md" || fail "SETUP.md must name wasm-bindgen-cli $bindgen_version"
-
-grep -Eq "rust:${rust_version}-bookworm@sha256:[0-9a-f]{64}" "$ROOT/docs/site/worker/Dockerfile" || fail "site builder must use Rust $rust_version"
-grep -Eq "oven/bun:${bun_version}@sha256:[0-9a-f]{64}" "$ROOT/docs/site/worker/Dockerfile" || fail "site builder must use Bun $bun_version"
-
-site_dockerfile="$ROOT/docs/site/worker/Dockerfile"
-zig_linux_sha="$(zig_digest x86_64-linux)"
-[[ -n "$zig_linux_sha" ]] || fail "zig-toolchain.json must pin x86_64-linux"
-grep -Fq "zig-x86_64-linux-${zig_version}.tar.xz" "$site_dockerfile" ||
-    fail "site builder must fetch Zig $zig_version"
-grep -Fq "$zig_linux_sha" "$site_dockerfile" ||
-    fail "site builder must pin Zig $zig_version x86_64-linux digest $zig_linux_sha"
-grep -Fq "ARG ZIG_VERSION=$zig_version" "$site_dockerfile" ||
-    fail "site builder ARG ZIG_VERSION must be $zig_version"
-grep -Fq "LIBGHOSTTY_VT_SYS_CPU=baseline" "$site_dockerfile" ||
-    fail "site builder must set LIBGHOSTTY_VT_SYS_CPU=baseline"
-
-phux_version="$(awk '
-    /^\[workspace.package\]/ { in_pkg=1; next }
-    in_pkg && /^\[/ { exit }
-    in_pkg && /^version = "/ {
-        gsub(/"/, "", $3)
-        print $3
-        exit
-    }
-' "$ROOT/Cargo.toml")"
-[[ "$phux_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "workspace.package.version is missing"
-grep -Fq "ARG PHUX_VERSION=$phux_version" "$site_dockerfile" ||
-    fail "site builder ARG PHUX_VERSION must be workspace version $phux_version"
-grep -Fq 'test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION"' "$site_dockerfile" ||
-    fail "site builder must assert installed phux --version matches PHUX_VERSION"
-# Generic extra-files only rewrite annotated regions. Missing markers leave
-# ARG PHUX_VERSION and the RUN test guard stale on the next release (#700, #711).
-awk '
-  /x-release-please-start-version/ { in_block = 1 }
-  /^ARG PHUX_VERSION=/ || /^RUN test "\$PHUX_VERSION" = "/ {
-    if (!in_block) {
-      printf "site Dockerfile line %d is not in a release-please version block\n", NR > "/dev/stderr"
-      bad = 1
-    }
-    seen++
-  }
-  /x-release-please-end/ { in_block = 0 }
-  END {
-    if (seen != 3) {
-      printf "site Dockerfile must annotate ARG PHUX_VERSION twice and the RUN test guard\n" > "/dev/stderr"
-      bad = 1
-    }
-    if (bad) exit 1
-  }
-' "$site_dockerfile" || fail "site Dockerfile PHUX_VERSION literals must be extra-files annotated"
-
-libghostty_rev="$(sed -n -E 's/.*libghostty-rs\.git", rev = "([0-9a-f]{40})".*/\1/p' "$ROOT/Cargo.toml")"
-[[ "$libghostty_rev" =~ ^[0-9a-f]{40}$ ]] || fail "workspace libghostty-vt rev is missing"
-grep -Fq "ARG LIBGHOSTTY_REVISION=$libghostty_rev" "$site_dockerfile" ||
-    fail "site builder ARG LIBGHOSTTY_REVISION must be $libghostty_rev"
-grep -Fq "https://github.com/phall1/libghostty-rs/archive/${libghostty_rev}.tar.gz" "$site_dockerfile" ||
-    fail "site builder must fetch libghostty-rs $libghostty_rev"
 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*node-version: ([0-9]+).*/\1/p')"

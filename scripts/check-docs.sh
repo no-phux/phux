@@ -87,15 +87,15 @@ fi
 
 # Checked: top-level .md, docs/ (with docs/adr/), and research/ minus its
 # archive. Exempt: the release-please CHANGELOG.md and third-party notices at
-# the root (docs/spec/CHANGELOG.md is hand-maintained and keeps every gate),
-# and docs/site/, the Astro site with its own conventions.
+# the root (docs/spec/CHANGELOG.md is hand-maintained and keeps every gate).
+# The Astro site lives in no-phux/website and is not in this tree.
 collect_files() {
     find "$ROOT" -maxdepth 1 -type f -name '*.md' \
         ! -iname 'LICENSE*' \
         ! -name 'CHANGELOG.md' \
         ! -name 'THIRD-PARTY-NOTICES.md' \
         -print
-    find "$ROOT/docs" -type f -name '*.md' -not -path "$ROOT/docs/site/*" -print
+    find "$ROOT/docs" -type f -name '*.md' -print
     find "$ROOT/research" -type f -name '*.md' -not -path "$ROOT/research/archive/*" -print
 }
 

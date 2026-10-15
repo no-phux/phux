@@ -33,12 +33,13 @@ assert.doesNotMatch(releasePlease, /\bgit tag\b/, "release-please is the sole ta
 {
   const undo = releasePlease.indexOf('gh pr ready "$num" --repo "$GITHUB_REPOSITORY" --undo');
   const cargo = releasePlease.indexOf("cargo update --workspace");
-  const pin = releasePlease.indexOf("chore: sync native demo source with the release version");
   const restore = releasePlease.indexOf('gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"');
   assert.ok(undo > 0 && cargo > undo, "a ready release PR is drafted before the slow lockfile sync");
-  assert.ok(pin > cargo && restore > pin, "the draft hold is released only after lockfile and source-pin pushes");
+  assert.ok(restore > cargo, "the draft hold is released only after the lockfile push");
   assert.match(releasePlease, /held_prs:/, "the release-please job records which PRs it held");
 }
+assert.doesNotMatch(releasePlease, /site_source_pin\.py/, "the native demo pin lives in no-phux/website");
+assert.doesNotMatch(releasePlease, /docs\/site\//, "the site is not in this repo");
 assert.doesNotMatch(releasePlease, /wait_validation\.py/, "release-please must not poll ci");
 assert.doesNotMatch(releasePlease, /uses: \.\/\.github\/workflows\/release\.yml/, "publish.yml owns artifact fan-out");
 
@@ -94,10 +95,9 @@ assert.ok(
 assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come from the tagged changelog");
 assert.doesNotMatch(linearWorkflow, /cockpit/i, "archived Cockpit is not reported to Linear");
 
-execFileSync("python3", ["scripts/ci/site_source_pin.py", "--check"], { cwd: root, stdio: "inherit" });
 execFileSync("python3", [
   "scripts/sync-path-lock-versions.py", "--check", "Cargo.lock",
-  "clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock", "docs/site/edge/Cargo.lock",
+  "clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock",
 ], { cwd: root, stdio: "inherit" });
 
 status("ok", "release orchestration passed");

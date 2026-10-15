@@ -17,8 +17,6 @@ require() {
 for workflow in .github/workflows/release.yml .github/workflows/next-release.yml; do
   require "$workflow" 'bash scripts/build-release-binaries.sh "${{ matrix.target }}"'
 done
-require docs/site/worker/Dockerfile 'RUSTFLAGS="-C target-cpu=x86-64"'
-require docs/site/worker/Dockerfile 'LIBGHOSTTY_VT_SYS_CPU=baseline'
 # The PhuxFFI xcframework lane: an explicit Rust floor per Apple target and
 # the engine on baseline, with no inherited RUSTFLAGS reaching a slice.
 require scripts/build-ffi-xcframework.sh 'target-cpu=apple-a7'
