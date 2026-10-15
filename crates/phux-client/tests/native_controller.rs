@@ -57,7 +57,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn start(lost_acks: usize) -> Self {
+    fn start(lost_acks: usize) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = UnixListener::bind(dir.path().join("native.sock")).unwrap();
         let broker = Arc::new(Broker::default());
@@ -120,14 +120,20 @@ fn json<T: serde::Serialize>(value: &T) -> CommandResult {
     CommandResult::OkWith(CommandValue::Json(serde_json::to_string(value).unwrap()))
 }
 
-async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
-    let Some(FrameKind::Hello { client_caps, .. }) = read_frame(&mut stream).await else {
+enum PeerResponse {
+    Reply(CommandResult),
+    Fenced,
+    LostAck,
+}
+
+async fn handshake(stream: &mut UnixStream, broker: &Broker) {
+    let Some(FrameKind::Hello { client_caps, .. }) = read_frame(stream).await else {
         panic!("HELLO required")
     };
     let (selected_profile, bootstrap_limits) =
         select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new()).unwrap();
     send(
-        &mut stream,
+        stream,
         FrameKind::HelloOk {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
@@ -145,6 +151,112 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
         },
     )
     .await;
+}
+
+async fn register_response(broker: &Broker) -> CommandResult {
+    let generation = broker.generation.fetch_add(1, Ordering::AcqRel) + 1;
+    broker.fenced.notify_waiters();
+    if generation > 1 && broker.delay_registration_for_fence.load(Ordering::Acquire) {
+        // Deliver the old receive's refusal before Register's JSON,
+        // forcing the client's cross-connection generation race.
+        broker.fence_sent.notified().await;
+    }
+    json(&serde_json::json!({"generation": generation}))
+}
+
+async fn receive_response(broker: &Broker, activation: String, generation: u64) -> PeerResponse {
+    assert_eq!(generation, broker.generation.load(Ordering::Acquire));
+    broker.receive_started.notify_one();
+    tokio::select! {
+        () = broker.release_receive.notified() => PeerResponse::Reply(json(&NativeCommand {
+            operation_id: 91,
+            activation,
+            intent: NativeIntent::Prompt {
+                text: "one actual prompt".into(),
+            },
+        })),
+        () = broker.fenced.notified() => PeerResponse::Fenced,
+    }
+}
+
+async fn publication_response(
+    broker: &Broker,
+    generation: u64,
+    publication_id: u64,
+    update: NativeUpdate,
+) -> PeerResponse {
+    assert_eq!(generation, broker.generation.load(Ordering::Acquire));
+    broker
+        .publishes
+        .lock()
+        .await
+        .push((generation, publication_id, update.clone()));
+    let refusal = *broker.refuse_publish.lock().await;
+    if let Some(code) = refusal {
+        return PeerResponse::Reply(CommandResult::Error {
+            code,
+            message: "native source unavailable".into(),
+        });
+    }
+    let receipt = {
+        let mut accepted = broker.accepted.lock().await;
+        let seq = accepted.len() as u64 + 1;
+        let (original, receipt) = accepted.entry(publication_id).or_insert_with(|| {
+            (
+                update.clone(),
+                NativePublicationReceipt {
+                    publication_id,
+                    first_seq: seq,
+                    last_seq: seq,
+                },
+            )
+        });
+        assert_eq!(
+            &update, original,
+            "changed payload must not reuse an identity"
+        );
+        let receipt = receipt.clone();
+        drop(accepted);
+        receipt
+    };
+    if broker
+        .lose_acks
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+    {
+        return PeerResponse::LostAck; // Acceptance happened; only its acknowledgement was lost.
+    }
+    PeerResponse::Reply(json(&receipt))
+}
+
+async fn completion_response(
+    broker: &Broker,
+    generation: u64,
+    result: NativeCommandResult,
+) -> CommandResult {
+    assert_eq!(generation, broker.generation.load(Ordering::Acquire));
+    broker.completions.lock().await.push(result);
+    let refusal = *broker.refuse_complete.lock().await;
+    refusal.map_or(CommandResult::Ok, |code| CommandResult::Error {
+        code,
+        message: "server upgrading; retry completion".into(),
+    })
+}
+
+async fn close_response(broker: &Broker, generation: u64) -> CommandResult {
+    assert_eq!(generation, broker.generation.load(Ordering::Acquire));
+    broker.closes.fetch_add(1, Ordering::AcqRel);
+    let refusal = *broker.refuse_close.lock().await;
+    refusal.map_or(CommandResult::Ok, |code| CommandResult::Error {
+        code,
+        message: "server upgrading; retry close".into(),
+    })
+}
+
+async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
+    handshake(&mut stream, &broker).await;
     while let Some(frame) = read_frame(&mut stream).await {
         let FrameKind::Command {
             request_id,
@@ -153,21 +265,14 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
         else {
             panic!("controller must use only dedicated native requests");
         };
-        let result = match request.into_request() {
+        let response = match request.into_request() {
             NativeRequest::Register {
                 agent_session_id,
                 activation,
                 binding_proof,
             } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
-                let generation = broker.generation.fetch_add(1, Ordering::AcqRel) + 1;
-                broker.fenced.notify_waiters();
-                if generation > 1 && broker.delay_registration_for_fence.load(Ordering::Acquire) {
-                    // Deliver the old receive's refusal before Register's JSON,
-                    // forcing the client's cross-connection generation race.
-                    broker.fence_sent.notified().await;
-                }
-                json(&serde_json::json!({"generation": generation}))
+                PeerResponse::Reply(register_response(&broker).await)
             }
             NativeRequest::Receive {
                 agent_session_id,
@@ -176,29 +281,7 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                 generation,
             } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
-                assert_eq!(generation, broker.generation.load(Ordering::Acquire));
-                broker.receive_started.notify_one();
-                tokio::select! {
-                    _ = broker.release_receive.notified() => {}
-                    _ = broker.fenced.notified() => {
-                        send(&mut stream, FrameKind::CommandResult {
-                            request_id,
-                            result: CommandResult::Error {
-                                code: ErrorCode::PreconditionFailed,
-                                message: "native controller generation is fenced".into(),
-                            },
-                        }).await;
-                        broker.fence_sent.notify_one();
-                        continue;
-                    }
-                }
-                json(&NativeCommand {
-                    operation_id: 91,
-                    activation,
-                    intent: NativeIntent::Prompt {
-                        text: "one actual prompt".into(),
-                    },
-                })
+                receive_response(&broker, activation, generation).await
             }
             NativeRequest::Publish {
                 agent_session_id,
@@ -209,50 +292,7 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                 update,
             } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
-                assert_eq!(generation, broker.generation.load(Ordering::Acquire));
-                broker
-                    .publishes
-                    .lock()
-                    .await
-                    .push((generation, publication_id, update.clone()));
-                let refusal = *broker.refuse_publish.lock().await;
-                if let Some(code) = refusal {
-                    CommandResult::Error {
-                        code,
-                        message: "native source unavailable".into(),
-                    }
-                } else {
-                    let receipt = {
-                        let mut accepted = broker.accepted.lock().await;
-                        let seq = accepted.len() as u64 + 1;
-                        let (original, receipt) =
-                            accepted.entry(publication_id).or_insert_with(|| {
-                                (
-                                    update.clone(),
-                                    NativePublicationReceipt {
-                                        publication_id,
-                                        first_seq: seq,
-                                        last_seq: seq,
-                                    },
-                                )
-                            });
-                        assert_eq!(
-                            &update, original,
-                            "changed payload must not reuse an identity"
-                        );
-                        receipt.clone()
-                    };
-                    if broker
-                        .lose_acks
-                        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                            remaining.checked_sub(1)
-                        })
-                        .is_ok()
-                    {
-                        return; // Acceptance happened; only its acknowledgement was lost.
-                    }
-                    json(&receipt)
-                }
+                publication_response(&broker, generation, publication_id, update).await
             }
             NativeRequest::Complete {
                 agent_session_id,
@@ -262,15 +302,7 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                 result,
             } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
-                assert_eq!(generation, broker.generation.load(Ordering::Acquire));
-                broker.completions.lock().await.push(result);
-                match *broker.refuse_complete.lock().await {
-                    Some(code) => CommandResult::Error {
-                        code,
-                        message: "server upgrading; retry completion".into(),
-                    },
-                    None => CommandResult::Ok,
-                }
+                PeerResponse::Reply(completion_response(&broker, generation, result).await)
             }
             NativeRequest::Close {
                 agent_session_id,
@@ -279,17 +311,28 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                 generation,
             } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
-                assert_eq!(generation, broker.generation.load(Ordering::Acquire));
-                broker.closes.fetch_add(1, Ordering::AcqRel);
-                match *broker.refuse_close.lock().await {
-                    Some(code) => CommandResult::Error {
-                        code,
-                        message: "server upgrading; retry close".into(),
-                    },
-                    None => CommandResult::Ok,
-                }
+                PeerResponse::Reply(close_response(&broker, generation).await)
             }
             request => panic!("host must never create a resource or replay input: {request:?}"),
+        };
+        let result = match response {
+            PeerResponse::Reply(result) => result,
+            PeerResponse::Fenced => {
+                send(
+                    &mut stream,
+                    FrameKind::CommandResult {
+                        request_id,
+                        result: CommandResult::Error {
+                            code: ErrorCode::PreconditionFailed,
+                            message: "native controller generation is fenced".into(),
+                        },
+                    },
+                )
+                .await;
+                broker.fence_sent.notify_one();
+                continue;
+            }
+            PeerResponse::LostAck => return,
         };
         send(&mut stream, FrameKind::CommandResult { request_id, result }).await;
     }
@@ -310,7 +353,7 @@ fn notice(text: &str) -> NativeUpdate {
 
 #[tokio::test]
 async fn legacy_server_is_refused_before_sending_native_registration() {
-    let fixture = Fixture::start(0).await;
+    let fixture = Fixture::start(0);
     fixture
         .broker
         .advertises_native
@@ -323,12 +366,13 @@ async fn legacy_server_is_refused_before_sending_native_registration() {
     )
     .await;
     assert!(matches!(result, Err(ClientError::Protocol(_))));
+    drop(result);
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 0);
 }
 
 #[tokio::test]
 async fn oversized_payloads_are_local_errors_without_publication_reservations() {
-    let fixture = Fixture::start(0).await;
+    let fixture = Fixture::start(0);
     let controller = fixture.controller().await;
     let oversized = "x".repeat(16 * 1024);
     assert!(matches!(
@@ -351,11 +395,12 @@ async fn oversized_payloads_are_local_errors_without_publication_reservations() 
     let receipt = controller.publish(notice("valid output")).await.unwrap();
     assert_eq!(receipt.publication_id, 1);
     controller.close().await.unwrap();
+    drop(controller);
 }
 
 #[tokio::test]
 async fn held_receive_does_not_block_publish_complete_or_close() {
-    let fixture = Fixture::start(0).await;
+    let fixture = Fixture::start(0);
     let controller = Arc::new(fixture.controller().await);
     let receiver = {
         let controller = Arc::clone(&controller);
@@ -396,6 +441,7 @@ async fn held_receive_does_not_block_publish_complete_or_close() {
         .await
         .unwrap()
         .unwrap();
+    drop(controller);
     assert!(matches!(
         timeout(DEADLINE, receiver).await.unwrap().unwrap(),
         Err(ClientError::Closed { .. })
@@ -404,7 +450,7 @@ async fn held_receive_does_not_block_publish_complete_or_close() {
 
 #[tokio::test]
 async fn lost_publication_ack_reuses_payload_id_and_original_stamped_sequences() {
-    let fixture = Fixture::start(1).await;
+    let fixture = Fixture::start(1);
     let controller = fixture.controller().await;
     let update = notice("one transcript projection");
     let receipt = timeout(DEADLINE, controller.publish(update.clone()))
@@ -425,6 +471,7 @@ async fn lost_publication_ack_reuses_payload_id_and_original_stamped_sequences()
         &[(1, 1, update.clone()), (2, 1, update)]
     );
     let next = controller.publish(notice("next output")).await.unwrap();
+    drop(controller);
     assert_eq!(
         next,
         NativePublicationReceipt {
@@ -438,7 +485,7 @@ async fn lost_publication_ack_reuses_payload_id_and_original_stamped_sequences()
 
 #[tokio::test]
 async fn pending_output_is_bounded_and_failed_calls_keep_their_first_identity() {
-    let fixture = Fixture::start(usize::MAX).await;
+    let fixture = Fixture::start(usize::MAX);
     let controller = fixture.controller().await;
     for index in 0..MAX_NATIVE_PENDING {
         let error = timeout(
@@ -466,13 +513,14 @@ async fn pending_output_is_bounded_and_failed_calls_keep_their_first_identity() 
     );
     fixture.broker.lose_acks.store(0, Ordering::Release);
     let receipt = controller.publish(notice("output 0")).await.unwrap();
+    drop(controller);
     assert_eq!(receipt.publication_id, 1);
 }
 
 #[tokio::test]
 async fn closed_resource_and_refusal_are_not_reconnected_as_transport_failures() {
     for code in [ErrorCode::PermissionDenied, ErrorCode::TerminalNotFound] {
-        let fixture = Fixture::start(0).await;
+        let fixture = Fixture::start(0);
         *fixture.broker.refuse_publish.lock().await = Some(code);
         let controller = fixture.controller().await;
         let error = controller
@@ -492,6 +540,7 @@ async fn closed_resource_and_refusal_are_not_reconnected_as_transport_failures()
                 matches!(error, ClientError::Refused { code: actual, .. } if actual == code)
             ),
         }
+        drop(controller);
         assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
         assert_eq!(fixture.broker.publishes.lock().await.len(), 1);
     }
@@ -499,7 +548,7 @@ async fn closed_resource_and_refusal_are_not_reconnected_as_transport_failures()
 
 #[tokio::test]
 async fn publication_reconnect_fences_receive_even_when_its_refusal_precedes_register_ack() {
-    let fixture = Fixture::start(1).await;
+    let fixture = Fixture::start(1);
     fixture
         .broker
         .delay_registration_for_fence
@@ -519,6 +568,7 @@ async fn publication_reconnect_fences_receive_even_when_its_refusal_precedes_reg
     .await
     .unwrap()
     .unwrap();
+    drop(controller);
     assert_eq!(receipt.publication_id, 1);
     timeout(DEADLINE, fixture.broker.receive_started.notified())
         .await
@@ -531,7 +581,7 @@ async fn publication_reconnect_fences_receive_even_when_its_refusal_precedes_reg
 
 #[tokio::test]
 async fn sealed_actor_backpressure_retries_the_same_publication_without_rebinding() {
-    let fixture = Fixture::start(0).await;
+    let fixture = Fixture::start(0);
     let controller = fixture.controller().await;
     *fixture.broker.refuse_publish.lock().await = Some(ErrorCode::Overflow);
     let update = notice("output retained across actor seal");
@@ -544,6 +594,7 @@ async fn sealed_actor_backpressure_retries_the_same_publication_without_rebindin
     assert!(fixture.broker.accepted.lock().await.is_empty());
     *fixture.broker.refuse_publish.lock().await = None;
     let receipt = controller.publish(update.clone()).await.unwrap();
+    drop(controller);
     assert_eq!(
         receipt,
         NativePublicationReceipt {
@@ -561,7 +612,7 @@ async fn sealed_actor_backpressure_retries_the_same_publication_without_rebindin
 
 #[tokio::test]
 async fn sealed_cut_keeps_completion_identity_and_does_not_claim_busy_close_succeeded() {
-    let fixture = Fixture::start(0).await;
+    let fixture = Fixture::start(0);
     let controller = fixture.controller().await;
     let result = NativeCommandResult {
         operation_id: 91,
@@ -587,6 +638,7 @@ async fn sealed_cut_keeps_completion_identity_and_does_not_claim_busy_close_succ
     *fixture.broker.refuse_close.lock().await = None;
     controller.close().await.unwrap();
     controller.close().await.unwrap();
+    drop(controller);
     assert_eq!(fixture.broker.closes.load(Ordering::Acquire), 2);
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
 }
