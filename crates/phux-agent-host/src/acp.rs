@@ -1,13 +1,17 @@
 //! Official ACP v1 connection, with optional surfaces explicitly unadvertised.
-//! Cursor blocking extensions follow https://cursor.com/docs/cli/acp, not text
+//! Cursor blocking extensions follow <https://cursor.com/docs/cli/acp>, not text
 //! inference. Filesystem/terminal/auth callbacks are never implicitly approved.
 use crate::{HostError, HostSpec, Sink, common};
 use agent_client_protocol::{self as sdk, Agent as _};
 use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptRole};
-use phux_protocol::native_agent::*;
+use parking_lot::Mutex;
+use phux_protocol::native_agent::{
+    NativeCapabilities, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
+    NativeOption, NativeQuestion, NativeQuestionItem, NativeState, NativeUpdate, validate_payload,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, rc::Rc};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -21,8 +25,10 @@ struct Rows {
 struct Callback {
     sink: Sink,
     provider: String,
-    waiting: RefCell<BTreeMap<String, oneshot::Sender<Value>>>,
-    rows: RefCell<Rows>,
+    // ACP runs on a LocalSet, but question waits borrow the callback across await.
+    // Keep those borrows Send without moving the connection off its local runtime.
+    waiting: Mutex<BTreeMap<String, oneshot::Sender<Value>>>,
+    rows: Mutex<Rows>,
 }
 impl Callback {
     async fn ask(&self, question: NativeQuestion) -> sdk::Result<Value> {
@@ -33,37 +39,42 @@ impl Callback {
             view.capabilities.questions = true.into();
             self.sink
                 .update(NativeUpdate::View { view })
-                .map_err(host_to_acp)?;
+                .map_err(|error| host_to_acp(&error))?;
         }
         let id = question.id.clone();
         let (tx, rx) = oneshot::channel();
-        if self.waiting.borrow().contains_key(&id) {
-            return Err(sdk::Error::invalid_params());
+        {
+            let mut waiting = self.waiting.lock();
+            if waiting.contains_key(&id) {
+                return Err(sdk::Error::invalid_params());
+            }
+            waiting.insert(id.clone(), tx);
         }
-        self.waiting.borrow_mut().insert(id.clone(), tx);
         if let Err(error) = self
             .sink
             .update(NativeUpdate::QuestionOpened { question })
             .and_then(|()| self.sink.state(NativeState::Blocked))
         {
-            self.waiting.borrow_mut().remove(&id);
+            self.waiting.lock().remove(&id);
             return Err(sdk::Error::internal_error().data(json!({"message":error.to_string()})));
         }
         let answer = rx.await.unwrap_or_else(|_| json!({"cancelled":true}));
-        self.waiting.borrow_mut().remove(&id);
+        self.waiting.lock().remove(&id);
         self.sink
             .update(NativeUpdate::QuestionClosed {
                 id,
                 reason: "ACP callback returned explicit response".into(),
             })
-            .map_err(host_to_acp)?;
-        if self.waiting.borrow().is_empty() && self.sink.view().turn_id.is_some() {
-            self.sink.state(NativeState::Working).map_err(host_to_acp)?;
+            .map_err(|error| host_to_acp(&error))?;
+        if self.waiting.lock().is_empty() && self.sink.view().turn_id.is_some() {
+            self.sink
+                .state(NativeState::Working)
+                .map_err(|error| host_to_acp(&error))?;
         }
         Ok(answer)
     }
     fn cancel_questions(&self) {
-        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
+        let waiting = std::mem::take(&mut *self.waiting.lock());
         for (_, sender) in waiting {
             let _ = sender.send(json!({"cancelled":true}));
         }
@@ -71,12 +82,12 @@ impl Callback {
     fn finish_prompt(&self, id: u64) -> Result<(), HostError> {
         self.cancel_questions();
         self.flush_text()?;
-        self.rows.borrow_mut().prompt_user_id = None;
+        self.rows.lock().prompt_user_id = None;
         self.sink.reject_pending_turn(&format!("acp:{id}"))?;
         self.sink.state(NativeState::Done)
     }
     fn flush_text(&self) -> Result<(), HostError> {
-        if let Some((id, role, text)) = self.rows.borrow_mut().current.take() {
+        if let Some((id, role, text)) = self.rows.lock().current.take() {
             common::text(&self.sink, &self.provider, id, role, text, true)?;
         }
         Ok(())
@@ -87,23 +98,21 @@ impl Callback {
                 sdk::ContentBlock::Text(text) => text.text,
                 sdk::ContentBlock::ResourceLink(resource) => resource.uri,
                 _ => return self.sink.notice(
-                    "Provider emitted non-text content; native attachment rendering unavailable"
-                        .into(),
+                    "Provider emitted non-text content; native attachment rendering unavailable",
                 ),
             };
-        if self.sink.view().turn_id.is_some() && self.waiting.borrow().is_empty() {
+        if self.sink.view().turn_id.is_some() && self.waiting.lock().is_empty() {
             self.sink.state(NativeState::Working)?;
         }
-        let mut rows = self.rows.borrow_mut();
-        if rows
-            .current
-            .as_ref()
-            .is_some_and(|(_, previous, _)| *previous != role)
-        {
-            let (id, previous, text) = rows.current.take().expect("current row");
-            common::text(&self.sink, &self.provider, id, previous, text, true)?;
-        }
-        if rows.current.is_none() {
+        let mut rows = self.rows.lock();
+        let current = match rows.current.take() {
+            Some((id, previous, text)) if previous != role => {
+                common::text(&self.sink, &self.provider, id, previous, text, true)?;
+                None
+            }
+            current => current,
+        };
+        let (id, role, mut current) = current.unwrap_or_else(|| {
             rows.serial += 1;
             let id = if role == TranscriptRole::User {
                 rows.prompt_user_id
@@ -112,13 +121,13 @@ impl Callback {
             } else {
                 format!("acp-message:{}", rows.serial)
             };
-            rows.current = Some((id, role, String::new()));
-        }
-        let (id, role, current) = rows.current.as_mut().expect("current row");
+            (id, role, String::new())
+        });
         // Keep one additional byte so the standard transcript truncation marker
         // remains truthful, without retaining an unbounded provider response.
         let room = (12 * 1024 + 4_usize).saturating_sub(current.len());
         current.push_str(&common::head(&text, room));
+        let (id, role, current) = rows.current.insert((id, role, current));
         common::text(
             &self.sink,
             &self.provider,
@@ -137,7 +146,7 @@ impl Callback {
         status: Option<sdk::ToolCallStatus>,
     ) -> Result<(), HostError> {
         self.flush_text()?;
-        let mut rows = self.rows.borrow_mut();
+        let mut rows = self.rows.lock();
         if !rows.tools.contains_key(&id) && rows.tools.len() >= 128 {
             let retired = rows.tools.iter().find_map(|(id, (_, _, _, status))| {
                 (*status != ToolStatus::Running).then(|| id.clone())
@@ -162,10 +171,10 @@ impl Callback {
         if let Some(input) = input {
             row.1 = common::summarize_args(&input);
         }
-        if self.sink.0.transcript_mode == common::TranscriptMode::Full {
-            if let Some(output) = output {
-                row.2 = common::head(&output.to_string(), 4096);
-            }
+        if self.sink.0.transcript_mode == common::TranscriptMode::Full
+            && let Some(output) = output
+        {
+            row.2 = common::head(&output.to_string(), 4096);
         }
         if let Some(status) = status {
             row.3 = match status {
@@ -174,7 +183,7 @@ impl Callback {
                 _ => ToolStatus::Running,
             };
         }
-        if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.borrow().is_empty() {
+        if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.lock().is_empty() {
             self.sink.state(NativeState::Working)?;
         }
         common::tool(
@@ -187,8 +196,24 @@ impl Callback {
             row.3,
         )
     }
+    fn startup_command(&self, command: NativeCommand) -> NativeCommandResult {
+        let id = command.operation_id;
+        match command.intent {
+            NativeIntent::Answer { question_id, response } => {
+                let sender = self.waiting.lock().remove(&question_id);
+                sender.map_or_else(
+                    || common::result(id, NativeDisposition::Refused, "ACP startup dialog is no longer pending"),
+                    |sender| match sender.send(response) {
+                        Ok(()) => common::result(id, NativeDisposition::Queued, "explicit answer queued during ACP startup"),
+                        Err(_) => common::result(id, NativeDisposition::Refused, "ACP startup dialog is no longer pending"),
+                    },
+                )
+            }
+            _ => common::result(id, NativeDisposition::Refused, "ACP session initialization is not complete"),
+        }
+    }
 }
-fn host_to_acp(error: HostError) -> sdk::Error {
+fn host_to_acp(error: &HostError) -> sdk::Error {
     sdk::Error::internal_error().data(json!({"message":error.to_string()}))
 }
 fn common_bounds(question: &NativeQuestion) -> sdk::Result<()> {
@@ -285,10 +310,10 @@ impl sdk::Client for Callback {
             ),
             sdk::SessionUpdate::Plan(plan) => self
                 .sink
-                .notice(serde_json::to_string(&plan).map_err(|_| sdk::Error::invalid_params())?),
+                .notice(&serde_json::to_string(&plan).map_err(|_| sdk::Error::invalid_params())?),
             _ => Ok(()),
         };
-        result.map_err(host_to_acp)
+        result.map_err(|error| host_to_acp(&error))
     }
     async fn ext_method(&self, request: sdk::ExtRequest) -> sdk::Result<sdk::ExtResponse> {
         if self.provider != "cursor-agent" && self.provider != "cursor" {
@@ -368,12 +393,12 @@ impl sdk::Client for Callback {
         match notification.method.as_ref() {
             "cursor/update_todos" | "cursor/task" | "cursor/generate_image" => self
                 .sink
-                .notice(format!(
+                .notice(&format!(
                     "{}: {}",
                     notification.method,
                     notification.params.get()
                 ))
-                .map_err(host_to_acp),
+                .map_err(|error| host_to_acp(&error)),
             _ => Err(sdk::Error::method_not_found()),
         }
     }
@@ -407,7 +432,7 @@ struct CursorPlan {
     plan: String,
 }
 
-pub(super) fn run(
+pub fn run(
     spec: HostSpec,
     sink: Sink,
     mut commands: mpsc::Receiver<NativeCommand>,
@@ -423,7 +448,7 @@ pub(super) fn run(
         let mut child = command.spawn()?;
         let outgoing = child.stdin.take().ok_or_else(|| HostError::Sdk("missing ACP stdin".into()))?.compat_write();
         let incoming = child.stdout.take().ok_or_else(|| HostError::Sdk("missing ACP stdout".into()))?.compat();
-        let callback = Rc::new(Callback { sink: sink.clone(), provider: spec.provider.clone(), waiting: RefCell::new(BTreeMap::new()), rows: RefCell::new(Rows::default()) });
+        let callback = Rc::new(Callback { sink: sink.clone(), provider: spec.provider.clone(), waiting: Mutex::new(BTreeMap::new()), rows: Mutex::new(Rows::default()) });
         let (connection, io) = sdk::ClientSideConnection::new(callback.clone(), outgoing, incoming, |future| { tokio::task::spawn_local(future); });
         let connection = Rc::new(connection);
         let mut io = tokio::task::spawn_local(io);
@@ -448,17 +473,7 @@ pub(super) fn run(
                 _ = shutdown.changed() => { child.kill().await?; child.wait().await?; return Ok(()); }
                 command = commands.recv() => {
                     let Some(command) = command else { child.kill().await?; child.wait().await?; return Ok(()); };
-                    let result = match command.intent {
-                        NativeIntent::Answer { question_id, response } => match callback.waiting.borrow_mut().remove(&question_id) {
-                            Some(sender) => {
-                                if sender.send(response).is_ok() { common::result(command.operation_id, NativeDisposition::Queued, "explicit answer queued during ACP startup") }
-                                else { common::result(command.operation_id, NativeDisposition::Refused, "ACP startup dialog is no longer pending") }
-                            }
-                            None => common::result(command.operation_id, NativeDisposition::Refused, "ACP startup dialog is no longer pending"),
-                        },
-                        _ => common::result(command.operation_id, NativeDisposition::Refused, "ACP session initialization is not complete"),
-                    };
-                    sink.result(result)?;
+                    sink.result(callback.startup_command(command))?;
                 }
             }
         };
@@ -475,7 +490,7 @@ pub(super) fn run(
                             if sink.view().turn_id.is_some() { sink.result(common::result(id, NativeDisposition::Refused, "ACP turn already active"))?; continue; }
                             let mut view = sink.view(); view.turn_id = Some(format!("acp:{id}")); sink.update(NativeUpdate::View { view })?;
                             common::text(&sink, &spec.provider, format!("acp-prompt:{id}"), TranscriptRole::User, text.clone(), true)?;
-                            callback.rows.borrow_mut().prompt_user_id = Some(format!("acp-prompt:{id}"));
+                            callback.rows.lock().prompt_user_id = Some(format!("acp-prompt:{id}"));
                             let connection = connection.clone(); let session_id = session_id.clone(); let sink = sink.clone(); let callback = callback.clone();
                             tokio::task::spawn_local(async move {
                                 // ACP response is end-of-turn, not prompt admission. Sending a
@@ -492,7 +507,7 @@ pub(super) fn run(
                                         // remain uncertain without fencing the next request forever.
                                         let _ = callback.finish_prompt(id);
                                         let _ = sink.result(common::result(id, NativeDisposition::Unknown, &error.to_string()));
-                                        let _ = sink.notice(error.to_string());
+                                        let _ = sink.notice(&error.to_string());
                                     }
                                 }
                             });
@@ -504,10 +519,14 @@ pub(super) fn run(
                             sink.result(match result { Ok(()) => common::result(id, NativeDisposition::Queued, "ACP cancellation notification queued; session remains open"), Err(error) => common::result(id, NativeDisposition::Unknown, &error.to_string()) })?;
                         }
                         NativeIntent::Answer { question_id, response } => {
-                            let result = match callback.waiting.borrow_mut().remove(&question_id) {
-                                Some(sender) => match sender.send(response) { Ok(()) => common::result(id, NativeDisposition::Queued, "explicit response queued to ACP callback; not provider-consumption receipt"), Err(_) => common::result(id, NativeDisposition::Refused, "ACP callback no longer pending") },
-                                None => common::result(id, NativeDisposition::Refused, "ACP question cancelled before dispatch"),
-                            };
+                            let sender = callback.waiting.lock().remove(&question_id);
+                            let result = sender.map_or_else(
+                                || common::result(id, NativeDisposition::Refused, "ACP question cancelled before dispatch"),
+                                |sender| match sender.send(response) {
+                                    Ok(()) => common::result(id, NativeDisposition::Queued, "explicit response queued to ACP callback; not provider-consumption receipt"),
+                                    Err(_) => common::result(id, NativeDisposition::Refused, "ACP callback no longer pending"),
+                                },
+                            );
                             sink.result(result)?;
                         }
                     }
@@ -542,8 +561,8 @@ mod tests {
         let callback = Callback {
             sink: sink.clone(),
             provider: "cursor".into(),
-            waiting: RefCell::new(BTreeMap::from([("permission".into(), sender)])),
-            rows: RefCell::new(Rows {
+            waiting: Mutex::new(BTreeMap::from([("permission".into(), sender)])),
+            rows: Mutex::new(Rows {
                 prompt_user_id: Some("acp-prompt:7".into()),
                 ..Rows::default()
             }),
@@ -551,9 +570,87 @@ mod tests {
         callback.finish_prompt(7).unwrap();
         assert!(sink.view().connected);
         assert!(sink.view().turn_id.is_none());
-        assert!(callback.rows.borrow().prompt_user_id.is_none());
+        assert!(callback.rows.lock().prompt_user_id.is_none());
         assert_eq!(receiver.try_recv().unwrap()["cancelled"], true);
         assert!(!sink.begin_prompt("acp:8".into()).unwrap());
         assert_eq!(sink.view().turn_id.as_deref(), Some("acp:8"));
+    }
+    #[test]
+    fn chunks_preserve_row_identity_until_role_changes() {
+        let callback = Callback {
+            sink: crate::tests::sink(),
+            provider: "cursor".into(),
+            waiting: Mutex::new(BTreeMap::new()),
+            rows: Mutex::new(Rows {
+                prompt_user_id: Some("acp-prompt:7".into()),
+                ..Rows::default()
+            }),
+        };
+        callback.chunk(TranscriptRole::User, "first".into()).unwrap();
+        callback.chunk(TranscriptRole::User, " second".into()).unwrap();
+        assert_eq!(
+            callback.rows.lock().current,
+            Some(("acp-prompt:7".into(), TranscriptRole::User, "first second".into()))
+        );
+        callback.chunk(TranscriptRole::Assistant, "reply".into()).unwrap();
+        assert_eq!(
+            callback.rows.lock().current,
+            Some(("acp-message:2".into(), TranscriptRole::Assistant, "reply".into()))
+        );
+        callback.flush_text().unwrap();
+        assert!(callback.rows.lock().current.is_none());
+    }
+
+    #[tokio::test]
+    async fn question_wait_is_send_and_requires_matching_explicit_answer() {
+        fn assert_send<T: Send>(_: &T) {}
+
+        let callback = Callback {
+            sink: crate::tests::sink(),
+            provider: "cursor".into(),
+            waiting: Mutex::new(BTreeMap::new()),
+            rows: Mutex::new(Rows::default()),
+        };
+        let question = NativeQuestion {
+            id: "permission".into(),
+            kind: "permission".into(),
+            title: "Tool permission".into(),
+            message: String::new(),
+            options: vec![NativeOption {
+                id: "allow-once".into(),
+                label: "Allow once".into(),
+                description: None,
+            }],
+            questions: Vec::new(),
+            fields: json!({}),
+        };
+        let wait = callback.ask(question);
+        assert_send(&wait);
+        let (answer, result) = tokio::join!(wait, async {
+            tokio::task::yield_now().await;
+            let refused = callback.startup_command(NativeCommand {
+                operation_id: 1,
+                activation: "a".into(),
+                intent: NativeIntent::Answer {
+                    question_id: "other-permission".into(),
+                    response: json!({"option_id":"allow-once"}),
+                },
+            });
+            assert_eq!(refused.disposition, NativeDisposition::Refused);
+            assert!(callback.waiting.lock().contains_key("permission"));
+            callback.startup_command(NativeCommand {
+                operation_id: 2,
+                activation: "a".into(),
+                intent: NativeIntent::Answer {
+                    question_id: "permission".into(),
+                    response: json!({"option_id":"allow-once"}),
+                },
+            })
+        });
+        assert_eq!(answer.unwrap(), json!({"option_id":"allow-once"}));
+        assert_eq!(result.operation_id, 2);
+        assert_eq!(result.disposition, NativeDisposition::Queued);
+        assert!(callback.waiting.lock().is_empty());
+        assert!(callback.sink.view().questions.is_empty());
     }
 }
