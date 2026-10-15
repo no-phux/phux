@@ -212,6 +212,7 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
+- [0173](./0173-mission-control-is-a-client-composition.md) Mission control is a client composition: it may own a task's worktree, brief, and agent launch, and the server learns nothing. An interim store uses the coordinator's nouns until phux-ajxq; merge is Patrick's TTY confirmation at the reviewed SHA.
 - [0166](./0166-usage-collection-is-a-supervised-child.md) Optional usage is one supervised collector child; the terminal runtime and plugin hooks do not host it.
 - [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) A theme is an Omarchy-schema `colors.toml` in `$XDG_DATA_HOME/phux/themes/<name>`, installed by URL or by a plugin, chosen by `[theme] name`; every client maps the same keys onto its chrome and the ANSI-16 palette.
 - [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.

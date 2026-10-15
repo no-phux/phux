@@ -13,6 +13,7 @@ Terminal. Mux-class product policy stays out of phux.
 
 Status: Proposed
 Date: 2026-09-19
+See [ADR-0173](./0173-mission-control-is-a-client-composition.md) for the client composition that owns task worktrees, briefs, and agent launch.
 
 ## Context
 

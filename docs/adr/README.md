@@ -40,7 +40,7 @@ column is the base status word plus at most one relationship clause, about
 | [0006](./0006-input-mirrors-libghostty.md) | Input event types re-export libghostty-vt's atoms | Accepted (amended by [0024](./0024-wire-owns-input-atoms.md)) |
 | [0007](./0007-mosh-class-transport-and-satellites.md) | Mosh-class transport semantics and satellite forward-compat | Accepted (forward-compat; superseded in part by [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0008](./0008-use-libghostty-types-directly.md) | Use libghostty-vt's types directly; stop reimplementing them | Accepted (amended by [0024](./0024-wire-owns-input-atoms.md)) |
-| [0009](./0009-phux-vs-mux-positioning.md) | phux vs coder/mux: positioning | Accepted (amended by [0132](./0132-swarm-members-are-coordinator-clients.md)) |
+| [0009](./0009-phux-vs-mux-positioning.md) | phux vs coder/mux: positioning | Accepted (amended by [0132](./0132-swarm-members-are-coordinator-clients.md), [0173](./0173-mission-control-is-a-client-composition.md)) |
 | [0010](./0010-frontend-agnostic-tmux-cc-reserved.md) | phux is TUI-first, non-TUI not precluded; tmux control mode reserved as compat option | Accepted (forward-compat; superseded in part by [0017](./0017-tui-not-protocol-privileged.md)) |
 | [0011](./0011-protocol-core-independence.md) | `phux-protocol` and `phux-core` are independent; `IdBridge` is their only meeting point | Accepted |
 | [0012](./0012-binary-split-tree-layout.md) | Window layout is a binary split tree, not n-ary | Accepted (superseded in part by [0015](./0015-protocol-layering.md)) |
@@ -123,7 +123,7 @@ column is the base status word plus at most one relationship clause, about
 | [0089](./0089-three-zone-attention-sidebar.md) | The sidebar is a bounded attention inbox, not a structural list | Accepted (amended by [0112](./0112-stable-split-sidebar-navigation.md)) |
 | [0090](./0090-confirmation-gated-predictive-echo.md) | Predictive echo returns to the alt screen via confirmation-gated display | Accepted |
 | [0091](./0091-certificate-names-the-advertised-address.md) | The certificate names the advertised address, once, at generation | Accepted (builds on [0031](./0031-remote-consumer-auth-and-encryption.md)) |
-| [0092](./0092-durable-work-coordinator-authority.md) | The coordinator owns durable work | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md); see [0132](./0132-swarm-members-are-coordinator-clients.md)) |
+| [0092](./0092-durable-work-coordinator-authority.md) | The coordinator owns durable work | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md); see [0132](./0132-swarm-members-are-coordinator-clients.md), [0173](./0173-mission-control-is-a-client-composition.md)) |
 | [0093](./0093-remote-target-as-a-resolution-ladder.md) | `--remote user@host` is a resolution ladder, not a new transport | Accepted |
 | [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) | Per-pane scrollback is bounded in bytes, by phux, explicitly | Accepted |
 | [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Accepted (builds on [0040](./0040-agent-identity-metadata.md)) |
@@ -163,7 +163,7 @@ column is the base status word plus at most one relationship clause, about
 | [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 | [0130](./0130-on-disk-pty-journal-is-not-built.md) | The on-disk PTY output journal is not built | Accepted |
 | [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Superseded by [0162](./0162-organization-records-persist-and-activations-reconcile.md) |
-| [0132](./0132-swarm-members-are-coordinator-clients.md) | Swarm members are coordinator clients | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md)) |
+| [0132](./0132-swarm-members-are-coordinator-clients.md) | Swarm members are coordinator clients | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md); see [0173](./0173-mission-control-is-a-client-composition.md)) |
 | [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
 | [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md); superseded in part by [0135](./0135-one-binding-crate.md)) |
 | [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
@@ -201,6 +201,7 @@ column is the base status word plus at most one relationship clause, about
 | [0167](./0167-cockpit-is-frozen.md) | The Zig Cockpit is frozen | Superseded by [0169](./0169-zig-cockpit-lives-in-an-archive.md) |
 | [0168](./0168-project-identity-is-a-session-attribute.md) | Project identity is a session attribute keyed by remote | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md)) |
 | [0169](./0169-zig-cockpit-lives-in-an-archive.md) | Zig Cockpit lives in an archive, not main | Accepted (supersedes [0167](./0167-cockpit-is-frozen.md), [0138](./0138-cockpit-rides-the-next-channel.md)) |
+| [0173](./0173-mission-control-is-a-client-composition.md) | Mission control is a client composition with an interim work store | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md), [0132](./0132-swarm-members-are-coordinator-clients.md)) |
 
 ## When to write an ADR
 
