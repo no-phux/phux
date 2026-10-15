@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/no-phux/phux/compare/desktop-v0.10.0...desktop-v0.11.0) (2026-10-15)
+
+
+### Features
+
+* **native:** read terminal omp conversations in gpui ([#1375](https://github.com/no-phux/phux/issues/1375)) ([2d267e7](https://github.com/no-phux/phux/commit/2d267e7a9ac331e91dab44afde9d7dddee64e0d7))
+
 ## [0.10.0](https://github.com/no-phux/phux/compare/desktop-v0.9.4...desktop-v0.10.0) (2026-10-15)
 
 
