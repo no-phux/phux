@@ -51,10 +51,14 @@ sign-in, nothing to press.
   launch or daily budget. The session's own slot, idle clock, and hard expiry
   remain the only limits.
 - Frames are routed per attachment where the wire says so and broadcast
-  otherwise, because every view looks at the same terminals. That terminal has
-  one geometry and `attach` applies the attaching client's viewport, so **only
-  the newest view may resize it** (src/attach-fanout.ts). That is the tmux rule,
-  and it keeps a phone from being handed a shell wider than its screen.
+  otherwise, because every view looks at the same terminals. Frames that answer
+  one *connection* — `HELLO_OK`, `ERROR`, `PONG`, `DETACHED`, a `COMMAND_RESULT`
+  keyed by the requester's id, and the bootstrap one view streams for itself —
+  go only to that view; broadcasting a handshake reply is a protocol error to a
+  client that already greeted. That terminal has one geometry and `attach`
+  applies the attaching client's viewport, so **only the newest view may resize
+  it** (src/attach-fanout.ts). That is the tmux rule, and it keeps a phone from
+  being handed a shell wider than its screen.
 - A paired view leaving, or timing out on its own idle clock, detaches that view
   only. The session ends when the view that opened it does.
 - The code rides in the pairing page's URL **fragment**, so it never reaches a
