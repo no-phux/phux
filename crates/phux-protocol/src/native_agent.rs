@@ -111,3 +111,31 @@ impl NativeIntent {
         }
     }
 }
+/// Validate normalized answers and explicit provider constraints before reservation.
+/// Provider-specific form schemas remain the adapter's responsibility.
+pub fn validate_answer(question: &NativeQuestion, response: &serde_json::Value) -> Result<(), &'static str> {
+    if response.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true)
+        && response.as_object().is_some_and(|object| object.len() == 1) { return Ok(()); }
+    let valid = match question.kind.as_str() {
+        "confirm" => response.get("confirmed").is_some_and(serde_json::Value::is_boolean),
+        "select" | "permission" => response.get("option_id").and_then(serde_json::Value::as_str).is_some_and(|id| question.options.iter().any(|option| option.id == id)),
+        "input" | "editor" => response.get("text").is_some_and(serde_json::Value::is_string),
+        "form" => response.get("values").is_some_and(serde_json::Value::is_object),
+        "ask" => response.get("answers").and_then(serde_json::Value::as_array).is_some_and(|answers| {
+            let mut ids = std::collections::BTreeSet::new();
+            answers.len() == question.questions.len() && answers.iter().all(|answer| {
+                let Some(id) = answer.get("id").and_then(serde_json::Value::as_str) else { return false; };
+                if !ids.insert(id) { return false; }
+                let Some(item) = question.questions.iter().find(|item| item.id == id) else { return false; };
+                answer.get("selected_options").and_then(serde_json::Value::as_array).is_some_and(|selected| {
+                    let mut options = std::collections::BTreeSet::new();
+                    (item.multi || selected.len() <= 1) && selected.iter().all(|value| value.as_str().is_some_and(|option| options.insert(option) && item.options.iter().any(|entry| entry.id == option)))
+                }) && answer.get("custom_input").is_none_or(|value| value.as_str().is_some_and(|text| {
+                    text.is_empty() || question.fields.get("allow_custom_input").and_then(serde_json::Value::as_bool) != Some(false)
+                }))
+            })
+        }),
+        _ => false,
+    };
+    if valid { Ok(()) } else { Err("response does not match the current provider question") }
+}

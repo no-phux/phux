@@ -13,8 +13,12 @@ pub struct NativeOperation {
     pub command: NativeCommand,
     pub result: NativeCommandResult,
     pub delivered: bool,
+    /// Sticky across ambiguous receipts and upgrade: submission cannot be undone.
+    #[serde(default = "assume_submitted")]
+    pub submitted: bool,
     pub requester: u64,
 }
+fn assume_submitted() -> bool { true }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativePublication {
     pub id: u64,
@@ -60,7 +64,7 @@ impl NativeBinding {
     pub(crate) fn refuse(&mut self, command: NativeCommand, requester: u64, detail: impl Into<String>) -> NativeCommandResult {
         let result = NativeCommandResult { operation_id: command.operation_id, disposition: NativeDisposition::Refused, detail: Some(detail.into()) };
         if command.operation_id != 0 && self.operations.len() < MAX_NATIVE_OPERATIONS && !self.operations.contains_key(&command.operation_id) {
-            self.operations.insert(command.operation_id, NativeOperation { command, result: result.clone(), delivered: false, requester });
+            self.operations.insert(command.operation_id, NativeOperation { command, result: result.clone(), delivered: false, submitted: false, requester });
         }
         result
     }
@@ -97,7 +101,7 @@ impl NativeBinding {
         if let NativeIntent::Answer { question_id, .. } = &command.intent { self.answered.insert(question_id.clone(), command.operation_id); }
         let result = NativeCommandResult { operation_id: command.operation_id, disposition: NativeDisposition::Queued, detail: Some("reserved in server controller queue; not provider-admitted".into()) };
         self.pending.push_back(command.operation_id);
-        self.operations.insert(command.operation_id, NativeOperation { command, result: result.clone(), delivered: false, requester });
+        self.operations.insert(command.operation_id, NativeOperation { command, result: result.clone(), delivered: false, submitted: false, requester });
         result
     }
     pub(crate) fn receive(&mut self) -> Option<NativeCommand> {
@@ -115,6 +119,24 @@ impl NativeBinding {
         if operation.result == result { return Ok(()); }
         if matches!(operation.result.disposition, NativeDisposition::Completed | NativeDisposition::Refused) { return Err("operation already has a final receipt".into()); }
         if result.disposition == NativeDisposition::Queued && result.detail.as_deref().is_none_or(str::is_empty) { return Err("queued receipt must identify its factual stage".into()); }
+        // A definitive local rejection never consumed this answer. Release only
+        // its own reservation while the original activation/question is live.
+        // Submitted or ambiguous receipts must continue fencing other responders.
+        if result.disposition == NativeDisposition::Refused
+            && operation.command.activation == self.activation
+            && !operation.submitted
+        {
+            if let NativeIntent::Answer { question_id, .. } = &operation.command.intent {
+                if self.view.questions.iter().any(|question| &question.id == question_id)
+                    && self.answered.get(question_id) == Some(&result.operation_id)
+                {
+                    self.answered.remove(question_id);
+                }
+            }
+        }
+        if matches!(result.disposition, NativeDisposition::Queued | NativeDisposition::Admitted | NativeDisposition::Completed) {
+            operation.submitted = true;
+        }
         operation.result = result;
         Ok(())
     }
@@ -154,30 +176,6 @@ fn validate_question(question: &NativeQuestion) -> Result<(), String> {
     if question.id.is_empty() { return Err("native question must preserve a nonempty provider id".into()); }
     if !matches!(question.kind.as_str(), "confirm" | "select" | "input" | "editor" | "ask" | "permission" | "form") { return Err("unsupported native question kind".into()); }
     validate_payload(question)
-}
-fn validate_answer(question: &NativeQuestion, response: &serde_json::Value) -> Result<(), &'static str> {
-    if response.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true)
-        && response.as_object().is_some_and(|object| object.len() == 1) { return Ok(()); }
-    let valid = match question.kind.as_str() {
-        "confirm" => response.get("confirmed").is_some_and(serde_json::Value::is_boolean),
-        "select" | "permission" => response.get("option_id").and_then(serde_json::Value::as_str).is_some_and(|id| question.options.iter().any(|option| option.id == id)),
-        "input" | "editor" => response.get("text").is_some_and(serde_json::Value::is_string),
-        "form" => response.get("values").is_some_and(serde_json::Value::is_object),
-        "ask" => response.get("answers").and_then(serde_json::Value::as_array).is_some_and(|answers| {
-            let mut ids = std::collections::BTreeSet::new();
-            answers.len() == question.questions.len() && answers.iter().all(|answer| {
-                let Some(id) = answer.get("id").and_then(serde_json::Value::as_str) else { return false; };
-                if !ids.insert(id) { return false; }
-                let Some(item) = question.questions.iter().find(|item| item.id == id) else { return false; };
-                answer.get("selected_options").and_then(serde_json::Value::as_array).is_some_and(|selected| {
-                    let mut options = std::collections::BTreeSet::new();
-                    (item.multi || selected.len() <= 1) && selected.iter().all(|value| value.as_str().is_some_and(|option| options.insert(option) && item.options.iter().any(|entry| entry.id == option)))
-                }) && answer.get("custom_input").is_none_or(serde_json::Value::is_string)
-            })
-        }),
-        _ => false,
-    };
-    if valid { Ok(()) } else { Err("response does not match the current provider question") }
 }
 impl ServerState {
     pub(crate) fn native_agents(&self) -> &NativeAgents { &self.native_agents }

@@ -362,3 +362,103 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
         ))));
     }).await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_declared_custom_answer_does_not_reserve_the_question() {
+    tokio::task::LocalSet::new().run_until(async {
+        let fx = Fixture::new(); let generation = fx.ready().await;
+        let mut ask = question("ask");
+        ask.fields = serde_json::json!({"allow_custom_input":false});
+        ask.questions.push(NativeQuestionItem { id: "choice".into(), question: "Choose".into(), header: "Choice".into(),
+            options: ask.options.clone(), multi: false, recommended: None });
+        decode::<NativePublicationReceipt>(fx.publish(generation, 2, NativeUpdate::QuestionOpened { question: ask }).await);
+        let invalid = NativeIntent::Answer { question_id: "question-A".into(),
+            response: serde_json::json!({"answers":[{"id":"choice","selected_options":[],"custom_input":"unsupported"}]}) };
+        assert_eq!(fx.command(fx.owner, 100, invalid.clone()).await.disposition, NativeDisposition::Refused);
+        let corrected = NativeIntent::Answer { question_id: "question-A".into(),
+            response: serde_json::json!({"answers":[{"id":"choice","selected_options":["deny-once"]}]}) };
+        assert_eq!(fx.command(fx.owner, 101, corrected.clone()).await.disposition, NativeDisposition::Queued);
+        assert_eq!(fx.command(fx.owner, 100, invalid).await.disposition, NativeDisposition::Refused);
+        assert_eq!(fx.receive(generation).await.intent, corrected);
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
+    tokio::task::LocalSet::new().run_until(async {
+        for case in ["local", "unknown", "queued", "admitted", "completed", "other-operation", "other-activation", "closed-question", "submitted-then-unknown"] {
+            let fx = Fixture::new(); let generation = fx.ready().await;
+            decode::<NativePublicationReceipt>(fx.publish(generation, 2, NativeUpdate::QuestionOpened { question: question("form") }).await);
+            let answer = NativeIntent::Answer { question_id: "question-A".into(), response: serde_json::json!({"values":{"count":"1"}}) };
+            assert_eq!(fx.command(fx.owner, 110, answer.clone()).await.disposition, NativeDisposition::Queued);
+            fx.receive(generation).await;
+            let complete = |disposition| NativeRequest::Complete { agent_session_id: fx.agent.clone(),
+                activation: "activation-A".into(), binding_proof: "private-test-proof".into(), generation,
+                result: NativeCommandResult { operation_id: 110, disposition, detail: Some("adapter receipt".into()) } };
+            match case {
+                "queued" => assert_eq!(fx.request(fx.host, complete(NativeDisposition::Queued)).await, CommandResult::Ok),
+                "admitted" => assert_eq!(fx.request(fx.host, complete(NativeDisposition::Admitted)).await, CommandResult::Ok),
+                "completed" => assert_eq!(fx.request(fx.host, complete(NativeDisposition::Completed)).await, CommandResult::Ok),
+                "submitted-then-unknown" => {
+                    assert_eq!(fx.request(fx.host, complete(NativeDisposition::Queued)).await, CommandResult::Ok);
+                    assert_eq!(fx.request(fx.host, complete(NativeDisposition::Unknown)).await, CommandResult::Ok);
+                }
+                "other-operation" => fx.state.with_mut(|s| { s.native_agents_mut().bindings.get_mut(&fx.agent).unwrap().answered.insert("question-A".into(), 999); }),
+                "other-activation" => fx.state.with_mut(|s| { s.native_agents_mut().bindings.get_mut(&fx.agent).unwrap().operations.get_mut(&110).unwrap().command.activation = "older-activation".into(); }),
+                "closed-question" => { decode::<NativePublicationReceipt>(fx.publish(generation, 3, NativeUpdate::QuestionClosed { id: "question-A".into(), reason: "withdrawn".into() }).await); }
+                _ => {}
+            }
+            if case != "unknown" {
+                let receipt = fx.request(fx.host, complete(NativeDisposition::Refused)).await;
+                if case == "completed" { assert!(matches!(receipt, CommandResult::Error { .. })); }
+                else { assert_eq!(receipt, CommandResult::Ok); }
+            }
+            let corrected = NativeIntent::Answer { question_id: "question-A".into(), response: serde_json::json!({"values":{"count":1}}) };
+            let result = fx.command(fx.owner, 111, corrected).await;
+            assert_eq!(result.disposition, if case == "local" { NativeDisposition::Queued } else { NativeDisposition::Refused }, "{case}");
+            if case == "local" {
+                // Replaying the old final refusal cannot remove the new responder.
+                assert_eq!(fx.request(fx.host, complete(NativeDisposition::Refused)).await, CommandResult::Ok);
+                assert_eq!(fx.command(fx.owner, 110, answer).await.disposition, NativeDisposition::Refused);
+                assert_eq!(fx.command(fx.owner, 112, NativeIntent::Answer { question_id: "question-A".into(), response: serde_json::json!({"cancelled":true}) }).await.disposition, NativeDisposition::Refused);
+                assert_eq!(fx.state.with(|s| s.native_agents().bindings[&fx.agent].answered["question-A"]), 111);
+            } else {
+                assert!(fx.state.with(|s| s.native_agents().bindings[&fx.agent].answered.contains_key("question-A")));
+            }
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn viewer_native_spawn_cannot_acquire_input_authority() {
+    tokio::task::LocalSet::new().run_until(async {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new();
+        // A real inert guardian process, not a provider or protocol echo.
+        let executable = fx._dir.path().join("guardian");
+        std::fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let spec = fx.state.with_mut(|s| {
+            s.attach_default_caps(fx.owner, "alpha", tx).unwrap();
+            s.set_attached_viewer(fx.owner, true);
+            s.set_native_host_executable(Some(executable));
+            s.native_agents().bindings[&fx.agent].launch.clone()
+        });
+        let spawned: SpawnedNativeAgent = decode(fx.request(fx.owner, NativeRequest::Spawn { spec }).await);
+        assert!(fx.state.with(|s| s.is_viewer(fx.owner, &spawned.parent)));
+        assert!(fx.state.with(|s| s.is_viewer(fx.owner, &spawned.agent)));
+        fx.state.with_mut(|s| {
+            let binding = s.native_agents_mut().bindings.get_mut(&spawned.agent).unwrap();
+            binding.view.connected = true;
+            binding.view.capabilities.prompt = true;
+        });
+        let result: NativeCommandResult = decode(fx.request(fx.owner, NativeRequest::Command {
+            agent_session_id: spawned.agent.clone(), command: NativeCommand { operation_id: 120, activation: spawned.activation, intent: prompt("viewer must not send") },
+        }).await);
+        assert_eq!(result.disposition, NativeDisposition::Refused);
+        assert!(fx.state.with(|s| s.native_agents().bindings[&spawned.agent].pending.is_empty()));
+        let parent = fx.state.with(|s| s.terminal_from_wire(&spawned.parent).unwrap());
+        fx.state.with_mut(|s| { s.reap_terminal(parent); });
+    }).await;
+}

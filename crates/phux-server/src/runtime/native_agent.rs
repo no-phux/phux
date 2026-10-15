@@ -355,6 +355,8 @@ async fn spawn_transaction(
         s.spawn_resource_actor(agent, bundle.handle.clone(), token, bundle.actor.run());
         s.record_spawn(parent, ctx.client_id);
         s.record_spawn(agent, ctx.client_id);
+        s.mark_if_viewer_session(ctx.client_id, &parent_wire);
+        s.mark_if_viewer_session(ctx.client_id, &agent_wire);
         let announcement = crate::state::EventRecord::new(Some(agent_wire.clone()), AgentEvent::ResourceSpawned {
             kind: phux_protocol::ids::ResourceKind::AgentSession, parent: Some(parent_wire.clone()),
         }).with_parent(Some(parent_wire.clone())).with_actor(Some(ctx.client_id)).with_operation_id(operation);
