@@ -29,11 +29,15 @@ for file in app.zon build.zig.zon; do
     fi
 done
 
-manifest_version="$(jq -er '."clients/cockpit"' "${REPO_ROOT}/.release-please-manifest.json")"
-if [[ "${manifest_version}" != "${version}" ]]; then
-    printf 'error: release manifest version %s does not match version.txt %s\n' \
-        "${manifest_version}" "${version}" >&2
-    exit 1
+# Absent while Cockpit is frozen (ADR-0167). A restored release-please
+# package must record the same version as version.txt.
+if jq -e 'has("clients/cockpit")' "${REPO_ROOT}/.release-please-manifest.json" >/dev/null; then
+    manifest_version="$(jq -er '."clients/cockpit"' "${REPO_ROOT}/.release-please-manifest.json")"
+    if [[ "${manifest_version}" != "${version}" ]]; then
+        printf 'error: release manifest version %s does not match version.txt %s\n' \
+            "${manifest_version}" "${version}" >&2
+        exit 1
+    fi
 fi
 
 if [[ -n "${EXPECTED_TAG}" ]]; then

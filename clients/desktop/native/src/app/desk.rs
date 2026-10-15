@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, FocusHandle, KeyDownEvent, Pixels, Subscription,
@@ -17,10 +17,10 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::{DeliveryOutcome, Event, PathAnswer, Status};
 use phux_client_runtime::engine::{Scroll, TextRegion};
 use phux_protocol::ResourceId;
-use phux_protocol::ids::{OperationId, SatelliteHost};
+use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 
 use crate::connection::path::{self as paths};
-use crate::connection::{AgentInfo, AgentState, Connection};
+use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
 use crate::settings::{self, DisplayPrefs};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
@@ -40,6 +40,13 @@ use super::typed::typed_keys;
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 
+fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
+    super::notifications::AgentAttention {
+        state: info.state,
+        attention: info.attention,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowRole {
     Main,
@@ -51,14 +58,27 @@ pub enum WindowRole {
 pub struct OpenRequest {
     pub role: WindowRole,
     pub session: String,
+    pub home_key: Option<SessionKey>,
     /// Spawn a new terminal when nothing is restored, instead of showing the home pane.
     pub fresh: bool,
     pub initial_terminal: Option<ResourceId>,
     pub layout_path: PathBuf,
     pub legacy_layout: Option<PathBuf>,
+    /// Default stores adopt the session key after the first topology; explicit
+    /// layout paths and fresh windows keep their caller-selected store.
+    pub stable_layout: bool,
     pub startup_error: Option<String>,
     /// The main window's display, which a quick window borrows.
     pub main_display: Option<DisplayPrefs>,
+    /// A host from the remote registry. Absent is the local server.
+    pub remote: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRenameTarget {
+    pub key: Option<SessionKey>,
+    pub id: u32,
+    pub identity: ConnectionIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +96,7 @@ pub enum Modal {
     Session {
         create: bool,
         current: String,
+        target: Option<SessionRenameTarget>,
     },
     /// Kill a whole session: every member ends and the session is deleted.
     KillSession {
@@ -86,6 +107,12 @@ pub enum Modal {
     Terminate {
         terminal: ResourceId,
         title: String,
+    },
+    /// Register a machine over ssh with `phux host add`.
+    AddHost,
+    /// Forget a registered machine with `phux host rm`.
+    RemoveHost {
+        name: String,
     },
 }
 
@@ -100,9 +127,13 @@ pub struct FindState {
 
 pub struct Desk {
     pub desktop: Entity<Desktop>,
+    pub(crate) updates: Entity<super::updates::Updater>,
     pub role: WindowRole,
     pub socket: PathBuf,
+    /// A host from the remote registry this window attaches to instead of `socket`.
+    pub remote: Option<String>,
     pub session: String,
+    home_key: Option<SessionKey>,
     pub phux: PathBuf,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
@@ -117,14 +148,18 @@ pub struct Desk {
     pub find: Option<FindState>,
     pub picker: Option<paths::PickerState>,
     pub feed: Feed,
+    pub(crate) recent_projects: Vec<PathBuf>,
     pub link: Option<Link>,
     pub connect_error: Option<String>,
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
+    stable_layout: bool,
+    layout_key: Option<SessionKey>,
+    layout_migration_pending: bool,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
-    agent_seen: HashMap<ResourceId, AgentState>,
+    agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
@@ -142,15 +177,26 @@ pub struct Desk {
     pub(crate) settings_controls: Option<SettingsControls>,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
+    /// A CLI-opened terminal that has not appeared in this window's topology yet.
+    pending_project_terminal: Option<ResourceId>,
     /// Sessions folded closed in the sidebar, by name.
     pub(crate) collapsed: std::collections::HashSet<String>,
+    /// The remote registry as last read, for the sidebar's Hosts section.
+    pub(crate) hosts: Vec<host::RemoteHost>,
+    /// A host enrollment in flight, by the target it was given.
+    pub(crate) host_adding: Option<String>,
+    /// A host switch is resolving its target's home session.
+    pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    /// Titlebar and sidebar. A terminal frame does not rebuild them.
+    pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
     window_title: String,
     closed: bool,
     /// Session creates awaiting their outcome, by operation, with the name.
     creates: HashMap<OperationId, String>,
+    renames: HashMap<OperationId, String>,
     /// Session kills awaiting their outcome, by operation, with the name.
     kills: HashMap<OperationId, String>,
     pub(crate) organization: super::organization::Organization,
@@ -181,12 +227,30 @@ enum Drag {
     },
 }
 
+/// Terminal damage and delivered input. Chrome, toasts, and layout stay put.
+fn paint_batch(events: &[Event]) -> bool {
+    !events.is_empty() && events.iter().all(crate::connection::paint_wake)
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl Desk {
-    pub fn open(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "window construction binds desktop handles, request, and its navigation snapshot"
+    )]
+    pub(crate) fn open(
         desktop: Entity<Desktop>,
+        updates: Entity<super::updates::Updater>,
         phux: PathBuf,
         socket: PathBuf,
         request: OpenRequest,
+        recent_projects: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -218,9 +282,12 @@ impl Desk {
         let focus = cx.focus_handle();
         let mut desk = Self {
             desktop,
+            updates,
             role: request.role,
             socket,
+            remote: request.remote.clone(),
             session: request.session.clone(),
+            home_key: request.home_key,
             phux,
             focus,
             prefs,
@@ -232,11 +299,15 @@ impl Desk {
             find: None,
             picker: None,
             feed: Feed::default(),
+            recent_projects,
             link: None,
             connect_error: None,
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,
+            stable_layout: request.stable_layout,
+            layout_key: None,
+            layout_migration_pending: false,
             last_saved: saved,
             panes: Panes::default(),
             agent_seen: HashMap::new(),
@@ -253,11 +324,17 @@ impl Desk {
             find_input: None,
             settings_controls: None,
             open_fresh: request.fresh,
+            pending_project_terminal: None,
             collapsed: Default::default(),
+            hosts: Vec::new(),
+            host_adding: None,
+            host_switching: false,
             drag_region: None,
+            chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
             creates: HashMap::new(),
+            renames: HashMap::new(),
             kills: HashMap::new(),
             organization: Default::default(),
             motion: Motion::default(),
@@ -276,8 +353,23 @@ impl Desk {
             );
         }
         desk.attach(request.initial_terminal, cx);
+        desk.refresh_hosts(cx);
         desk.sync_bindings(cx);
         desk.apply_kit_theme(cx);
+        let updates = desk.updates.clone();
+        let mut runtime_generation = updates.read(cx).runtime_generation;
+        desk._subs.push(cx.observe(&updates, move |_, updates, cx| {
+            let generation = updates.read(cx).runtime_generation;
+            if generation != runtime_generation {
+                runtime_generation = generation;
+                cx.spawn(async move |this, cx| {
+                    smol::Timer::after(Duration::from_millis(500)).await;
+                    let _ = this.update(cx, |desk, cx| desk.redial(cx));
+                })
+                .detach();
+            }
+            cx.notify();
+        }));
         // Quit saves every window; a closed window saves through `Desktop::window_closed`.
         desk._subs.push(cx.on_app_quit(|desk, cx| {
             desk.prepare_close(cx);
@@ -295,7 +387,17 @@ impl Desk {
             cx.notify();
             return;
         }
-        match Connection::connect(self.socket.clone(), self.session.clone()) {
+        let connected = match self.remote.as_deref() {
+            Some(host) => {
+                Connection::connect_remote_with_key(host, self.session.clone(), self.home_key)
+            }
+            None => Connection::connect_with_key(
+                self.socket.clone(),
+                self.session.clone(),
+                self.home_key,
+            ),
+        };
+        match connected {
             Ok(connection) => {
                 let mut workspace = Workspace::new(
                     self.session.clone(),
@@ -351,6 +453,23 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
+        // A spawn's bootstrap can arrive as a pure paint batch. With work still
+        // pending, run the full pass so the new pane is placed the moment its
+        // replica lands, instead of waiting for the topology refresh.
+        let pending = self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.workspace.pending() > 0);
+        if answers.is_empty() && paint_batch(&events) && !pending {
+            // Output while the socket is down would reacquire, fail, and
+            // blank the pane. The cached view keeps the last frame.
+            if self.session_is_attached() {
+                self.repaint_terminals(&events, cx);
+            }
+            return;
+        }
+        self.adopt_session_layout(cx);
+        self.sync_home_session(cx);
         if self.agent_epoch != Some(epoch)
             || events.iter().any(crate::connection::starts_connection)
         {
@@ -367,6 +486,15 @@ impl Desk {
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(&events, &link.connection);
             link.workspace.settle(&link.connection);
+        }
+        if let Some(terminal) = self.pending_project_terminal.as_ref()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.pane(terminal).is_some())
+            && let Some(terminal) = self.pending_project_terminal.take()
+        {
+            self.reveal_terminal(&terminal);
         }
         self.take_notices();
         self.note_agents();
@@ -388,7 +516,22 @@ impl Desk {
         }
         self.persist_if_changed();
         self.ensure_clock(cx);
+        if events.iter().any(crate::connection::session_attached) {
+            self.panes.notify_all(cx);
+        }
         cx.notify();
+    }
+
+    /// Output and delivered input paint the panes and leave the chrome tree in place.
+    fn repaint_terminals(&mut self, events: &[Event], cx: &mut Context<Self>) {
+        let terminals = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TerminalChanged { terminal_id } => Some(terminal_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        self.panes.notify_terminals(&terminals, cx);
     }
 
     fn note_event(&mut self, event: &Event) {
@@ -400,12 +543,91 @@ impl Desk {
         }
     }
 
+    fn sync_home_session(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        let name = link.connection.session_name().to_owned();
+        if let Some(topology) = &link.connection.topology {
+            let desk = cx.entity_id();
+            let local = self.remote.is_none();
+            self.desktop.update(cx, |desktop, _| {
+                if local {
+                    desktop.observe_topology(topology);
+                }
+                desktop.sync_window_session(desk, &name);
+            });
+        }
+        if self.session == name {
+            return;
+        }
+        self.session = name.clone();
+        link.workspace.set_home_session(name.clone());
+    }
+
+    fn adopt_session_layout(&mut self, cx: &mut Context<Self>) {
+        if !self.stable_layout || self.role == WindowRole::Fresh {
+            return;
+        }
+        let Some(key) = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.home_key())
+        else {
+            return;
+        };
+        if self.layout_key == Some(key) {
+            return;
+        }
+        self.layout_key = Some(key);
+        let authority = self.remote.as_ref().map_or_else(
+            || self.socket.display().to_string(),
+            |host| format!("host:{host}"),
+        );
+        let paths = persist::session_layout_paths(&authority, key);
+        let path = if self.role == WindowRole::Quick {
+            paths.quick
+        } else {
+            paths.layout
+        };
+        let missing = matches!(
+            FileLayoutStore::new(&path, None).read(),
+            persist::StoreValue::Missing
+        );
+        let store = FileLayoutStore::new(path, Some(self.store.path.clone()));
+        let loaded = persist::load_layout(&store.read());
+        self.layout_blocked |= loaded.blocked;
+        self.persist_writes &= !loaded.blocked;
+        self.layout_migration_pending = missing && !self.layout_blocked;
+        self.store = store;
+        if loaded.blocked {
+            self.post(
+                Kind::Error,
+                "Session layout is unreadable",
+                Some("The saved file is preserved; layout writes are disabled.".to_owned()),
+            );
+            return;
+        }
+        if let Some(saved) = loaded.initial {
+            self.prefs = if self.role == WindowRole::Quick {
+                persist::quick_display(Some(&self.prefs), Some(&saved))
+            } else {
+                saved.display.clone()
+            };
+            self.last_saved = Some(saved.clone());
+            self.workspace_mut(|link| link.workspace.restore(Some(saved)));
+            self.sync_bindings(cx);
+            self.apply_kit_theme(cx);
+        }
+    }
+
     fn note_operation_event(&mut self, event: &Event) {
         if let Event::OrganizationOperation { operation, outcome } = event {
             self.note_organization(*operation, outcome);
         }
         self.note_kill_event(event);
         self.note_create_event(event);
+        self.note_rename_event(event);
     }
 
     fn note_terminal_event(&mut self, event: &Event) {
@@ -465,6 +687,22 @@ impl Desk {
         }
     }
 
+    fn note_rename_event(&mut self, event: &Event) {
+        if let Event::OrganizationOperation { operation, outcome } = event
+            && let Some(name) = self.renames.remove(operation)
+        {
+            if outcome.succeeded() {
+                self.post(Kind::Info, "Session renamed", Some(name));
+            } else {
+                self.post(
+                    Kind::Error,
+                    "Could not rename the session",
+                    Some(crate::connection::org::outcome_sentence(outcome)),
+                );
+            }
+        }
+    }
+
     fn note_input_event(&mut self, event: &Event) {
         if let Some(message) = crate::connection::refused_input(event) {
             self.post(Kind::Error, "Input not delivered", Some(message));
@@ -497,25 +735,24 @@ impl Desk {
                     .terminal
                     .as_ref()
                     .and_then(|id| current.get(id))
-                    .is_some_and(|info| entry.agent_state == Some(info.state))
+                    .is_some_and(|info| {
+                        entry.agent_state == Some(info.state) && agent_attention(info).actionable()
+                    })
         });
         if !self.prefs.notifications {
             self.agent_seen = current
                 .into_iter()
-                .map(|(id, info)| (id, info.state))
+                .map(|(id, info)| (id, agent_attention(&info)))
                 .collect();
             return;
         }
         for (id, info) in &current {
-            let previous = self.agent_seen.get(id).copied();
-            if previous == Some(info.state) || previous.is_none() {
-                continue;
-            }
-            if !info.needs_you() || focused.as_ref() == Some(id) {
+            let next = agent_attention(info);
+            if !next.should_alert(self.agent_seen.get(id), focused.as_ref() == Some(id)) {
                 continue;
             }
             let title = match info.word() {
-                "" => info.name.clone(),
+                "" => format!("{} needs attention", info.name),
                 word => format!("{} {word}", info.name),
             };
             let body = format!(
@@ -527,7 +764,7 @@ impl Desk {
         }
         self.agent_seen = current
             .into_iter()
-            .map(|(id, info)| (id, info.state))
+            .map(|(id, info)| (id, agent_attention(&info)))
             .collect();
     }
 
@@ -610,6 +847,7 @@ impl Desk {
                 self.modal = Modal::Session {
                     create: true,
                     current: String::new(),
+                    target: None,
                 }
             }
             "rename-session" => self.open_rename_session(),
@@ -741,6 +979,11 @@ impl Desk {
                 }
                 Modal::KillSession { .. } => {
                     self.confirm_kill_session(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                Modal::RemoveHost { .. } => {
+                    self.confirm_remove_host(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -948,14 +1191,18 @@ impl Desk {
         } else {
             return;
         }
-        if let Some(saved) = &self.last_saved
-            && let Err(error) = self.store.write(&persist::layout_value(saved))
-        {
-            self.post(
-                Kind::Error,
-                "Could not save desktop layout",
-                Some(error.to_string()),
-            );
+        if let Some(saved) = &self.last_saved {
+            // One adoption attempt, not a retry/stat on every PTY wake. A
+            // failed write is reported and can be retried by save or close.
+            self.layout_migration_pending = false;
+            match self.store.write(&persist::layout_value(saved)) {
+                Ok(()) => {}
+                Err(error) => self.post(
+                    Kind::Error,
+                    "Could not save desktop layout",
+                    Some(error.to_string()),
+                ),
+            }
         }
     }
 
@@ -984,7 +1231,7 @@ impl Desk {
         let Some(next) = self.current_layout() else {
             return;
         };
-        if self.last_saved.as_ref() != Some(&next) {
+        if self.layout_migration_pending || self.last_saved.as_ref() != Some(&next) {
             self.persist();
         }
     }
@@ -1004,28 +1251,73 @@ impl Desk {
         cx.notify();
     }
 
-    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
+    /// Resolve the existing home before redialing; never recreate a stale name.
+    fn prepare_reconnect_home(&mut self, cx: &mut Context<Self>) -> bool {
         if self
             .link
             .as_ref()
-            .is_none_or(|link| link.connection.status != Status::Attached)
+            .is_some_and(|link| link.connection.status == Status::Attached)
         {
-            match host::ensure_server(&self.phux, &self.socket, &self.session) {
-                // A launch that could not name a session reopens on the one
-                // the server now offers, with that session's saved layout.
-                Ok(name) if self.session.is_empty() => {
-                    let old = cx.entity_id();
-                    let desktop = self.desktop.clone();
-                    cx.defer(move |cx| {
-                        desktop.update(cx, |desktop, cx| desktop.rehome(old, name, cx));
-                    });
-                    return;
+            return true;
+        }
+        let key = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.home_key())
+            .or(self.home_key);
+        let result = if let Some(remote) = self.remote.as_deref() {
+            crate::connection::home::existing_remote_home(remote, &self.session, key)
+        } else {
+            host::start_server(&self.phux, &self.socket).and_then(|()| {
+                if self.session.is_empty() {
+                    crate::connection::home::open_home(&self.phux, &self.socket, None)
+                } else {
+                    crate::connection::home::existing_home(&self.socket, &self.session, key)
                 }
-                Ok(_) => {}
-                Err(error) => {
-                    self.post(Kind::Error, "Could not start the phux server", Some(error))
-                }
+            })
+        };
+        match result {
+            // A launch that could not name a session reopens on the one
+            // the server now offers, with that session's saved layout.
+            Ok(name) if self.session.is_empty() => {
+                let old = cx.entity_id();
+                let desktop = self.desktop.clone();
+                cx.defer(move |cx| {
+                    desktop.update(cx, |desktop, cx| desktop.rehome(old, name, cx));
+                });
+                false
             }
+            Ok(name) => {
+                self.session = name.clone();
+                self.workspace_mut(|link| link.workspace.set_home_session(name));
+                true
+            }
+            Err(error) => {
+                self.post(Kind::Error, "Could not reconnect", Some(error));
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
+        if !self.prepare_reconnect_home(cx) {
+            return;
+        }
+        self.redial(cx);
+    }
+
+    /// Reattach after a managed handoff. The updater already performed the
+    /// process work off-thread; this path never invokes a CLI subprocess.
+    fn redial(&mut self, cx: &mut Context<Self>) {
+        // Managed updates bypass the CLI resolver, but must not lose the
+        // identity already learned by the old connection when rebuilding it.
+        if let Some(key) = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.home_key())
+        {
+            self.home_key = Some(key);
         }
         self.persist();
         let snapshot = self.last_saved.clone();
@@ -1098,8 +1390,9 @@ impl Desk {
             link.workspace
                 .close_pane(&link.connection, Some(placement.id.as_str()))
         });
+        let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
-            desktop.open_moved(session, terminal, cx);
+            desktop.open_moved(session, terminal, remote, cx);
         });
     }
 
@@ -1118,25 +1411,118 @@ impl Desk {
                 .and_then(Result::ok)
                 .flatten()
                 .unwrap_or_default();
-            if let Some(path) = paths.into_iter().next() {
-                let _ = desk.update(cx, |desk, cx| {
-                    let cwd = path.display().to_string();
-                    desk.workspace_call(|link| {
-                        link.workspace
-                            .new_terminal(&link.connection, Some(cwd.as_str()))
-                    });
-                    desk.take_notices();
-                    cx.notify();
-                });
-            }
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = desk.update_in(cx, |desk, window, cx| {
+                desk.open_project_path(path, window, cx);
+            });
         })
         .detach();
     }
 
+    /// A selected folder and a sidebar project use the same CLI/trust path.
+    pub fn open_project_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(failure) = self.local_only() {
+            self.post(Kind::Refusal, "Could not open folder", Some(failure));
+            cx.notify();
+            return;
+        }
+        let desk = cx.entity().downgrade();
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            // Validation, trust checks and recipe launches can block.
+            let result = smol::unblock(move || host::open_project(&phux, &socket, &path)).await;
+            let _ = desk.update(cx, |desk, cx| match result {
+                Ok(opened) => {
+                    if let Err(error) = desk.desktop.update(cx, |desktop, cx| {
+                        desktop.record_recent_project(opened.path, cx)
+                    }) {
+                        desk.post(
+                            Kind::Error,
+                            "Could not save recent folder",
+                            Some(error.to_string()),
+                        );
+                    }
+                    desk.open_project_window(opened.session, opened.terminal, cx);
+                }
+                Err(error) => {
+                    desk.post(Kind::Error, "Could not open folder", Some(error));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn forget_recent_project(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        if let Err(error) = self
+            .desktop
+            .update(cx, |desktop, cx| desktop.forget_recent_project(path, cx))
+        {
+            self.post(
+                Kind::Error,
+                "Could not forget folder",
+                Some(error.to_string()),
+            );
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {
+        if self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.connection.pane(&terminal).is_some())
+        {
+            self.pending_project_terminal = None;
+            self.reveal_terminal(&terminal);
+        } else {
+            self.pending_project_terminal = Some(terminal);
+            if let Some(link) = self.link.as_ref() {
+                let _ = link.connection.refresh_topology();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn open_project_window(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session == session {
+            self.show_project_terminal(terminal, cx);
+            return;
+        }
+        if let Err(error) = self.desktop.update(cx, |desktop, cx| {
+            desktop.open_project(session, terminal, cx)
+        }) {
+            self.post(
+                Kind::Error,
+                "Could not show project",
+                Some(error.to_string()),
+            );
+            cx.notify();
+        }
+    }
+
     fn open_rename_session(&mut self) {
-        let name = self
+        let (name, target) = self
             .focused_pane()
-            .map(|pane| pane.session_name.clone())
+            .map(|pane| {
+                (
+                    pane.session_name.clone(),
+                    self.rename_session_target(pane.session_id),
+                )
+            })
             .unwrap_or_default();
         if name.trim().is_empty() {
             self.post(
@@ -1149,7 +1535,23 @@ impl Desk {
         self.modal = Modal::Session {
             create: false,
             current: name,
+            target,
         };
+    }
+
+    pub(crate) fn rename_session_target(&self, id: u32) -> Option<SessionRenameTarget> {
+        let connection = &self.link.as_ref()?.connection;
+        let session = connection
+            .topology
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|session| session.id == id)?;
+        Some(SessionRenameTarget {
+            key: session.key,
+            id,
+            identity: connection.identity()?,
+        })
     }
 
     fn rename_active(&mut self) {
@@ -1200,37 +1602,82 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Modal::Session { create, current } = self.modal.clone() else {
+        let Modal::Session {
+            create,
+            current,
+            target,
+        } = self.modal.clone()
+        else {
             return;
         };
-        let directory = directory.unwrap_or_default();
-        if create
-            && let Some(link) = self.link.as_ref()
-            && link.connection.organization()
-        {
-            let submitted = match crate::workspace::create_session_error(&name, &directory) {
-                Some(refused) => Err(refused.to_owned()),
-                None => link
-                    .connection
-                    .create_session(name.trim(), directory.trim()),
-            };
-            match submitted {
-                Ok(operation) => {
-                    self.creates.insert(operation, name.trim().to_owned());
-                    self.close_modal(window, cx);
-                    self.after_command(window, cx);
-                }
-                Err(failure) => {
-                    self.post(Kind::Error, "Could not create the session", Some(failure));
-                    cx.notify();
-                }
-            }
+        if !create && self.rename_organization_session(target.as_ref(), &name, window, cx) {
             return;
         }
-        let failure = if create {
-            host::create_session(&self.phux, &self.socket, &name, &directory)
+        if !create && !self.legacy_rename_matches(target.as_ref(), &current) {
+            self.post(
+                Kind::Error,
+                "Session changed",
+                Some("Reopen the rename dialog to select its current identity.".to_owned()),
+            );
+            cx.notify();
+            return;
+        }
+        let directory = directory.unwrap_or_default();
+        if create && self.create_organization_session(&name, &directory, window, cx) {
+            return;
+        }
+        self.apply_legacy_session(create, &current, &name, &directory, window, cx);
+    }
+
+    fn create_organization_session(
+        &mut self,
+        name: &str,
+        directory: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(link) = self
+            .link
+            .as_ref()
+            .filter(|link| link.connection.organization())
+        else {
+            return false;
+        };
+        let submitted = match crate::workspace::create_session_error(name, directory) {
+            Some(refused) => Err(refused.to_owned()),
+            None => link
+                .connection
+                .create_session(name.trim(), directory.trim()),
+        };
+        match submitted {
+            Ok(operation) => {
+                self.creates.insert(operation, name.trim().to_owned());
+                self.close_modal(window, cx);
+                self.after_command(window, cx);
+            }
+            Err(failure) => {
+                self.post(Kind::Error, "Could not create the session", Some(failure));
+                cx.notify();
+            }
+        }
+        true
+    }
+
+    fn apply_legacy_session(
+        &mut self,
+        create: bool,
+        current: &str,
+        name: &str,
+        directory: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let failure = if let Some(failure) = self.local_only() {
+            Some(failure)
+        } else if create {
+            host::create_session(&self.phux, &self.socket, name, directory)
         } else {
-            host::rename_session(&self.phux, &self.socket, &current, &name)
+            host::rename_session(&self.phux, &self.socket, current, name)
         };
         if let Some(failure) = failure {
             self.post(
@@ -1252,6 +1699,61 @@ impl Desk {
         self.after_command(window, cx);
     }
 
+    fn rename_organization_session(
+        &mut self,
+        target: Option<&SessionRenameTarget>,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(link) = self
+            .link
+            .as_ref()
+            .filter(|link| link.connection.organization())
+        else {
+            return false;
+        };
+        let submitted = target
+            .and_then(|target| target.key)
+            .ok_or_else(|| {
+                "Session identity is unavailable. Reopen the rename dialog after refreshing."
+                    .to_owned()
+            })
+            .and_then(|key| {
+                link.connection
+                    .client
+                    .rename_session(key, name.trim())
+                    .map_err(|error| error.to_string())
+            });
+        match submitted {
+            Ok(operation) => {
+                self.renames.insert(operation, name.trim().to_owned());
+                self.close_modal(window, cx);
+                self.after_command(window, cx);
+            }
+            Err(error) => {
+                self.post(Kind::Error, "Could not rename the session", Some(error));
+                cx.notify();
+            }
+        }
+        true
+    }
+
+    fn legacy_rename_matches(&self, target: Option<&SessionRenameTarget>, name: &str) -> bool {
+        let Some(target) = target else { return false };
+        let Some(link) = self.link.as_ref() else {
+            return false;
+        };
+        link.connection.status == Status::Attached
+            && link.connection.identity().as_ref() == Some(&target.identity)
+            && link.connection.topology.as_ref().is_some_and(|topology| {
+                topology
+                    .sessions
+                    .iter()
+                    .any(|session| session.id == target.id && session.name == name)
+            })
+    }
+
     /// Ask to kill the focused pane's session.
     fn ask_kill_session(&mut self) {
         let Some((name, session)) = self
@@ -1266,6 +1768,9 @@ impl Desk {
             );
             return;
         };
+        if self.intake_kill_refused(session) {
+            return;
+        }
         self.modal = Modal::KillSession { name, session };
     }
 
@@ -1281,6 +1786,9 @@ impl Desk {
     /// Kill `session` with one `SESSION_KILL`; a server without it gets
     /// `phux kill`.
     fn kill_session(&mut self, name: &str, session: u32) {
+        if self.intake_kill_refused(session) {
+            return;
+        }
         let Some(link) = self.link.as_ref() else {
             self.post(
                 Kind::Error,
@@ -1299,7 +1807,10 @@ impl Desk {
             self.kills.insert(operation, name.to_owned());
             return;
         }
-        if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
+        if let Some(failure) = self
+            .local_only()
+            .or_else(|| host::kill_session(&self.phux, &self.socket, name))
+        {
             self.post(Kind::Error, "Could not kill the session", Some(failure));
         } else {
             let _ = link.connection.refresh_topology();
@@ -1324,6 +1835,18 @@ impl Desk {
         self.open_session_window(name, window, cx);
     }
 
+    fn intake_kill_refused(&mut self, session: u32) -> bool {
+        if !self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.connection.is_intake_session(session))
+        {
+            return false;
+        }
+        self.post(Kind::Info, "Intake cannot be killed", Some("Move its work to a named session, or terminate individual processes. Intake is the designated home for unorganized work.".to_owned()));
+        true
+    }
+
     pub fn open_session_window(
         &mut self,
         name: String,
@@ -1336,8 +1859,9 @@ impl Desk {
         } else {
             name
         };
+        let remote = self.remote.clone();
         self.desktop
-            .update(cx, |desktop, cx| desktop.open_session(session, cx));
+            .update(cx, |desktop, cx| desktop.open_session(session, remote, cx));
         cx.notify();
     }
 
@@ -2182,6 +2706,13 @@ impl Desk {
         }
     }
 
+    /// The session is attached, so a terminal reacquire can paint.
+    pub(crate) fn session_is_attached(&self) -> bool {
+        self.link
+            .as_ref()
+            .is_some_and(|link| link.connection.status == Status::Attached)
+    }
+
     /// Whether the connection needs the user to reconnect.
     pub(crate) fn unhealthy(&self) -> bool {
         self.link
@@ -2273,9 +2804,9 @@ impl Desk {
                 smol::Timer::after(Duration::from_secs(1)).await;
                 let keep = this
                     .update(cx, |desk, cx| {
-                        let now = Instant::now();
-                        desk.feed.expire_peek(now);
-                        cx.notify();
+                        if desk.tick_clock() {
+                            cx.notify();
+                        }
                         let keep = desk.clock_needed();
                         if !keep {
                             desk._clock = None;
@@ -2296,6 +2827,23 @@ impl Desk {
                 .link
                 .as_ref()
                 .is_some_and(|link| !link.connection.agents.is_empty())
+    }
+
+    /// Expire a peek and report whether the chrome labels moved.
+    fn tick_clock(&mut self) -> bool {
+        let expired = self.feed.expire_peek(Instant::now());
+        expired || self.agent_ages_moved()
+    }
+
+    fn agent_ages_moved(&self) -> bool {
+        let now = unix_ms();
+        let earlier = now.saturating_sub(1_000);
+        self.link.as_ref().is_some_and(|link| {
+            link.connection
+                .agents
+                .values()
+                .any(|info| super::view::ago_changed(info.changed_at_ms, earlier, now))
+        })
     }
 
     fn retain_panes(&mut self) {
@@ -2322,12 +2870,194 @@ impl Desk {
         &mut self.panes
     }
 
-    /// `{tab} — phux`, or `phux` with no tab. Written only when it changes.
+    /// Re-read the remote registry on the background executor, which a test
+    /// scheduler drives like any other window-open work.
+    pub(crate) fn refresh_hosts(&mut self, cx: &mut Context<Self>) {
+        let phux = self.phux.clone();
+        let listed = cx
+            .background_executor()
+            .spawn(async move { host::list_hosts(&phux) });
+        cx.spawn(async move |desk, cx| {
+            let result = listed.await;
+            let _ = desk.update(cx, |desk, cx| {
+                match result {
+                    Ok(hosts) => desk.hosts = hosts,
+                    // No CLI is already explained at launch; the section just stays empty.
+                    Err(error) => log::warn!("host list: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Open a window on registered host `name`, or raise the one already open.
+    pub(crate) fn open_host(&mut self, name: String, cx: &mut Context<Self>) {
+        let desk = cx.entity().downgrade();
+        let host = name.clone();
+        self.desktop.update(cx, |desktop, cx| {
+            desktop.open_host(
+                name,
+                move |result, cx| {
+                    if let Err(error) = result {
+                        let _ = desk.update(cx, |desk, cx| {
+                            desk.post(Kind::Error, &format!("Could not open {host}"), Some(error));
+                            cx.notify();
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+    }
+
+    /// Point this window at another host in place: `None` is this machine,
+    /// `Some(name)` a registered remote. The current connection and views are
+    /// released and the target's home session and saved layout take their
+    /// place. No new window is opened.
+    pub(crate) fn switch_host(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.host_switching || self.remote == name {
+            return;
+        }
+        self.host_switching = true;
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
+        let target = name.clone();
+        cx.spawn(async move |desk, cx| {
+            let probe = target.clone();
+            let resolved = smol::unblock(move || match probe.as_deref() {
+                Some(host) => crate::connection::home::open_remote_home(host),
+                None => crate::connection::home::open_home(&phux, &socket, None),
+            })
+            .await;
+            let _ = desk.update(cx, |desk, cx| {
+                desk.host_switching = false;
+                match resolved {
+                    Ok(session) => desk.adopt_host(target, session, cx),
+                    Err(error) => {
+                        desk.post(Kind::Error, "Could not switch host", Some(error));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The in-place half of [`Self::switch_host`], once the target's home is known.
+    fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
+        self.persist();
+        if let Some(link) = self.link.as_mut() {
+            link.workspace.release_all(&link.connection);
+            link.connection.close();
+        }
+        self.link = None;
+        self.panes.clear();
+        self.agent_seen.clear();
+        self.feed.retain(|entry| entry.kind != Kind::Agent);
+        self.find = None;
+        self.find_input = None;
+        self.pending_project_terminal = None;
+        self.connect_error = None;
+        self.remote = name.clone();
+        self.session = session.clone();
+        self.home_key = None;
+        self.layout_key = None;
+        self.last_saved = None;
+        self.open_fresh = false;
+        let authority = name.as_ref().map_or_else(
+            || self.socket.display().to_string(),
+            |host| format!("host:{host}"),
+        );
+        let paths = crate::workspace::layout_paths(&authority, &session);
+        self.store = FileLayoutStore::new(paths.layout, None);
+        self.last_saved = persist::load_layout(&self.store.read()).initial;
+        self.attach(None, cx);
+        self.refresh_hosts(cx);
+        self.sync_bindings(cx);
+        self.apply_kit_theme(cx);
+        cx.notify();
+    }
+
+    /// Enroll `target` over ssh. The dialog closes at once; enrollment runs in
+    /// the background and reports through a notification.
+    pub(crate) fn apply_add_host(
+        &mut self,
+        target: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = target.trim().to_owned();
+        if target.is_empty() {
+            self.post(
+                Kind::Refusal,
+                "Could not add host",
+                Some("Enter an ssh destination such as me@mini.".into()),
+            );
+            cx.notify();
+            return;
+        }
+        if self.host_adding.is_some() {
+            return;
+        }
+        self.close_modal(window, cx);
+        self.host_adding = Some(target.clone());
+        let phux = self.phux.clone();
+        cx.spawn(async move |desk, cx| {
+            let added = target.clone();
+            let result = smol::unblock(move || host::add_host(&phux, &target, &name)).await;
+            let _ = desk.update(cx, |desk, cx| {
+                desk.host_adding = None;
+                match result {
+                    Ok(()) => desk.post(Kind::Info, &format!("Added {added}"), None),
+                    Err(error) => {
+                        desk.post(Kind::Error, &format!("Could not add {added}"), Some(error))
+                    }
+                }
+                desk.refresh_hosts(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_remove_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Modal::RemoveHost { name } = self.modal.clone() else {
+            return;
+        };
+        self.close_modal(window, cx);
+        match host::remove_host(&self.phux, &name) {
+            Ok(()) => self.hosts.retain(|host| host.name != name),
+            Err(error) => self.post(
+                Kind::Error,
+                &format!("Could not remove {name}"),
+                Some(error),
+            ),
+        }
+        self.refresh_hosts(cx);
+    }
+
+    /// Why a CLI-backed action cannot run here: the CLI drives the local
+    /// server's socket, not a registered host.
+    fn local_only(&self) -> Option<String> {
+        self.remote.as_deref().map(|host| {
+            format!("This window is on {host}. Run it there with `phux attach {host}`.")
+        })
+    }
+
+    /// `{tab} — phux`, or `phux` with no tab, plus the host on a remote window.
+    /// Written only when it changes.
     pub(crate) fn sync_title(&mut self, window: &mut Window) {
         let title = self
             .active_tab()
             .map(|tab| format!("{} — phux", tab_title(self, tab)))
             .unwrap_or_else(|| "phux".into());
+        let title = match self.remote.as_deref() {
+            Some(host) => format!("{title} · {host}"),
+            None => title,
+        };
         if title != self.window_title {
             window.set_window_title(&title);
             self.window_title = title;
@@ -2501,8 +3231,13 @@ impl Desk {
         cx: &mut Context<Self>,
     ) {
         self.workspace_call(|link| {
+            let cwd = link
+                .connection
+                .directories
+                .get(&session_id)
+                .map(String::as_str);
             link.workspace
-                .new_terminal_in(&link.connection, session_id, None)
+                .new_terminal_in(&link.connection, session_id, cwd)
         });
         self.after_command(window, cx);
     }

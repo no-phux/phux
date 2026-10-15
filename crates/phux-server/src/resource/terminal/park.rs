@@ -73,16 +73,33 @@ impl Drop for PtyReader {
     }
 }
 
-/// Panes currently registered with the shared poller.
+/// Where one reader sits. Per-reader, so a test can ignore panes other tests
+/// still have registered on the process-wide poller.
 #[cfg(test)]
-pub(super) fn parked_count() -> usize {
-    shared_park().map_or(0, |park| park.count(SlotKind::Parked))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReaderPlace {
+    /// Registered with the shared poller.
+    Parked,
+    /// A dedicated thread is reading this pane.
+    Hot,
+    /// The shared poller was unavailable, so this pane has its own thread.
+    Dedicated,
+    /// The poller took the fd for one wake.
+    Reading,
+    /// The slot is already gone.
+    Gone,
 }
 
-/// Panes whose output is being read by a dedicated thread.
+/// Place of `reader`. [`ReaderPlace::Dedicated`] when it never joined the poller.
 #[cfg(test)]
-pub(super) fn hot_count() -> usize {
-    shared_park().map_or(0, |park| park.count(SlotKind::Hot))
+pub(super) fn reader_place(reader: &PtyReader) -> ReaderPlace {
+    match reader.inner.as_ref() {
+        Some(ReaderInner::Dedicated(_)) => ReaderPlace::Dedicated,
+        Some(ReaderInner::Shared(id)) => shared_park()
+            .and_then(|park| park.place(*id))
+            .unwrap_or(ReaderPlace::Gone),
+        None => ReaderPlace::Gone,
+    }
 }
 
 /// Times a quiet pane was promoted onto a dedicated reader.
@@ -121,13 +138,6 @@ fn shared_park() -> Option<&'static Park> {
 
 fn shared_shutdown(id: u64) -> Option<JoinHandle<()>> {
     shared_park().and_then(|park| park.shutdown(id))
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind {
-    Parked,
-    Hot,
 }
 
 struct Park {
@@ -225,16 +235,15 @@ impl Park {
     }
 
     #[cfg(test)]
-    fn count(&self, kind: SlotKind) -> usize {
-        self.slots()
-            .values()
-            .filter(|slot| {
-                matches!(
-                    (&slot.state, kind),
-                    (SlotState::Parked(_), SlotKind::Parked) | (SlotState::Hot, SlotKind::Hot)
-                )
-            })
-            .count()
+    fn place(&self, id: u64) -> Option<ReaderPlace> {
+        let slots = self.slots();
+        let place = slots.get(&id).map(|slot| match &slot.state {
+            SlotState::Parked(_) => ReaderPlace::Parked,
+            SlotState::Hot => ReaderPlace::Hot,
+            SlotState::Reading => ReaderPlace::Reading,
+        });
+        drop(slots);
+        place
     }
 
     fn poll_loop(&'static self) {

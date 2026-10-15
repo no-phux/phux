@@ -45,7 +45,7 @@ pub(super) use crate::attach::onboarding::{AttachClaim, AttachMoment};
 pub(super) use crate::attach::outcome::{AttachEnd, AttachError};
 pub(super) use crate::attach::paint::{
     SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place, paint_full_frame,
-    sidebar_reservation,
+    paint_panes_in_place, sidebar_reservation,
 };
 pub(super) use crate::attach::pane_state::{
     AttentionNavigation, VcsIndex, reanchor_predict_to_pane,
@@ -147,10 +147,7 @@ pub(super) fn unreachable_row_explains(
 
 /// Held `SatelliteUnreachable` diagnostics as status notices.
 pub(super) fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
-    messages
-        .into_iter()
-        .map(|message| Notice::warn(format!("federation degraded: {message}")))
-        .collect()
+    messages.into_iter().map(Notice::warn).collect()
 }
 
 /// What one host inventory said about each satellite.
@@ -512,7 +509,7 @@ pub(super) struct SessionLoop {
     /// ADR-0140: a `switch-host` committed in the last batch, as
     /// `(host, session)`.
     host_switch_request: Option<(String, String)>,
-    /// ADR-0167: a `toggle-project-group` committed in the last batch.
+    /// ADR-0168: a `toggle-project-group` committed in the last batch.
     project_toggle_request: Option<String>,
     /// phux-c2td.3: did the server advertise
     /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
@@ -660,7 +657,8 @@ impl SessionLoop {
             pending_directory: None,
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme)
-                .with_plugin_specs(settings.plugin_sidebar.clone()),
+                .with_plugin_specs(settings.plugin_sidebar.clone())
+                .with_agents_share(settings.sidebar.agents_share),
             plugin_tx,
             plugin_rx,
             bind_reflow_owed: false,

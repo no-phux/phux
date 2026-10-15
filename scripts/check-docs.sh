@@ -9,6 +9,8 @@
 # by ADR number or wire ID are indexed arrays, and `10#` keeps 0008 decimal.
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -46,9 +48,8 @@ OPTIONS:
     --list          print the gates this script implements and exit
     --only=<gate>   run only the named gate
 
-Gates write violations to stderr prefixed with `[<gate-name>]`. The
-script prints a `checked N files, M violations` summary on stdout and
-exits 0 if M == 0, else 1.
+Gates write `phux: error: [<gate-name>]` violations and a status summary
+to stderr. Exit 0 means no violations; exit 1 means at least one.
 
 See docs/CONVENTIONS.md for the contract these gates enforce.
 EOF
@@ -67,7 +68,7 @@ for arg in "$@"; do
         --list) list_gates; exit 0 ;;
         --only=*) ONLY="${arg#--only=}" ;;
         *)
-            echo "error: unknown argument: $arg" >&2
+            phux_error "unknown argument: $arg"
             usage >&2
             exit 2
             ;;
@@ -75,7 +76,7 @@ for arg in "$@"; do
 done
 
 if [[ -n "$ONLY" && " ${ALL_GATES[*]} " != *" $ONLY "* ]]; then
-    echo "error: --only=$ONLY does not match a known gate" >&2
+    phux_error "--only=$ONLY does not match a known gate"
     list_gates >&2
     exit 2
 fi
@@ -127,7 +128,7 @@ violate() {
     local gate="$1"
     local file="$2"
     shift 2
-    echo "[$gate] ${file#"$ROOT"/}: $*" >&2
+    phux_error "[$gate] ${file#"$ROOT"/}: $*"
     VIOLATIONS=$((VIOLATIONS + 1))
 }
 
@@ -961,6 +962,10 @@ for gate in "${ALL_GATES[@]}"; do
     "gate_${gate//-/_}"
 done
 
-echo "checked ${#FILES[@]} files, ${VIOLATIONS} violations"
+if (( VIOLATIONS == 0 )); then
+    phux_ok "checked ${#FILES[@]} files, ${VIOLATIONS} violations"
+else
+    phux_error "checked ${#FILES[@]} files, ${VIOLATIONS} violations"
+fi
 
 (( VIOLATIONS == 0 ))

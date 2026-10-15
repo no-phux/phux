@@ -1,4 +1,4 @@
-//! Grouping session rows by project identity (ADR-0167): one pure rule for
+//! Grouping session rows by project identity (ADR-0168): one pure rule for
 //! the TUI sidebar, the session picker, and `phux ls`.
 //!
 //! Grouping is membership only. Blocks keep the first-appearance order of

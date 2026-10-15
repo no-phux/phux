@@ -42,9 +42,7 @@ pub(crate) fn run_logs(
     // The tail modifiers need a tail. The parser cannot say "one of these
     // three" (its `requires` is every-listed-flag), so the rule lives here.
     if !(server || client || cockpit) && (follow || lines.is_some()) {
-        eprintln!(
-            "phux logs: -f and -n tail a log; pick one with --server, --client, or --cockpit"
-        );
+        error!("logs: -f and -n tail a log; pick one with --server, --client, or --cockpit");
         return ExitCode::from(crate::exit_codes::EXIT_USAGE);
     }
     let lines = lines.unwrap_or(DEFAULT_TAIL_LINES);
@@ -63,13 +61,13 @@ pub(crate) fn run_logs(
             );
         }
         let Some(log) = cockpit_log_path_from_env() else {
-            eprintln!(
-                "phux logs: HOME is unset, so the Cockpit log path cannot be resolved;                  set {COCKPIT_LOG_ENV} to the file."
+            error!(
+                "logs: HOME is unset, so the Cockpit log path cannot be resolved;                  set {COCKPIT_LOG_ENV} to the file."
             );
             return ExitCode::FAILURE;
         };
         let missing = format!(
-            "phux logs: no Cockpit log at {} yet.\n\
+            "logs: no Cockpit log at {} yet.\n\
              Cockpit writes it when it next starts; run `phux cockpit`.",
             log.display()
         );
@@ -78,7 +76,7 @@ pub(crate) fn run_logs(
     if server {
         let log = phux_server::telemetry::server_log_path();
         let missing = format!(
-            "phux logs: no server log at {} yet.\n\
+            "logs: no server log at {} yet.\n\
              A server writes it when it next starts; run `phux` (auto-spawns) or `phux server`.",
             log.display()
         );
@@ -90,12 +88,12 @@ pub(crate) fn run_logs(
         let log = match client_log_target(&dir, pid) {
             Ok(log) => log,
             Err(message) => {
-                eprintln!("{message}");
+                crate::output::error_block(message.lines());
                 return ExitCode::FAILURE;
             }
         };
         let missing = format!(
-            "phux logs: no client log at {} yet.\n\
+            "logs: no client log at {} yet.\n\
              An interactive client (naked `phux`, `phux attach`) writes one per pid;\n\
              bare `phux logs` lists the ones that exist.",
             log.display()
@@ -120,7 +118,7 @@ pub(crate) fn run_logs(
 /// `missing` message and fails.
 pub(crate) fn tail_file(path: &Path, follow: bool, lines: u32, missing: &str) -> ExitCode {
     if !path.exists() {
-        eprintln!("{missing}");
+        crate::output::error_block(missing.lines());
         return ExitCode::FAILURE;
     }
 
@@ -134,7 +132,7 @@ pub(crate) fn tail_file(path: &Path, follow: bool, lines: u32, missing: &str) ->
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) | Err(_) => {
-            eprintln!("phux logs: could not read {}", path.display());
+            error!("logs: could not read {}", path.display());
             ExitCode::FAILURE
         }
     }
@@ -151,7 +149,7 @@ fn client_log_target(dir: &Path, pid: Option<u32>) -> Result<PathBuf, String> {
         .next()
         .ok_or_else(|| {
             format!(
-                "phux logs: no client logs in {} yet.\n\
+                "logs: no client logs in {} yet.\n\
              An interactive client (naked `phux`, `phux attach`) writes one per pid.",
                 dir.display()
             )

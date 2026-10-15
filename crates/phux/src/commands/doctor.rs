@@ -27,12 +27,11 @@ pub(crate) enum Status {
 }
 
 impl Status {
-    /// Fixed-width marker so the report scans as a column.
-    const fn marker(self) -> &'static str {
+    const fn severity(self) -> crate::output::Severity {
         match self {
-            Self::Pass => "ok  ",
-            Self::Warn => "warn",
-            Self::Fail => "FAIL",
+            Self::Pass => crate::output::Severity::Ok,
+            Self::Warn => crate::output::Severity::Warn,
+            Self::Fail => crate::output::Severity::Error,
         }
     }
 
@@ -1220,19 +1219,42 @@ fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> C
 // ---------------------------------------------------------------------------
 
 fn report_human(checks: &[Check]) -> ExitCode {
-    out!("{}", render_human(checks));
+    use std::io::IsTerminal as _;
+    let color = crate::output::color_enabled(std::io::stdout().is_terminal());
+    out!("{}", render_human(checks, color));
 
     let failed = checks.iter().filter(|c| c.status == Status::Fail).count();
     let warned = checks.iter().filter(|c| c.status == Status::Warn).count();
     outln!();
     if failed > 0 {
-        outln!("{failed} failed, {warned} warning(s)");
+        outln!(
+            "{}",
+            crate::output::human_line(
+                crate::output::Severity::Error,
+                format_args!("{failed} failed, {warned} warning(s)"),
+                color
+            )
+        );
         return ExitCode::FAILURE;
     }
     if warned > 0 {
-        outln!("no failures, {warned} warning(s)");
+        outln!(
+            "{}",
+            crate::output::human_line(
+                crate::output::Severity::Warn,
+                format_args!("no failures, {warned} warning(s)"),
+                color
+            )
+        );
     } else {
-        outln!("all checks passed");
+        outln!(
+            "{}",
+            crate::output::human_line(
+                crate::output::Severity::Ok,
+                format_args!("all checks passed"),
+                color
+            )
+        );
     }
     ExitCode::SUCCESS
 }
@@ -1240,21 +1262,24 @@ fn report_human(checks: &[Check]) -> ExitCode {
 /// The check rows as the human report prints them. The name column is as
 /// wide as the longest check name, so a long name (`workload-authority`)
 /// cannot push its detail out of alignment with every other row.
-fn render_human(checks: &[Check]) -> String {
+fn render_human(checks: &[Check], color: bool) -> String {
     use std::fmt::Write as _;
 
     let width = checks.iter().map(|c| c.name.len()).max().unwrap_or(0);
     let mut out = String::new();
     for check in checks {
-        let _ = writeln!(
-            out,
-            "{} {:<width$} {}",
-            check.status.marker(),
-            check.name,
-            check.detail
+        let severity = check.status.severity();
+        let padding = 5 - severity.label().len();
+        let line = crate::output::human_line(
+            severity,
+            format_args!("{:padding$}{:<width$} {}", "", check.name, check.detail),
+            color,
         );
+        let _ = writeln!(out, "{line}");
         if let Some(hint) = &check.hint {
-            let _ = writeln!(out, "     {:<width$} -> {hint}", "");
+            for line in hint.lines() {
+                let _ = writeln!(out, "  hint: {}: {}", check.name, line.trim_start());
+            }
         }
     }
     out
@@ -2093,14 +2118,14 @@ mod tests {
     }
 
     /// A check name longer than the old fixed 12-column field still lines
-    /// its detail (and its hint arrow) up with every other row.
+    /// its detail up with every other row; hints identify their check.
     #[test]
     fn human_report_aligns_details_past_the_longest_name() {
         let checks = [
             Check::pass("config", "fine"),
             Check::warn("workload-authority", "missing", "init it"),
         ];
-        let rendered = render_human(&checks);
+        let rendered = render_human(&checks, false);
         let lines: Vec<&str> = rendered.lines().collect();
         let detail_column = |line: &str, needle: &str| line.find(needle).expect(needle);
         assert_eq!(
@@ -2108,10 +2133,8 @@ mod tests {
             detail_column(lines[1], "missing"),
             "{rendered}"
         );
-        assert_eq!(
-            detail_column(lines[2], "->"),
-            detail_column(lines[1], "missing"),
-            "{rendered}"
-        );
+        assert_eq!(lines[2], "  hint: workload-authority: init it");
+        assert!(lines[0].starts_with("phux: ok: "));
+        assert!(lines[1].starts_with("phux: warn: "));
     }
 }

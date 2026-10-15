@@ -754,7 +754,7 @@ pub mod org_launch {
 pub mod org_page {
     /// `AuthorityId` (16 bytes).
     pub const AUTHORITY: u32 = 1;
-    /// The designated Inbox `SessionKey` (16 bytes).
+    /// The designated Intake `SessionKey` (16 bytes); legacy name, unchanged tag.
     pub const INBOX: u32 = 2;
     /// One session record: nested [`org`](super::org) fields. Repeated.
     pub const SESSION: u32 = 3;

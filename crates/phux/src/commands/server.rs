@@ -65,7 +65,7 @@ fn ensure_document(socket_path: &Path, disposition: EnsureDisposition) -> serde_
 
 fn report_ensure_failure(json: bool, socket_path: &Path, err: &std::io::Error) -> ExitCode {
     if !json {
-        eprintln!("phux server --ensure: {}: {err}", socket_path.display());
+        error!("server --ensure: {}: {err}", socket_path.display());
         return ExitCode::FAILURE;
     }
 
@@ -131,7 +131,7 @@ fn ensure_accepting(socket_path: &Path) -> std::io::Result<EnsureDisposition> {
 /// stderr and the server log.
 fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
     format!(
-        "phux server: cannot start: config at {} failed to load\n  {err}\nrun: phux config check",
+        "server: cannot start: config at {} failed to load\n  {err}\nrun `phux config check`",
         path.display()
     )
 }
@@ -203,7 +203,7 @@ fn prepare_process(
 fn load_config() -> Result<phux_config::Config, ExitCode> {
     config_loader::load().map_err(|err| {
         let msg = broken_config_message(&config_loader::config_path(), &err);
-        eprintln!("{msg}");
+        crate::output::error_block(msg.lines());
         tracing::error!(
             path = %config_loader::config_path().display(),
             error = %err,
@@ -291,7 +291,7 @@ fn build_server_config(
         env: phux_server::ServerEnv::from_process(),
         // The durable organization store under the instance's state
         // directory (ADR-0162).
-        org_store: phux_server::OrgStoreLocation::default_path(),
+        org_store: phux_server::OrgStoreLocation::for_socket(socket_path),
     }
 }
 
@@ -302,7 +302,7 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
         .enable_all()
         .build()
         .map_err(|err| {
-            eprintln!("failed to build runtime: {err}");
+            error!("failed to build runtime: {err}");
             ExitCode::FAILURE
         })
 }
@@ -376,11 +376,11 @@ fn with_network_listeners(
 fn report_shutdown<E: std::fmt::Display>(result: Result<(), E>) -> ExitCode {
     match result {
         Ok(()) => {
-            eprintln!("phux server: shutting down cleanly");
+            info!("server: shutting down cleanly");
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux server failed: {err}");
+            error!("server failed: {err}");
             ExitCode::FAILURE
         }
     }
@@ -422,7 +422,7 @@ pub(crate) fn run_server(
         None => None,
         Some(Ok(autosave)) => Some(autosave),
         Some(Err(err)) => {
-            eprintln!("phux server: cannot start: --autosave: {err}");
+            error!("server: cannot start: --autosave: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -442,7 +442,7 @@ pub(crate) fn run_server(
     let configured_connectors = config.connector;
     let connector_entries = select_connectors(configured_connectors, connect.as_deref());
     if let Err(err) = phux_server::connector::plan_connectors(&connector_entries) {
-        eprintln!("phux server failed: connector: {err}");
+        error!("server failed: connector: {err}");
         return ExitCode::FAILURE;
     }
 
@@ -472,8 +472,8 @@ pub(crate) fn run_server(
     let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport)
         .on_listening(move |listeners| {
             let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
-            eprintln!(
-                "phux server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
+            info!(
+                "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
                 socket_path.display(),
             );
         });
@@ -522,8 +522,8 @@ async fn shutdown_signal() {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     else {
         // Registering failed; fall back to SIGINT alone rather than refuse to serve.
-        eprintln!(
-            "phux server: could not install a SIGTERM handler; only Ctrl-C will stop this server cleanly"
+        warn!(
+            "server: could not install a SIGTERM handler; only Ctrl-C will stop this server cleanly"
         );
         let _ = interrupt.await;
         return;
@@ -579,8 +579,8 @@ fn auto_spawn_idle_limit(quiet: bool) -> Option<u64> {
     }
     let parsed = parse_auto_spawn_idle(trimmed);
     if parsed.is_none() && !quiet {
-        eprintln!(
-            "phux: ignoring {AUTO_SPAWN_IDLE_ENV}={trimmed} \
+        warn!(
+            "ignoring {AUTO_SPAWN_IDLE_ENV}={trimmed} \
              (want whole seconds, 1..={AUTO_SPAWN_IDLE_MAX_SECS}); \
              the auto-spawned server will have no idle limit"
         );
@@ -610,8 +610,8 @@ pub(crate) fn maybe_auto_spawn_server(
 
     // The banner names the log; suppressed under `--json`.
     if !quiet {
-        eprintln!(
-            "phux: starting server at {} (auto-spawn, session={}; log: {})",
+        info!(
+            "starting server at {} (auto-spawn, session={}; log: {})",
             socket_path.display(),
             session.unwrap_or("none"),
             log_path.display()
@@ -874,9 +874,7 @@ fn reconcile_version_skew(socket_path: &Path) {
         return;
     }
 
-    eprintln!(
-        "phux: the running server is {theirs}, this binary is {ours} — upgrading it in place"
-    );
+    info!("the running server is {theirs}, this binary is {ours} — upgrading it in place");
     match super::upgrade::request_upgrade(socket_path) {
         Ok(super::upgrade::UpgradeAck::Upgrading) => {
             // Wait for the re-exec'd server so the caller's connect does not race it.
@@ -892,10 +890,10 @@ fn reconcile_version_skew(socket_path: &Path) {
             super::upgrade::UpgradeAck::Refused(message)
             | super::upgrade::UpgradeAck::Unexpected(message),
         ) => {
-            eprintln!("phux: the server declined the upgrade ({message}); continuing on {theirs}");
+            warn!("the server declined the upgrade ({message}); continuing on {theirs}");
         }
         Err(err) => {
-            eprintln!("phux: could not upgrade the running server ({err}); continuing on {theirs}");
+            warn!("could not upgrade the running server ({err}); continuing on {theirs}");
         }
     }
 }
@@ -1052,7 +1050,7 @@ mod tests {
             msg.contains("config.toml: 3:14: expected `=` after key"),
             "{msg}"
         );
-        assert!(msg.contains("run: phux config check"), "{msg}");
+        assert!(msg.contains("run `phux config check`"), "{msg}");
     }
 
     /// The startup line carries pid, version, and socket and passes the default

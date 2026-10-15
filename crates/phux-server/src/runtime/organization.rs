@@ -13,6 +13,7 @@
 //! signals a lost process group after rechecking its identity. Both report
 //! the real outcome as `ActivationChanged`.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use phux_core::{Effect, Op, Refusal, Reply, ResourceKind};
@@ -134,12 +135,19 @@ fn mutate(
     answer
 }
 
-/// `SESSION_KILL`: every member with an engine here closes through the
-/// legacy kill's committed teardown (hangup, the grace, then kill), then the
-/// kill commits under the caller's operation, removing what remains,
-/// terminating any orphan it still records, and deleting the session. One
-/// lock holds both, so nothing joins the session between them. The receipt
-/// counts the members the kill found; a replay answers without the count.
+/// `SESSION_KILL`: the kill is written to the organization store first. Only
+/// a store that accepts it closes every member with an engine here, through
+/// the legacy kill's teardown (hangup, the grace, then kill), and only then
+/// does memory mirror the transition. A store refusal therefore leaves
+/// engines, announcements, and records untouched (`STORE_FAILURE`: nothing
+/// changed, and the same operation may be retried). One lock holds the
+/// sequence, so nothing joins the session between the commit and the closes.
+/// The receipt counts the members the kill found; a replay answers without
+/// the count and without closing again.
+#[allow(
+    clippy::too_many_lines,
+    reason = "persist the kill, close engines, then mirror, in one lock"
+)]
 fn session_kill(
     state: &SharedState,
     client_id: ClientId,
@@ -150,65 +158,92 @@ fn session_kill(
     let operation = ow::core_operation(operation);
     let key = ow::core_session_key(session);
     let (closed, committed) = state.with_mut(|s| {
-        let mut closed = None;
         let mut members = None;
+        let mut live = Vec::new();
+        let mut member_keys = Vec::new();
         if s.org().receipt(&operation).is_none() {
             let Some(record) = s.org().session(&key) else {
                 return (None, Err(Refusal::NotFound));
             };
-            if key == s.org().authority().inbox_session {
+            if key == s.org().authority().intake_session() {
                 return (
                     None,
                     Err(Refusal::InvalidArgument {
                         field: "session",
-                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                        reason: "the designated intake session cannot be deleted".to_owned(),
                     }),
                 );
             }
             members = Some(u32::try_from(record.members.len()).unwrap_or(u32::MAX));
-            let live: Vec<_> = record
+            member_keys = record.members.clone();
+            live = record
                 .members
                 .iter()
                 .filter_map(|member| s.registry().resource_id(member))
                 .filter(|id| s.resource_handle(*id).is_some())
                 .collect();
-            closed = Some(super::committed_close::commit_close(
-                s,
-                &live,
-                phux_protocol::wire::frame::CloseReason::Killed,
-                crate::state::CloseAttribution {
-                    actor: Some(client_id),
-                    operation_id: None,
-                },
-            ));
         }
+        // Engines this kill will close. Their `pane_closed` records are
+        // journaled before the kill's own events, so the stored journal
+        // position counts them. A `Terminate` for one of them would signal
+        // the group again after the teardown, so those effects are dropped.
+        let closing = s.resources_closing_with(&live);
+        let leading = u64::try_from(closing.len()).unwrap_or(u64::MAX);
+        let closing_keys: HashSet<_> = closing
+            .iter()
+            .filter_map(|id| s.registry().resource_key(*id))
+            .collect();
         let actor = s.actor_for(client_id);
         let command = phux_core::Command {
             operation,
             op: Op::SessionKill { session: key },
         };
-        let committed = s
-            .commit_command_from(&command, &actor, Some(client_id))
-            .map(|commit| {
-                let answer = match (answer(s, &commit.applied), members) {
-                    (CommandResult::OkWith(CommandValue::Committed(receipt)), Some(_)) => {
-                        CommandResult::OkWith(CommandValue::Committed(Box::new(
-                            receipt.with_members(members),
-                        )))
-                    }
-                    (answer, _) => answer,
-                };
-                (answer, commit.applied.effects)
-            });
-        if let Some(closed) = closed.as_mut() {
-            let detached: Vec<_> = s
-                .take_killed_sessions()
-                .into_iter()
-                .flat_map(|session| s.attached_clients_in_session(session))
-                .collect();
-            closed.extend_killed_clients(detached);
+        let persisted = match s.persist_command_from(&command, &actor, leading) {
+            Ok(persisted) => persisted,
+            Err(refusal) => return (None, Err(refusal)),
+        };
+        if !persisted.stored() {
+            let commit = s.mirror_persisted(persisted, &actor, Some(client_id));
+            let answer = answer(s, &commit.applied);
+            return (None, Ok((answer, commit.applied.effects)));
         }
-        (closed, committed)
+        // The store has the kill and memory still names the engines. Do not
+        // let the close write the members again: that transition would put
+        // back rows this kill already deleted.
+        s.suppress_retirement(&member_keys);
+        let mut closed = super::committed_close::commit_close(
+            s,
+            &live,
+            phux_protocol::wire::frame::CloseReason::Killed,
+            crate::state::CloseAttribution {
+                actor: Some(client_id),
+                operation_id: None,
+            },
+        );
+        s.clear_retirement_suppression();
+        let commit = s.mirror_persisted(persisted, &actor, Some(client_id));
+        let detached: Vec<_> = s
+            .take_killed_sessions()
+            .into_iter()
+            .flat_map(|session| s.attached_clients_in_session(session))
+            .collect();
+        closed.extend_killed_clients(detached);
+        let answer = match (answer(s, &commit.applied), members) {
+            (CommandResult::OkWith(CommandValue::Committed(receipt)), Some(_)) => {
+                CommandResult::OkWith(CommandValue::Committed(Box::new(
+                    receipt.with_members(members),
+                )))
+            }
+            (answer, _) => answer,
+        };
+        let mut effects = commit.applied.effects;
+        effects.retain(|effect| {
+            !matches!(
+                effect,
+                Effect::Terminate { resource, .. } if closing_keys.contains(resource)
+            )
+        });
+        (Some(closed), Ok((answer, effects)))
     });
     if let Some(closed) = closed {
         super::committed_close::announce(state, closed);
@@ -778,7 +813,7 @@ fn arrangement_get(s: &ServerState, key: &phux_protocol::ids::ArrangementKey) ->
 /// caller may inventory, in session-key order, each followed by its members
 /// in resource-key order. `cursor` is the key of the last record the previous
 /// page emitted; this page resumes strictly after that key. Totals count
-/// every matching record the caller may inventory; the Inbox designation
+/// every matching record the caller may inventory; the Intake designation
 /// needs Global.
 fn organization_page(
     s: &mut ServerState,
@@ -787,14 +822,14 @@ fn organization_page(
     page_size: u32,
     cursor: Option<&[u8]>,
 ) -> CommandResult {
-    let inbox = s.org().authority().inbox_session;
+    let intake = s.org().authority().intake_session();
     let selected: Vec<phux_core::SessionKey> = match filter {
         OrgFilter::All => s.org().sessions().map(|r| r.key).collect(),
         OrgFilter::Session(key) => vec![ow::core_session_key(&key)],
         OrgFilter::Intake => s
             .org()
             .sessions()
-            .filter(|r| r.key == inbox || r.awaiting_organization)
+            .filter(|r| r.key == intake || r.awaiting_organization)
             .map(|r| r.key)
             .collect(),
         _ => {
@@ -902,9 +937,9 @@ fn organization_page(
     };
     let head = s.journal_head();
     let page = OrganizationPage::new(authority, phux_protocol::ids::Revision::new(head), head)
-        .with_inbox(
+        .with_intake(
             crate::policy::filter::admits_global(s, client, Verb::Inventory)
-                .then(|| ow::session_key(inbox))
+                .then(|| ow::session_key(intake))
                 .flatten(),
         )
         .with_sessions(sessions)
@@ -1126,6 +1161,85 @@ mod tests {
                 handle(&state, CLIENT, inbox, &root),
                 CommandResult::Refused(WireRefusal::InvalidArgument { .. })
             ));
+        });
+    }
+
+    /// A store that refuses the kill must leave the live engine and the
+    /// records in place: `STORE_FAILURE` means nothing changed, and the same
+    /// operation may be retried.
+    #[test]
+    fn session_kill_store_failure_closes_nothing() {
+        use std::sync::atomic::Ordering;
+
+        use crate::org_store::MemOrgStore;
+
+        run(async {
+            let state = SharedState::new();
+            let root = CancellationToken::new();
+            let receipt = committed(handle(
+                &state,
+                CLIENT,
+                Command::SessionCreate {
+                    operation: op(1),
+                    name: "work".to_owned(),
+                    lifetime: SessionLifetime::Persistent,
+                    attrs: Vec::new(),
+                    launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
+                },
+                &root,
+            ));
+            let session = receipt.session.expect("created session");
+            let wire = receipt.target.expect("a launched engine").resource;
+            let core = state
+                .with(|s| s.terminal_from_wire(&wire))
+                .expect("live core id");
+            assert!(
+                state.with(|s| s.resource_handle(core).is_some()),
+                "the launch registered an engine"
+            );
+            let head = state.with(ServerState::journal_head);
+
+            let store = MemOrgStore::default();
+            let fail = store.fail_commits();
+            state.with_mut(|s| s.set_org_store(Box::new(store)));
+            fail.store(true, Ordering::Relaxed);
+
+            let kill = Command::SessionKill {
+                operation: op(2),
+                session,
+            };
+            assert!(matches!(
+                handle(&state, CLIENT, kill.clone(), &root),
+                CommandResult::Refused(WireRefusal::StoreFailure { .. })
+            ));
+            assert!(
+                state.with(|s| s.resource_handle(core).is_some()),
+                "a refused kill does not close the engine"
+            );
+            assert!(state.with(|s| s.registry().record(core).is_some()));
+            assert_eq!(
+                page(&state, OrgFilter::Session(session)).sessions.len(),
+                1,
+                "the session is still listed"
+            );
+            assert_eq!(
+                state.with(ServerState::journal_head),
+                head,
+                "a refused kill journals nothing"
+            );
+
+            fail.store(false, Ordering::Relaxed);
+            let killed = committed(handle(&state, CLIENT, kill, &root));
+            assert_eq!(killed.members, Some(1));
+            assert!(
+                page(&state, OrgFilter::Session(session))
+                    .sessions
+                    .is_empty()
+            );
+            assert!(
+                state.with(|s| s.resource_handle(core).is_none()),
+                "a committed kill closes the engine"
+            );
         });
     }
 

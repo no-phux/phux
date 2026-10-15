@@ -5,9 +5,51 @@
 # Existing app installation rolls back on failure.
 set -eu
 
+# BEGIN shared CLI output
+#!/bin/sh
+# Human status only. Source locally or embed in standalone installers with
+# sync-install-resolver.sh. Keep data, help, and child-tool output untouched.
+
+phux_color_enabled() {
+  [ -z "${NO_COLOR:-}" ] || return 1
+  [ "${TERM:-}" != dumb ] || return 1
+  case "${CLICOLOR_FORCE:-}" in ''|0) ;; *) return 0 ;; esac
+  [ "${CLICOLOR:-}" != 0 ] || return 1
+  [ -t 2 ]
+}
+
+# A subshell keeps rendering variables out of the caller's namespace. printf
+# always uses a fixed format: percent signs and backslashes in messages are data.
+phux_message() (
+  phux_label="$1"
+  shift
+  if phux_color_enabled; then
+    case "$phux_label" in
+      error) phux_style=31 ;;
+      warn) phux_style=33 ;;
+      ok) phux_style=32 ;;
+      *) phux_style=36 ;;
+    esac
+    printf '\033[1mphux\033[0m: \033[%sm%s\033[0m: %s\n' "$phux_style" "$phux_label" "$*" >&2
+  else
+    printf 'phux: %s: %s\n' "$phux_label" "$*" >&2
+  fi
+)
+
+phux_error() { phux_message error "$@"; }
+phux_warn() { phux_message warn "$@"; }
+phux_info() { phux_message info "$@"; }
+phux_ok() { phux_message ok "$@"; }
+phux_hint() {
+  printf '%s\n' "$*" | while IFS= read -r phux_line; do
+    printf '  hint: %s\n' "${phux_line#"${phux_line%%[![:space:]]*}"}" >&2
+  done
+}
+# END shared CLI output
+
 usage() {
   cat <<'EOF'
-Usage: install-desktop.sh [--version desktop-vX.Y.Z] [options]
+Usage: install-desktop.sh [--channel stable|latest|next] [options]
 
 Installs the latest stable desktop client for Apple-silicon macOS. Installs the
 phux CLI first if none is found; never upgrades an existing CLI or stops a
@@ -15,7 +57,9 @@ server. Releases are ad-hoc
 signed, not Apple-notarized. The installer removes quarantine after
 checksum/signature checks.
 
-  --version <tag|X.Y.Z>         Pin a desktop version (default: newest published).
+  --channel <stable|latest|next> Stable by default; latest is a stable alias.
+  --version <tag|X.Y.Z>         Pin stable, or next.<40-character SHA> with --channel next.
+  --revision <SHA>             Pin immutable next artifact (requires --channel next).
   --applications-dir <dir>      Default: /Applications if writable, else ~/Applications.
   --bin-dir <dir>               phux-desktop launcher (default: ~/.local/bin).
   --dry-run                    Print release URLs and destination without installing.
@@ -24,7 +68,7 @@ EOF
 }
 
 die() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -56,8 +100,8 @@ write_cli_launcher() {
     printf '%s\n' '# through Launch Services so Dock identity stays this copy.'
     printf 'APP=%s\n' "$(shell_quote "$app_path")"
     printf '%s\n' 'if [ ! -d "$APP" ] || [ ! -f "$APP/Contents/Info.plist" ]; then'
-    printf '%s\n' '  echo "error: Phux is not installed at $APP" >&2'
-    printf '%s\n' '  echo "remedy: curl -fsSL https://phux.sh/install-desktop | sh" >&2'
+    printf '%s\n' '  echo "phux: error: Phux is not installed at $APP" >&2'
+    printf '%s\n' '  echo "  hint: curl -fsSL https://phux.sh/install-desktop | sh" >&2'
     printf '%s\n' '  exit 1'
     printf '%s\n' 'fi'
     printf '%s\n' 'exec open "$APP"'
@@ -76,12 +120,26 @@ write_cli_launcher() {
 }
 
 version=""
+revision=""
+channel="${PHUX_CHANNEL:-stable}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
 bin_dir="${PHUX_DESKTOP_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
 dry_run=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --channel)
+      [ "$#" -ge 2 ] || die "--channel requires a value"
+      channel="$2"
+      shift 2
+      ;;
+    --revision)
+      [ "$#" -ge 2 ] || die "--revision requires a value"
+      revision="$2"
+      printf '%s\n' "$revision" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$' \
+        || die "--revision must be a 40-character lowercase SHA"
+      shift 2
+      ;;
     --version)
       [ "$#" -ge 2 ] || die "--version requires a value"
       [ -n "$2" ] || die "--version requires a nonempty release tag"
@@ -390,15 +448,55 @@ esac
 os_version="$(/usr/bin/sw_vers -productVersion)"
 [ "${os_version%%.*}" -ge 27 ] || die "Phux desktop requires macOS 27 or later"
 
-if [ -z "$version" ]; then
-  version="$(resolve_latest_version desktop-v stable)"
-fi
-case "$version" in
-  desktop-v*) semver="${version#desktop-v}" ;;
-  *) semver="$version"; version="desktop-v$semver" ;;
+case "$channel" in
+  latest) channel=stable ;;
+  stable|next) ;;
+  *) die "--channel must be stable, latest, or next" ;;
 esac
-valid_release_tag "$version" desktop-v stable \
-  || die "--version must be desktop-vX.Y.Z (got ${version})"
+[ -z "$revision" ] || {
+  [ "$channel" = next ] || die "--revision requires --channel next"
+  [ -z "$version" ] || die "--revision and --version cannot be combined"
+  version="next.$revision"
+}
+next_sha=""
+semver=""
+if [ "$channel" = next ]; then
+  if [ -z "$version" ]; then
+    # Native macOS JSON parsing rejects malformed/nested spoofed fields. Bound
+    # the download just like release discovery; never evaluate pointer content.
+    pointer_dir="$(mktemp -d)"
+    trap 'rm -rf "$pointer_dir"' 0
+    pointer="$pointer_dir/desktop-channel.json"
+    fetch_release_page "https://github.com/no-phux/phux/releases/download/next/desktop-channel.json" "$pointer" \
+      || die "could not download the Desktop next channel pointer"
+    [ "$(wc -c < "$pointer")" -le 1048576 ] || die "desktop channel pointer exceeds 1048576 bytes"
+    [ "$(/usr/bin/plutil -extract schema_version raw -o - "$pointer")" = 1 ] \
+      && [ "$(/usr/bin/plutil -extract product raw -o - "$pointer")" = desktop ] \
+      && [ "$(/usr/bin/plutil -extract channel raw -o - "$pointer")" = next ] \
+      || die "invalid Desktop next channel pointer"
+    next_sha="$(/usr/bin/plutil -extract sha raw -o - "$pointer")" || die "desktop pointer named no SHA"
+    semver="$(/usr/bin/plutil -extract version raw -o - "$pointer")" || die "desktop pointer named no version"
+    valid_release_tag "desktop-v$semver" desktop-v stable || die "invalid desktop pointer version"
+    version="next.$next_sha"
+    rm -rf "$pointer_dir"
+    trap - 0
+  else
+    next_sha="${version#next.}"
+  fi
+  printf '%s\n' "$next_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$' \
+    && [ "$version" = "next.$next_sha" ] \
+    || die "--version for next must be next.<40-character lowercase SHA>"
+else
+  if [ -z "$version" ]; then
+    version="$(resolve_latest_version desktop-v stable)"
+  fi
+  case "$version" in
+    desktop-v*) semver="${version#desktop-v}" ;;
+    *) semver="$version"; version="desktop-v$semver" ;;
+  esac
+  valid_release_tag "$version" desktop-v stable \
+    || die "--version must be desktop-vX.Y.Z (got ${version})"
+fi
 
 if [ -z "$applications_dir" ]; then
   if [ -d "/Applications" ] && [ -w "/Applications" ]; then
@@ -417,9 +515,16 @@ base_url="https://github.com/no-phux/phux/releases/download/${version}"
 zip_name="phux-desktop-${semver}-macos-arm64.zip"
 sums_url="${base_url}/SHA256SUMS"
 zip_url="${base_url}/${zip_name}"
+if [ "$channel" = next ]; then
+  base_url="https://github.com/no-phux/phux/releases/download/next"
+  zip_name="phux-desktop-next.${next_sha}-macos-arm64.zip"
+  zip_url="${base_url}/${zip_name}"
+  sums_url="${zip_url}.sha256"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
   echo "tag: ${version}"
+  echo "channel: ${channel}"
   echo "zip_url: ${zip_url}"
   echo "sha256_url: ${sums_url}"
   echo "applications_dir: ${applications_dir}"
@@ -433,11 +538,11 @@ done
 
 if command -v curl >/dev/null 2>&1; then
   download() {
-    curl -fsSL "$1" -o "$2"
+    curl -fsSL --connect-timeout 10 --max-time 300 "$1" -o "$2"
   }
 elif command -v wget >/dev/null 2>&1; then
   download() {
-    wget -q -O "$2" "$1"
+    wget -q --timeout=30 --tries=2 -O "$2" "$1"
   }
 else
   die "curl or wget is required to download release artifacts"
@@ -453,7 +558,7 @@ find_cli() {
 if ! find_cli; then
   # The app needs a CLI it can find from the Dock: install the standard one
   # into ~/.local/bin rather than refusing.
-  echo "phux CLI not found; installing it first"
+  phux_info "phux CLI not found; installing it first"
   cli_installer="$(mktemp)"
   if ! download https://phux.sh/install "$cli_installer" \
     || ! PHUX_INSTALL_DIR="${HOME}/.local/bin" sh "$cli_installer"; then
@@ -479,7 +584,7 @@ rollback_publish() {
   fi
   if [ -e "${publish_dir}/backup/Phux.app" ] || [ -L "${publish_dir}/backup/Phux.app" ]; then
     mv -f "${publish_dir}/backup/Phux.app" "${applications_dir}/Phux.app" || {
-      echo "error: rollback failed; old app preserved at ${publish_dir}/backup/Phux.app" >&2
+      phux_error "rollback failed; old app preserved at ${publish_dir}/backup/Phux.app"
       publish_dir=""
       return 1
     }
@@ -559,7 +664,23 @@ codesign --verify --deep --strict "${extract_dir}/Phux.app" \
 identity="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${extract_dir}/Phux.app/Contents/Info.plist")"
 [ "$identity" = dev.phux.desktop ] || die "archive is not the Phux desktop app"
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopVersion' "${extract_dir}/Phux.app/Contents/Info.plist")"
-[ "$bundle_version" = "$semver" ] || die "desktop bundle version does not match ${version}"
+if [ -n "$semver" ]; then
+  [ "$bundle_version" = "$semver" ] || die "desktop bundle version does not match ${version}"
+else
+  valid_release_tag "desktop-v$bundle_version" desktop-v stable || die "invalid desktop bundle version"
+fi
+if [ "$channel" = next ]; then
+  bundle_sha="$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "${extract_dir}/Phux.app/Contents/Info.plist")"
+  [ "$bundle_sha" = "$next_sha" ] || die "desktop bundle revision does not match ${version}"
+  bundle_channel="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopChannel' "${extract_dir}/Phux.app/Contents/Info.plist")"
+  [ "$bundle_channel" = next ] || die "desktop bundle is not a next-channel build"
+else
+  # Older stable bundles predate channel metadata; an explicit Next marker
+  # must never masquerade as a Stable channel switch.
+  bundle_channel="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopChannel' "${extract_dir}/Phux.app/Contents/Info.plist" 2>/dev/null || true)"
+  [ -z "$bundle_channel" ] || [ "$bundle_channel" = stable ] \
+    || die "desktop bundle is not a stable-channel build"
+fi
 
 mkdir -p "$applications_dir"
 lock_dir="${applications_dir}/.phux-desktop-install.lock"
@@ -600,12 +721,12 @@ publish_complete=1
 # the Homebrew cask performs.
 xattr -d com.apple.quarantine "$installed_path" 2>/dev/null || true
 
-echo "installed Phux ${version} to ${applications_dir}"
+phux_ok "installed Phux ${version} to ${applications_dir}"
 installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux.app"
 if write_cli_launcher "$installed_app"; then
   launcher_path="$(CDPATH='' cd "$bin_dir" && pwd -P)/phux-desktop"
   echo "launcher: ${launcher_path}"
 else
-  echo "warning: could not install phux-desktop launcher; open the app directly" >&2
+  phux_warn "could not install phux-desktop launcher; open the app directly"
 fi
 printf 'next: open %s\n' "$(shell_quote "$installed_app")"

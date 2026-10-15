@@ -34,6 +34,8 @@
 #   1   drift, or the generator could not run
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -49,8 +51,8 @@ FIX="python3 ${GENERATOR} ${SOURCE} ${GENERATED}"
 
 for path in "$GENERATOR" "$SOURCE" "$GENERATED"; do
     if [ ! -f "$path" ]; then
-        echo "error: missing ${path}" >&2
-        echo "  the generated-font gate expects generator, source, and artifact to travel together." >&2
+        phux_error "missing ${path}"
+        phux_hint "the generated-font gate expects generator, source, and artifact to travel together."
         exit 1
     fi
 done
@@ -59,8 +61,8 @@ if ! command -v python3 >/dev/null 2>&1; then
     # Hard failure, never a skip. A gate that quietly opts out when its
     # interpreter is absent is indistinguishable from the hole it replaced.
     # python3 is in the nix devshell (flake.nix) precisely so this runs.
-    echo "error: python3 not found on PATH; cannot verify ${GENERATED}" >&2
-    echo "  run inside the dev shell:  nix develop -c bash scripts/check-generated-font.sh" >&2
+    phux_error "python3 not found on PATH; cannot verify ${GENERATED}"
+    phux_hint "run inside the dev shell:  nix develop -c bash scripts/check-generated-font.sh"
     exit 1
 fi
 
@@ -69,28 +71,28 @@ trap 'rm -rf "$TMP"' EXIT
 regenerated="${TMP}/spleen_8x16.rs"
 
 if ! python3 "$GENERATOR" "$SOURCE" "$regenerated" >/dev/null; then
-    echo "error: ${GENERATOR} failed on ${SOURCE}" >&2
-    echo "  reproduce with:  ${FIX}" >&2
+    phux_error "${GENERATOR} failed on ${SOURCE}"
+    phux_hint "reproduce with:  ${FIX}"
     exit 1
 fi
 
 if cmp -s "$GENERATED" "$regenerated"; then
-    echo "generated font ok: ${GENERATED} matches ${SOURCE}"
+    phux_ok "generated font: ${GENERATED} matches ${SOURCE}"
     exit 0
 fi
 
-echo "error: ${GENERATED} does not match a fresh regeneration from ${SOURCE}" >&2
+phux_error "${GENERATED} does not match a fresh regeneration from ${SOURCE}"
 echo "" >&2
-echo "  Either the vendored face was bumped without regenerating, or the" >&2
-echo "  generated table was edited by hand. It is generated -- do not edit it." >&2
+phux_hint "Either the vendored face was bumped without regenerating, or the"
+phux_hint "generated table was edited by hand. It is generated -- do not edit it."
 echo "" >&2
-echo "  Fix with:" >&2
-echo "    ${FIX}" >&2
+phux_hint "Fix with:"
+phux_hint "  ${FIX}"
 echo "" >&2
-echo "  then commit the regenerated file alongside the .bdf." >&2
+phux_hint "then commit the regenerated file alongside the .bdf."
 echo "" >&2
 # The table is ~112 KB, so an unbounded diff would bury the instructions
 # above under thousands of glyph rows. Show enough to identify the change.
-echo "  First 40 differing lines (committed '<' vs regenerated '>'):" >&2
+phux_hint "First 40 differing lines (committed '<' vs regenerated '>'):"
 diff "$GENERATED" "$regenerated" | head -40 >&2 || true
 exit 1

@@ -54,7 +54,7 @@ const EXIT_WAIT_TIMEOUT: i32 = 124;
 
 /// Shared `target` description for the agent tools.
 const TARGET_DESC: &str = "Target selector resolving to one pane \
-    (`@N`, `host/@N`, `session:window.pane`, `#tag`, or `.`). Omit for the \
+    (`@N`, `host/@N`, `session:group.pane`, `#tag`, or `.`). Omit for the \
     focused pane.";
 
 /// A bounded string `target` property carrying `description`.
@@ -716,7 +716,7 @@ const LOG_MAX_TAIL: u64 = 10_000;
 
 /// Shared `target` description for the session verbs.
 const SESSION_TARGET_DESC: &str = "Target selector: the pane hosting the agent (`@N`, `%name`, \
-    `session:window.pane`) resolves to its unique live AgentSession child; an AgentSession \
+    `session:group.pane`) resolves to its unique live AgentSession child; an AgentSession \
     resource id (`@N`) names itself. Required.";
 
 fn session_open_schema() -> Value {

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { docsHref } from "../../lib/site";
 import {
   CHAPTERS,
+  advanceTour,
   frameAt,
+  type Playback,
   type ClientId,
   type Frame,
   type NodeId,
@@ -329,23 +331,37 @@ function useReducedMotion() {
   return reduced;
 }
 
-export default function Tour() {
+// Quiet context, not extra actors in the story. These hosts never claim live status.
+function DistantHosts() {
+  return <div className="tour-distance" aria-hidden="true">
+    <svg viewBox="0 0 880 480" preserveAspectRatio="none">
+      <path d="M580 240 C750 240 580 42 770 42 M580 240 C660 240 640 440 770 440 M580 240 C480 240 560 410 470 410" />
+    </svg>
+    {["relay / iad", "runner / fra", "lab / sea"].map((host, index) => (
+      <div className={`tour-distant-host is-${index}`} key={host}>
+        <span>{host}</span><i /><i /><i />
+      </div>
+    ))}
+  </div>;
+}
+
+export default function Tour({ prepare }: { prepare?: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
   const [visible, setVisible] = useState(false);
   const [playing, setPlaying] = useState(true);
   // Server render and reduced motion show each chapter's settled state.
-  const [position, setPosition] = useState({ chapter: 0, time: Infinity });
+  const [position, setPosition] = useState<Playback>({ chapter: 0, time: Infinity, pace: "quick" });
   const clock = useRef(position);
   const chapter = CHAPTERS[position.chapter]!;
 
-  function show(next: { chapter: number; time: number }) {
+  function show(next: Playback) {
     clock.current = next;
     setPosition(next);
   }
 
   useEffect(() => {
-    show({ chapter: clock.current.chapter, time: reduced ? Infinity : 0 });
+    show({ ...clock.current, time: reduced ? Infinity : 0 });
   }, [reduced]);
 
   useEffect(() => {
@@ -362,13 +378,7 @@ export default function Tour() {
       // Hidden-tab time is not story time; resume where the viewer left off.
       const delta = Math.min((now - previous) / 1000, 0.1);
       previous = now;
-      if (!document.hidden) {
-        const { chapter, time } = clock.current;
-        const next = time + delta;
-        show(next < CHAPTERS[chapter]!.seconds
-          ? { chapter, time: next }
-          : { chapter: (chapter + 1) % CHAPTERS.length, time: 0 });
-      }
+      if (!document.hidden) show(advanceTour(clock.current, delta));
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -377,17 +387,13 @@ export default function Tour() {
 
   const frame = frameAt(position.chapter, position.time);
   const progress = Math.min(1, position.time / chapter.seconds);
-  const local = (["terminal", "desktop", "phone"] as const).filter((client) => edgeView(frame, client) === "attached").length;
 
   return (
-    <div ref={root} className="tour">
+    <div ref={root} className="tour" data-pace={position.pace}>
       <div className="tour-frame terminal-surface">
-        <div className="tour-bar">
-          <span><b>studio</b> <i>/</i> api</span>
-          <span className="tour-bar-count">{local} {local === 1 ? "view" : "views"} on studio{frame.remote && " · 1 on devbox"}</span>
-        </div>
-        <div className="tour-canvas" aria-hidden="true">
-          <div className="tour-stage">
+        <div className="tour-canvas" onPointerEnter={prepare}>
+          <div className="tour-stage" aria-hidden="true">
+            <DistantHosts />
             <Edges layout={WIDE} frame={frame} className="is-wide" />
             <Edges layout={NARROW} frame={frame} className="is-narrow" />
             <Host frame={frame} id="server" />
@@ -398,6 +404,15 @@ export default function Tour() {
             <Edges layout={WIDE} frame={frame} className="is-wide" signals />
             <Edges layout={NARROW} frame={frame} className="is-narrow" signals />
           </div>
+          <a className="tour-entry" href="/embed" data-demo-launch onFocus={prepare} aria-label="Open terminal demo">
+            <span className="tour-invitation">
+              <span className="tour-invitation-copy">
+                <span className="tour-invitation-glyph" aria-hidden="true">↳</span>
+                <b>This one is real.</b>
+                <span className="tour-invitation-cta">Open a shell<span aria-hidden="true"> ↗</span></span>
+              </span>
+            </span>
+          </a>
         </div>
         <div className="tour-controls">
           <div className="tour-chapters" role="group" aria-label="Tour chapters">
@@ -408,7 +423,7 @@ export default function Tour() {
                 aria-pressed={index === position.chapter}
                 style={{ "--progress": index === position.chapter ? progress : 0 } as CSSProperties}
                 onClick={() => {
-                  show({ chapter: index, time: reduced ? Infinity : 0 });
+                  show({ chapter: index, time: reduced ? Infinity : 0, pace: "walkthrough" });
                   setPlaying(true);
                 }}
               >
@@ -434,7 +449,10 @@ export default function Tour() {
         <strong>{chapter.title}</strong> {chapter.text}{" "}
         <a href={docsHref(chapter.href)}>Learn more<span className="tour-sr"> about {chapter.label.toLowerCase()}</span></a>
       </p>
-      <p className="tour-note">Scripted illustration, not a live session. The iPhone app is in TestFlight beta.</p>
+      <p className="tour-note">
+        {!reduced && <span className="tour-pace">{position.pace === "quick" ? "Quick pass · walkthrough next. " : "Walkthrough · select a chapter to replay. "}</span>}
+        Scripted illustration, not a live session. The iPhone app is in TestFlight beta.
+      </p>
     </div>
   );
 }

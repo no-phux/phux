@@ -90,7 +90,7 @@ fn event_doc(name: &str) -> &'static str {
         }
         WORKTREE_CREATED => {
             "`phux worktree new` created a checkout, before its session \
-             starts (ADR-0167). The CLI fires it, not the server, and \
+             starts (ADR-0168). The CLI fires it, not the server, and \
              waits for each hook; `repo` is the primary checkout."
         }
         other => unreachable!("no doc prose for hook event `{other}`"),

@@ -1,5 +1,116 @@
 # Changelog
 
+## [0.9.1](https://github.com/no-phux/phux/compare/desktop-v0.9.0...desktop-v0.9.1) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
+## [0.9.0](https://github.com/no-phux/phux/compare/desktop-v0.8.6...desktop-v0.9.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** switch the active host in place and place spawned panes sooner ([#1379](https://github.com/no-phux/phux/issues/1379)) ([dd1d231](https://github.com/no-phux/phux/commit/dd1d23164f2e857c673b42ea9e6fe158bbcfb733))
+
+## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** use sparse damage for pane redraws ([#1372](https://github.com/no-phux/phux/issues/1372)) ([9856e15](https://github.com/no-phux/phux/commit/9856e15315a433590c81ce3127f6856701acd516))
+
+## [0.8.5](https://github.com/no-phux/phux/compare/desktop-v0.8.4...desktop-v0.8.5) (2026-10-14)
+
+
+### Performance
+
+* **runtime:** redial a settled session before sleeping ([#1368](https://github.com/no-phux/phux/issues/1368)) ([cfd65d6](https://github.com/no-phux/phux/commit/cfd65d610cabcb81ad99f216febc775fd4a1e84a))
+
+## [0.8.4](https://github.com/no-phux/phux/compare/desktop-v0.8.3...desktop-v0.8.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** improve terminal rendering and quiet the sidebar ([#1363](https://github.com/no-phux/phux/issues/1363)) ([305b1ef](https://github.com/no-phux/phux/commit/305b1efca31ac1252afe50bfbf413430cc07409f))
+
+## [0.8.3](https://github.com/no-phux/phux/compare/desktop-v0.8.2...desktop-v0.8.3) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** keep the sidebar and titlebar across terminal frames ([#1361](https://github.com/no-phux/phux/issues/1361)) ([e0d0780](https://github.com/no-phux/phux/commit/e0d07800ff49c972cf4556411fd424a1d47692a3))
+
+## [0.8.2](https://github.com/no-phux/phux/compare/desktop-v0.8.1...desktop-v0.8.2) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** cache pane views and paint ASCII as lines ([#1357](https://github.com/no-phux/phux/issues/1357)) ([ea2b689](https://github.com/no-phux/phux/commit/ea2b68925e98ebbd1776e836b8b13f0d2b803480))
+
+## [0.8.1](https://github.com/no-phux/phux/compare/desktop-v0.8.0...desktop-v0.8.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** bump rustls to 0.23.46 for RUSTSEC-2026-0346..0349 ([#1352](https://github.com/no-phux/phux/issues/1352)) ([5b6738c](https://github.com/no-phux/phux/commit/5b6738cdeebce780213336a786906aa4d7b23d43))
+
+
+### Performance
+
+* **desktop:** stop rebuilding the window on terminal output ([#1353](https://github.com/no-phux/phux/issues/1353)) ([79eeb8d](https://github.com/no-phux/phux/commit/79eeb8d8f2597d9f4ccd61b69866b316a7a5e03e))
+
+## [0.8.0](https://github.com/no-phux/phux/compare/desktop-v0.7.0...desktop-v0.8.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** remember recent project folders ([#1350](https://github.com/no-phux/phux/issues/1350)) ([0944244](https://github.com/no-phux/phux/commit/0944244005aedbab6328c2666aaab8f94cea292d))
+
+## [0.7.0](https://github.com/no-phux/phux/compare/desktop-v0.6.1...desktop-v0.7.0) (2026-10-14)
+
+
+### Features
+
+* **organization:** distinguish Intake from the attention Inbox ([#1344](https://github.com/no-phux/phux/issues/1344)) ([d18a547](https://github.com/no-phux/phux/commit/d18a547fb709ea08c4b6a56772bb4d0c21e3185c))
+
+## [0.6.1](https://github.com/no-phux/phux/compare/desktop-v0.6.0...desktop-v0.6.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** explain a missing Next pointer instead of a curl 404 ([611c041](https://github.com/no-phux/phux/commit/611c0415a5a4686f5087b1c402c902316aaa6c9c))
+
+## [0.6.0](https://github.com/no-phux/phux/compare/desktop-v0.5.0...desktop-v0.6.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** give the Updates settings a real status surface ([b0992b0](https://github.com/no-phux/phux/commit/b0992b073aeb21456473790466b231c05c213f7e))
+* **desktop:** manage remote hosts from the sidebar ([393ab41](https://github.com/no-phux/phux/commit/393ab4187884b72a2b4c64884c8146e4ec793b7f))
+
+## [0.5.0](https://github.com/no-phux/phux/compare/desktop-v0.4.1...desktop-v0.5.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** open durable checkout projects ([#1332](https://github.com/no-phux/phux/issues/1332)) ([f2c14df](https://github.com/no-phux/phux/commit/f2c14df1ddec0009e408ca1bcfe4ad524a2ff884))
+
+## [0.4.1](https://github.com/no-phux/phux/compare/desktop-v0.4.0...desktop-v0.4.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* finish the 2026-10-13 landing seams (org store, import, upload lane, docs) ([#1318](https://github.com/no-phux/phux/issues/1318)) ([2aff3b7](https://github.com/no-phux/phux/commit/2aff3b7ddbc22ba56ac656d55fa437557f59dd10))
+
+## [0.4.0](https://github.com/no-phux/phux/compare/desktop-v0.3.2...desktop-v0.4.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** add automatic stable and next updates ([#1313](https://github.com/no-phux/phux/issues/1313)) ([e850563](https://github.com/no-phux/phux/commit/e8505635fd34adc7cb4e6e1e95598ab49380acbb))
+
 ## [0.3.2](https://github.com/no-phux/phux/compare/desktop-v0.3.1...desktop-v0.3.2) (2026-10-14)
 
 

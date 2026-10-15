@@ -50,6 +50,9 @@ pub struct SidebarSettings {
     pub width: u16,
     /// `[sidebar] position`, folded to the reservation's edge.
     pub edge: SidebarEdge,
+    /// `[sidebar] agents-share`: percent of the body the Agents panel keeps
+    /// whatever its population; `0` drops it.
+    pub agents_share: u8,
 }
 
 /// Everything the TUI derives from the on-disk config, loaded before any
@@ -189,6 +192,7 @@ impl TuiSettings {
                 enabled: false,
                 width: 0,
                 edge: SidebarEdge::Left,
+                agents_share: 0,
             },
             hosts: crate::attach::hosts::HostsSettings::disabled(),
             mouse_capture: true,
@@ -310,6 +314,7 @@ impl TuiSettings {
                 enabled: cfg.sidebar.enabled,
                 width: cfg.sidebar.width,
                 edge: sidebar_edge(cfg.sidebar.position),
+                agents_share: cfg.sidebar.agents_share,
             },
             hosts: crate::attach::hosts::HostsSettings::from_cfg(&cfg.sidebar),
             mouse_capture: cfg.defaults.mouse,
@@ -465,6 +470,17 @@ mod tests {
         }
     }
 
+    /// The row allocator's own default must track the schema default, or a
+    /// painter built without a live config (a test, a capture) would lay a
+    /// different line than the glass.
+    #[test]
+    fn agents_share_default_matches_the_schema() {
+        assert_eq!(
+            crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
+            phux_config::Config::default().sidebar.agents_share
+        );
+    }
+
     #[test]
     fn strict_load_reads_which_key_and_sidebar_knobs() {
         let (_dir, path) = config_file(
@@ -491,6 +507,7 @@ mod tests {
                 enabled: true,
                 width: 33,
                 edge: SidebarEdge::Right,
+                agents_share: 50,
             }
         );
         assert!(!new.mouse_capture);

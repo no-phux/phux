@@ -70,7 +70,8 @@ Herdr is an agent-workspace application. Its server owns the workspace model
 and projects panes and agent state to Herdr clients; its control API addresses
 that product model. phux stops its protocol vocabulary at resources,
 lifecycle, streams, events, and metadata. Terminal and AgentSession are resource
-kinds; sessions, windows, splits, and the attention inbox are client policy.
+kinds; sessions and their arrangements are typed server records, and splits,
+tabs, and the attention inbox are presented by each client.
 
 Choose Herdr for its cohesive agent workspace, supported-agent breadth, and
 plugin ecosystem. Choose phux for independent clients, harness-emitted

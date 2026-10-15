@@ -33,10 +33,22 @@ curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
 Apple silicon, macOS 27 or later. This installs `Phux.app` and installs the
-CLI first if it is missing. Rerun it to update the app; it never replaces an
-existing CLI or stops a running server. Releases are ad-hoc signed, not
+CLI first if it is missing, but never replaces an existing CLI or stops a
+running server. The app then updates itself: **Settings > Updates** checks in
+the background and installs a verified update with one click. Releases are ad-hoc signed, not
 Apple-notarized: the installer checks the checksum and signature, then clears
 quarantine. See the [desktop guide](./consumers/desktop.md).
+
+The desktop has its own canary on the same moving `next` prerelease:
+
+```sh
+curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next
+```
+
+It installs a verified green-`main` build and records the channel in the app;
+**Settings > Updates** switches back to Stable at any time. The desktop canary
+and the CLI canary are independent, so the app can follow `next` while the
+coordinator stays on numbered releases.
 
 ## Homebrew
 
@@ -151,19 +163,20 @@ tar -xzf "phux-${tag}-${target}.tar.gz"
 Put the extracted `phux` and `phux-mcp` on `PATH`. In `~/.local/bin`,
 `phux update` maintains them like an installer install.
 
-### Cockpit (native macOS)
+### Cockpit (frozen)
 
-Cockpit is the experimental native macOS client, released separately from
-the desktop app:
+The Zig Cockpit is not maintained ([ADR-0167](adr/0167-cockpit-is-frozen.md)).
+The [desktop app](#desktop-app-macos) is the native macOS client. The last
+published Cockpit release still installs:
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh
 phux cockpit
 ```
 
-Its in-app Check for Updates and `phux update` keep it current. The
-[Cockpit guide](./consumers/cockpit.md#install) covers the Homebrew cask,
-pinning, and channels.
+An already-installed copy can still check for updates. No new release is
+being cut. The [Cockpit guide](./consumers/cockpit.md#install) covers the
+Homebrew cask and pinning.
 
 ## `phux update` in detail
 

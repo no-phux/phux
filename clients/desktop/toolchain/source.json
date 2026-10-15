@@ -16,6 +16,7 @@
   },
   "patches": {
     "patches/0001-drawable-presented.patch": "e9b53eeadc5d47896d68e537fbc7e8de499972878dc4c47e8f260453cddb75a5",
-    "patches/0002-window-capture.patch": "3b6fab72887b91f5f7ebd5a9004e5541ef763ca75d208c8a82fc2452ee6ba5e0"
+    "patches/0002-window-capture.patch": "3b6fab72887b91f5f7ebd5a9004e5541ef763ca75d208c8a82fc2452ee6ba5e0",
+    "patches/0003-memory-font-fallback.patch": "22e8e84b03d8c544745bcab8b57e29283a658f78629334ff6aacda1fdd1ce144"
   }
 }

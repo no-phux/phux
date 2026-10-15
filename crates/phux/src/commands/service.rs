@@ -397,22 +397,22 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
     )
 }
 
-/// The deprecated export spelling a wrapper written before `phux archive`
+/// The removed export spelling a wrapper written before `phux archive`
 /// calls, and its replacement.
 const OLD_WRAPPER_SAVE: &str = "\"$phux\" workspace save";
 const WRAPPER_EXPORT: &str = "\"$phux\" archive export";
 
 /// Rewrite an installed restore wrapper's `workspace save` call to `archive
-/// export`; `None` when it has none. The old spelling keeps working through
-/// the hidden alias until this runs.
+/// export`; `None` when it has none. The binary no longer parses the old
+/// spelling, so an unpatched wrapper's save fails until this runs.
 pub(crate) fn modernize_wrapper(body: &str) -> Option<String> {
     body.contains(OLD_WRAPPER_SAVE)
         .then(|| body.replace(OLD_WRAPPER_SAVE, WRAPPER_EXPORT))
 }
 
 /// Patch the installed restore wrapper, if there is one, to the current
-/// export spelling; says so unless `quiet`. Never fatal: the old spelling
-/// still works.
+/// export spelling; says so unless `quiet`. Never fatal: a wrapper it cannot
+/// patch keeps running its server, only its save step fails.
 fn reconcile_wrapper(quiet: bool) {
     let wrapper = phux_server::telemetry::state_dir().join("service-wrapper.sh");
     let Ok(body) = std::fs::read_to_string(&wrapper) else {
@@ -427,10 +427,7 @@ fn reconcile_wrapper(quiet: bool) {
             wrapper.display()
         ),
         Ok(()) => {}
-        Err(err) => eprintln!(
-            "phux service: note: could not rewrite {}: {err}",
-            wrapper.display()
-        ),
+        Err(err) => warn!("service: could not rewrite {}: {err}", wrapper.display()),
     }
 }
 
@@ -737,7 +734,7 @@ fn install_hub_unit(manager: Manager, unit_path: &Path) -> LocalHub {
     }
     if let Err(err) = mark_adoption_pending(unit_path) {
         // Unit is written and armed; only the automatic hand-over is lost.
-        eprintln!("phux service: note: {err}");
+        warn!("service: {err}");
     }
     LocalHub::Installed
 }
@@ -921,8 +918,8 @@ fn insert_after_word(value: &str, word: &str, insert: &str) -> String {
 /// next login and what applying it now would cost.
 pub(crate) fn run_reconcile(print: bool) -> ExitCode {
     let Some(manager) = Manager::host() else {
-        eprintln!(
-            "phux service: no unit generator for this platform, so `phux service install`\n\
+        info!(
+            "service: no unit generator for this platform, so `phux service install`\n\
              never wrote a unit here. There is nothing to reconcile."
         );
         return ExitCode::FAILURE;
@@ -931,7 +928,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("phux service: {err}");
+            error!("service: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -944,10 +941,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Err(err) => {
-            eprintln!(
-                "phux service: could not read {}: {err}",
-                unit_path.display()
-            );
+            error!("service: could not read {}: {err}", unit_path.display());
             return ExitCode::FAILURE;
         }
     };
@@ -957,8 +951,8 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
     }
     match reconcile_unit(manager, &body) {
         Reconcile::Unrecognized(why) => {
-            eprintln!(
-                "phux service: {} was left alone — {why}.\n\
+            warn!(
+                "service: {} was left alone — {why}.\n\
                  \n\
                  Rewriting it would risk a unit the init system silently refuses to load, which\n\
                  is worse than the policy it carries now. Compare it against `phux service\n\
@@ -984,10 +978,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             if let Err(err) = std::fs::write(&unit_path, &patched) {
-                eprintln!(
-                    "phux service: could not write {}: {err}",
-                    unit_path.display()
-                );
+                error!("service: could not write {}: {err}", unit_path.display());
                 return ExitCode::FAILURE;
             }
             outln!("Rewrote the restart policy in {}.", unit_path.display());
@@ -1032,7 +1023,7 @@ fn report_policy_reach_with(
                  policy governs its next exit."
                 ),
                 Err(err) => {
-                    eprintln!("phux service: note: {err}");
+                    warn!("service: {err}");
                     outln!(
                         "The file is correct, but systemd is still holding the definition it loaded\n\
                          earlier. Run `systemctl --user daemon-reload` to pick this up; it stops\n\
@@ -1356,7 +1347,7 @@ pub(crate) fn run_install(
     ) {
         Ok(plan) => plan,
         Err(err) => {
-            eprintln!("phux service: {err}");
+            error!("service: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -1371,8 +1362,8 @@ pub(crate) fn run_install(
         // No generator: print the unit as a starting point (ADR-0055), but exit
         // non-zero because nothing was installed.
         out!("{}", dry_run_text(None, &plan));
-        eprintln!(
-            "\nphux service: no unit generator for this platform. Nothing was installed.\n\
+        info!(
+            "service: no unit generator for this platform. Nothing was installed.\n\
              The unit above is a starting point -- adapt it for your init system, or run\n\
              `phux server` under your own supervisor."
         );
@@ -1384,8 +1375,8 @@ pub(crate) fn run_install(
     // the incumbent would kill its panes; `--adopt` arms instead (ADR-0088).
     let incumbent_live = socket::probe(&plan.socket_path) == SocketState::Live;
     if incumbent_live && takeover == Takeover::Refuse {
-        eprintln!(
-            "phux service: a server is already running on {}\n\
+        error!(
+            "service: a server is already running on {}\n\
              \n\
              Installing now would supervise a server that cannot bind that socket, and the\n\
              unit would retry a failing start every {RESTART_THROTTLE_SECS}s indefinitely.\n\
@@ -1408,7 +1399,7 @@ pub(crate) fn run_install(
             && let Ok(body) = std::fs::read_to_string(&unit_path)
             && matches!(reconcile_unit(manager, &body), Reconcile::Patched(_))
         {
-            eprintln!(
+            hint!(
                 "The unit at {} predates the corrected restart policy. If bringing\n\
                  that policy up to date is what you were after, `phux service reconcile` does\n\
                  it in place — no stop, no lost panes, and none of the flags baked into that\n\
@@ -1422,13 +1413,13 @@ pub(crate) fn run_install(
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("phux service: {err}");
+            error!("service: {err}");
             return ExitCode::FAILURE;
         }
     };
 
     if let Err(err) = write_unit_files(manager, &plan, &unit_path) {
-        eprintln!("phux service: {err}");
+        error!("service: {err}");
         return ExitCode::FAILURE;
     }
 
@@ -1437,15 +1428,15 @@ pub(crate) fn run_install(
         // A failed arming only loses the login trigger; the phux-side hand-over
         // still works, so report it and keep the success.
         if let Err(err) = arm_unit(manager) {
-            eprintln!(
-                "phux service: note: the unit is written, but the init system would not record\n\
+            warn!(
+                "service: the unit is written, but the init system would not record\n\
                  it as wanted at login ({err}). Supervision still takes over the next time a\n\
                  server starts; it will not come up by itself after a reboot until this is\n\
                  resolved."
             );
         }
         if let Err(err) = mark_adoption_pending(&unit_path) {
-            eprintln!("phux service: note: {err}");
+            warn!("service: {err}");
         }
         report_adopt(manager, &plan, &unit_path);
         return ExitCode::SUCCESS;
@@ -1454,7 +1445,7 @@ pub(crate) fn run_install(
     match reload(manager, &unit_path) {
         Ok(()) => {}
         Err(err) => {
-            eprintln!("phux service: unit written, but the init system rejected it: {err}");
+            error!("service: unit written, but the init system rejected it: {err}");
             return ExitCode::FAILURE;
         }
     }
@@ -1668,8 +1659,8 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
             // fails is a crash-loop for `phux doctor`, not something to retrigger.
             clear_adoption_pending();
             if !quiet {
-                eprintln!(
-                    "phux: handing this server over to {} — the unit armed by `phux service \
+                info!(
+                    "handing this server over to {} — the unit armed by `phux service \
                      install --adopt` is now live",
                     match manager {
                         Manager::Launchd => "launchd",
@@ -1682,9 +1673,7 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
         Err(err) => {
             // Fall through to an ordinary spawn; the marker stays for the next try.
             if !quiet {
-                eprintln!(
-                    "phux: could not start the armed service unit ({err}); starting a server"
-                );
+                warn!("could not start the armed service unit ({err}); starting a server");
             }
             Handover::NotTaken
         }
@@ -1927,8 +1916,8 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
 pub(crate) fn run_uninstall() -> ExitCode {
     // No generator here means no unit was ever written to remove.
     let Some(manager) = Manager::host() else {
-        eprintln!(
-            "phux service: no unit generator for this platform, so `phux service install`\n\
+        info!(
+            "service: no unit generator for this platform, so `phux service install`\n\
              never wrote a unit here. Remove whatever supervises `phux server` by hand."
         );
         return ExitCode::FAILURE;
@@ -1939,7 +1928,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("phux service: {err}");
+            error!("service: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -1961,7 +1950,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
     if let Err(err) = unloaded {
         // A unit that was not loaded is the expected case when uninstalling
         // twice; say so and keep going to the file removal.
-        eprintln!("phux service: note: {err}");
+        warn!("service: {err}");
     }
 
     match std::fs::remove_file(&unit_path) {
@@ -1970,10 +1959,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
             outln!("No unit at {}", unit_path.display());
         }
         Err(err) => {
-            eprintln!(
-                "phux service: could not remove {}: {err}",
-                unit_path.display()
-            );
+            error!("service: could not remove {}: {err}", unit_path.display());
             return ExitCode::FAILURE;
         }
     }
@@ -2007,8 +1993,8 @@ pub(crate) fn run_uninstall() -> ExitCode {
 /// running it?
 pub(crate) fn run_status() -> ExitCode {
     let Some(manager) = Manager::host() else {
-        eprintln!(
-            "phux service: no unit generator for this platform, so there is no phux unit\n\
+        info!(
+            "service: no unit generator for this platform, so there is no phux unit\n\
              to report on. `phux doctor` still checks the server itself."
         );
         return ExitCode::FAILURE;
@@ -2017,7 +2003,7 @@ pub(crate) fn run_status() -> ExitCode {
     let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("phux service: {err}");
+            error!("service: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -2051,7 +2037,7 @@ pub(crate) fn run_status() -> ExitCode {
             }
         }
         Err(err) => {
-            eprintln!("phux service: could not query the init system: {err}");
+            error!("service: could not query the init system: {err}");
             ExitCode::FAILURE
         }
     }
@@ -2122,7 +2108,7 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     let entries = match super::logs::client_log_paths(&dir) {
         Ok(entries) => entries,
         Err(err) => {
-            eprintln!("phux service: could not read {}: {err}", dir.display());
+            error!("service: could not read {}: {err}", dir.display());
             return ExitCode::FAILURE;
         }
     };
@@ -2152,7 +2138,7 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     }
     outln!("Removed {removed} client logs from {}.", dir.display());
     if failed > 0 {
-        eprintln!("phux service: {failed} could not be removed.");
+        error!("service: {failed} could not be removed.");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -2713,8 +2699,8 @@ WantedBy=default.target
     }
 
     /// A wrapper an older install wrote still calls `workspace save`, which
-    /// keeps working through the hidden alias; reconcile rewrites it, and
-    /// leaves a current wrapper alone.
+    /// the binary no longer parses; reconcile rewrites it, and leaves a
+    /// current wrapper alone.
     #[test]
     fn reconcile_moves_an_installed_wrapper_to_archive_export() {
         let old = "save() {\n    \"$phux\" workspace save --output \"$archive\"\n}\n";

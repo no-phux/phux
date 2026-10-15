@@ -93,7 +93,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
     let file = match std::fs::canonicalize(args.file) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("phux: play: cannot read {}: {err}", args.file.display());
+            error!("play: cannot read {}: {err}", args.file.display());
             return ExitCode::FAILURE;
         }
     };
@@ -109,7 +109,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(err) => {
-            eprintln!("phux: play: cannot resolve the phux binary to run in the pane: {err}");
+            error!("play: cannot resolve the phux binary to run in the pane: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -158,8 +158,8 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         _ => {
-            eprintln!(
-                "phux: {}",
+            error!(
+                "{}",
                 phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
@@ -441,11 +441,11 @@ fn hold_forever() -> ! {
 /// inputs, so the reported and the played durations agree by construction.
 fn load(file: &Path, idle_flag: Option<f64>) -> Result<Loaded, ExitCode> {
     let handle = std::fs::File::open(file).map_err(|err| {
-        eprintln!("phux: play: cannot read {}: {err}", file.display());
+        error!("play: cannot read {}: {err}", file.display());
         ExitCode::FAILURE
     })?;
     let (header, mut events) = read_cast(BufReader::new(handle)).map_err(|err| {
-        eprintln!("phux: play: {}: {err}", file.display());
+        error!("play: {}: {err}", file.display());
         ExitCode::FAILURE
     })?;
     let idle_limit = effective_idle_limit(&header, idle_flag);

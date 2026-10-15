@@ -77,7 +77,7 @@ pub const CLIENT_ATTACHED: &str = "client-attached";
 pub const CLIENT_DETACHED: &str = "client-detached";
 /// Hook point: a pane's derived agent state changed (ADR-0046).
 pub const AGENT_STATE_CHANGED: &str = "agent-state-changed";
-/// Hook point: `phux worktree new` created a checkout (ADR-0167). The CLI
+/// Hook point: `phux worktree new` created a checkout (ADR-0168). The CLI
 /// fires it, since worktree creation never reaches the server.
 pub const WORKTREE_CREATED: &str = "worktree-created";
 

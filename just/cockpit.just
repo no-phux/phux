@@ -1,4 +1,5 @@
-# Native macOS Cockpit. Changing this file routes cockpit-ci only.
+# Native macOS Cockpit. Frozen (ADR-0167): these recipes are local only.
+# Changing this file does not start Cockpit CI. Resume: clients/cockpit/FROZEN.md.
 
 
 # Build the stable C ABI and the native macOS Cockpit from this checkout.
@@ -22,7 +23,15 @@ cockpit-test: cockpit-ffi cockpit-ffi-abi cockpit-build-contracts cockpit-node-t
     ./scripts/lib/zon_test.sh
     ./scripts/lib/measure_test.sh
     ./scripts/generate-operation-fixtures_test.sh
-    ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
+    # The TypeScript lifecycle test execs this checkout's CLI and stops that
+    # server. CARGO_BIN_EXE_phux is the same name the Rust integration tests
+    # read; PATH is not a substitute.
+    bash ./scripts/build-phux-artifacts.sh --only cli ffi-dev
+    # PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE is the server's own backstop: an open
+    # connection disarms it, and a daemon this process failed to reap still exits.
+    CARGO_BIN_EXE_phux="$(CDPATH='' cd -- ../.. && pwd)/target/ffi-dev/phux" \
+        PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=30 \
+        ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
 
 # Optional full run of the default app graph (DisabledPhuxProvider). CI

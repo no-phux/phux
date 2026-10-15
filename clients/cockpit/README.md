@@ -1,5 +1,9 @@
 # Phux Cockpit
 
+**Frozen.** This client is not maintained. The GPUI desktop is the native
+app. The source stays here so it can be resumed; see [FROZEN.md](FROZEN.md)
+and [ADR-0167](../../docs/adr/0167-cockpit-is-frozen.md).
+
 Phux Cockpit is a native macOS spatial runtime for terminal, web, and future
 control-plane surfaces. Native Phux terminals use the same bounded tabs and
 split-pane substrate as local terminal processes.
@@ -174,14 +178,13 @@ than starting replacement local shells. Startup ownership is described in the
 [process model](../../docs/architecture/process-model.md).
 
 **Remote hosts.** Machines… (`cmd+shift+O`, Window menu, or the header's
-location trigger) lists every saved machine with its state and Connect, Retry
-or Browse Sessions. Connect to Host (the header location menu) attaches a
-host registered with `phux host add`, the same registry `phux --remote HOST`
-uses. Enter its
-registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
-`PHUX_REMOTE=NAME`, selects one at launch. Connected hosts names the host
-while connecting, connected, reconnecting, or failed, and gives the reason
-when it fails. A failure keeps the entered host so a retry is one keystroke.
+location trigger) is the one place to reach a machine: it lists every saved
+machine with its state and Connect, Retry or Browse Sessions, and Add Machine…
+sets up a new one. Machines come from the registry `phux host add` and
+`phux --remote HOST` use. `phux-remote = NAME` in the config, or
+`PHUX_REMOTE=NAME`, selects one at launch. The header says nothing while the
+connection is healthy; it names the host while connecting, reconnecting or
+failed, and gives the reason when it fails.
 Cockpit holds up to four coordinators at once, this Mac and registered
 hosts, each on its own connection: the switcher lists them as host groups,
 "This Mac" first. Picking a session in another coordinator's group shows it
@@ -193,12 +196,9 @@ that owns it and no other, and a session row's context menu in the switcher
 renames that row's session on the coordinator that listed it, a listing
 host's included; a refused name says why. Renames any client makes reach
 the header and the switcher live on every connected coordinator.
-Use this Mac makes this Mac active and keeps the hosts listed; Disconnect
-removes the host named in the panel, and Disconnect All every host. The
-connected hosts are remembered and come back beside this Mac after relaunch,
-listing until one of their sessions is picked. Cockpit never pairs a host;
-an unregistered one fails with
-the CLI command that pairs it. See [Remote hosts](docs/REMOTE_HOSTS.md).
+A connected machine's row in Machines… offers Disconnect. Connected hosts are
+remembered and come back beside this Mac after relaunch, listing until one of
+their sessions is picked. See [Remote hosts](docs/REMOTE_HOSTS.md).
 
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line
 comment, and there are deliberately no trailing comments because `#` is also how
@@ -378,9 +378,10 @@ install paths clear the quarantine attribute and report that fact.
 | `cmd+=` / `cmd+-` / `cmd+0` | Increase, decrease, or reset the terminal font size |
 | `cmd+A` | Select the whole scrollback |
 | `cmd+click` | Open the URL under the pointer |
-| `cmd+K` | Clear the screen and scrollback |
-| `cmd+shift+P` | Go to terminal — the summoned switcher (type to filter, arrows or `ctrl+N`/`ctrl+P` to move, `enter` to go, `esc` to dismiss) |
-| `cmd+shift+O` | Connect to Host — attach a host registered with `phux host add` (`enter` to connect, Use this Mac to return) |
+| `cmd+shift+K` | Clear the screen and scrollback |
+| `cmd+K` | Sessions — every session and the tabs open in them (type to filter, arrows or `ctrl+N`/`ctrl+P` to move, `enter` to go, `esc` to dismiss) |
+| `cmd+shift+P` | Commands — every command with its shortcut |
+| `cmd+shift+O` | Machines — every saved machine, with Connect, Retry, Browse Sessions and Add Machine… |
 | `cmd+shift+J` | Go to Directory — browse the connected host's directories and open a new tab in one (type to filter, `enter` to descend or open, `esc` to cancel); see [Go to Directory](docs/DIRECTORY_PICKER.md) |
 | `cmd+,` | Settings — themes with a live preview and a WCAG contrast readout (arrows or `ctrl+N`/`ctrl+P` to preview, `return` to save, `esc` to cancel) |
 | `cmd+shift+B` | Show the Web surface |
@@ -430,9 +431,9 @@ other key drops it, and a paste containing the bracketed-paste terminator always
 asks. Phux terminals get the same rule from their replica's mode.
 
 Secondary-clicking a top or rail tab offers one-step axis movement, Close
-Others, Close View, and Kill Tab. Close View removes the tab from the session's
+Others, Close Tab, and Kill Tab. Close Tab removes the tab from the session's
 arrangement and its terminals keep running; Kill Tab ends every terminal it
-shows. The tab's close button is Close View. The Shell menu's Close View
+shows. The tab's close button is Close Tab. The Shell menu's Close Pane
 (Cmd+W) only removes the pane from the arrangement; its Kill Pane, which has no
 shortcut, ends the focused terminal. A scratch pane is local only, so closing
 its view ends it. The action stays bound to the tab that opened the menu,

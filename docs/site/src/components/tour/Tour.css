@@ -2,39 +2,23 @@
   --tour-accent: #7aa2f7;
   --tour-ok: #9ece6a;
   --tour-agent: #bb9af7;
+  --tour-response: 180ms;
   container-type: inline-size;
   min-width: 0;
 }
+.tour[data-pace="quick"] { --tour-response: 60ms; }
 .tour-frame {
   overflow: hidden;
-  border: 1px solid var(--terminal-rule);
-  border-radius: 12px;
+  border: 0;
+  border-radius: 18px;
   background: var(--terminal-bg);
-  box-shadow: 0 8px 24px #0002;
 }
-.tour-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  min-height: 40px;
-  padding: 6px 16px;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--terminal-rule);
-  background: var(--terminal-surface);
-  font: 12px var(--font-reading);
-  color: var(--terminal-muted);
-}
-.tour-bar b { color: var(--terminal-fg); font-weight: 600; }
-.tour-bar i { color: var(--terminal-dim); font-style: normal; }
-.tour-bar-count { font-variant-numeric: tabular-nums; }
-
 /* Canvas: one stage unit is --u pixels, so the scene scales as a whole. */
 .tour-canvas {
   --u: calc((100cqw - 2px) / 880);
-  background:
-    radial-gradient(circle at 1px 1px, #ffffff14 1px, transparent 0) 0 0 / 20px 20px,
-    var(--terminal-bg);
+  position: relative;
+  background: radial-gradient(ellipse at 58% 45%, #ffffff06, transparent 65%);
+  padding-bottom: 48px;
 }
 .tour-stage {
   position: relative;
@@ -45,8 +29,8 @@
 }
 .tour-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .tour-edges.is-narrow { display: none; }
-.tour-edge path { fill: none; stroke: var(--terminal-dim); stroke-width: 1.25; transition: stroke 300ms ease, opacity 300ms ease; }
-.tour-edge text { fill: var(--terminal-muted); font: 9px var(--font-reading); text-anchor: middle; transition: opacity 300ms ease; }
+.tour-edge path { fill: none; stroke: var(--terminal-dim); stroke-width: 1.25; transition: stroke var(--tour-response) ease, opacity var(--tour-response) ease; }
+.tour-edge text { fill: var(--terminal-muted); font: 9px var(--font-reading); text-anchor: middle; transition: opacity var(--tour-response) ease; }
 .tour-edge[data-view="attached"] path { stroke: var(--tour-accent); stroke-opacity: 0.55; }
 .tour-edge[data-view="detached"] path { stroke-dasharray: 3 4; opacity: 0.6; }
 .tour-edge[data-view="off"] path { stroke-dasharray: 2 5; opacity: 0.25; }
@@ -63,7 +47,7 @@
   width: calc(var(--w) * var(--u));
   height: calc(var(--h) * var(--u));
   box-sizing: border-box;
-  transition: opacity 400ms ease, filter 400ms ease, border-color 400ms ease;
+  transition: opacity var(--tour-response) ease, filter var(--tour-response) ease, border-color var(--tour-response) ease;
 }
 .tour-window, .tour-host {
   display: flex;
@@ -129,7 +113,7 @@
   color: var(--terminal-fg);
   font-family: var(--font-reading);
   box-shadow: 0 0.6em 1.6em #0008;
-  animation: tour-drop 300ms ease-out both;
+  animation: tour-drop var(--tour-response) ease-out both;
 }
 .tour-veil {
   position: absolute;
@@ -141,7 +125,7 @@
   background: var(--terminal-surface);
   color: var(--terminal-fg);
   font-family: var(--font-reading);
-  animation: tour-fade 400ms ease both;
+  animation: tour-fade var(--tour-response) ease both;
 }
 .tour-veil small { color: var(--terminal-muted); font-size: 0.9em; }
 
@@ -179,10 +163,10 @@
 .tour-host li span { color: var(--terminal-muted); }
 .tour-host-log { margin-top: auto; padding-top: 0.5em; border-top: 1px solid var(--terminal-rule); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--terminal-muted); font-size: 0.92em; }
 .tour-devbox[data-view="off"] { opacity: 0; transform: translateY(0.8em); }
-.tour-devbox { transition: opacity 500ms ease, transform 500ms ease; }
+.tour-devbox { transition: opacity var(--tour-response) ease, transform var(--tour-response) ease; }
 
-.tour-controls { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--terminal-rule); background: var(--terminal-surface); }
-.tour-chapters { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--terminal-rule); border-radius: 8px; background: var(--terminal-bg); }
+.tour-controls { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 12px; }
+.tour-chapters { display: flex; gap: 2px; padding: 2px; border: 0; border-radius: 8px; }
 .tour-chapters button, .tour-play {
   position: relative;
   min-height: 40px;
@@ -218,6 +202,102 @@
 .tour-note { margin: 4px 0 0; color: var(--color-dim); font-size: 12px; text-align: center; }
 .tour-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
+/* Hosts recede behind the story; depth comes from contrast, not extra labels. */
+.tour-distance { position: absolute; inset: 0; pointer-events: none; }
+.tour-distance > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.tour-distance path { fill: none; stroke: #ffffff0d; stroke-width: 1; stroke-dasharray: 2 6; }
+.tour-distant-host { position: absolute; width: 12%; padding: 1.1em; border: 1px solid #ffffff0c; border-radius: 0.8em; background: #ffffff02; color: #ffffff35; font-size: 0.85em; transform: perspective(600px) rotateY(-12deg); }
+.tour-distant-host span { display: block; margin-bottom: 0.7em; }
+.tour-distant-host i { display: block; width: 75%; height: 1px; margin-block: 0.6em; background: #ffffff10; }
+.tour-distant-host i:nth-child(3) { width: 48%; }
+.tour-distant-host.is-0 { top: 1%; right: 5%; }
+.tour-distant-host.is-1 { bottom: 1%; right: 4%; }
+.tour-distant-host.is-2 { bottom: 4%; left: 52%; width: 9%; opacity: 0.7; }
+.tour-entry { position: absolute; inset: 0; z-index: 1; border-radius: 16px; overflow: hidden; }
+.tour-entry:focus-visible { outline-offset: -3px; }
+/* The hover/focus reveal is a full-bleed overlay: a blurred, dimmed pane over
+   the scene with the invitation settling into the middle. It is opacity-only on
+   the backdrop (cheap to composite) and one transform/filter entrance on the
+   copy, so revealing it never re-lays-out the tour. */
+.tour-invitation {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+  background:
+    radial-gradient(120% 130% at 50% 118%, color-mix(in srgb, var(--tour-accent) 20%, transparent), transparent 64%),
+    linear-gradient(180deg, #08080ac4, #08080ae6);
+  backdrop-filter: blur(9px) saturate(1.06);
+  color: var(--terminal-fg);
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.tour-invitation::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 40%, #ffffff14 50%, transparent 60%);
+  opacity: 0;
+  transform: translateX(-110%);
+}
+.tour-invitation-copy {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  opacity: 0;
+  transform: translateY(16px) scale(0.97);
+  filter: blur(7px);
+  transition: opacity 300ms ease, transform 480ms cubic-bezier(.22,.61,.36,1), filter 360ms ease;
+}
+.tour-invitation-glyph { color: var(--tour-accent); font-size: 20px; line-height: 1; }
+.tour-invitation-copy b { font: 600 clamp(18px, 3.4cqi, 26px) var(--font-reading); letter-spacing: -0.02em; }
+.tour-invitation-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 18px;
+  border: 1px solid color-mix(in srgb, var(--tour-accent) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tour-accent) 12%, transparent);
+  box-shadow: 0 12px 34px -18px color-mix(in srgb, var(--tour-accent) 80%, transparent);
+  color: var(--terminal-fg);
+  font: 13px var(--font-reading);
+}
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation { opacity: 1; }
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation-copy { opacity: 1; transform: none; filter: none; }
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation::after { animation: tour-sheen 1200ms cubic-bezier(.4,0,.2,1) 140ms both; }
+.tour-node { pointer-events: none; }
+.tour-window, .tour-host { border-color: #ffffff14; box-shadow: 0 8px 24px #0004; }
+.tour-chrome { background: #ffffff03; border-bottom-color: transparent; }
+.tour-split { gap: 0.6em; padding: 0.5em; }
+.tour-split-pane { border: 1px solid #ffffff10; border-radius: 0.6em; background: var(--terminal-bg); overflow: hidden; }
+.tour-split-pane + .tour-split-pane { border-left-color: #ffffff10; }
+.tour-split-pane .tour-tabs { border-bottom: 0; padding-top: 0.6em; }
+/* Touch devices get the invitation continuously, but as a bottom chip rather
+   than a pane over the scene: covering the tour would hide the story. */
+@media (hover: none) {
+  .tour-invitation { place-content: end center; padding: 0 12px 10px; background: none; backdrop-filter: none; opacity: 1; pointer-events: none; }
+  .tour-invitation::after { display: none; }
+  .tour-invitation-copy { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 9px 16px; border: 1px solid #ffffff16; border-radius: 100px; background: #1b1b1de8; box-shadow: 0 4px 20px #0004; opacity: 1; transform: none; filter: none; }
+  .tour-invitation-copy b { font: 600 13px var(--font-reading); }
+  .tour-invitation-glyph { font-size: 15px; }
+  .tour-invitation-cta { padding: 0; border: 0; background: none; box-shadow: none; }
+}
+@container (max-width: 640px) {
+  .tour-distant-host.is-0 { display: none; }
+  .tour-distant-host.is-1 { bottom: 4%; left: 5%; right: auto; width: 35%; }
+  .tour-distant-host.is-2 { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-invitation, .tour-invitation-copy { transition: none; }
+  .tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation::after { animation: none; }
+}
+
+@keyframes tour-sheen { 0% { opacity: 0; transform: translateX(-110%); } 45% { opacity: 1; } 100% { opacity: 0; transform: translateX(110%); } }
 @keyframes tour-ring { 25% { transform: rotate(14deg); } 75% { transform: rotate(-14deg); } }
 @keyframes tour-drop { from { opacity: 0; transform: translateY(-0.4em); } }
 @keyframes tour-fade { from { opacity: 0; } }
@@ -228,7 +308,6 @@
   .tour-node { left: calc(var(--nx) * var(--u)); top: calc(var(--ny) * var(--u)); width: calc(var(--nw) * var(--u)); height: calc(var(--nh) * var(--u)); }
   .tour-node.is-wide-only, .tour-edges.is-wide { display: none; }
   .tour-edges.is-narrow { display: block; }
-  .tour-bar { padding-inline: 12px; }
   .tour-chapters button { padding: 0 9px; font-size: 12px; }
   .tour-chapters button span { display: none; }
 }

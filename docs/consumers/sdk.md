@@ -26,9 +26,10 @@ reconnect, the session kernel, acknowledged-input replay, and grid publication.
 See the [client runtime](../architecture/client-runtime.md) (ADR-0133,
 ADR-0135).
 
-`phux-client` speaks L1 ([`../spec/L1.md`](../spec/L1.md)); its session,
-window, and layout helpers are L3 conventions over L1 state
-([`../spec/L3.md`](../spec/L3.md)), not a privileged tier
+`phux-client` speaks L1 ([`../spec/L1.md`](../spec/L1.md)); its session
+and arrangement helpers use the organization commands
+([`../spec/L2.md`](../spec/L2.md)) and fall back to the L3 conventions
+([`../spec/L3.md`](../spec/L3.md)) on an older server, not a privileged tier
 ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
 
 ## How it fits the projection thesis

@@ -76,4 +76,4 @@ $XDG_STATE_HOME/<profile-dir>/
 
 ## Decided: not built
 
-A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery are decided: not built (ADR-0130). Neither path exists today; a crash loses every pane's scrollback. The `EVENT` stream is a separate, memory-bounded journal (ADR-0123) that carries no PTY bytes. Workspace archives are written only where `phux workspace save` or `phux server --autosave` is pointed.
+A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery are decided: not built (ADR-0130). Neither path exists today; a crash loses every pane's scrollback. The `EVENT` stream is a separate, memory-bounded journal (ADR-0123) that carries no PTY bytes. Workspace archives are written only where `phux archive export` or `phux server --autosave` is pointed.

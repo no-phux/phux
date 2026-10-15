@@ -1,15 +1,14 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-10-08
+last-reviewed: 2026-10-14
 ---
 # phux site design system
 
-**TL;DR.** Marketing keeps its terminal identity. Documentation is a separate,
-scoped reading surface: proportional typography, restrained blue, light/dark/system
-preferences, static technical content, and task-based navigation. Reuse Fumadocs
-for the page tree, search, TOC, and navigation; use native browser controls for
-copying, theme selection, and modal focus behavior.
+**TL;DR.** The landing pairs a quiet product tour with an on-demand shell.
+Documentation uses system sans and monospace, warm neutral palettes, compact
+corners, and Light/Dark/System preferences. Fumadocs supplies the page tree,
+search, TOC, and navigation; native controls handle theme selection and modal focus.
 
 ## Two surfaces, shared identity
 
@@ -19,8 +18,11 @@ The documentation shell uses `data-design="reader"`. Reader tokens in
 Keep each reader rule in the single documentation section rather than appending
 a second theme override.
 
-- IBM Plex Sans is the reading and navigation face. IBM Plex Mono is for commands,
-  selectors, code, and wire structure, not ordinary chrome.
+- Reader prose and navigation use `-apple-system, BlinkMacSystemFont, "Inter",
+  "Helvetica Neue", sans-serif`. Code uses `"SFMono-Regular", Consolas,
+  "Liberation Mono", Menlo, monospace`. Inter is a local fallback, not a download.
+- Reader `--font-sans` and `--font-mono` aliases include portalled search UI.
+  The shared head no longer fetches IBM fonts. Paper Mono remains outside the reader.
 - The wordmark is lowercase `phux`; navigation uses sentence case.
 - The favicon and mark-only surfaces use `docs/assets/fox-mark.*`.
 - Information hierarchy comes from type size, weight, spacing, and position.
@@ -28,12 +30,26 @@ a second theme override.
 
 ## Reader tokens and typography
 
-The light reader uses a white canvas, dark slate text, and blue `#245dcc` links.
-The dark reader uses a `#10151d` canvas, soft slate text, and blue `#8ab4ff` links.
-Both map the same semantic tokens to Fumadocs' `--color-fd-*` palette, including
-portalled search UI. The native Theme selector supports Light, Dark, and System;
-next-themes owns persistence and system updates. A small head script applies the
-saved preference before paint and Astro document swaps.
+The reader uses off-white in light mode and warm graphite in dark mode, with
+muted earth-tone accents. Tokens map to Fumadocs' `--color-fd-*` palette,
+including portalled search UI. Head theme colors match the two canvas colors.
+
+| Token (`--color-`) | Light | Dark |
+|---|---|---|
+| `bg` | `#faf9f6` | `#111110` |
+| `bg-soft` | `#f1f0ec` | `#191918` |
+| `fg` | `#242320` | `#e9e6df` |
+| `dim`, `muted` | `#65615a` | `#aaa69e` |
+| `subtle` | `#69645c` | `#969188` |
+| `rule` | `#dedbd4` | `#33312d` |
+| `surface` | `#f6f5f1` | `#151514` |
+| `surface-raised` | `#eae7e0` | `#24231f` |
+| `accent` (also `cyan`) | `#705b3f` | `#c6b69d` |
+| `accent-soft` | `#c8bda9` | `#595044` |
+
+The native Theme selector supports Light, Dark, and System; System is the default.
+next-themes owns persistence and system updates. A head script applies the saved
+preference before paint and Astro document swaps.
 
 - `--color-bg`: page canvas; `--color-bg-soft`: code and supporting surfaces.
 - `--color-fg`: primary text; `--color-muted`: supporting and navigational text.
@@ -43,18 +59,47 @@ saved preference before paint and Astro document swaps.
   The page title scales from roughly 30px to 42px.
 - Utilities stay at least 13px. Commands may be 13px but remain zoomable and
   horizontally scrollable. Do not shrink text to make long commands fit.
-- Reader surface radii are 6–14px. Task cards group choices on the overview;
-  ordinary articles do not need cards around every paragraph.
+- Reader radii `sm`/`md`/`lg` are 3/5/6px; `xl`/`2xl` are 8/10px for framework
+  surfaces. Overview cards, code blocks, and tables use the compact surface tokens.
 
-Marketing keeps a flat, rule-aligned page and terminal palette, with one visual
-per idea. The hero's product tour introduces the product: one server, several
-clients, and signals that travel from source to destination along visible
-connections. It autoplays only while on screen, with a pause control and
-chapter buttons; reduced motion shows settled chapters instead. The interactive
-explainer on `/more` shows persistence, agents, federation, and the wire; its
-playback is opt-in, pausable, and scrubbable. Idle diagrams stay quiet. The
-hero and live-terminal dialog use rounded frames; terminal
-interiors stay undecorated. Reader tokens do not restyle marketing surfaces.
+## Landing and live shell
+
+The landing carries a short top bar: wordmark plus Docs, Try, and Source. There is
+no visible tagline. The install targets, command, and copy action float as type on
+the canvas — no card, panel, or fill behind them, and hover changes color rather
+than background. The three targets are CLI, Desktop, and Mobile; Mobile swaps the
+command line for the TestFlight address request inside the same reserved slot, so
+the landing carries no separate beta band. The quiet footer keeps Demos, More,
+Privacy, and Support instead of repeating the top bar. The landing canvas is
+`#0b0b0d`, with `#ededee` text and neutral accents.
+
+The hero tour shows a server, clients, and signals travelling along connections.
+It autoplays only while on screen, with pause and chapter controls; reduced motion
+shows settled chapters. Faint background hosts are decorative, hidden from
+assistive technology, and do not claim live status. Hovering or keyboard-focusing
+the scene link fades a full-bleed overlay over the reel with the shell invitation;
+touch devices show the invitation as a bottom chip so the story stays visible.
+Activating the scene opens the live shell. `/more` retains its opt-in, pausable,
+scrubbable explainer.
+
+The live shell's dialog offers one more thing: **Pair your phone**, a single line
+that expands into a QR (a white tile, the only light surface in the dialog) with
+the status beneath it. The phone opens `/phone#CODE` — a page that is a terminal
+and almost nothing else — and lands in the same shell, thumb key bar included, in
+about a second. The link is single-use and expires with the session; the pairing
+code never appears in a URL the site's own logs would keep. While a phone is
+attached the shared shell follows the newest screen's size, which is the tmux
+rule and the honest reading of "one shell, two screens"; the pairing line says
+"Phone linked" so the beat is visible on the big screen.
+
+The live dialog uses one rounded glass shell with a blurred backdrop, not stacked
+outer frames. The terminal canvas is inset within it; pane controls sit below the
+canvas, using icons with accessible names and a labelled primary Split pane action.
+The Info disclosure opens an inspector for runtime, network/file limits, shortcuts,
+and session controls, plus identity, startup timing, and focused terminal when
+available. Runtime and connection status remain in the header.
+Terminal interiors use local neutral tokens;
+program output and reader themes are not recolored.
 
 ## Article structure
 
@@ -65,8 +110,9 @@ exact-source provenance belong in a quiet footer, not a warning before every gui
 Source links remain pinned to the synchronized revision. Heading IDs and deep links
 must survive presentation changes.
 
-Prose links are underlined and blue; headings remain ordinary text with discoverable
-anchor links. Headings have generous separation without a rule above every section.
+Prose links are underlined in the reader accent; headings remain ordinary text with
+discoverable anchor links. Headings have generous separation without a rule above
+every section.
 Use callouts for warnings or meaningful constraints, not decorative emphasis.
 
 ## Static technical content
@@ -84,9 +130,9 @@ Never wrap byte diagrams or clip commands to fit a viewport.
 
 ## Navigation and overview
 
-`/overview` is the sole primary docs home. Its task cards and explanatory figure
-connect the reader's goal to a working path; the figure shows a person, an app,
-and an agent sharing one running terminal. Quickstart and performance evidence
+`/overview` is the sole primary docs home. Its task cards and first-run steps
+connect the reader's goal to a working path. The model figure shows a server,
+sessions, a terminal resource, and client views. Quickstart and performance evidence
 are primary destinations. `/docs` remains the addressable complete index.
 
 The task tree groups Start here, Use phux, Run coding agents, Connect machines,

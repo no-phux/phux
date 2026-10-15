@@ -12,21 +12,25 @@ impl Owner {
             return Ok(false);
         };
         self.ensure_projector(id, token, geometry)?;
-        let views = self.views.values().any(|view| &view.terminal == id);
         self.install_presentation(id)?;
         let Some(mut slot) = self.projectors.remove(id) else {
             return Ok(false);
         };
-        // Paced publication can leave one presentation many projections
-        // behind another; its row damage then says nothing about its own
-        // previous frame.
-        let full = views || slot.reader != self.active_view;
+        // Damage belongs to the projector's last reader. A switch between the
+        // default presentation and an independent view needs a full frame;
+        // skipped publications within one view are checked by the painter's
+        // generation guard.
+        let full = !slot.valid || slot.reader != self.active_view;
         slot.reader = self.active_view;
         let _timed = crate::perf::PROJECT.timer();
-        let result = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
+        let projected = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
+        slot.valid = projected.is_ok();
         self.projectors.insert(id.clone(), slot);
-        let result = result.and_then(|frame| self.publish_frame(id, frame));
+        let result = projected.and_then(|frame| self.publish_frame(id, frame));
         if result.is_err() {
+            if let Some(slot) = self.projectors.get_mut(id) {
+                slot.valid = false;
+            }
             crate::perf::PROJECT_ERRORS.incr();
         }
         result?;

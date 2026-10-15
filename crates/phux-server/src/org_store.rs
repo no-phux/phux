@@ -33,7 +33,8 @@ pub const RECEIPT_CAP: usize = 10_000;
 pub const TOMBSTONE_HORIZON_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// The migration receipt naming the first-start import of a live registry
-/// (MIGRATION §07); its presence makes the import idempotent.
+/// (MIGRATION §07). The import runs only for a handoff that carries no
+/// records; the receipt records that it happened.
 pub const LIVE_IMPORT_MIGRATION: &str = "import-live-registry/v1";
 
 /// Where a server keeps its organization store.
@@ -48,13 +49,23 @@ pub enum OrgStoreLocation {
 }
 
 impl OrgStoreLocation {
-    /// The production location: `<state_dir>/org/v1.sqlite3`.
+    /// The production location for the server listening on `socket`.
+    ///
+    /// The profile's own socket (`<runtime_dir>/phux.sock`) keeps
+    /// `<state_dir>/org/v1.sqlite3`. Any other socket gets a store of its
+    /// own under `<state_dir>/org/sockets/`, named by the escaped socket
+    /// path, so two servers of one profile never share records: each would
+    /// otherwise write its own sessions into the other's store, and a
+    /// session name both used would make the next start refuse the store.
     #[must_use]
-    pub fn default_path() -> Self {
+    pub fn for_socket(socket: &Path) -> Self {
+        let org = phux_config::instance::state_dir().join("org");
+        if socket == phux_config::instance::runtime_dir().join("phux.sock") {
+            return Self::Path(org.join("v1.sqlite3"));
+        }
         Self::Path(
-            phux_config::instance::state_dir()
-                .join("org")
-                .join("v1.sqlite3"),
+            org.join("sockets")
+                .join(format!("{}.v1.sqlite3", escape_socket(socket))),
         )
     }
 
@@ -70,6 +81,23 @@ impl OrgStoreLocation {
             Self::Memory => Box::new(MemOrgStore::default()),
         })
     }
+}
+
+/// A socket path as one file name: ASCII letters, digits, `-`, and `_`
+/// stand for themselves; every other byte is `%XX`, so distinct paths
+/// never share a name.
+fn escape_socket(socket: &Path) -> String {
+    use std::fmt::Write as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut name = String::new();
+    for &byte in socket.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(char::from(byte));
+        } else {
+            let _ = write!(name, "%{byte:02X}");
+        }
+    }
+    name
 }
 
 /// Why a store operation failed. A failed commit leaves the store as it
@@ -104,7 +132,7 @@ pub enum StoreError {
 /// Everything a store holds, as loaded at startup.
 #[derive(Debug, Clone)]
 pub struct StoredOrg {
-    /// The authority record and its designated Inbox.
+    /// The authority record and its designated Intake.
     pub authority: Authority,
     /// Every session record.
     pub sessions: Vec<Session>,
@@ -373,7 +401,8 @@ fn put_meta(tx: &Transaction<'_>, key: &str, value: &[u8]) -> Result<(), StoreEr
 
 fn put_authority(tx: &Transaction<'_>, authority: &Authority) -> Result<(), StoreError> {
     put_meta(tx, "authority", &authority.id.to_bytes())?;
-    put_meta(tx, "inbox_session", &authority.inbox_session.to_bytes())
+    // Retain the legacy storage key; renaming Intake does not migrate identities.
+    put_meta(tx, "inbox_session", &authority.intake_session().to_bytes())
 }
 
 fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
@@ -660,6 +689,37 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn socket_names_escape_to_distinct_file_names() {
+        assert_eq!(
+            escape_socket(Path::new("/tmp/phux-ci-42.sock")),
+            "%2Ftmp%2Fphux-ci-42%2Esock"
+        );
+        assert_ne!(
+            escape_socket(Path::new("/tmp/a_b.sock")),
+            escape_socket(Path::new("/tmp/a/b.sock"))
+        );
+        assert_ne!(
+            escape_socket(Path::new("/tmp/a%2Fb.sock")),
+            escape_socket(Path::new("/tmp/a/b.sock"))
+        );
+    }
+
+    #[test]
+    fn only_the_profile_socket_uses_the_shared_store() {
+        let home = phux_config::instance::runtime_dir().join("phux.sock");
+        let other = Path::new("/tmp/phux-private.sock");
+        let OrgStoreLocation::Path(home) = OrgStoreLocation::for_socket(&home) else {
+            panic!("a socket names a file store");
+        };
+        let OrgStoreLocation::Path(other) = OrgStoreLocation::for_socket(other) else {
+            panic!("a socket names a file store");
+        };
+        assert!(home.ends_with("org/v1.sqlite3"), "{}", home.display());
+        assert_ne!(home, other);
+        assert!(other.starts_with(home.parent().unwrap().join("sockets")));
+    }
+
     fn org(keys: &mut SequentialKeys) -> Org {
         use phux_core::FreshKeys as _;
         Org::new(
@@ -683,6 +743,44 @@ mod tests {
 
     fn op_id(n: u8) -> OperationId {
         OperationId::from_bytes([n; 16])
+    }
+
+    #[test]
+    fn intake_defaults_and_persisted_designation_names_keep_their_identity() {
+        for name in ["intake", "inbox", "my queue"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("v1.sqlite3");
+            let mut keys = SequentialKeys::new(*b"storetst");
+            let fresh = org(&mut keys);
+            let key = fresh.authority().intake_session();
+            assert_eq!(fresh.session(&key).unwrap().name, "intake");
+            let mut sessions: Vec<_> = fresh.sessions().cloned().collect();
+            sessions[0].name = name.to_owned();
+            let saved = Org::restore(
+                *fresh.authority(),
+                fresh.instance(),
+                sessions,
+                fresh.resources().cloned(),
+                fresh.arrangements().cloned(),
+                fresh.receipts().cloned(),
+            )
+            .unwrap();
+            let mut store = SqliteOrgStore::open(&path).unwrap();
+            store.import(&saved, None, Stamp(1_000)).unwrap();
+            drop(store);
+            let stored = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.authority.intake_session(), key);
+            assert_eq!(stored.sessions[0].key, key);
+            assert_eq!(stored.sessions[0].name, name);
+            assert_eq!(
+                stored.sessions[0].revision,
+                saved.session(&key).unwrap().revision
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build distributable CLI binaries with explicit Rust and libghostty CPU floors.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 target="${1:?usage: build-release-binaries.sh <target>}"
 case "$target" in
@@ -17,7 +19,7 @@ case "$target" in
     rustflags='-C target-cpu=apple-m1'
     ;;
   *)
-    printf 'error: no portable release CPU baseline for %s\n' "$target" >&2
+    phux_error "no portable release CPU baseline for $target"
     exit 2
     ;;
 esac
@@ -28,7 +30,7 @@ export LIBGHOSTTY_VT_SYS_CPU=baseline
 # stamped server only hot-swaps into another stamped build, so a dev or
 # local build copied over the installed binary can never replace it.
 export PHUX_RELEASE_ARTIFACT=1
-printf 'release CPU baseline: target=%s rust=%s libghostty=baseline\n' "$target" "$rust_cpu"
+phux_info "release CPU baseline: target=$target rust=$rust_cpu libghostty=baseline"
 receipt=target/release/.phux-cpu-baseline
 rm -f -- "$receipt"
 cargo build --locked --release --bin phux --bin phux-mcp

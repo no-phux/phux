@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.37.4](https://github.com/no-phux/phux/compare/cockpit-v0.37.3...cockpit-v0.37.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **cockpit:** cull duplicate lists, internals and chatter from the chrome ([#1312](https://github.com/no-phux/phux/issues/1312)) ([e12f418](https://github.com/no-phux/phux/commit/e12f41898caa38c64e2fe67d2062a6815a9cf345))
+
 ## [0.37.3](https://github.com/no-phux/phux/compare/cockpit-v0.37.2...cockpit-v0.37.3) (2026-10-14)
 
 

@@ -1,8 +1,8 @@
 //! Durable bridge for provider-native agent resume identity.
 //!
 //! `phux.agent-session/v1` is live, terminal-scoped L3 metadata. It is not the
-//! durable store: terminal metadata dies with the Terminal. `workspace save`
-//! copies a confirmed record into the versioned archive, and restore stamps the
+//! durable store: terminal metadata dies with the Terminal. `archive export`
+//! copies a confirmed record into the versioned archive, and import stamps the
 //! returned replacement Terminal after replaying the provider's native argv.
 //!
 //! The record and its wire round trips live in

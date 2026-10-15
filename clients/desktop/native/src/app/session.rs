@@ -1,6 +1,8 @@
 //! Process-wide windows, native menus, and the quick-terminal hotkey.
 
 #[cfg(test)]
+mod journey_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
@@ -16,8 +18,9 @@ use gpui_kit::{self, AnyWindowHandle};
 
 use crate::hotkeys::GlobalHotkeys;
 use crate::settings::{self, DisplayPrefs, GhosttyConfig};
-use crate::workspace::persist::{self, FileLayoutStore};
+use crate::workspace::persist::{self, FileLayoutStore, RecentProjects};
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionKey;
 
 use super::AppOptions;
 use super::actions::{OpenPathDirectory, Quit, Run};
@@ -27,18 +30,24 @@ use super::keys::gpui_stroke;
 struct Opened {
     handle: AnyWindowHandle,
     desk: Entity<Desk>,
+    session: String,
+    role: WindowRole,
+    remote: Option<String>,
 }
 
 pub struct Desktop {
+    pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
     socket: PathBuf,
     home_session: String,
+    home_key: Option<SessionKey>,
     layout: PathBuf,
     /// The launch named its layout file; rehoming keeps it.
     explicit_layout: bool,
     quick_layout: PathBuf,
     legacy_layout: Option<PathBuf>,
     legacy_quick: Option<PathBuf>,
+    recent_projects: Option<RecentProjects>,
     windows: Vec<Opened>,
     quick: Option<Opened>,
     /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
@@ -64,15 +73,19 @@ impl Desktop {
             KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
+        let updates = cx.new(|_| super::updates::Updater::new());
         let desktop = cx.new(|_| Self {
+            updates,
             phux: PathBuf::new(),
             socket: PathBuf::new(),
             home_session: String::new(),
+            home_key: None,
             layout: PathBuf::new(),
             explicit_layout: false,
             quick_layout: PathBuf::new(),
             legacy_layout: None,
             legacy_quick: None,
+            recent_projects: None,
             windows: Vec::new(),
             quick: None,
             keymap: None,
@@ -109,7 +122,9 @@ impl Desktop {
         self.phux = options.phux;
         self.socket = options.socket;
         self.home_session = options.session.clone();
+        self.home_key = None;
         let socket = self.socket.display().to_string();
+        self.recent_projects = Some(RecentProjects::load(&socket));
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
@@ -140,16 +155,22 @@ impl Desktop {
                     WindowRole::Main
                 },
                 session: options.session,
+                home_key: None,
                 fresh: options.fresh,
                 initial_terminal: options.initial_terminal,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
+                stable_layout: !explicit,
                 startup_error: options.startup_error,
                 main_display: None,
+                remote: None,
             };
             self.open_window(request, focus, false, cx)?
         };
         self.publish_menus(cx);
+        self.updates.update(cx, |updater, cx| {
+            updater.start(self.phux.clone(), self.socket.clone(), cx)
+        });
         Ok(handle)
     }
 
@@ -157,6 +178,7 @@ impl Desktop {
     /// a session: the home session and the layout files follow it.
     pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
         self.home_session = session.clone();
+        self.home_key = None;
         if !self.explicit_layout {
             let paths =
                 crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
@@ -175,12 +197,15 @@ impl Desktop {
             OpenRequest {
                 role: WindowRole::Main,
                 session,
+                home_key: None,
                 fresh: false,
                 initial_terminal: None,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
+                stable_layout: !self.explicit_layout,
                 startup_error: None,
                 main_display: None,
+                remote: None,
             }
         };
         let replaced = self
@@ -198,32 +223,220 @@ impl Desktop {
         }
     }
 
-    pub fn open_session(&mut self, session: String, cx: &mut Context<Self>) {
+    pub fn open_session(
+        &mut self,
+        session: String,
+        remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
+            home_key: None,
             fresh: true,
             initial_terminal: None,
             layout_path: self.layout.clone(),
             legacy_layout: None,
+            stable_layout: false,
             startup_error: None,
             main_display: None,
+            remote,
         };
         let _ = self.open_window(request, true, false, cx);
     }
 
-    pub fn open_moved(&mut self, session: String, terminal: ResourceId, cx: &mut Context<Self>) {
+    pub(crate) fn recent_projects(&self) -> &[PathBuf] {
+        self.recent_projects
+            .as_ref()
+            .map_or(&[], RecentProjects::entries)
+    }
+
+    pub(crate) fn record_recent_project(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        self.recent_projects
+            .as_mut()
+            .expect("desktop launched")
+            .record(path)?;
+        self.publish_recent_projects(cx);
+        Ok(())
+    }
+
+    pub(crate) fn forget_recent_project(
+        &mut self,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        self.recent_projects
+            .as_mut()
+            .expect("desktop launched")
+            .forget(path)?;
+        self.publish_recent_projects(cx);
+        Ok(())
+    }
+
+    /// A window may render while this entity is leased by `open_window`;
+    /// publish the small snapshot after the current GPUI update completes.
+    fn publish_recent_projects(&self, cx: &mut Context<Self>) {
+        let paths = self.recent_projects().to_vec();
+        let windows: Vec<_> = self
+            .windows
+            .iter()
+            .chain(self.quick.as_ref())
+            .map(|opened| opened.desk.downgrade())
+            .collect();
+        cx.defer(move |cx| {
+            for window in windows {
+                let _ = window.update(cx, |desk, cx| {
+                    desk.recent_projects = paths.clone();
+                    cx.notify();
+                });
+            }
+        });
+    }
+
+    /// A folder is a durable session, not a new terminal in whichever
+    /// session happened to be focused. Reuse its open window; otherwise load
+    /// the layout scoped to this socket and session.
+    pub fn open_project(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if let Some(opened) = self.windows.iter().find(|opened| {
+            opened.session == session && opened.role == WindowRole::Main && opened.remote.is_none()
+        }) {
+            cx.activate(true);
+            opened
+                .handle
+                .update(cx, |_, window, _| window.activate_window())?;
+            opened
+                .desk
+                .update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
+            return Ok(());
+        }
+        let paths = crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
+        let request = OpenRequest {
+            role: WindowRole::Main,
+            session,
+            home_key: None,
+            fresh: false,
+            initial_terminal: Some(terminal),
+            layout_path: paths.layout,
+            legacy_layout: None,
+            stable_layout: true,
+            startup_error: None,
+            main_display: None,
+            remote: None,
+        };
+        self.open_window(request, true, false, cx)?;
+        Ok(())
+    }
+
+    /// Update reuse metadata without reading the desk while it is leased.
+    pub(crate) fn sync_window_session(&mut self, desk: gpui::EntityId, name: &str) {
+        if let Some(opened) = self
+            .windows
+            .iter_mut()
+            .chain(self.quick.as_mut())
+            .find(|opened| opened.desk.entity_id() == desk)
+            && opened.session != name
+        {
+            name.clone_into(&mut opened.session);
+        }
+    }
+
+    /// Any remaining window can keep the singleton home current after its own
+    /// window closes. Once learned, the key prevents adopting a reused name.
+    pub(crate) fn observe_topology(&mut self, topology: &phux_client_runtime::control::Topology) {
+        let previous = self.home_key;
+        crate::connection::sync_home_name(topology, &mut self.home_session, &mut self.home_key);
+        if !self.explicit_layout
+            && self.home_key != previous
+            && let Some(key) = self.home_key
+        {
+            let paths = persist::session_layout_paths(&self.socket.display().to_string(), key);
+            self.legacy_layout = Some(std::mem::replace(&mut self.layout, paths.layout));
+            self.legacy_quick = Some(std::mem::replace(&mut self.quick_layout, paths.quick));
+        }
+    }
+
+    pub fn open_moved(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
+            home_key: None,
             fresh: true,
             initial_terminal: Some(terminal),
             layout_path: self.layout.clone(),
             legacy_layout: None,
+            stable_layout: false,
             startup_error: None,
             main_display: None,
+            remote,
         };
         let _ = self.open_window(request, true, false, cx);
+    }
+
+    /// Show registered host `name`: raise its window, or find the session to
+    /// open there off the main thread and open one. `done` hears the refusal.
+    pub fn open_host(
+        &mut self,
+        name: String,
+        done: impl FnOnce(Result<(), String>, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(opened) = self
+            .windows
+            .iter()
+            .find(|opened| opened.remote.as_deref() == Some(name.as_str()))
+            && opened
+                .handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            cx.activate(true);
+            done(Ok(()), cx);
+            return;
+        }
+        let probe = name.clone();
+        cx.spawn(async move |this, cx| {
+            let home =
+                smol::unblock(move || crate::connection::home::open_remote_home(&probe)).await;
+            let _ = this.update(cx, |desktop, cx| {
+                let result = home.and_then(|session| {
+                    let paths = crate::workspace::layout_paths(&format!("host:{name}"), &session);
+                    let request = OpenRequest {
+                        role: WindowRole::Main,
+                        session,
+                        home_key: None,
+                        fresh: false,
+                        initial_terminal: None,
+                        layout_path: paths.layout,
+                        legacy_layout: None,
+                        stable_layout: true,
+                        startup_error: None,
+                        main_display: None,
+                        remote: Some(name),
+                    };
+                    desktop
+                        .open_window(request, true, false, cx)
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:#}"))
+                });
+                done(result, cx);
+            });
+        })
+        .detach();
     }
 
     /// Close the quick window if it is open, or open it. A handle whose window
@@ -238,8 +451,41 @@ impl Desktop {
                 .update(cx, |_, window, _| window.remove_window());
             return;
         }
+        if let Err(error) = self.resolve_quick_home(cx) {
+            if let Some(opened) = self.windows.first() {
+                opened.desk.update(cx, |desk, cx| {
+                    desk.post(
+                        super::notifications::Kind::Error,
+                        "Could not open quick terminal",
+                        Some(error),
+                    );
+                    cx.notify();
+                });
+            }
+            return;
+        }
         let request = self.quick_request(cx);
         let _ = self.open_window(request, true, true, cx);
+    }
+
+    fn resolve_quick_home(&mut self, cx: &App) -> Result<(), String> {
+        let Some(key) = self.home_key else {
+            return Ok(());
+        };
+        for opened in &self.windows {
+            if opened.remote.is_some() {
+                continue;
+            }
+            let desk = opened.desk.read(cx);
+            let Some(link) = &desk.link else { continue };
+            let replica = link.connection.client.organization();
+            if replica.is_live() {
+                let session = replica.session(&key).ok_or_else(|| "The original home session no longer exists. Open an existing session instead.".to_owned())?;
+                self.home_session.clone_from(&session.name);
+                return Ok(());
+            }
+        }
+        Err("The home session's identity is unavailable. Reconnect a window before opening the quick terminal.".to_owned())
     }
 
     /// The quick window restores its own layout and spawns a fresh terminal only
@@ -248,12 +494,15 @@ impl Desktop {
         OpenRequest {
             role: WindowRole::Quick,
             session: self.home_session.clone(),
+            home_key: self.home_key,
             fresh: true,
             initial_terminal: None,
             layout_path: self.quick_layout.clone(),
             legacy_layout: self.legacy_quick.clone(),
+            stable_layout: !self.explicit_layout,
             startup_error: None,
             main_display: self.main_display(cx),
+            remote: None,
         }
     }
 
@@ -368,8 +617,13 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
         let desktop = cx.entity();
+        let updates = self.updates.clone();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
+        let session = request.session.clone();
+        let recent_projects = self.recent_projects().to_vec();
+        let role = request.role;
+        let remote = request.remote.clone();
         let bounds = if quick {
             size(px(1100.), px(460.))
         } else {
@@ -397,12 +651,31 @@ impl Desktop {
                 ..WindowOptions::default()
             },
             cx,
-            move |window, cx| cx.new(|cx| Desk::open(desktop, phux, socket, request, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    Desk::open(
+                        desktop,
+                        updates,
+                        phux,
+                        socket,
+                        request,
+                        recent_projects,
+                        window,
+                        cx,
+                    )
+                })
+            },
         )?;
         let handle = any
             .downcast::<Root>()
             .ok_or_else(|| anyhow::anyhow!("window root was not gpui_kit::component::Root"))?;
-        let opened = Opened { handle: any, desk };
+        let opened = Opened {
+            handle: any,
+            desk,
+            session,
+            role,
+            remote,
+        };
         if quick {
             self.quick = Some(opened);
         } else {

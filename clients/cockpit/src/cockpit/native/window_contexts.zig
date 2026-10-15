@@ -117,7 +117,8 @@ fn sessionName(remote: *const Remote, scratch: []u8) []const u8 {
     for (remote.sessionCatalog()) |session| {
         if (session.id == id and session.name.len > 0) return session.name;
     }
-    return std.fmt.bufPrint(scratch, "Session #{d}", .{id}) catch "Session";
+    _ = scratch;
+    return "Untitled session";
 }
 
 /// Append the record after `start`. Always written, so a decoder can tell a

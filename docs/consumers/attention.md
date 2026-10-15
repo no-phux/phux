@@ -42,7 +42,9 @@ scratch: empty, ephemeral
 - **Quiet facts** follow: running, not started, or done when nothing runs.
 - **Lifetime** shows only as `ephemeral`, because that session vanishes with
   its last terminal. A persistent session is the default and says nothing.
-- **The Inbox** shows only while it holds imported work, as `N to organize`.
+- **Intake** names the designated session for untargeted work. It and each
+  imported session awaiting organization show their own `N to organize` count.
+  Neither is the attention **Inbox**, which lists work needing a person.
 - **Keys, revisions, window counts, and activation ids** never appear here.
 - **Volume is bounded.** Past 20 lines, exception sessions fill the screen
   first and every other session collapses into one `+N quiet sessions`
@@ -54,9 +56,10 @@ scratch: empty, ephemeral
   trip per 64 terminals rather than one each. It skips the layout reads
   that only the window counts of `-l` need.
 
-The TUI session picker uses the same rules: the current session, then the
-sessions that need you with their count, then the rest by name. Lifetime
-reads `ephemeral` or nothing. The sidebar keeps its three zones.
+The TUI session picker uses the same order: the current session, then the
+sessions that need you with their count, then the rest by name. A picker
+row shows only that count. The sidebar's Agents section lists only the
+agents that need you and disappears when none do.
 
 ## Session
 

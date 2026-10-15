@@ -6,15 +6,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
 case "$scope" in
     docs|core|native|integrations|web|cockpit|desktop|ci) ;;
-    *) echo "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|cockpit|desktop|ci]" >&2; exit 2 ;;
+    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|cockpit|desktop|ci]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 cd "$DEV_ROOT"
 # Rustup proxies must not turn a diagnostic into an implicit toolchain download.
 export RUSTUP_AUTO_INSTALL=0
 failures=0
-ok() { printf 'ok: %s\n' "$1"; }
-fail() { printf 'missing/incompatible: %s\n  remedy: %s\n' "$1" "$2" >&2; failures=$((failures + 1)); }
+ok() { phux_ok "$1"; }
+fail() { phux_error "missing/incompatible: $1"; phux_hint "$2"; failures=$((failures + 1)); }
 need() {
     if command -v "$1" >/dev/null 2>&1; then ok "$1"; else fail "$1" "$2"; fi
 }
@@ -47,10 +47,10 @@ nix_cache_check() {
         return 0
     fi
     key="$(sed -n 's/.*"\(phux\.cachix\.org-1:[^"]*\)".*/\1/p' "$DEV_ROOT/flake.nix" | head -1)"
-    printf 'note: the Nix daemon ignores %s, so nix develop builds what CI already cached\n' "$cache"
-    printf '  remedy (once, as admin; see docs/SETUP.md#binary-cache):\n'
-    printf "    sudo sh -c 'printf \"extra-trusted-substituters = %s\\\\nextra-trusted-public-keys = %s\\\\n\" >> /etc/nix/nix.custom.conf'\n" "$cache" "$key"
-    printf '    then restart the daemon (macOS Determinate: sudo launchctl kickstart -k system/systems.determinate.nix-daemon)\n'
+    phux_warn "the Nix daemon ignores $cache, so nix develop builds what CI already cached"
+    phux_hint "once, as admin; see docs/SETUP.md#binary-cache:"
+    phux_hint "sudo sh -c 'printf \"extra-trusted-substituters = $cache\\nextra-trusted-public-keys = $key\\n\" >> /etc/nix/nix.custom.conf'"
+    phux_hint "then restart the daemon (macOS Determinate: sudo launchctl kickstart -k system/systems.determinate.nix-daemon)"
 }
 
 rust_tools() {
@@ -65,7 +65,8 @@ rust_tools() {
     # Advisory: Cargo works without mbx, but parallel worktrees then each pay a
     # cold build and an unmanaged target/ (docs/SETUP.md#build-cache-mbx).
     if command -v mbx >/dev/null 2>&1; then ok "$(mbx --version)"; else
-        printf 'note: mbx not on PATH; Cargo runs without the shared build cache\n  remedy: mise install, or nix develop (docs/SETUP.md#build-cache-mbx)\n'
+        phux_warn 'mbx not on PATH; Cargo runs without the shared build cache'
+        phux_hint 'mise install, or nix develop (docs/SETUP.md#build-cache-mbx)'
     fi
     nix_cache_check
     need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
@@ -205,5 +206,9 @@ case "$scope" in
         done
         ;;
 esac
-printf 'doctor %s: %d problem(s). See docs/SETUP.md.\n' "$scope" "$failures"
+if [[ "$failures" -eq 0 ]]; then
+    phux_ok "doctor $scope: $failures problem(s). See docs/SETUP.md."
+else
+    phux_error "doctor $scope: $failures problem(s). See docs/SETUP.md."
+fi
 [[ "$failures" -eq 0 ]]

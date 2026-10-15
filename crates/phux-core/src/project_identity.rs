@@ -1,4 +1,4 @@
-//! Project identity: the repository a session was created in (ADR-0167).
+//! Project identity: the repository a session was created in (ADR-0168).
 //!
 //! A descriptive session attribute, never a container: sessions whose
 //! [`SessionProject::id`] is equal belong to one repository, on any machine.

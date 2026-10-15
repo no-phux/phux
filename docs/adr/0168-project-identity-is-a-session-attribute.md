@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-14
 ---
 
-# 0167 — Project identity is a session attribute keyed by remote
+# 0168 — Project identity is a session attribute keyed by remote
 
 **TL;DR.** A session created in a git checkout carries a typed project
 identity among its attributes: the normalized `origin` URL (else the

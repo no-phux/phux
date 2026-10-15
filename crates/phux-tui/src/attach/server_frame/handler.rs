@@ -1325,7 +1325,7 @@ fn split_refusal_notice(host: &SplitHost, reason: &str) -> Option<Notice> {
         return None;
     };
     Some(Notice::warn(format!(
-        "could not split onto satellite {satellite}: {reason}"
+        "could not open on {satellite}: {reason}"
     )))
 }
 
@@ -1953,7 +1953,7 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
     if code == ErrorCode::SatelliteUnreachable {
         tracing::warn!(message = %message, "federation degraded (satellite unreachable)");
         return FrameOutcome {
-            notices: vec![Notice::warn(format!("federation degraded: {message}"))],
+            notices: vec![Notice::warn(message.to_owned())],
             ..FrameOutcome::default()
         };
     }
@@ -1964,7 +1964,7 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
         "server error frame in the attached phase"
     );
     FrameOutcome {
-        notices: vec![Notice::warn(format!("server error ({code:?}): {message}"))],
+        notices: vec![Notice::warn(format!("server error: {message}"))],
         ..FrameOutcome::default()
     }
 }
@@ -2140,12 +2140,9 @@ fn adopt_refused<W: crate::attach::RenderSink>(
     let _ = actions::write_bell(ctx.out);
     let text = match parked {
         ParkedAdopt::Window(window) => {
-            format!(
-                "could not open {} on satellite {host}: {reason}",
-                window.name
-            )
+            format!("could not open {} on {host}: {reason}", window.name)
         }
-        ParkedAdopt::Split(_) => format!("could not split onto satellite {host}: {reason}"),
+        ParkedAdopt::Split(_) => format!("could not open on {host}: {reason}"),
     };
     FrameOutcome {
         notices: vec![Notice::warn(text)],

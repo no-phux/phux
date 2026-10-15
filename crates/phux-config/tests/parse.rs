@@ -242,6 +242,9 @@ fn user_values_parse_and_round_trip() {
     assert_eq!(cfg.sidebar.width, 30);
     assert_eq!(cfg.sidebar.position, SidebarPosition::Right);
 
+    let cfg = parse_and_round_trip("[sidebar]\nagents-share = 55\n");
+    assert_eq!(cfg.sidebar.agents_share, 55);
+
     let cfg = parse_and_round_trip("[status]\nleft     = [\"session-name\"]\nposition = \"top\"\n");
     assert_eq!(cfg.status.position, StatusPosition::Top);
 

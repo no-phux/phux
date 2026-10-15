@@ -448,6 +448,23 @@ pub struct LayoutPaths {
 /// `$XDG_STATE_HOME/phux-desktop/<hash>/` or `~/.local/state/phux-desktop/<hash>/`.
 #[must_use]
 pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
+    let state = layout_state_directory();
+    let directory = state.join(target_hash(socket, session));
+    paths_in(directory, &state)
+}
+
+/// Organization sessions use their immutable key, not their mutable name.
+/// The separate namespace cannot collide with an existing named-session store.
+#[must_use]
+pub fn session_layout_paths(socket: &str, key: phux_protocol::ids::SessionKey) -> LayoutPaths {
+    let state = layout_state_directory();
+    let directory = state
+        .join("sessions")
+        .join(target_hash(socket, &key.to_string()));
+    paths_in(directory, &state)
+}
+
+fn layout_state_directory() -> PathBuf {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -456,15 +473,24 @@ pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".local/state")
         });
-    let directory = state
-        .join("phux-desktop")
-        .join(target_hash(socket, session));
+    state.join("phux-desktop")
+}
+
+fn paths_in(directory: PathBuf, state: &Path) -> LayoutPaths {
     LayoutPaths {
         layout: directory.join("layout.json"),
         quick: directory.join("quick.json"),
-        legacy_layout: state.join("phux-desktop/layout.json"),
-        legacy_quick: state.join("phux-desktop/quick.json"),
+        legacy_layout: state.join("layout.json"),
+        legacy_quick: state.join("quick.json"),
     }
+}
+/// A small, socket-scoped folder history. The empty session name cannot be
+/// opened, so its layout directory is free for process-wide desktop state.
+#[must_use]
+pub fn recent_projects_path(socket: &str) -> PathBuf {
+    layout_paths(socket, "")
+        .layout
+        .with_file_name("projects.json")
 }
 
 /// First 24 hex characters of SHA-256 over `JSON.stringify([socket, session])`.
@@ -581,6 +607,73 @@ fn read_json(path: &Path) -> StoreValue {
     }
 }
 
+/// Local navigation history, never a server project or a recipe trust grant.
+pub struct RecentProjects {
+    store: FileLayoutStore,
+    entries: Vec<PathBuf>,
+}
+
+impl RecentProjects {
+    #[must_use]
+    pub fn load(socket: &str) -> Self {
+        let store = FileLayoutStore::new(recent_projects_path(socket), None);
+        Self::from_store(store)
+    }
+
+    fn from_store(store: FileLayoutStore) -> Self {
+        let entries = match store.read() {
+            StoreValue::Present(value) => serde_json::from_value::<Vec<PathBuf>>(value)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|path| path.is_absolute())
+                .take(8)
+                .collect(),
+            StoreValue::Missing | StoreValue::Damaged => Vec::new(),
+        };
+        Self { store, entries }
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> &[PathBuf] {
+        &self.entries
+    }
+
+    pub fn record(&mut self, path: PathBuf) -> io::Result<()> {
+        if self.entries.first() == Some(&path) {
+            return Ok(());
+        }
+        let mut next: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|old| **old != path)
+            .take(7)
+            .cloned()
+            .collect();
+        next.insert(0, path);
+        self.save(next)
+    }
+
+    pub fn forget(&mut self, path: &Path) -> io::Result<()> {
+        if !self.entries.iter().any(|old| old == path) {
+            return Ok(());
+        }
+        self.save(
+            self.entries
+                .iter()
+                .filter(|old| *old != path)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn save(&mut self, entries: Vec<PathBuf>) -> io::Result<()> {
+        let value = serde_json::to_value(&entries).map_err(io::Error::other)?;
+        self.store.write(&value)?;
+        self.entries = entries;
+        Ok(())
+    }
+}
+
 /// Quick terminal display: the main window's preferences, sidebar hidden.
 #[must_use]
 pub fn quick_display(main: Option<&DisplayPrefs>, quick: Option<&SavedLayout>) -> DisplayPrefs {
@@ -681,6 +774,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn key_scoped_paths_are_rename_stable_and_separate_from_name_scoped_paths() {
+        let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let keyed = session_layout_paths("private-server.sock", key);
+        assert_eq!(keyed, session_layout_paths("private-server.sock", key));
+        assert_ne!(
+            keyed.layout,
+            layout_paths("private-server.sock", "A").layout
+        );
+        assert_ne!(
+            keyed.layout,
+            layout_paths("private-server.sock", "renamed-A").layout
+        );
+        assert_ne!(
+            keyed.layout,
+            session_layout_paths("another-server.sock", key).layout
+        );
+    }
+
+    #[test]
+    fn key_store_imports_without_overwriting_old_or_conflicting_layouts() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("phux-layout-key-{}-{nonce}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let old = directory.join("name.json");
+        let keyed = directory.join("key.json");
+        let old_value = serde_json::json!({"version": 2, "serverId": "old", "tabs": []});
+        fs::write(&old, old_value.to_string()).unwrap();
+        let store = FileLayoutStore::new(&keyed, Some(old.clone()));
+        assert_eq!(store.read(), StoreValue::Present(old_value.clone()));
+        assert!(
+            !keyed.exists(),
+            "reading the fallback does not migrate destructively"
+        );
+        let layout = parse_layout(&old_value).unwrap();
+        for bytes in ["damaged", r#"{"version":99,"serverId":"other","tabs":[]}"#] {
+            fs::write(&keyed, bytes).unwrap();
+            let loaded = load_layout(&store.read());
+            assert!(loaded.blocked);
+            write_if_allowed(&loaded, &layout, |value| store.write(value)).unwrap();
+            assert_eq!(fs::read_to_string(&keyed).unwrap(), bytes);
+            assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
+        }
+        let conflicting = serde_json::json!({"version": 2, "serverId": "other", "tabs": []});
+        fs::write(&keyed, conflicting.to_string()).unwrap();
+        assert_eq!(store.read(), StoreValue::Present(conflicting.clone()));
+        assert_eq!(fs::read_to_string(&keyed).unwrap(), conflicting.to_string());
+        assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn sha256_matches_the_empty_and_abc_vectors() {
         assert_eq!(
             hex(sha256(b"")),
@@ -744,5 +892,38 @@ mod tests {
         assert_eq!(clean.theme_id, DisplayPrefs::default().theme_id);
         assert_eq!(clean.font_family, "Paper Mono");
         assert_eq!(clean.terminal_opacity, 0.55);
+    }
+    #[test]
+    fn recent_folders_survive_restart_reorder_and_forget_without_exceeding_limit() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("phux-recent-{}-{stamp}.json", std::process::id()));
+        let store = FileLayoutStore::new(&path, None);
+        let mut history = RecentProjects::from_store(store.clone());
+        for index in 0..10 {
+            history
+                .record(PathBuf::from(format!("/checkouts/{index}")))
+                .expect("save");
+        }
+        assert_eq!(history.entries().len(), 8);
+        assert_eq!(history.entries()[0], Path::new("/checkouts/9"));
+        assert!(!history.entries().contains(&PathBuf::from("/checkouts/0")));
+
+        history
+            .record(PathBuf::from("/checkouts/4"))
+            .expect("reorder");
+        let mut restarted = RecentProjects::from_store(store);
+        assert_eq!(restarted.entries()[0], Path::new("/checkouts/4"));
+        assert_eq!(restarted.entries().len(), 8);
+        restarted.forget(Path::new("/checkouts/4")).expect("forget");
+        assert!(
+            !RecentProjects::from_store(FileLayoutStore::new(&path, None))
+                .entries()
+                .contains(&PathBuf::from("/checkouts/4"))
+        );
+        fs::remove_file(path).expect("remove temporary history");
     }
 }

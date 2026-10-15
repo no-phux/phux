@@ -1,5 +1,5 @@
 //! Which project groups this client keeps collapsed in the sidebar
-//! (ADR-0167): per-user client state under the profile's state dir, never
+//! (ADR-0168): per-user client state under the profile's state dir, never
 //! on the server. Best effort: an unreadable file reads as nothing
 //! collapsed and a failed write is logged.
 

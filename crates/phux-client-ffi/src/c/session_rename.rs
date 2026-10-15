@@ -19,7 +19,8 @@ use crate::c::types::{PhuxBytes, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::rename::{
-    BarrierVerdict, NamedSession, RenamePlan, barrier_verdict, plan_rename, rename_frames,
+    BarrierVerdict, NamedSession, RenamePlan, barrier_verdict, check_session_name_text,
+    plan_rename, rename_frames,
 };
 use phux_protocol::ids::{OperationId, SessionId};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, SESSION_NAME_KEY, Scope};
@@ -34,9 +35,6 @@ const STATUS_RENAMED: u32 = 2;
 const STATUS_REFUSED: u32 = 3;
 /// The connection ended before the confirmation read was answered.
 const STATUS_UNKNOWN_OUTCOME: u32 = 4;
-
-/// A session name, as the arrangement catalog bounds one.
-const MAX_NAME_BYTES: usize = 4096;
 
 /// The one rename this client may have outstanding, and what it has heard.
 pub(crate) struct SessionRename {
@@ -228,18 +226,16 @@ fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeErr
     Ok(())
 }
 
+/// A session name as the server stores one: UTF-8 that
+/// `check_session_name_text` accepts.
+///
+/// This judges an existing name (the current one, or one the server
+/// reported). The new name of a rename is judged by `check_session_name` in
+/// `plan_rename`, which settles a selector-grammar refusal REFUSED.
 pub(crate) fn valid_name(name: &[u8]) -> Result<(), BridgeError> {
-    if name.is_empty() {
-        return Err(BridgeError::invalid("a session name must not be empty"));
-    }
-    if name.len() > MAX_NAME_BYTES || name.contains(&0) {
-        return Err(BridgeError::invalid(
-            "a session name exceeds 4096 bytes or contains NUL",
-        ));
-    }
-    std::str::from_utf8(name)
-        .map(|_| ())
-        .map_err(|_| BridgeError::invalid("a session name must be UTF-8"))
+    let name = std::str::from_utf8(name)
+        .map_err(|_| BridgeError::invalid("a session name must be UTF-8"))?;
+    check_session_name_text(name).map_err(|invalid| BridgeError::invalid(invalid.to_string()))
 }
 
 /// The shared rename plan against this client's session list.
@@ -858,6 +854,33 @@ mod tests {
             PhuxClientResult::InvalidState,
             "one rename at a time"
         );
+        unsafe { crate::c::phux_client_free(client) };
+    }
+
+    /// The new name is judged by core's one rule: a name the server would not
+    /// store is an invalid argument, and one no selector could address is
+    /// refused with core's reason. Nothing is sent either way.
+    #[test]
+    fn a_new_name_is_judged_by_cores_session_name_rule() {
+        use phux_client_core::rename::{MAX_SESSION_NAME_BYTES, SessionNameError};
+        let client = negotiated(&["build"]);
+        let too_long = "a".repeat(MAX_SESSION_NAME_BYTES + 1);
+        for (id, bad) in (1..).zip([too_long.as_str(), "a\tb", "a\u{7f}b"]) {
+            assert_eq!(
+                rename(client, id, "build", bad),
+                PhuxClientResult::InvalidArgument,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(rename(client, 1, "build", "x:y"), PhuxClientResult::Ok);
+        let (_, status, _, message) = info(client);
+        assert_eq!(status, STATUS_REFUSED);
+        assert_eq!(message, SessionNameError::Colon.to_string());
+        assert!(sent(client).is_empty());
+
+        let at_limit = "a".repeat(MAX_SESSION_NAME_BYTES);
+        assert_eq!(rename(client, 2, "build", &at_limit), PhuxClientResult::Ok);
+        assert_eq!(info(client).1, STATUS_PENDING);
         unsafe { crate::c::phux_client_free(client) };
     }
 }

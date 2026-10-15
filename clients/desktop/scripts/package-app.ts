@@ -30,15 +30,24 @@ if (import.meta.main) {
   for (const name of [
     "PaperMono-Regular.ttf",
     "PaperMono-Medium.ttf",
+    "PaperMono-SemiBold.ttf",
     "PaperMono-Bold.ttf",
     "PaperMono-OFL.txt",
+    "JetBrainsMonoNLNerdFontMono-Regular.ttf",
+    "JetBrainsMonoNLNerdFontMono-Bold.ttf",
+    "JetBrainsMonoNLNerdFontMono-Italic.ttf",
+    "JetBrainsMonoNLNerdFontMono-BoldItalic.ttf",
+    "JetBrainsMono-OFL.txt",
   ]) {
     cpSync(join(fonts, name), join(contents, "Resources/fonts", name));
   }
   renderIcon(join(contents, "Resources/AppIcon.icns"));
   const version = packageVersion(readFileSync(join(root, "package.json"), "utf8"));
   const sha = run(["git", "-C", repo, "rev-parse", "HEAD"]).trim();
-  writeFileSync(join(contents, "Info.plist"), infoPlist(version, sha));
+  writeFileSync(
+    join(contents, "Info.plist"),
+    infoPlist(version, sha, process.env.PHUX_CHANNEL === "next" ? "next" : "stable"),
+  );
   writeFileSync(join(contents, "PkgInfo"), "APPL????");
   if (existsSync(join(contents, "Resources/phux-desktop-native.darwin-arm64.node"))) {
     throw new Error("Phux.app must not ship a NAPI addon");
@@ -67,7 +76,11 @@ export function packageVersion(text: string): string {
   return version;
 }
 
-export function infoPlist(version: string, sha: string): string {
+export function infoPlist(
+  version: string,
+  sha: string,
+  channel: "stable" | "next" = "stable",
+): string {
   const numericVersion = version.split("-")[0] ?? version;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -84,6 +97,7 @@ export function infoPlist(version: string, sha: string): string {
   <key>CFBundleShortVersionString</key><string>${numericVersion}</string>
   <key>CFBundleVersion</key><string>${numericVersion}</string>
   <key>PhuxDesktopVersion</key><string>${version}</string>
+  <key>PhuxDesktopChannel</key><string>${channel}</string>
   <key>PhuxDesktopHost</key><string>gpui</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>27.0</string>

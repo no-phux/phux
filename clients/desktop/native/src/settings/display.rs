@@ -67,18 +67,6 @@ impl Default for DisplayPrefs {
     }
 }
 
-/// Faces the settings page offers, besides the Ghostty face and the current one.
-pub const FONT_FAMILIES: &[&str] = &[
-    "Paper Mono",
-    "Menlo",
-    "SF Mono",
-    "Monaco",
-    "JetBrains Mono",
-    "Fira Code",
-    "Berkeley Mono",
-    "Iosevka",
-];
-
 /// Narrowest sidebar, in points.
 pub const SIDEBAR_MIN: f64 = 180.0;
 /// Widest sidebar, in points.

@@ -10,7 +10,7 @@ use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_tar
 /// side-effect-free `ROUTE_INPUT` route.
 ///
 /// `TARGET` is the full selector grammar (`docs/consumers/tui.md` §3):
-/// `session`, `session:window`, `session:window.pane`, `@id`, `.`. It
+/// `session`, `session:group`, `session:group.pane`, `@id`, `.`. It
 /// is resolved client-side to a single pane (the selected one — the focused
 /// pane when the selector spans several), then the events route to exactly
 /// that pane by id, so this neither attaches nor resizes the live pane
@@ -35,11 +35,11 @@ pub(crate) fn run_send_keys(target: &str, keys: &[String], socket: Option<PathBu
             Ok(()) => ExitCode::SUCCESS,
             Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "send-keys"),
             Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot send to '{target}': {msg} (try `phux ls`)");
+                error!("cannot send to '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE
             }
             Err(err) => {
-                eprintln!("phux: send-keys failed: {err}");
+                error!("send-keys failed: {err}");
                 ExitCode::FAILURE
             }
         }

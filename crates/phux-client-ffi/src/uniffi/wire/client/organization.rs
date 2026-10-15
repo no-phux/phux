@@ -1,4 +1,4 @@
-//! The organization surface of [`RemoteClient`]: the Inbox and the typed
+//! The organization surface of [`RemoteClient`]: Intake and the typed
 //! organization commands.
 //!
 //! Keys cross as full base32 text and operation ids as 32 hex digits. Each
@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 
 use phux_client_core::org_ops::{OrgOutcome, SubmitError};
+use phux_client_core::rename::check_session_name;
 use phux_client_runtime::control::mint_operation;
 use phux_protocol::ids::{OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Command, Committed, LaunchSpec, SessionLifetime, TerminateMode};
@@ -25,9 +26,6 @@ use crate::projection::organization;
 /// Most committed receipts a client keeps for `undo`; the oldest is dropped
 /// first.
 const MAX_RECEIPTS: usize = 256;
-
-/// Longest session name the protocol accepts, in bytes.
-const MAX_SESSION_NAME: usize = 256;
 
 /// Whether a session outlives its last resource.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,11 +59,9 @@ fn resource_key(text: &str) -> Result<ResourceKey, WireError> {
     ResourceKey::parse(text).ok_or_else(|| reason("invalid_resource_key"))
 }
 
+/// A name to create or assign: one `check_session_name` accepts.
 fn session_name(name: &str) -> Result<(), WireError> {
-    if name.is_empty() || name.len() > MAX_SESSION_NAME || name.contains('\0') {
-        return Err(reason("invalid_session_name"));
-    }
-    Ok(())
+    check_session_name(name).map_err(|_| reason("invalid_session_name"))
 }
 
 #[allow(
@@ -212,9 +208,14 @@ impl RemoteClient {
         Ok(arrangement.and_then(|arrangement| client.fetch_arrangement(arrangement)))
     }
 
-    /// The owner-local Inbox: the designated Inbox session and every session
+    /// The owner-local Intake: the designated Intake session and every session
     /// awaiting organization, with their member records.
     pub fn inbox(&self) -> InboxDescriptor {
+        self.intake()
+    }
+
+    /// Preferred Intake API; descriptor field names retain binding compatibility.
+    pub fn intake(&self) -> IntakeDescriptor {
         let Some(client) = self.runtime_client() else {
             return InboxDescriptor {
                 inbox: None,
@@ -223,7 +224,7 @@ impl RemoteClient {
             };
         };
         let replica = client.organization();
-        let view = replica.inbox_view();
+        let view = replica.intake_view();
         let sessions: Vec<String> = view.sessions.iter().map(|s| s.key.to_string()).collect();
         let records = client
             .topology()
@@ -291,13 +292,21 @@ impl RemoteClient {
         submitted(self.connected()?.delete_session(key))
     }
 
-    /// Clear a session's Inbox intake mark; its work is untouched.
+    /// Clear a session's Intake mark; legacy binding name retained.
     ///
     /// # Errors
     /// See the module docs.
     pub fn inbox_resolve(&self, session_key_text: String) -> Result<String, WireError> {
+        self.intake_resolve(session_key_text)
+    }
+
+    /// Clear a session's Intake mark; its work is untouched.
+    ///
+    /// # Errors
+    /// See the module docs.
+    pub fn intake_resolve(&self, session_key_text: String) -> Result<String, WireError> {
         let key = session_key(&session_key_text)?;
-        submitted(self.connected()?.inbox_resolve(key))
+        submitted(self.connected()?.intake_resolve(key))
     }
 
     /// Move resources into a session (membership only; they keep running).
@@ -413,6 +422,50 @@ mod tests {
         assert_eq!(lifetime, SessionLifetime::Ephemeral);
         assert!(launch.is_some());
         assert!(create_command(String::new(), WireSessionLifetime::Persistent, None).is_err());
+    }
+
+    /// Create and rename judge a name by core's one rule; a refusal is
+    /// `invalid_session_name` before any connection is needed.
+    #[test]
+    fn create_and_rename_refuse_what_core_refuses() {
+        fn word<T>(result: Result<T, WireError>) -> Option<String> {
+            match result {
+                Err(WireError::Runtime { reason }) => Some(reason),
+                _ => None,
+            }
+        }
+        let too_long = "a".repeat(phux_client_core::rename::MAX_SESSION_NAME_BYTES + 1);
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let key = SessionKey::new([2; 16]).unwrap().to_string();
+        for bad in ["x:y", too_long.as_str(), "a\tb", "a\0b", "@3"] {
+            assert_eq!(
+                word(create_command(
+                    bad.to_owned(),
+                    WireSessionLifetime::Persistent,
+                    None
+                ))
+                .as_deref(),
+                Some("invalid_session_name"),
+                "create {bad:?}"
+            );
+            assert_eq!(
+                word(remote.rename_session(key.clone(), bad.to_owned())).as_deref(),
+                Some("invalid_session_name"),
+                "rename {bad:?}"
+            );
+        }
+        let at_limit = "a".repeat(phux_client_core::rename::MAX_SESSION_NAME_BYTES);
+        for good in ["notes", at_limit.as_str()] {
+            assert!(
+                create_command(good.to_owned(), WireSessionLifetime::Persistent, None).is_ok(),
+                "create {good:?}"
+            );
+            assert_eq!(
+                word(remote.rename_session(key.clone(), good.to_owned())).as_deref(),
+                Some("not_connected"),
+                "rename {good:?}"
+            );
+        }
     }
 
     #[test]

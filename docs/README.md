@@ -16,7 +16,7 @@ the references cover commands, protocols, and implementation.
 |---|---|
 | Run a persistent terminal and reattach | [Quickstart](./QUICKSTART.md) |
 | Choose a supported platform and install method | [Install phux](./INSTALL.md) |
-| Understand sessions, windows, panes, and persistence | [How phux works](./CONCEPTS.md) |
+| Understand sessions, resources, the Inbox, and persistence | [How phux works](./CONCEPTS.md) |
 | Compare phux with tmux, Herdr, or cmux | [When to use phux](./when-to-use.md) |
 | Translate tmux or screen habits | [Coming from tmux or screen](./coming-from.md) |
 
@@ -24,7 +24,8 @@ the references cover commands, protocols, and implementation.
 
 - [Terminal UI](./consumers/tui.md): navigate, split, copy, and search.
 - [Configuration](./CONFIG.md): make a small change, validate it, and apply it.
-- [Cockpit](./consumers/cockpit.md): use the native macOS interface.
+- [Desktop](./consumers/desktop.md): use the native macOS interface.
+- [Cockpit](./consumers/cockpit.md): the frozen Zig client.
 - [Recording](./consumers/recording.md): capture and replay terminal work.
 - [All interfaces](./consumers/README.md): distinguish available clients from previews.
 

@@ -690,7 +690,14 @@ fn an_unread_default_is_deferred_while_a_read_view_publishes_every_batch() {
     for seq in 1..=3 {
         let generation = publication.acquire_view(view).unwrap().generation;
         output(&owner, &terminal, seq, format!("\x1b[1;1H{seq}").as_bytes());
-        assert_eq!(publication.view_generation(view), Some(generation + 1));
+        let frame = publication.acquire_view(view).unwrap();
+        assert_eq!(frame.generation, generation + 1);
+        assert_eq!(frame.damage, GridDamage::Rows);
+        assert!(frame.is_row_dirty(0), "live output row must repaint");
+        assert!(
+            frame.dirty_rows().count() < usize::from(frame.rows),
+            "an unchanged row must not be republished"
+        );
     }
     assert_eq!(publication.generation(&terminal), Some(default));
 

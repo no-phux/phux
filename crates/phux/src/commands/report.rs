@@ -98,7 +98,7 @@ fn run_new(note: &[String], json: bool) -> ExitCode {
                     1,
                 );
             }
-            eprintln!("phux report: could not write a bug report: {err}");
+            error!("report: could not write a bug report: {err}");
             ExitCode::FAILURE
         }
     }
@@ -122,7 +122,7 @@ fn run_show(id: Option<String>, json: bool) -> ExitCode {
                 1,
             );
         }
-        eprintln!("phux report: {message}");
+        error!("report: {message}");
         return ExitCode::FAILURE;
     };
     if json {
@@ -135,7 +135,7 @@ fn run_show(id: Option<String>, json: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux report: could not read {}: {err}", markdown.display());
+            error!("report: could not read {}: {err}", markdown.display());
             ExitCode::FAILURE
         }
     }

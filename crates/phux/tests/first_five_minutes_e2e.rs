@@ -383,6 +383,22 @@ fn assert_success(label: &str, output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("command stdout is UTF-8")
 }
 
+fn assert_misplaced_json_error(stderr: Vec<u8>) {
+    let mistake_err = String::from_utf8(stderr).expect("usage stderr is UTF-8");
+    // Even parser placement failures honor --json's single-line stderr contract.
+    assert_eq!(mistake_err.lines().count(), 1);
+    let mistake_doc: serde_json::Value = serde_json::from_str(&mistake_err).expect("usage JSON");
+    assert_eq!(
+        mistake_doc,
+        serde_json::json!({
+            "schema_version": 1,
+            "error": {"code": "usage_error", "message": "unexpected argument '--json' found"},
+            "remedy": "`--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`",
+            "exit_code": 2,
+        })
+    );
+}
+
 fn run_journey(harness: &mut Harness) {
     let short = harness.capture("short-help", &["-h"]);
     let short = assert_success("phux -h", &short);
@@ -460,11 +476,7 @@ fn run_journey(harness: &mut Harness) {
         mistake.stdout.is_empty(),
         "usage failure wrote stdout bytes"
     );
-    let mistake_err = String::from_utf8(mistake.stderr).expect("usage stderr is UTF-8");
-    assert_eq!(
-        mistake_err,
-        "error: unexpected argument '--json' found\n\nUsage: phux [FLAGS] [SUBCOMMAND]\n\nFor more information, try '--help'.\nhint: `--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`\n"
-    );
+    assert_misplaced_json_error(mistake.stderr);
 
     let redirected_socket = harness.runtime.join("redirected.sock");
     let mut redirected = harness.command(&[]);
@@ -484,7 +496,7 @@ fn run_journey(harness: &mut Harness) {
     );
     assert_eq!(
         String::from_utf8(redirected.stderr).expect("redirected stderr is UTF-8"),
-        "phux: interactive use requires both stdin and stdout to be terminals\n"
+        "phux: error: interactive use requires both stdin and stdout to be terminals\n"
     );
     assert!(
         !redirected_socket.exists(),

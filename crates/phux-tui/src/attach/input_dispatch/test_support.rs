@@ -508,6 +508,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             project_starts: 0,
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
             plugin: crate::render::chrome::sidebar_sections::PluginShape::default(),
+            agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
         },
         // Row 0 is local; the rest are peers, so one fixture covers both.
         needs_you: (0..needs_you)

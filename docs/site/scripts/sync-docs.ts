@@ -590,7 +590,7 @@ Detach leaves it running. A server crash or reboot ends it. [Continuity details]
 
 ## The model
 
-Server → session → resource (terminal). Inbox is the session for unorganized resources. TUI and desktop views show the terminal; an agent can read or type in it.
+Server → session → resource (terminal). Intake is the designated persistent session for work created without a destination; imported sessions awaiting organization remain separate. The attention Inbox lists work needing a person. TUI and desktop views show the terminal; an agent can read or type in it.
 
 Sessions own resources. Arrangements place them. Views show them. [Full model](/concepts).
 
@@ -662,7 +662,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(use)", title: `Use ${SITE.name}`,
-    pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/cockpit", "../consumers/recording", "../consumers/web", "../consumers/ios"],
+    pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/desktop", "../consumers/recording", "../consumers/web", "../consumers/ios"],
   },
   {
     folder: "(agents)", title: "Run coding agents",
@@ -682,7 +682,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(contribute)", title: "Build & contribute",
-    pages: ["../consumers/build-a-client", "../consumers/sdk", "../consumers/harness", "../consumers/desktop", "../architecture", "../decisions", "../concepts/vision", "../docs"],
+    pages: ["../consumers/build-a-client", "../consumers/sdk", "../consumers/harness", "../consumers/cockpit", "../architecture", "../decisions", "../concepts/vision", "../docs"],
   },
 ];
 
@@ -722,6 +722,7 @@ const REFERENCE_PAGES = [
 const GUIDE_PAGES = [
   "index",
   "tui",
+  "desktop",
   "cockpit",
   "agents",
   "opencode",

@@ -9,6 +9,218 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.2](https://github.com/no-phux/phux/compare/v0.74.1...v0.74.2) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
+## [0.74.1](https://github.com/no-phux/phux/compare/v0.74.0...v0.74.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ci:** align the landing install-surface pins with the Mobile hero ([#1377](https://github.com/no-phux/phux/issues/1377)) ([ec051d9](https://github.com/no-phux/phux/commit/ec051d99a128a84da61a713db47cc524577cdbcd))
+* **site:** assert the parked demo state in the native smokes ([d58cfb5](https://github.com/no-phux/phux/commit/d58cfb58b5162c2eab2415bc063313e34adea2d3))
+
+## [0.74.0](https://github.com/no-phux/phux/compare/v0.73.1...v0.74.0) (2026-10-14)
+
+
+### Features
+
+* **site:** float the landing hero and fade a full-bleed tour overlay ([45b5555](https://github.com/no-phux/phux/commit/45b5555a4e6f72a43c7af8a967b85ed74a73c71a))
+
+## [0.73.1](https://github.com/no-phux/phux/compare/v0.73.0...v0.73.1) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** use sparse damage for pane redraws ([#1372](https://github.com/no-phux/phux/issues/1372)) ([9856e15](https://github.com/no-phux/phux/commit/9856e15315a433590c81ce3127f6856701acd516))
+
+## [0.73.0](https://github.com/no-phux/phux/compare/v0.72.1...v0.73.0) (2026-10-14)
+
+
+### Features
+
+* **site:** pin the install dock and quiet the landing TestFlight band ([#1367](https://github.com/no-phux/phux/issues/1367)) ([a0d37aa](https://github.com/no-phux/phux/commit/a0d37aa20b2bb60adc4d765f47176cd233002f52))
+
+
+### Performance
+
+* **runtime:** redial a settled session before sleeping ([#1368](https://github.com/no-phux/phux/issues/1368)) ([cfd65d6](https://github.com/no-phux/phux/commit/cfd65d610cabcb81ad99f216febc775fd4a1e84a))
+
+## [0.72.1](https://github.com/no-phux/phux/compare/v0.72.0...v0.72.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** improve terminal rendering and quiet the sidebar ([#1363](https://github.com/no-phux/phux/issues/1363)) ([305b1ef](https://github.com/no-phux/phux/commit/305b1efca31ac1252afe50bfbf413430cc07409f))
+
+## [0.72.0](https://github.com/no-phux/phux/compare/v0.71.1...v0.72.0) (2026-10-14)
+
+
+### Features
+
+* **site:** hover install switcher, landing TestFlight signup, desktop canary ([#1358](https://github.com/no-phux/phux/issues/1358)) ([93db004](https://github.com/no-phux/phux/commit/93db00453d6bb3f902026f6578aa569df235ffa3))
+
+
+### Bug Fixes
+
+* **tui:** hold the sidebar split fixed and stop pane-clear strobing ([#1356](https://github.com/no-phux/phux/issues/1356)) ([49c42a4](https://github.com/no-phux/phux/commit/49c42a40643f7721d14b92ba1b4ecae6cdd53aba))
+
+## [0.71.1](https://github.com/no-phux/phux/compare/v0.71.0...v0.71.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** bump rustls to 0.23.46 for RUSTSEC-2026-0346..0349 ([#1352](https://github.com/no-phux/phux/issues/1352)) ([5b6738c](https://github.com/no-phux/phux/commit/5b6738cdeebce780213336a786906aa4d7b23d43))
+
+
+### Performance
+
+* **desktop:** stop rebuilding the window on terminal output ([#1353](https://github.com/no-phux/phux/issues/1353)) ([79eeb8d](https://github.com/no-phux/phux/commit/79eeb8d8f2597d9f4ccd61b69866b316a7a5e03e))
+
+## [0.71.0](https://github.com/no-phux/phux/compare/v0.70.0...v0.71.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** remember recent project folders ([#1350](https://github.com/no-phux/phux/issues/1350)) ([0944244](https://github.com/no-phux/phux/commit/0944244005aedbab6328c2666aaab8f94cea292d))
+
+
+### Bug Fixes
+
+* **cockpit:** stop the lifecycle test's phux server and use the in-tree CLI ([f373ee2](https://github.com/no-phux/phux/commit/f373ee2fdf88bf83640abf2e6f1331e31702a441)), closes [#1100](https://github.com/no-phux/phux/issues/1100)
+
+## [0.70.0](https://github.com/no-phux/phux/compare/v0.69.1...v0.70.0) (2026-10-14)
+
+
+### Features
+
+* **organization:** distinguish Intake from the attention Inbox ([#1344](https://github.com/no-phux/phux/issues/1344)) ([d18a547](https://github.com/no-phux/phux/commit/d18a547fb709ea08c4b6a56772bb4d0c21e3185c))
+
+## [0.69.1](https://github.com/no-phux/phux/compare/v0.69.0...v0.69.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **release:** publish next pointers even when the tag move is refused ([49acd4d](https://github.com/no-phux/phux/commit/49acd4d824534e6e23cef4632d042841aa328565))
+
+## [0.69.0](https://github.com/no-phux/phux/compare/v0.68.0...v0.69.0) (2026-10-14)
+
+
+### Features
+
+* **cli:** standardize human output across CLI and native scripts ([#1330](https://github.com/no-phux/phux/issues/1330)) ([94b9325](https://github.com/no-phux/phux/commit/94b932599701e000511f788ddb72d3ccc0ba108e))
+
+
+### Bug Fixes
+
+* **desktop:** isolate stable resolver test from next qualification ([#1335](https://github.com/no-phux/phux/issues/1335)) ([d5d7912](https://github.com/no-phux/phux/commit/d5d7912ae363600d4e3665aa0201b31a3f514a92))
+
+## [0.68.0](https://github.com/no-phux/phux/compare/v0.67.0...v0.68.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** open durable checkout projects ([#1332](https://github.com/no-phux/phux/issues/1332)) ([f2c14df](https://github.com/no-phux/phux/commit/f2c14df1ddec0009e408ca1bcfe4ad524a2ff884))
+
+## [0.67.0](https://github.com/no-phux/phux/compare/v0.66.0...v0.67.0) (2026-10-14)
+
+
+### Features
+
+* **site:** open the tour with a quick pass before the walkthrough ([#1327](https://github.com/no-phux/phux/issues/1327)) ([cd12cda](https://github.com/no-phux/phux/commit/cd12cdad40fdc8194a1336ef4cc5c3e777b7bdb6))
+
+## [0.66.0](https://github.com/no-phux/phux/compare/v0.65.0...v0.66.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `phux workspace` and `phux move-pane` no longer parse. Use `phux archive export` / `phux archive import` (was `workspace save` / `restore`), `phux project inspect` (was `workspace inspect`), and `phux mv` (was `move-pane`).
+
+### Features
+
+* **cli:** remove the deprecated workspace and move-pane aliases ([d4d8562](https://github.com/no-phux/phux/commit/d4d8562297b6e095c166c091ccefda5d0a8870e9))
+
+
+### Bug Fixes
+
+* **client-core:** read phux.agent/v1 records with one parser ([c49cab7](https://github.com/no-phux/phux/commit/c49cab7b9d4639f63d3f990a8f352c5b70be1cee))
+* **client:** use core's APPLY_INPUT batch-size rule for prompt prechecks ([a0d2c10](https://github.com/no-phux/phux/commit/a0d2c1055f64ebb589b9194a7df89849bbbccc0e))
+* **cli:** keep suffixed session names within the byte limit and name the rules ([e3e1ce9](https://github.com/no-phux/phux/commit/e3e1ce99c1d032bb29b44458a389ede128fe1db7))
+* **ffi:** validate session names with core's rule in every binding ([7f9882d](https://github.com/no-phux/phux/commit/7f9882dabf12067db1789b538223c4c5bb8a5f7e))
+* **tui:** cull duplicate and internal chrome from the default ui ([#1325](https://github.com/no-phux/phux/issues/1325)) ([164dd86](https://github.com/no-phux/phux/commit/164dd860ba6f804e7217918d7fa468d1792e3d71))
+* **tui:** read the satellite-unreachable host with one parser ([a51a1bb](https://github.com/no-phux/phux/commit/a51a1bbb0af5be7ca585bf97b49c285e9cab9cc7))
+
+## [0.65.0](https://github.com/no-phux/phux/compare/v0.64.0...v0.65.0) (2026-10-14)
+
+
+### Features
+
+* **site:** refine landing depth and native terminal styling ([#1317](https://github.com/no-phux/phux/issues/1317)) ([b9d58dc](https://github.com/no-phux/phux/commit/b9d58dc8c83cc19682ade126ac12c0e92c12b2ab))
+
+
+### Bug Fixes
+
+* finish the 2026-10-13 landing seams (org store, import, upload lane, docs) ([#1318](https://github.com/no-phux/phux/issues/1318)) ([2aff3b7](https://github.com/no-phux/phux/commit/2aff3b7ddbc22ba56ac656d55fa437557f59dd10))
+* **server:** close session members only after the store commit ([#1296](https://github.com/no-phux/phux/issues/1296)) ([b9eeb4c](https://github.com/no-phux/phux/commit/b9eeb4c508953d54478f9c0694ce8cfdd452506f))
+
+## [0.64.0](https://github.com/no-phux/phux/compare/v0.63.0...v0.64.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** add automatic stable and next updates ([#1313](https://github.com/no-phux/phux/issues/1313)) ([e850563](https://github.com/no-phux/phux/commit/e8505635fd34adc7cb4e6e1e95598ab49380acbb))
+* **site:** draw a desktop terminal split in the link preview ([#1316](https://github.com/no-phux/phux/issues/1316)) ([3615a36](https://github.com/no-phux/phux/commit/3615a36dada73919f7415b9862093b0415f49950))
+
+
+### Bug Fixes
+
+* **cockpit:** cull duplicate lists, internals and chatter from the chrome ([#1312](https://github.com/no-phux/phux/issues/1312)) ([e12f418](https://github.com/no-phux/phux/commit/e12f41898caa38c64e2fe67d2062a6815a9cf345))
+
+## [0.63.0](https://github.com/no-phux/phux/compare/v0.62.1...v0.63.0) (2026-10-14)
+
+
+### Features
+
+* **site:** latest-releases popover under the homepage install command ([#1311](https://github.com/no-phux/phux/issues/1311)) ([b72b5fe](https://github.com/no-phux/phux/commit/b72b5fe0663a8660a3e523035c29854340178b42))
+
+
+### Bug Fixes
+
+* **cli:** keep config.toml's mode when plugin commands rewrite it ([c1e028b](https://github.com/no-phux/phux/commit/c1e028ba831126ec1b1f4fcf7443817342337cc8))
+* **desktop:** cull default UI down to what needs a person ([#1307](https://github.com/no-phux/phux/issues/1307)) ([9609826](https://github.com/no-phux/phux/commit/96098266a889856eb3839e12ef64a3ef058b5206))
+* **install:** one command, PATH that works, and a Latest that names the CLI ([#1308](https://github.com/no-phux/phux/issues/1308)) ([33bfd51](https://github.com/no-phux/phux/commit/33bfd5180329846180e6341989c21dcc9a32d990))
+
+
+### Refactors
+
+* **cli:** call library helpers directly instead of through forwarders ([cd2358d](https://github.com/no-phux/phux/commit/cd2358dcaddce016575eb0e15865ced41a6159c6))
+* **client:** drop the unused org_rename_verdict ([c7f9b1a](https://github.com/no-phux/phux/commit/c7f9b1a006e550ed3dc2046863f2efc0cf4279c2))
+* **client:** move test-only layout wire helpers into tests ([f860560](https://github.com/no-phux/phux/commit/f8605603bde677c734d94eaeab6d6ba8a509406f))
+* **client:** replace the stateless predict Overlay with render_overlay ([b7f1c40](https://github.com/no-phux/phux/commit/b7f1c4092d987397a8752deccd1feee37f9e481a))
+* **client:** share operation-id minters with the runtime ([9b2b32d](https://github.com/no-phux/phux/commit/9b2b32d9cd92609a7bfc0230ac5326dee68e447b))
+* **cli:** one Refusal type for an error document plus its exit status ([f08d3ad](https://github.com/no-phux/phux/commit/f08d3ad4926d891bc274c10aa04f387c0f530d6b))
+* delete public helpers nothing calls ([658a303](https://github.com/no-phux/phux/commit/658a3033444118dbb78dac2bf8263781aa4a99bf))
+* **ffi:** compile the agent-record projection only for encoders ([9c15f32](https://github.com/no-phux/phux/commit/9c15f322067063696786793f7e2fa61e84944eb6))
+* **server:** drop single-impl fd and spawnattr shims in fd_shrink ([a5c3e9c](https://github.com/no-phux/phux/commit/a5c3e9ce41ddbac03d7b06ddc7829df22b9d85cf))
+* **server:** gate test-only ServerState helpers behind cfg(test) ([9e3f64c](https://github.com/no-phux/phux/commit/9e3f64cc1ced92ea3c89b298e8a3921a25565b2b))
+* **server:** keep the relay stream-frame scope list in one place ([bd35698](https://github.com/no-phux/phux/commit/bd3569888106d2f2c195d7c9efeb831178c462b1))
+* **server:** lift the blanket nursery allow from state ([0125039](https://github.com/no-phux/phux/commit/0125039eaa0ba7b9ba3715720b264cce5e7988c1))
+* **server:** name the native bootstrap frame budget and share its request path ([df2e5eb](https://github.com/no-phux/phux/commit/df2e5eb7859f0be9a56b572a9893e99623c68601))
+* **server:** route Unix-millisecond clocks through one helper ([6fdc1c5](https://github.com/no-phux/phux/commit/6fdc1c525a4345d0cf86b71b11e955abcb743bca))
+* **tui:** drop no-op cast allows and hand-rolled saturating math ([76e1734](https://github.com/no-phux/phux/commit/76e1734d31c17eba41c17bffa25d3ba756e1d04d))
+* **tui:** measure chrome text with phux-config's width helpers ([11bc837](https://github.com/no-phux/phux/commit/11bc8371cbe71b38f911c4018a32053d568c33b0))
+* **tui:** one dial and one connection attach entry point ([f337e1a](https://github.com/no-phux/phux/commit/f337e1a973c7f0b3748e29cf4278c24bb53af7bf))
+
+
+### Documentation
+
+* **cli:** point dhat notes at lib.rs's module doc, in present tense ([09ebfba](https://github.com/no-phux/phux/commit/09ebfba8b78303c909c41361576d4b7651a712ac))
+* **tui:** state invariants, not history, in comments ([a773880](https://github.com/no-phux/phux/commit/a773880d7ba78d64ceaba585fe3624ef85d442b7))
+
 ## [0.62.1](https://github.com/no-phux/phux/compare/v0.62.0...v0.62.1) (2026-10-14)
 
 

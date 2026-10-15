@@ -14,6 +14,8 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct Predictor {
     state: PredictionState,
     viewport: (u16, u16),
+    /// Rows overlaid in the last publication; restoring their base grid is damage too.
+    displayed_rows: Vec<u16>,
 }
 
 impl Predictor {
@@ -24,6 +26,7 @@ impl Predictor {
         Self {
             state: PredictionState::new(PredictiveConfig::enabled(), viewport.0, viewport.1),
             viewport,
+            displayed_rows: Vec::new(),
         }
     }
 
@@ -77,6 +80,11 @@ impl Predictor {
             self.set_viewport(cols, rows);
         }
         self.state.set_alt_screen(alternate);
+        for row in self.displayed_rows.drain(..) {
+            if let Some(dirty) = buffer.row_dirty.get_mut(usize::from(row)) {
+                *dirty = true;
+            }
+        }
         if self.state.pending_len() == 0 {
             return;
         }
@@ -93,6 +101,10 @@ impl Predictor {
         let predictions = self.state.displayable(now_ms).cloned().collect::<Vec<_>>();
         for prediction in &predictions {
             overlay(prediction, cols, buffer);
+            if let Some(dirty) = buffer.row_dirty.get_mut(usize::from(prediction.row)) {
+                *dirty = true;
+                self.displayed_rows.push(prediction.row);
+            }
         }
         let (row, col) = self.state.cursor();
         cursor.row = row;
@@ -205,10 +217,26 @@ mod tests {
         };
         let mut buffer = GridBuffer {
             cells: vec![Cell::default(); 8],
+            row_dirty: vec![false; 2],
             ..GridBuffer::default()
         };
         predictor.apply(4, 2, false, &mut cursor, &mut buffer, 1);
         assert_eq!(buffer.cell_text(0), b"Z");
         assert_eq!(buffer.cell_text(1), b"");
+        assert_eq!(buffer.row_dirty, [true, false]);
+
+        predictor.clear();
+        let mut restored = GridBuffer {
+            cells: vec![Cell::default(); 8],
+            row_dirty: vec![false; 2],
+            ..GridBuffer::default()
+        };
+        predictor.apply(4, 2, false, &mut cursor, &mut restored, 2);
+        assert_eq!(restored.cell_text(0), b"");
+        assert_eq!(
+            restored.row_dirty,
+            [true, false],
+            "clear repaints the old prediction"
+        );
     }
 }

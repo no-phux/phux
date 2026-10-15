@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Desktop
@@ -19,13 +19,14 @@ Apple-silicon macOS is the first target.
 > Accessibility, notarization, and Linux are open. The Status table tracks each gap.
 
 The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
-[Cockpit](./cockpit.md) remains a separate client. The first release requires
+This is the maintained native client. The Zig [Cockpit](./cockpit.md) is
+frozen ([ADR-0167](../adr/0167-cockpit-is-frozen.md)). The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
 [Install the Desktop](../INSTALL.md#desktop-app-macos)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
 later. It downloads a published `Phux.app`, installing the CLI first if it is
-missing; Cockpit remains a separate app.
+missing.
 
 To build the same app from a checkout instead, install the CLI, set up the
 desktop tools from [Contributor setup](../SETUP.md), quit any running
@@ -43,18 +44,25 @@ appear as an empty inventory. A project navigator, tabs, splits, command
 palette, and optional inspector organize the terminal through one command
 surface.
 
-### Inbox organization
+### Intake organization
 
-Untargeted startup opens the owner's Inbox. The sidebar puts that Session and
-imported Sessions awaiting organization under **Inbox**, preserving their
-existing grouping. **Move out of Inbox** in an imported Session's menu removes
-it from intake without moving or restarting its work.
+Untargeted startup opens the owner's Intake: a real designated persistent
+Session for work created without a destination. The sidebar puts that Session
+and separate imported Sessions awaiting organization under **Intake sessions**,
+preserving their existing grouping. **Mark session organized** in an imported
+Session's menu clears only its import mark, removing it from that section
+without moving, renaming, or restarting its work. The attention **Inbox**
+lists agent attention alerts; it is not a Session or a move destination.
+The titlebar bell opens **Inbox & notifications**, separating agent alerts
+from errors and command results. Its badge counts unread alerts, not resources.
 
 - Command-click live work to toggle selection; stopped and non-Terminal
   records remain selectable in the same sidebar. **Select All** selects a
   Session's members.
 - Drag a resource (or its selected group) onto a Session, or use **Move…** /
-  `Cmd-Shift-M` and choose a destination. **Clear** cancels selection.
+  `Cmd-Shift-M` and choose a named Session or **Leave unorganized (Intake)**.
+  The designated Intake cannot be killed; terminate individual processes or
+  move them to another Session instead. **Clear** cancels selection.
 - After a committed edit, **Undo** / `Cmd-Option-Z` requests its receipt's
   inverse through the shared runtime. A conflict, changed permission, expired
   receipt, or missing original Session is a refusal, not a fabricated success.
@@ -64,6 +72,13 @@ never execution identity or process lifetime; closing a local View still only
 detaches it. Only the latest organization edit submitted by that window is
 offered for undo. Local tabs remain a View arrangement, not a shared-arrangement
 editor; Browser resources and cross-machine Workspaces are not implemented.
+
+Session names are labels, not identity. Rename dialogs keep their original
+target even if another client renames it or reuses its old name. Home and Quick
+Window follow the same session, and reconnect never recreates its old name.
+Default launches save layouts by the permanent session key, importing existing
+name-based layouts without deleting them; explicit layout paths stay unchanged.
+Unreadable or newer saved layouts remain protected from writes.
 
 ## Projects, folders, and worktrees
 
@@ -81,6 +96,21 @@ These are desktop organization terms, not new server resource kinds:
 | Terminal | The daemon-owned resource and its running process. |
 | View | An independent presentation of that terminal, with its own scroll, selection, and search state. |
 
+**Current macOS build:** **Open Folder** calls `phux project open` off the UI
+thread. One persistent Session is bound to each canonical checkout path;
+untrusted [project recipes](../CONFIG.md#project-recipes) are refused until
+approved, and a same-name checkout cannot take over another Session. The
+sidebar groups Sessions by their recorded project label (shared across Git
+worktrees), with **Open** focusing an existing project window or restoring its
+per-session layout. A new terminal in that Session starts at its recorded
+directory; reopening after the last shell exits starts a shell there without
+rerunning the recipe. **Recent folders** keeps the last eight successfully
+opened local checkout paths in socket-scoped desktop state across app restarts.
+Selecting one runs the same CLI trust and collision checks; **Forget folder**
+removes only its shortcut, not the Session, layout, or checkout. This is
+local-only: multi-folder or cross-host project references, offline remote
+folders, and cross-server Workspaces are not yet implemented.
+
 **Open Folder** reuses a matching host-qualified folder or creates a project
 for it. Worktree discovery groups checkouts without merging paths; a new
 terminal starts in the selected folder, and a shell's later `cd` never moves
@@ -97,9 +127,9 @@ previous layout and focus. A pending spawn belongs to its original destination:
 closing that destination before the reply cannot insert it into whichever pane
 happens to be focused later.
 
-**Reveal Existing** finds an existing placement and focuses its window.
+**Go to Terminal** (⌘P) finds an existing placement and focuses its window.
 **Mirror Pane** creates a new view of the same terminal in a chosen
-split, tab, or window. Both are available in the first release. Scrolling,
+split, tab, or window. Scrolling,
 selecting, or searching in one view leaves the others unchanged; all show the
 same process output. Focus and input belong to the selected view, subject to
 the server's input authority.
@@ -118,7 +148,7 @@ the result. Merely opening an observer view does not resize the application.
 | Close pane or tab | Remove those placements and release their views; leave the processes running. |
 | Close window or quit | Save local presentation and detach; daemon-owned work continues. |
 | Close one of two views | Preserve the sibling view, its state, and the shared attachment. |
-| Terminate Terminal | Explicitly request server termination; all views reflect the terminal's closure. |
+| Terminate Terminal Process… | Explicitly request server termination; all views reflect the terminal's closure. |
 | Kill Session | After confirmation, end every member and delete the session in one server command; report how many ended, or why it was refused. |
 | App crash or UI update | Reattach to the same resources if their daemon incarnation still exists. |
 | Transport interruption | Show reconnecting/stale state; runtime recovery owns retries. |
@@ -164,6 +194,11 @@ from detector fallback and exposes gaps and stale approvals. Notifications
 are deduplicated and navigate without typing; approval buttons appear only
 with server authority.
 
+**Current macOS build:** Sidebar rows keep one title and a restrained status
+marker. Hover for directory, provider, lifecycle age, and identity. **Needs
+you** keeps explicit blocked, finished, and attention states; context menus
+and organization actions remain available.
+
 ## Connections, settings, and native behavior
 
 Local and registered remote hosts open concurrently with host-qualified
@@ -174,6 +209,17 @@ catalogue and comment-preserving writer. Native menus, Dock, dialogs, drops,
 clipboard, notifications, scale, appearance, reduced motion, high contrast,
 and screen-reader navigation are in scope; titles, links, and dropped paths
 never become implicit command execution.
+
+**Current macOS build:** Appearance puts font family, size, a live sample,
+and themes first. The searchable font chooser offers installed families and
+the bundled Nerd family, retains the current selection, and identifies a
+missing font's Paper Mono substitution. Nerd symbols fall back automatically;
+the main font does not need to change. Font assets and patch attribution are
+shipped under their [Open Font License](../../clients/desktop/native/assets/fonts/JetBrainsMono-OFL.txt).
+
+Advanced holds line height, cell width, padding, and unfocused-pane dimming.
+Display edits apply live and persist with the window's layout; font selection
+follows resets and Ghostty imports while Settings stays open.
 
 ## Status
 
@@ -186,9 +232,9 @@ notarization, accessibility journeys, and Linux are not shipped.
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Inbox (else the most recent session) and never creates `default`; settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Intake (else the most recent session) and never creates `default`; display settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts, approvals, the inspector, and catalogue-backed settings (effective value, default, source) are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
-| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. Notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |
+| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
 
 ## Where to go next

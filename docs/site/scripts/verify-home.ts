@@ -34,14 +34,64 @@ try {
   const requests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => requests.push(request.url()));
+  // The TestFlight form is the one homepage network write; answer it locally.
+  const beta: { payload: Record<string, string> | null } = { payload: null };
+  await page.route("**/api/beta", async (route) => {
+    beta.payload = route.request().postDataJSON() as Record<string, string>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, status: "invited" }),
+    });
+  });
   await page.goto(base);
   assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
-  assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
+  assert.equal(await page.locator("#how-it-works").count(), 0, "no homepage explainer");
+  assert.equal(await page.locator("#install .install-request").isHidden(), true, "the hero opens on a command, not the request form");
+  assert.equal(await page.locator(".beta, #testflight").count(), 0, "the landing carries no separate TestFlight band");
   assert.equal(await page.locator(".tour").count(), 1, "one product tour");
+  assert.equal(await page.locator("body > header").count(), 1, "the landing carries one top bar");
+  assert.deepEqual(
+    await page.locator("body > header nav[aria-label='Primary navigation']").getByRole("link").allInnerTexts(),
+    ["phux", "Docs", "Try", "Source"],
+    "the top bar carries the wordmark and the Docs/Try/Source links",
+  );
+  assert.equal(await page.locator(".tagline, .tour-bar").count(), 0, "no landing tagline");
+  assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
+  const entry = page.getByRole("link", { name: "Open terminal demo", exact: true });
+  await page.locator("astro-island:not([ssr]) .tour-entry").waitFor();
+  await page.locator(".tour").scrollIntoViewIfNeeded();
+  assert.equal(await page.locator(".tour").getAttribute("data-pace"), "quick", "opens with the quick lap");
+  await page.getByRole("button", { name: "Pause tour" }).click();
+  const pausedProgress = await page.locator('.tour-chapters button[aria-pressed="true"]').getAttribute("style");
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.tour-chapters button[aria-pressed="true"]').getAttribute("style"), pausedProgress, "pause freezes the quick lap");
+  await page.getByRole("button", { name: "Play tour" }).click();
+  await page.locator('.tour[data-pace="walkthrough"]').waitFor({ timeout: 12_000 });
+  assert.equal(await page.locator('.tour-chapters button[aria-pressed="true"]').innerText(), "01 Attach", "quick lap restarts as an explanatory walkthrough");
+  assert.match(await page.locator(".tour-pace").innerText(), /Walkthrough/);
+  // The playback checks used the mouse. Exercise actual keyboard navigation
+  // before asserting :focus-visible, rather than relying on browser modality.
+  await entry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => getComputedStyle(document.querySelector(".tour-invitation")!).opacity === "1");
+  assert.equal(await page.locator(".tour-invitation").evaluate((node) => getComputedStyle(node).opacity), "1", "keyboard focus reveals the invitation");
+  const invitation = await page.locator(".tour-invitation").boundingBox();
+  const canvas = await page.locator(".tour-canvas").boundingBox();
+  assert.ok(
+    invitation && canvas && invitation.width >= canvas.width - 1 && Math.abs(invitation.height - canvas.height) <= 1,
+    "the invitation is a full-bleed overlay, not a chip in the corner",
+  );
+  assert.match(await page.locator(".tour-invitation").innerText(), /This one is real\.[\s\S]*Open a shell/);
+  assert.equal(await page.locator("dialog[open]").count(), 0, "discovery does not launch a session");
+  await entry.hover();
+  assert.equal(await page.locator("dialog[open]").count(), 0, "hover only prepares the client");
   const chapters = page.getByRole("group", { name: "Tour chapters" }).getByRole("button");
   assert.equal(await chapters.count(), 4, "four tour chapters");
   await chapters.nth(2).click();
   assert.equal(await chapters.nth(2).getAttribute("aria-pressed"), "true", "chapter selection");
+  assert.equal(await page.locator(".tour").getAttribute("data-pace"), "walkthrough", "manual chapter selection uses readable pacing");
   await page.getByRole("button", { name: "Pause tour" }).click();
   assert.ok(await page.getByRole("button", { name: "Play tour" }).isVisible(), "tour pauses");
   assert.equal(await page.locator("main .features h2").count(), 3);
@@ -49,6 +99,51 @@ try {
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install | sh");
   assert.equal(await page.getByRole("status").innerText(), "Install command copied.");
+  // The hero switcher swaps the command on hover, focus, click, and arrows, and
+  // turns the third target into the TestFlight request.
+  const command = page.locator("#install-command");
+  const line = page.locator("#install .install-line");
+  const request = page.locator("#install .install-request");
+  const target = (name: string) => page.locator(`#install [data-install-target="${name}"]`);
+  assert.deepEqual(await page.locator("#install .install-tabs button").allInnerTexts(), ["CLI", "Desktop", "Mobile"], "three install targets");
+  await target("desktop").hover();
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "hover swaps to the desktop installer");
+  await target("mobile").click();
+  assert.equal(await target("mobile").getAttribute("aria-pressed"), "true", "the clicked target is pressed");
+  assert.ok(await request.isVisible(), "Mobile asks for an address instead of printing a command");
+  assert.equal(await line.isHidden(), true, "the command line steps aside for the request form");
+  assert.match(await page.locator("#install-note").innerText(), /TestFlight/, "the note describes the mobile target");
+  await target("mobile").focus();
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "arrow keys move the target back to Desktop");
+  assert.equal(await request.isHidden(), true, "a command target hides the request form");
+  assert.equal(await line.isVisible(), true, "a command target restores the command line");
+  await page.getByRole("button", { name: "Copy install command" }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh", "copy follows the keyboard target");
+  // Regression: a content-sized dock widened with the command and slid the
+  // targets out from under the pointer. The dock and its targets are pinned.
+  const box = (selector: string) =>
+    page.locator(selector).evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) };
+    });
+  const dock = await box("#install");
+  const cliTarget = await box('#install [data-install-target="cli"]');
+  for (const name of ["desktop", "mobile", "cli"]) {
+    await target(name).hover();
+    assert.deepEqual(await box("#install"), dock, `the dock keeps its box while ${name} is previewed`);
+    assert.deepEqual(await box('#install [data-install-target="cli"]'), cliTarget, `targets stay pinned while ${name} is previewed`);
+  }
+  // The Mobile target carries the same TestFlight request /more posts.
+  await target("mobile").click();
+  await request.locator("input[name=email]").fill("iphone@example.com");
+  await request.locator("button[type=submit]").click();
+  await page.waitForFunction(() => document.querySelector("#beta-note")?.textContent?.includes("Invite sent") ?? false);
+  assert.match(await page.locator("#beta-note").innerText(), /Invite sent/, "the hero reports the invite");
+  assert.equal(beta.payload?.email, "iphone@example.com", "the hero request posts the address");
+  assert.equal(beta.payload?.website, "", "the honeypot stays empty");
+  // Leave the longest command up for the overflow pass below.
+  await target("desktop").click();
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no overflow at ${width}px`);
@@ -64,6 +159,10 @@ try {
   await page.goto(`${base}/more`);
   assert.equal(await page.getByRole("link", { name: /Built for automation/ }).getAttribute("href"), "https://docs.phux.sh/consumers/getting-started");
   assert.ok(await page.locator("#testflight form").isVisible(), "iPhone signup is preserved");
+  await page.locator("#testflight input[name=email]").fill("more@example.com");
+  await page.locator("#testflight button[type=submit]").click();
+  await page.waitForFunction(() => document.querySelector("#beta-note")?.textContent?.includes("Invite sent") ?? false);
+  assert.equal(beta.payload?.email, "more@example.com", "/more still posts the TestFlight request");
   assert.ok(await page.locator("#beta form").isVisible(), "release signup is preserved");
   assert.equal(await page.locator("[data-copy]").count(), 3, "alternate installers preserved");
   await page.goto(`${base}/privacy`);
@@ -78,6 +177,7 @@ try {
   await stillPage.goto(base);
   await stillPage.locator("astro-island:not([ssr]) .tour").waitFor();
   assert.equal(await stillPage.locator(".tour-play").count(), 0, "reduced motion does not autoplay");
+  assert.equal(await stillPage.locator(".tour-pace").count(), 0, "reduced motion does not promise a moving quick pass");
   assert.match(await stillPage.locator(".tour-terminal").innerText(), /Finished/, "reduced motion shows the settled chapter");
   await stillContext.close();
   const staticContext = await browser.newContext({ javaScriptEnabled: false });
@@ -88,7 +188,7 @@ try {
   assert.equal(await staticPage.getByRole("link", { name: /Try it in your browser/ }).getAttribute("href"), "/embed");
   assert.match(await staticPage.locator(".tour-terminal").innerText(), /Finished/, "no-JS tour shows a settled scene");
   await staticContext.close();
-  console.log(`PASS home: copy, tour chapters/pause/reduced motion, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
+  console.log(`PASS home: copy, quick lap → walkthrough, chapters/pause/reduced motion, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
 } finally {
   await browser.close();
   server.stop(true);

@@ -1,6 +1,6 @@
 //! Which session a window opens when none is named.
 //!
-//! A server with `ORGANIZATION` always has the owner's Inbox, so an untargeted
+//! A server with `ORGANIZATION` always has the owner's Intake, so an untargeted
 //! launch opens it. A server without it opens its most recent session. Neither
 //! path creates a session. A session the user names explicitly and that does
 //! not exist is created persistent: through `SESSION_CREATE` when the server
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use phux_client_runtime::control::{ControlOptions, Event, Status, Topology, mint_operation};
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::OperationId;
+use phux_protocol::ids::{OperationId, SessionKey};
 use phux_protocol::wire::frame::{Command, LaunchSpec, SessionLifetime};
 
 use super::org::outcome_sentence;
@@ -33,11 +33,11 @@ pub enum Home {
     Existing(String),
     /// The explicitly requested session does not exist yet.
     Missing(String),
-    /// No session was named and the server has neither an Inbox nor a session.
+    /// No session was named and the server has neither an Intake nor a session.
     Nothing,
 }
 
-/// The explicit request when it exists or is missing; else the Inbox (named
+/// The explicit request when it exists or is missing; else the Intake (named
 /// by `inbox`); else the most recently created session.
 #[must_use]
 pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>) -> Home {
@@ -60,7 +60,7 @@ pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>)
         })
 }
 
-/// The Inbox session's name: from the topology when it lists the Inbox, else
+/// The Intake session's name: from the topology when it lists the Intake, else
 /// from the organization replica's record.
 #[must_use]
 pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
@@ -69,7 +69,7 @@ pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
         return Some(session.name.clone());
     }
     client
-        .inbox()
+        .intake()
         .sessions
         .into_iter()
         .find(|session| session.key == key)
@@ -77,15 +77,73 @@ pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 }
 
 /// The session a window on `socket` opens: `requested` (created persistent
-/// when missing), else the Inbox, else the most recent session.
+/// when missing), else the Intake, else the most recent session.
 ///
 /// # Errors
 ///
 /// A sentence for the window when the server cannot be read, the create is
 /// refused, or there is nothing to open.
 pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<String, String> {
-    let probe = Probe::connect(socket)?;
+    let probe = Probe::connect(Target::uds(socket.to_path_buf()))?;
     let result = probe.resolve(phux, socket, requested);
+    probe.client.close();
+    result
+}
+
+/// The session a window on registered host `name` opens: its Intake, else its
+/// most recent session. Nothing is created on the remote.
+///
+/// # Errors
+///
+/// A sentence for the notification when the host is not registered, cannot
+/// be reached, or has nothing to open.
+pub fn open_remote_home(name: &str) -> Result<String, String> {
+    let target = Target::resolve(name, None)?;
+    let probe = Probe::connect(target)?;
+    let result = probe.ready().and_then(|topology| {
+        let inbox = inbox_name(&probe.client, &topology);
+        match choose(None, &topology, inbox.as_deref()) {
+            Home::Existing(name) => Ok(name),
+            Home::Missing(_) | Home::Nothing => Err(format!(
+                "{name} has no sessions yet. Run `phux attach {name}` once to start one."
+            )),
+        }
+    });
+    probe.client.close();
+    result
+}
+
+/// Reconnect to an existing home only. A persistent key wins over a reused name.
+pub(crate) fn existing_home(
+    socket: &Path,
+    name: &str,
+    key: Option<SessionKey>,
+) -> Result<String, String> {
+    existing_target_home(Target::uds(socket.to_path_buf()), name, key)
+}
+
+pub(crate) fn existing_remote_home(
+    host: &str,
+    name: &str,
+    key: Option<SessionKey>,
+) -> Result<String, String> {
+    existing_target_home(Target::resolve(host, None)?, name, key)
+}
+
+fn existing_target_home(
+    target: Target,
+    name: &str,
+    key: Option<SessionKey>,
+) -> Result<String, String> {
+    let probe = Probe::connect(target)?;
+    let result = probe.ready().and_then(|topology| {
+        let session = match key {
+            Some(key) => topology.session_keyed(&key),
+            None => topology.session_named(name),
+        };
+        session.map(|session| session.name.clone()).ok_or_else(||
+            "The home session no longer exists. Open an existing session or create a new one explicitly.".to_owned())
+    });
     probe.client.close();
     result
 }
@@ -105,9 +163,9 @@ struct Probe {
 }
 
 impl Probe {
-    fn connect(socket: &Path) -> Result<Self, String> {
+    fn connect(target: Target) -> Result<Self, String> {
         let client = Runtime::connect(
-            Target::uds(socket.to_path_buf()),
+            target,
             ClientOptions {
                 control: ControlOptions {
                     client_name: "phux-desktop".to_owned(),
@@ -142,7 +200,7 @@ impl Probe {
             Home::Missing(name) if self.organization() => self.create(&name).map(|()| name),
             Home::Missing(name) => create_with_cli(phux, socket, &name).map(|()| name),
             Home::Nothing => Err(
-                "This server has no sessions and no Inbox. Create one with `phux new -s NAME`, then reconnect."
+                "This server has no sessions and no Intake. Create one with `phux new -s NAME`, then reconnect."
                     .to_owned(),
             ),
         }
@@ -310,6 +368,52 @@ mod tests {
             choose(Some("new"), &graph, Some("inbox")),
             Home::Missing("new".into())
         );
+    }
+
+    #[test]
+    fn home_identity_follows_renames_without_retargeting_to_the_old_name() {
+        let home_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let other_key = phux_protocol::ids::SessionKey::new([2; 16]).unwrap();
+        let mut home = session(1, "Intake", 10);
+        home.key = Some(home_key);
+        let mut name = "Intake".to_owned();
+        let mut key = None;
+        crate::connection::sync_home_name(&topology(vec![home.clone()]), &mut name, &mut key);
+        assert_eq!(key, Some(home_key));
+        home.name = "Unorganized".to_owned();
+        let mut other = session(2, "Intake", 11);
+        other.key = Some(other_key);
+        crate::connection::sync_home_name(&topology(vec![other, home]), &mut name, &mut key);
+        assert_eq!(name, "Unorganized");
+        assert_eq!(key, Some(home_key));
+    }
+
+    #[test]
+    fn a_missing_home_key_does_not_adopt_a_different_session_with_the_old_name() {
+        let mut replacement = session(2, "Intake", 11);
+        replacement.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
+        let home_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let mut key = Some(home_key);
+        let mut name = "Intake".to_owned();
+        crate::connection::sync_home_name(&topology(vec![replacement]), &mut name, &mut key);
+        assert_eq!(key, Some(home_key));
+    }
+
+    #[test]
+    fn intake_kill_protection_follows_the_designated_key_not_names_or_import_flags() {
+        let intake_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let mut intake = session(1, "Renamed intake", 10);
+        intake.key = Some(intake_key);
+        let mut imported = session(2, "Intake", 11);
+        imported.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
+        imported.awaiting_organization = true;
+        let mut graph = topology(vec![intake, imported]);
+        graph.inbox = Some(intake_key);
+        assert!(crate::connection::designated_intake_session(&graph, 1));
+        assert!(!crate::connection::designated_intake_session(&graph, 2));
+        assert!(!crate::connection::designated_intake_session(&graph, 3));
+        graph.inbox = None;
+        assert!(!crate::connection::designated_intake_session(&graph, 1));
     }
 
     #[test]

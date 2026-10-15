@@ -9,7 +9,7 @@ last-reviewed: 2026-10-13
 **TL;DR.** A resource belongs to exactly one session on its owning server.
 A session is a persistent record with an explicit lifetime, persistent or
 ephemeral, chosen at create. Window is deleted; tabs and splits are groups
-in the session's arrangement. Each server designates one persistent Inbox
+in the session's arrangement. Each server designates one persistent Intake
 session for unorganized work. Workspaces link sessions across servers and
 arrive last. Closing a view never ends work.
 
@@ -74,13 +74,16 @@ resources.
 7. **Close is not kill.** Closing a view, a tab, or a client removes
    presentation only. A verb named kill terminates execution, explicitly.
    A verb named close never does.
-8. **Inbox.** The authority record designates one persistent ordinary
-   session as its Inbox. Resources created without a session go there.
+8. **Intake.** The authority record designates one persistent ordinary
+   session as its Intake. Resources created without a session go there.
    It cannot be deleted or made ephemeral while designated. Imported
    sessions keep their membership and arrangement and carry an
-   `awaiting_organization` mark until someone resolves it. The Inbox view
-   is a permission-filtered projection over Inbox sessions and marked
-   groups, aggregated across connected authorities by the client runtime.
+   `awaiting_organization` mark until someone resolves it. The Intake view
+   is a permission-filtered projection over designated Intake sessions and
+   separate marked sessions across connected authorities. Mark session organized
+   clears only the import mark. Attention Inbox is a different projection.
+   The wire `INBOX_RESOLVE` and raw `inbox` field retain their spellings
+   for compatibility; neither names attention Inbox.
 9. **Shared arrangements, local focus.** A session may have one shared
    arrangement, owned by its server and changed by revision. Personal
    arrangements live in client preferences and cannot change membership.
@@ -120,8 +123,9 @@ ownership.
   show them with counts, or users will not see why records accumulate.
 - Old clients still read one window per session. The server synthesizes
   it from the arrangement until the translation layer is deleted.
-- Killing a whole session is several commands rather than one atomic
-  cascade, and reports per-target results.
+- Killing a whole session is one `SessionKill` (§6), so it ends work that
+  joined meanwhile too; a caller that wants only the members it saw kills
+  those resources instead.
 - Workspaces are designed now but not built, so stage-1 surfaces must not
   claim cross-machine grouping.
 

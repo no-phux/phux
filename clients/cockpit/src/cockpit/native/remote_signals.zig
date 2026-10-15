@@ -34,20 +34,6 @@ fn historyState(presentation: model_module.Presentation) State {
     return .quiet;
 }
 
-pub fn label(value: State) []const u8 {
-    return switch (value) {
-        .quiet => "",
-        .attaching => "Loading terminal",
-        .recovering => "Recovering terminal: waiting for snapshot",
-        .frozen => "Terminal frozen: waiting for recovery",
-        .unavailable => "Terminal unavailable",
-        .ended => "Terminal ended",
-        .history_loading => "Loading earlier history",
-        .history_available => "Earlier history available",
-        .driven_elsewhere => "Another client is driving",
-    };
-}
-
 pub fn windowState(model: *const model_module.Model, window: usize) State {
     const workspace = model.wsAtConst(window) orelse return .quiet;
     const ref = workspace.focusedTerminalRef() orelse return .quiet;

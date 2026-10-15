@@ -53,6 +53,8 @@
 # scripts/apple-toolchain-env.sh.
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 INVOKE_CWD="$PWD"
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,12 +69,12 @@ while [[ $# -gt 0 ]]; do
     --full) MODE="full" ;;
     --dev) MODE="dev" ;;
     --profile)
-        [[ $# -ge 2 ]] || { echo "--profile needs a value" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { phux_error "--profile needs a value"; exit 2; }
         PROFILE="$2"
         shift
         ;;
     --out)
-        [[ $# -ge 2 ]] || { echo "--out needs a value" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { phux_error "--out needs a value"; exit 2; }
         OUT="$2"
         shift
         ;;
@@ -83,7 +85,7 @@ while [[ $# -gt 0 ]]; do
         exit 0
         ;;
     *)
-        echo "unknown argument: $1 (see --help)" >&2
+        phux_error "unknown argument: $1 (see --help)"
         exit 2
         ;;
     esac
@@ -93,7 +95,7 @@ done
 case "$PROFILE" in
 ffi-release | ffi-dev) ;;
 *)
-    echo "error: profile must be ffi-release or ffi-dev (panic=unwind at the C boundary); got $PROFILE" >&2
+    phux_error "profile must be ffi-release or ffi-dev (panic=unwind at the C boundary); got $PROFILE"
     exit 2
     ;;
 esac
@@ -125,12 +127,12 @@ IOS_FLOOR="${PHUX_FFI_IOS_DEPLOYMENT_TARGET:-26.0}"
 MACOS_FLOOR="${PHUX_FFI_MACOS_DEPLOYMENT_TARGET:-26.0}"
 
 die() {
-    echo "build-ffi-xcframework: error: $*" >&2
+    phux_error "$*"
     exit 1
 }
 
 step() {
-    echo "==> $*"
+    phux_info "$*"
 }
 
 # Every scratch directory the script creates, removed on any exit so a
@@ -270,7 +272,7 @@ build_slices() {
     done
     step "building $CRATE ($PROFILE) per target"
     for target in "${TARGETS[@]}"; do
-        echo "    - $target"
+        phux_info "target: $target"
         # staticlib only: the crate also declares cdylib and rlib, and the
         # xcframework carries archives. This is the same invocation Cockpit's
         # release uses, plus --target.
@@ -506,9 +508,9 @@ main() {
         smoke_consumer
     fi
     step "done"
-    echo "    xcframework: ${OUT#"$ROOT"/}/PhuxFFI.xcframework"
-    echo "    provenance:  ${OUT#"$ROOT"/}/provenance"
-    [[ "$MODE" == "full" ]] || echo "    note: simulator + macOS only; --full adds the device slice"
+    phux_info "xcframework: ${OUT#"$ROOT"/}/PhuxFFI.xcframework"
+    phux_info "provenance:  ${OUT#"$ROOT"/}/provenance"
+    [[ "$MODE" == "full" ]] || phux_info "simulator + macOS only; --full adds the device slice"
 }
 
 main

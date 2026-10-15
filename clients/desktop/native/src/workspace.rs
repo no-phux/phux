@@ -87,6 +87,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// The home remains the same session when its server-side name changes.
+    pub(crate) fn set_home_session(&mut self, session: String) {
+        self.session = session;
+    }
+
     /// A window's workspace over `session`. Every operation that touches the
     /// runtime takes the window's [`Connection`].
     #[must_use]
@@ -756,6 +761,14 @@ impl Workspace {
                 .unwrap_or_default();
             self.tabs = tabs;
             self.active_id = active;
+            // An explicit project open may have reseeded a shell since this
+            // window last saved its layout. Keep the splits, but show that
+            // shell too (or reveal its existing placement).
+            if let Some(initial) = self.options.initial_terminal.as_ref()
+                && let Some(pane) = connection.pane(initial).cloned()
+            {
+                self.open(connection, &pane);
+            }
             return;
         }
         self.open_initial(connection);
@@ -1118,4 +1131,17 @@ pub fn snapshot_layout(
     }
     let (tabs, active) = workspace.snapshot();
     Some(save_layout(server, &tabs, display, Some(active.as_str())))
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::{Workspace, WorkspaceOptions};
+
+    #[test]
+    fn home_session_name_tracks_the_same_renamed_session() {
+        let mut workspace = Workspace::new("Intake".to_owned(), WorkspaceOptions::default());
+        workspace.set_home_session("Unorganized".to_owned());
+        assert_eq!(workspace.session, "Unorganized");
+        assert!(workspace.tabs.is_empty());
+    }
 }

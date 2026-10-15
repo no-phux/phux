@@ -131,4 +131,8 @@ test("the app plist identifies the GPUI host and a stable release version", () =
   expect(plist).toContain("<key>PhuxDesktopHost</key><string>gpui</string>");
   expect(plist).toContain("<key>CFBundleIdentifier</key><string>dev.phux.desktop</string>");
   expect(plist).not.toContain(".node");
+  expect(plist).toContain("<key>PhuxDesktopChannel</key><string>stable</string>");
+  expect(infoPlist("0.1.0", "abc", "next")).toContain(
+    "<key>PhuxDesktopChannel</key><string>next</string>",
+  );
 });

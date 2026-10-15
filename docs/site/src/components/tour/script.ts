@@ -49,9 +49,11 @@ export type Chapter = {
   steps: readonly Step[];
 };
 
-export const SIGNAL_SECONDS = 0.9;
-const TAP_SECONDS = 0.6;
-const TYPE_CPS = 24;
+// Connection motion stays crisp even in the explanatory lap. Reading time
+// belongs after a result, not in pretend network latency or slow typing.
+export const SIGNAL_SECONDS = 0.18;
+const TAP_SECONDS = 0.22;
+const TYPE_CPS = 110;
 const VIEWS: readonly NodeId[] = ["terminal", "desktop", "phone"];
 
 const BASE: Frame = {
@@ -89,24 +91,24 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "One terminal. Every screen.",
     text: "The server owns the shell. Your terminal, Phux.app, and your phone are views of the same running process.",
     href: "/concepts",
-    seconds: 8.5,
+    seconds: 4.2,
     steps: [
-      { at: 0.2, type: "phux attach api", pane: "shell" },
-      { at: 1.0, signal: "attach", from: "terminal", to: "server" },
-      { at: 1.4, view: "attached", client: "terminal" },
-      { at: 1.6, type: "cargo build --release", pane: "build" },
-      { at: 2.6, signal: "keys", from: "terminal", to: "server" },
-      { at: 2.9, status: "working", pane: "build" },
-      { at: 3.0, line: "   Compiling api v0.4.2", pane: "build", tone: "dim" },
-      { at: 3.2, signal: "attach", from: "desktop", to: "server" },
-      { at: 3.6, view: "attached", client: "desktop" },
-      { at: 4.0, signal: "attach", from: "phone", to: "server" },
-      { at: 4.4, view: "attached", client: "phone" },
-      { at: 4.8, line: "   Compiling tokio v1.47.1", pane: "build", tone: "dim" },
-      { at: 4.9, signal: "output", from: "server", to: VIEWS },
-      { at: 6.2, line: "    Finished `release` in 41s", pane: "build", tone: "ok" },
-      { at: 6.2, status: "done", pane: "build" },
-      { at: 6.3, signal: "output", from: "server", to: VIEWS },
+      { at: 0.08, type: "phux attach api", pane: "shell" },
+      { at: 0.24, signal: "attach", from: "terminal", to: "server" },
+      { at: 0.44, view: "attached", client: "terminal" },
+      { at: 0.48, type: "cargo build --release", pane: "build" },
+      { at: 0.70, signal: "keys", from: "terminal", to: "server" },
+      { at: 0.90, status: "working", pane: "build" },
+      { at: 0.92, line: "   Compiling api v0.4.2", pane: "build", tone: "dim" },
+      { at: 0.96, signal: "attach", from: "desktop", to: "server" },
+      { at: 1.16, view: "attached", client: "desktop" },
+      { at: 1.20, signal: "attach", from: "phone", to: "server" },
+      { at: 1.40, view: "attached", client: "phone" },
+      { at: 1.52, line: "   Compiling tokio v1.47.1", pane: "build", tone: "dim" },
+      { at: 1.54, signal: "output", from: "server", to: VIEWS },
+      { at: 2.06, line: "    Finished `release` in 41s", pane: "build", tone: "ok" },
+      { at: 2.06, status: "done", pane: "build" },
+      { at: 2.08, signal: "output", from: "server", to: VIEWS },
     ],
   },
   {
@@ -115,25 +117,25 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "Agents work in the open.",
     text: "Claude runs in a pane and drives other terminals through phux. Its state reaches every screen, so you see when it needs you.",
     href: "/consumers/getting-started",
-    seconds: 9,
+    seconds: 4.8,
     steps: [
       { at: 0, focus: "claude" },
-      { at: 0.3, type: "fix the flaky migration test", pane: "claude", prompt: "> " },
-      { at: 1.6, signal: "keys", from: "terminal", to: "server" },
-      { at: 1.9, status: "working", pane: "claude" },
-      { at: 2.0, line: "Reading migrations/0042_users.sql", pane: "claude", tone: "dim" },
-      { at: 2.8, log: "@7 → phux_run @3 cargo test" },
-      { at: 2.9, type: "cargo test", pane: "build", agent: true },
-      { at: 3.5, status: "working", pane: "build" },
-      { at: 3.7, line: "running 128 tests", pane: "build", tone: "dim" },
-      { at: 3.8, signal: "output", from: "server", to: VIEWS },
-      { at: 4.9, line: "test result: ok. 128 passed", pane: "build", tone: "ok" },
-      { at: 4.9, status: "done", pane: "build" },
-      { at: 5.6, line: "Tests pass. Apply 0042 to staging? (y/n)", pane: "claude", tone: "ask" },
-      { at: 5.6, status: "blocked", pane: "claude" },
-      { at: 5.6, log: "@7 blocked · needs input" },
-      { at: 5.7, signal: "needs you", from: "server", to: VIEWS },
-      { at: 6.2, notice: "claude needs you · api/@7" },
+      { at: 0.08, type: "fix the flaky migration test", pane: "claude", prompt: "> " },
+      { at: 0.36, signal: "keys", from: "terminal", to: "server" },
+      { at: 0.56, status: "working", pane: "claude" },
+      { at: 0.58, line: "Reading migrations/0042_users.sql", pane: "claude", tone: "dim" },
+      { at: 0.90, log: "@7 → phux_run @3 cargo test" },
+      { at: 0.92, type: "cargo test", pane: "build", agent: true },
+      { at: 1.08, status: "working", pane: "build" },
+      { at: 1.10, line: "running 128 tests", pane: "build", tone: "dim" },
+      { at: 1.12, signal: "output", from: "server", to: VIEWS },
+      { at: 1.48, line: "test result: ok. 128 passed", pane: "build", tone: "ok" },
+      { at: 1.48, status: "done", pane: "build" },
+      { at: 1.90, line: "Tests pass. Apply 0042 to staging? (y/n)", pane: "claude", tone: "ask" },
+      { at: 1.90, status: "blocked", pane: "claude" },
+      { at: 1.90, log: "@7 blocked · needs input" },
+      { at: 1.92, signal: "needs you", from: "server", to: VIEWS },
+      { at: 2.12, notice: "claude needs you · api/@7" },
     ],
   },
   {
@@ -142,23 +144,23 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "Close the laptop. Keep the work.",
     text: "Views come and go; the terminals keep running on the server. Answer the agent from your phone.",
     href: "/concepts",
-    seconds: 8,
+    seconds: 4.5,
     steps: [
-      { at: 0.6, signal: "detach", from: "terminal", to: "server" },
-      { at: 0.9, view: "detached", client: "terminal" },
-      { at: 0.9, line: "[detached (from session api)]", pane: "shell", tone: "dim" },
-      { at: 1.5, signal: "detach", from: "desktop", to: "server" },
-      { at: 1.8, view: "detached", client: "desktop" },
-      { at: 2.8, tap: "y" },
-      { at: 3.0, signal: "y", from: "phone", to: "server" },
-      { at: 3.5, line: "y", pane: "claude", tone: "cmd" },
-      { at: 3.5, status: "working", pane: "claude" },
-      { at: 3.5, notice: null },
-      { at: 3.5, log: "@7 input from phone" },
-      { at: 3.6, line: "Applying 0042_users to staging…", pane: "claude", tone: "dim" },
-      { at: 5.2, line: "✓ Staging migrated.", pane: "claude", tone: "ok" },
-      { at: 5.2, status: "done", pane: "claude" },
-      { at: 5.3, signal: "output", from: "server", to: "phone" },
+      { at: 0.08, signal: "detach", from: "terminal", to: "server" },
+      { at: 0.28, view: "detached", client: "terminal" },
+      { at: 0.28, line: "[detached (from session api)]", pane: "shell", tone: "dim" },
+      { at: 0.34, signal: "detach", from: "desktop", to: "server" },
+      { at: 0.54, view: "detached", client: "desktop" },
+      { at: 1.30, tap: "y" },
+      { at: 1.34, signal: "y", from: "phone", to: "server" },
+      { at: 1.54, line: "y", pane: "claude", tone: "cmd" },
+      { at: 1.54, status: "working", pane: "claude" },
+      { at: 1.54, notice: null },
+      { at: 1.54, log: "@7 input from phone" },
+      { at: 1.56, line: "Applying 0042_users to staging…", pane: "claude", tone: "dim" },
+      { at: 2.08, line: "✓ Staging migrated.", pane: "claude", tone: "ok" },
+      { at: 2.08, status: "done", pane: "claude" },
+      { at: 2.10, signal: "output", from: "server", to: "phone" },
     ],
   },
   {
@@ -167,24 +169,45 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "Bring your other machines.",
     text: "Pair a host over SSH once; after that the terminal attaches over QUIC. Its work keeps running where it started.",
     href: "/remote-access",
-    seconds: 8.5,
+    seconds: 4.2,
     steps: [
       { at: 0, log: "" },
-      { at: 0.3, type: "phux --remote me@devbox", pane: "shell" },
-      { at: 1.6, remote: true },
-      { at: 1.7, signal: "SSH pair", from: "terminal", to: "devbox" },
-      { at: 2.7, signal: "QUIC", from: "terminal", to: "devbox" },
-      { at: 3.2, view: "attached", client: "terminal" },
-      { at: 3.2, focus: "train" },
-      { at: 4.0, line: "epoch 12/50  loss 0.231", pane: "train", tone: "dim" },
-      { at: 4.1, signal: "output", from: "devbox", to: "terminal" },
-      { at: 5.4, line: "epoch 13/50  loss 0.219", pane: "train", tone: "dim" },
-      { at: 5.5, signal: "output", from: "devbox", to: "terminal" },
-      { at: 6.8, line: "epoch 14/50  loss 0.207", pane: "train", tone: "dim" },
-      { at: 6.9, signal: "output", from: "devbox", to: "terminal" },
+      { at: 0.08, type: "phux --remote me@devbox", pane: "shell" },
+      { at: 0.32, remote: true },
+      { at: 0.34, signal: "SSH pair", from: "terminal", to: "devbox" },
+      { at: 0.60, signal: "QUIC", from: "terminal", to: "devbox" },
+      { at: 0.80, view: "attached", client: "terminal" },
+      { at: 0.80, focus: "train" },
+      { at: 1.04, line: "epoch 12/50  loss 0.231", pane: "train", tone: "dim" },
+      { at: 1.06, signal: "output", from: "devbox", to: "terminal" },
+      { at: 1.40, line: "epoch 13/50  loss 0.219", pane: "train", tone: "dim" },
+      { at: 1.42, signal: "output", from: "devbox", to: "terminal" },
+      { at: 1.76, line: "epoch 14/50  loss 0.207", pane: "train", tone: "dim" },
+      { at: 1.78, signal: "output", from: "devbox", to: "terminal" },
     ],
   },
 ];
+
+export type Playback = {
+  chapter: number;
+  time: number;
+  pace: "quick" | "walkthrough";
+};
+
+export const QUICK_RATE = 3;
+
+/** Advance one visible animation frame (delta is capped at 0.1s by the player).
+ * The opening lap is quick; every subsequent lap uses the readable timeline.
+ * Carry wall-clock overshoot across the pace change rather than losing time.
+ */
+export function advanceTour(position: Playback, delta: number): Playback {
+  const rate = position.pace === "quick" ? QUICK_RATE : 1;
+  const remaining = (CHAPTERS[position.chapter]!.seconds - position.time) / rate;
+  if (delta < remaining) return { ...position, time: position.time + delta * rate };
+  const chapter = (position.chapter + 1) % CHAPTERS.length;
+  const pace = chapter === 0 ? "walkthrough" : position.pace;
+  return { chapter, pace, time: (delta - remaining) * (pace === "quick" ? QUICK_RATE : 1) };
+}
 
 function clone(frame: Frame): Frame {
   const panes = {} as Record<PaneId, Pane>;

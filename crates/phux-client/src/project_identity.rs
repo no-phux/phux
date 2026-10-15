@@ -1,4 +1,4 @@
-//! Project identity discovery (ADR-0167).
+//! Project identity discovery (ADR-0168).
 //!
 //! Discovery reads git's own files: the `.git` directory or `gitdir:` file,
 //! `commondir`, `HEAD`, and the common `config`. It runs no `git` process,

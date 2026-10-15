@@ -3,13 +3,15 @@
 # contract: allowlisted SKILL.md files match, openai.yaml is present, beads
 # is absent, and README/LICENSE exist.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/phux-skills-export.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 fail() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -60,4 +62,4 @@ for dir in "${TMP}/skills"/*; do
   [[ "$found" -eq 1 ]] || fail "unexpected exported skill: ${base}"
 done
 
-echo "product skills export check passed"
+phux_ok "product skills export check passed"

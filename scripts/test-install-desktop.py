@@ -111,6 +111,9 @@ cp "$fixture" "$out"
                 env = {
                     **os.environ, "FIXTURE": str(root), "TMPDIR": str(index_temp),
                     "PATH": f"{root}:{os.environ['PATH']}",
+                    # The Next qualification job exports PHUX_CHANNEL=next;
+                    # this fixture specifically exercises the stable default.
+                    "PHUX_CHANNEL": "",
                 }
                 result = run(
                     SHELL, str(INSTALLER), "--dry-run",
@@ -126,6 +129,152 @@ cp "$fixture" "$out"
                 self.assertEqual(list(index_temp.iterdir()), [])
                 self.assertFalse((root / "Applications").exists())
                 self.assertFalse((root / "launchers").exists())
+
+
+class DesktopPublication(unittest.TestCase):
+    """Run the workflow's actual publication shell against an inert gh mock."""
+
+    def publish(self, existing=True, corrupt=False, fail_pointer=False, fail_previous=False, already_current=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            sha = "a" * 40
+            previous = "b" * 40
+            archive = f"phux-desktop-next.{sha}-macos-arm64.zip"
+            (dist / archive).write_bytes(b"qualified archive")
+            digest = hashlib.sha256((dist / archive).read_bytes()).hexdigest()
+            (dist / f"{archive}.sha256").write_text(f"{digest}  {archive}\n")
+            (dist / "desktop-channel.json").write_text(json.dumps({
+                "schema_version": 1, "channel": "next", "product": "desktop",
+                "sha": sha, "version": VERSION, "archive": archive,
+                "sha256": "0" * 64 if corrupt else digest,
+            }))
+            names = [archive, f"{archive}.sha256",
+                     f"phux-desktop-next.{previous}-macos-arm64.zip",
+                     f"phux-desktop-next.{previous}-macos-arm64.zip.sha256",
+                     f"phux-desktop-next.{'c' * 40}-macos-arm64.zip",
+                     "phux-next.cli.tar.gz", "phux-cockpit-next.cockpit.zip",
+                     "channel.json", "cockpit-channel.json", "desktop-channel.json"]
+            (root / "names.json").write_text(json.dumps(names))
+            mock = root / "gh"
+            mock.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['MOCK_ROOT'])
+args = sys.argv[1:]
+with (root / 'calls.jsonl').open('a') as log:
+    log.write(json.dumps(args) + '\\n')
+if args[:3] == ['release', 'view', 'next']:
+    if os.environ['MOCK_EXISTING'] == '0' and not (root / 'created').exists():
+        sys.exit(1)
+    if '--json' in args:
+        print('\\n'.join(json.loads((root / 'names.json').read_text())))
+elif args[:2] == ['release', 'download']:
+    if os.environ['MOCK_FAIL_PREVIOUS'] == '1':
+        sys.exit(1)
+    directory = pathlib.Path(args[args.index('--dir') + 1])
+    previous = 'a' if os.environ['MOCK_ALREADY_CURRENT'] == '1' else 'b'
+    (directory / 'desktop-channel.json').write_text(json.dumps({'sha': previous * 40}))
+elif args[:2] == ['release', 'upload']:
+    if 'dist/desktop-channel.json' in args and os.environ['MOCK_FAIL_POINTER'] == '1':
+        sys.exit(1)
+elif args[:2] == ['release', 'create']:
+    (root / 'created').touch()
+''')
+            mock.chmod(0o755)
+            workflow = (ROOT / ".github/workflows/next-release.yml").read_text()
+            section = workflow.split("      - name: Publish Phux Desktop onto the next prerelease\n", 1)[1]
+            script = section.split("        run: |\n", 1)[1]
+            script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+            result = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True, text=True,
+                                    env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                                         "SHA": sha, "GH_REPO": "test/phux", "MOCK_ROOT": str(root),
+                                          "MOCK_EXISTING": str(int(existing)), "MOCK_FAIL_POINTER": str(int(fail_pointer)),
+                                          "MOCK_FAIL_PREVIOUS": str(int(fail_previous)), "MOCK_ALREADY_CURRENT": str(int(already_current))})
+            calls = root / "calls.jsonl"
+            return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+    def test_existing_next_uploads_pointer_last_and_prunes_only_old_desktop(self):
+        result, calls = self.publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        uploads = [call for call in calls if call[:2] == ["release", "upload"]]
+        self.assertEqual(len(uploads), 2)
+        self.assertTrue(uploads[0][3].endswith(".zip"))
+        self.assertEqual(uploads[1][3], "dist/desktop-channel.json")
+        deleted = [call[3] for call in calls if call[:2] == ["release", "delete-asset"]]
+        self.assertEqual(deleted, [f"phux-desktop-next.{'c' * 40}-macos-arm64.zip"])
+
+    def test_desktop_can_create_next_without_cli_or_cockpit(self):
+        result, calls = self.publish(existing=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call[:2] == ["release", "create"] for call in calls))
+
+    def test_corrupt_metadata_never_publishes(self):
+        result, calls = self.publish(corrupt=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_pointer_failure_never_prunes_previous_assets(self):
+        result, calls = self.publish(fail_pointer=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(call[:2] == ["release", "delete-asset"] for call in calls))
+
+    def test_unreadable_previous_pointer_and_retries_preserve_pinned_assets(self):
+        for options in ({"fail_previous": True}, {"already_current": True}):
+            with self.subTest(options=options):
+                result, calls = self.publish(**options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(call[:2] == ["release", "delete-asset"] for call in calls))
+
+    def test_other_product_publication_failure_cannot_skip_desktop(self):
+        workflow = (ROOT / ".github/workflows/next-release.yml").read_text()
+        desktop = workflow.split("      - name: Publish Phux Desktop onto the next prerelease\n", 1)[1]
+        self.assertIn("if: ${{ !cancelled() && needs.desktop.result == 'success' }}", desktop)
+
+    def test_gate_uses_desktop_pointer_and_skips_docs_only_changes(self):
+        workflow = (ROOT / ".github/workflows/next-release.yml").read_text()
+        section = workflow.split("      - name: Decide whether to build\n", 1)[1].split("\n  build:", 1)[0]
+        script = section.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mocks = {
+                "curl": '''#!/bin/sh
+case "$2" in
+  */desktop-channel.json) sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+  *) sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
+printf '{"sha":"%s"}\\n' "$sha"
+''',
+                "git": '''#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+if args[0] == 'diff':
+    paths = args[args.index('--') + 1:]
+    changed = os.environ['MOCK_CHANGED']
+    if not paths or any(changed == path or changed.startswith(path + '/') for path in paths):
+        print(changed)
+''',
+            }
+            for name, content in mocks.items():
+                mock = root / name
+                mock.write_text(content)
+                mock.chmod(0o755)
+            for changed, expected in (("clients/desktop/native/src/main.rs", "true"),
+                                      ("scripts/install-desktop.sh", "true"),
+                                      ("crates/phux-client/src/lib.rs", "true"),
+                                      ("docs/RELEASING.md", "false")):
+                with self.subTest(changed=changed):
+                    output = root / "output"
+                    output.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True,
+                                            env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                                                 "SHA": "a" * 40, "GITHUB_OUTPUT": str(output),
+                                                 "GITHUB_REPOSITORY": "test/phux", "MOCK_CHANGED": changed})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"desktop_build={expected}\n", output.read_text())
+                    self.assertIn("should_build=false\n", output.read_text())
+                    self.assertIn("cockpit_build=false\n", output.read_text())
 
 
 @unittest.skipUnless(platform.system() == "Darwin" and platform.machine() == "arm64", "macOS arm64 app installer")
@@ -152,6 +301,7 @@ class DesktopInstaller(unittest.TestCase):
             "CFBundleVersion": "0.1.0",
             "PhuxDesktopVersion": VERSION,
         }
+        self.asset = ASSET
         self.pack()
         self.script("curl", '''#!/bin/sh
 while [ "$#" -gt 0 ]; do
@@ -162,7 +312,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$url" in
-  *SHA256SUMS) cp "$FIXTURE/SHA256SUMS" "$out" ;;
+  *SHA256SUMS|*.sha256) cp "$FIXTURE/SHA256SUMS" "$out" ;;
+  *desktop-channel.json) cp "$FIXTURE/desktop-channel.json" "$out" ;;
   *.zip) cp "$FIXTURE/asset.zip" "$out" ;;
   https://phux.sh/install) cp "$FIXTURE/cli-installer.sh" "$out" ;;
   *) echo "unexpected URL: $url" >&2; exit 1 ;;
@@ -179,6 +330,7 @@ esac
         self.env.pop("PHUX_BIN", None)
         self.env.pop("PHUX_DESKTOP_APPLICATIONS_DIR", None)
         self.env.pop("PHUX_DESKTOP_BIN_DIR", None)
+        self.env.pop("PHUX_CHANNEL", None)
 
     def script(self, name, content):
         path = self.bin / name
@@ -195,11 +347,11 @@ esac
 
     def checksum(self):
         digest = hashlib.sha256((self.fixture / "asset.zip").read_bytes()).hexdigest()
-        (self.fixture / "SHA256SUMS").write_text(f"{digest}  {ASSET}\n")
+        (self.fixture / "SHA256SUMS").write_text(f"{digest}  {self.asset}\n")
 
-    def install(self, success=True):
+    def install(self, success=True, args=None):
         result = subprocess.run(
-            [SHELL, str(INSTALLER), "--version", VERSION, "--applications-dir", str(self.apps), "--bin-dir", str(self.root / "launchers")],
+            [SHELL, str(INSTALLER), *(args if args is not None else ["--version", VERSION]), "--applications-dir", str(self.apps), "--bin-dir", str(self.root / "launchers")],
             env=self.env, capture_output=True, text=True,
         )
         if success:
@@ -211,6 +363,84 @@ esac
     @property
     def installed(self):
         return self.apps / "Phux.app"
+
+    def next_fixture(self):
+        sha = "a" * 40
+        self.asset = f"phux-desktop-next.{sha}-macos-arm64.zip"
+        self.plist["PhuxBuildSHA"] = sha
+        self.plist["PhuxDesktopChannel"] = "next"
+        self.pack()
+        (self.fixture / "desktop-channel.json").write_text(json.dumps({
+            "schema_version": 1, "channel": "next", "product": "desktop",
+            "sha": sha, "version": VERSION,
+        }))
+        return sha
+
+    def test_next_pointer_selects_desktop_sha_and_checks_bundle_revision(self):
+        sha = self.next_fixture()
+        result = self.install(args=["--channel", "next"])
+        self.assertIn(f"phux: ok: installed Phux next.{sha}", result.stderr)
+        self.assertNotIn("installed Phux", result.stdout)
+        self.plist["PhuxBuildSHA"] = "b" * 40
+        self.pack()
+        result = self.install(success=False, args=["--channel", "next"])
+        self.assertIn("revision does not match", result.stderr)
+        installed = plistlib.loads((self.installed / "Contents/Info.plist").read_bytes())
+        self.assertEqual(installed["PhuxBuildSHA"], sha)
+
+    def test_revision_pin_never_fetches_moving_pointer(self):
+        sha = self.next_fixture()
+        (self.fixture / "desktop-channel.json").unlink()
+        self.install(args=["--channel", "next", "--revision", sha])
+
+    def test_next_rejects_bundle_packaged_as_stable(self):
+        sha = self.next_fixture()
+        self.plist["PhuxDesktopChannel"] = "stable"
+        self.pack()
+        result = self.install(success=False, args=["--channel", "next", "--revision", sha])
+        self.assertIn("not a next-channel build", result.stderr)
+        self.assertFalse(self.apps.exists())
+
+    def test_stable_rejects_bundle_packaged_as_next(self):
+        self.plist["PhuxDesktopChannel"] = "next"
+        self.pack()
+        result = self.install(success=False)
+        self.assertIn("not a stable-channel build", result.stderr)
+        self.assertFalse(self.apps.exists())
+
+    def test_latest_alias_and_explicit_stable(self):
+        for channel in ("latest", "stable"):
+            with self.subTest(channel=channel):
+                result = self.install(args=["--channel", channel, "--version", VERSION, "--dry-run"])
+                self.assertIn("channel: stable\n", result.stdout)
+                self.assertIn(f"/desktop-v{VERSION}/{ASSET}", result.stdout)
+                self.assertFalse(self.apps.exists())
+
+    def test_invalid_channels_and_revision_combinations(self):
+        for args in (
+            ["--channel", "alpha"], ["--channel"], ["--revision"],
+            ["--channel", "next", "--revision", "bad"],
+            ["--channel", "stable", "--revision", "a" * 40],
+            ["--channel", "next", "--revision", "a" * 40, "--version", VERSION],
+            ["--channel", "next", "--version", VERSION],
+        ):
+            with self.subTest(args=args):
+                self.install(success=False, args=args)
+                self.assertFalse(self.apps.exists())
+
+    def test_invalid_next_pointer_never_installs(self):
+        self.next_fixture()
+        pointer = self.fixture / "desktop-channel.json"
+        valid = json.loads(pointer.read_text())
+        cases = ['not json', json.dumps({"nested": valid})]
+        for key, value in (("product", "phux"), ("channel", "stable"),
+                           ("sha", "../evil"), ("version", "bad"), ("schema_version", 2)):
+            cases.append(json.dumps({**valid, key: value}))
+        for body in cases:
+            with self.subTest(body=body):
+                pointer.write_text(body)
+                self.install(success=False, args=["--channel", "next"])
+                self.assertFalse(self.apps.exists())
 
     def test_install_and_update_preserve_cli_and_state(self):
         state = self.root / "state/layout.json"
@@ -232,7 +462,7 @@ esac
     def test_missing_cli_is_installed_first(self):
         self.cli.unlink()
         result = self.install()
-        self.assertIn("installing it first", result.stdout)
+        self.assertIn("phux: info: phux CLI not found; installing it first", result.stderr)
         self.assertTrue(os.access(self.cli, os.X_OK))
         self.assertTrue(self.installed.is_dir())
 

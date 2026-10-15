@@ -33,6 +33,56 @@ start and reports the config path, the loader error, and the remedy
 nulls stdio). A *missing* config starts with the shipped defaults. The server
 never silently reverts a broken config to defaults.
 
+## CLI presentation
+
+Human diagnostics and script progress use lowercase, ASCII labels. Meaning
+never depends on color:
+
+```text
+phux: info: building release binaries
+phux: ok: all checks passed
+phux: warn: a check could not run
+phux: error: no server running
+  hint: run `phux doctor` for a health check
+```
+
+Diagnostics and progress go to stderr. Human reports such as `phux doctor`
+and listings stay on stdout. Rendering does not change exit statuses.
+Help retains its fixed-width layout. Diagnostic styling is limited to the
+wordmark and severity: bold wordmark, cyan information, green success, yellow
+warning, red error. Status labels have no emoji or decorative Unicode markers.
+
+Color is chosen for the destination stream, in this order:
+
+1. Nonempty `NO_COLOR` or `TERM=dumb` disables it, even when forced.
+2. Nonempty `CLICOLOR_FORCE` other than `0` enables it, including in a pipe.
+3. `CLICOLOR=0` disables it.
+4. Otherwise, only a terminal receives color.
+
+JSON documents (including one-line JSON errors on stderr), pane IDs, terminal
+bytes, recordings, config exports, completion source, and script data are
+never routed through human styling. Installer dry-run fields, `next:`
+commands, PATH remedies, toolchain probe TSV, build receipts, and the app's
+self-update protocol keep their formats. Child-tool output and captured
+terminal transcripts are passed through rather than relabeled. The MCP
+adapter uses the same severity labels on its out-of-band stderr channel but
+keeps it uncolored even when color is forced.
+
+The Rust binary owns its presentation in `crates/phux/src/output.rs`, using
+[anstyle](https://docs.rs/anstyle/) and standard-library terminal detection.
+The existing usage-rs parser still owns help, parsing, and completions.
+Setup, build, release, and guard scripts source `scripts/lib/output.sh`;
+Python and Node checks use the equivalent native helpers in that directory.
+Rendering helpers do not exit, count failures, or execute a remedy. Keep
+structured logic in its native language instead of launching another runtime
+just to print status.
+
+The three standalone installers embed the same POSIX helper. After changing
+it, run `bash scripts/sync-install-resolver.sh --write`; the install-surface
+gate checks freshness. No installer fetches or sources a second file.
+`python3 -B scripts/test-output.py` verifies the shared stream and color rules
+in POSIX sh, Bash, Python, and Node, including real terminal destinations.
+
 ## Runtime status
 
 `phux status` reports the listening server's PID (from UDS peer credentials),
@@ -63,7 +113,7 @@ TUI entry points share a layer builder
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
-- **Cockpit** (the native macOS app) — one file,
+- **Cockpit** (the frozen Zig macOS app) — one file,
   `~/Library/Logs/Phux Cockpit/cockpit.log`; `PHUX_COCKPIT_LOG` names a
   different file. Launch Services gives the app no terminal, so at
   startup Cockpit points its standard error at that file and the Rust
@@ -204,21 +254,19 @@ channel send/receive failures, not business-operation rejections such as an
 unknown view. `runtime.apply_errors` and `runtime.project_errors` count failed
 apply events and timed projections respectively; projection setup is excluded.
 
-The desktop host (`clients/desktop`) appends its painter rows to the same
-report, `desktopPerfJson`. Per terminal element per window draw:
+The desktop app (`clients/desktop`) adds its painter rows to the same
+report. Per terminal element per window draw:
 `desktop.render`, `desktop.acquire` (frame validation, one owner round trip),
 `desktop.acquire_rejected`, `desktop.prepare` (with `desktop.prepare_reused`
 for draws that reused the previous scene, `desktop.prepare_patched` for draws
 that reshaped only the changed rows, and `desktop.shaped` line shapes for
 cells that were shaped), `desktop.paint` and `desktop.present`; and
 `desktop.key_to_paint`, from a key reaching a focused terminal to the first
-paint of that terminal's next output. Launched with
-`PHUX_DESKTOP_PERF=<absolute path>`, the desktop appends one JSON line per
-second with that report, the main window's draw count and recent draw times,
-its wake drains (count, events, milliseconds spent applying them, wakes
-deferred to the next display frame), the main
-window's GPUIX mutation batches by kind (each batch redraws the window), and
-current memory. `bun clients/desktop/scripts/perf-bench.ts` drives a fixed
+paint of that terminal's next output. Launched with `--evidence DIR`, the
+desktop appends one JSON line per second to `DIR/perf.jsonl` with that
+report, the second's frame count and p99 and maximum frame times, its wake
+drains (wakes, events, milliseconds spent applying them), and peak
+memory. `bun clients/desktop/scripts/perf-bench.ts` drives a fixed
 workload (idle, background-tab flood, one-pane and every-pane floods) against
 a private server and summarizes those lines per phase, plus a `vmmap` region
 summary; compare runs made back to back on one host.
@@ -605,7 +653,9 @@ cause; fix it, then run `phux upgrade` again.
 session's key and lifetime and each resource's key, activation, and
 process identity, so an upgrade keeps them; a new server still reads a
 handoff from an older one and flattens its windows into members and an
-arrangement. The organization store (`<state_dir>/org/v1.sqlite3`) is
+arrangement. The organization store (`<state_dir>/org/v1.sqlite3`; a
+server on a non-default `--socket` keeps its own under
+`<state_dir>/org/sockets/`) is
 backed up before any schema migration and never overwritten by an older
 binary. Downgrading is not safe by ignoring the store: an older server
 cannot reconstruct membership or lifetime from it. Export first
@@ -688,28 +738,26 @@ guarantees:
   not. On the next start the server reconciles what was running: a
   terminal whose process is gone shows as ended, unobserved; a process
   that outlived the server (for example under `nohup`) shows as lost
-  until you terminate or abandon it. Nothing relaunches on its own;
+  until you terminate it. Nothing relaunches on its own;
   `phux restore` relaunches the terminals the crash ended, in their
   sessions and working directories
   ([ADR-0162](./adr/0162-organization-records-persist-and-activations-reconcile.md)).
-- **Restart restore:** `phux workspace save` (renamed `phux archive
-  export`; the old spelling remains a hidden alias) writes a typed JSON archive of
-  the running workspace, reading each session's split tree from its L3 layout
-  envelope (`phux.tui.layout/v1/<session-id>`, or `save --projection KEY`);
-  a session with none falls back to one pane per window. `phux workspace
-  restore ARCHIVE` recreates missing sessions on a running server with a fresh
-  PTY per archived pane (the archived `command`, a resumable native agent
-  session, or the default shell in the archived cwd) and replays the split
-  tree with fresh window identities, confirmed by read-back. A session that
-  fails partway is rolled back and named; the rest still restores, and the
-  command exits non-zero if any session failed
-  ([ADR-0129](./adr/0129-projections-are-named-by-key.md)). A native agent
+- **Restart restore:** `phux archive export` writes a typed JSON archive of
+  the running server's sessions, reading each session's split tree from its
+  shared layout (or `export --projection PREFIX`); a session with none
+  falls back to its bare pane list. `phux archive import ARCHIVE` recreates
+  the missing sessions on a running server, persistent, with each archived
+  local pane as a dormant record in the session's arrangement; it starts
+  nothing. `phux restore SESSION` then launches them (the archived
+  `command`, a resumable native agent session, or the default shell in the
+  archived cwd). A session that cannot be created is named and the rest
+  still import ([ADR-0129](./adr/0129-projections-are-named-by-key.md)). A native agent
   session is archived for a `phux launch` pane and for an agent started in a
   plain shell whose `AgentSession` provider an enabled integration claims and
-  can resume; save warns about any agent pane that will come back as a shell
+  can resume; export warns about any agent pane that will come back as a shell
   ([ADR-0151](./adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
   `--output` writes a temp file, fsyncs it, and renames it into place, so an
-  interrupted save never replaces a good archive with a torn one. An archive
+  interrupted export never replaces a good archive with a torn one. An archive
   is a portable copy for another machine or a backup; importing one creates
   records with provenance and launches nothing until you relaunch them.
 - **Export schedule:** `phux server --autosave <state-dir>/workspace.json`,

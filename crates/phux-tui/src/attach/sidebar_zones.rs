@@ -50,7 +50,7 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_attention: &'a HashSet<ResourceId>,
     /// `phux.session.project/v1` tags, keyed by session id.
     pub project_tags: &'a HashMap<SessionId, String>,
-    /// ADR-0167: project group keys collapsed in this client's sidebar.
+    /// ADR-0168: project group keys collapsed in this client's sidebar.
     pub collapsed_projects: &'a BTreeSet<String>,
     /// Connection-lifetime review index. Peer rows read `seen`
     /// from here instead of hardcoding unseen.
@@ -374,7 +374,7 @@ pub(super) fn session_roster(
     group_roster(&out, &projects, peers.collapsed_projects)
 }
 
-/// What groups one roster row (ADR-0167).
+/// What groups one roster row (ADR-0168).
 #[derive(Default)]
 struct RowProject<'a> {
     project: Option<SessionProject>,
@@ -469,7 +469,7 @@ fn machine_roster<'a>(
         if !host.reachable {
             out.push((
                 SessionRosterEntry {
-                    name: "unreachable".to_owned(),
+                    name: "down".to_owned(),
                     ..base
                 },
                 None,
@@ -560,7 +560,7 @@ fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
         };
         if !host.is_reachable() {
             out.push(SessionRosterEntry {
-                name: "unreachable".to_owned(),
+                name: "down".to_owned(),
                 ..base
             });
             continue;
@@ -753,7 +753,7 @@ mod tests {
                 ("mini", "here", None, true),
                 ("mini", "peer", None, true),
                 ("laptop", "work", Some("local"), true),
-                ("xps", "unreachable", Some("xps"), false),
+                ("xps", "down", Some("xps"), false),
             ]
         );
     }
@@ -1152,7 +1152,7 @@ mod tests {
         *session = session.clone().with_attrs(project.to_attrs());
     }
 
-    /// ADR-0167: one repository groups across machines. The group leads
+    /// ADR-0168: one repository groups across machines. The group leads
     /// the roster; a linked worktree packs under the primary checkout on
     /// its own machine; ungrouped rows keep their place.
     #[test]

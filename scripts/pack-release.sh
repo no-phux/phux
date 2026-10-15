@@ -6,6 +6,8 @@
 # and dist.sh call it; the install tests pack stub binaries the same way so
 # a packaging change cannot silently diverge from what curl | sh accepts.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 RELEASE_BINS=(phux phux-mcp)
 RELEASE_DOCS=(README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md)
@@ -30,7 +32,7 @@ EOF
 }
 
 die() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -154,5 +156,5 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
   echo "artifact=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
 fi
 
-echo "packaged ${archive}"
-echo "sha256   ${sha}"
+phux_ok "packaged ${archive}"
+phux_info "sha256 ${sha}"

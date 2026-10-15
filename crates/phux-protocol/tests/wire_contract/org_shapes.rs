@@ -769,7 +769,7 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     assert_eq!(decoded.sessions[0].key, Some(key));
     assert!(decoded.sessions[0].attrs.is_empty());
 
-    // Descriptive attributes (ADR-0167) ride the same SESSION_STATE.
+    // Descriptive attributes (ADR-0168) ride the same SESSION_STATE.
     let attrs = vec![
         (
             "project.id".to_owned(),

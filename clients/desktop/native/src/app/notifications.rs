@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use phux_protocol::ResourceId;
 
-use crate::connection::AgentState;
+use crate::connection::{AgentAttention as AttentionLevel, AgentState};
 
 /// Entries kept, oldest dropped first.
 const LIMIT: usize = 100;
@@ -17,6 +17,31 @@ const LIMIT: usize = 100;
 const PEEK: Duration = Duration::from_secs(10);
 /// How long a refusal's card stays up.
 const REFUSAL_PEEK: Duration = Duration::from_secs(4);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentAttention {
+    pub state: AgentState,
+    pub attention: AttentionLevel,
+}
+
+impl AgentAttention {
+    pub fn actionable(&self) -> bool {
+        matches!(self.state, AgentState::Done | AgentState::Blocked)
+            || self.attention == AttentionLevel::High
+    }
+
+    pub fn should_alert(&self, previous: Option<&Self>, focused: bool) -> bool {
+        if focused || !self.actionable() {
+            return false;
+        }
+        let Some(previous) = previous else {
+            return true;
+        };
+        self.state != previous.state
+            || (self.attention == AttentionLevel::High
+                && previous.attention != AttentionLevel::High)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -217,6 +242,45 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn attention(state: AgentState, level: AttentionLevel) -> AgentAttention {
+        AgentAttention {
+            state,
+            attention: level,
+        }
+    }
+
+    #[test]
+    fn initially_actionable_agents_alert_but_quiet_or_focused_agents_do_not() {
+        assert!(attention(AgentState::Blocked, AttentionLevel::Normal).should_alert(None, false));
+        assert!(attention(AgentState::Done, AttentionLevel::Normal).should_alert(None, false));
+        assert!(attention(AgentState::Working, AttentionLevel::High).should_alert(None, false));
+        assert!(!attention(AgentState::Working, AttentionLevel::Normal).should_alert(None, false));
+        assert!(!attention(AgentState::Blocked, AttentionLevel::Normal).should_alert(None, true));
+    }
+
+    #[test]
+    fn attention_escalation_alerts_without_a_state_change_and_deduplicates() {
+        let previous = attention(AgentState::Working, AttentionLevel::Normal);
+        let escalated = attention(AgentState::Working, AttentionLevel::High);
+        assert!(escalated.should_alert(Some(&previous), false));
+        assert!(!escalated.should_alert(Some(&escalated), false));
+        assert!(!previous.should_alert(Some(&escalated), false));
+        assert!(!previous.actionable());
+    }
+
+    #[test]
+    fn attention_downgrade_does_not_repeat_an_actionable_state() {
+        let previous = attention(AgentState::Blocked, AttentionLevel::High);
+        assert!(
+            !attention(AgentState::Blocked, AttentionLevel::Normal)
+                .should_alert(Some(&previous), false)
+        );
+        assert!(
+            attention(AgentState::Done, AttentionLevel::Normal)
+                .should_alert(Some(&previous), false)
+        );
+    }
 
     #[test]
     fn only_interrupting_entries_peek_and_count() {

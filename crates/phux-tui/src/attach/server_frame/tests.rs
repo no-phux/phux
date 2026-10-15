@@ -772,10 +772,7 @@ fn history_unavailable_status_names_the_pane_in_a_warn_notice() {
     let outcome = h.send(history_page(&id, b"cursor"));
     assert_eq!(outcome.notices.len(), 1);
     assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
-    assert_eq!(
-        outcome.notices[0].text,
-        "pane 3: scrollback unavailable (CodecFailure)"
-    );
+    assert_eq!(outcome.notices[0].text, "pane 3: scrollback unavailable");
 }
 
 /// A server-pruned history boundary marks the pane past the notice's TTL; a
@@ -1808,7 +1805,7 @@ fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
         assert!(h.belled());
         assert_eq!(outcome.notices.len(), 1);
         assert!(
-            outcome.notices[0].text.contains("on satellite edge"),
+            outcome.notices[0].text.contains("on edge"),
             "{}",
             outcome.notices[0].text
         );
@@ -2092,9 +2089,7 @@ fn a_spawned_satellite_split_refusal_bells_and_names_the_host() {
         assert!(h.belled());
         assert_eq!(outcome.notices.len(), 1);
         assert!(
-            outcome.notices[0]
-                .text
-                .contains("split onto satellite edge"),
+            outcome.notices[0].text.contains("could not open on edge"),
             "{}",
             outcome.notices[0].text
         );
@@ -2122,7 +2117,7 @@ fn a_satellite_split_whose_spawn_is_refused_names_the_host() {
     assert!(
         outcome.notices[0]
             .text
-            .contains("could not split onto satellite edge: satellite edge link is down"),
+            .contains("could not open on edge: satellite edge link is down"),
         "{}",
         outcome.notices[0].text
     );
@@ -2677,7 +2672,7 @@ fn focused_holder_transition_yields_a_notice_and_initial_state_does_not() {
     assert_eq!(released.notices[0].text, "input: wheel released");
     let seized = h.send(event(&pane, control_event(Some(holder))));
     assert_eq!(seized.notices.len(), 1);
-    assert_eq!(seized.notices[0].text, "input: c9 took the wheel");
+    assert_eq!(seized.notices[0].text, "input: wheel taken");
     assert!(
         h.send(event(&pane, control_event(Some(holder))))
             .notices
@@ -2724,16 +2719,15 @@ fn no_error_code_is_fatal_in_the_attached_phase() {
             assert!(!outcome.exit, "{code:?} ({request_id:?})");
             match (request_id, code) {
                 (Some(_), _) => assert!(outcome.notices.is_empty(), "{code:?}"),
-                (None, ErrorCode::SatelliteUnreachable) => assert_eq!(
-                    outcome.notices[0].text,
-                    "federation degraded: the pane fell over"
-                ),
+                (None, ErrorCode::SatelliteUnreachable) => {
+                    assert_eq!(outcome.notices[0].text, "the pane fell over");
+                }
                 (None, _) => {
                     assert_eq!(outcome.notices.len(), 1, "{code:?}");
                     assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
                     let text = &outcome.notices[0].text;
                     assert!(
-                        text.contains("the pane fell over") && text.contains(&format!("{code:?}")),
+                        text.contains("the pane fell over") && !text.contains(&format!("{code:?}")),
                         "{text}"
                     );
                 }

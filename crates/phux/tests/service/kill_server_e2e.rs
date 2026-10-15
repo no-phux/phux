@@ -79,6 +79,10 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
         String::from_utf8_lossy(&killed.stdout),
         String::from_utf8_lossy(&killed.stderr)
     );
+    assert_eq!(
+        String::from_utf8_lossy(&killed.stderr),
+        "phux: ok: server stopped\n"
+    );
     assert!(
         std::os::unix::net::UnixStream::connect(&socket).is_err(),
         "the server must be gone by the time the command returns, not merely \

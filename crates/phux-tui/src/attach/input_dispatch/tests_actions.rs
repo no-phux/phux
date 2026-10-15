@@ -438,8 +438,8 @@ fn kill_window_confirm_names_terminals_shown_elsewhere() {
     assert_eq!(
         confirm.lines(),
         [
-            "End 3 terminals in window 1.",
-            "pane 2 is also shown in window logs",
+            "End 3 terminals in tab 1.",
+            "pane 2 is also shown in tab logs",
             "pane 3 is also shown in session notes",
             "Enter kill  ·  Esc cancel",
         ]
@@ -1178,10 +1178,10 @@ fn current_session_window_rows_commit_select_window() {
     assert_eq!(items.len(), 2);
     assert_eq!(
         (items[0].label.as_str(), items[0].secondary.as_deref()),
-        ("0:1", Some("1 pane"))
+        ("1", Some("1 pane"))
     );
     assert!(items[0].indented, "window rows nest under their session");
-    assert_eq!(items[1].label, "1:editor");
+    assert_eq!(items[1].label, "editor");
     assert_eq!(items[1].action.args.get("index"), Some(&Value::Integer(1)));
     // Committing a row performs the per-client switch a binding does.
     let effects = run(&items[1].action, &mut workspace);
@@ -1213,7 +1213,7 @@ fn window_picker_groups_windows_under_their_session() {
             .collect();
         let items = window_picker_items(&workspace, &sessions, &foreign, Some(SessionId::new(1)));
         assert!(items[0].is_header());
-        assert_eq!(items[0].label, "work (current)");
+        assert_eq!(items[0].label, "work");
         assert!(!items[1].is_header() && items[1].indented);
         assert_eq!(items[1].action.action, "select-window");
         assert_eq!(items[2].action.action, "select-window");
@@ -1230,7 +1230,7 @@ fn window_picker_groups_windows_under_their_session() {
             assert!(!items[at + 1].action.args.contains_key("window"));
             continue;
         }
-        for (i, label) in ["0:build", "1:logs"].into_iter().enumerate() {
+        for (i, label) in ["build", "logs"].into_iter().enumerate() {
             let row = &items[at + 1 + i];
             assert_eq!(row.label, label);
             assert!(row.indented);
@@ -1386,25 +1386,15 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
             phux_protocol::wire::frame::SessionLifetime::Persistent,
         )),
     ];
-    // Terminal counts come from the resource graph; a session the graph does
-    // not list shows none.
-    let terminals = HashMap::from([(SessionId::new(1), 1), (SessionId::new(3), 2)]);
     let items = session_picker_items(
         &sessions,
         Some(SessionId::new(1)),
-        &SessionCounts {
-            terminals,
-            needs_you: HashMap::new(),
-        },
+        &SessionCounts::default(),
     );
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["work", "logs", "scratch"]);
-    assert_eq!(
-        items[0].secondary.as_deref(),
-        Some("1 terminal, ephemeral, current")
-    );
-    assert_eq!(items[1].secondary.as_deref(), Some("2 terminals"));
-    assert_eq!(items[2].secondary.as_deref(), Some("ephemeral"));
+    // A quiet row is just its name: no lifetime, count, or current marker.
+    assert!(items.iter().all(|i| i.secondary.is_none()), "{items:?}");
     assert_eq!(items[0].action.action, "switch-session");
     assert_eq!(
         items[0].action.args.get("name"),
@@ -1425,13 +1415,12 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
 fn session_picker_puts_sessions_that_need_you_first() {
     let sessions = [sinfo(1, "work"), sinfo(2, "alpha"), sinfo(3, "zeta")];
     let counts = SessionCounts {
-        terminals: HashMap::new(),
         needs_you: HashMap::from([(SessionId::new(3), 2)]),
     };
     let items = session_picker_items(&sessions, Some(SessionId::new(1)), &counts);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["work", "zeta", "alpha"]);
-    assert_eq!(items[1].secondary.as_deref(), Some("2 need you, ephemeral"));
+    assert_eq!(items[1].secondary.as_deref(), Some("2 need you"));
 }
 
 /// phux-kmlrz: a live rename reorders the name-sorted picker. Selection
@@ -1688,7 +1677,7 @@ fn session_picker_groups_by_project_tag() {
         labels,
         ["phux", "api", "web", "Sessions", "notes", "+ New session…"]
     );
-    assert_eq!(items[1].secondary.as_deref(), Some("ephemeral"));
+    assert_eq!(items[1].secondary, None);
     assert_eq!(items[1].action.args.get("id"), Some(&Value::Integer(1)));
 }
 
@@ -1703,7 +1692,7 @@ fn identity(linked: bool) -> phux_core::project_identity::SessionProject {
     }
 }
 
-/// ADR-0167: a project identity groups the picker; the primary checkout
+/// ADR-0168: a project identity groups the picker; the primary checkout
 /// leads and a linked worktree follows marked `└`, still switching by id.
 #[test]
 fn session_picker_groups_by_project_identity() {
@@ -1734,7 +1723,7 @@ fn session_picker_groups_by_project_identity() {
     );
 }
 
-/// ADR-0167: a group header click commits `toggle-project-group`, which the
+/// ADR-0168: a group header click commits `toggle-project-group`, which the
 /// dispatcher hands to the driver; without a key it bells.
 #[test]
 fn toggle_project_group_hands_the_key_to_the_driver() {
@@ -1765,16 +1754,16 @@ api
 Sessions
 api
 notes
-edge - 2 sessions
+edge
 build
 logs
-idle - connected, no sessions
-down - unreachable: link is down
-mini - 2 sessions
+idle
+down - unreachable
+mini
 build
 phall
-spare - connected, no sessions
-xps - unreachable: timed out
+spare
+xps - unreachable
 + New session…";
 
 const PLAIN_PICKER_LABELS: &str = "\
@@ -1784,16 +1773,16 @@ api
 api
 notes
 zeta
-edge - 2 sessions
+edge
 build
 logs
-idle - connected, no sessions
-down - unreachable: link is down
-mini - 2 sessions
+idle
+down - unreachable
+mini
 build
 phall
-spare - connected, no sessions
-xps - unreachable: timed out
+spare
+xps - unreachable
 + New session…";
 
 fn picker_labels(items: &[crate::render::overlay::SelectItem]) -> String {
@@ -1890,21 +1879,17 @@ fn session_picker_project_groups_keep_hosts_and_row_details() {
     assert_eq!(picker_labels(&plain), PLAIN_PICKER_LABELS);
 
     let local = attached_picker_row(&tagged, 1);
-    assert_eq!(local.secondary.as_deref(), Some("1 terminal, 2 attached"));
+    assert_eq!(local.secondary, None);
     assert_eq!(local.secondary, attached_picker_row(&plain, 1).secondary);
     assert_eq!(local.action, attached_picker_row(&plain, 1).action);
     assert!(local.indented);
     let focused = attached_picker_row(&tagged, 2);
-    assert_eq!(focused.secondary.as_deref(), Some("ephemeral, current"));
+    assert_eq!(focused.secondary, None);
     assert_eq!(focused.label, "web");
     assert!(!focused.action.args.contains_key("host"));
-    assert_eq!(
-        attached_picker_row(&tagged, 3).secondary.as_deref(),
-        Some("2 terminals, ephemeral")
-    );
     let duplicate = attached_picker_row(&tagged, 4);
     assert_eq!(duplicate.label, "api");
-    assert_eq!(duplicate.secondary.as_deref(), Some("ephemeral"));
+    assert_eq!(duplicate.secondary, None);
     assert_eq!(duplicate.action.args.get("id"), Some(&Value::Integer(4)));
     assert_eq!(
         attached_picker_row(&tagged, 3).secondary,
@@ -1919,11 +1904,11 @@ fn assert_remote_sections_match(
 ) {
     let tagged_tail: Vec<_> = tagged
         .iter()
-        .skip_while(|item| item.label != "edge - 2 sessions")
+        .skip_while(|item| item.label != "edge")
         .collect();
     let plain_tail: Vec<_> = plain
         .iter()
-        .skip_while(|item| item.label != "edge - 2 sessions")
+        .skip_while(|item| item.label != "edge")
         .collect();
     assert_eq!(tagged_tail.len(), plain_tail.len());
     for (tagged_row, plain_row) in tagged_tail.iter().zip(&plain_tail) {
@@ -1940,10 +1925,7 @@ fn assert_remote_sections_match(
         edge.action.args.get("host"),
         Some(&Value::String("edge".to_owned()))
     );
-    assert_eq!(
-        edge.secondary.as_deref(),
-        Some("on edge, 2 windows, 3 panes")
-    );
+    assert_eq!(edge.secondary.as_deref(), Some("on edge"));
     let mini = tagged
         .iter()
         .find(|item| item.action.action == "switch-host" && item.label == "phall")
@@ -1952,19 +1934,16 @@ fn assert_remote_sections_match(
         mini.action.args.get("host"),
         Some(&Value::String("mini".to_owned()))
     );
-    assert_eq!(
-        mini.secondary.as_deref(),
-        Some("on mini, 1 need you, 2 running, 1 attached")
+    assert_eq!(mini.secondary.as_deref(), Some("on mini, 1 need you"));
+    assert!(
+        tagged
+            .iter()
+            .any(|item| item.is_header() && item.label == "down - unreachable")
     );
     assert!(
         tagged
             .iter()
-            .any(|item| item.is_header() && item.label == "down - unreachable: link is down")
-    );
-    assert!(
-        tagged
-            .iter()
-            .any(|item| item.is_header() && item.label == "xps - unreachable: timed out")
+            .any(|item| item.is_header() && item.label == "xps - unreachable")
     );
 }
 
@@ -2033,13 +2012,13 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
     );
     assert_eq!(
         rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-        ["@2", "@3"]
+        ["editor · pane 2", "tests · pane 1"]
     );
     assert_eq!(
         rows.iter()
             .map(|r| r.secondary.as_deref().unwrap_or_default())
             .collect::<Vec<_>>(),
-        ["work · 0:editor · pane 2", "build · 0:tests · pane 1"]
+        ["work", "build"]
     );
     assert_eq!(rows[1].action.action, "move-pane");
     assert_eq!(rows[1].action.args["target"].as_integer(), Some(3));
@@ -2104,11 +2083,11 @@ fn session_picker_groups_rows_by_host() {
         [
             "Local",
             "work",
-            "edge - 2 sessions",
+            "edge",
             "build",
             "logs",
-            "idle - connected, no sessions",
-            "down - unreachable: link is down"
+            "idle",
+            "down - unreachable"
         ]
     );
     for i in [0, 2, 5, 6] {
@@ -2125,10 +2104,7 @@ fn session_picker_groups_rows_by_host() {
         items[3].action.args.get("name"),
         Some(&Value::String("build".to_owned()))
     );
-    assert_eq!(
-        items[3].secondary.as_deref(),
-        Some("on edge, 2 windows, 3 panes")
-    );
+    assert_eq!(items[3].secondary.as_deref(), Some("on edge"));
 
     let mut open = ArrangementDoc::single(tid(1));
     open.add_group("edge/build".to_owned(), satellite_id("edge", 9));
@@ -2254,11 +2230,11 @@ fn session_picker_lists_other_machines() {
         [
             "Local",
             "work",
-            "mini - 2 sessions",
+            "mini",
             "build",
             "phall",
-            "spare - connected, no sessions",
-            "xps - unreachable: timed out",
+            "spare",
+            "xps - unreachable",
         ]
     );
     for i in [0, 2, 5, 6] {
@@ -2275,15 +2251,8 @@ fn session_picker_lists_other_machines() {
         build.action.args.get("name"),
         Some(&Value::String("build".to_owned()))
     );
-    assert_eq!(
-        build.secondary.as_deref(),
-        Some("on mini, 2 windows"),
-        "a machine that reports no lifetime counts windows"
-    );
-    assert_eq!(
-        items[4].secondary.as_deref(),
-        Some("on mini, 1 need you, 2 running, 1 attached")
-    );
+    assert_eq!(build.secondary.as_deref(), Some("on mini"));
+    assert_eq!(items[4].secondary.as_deref(), Some("on mini, 1 need you"));
 
     // Attached to `mini`: its group is the attach stream's, headed by its
     // registry name, and this machine appears as a machine to switch back to.
@@ -2302,10 +2271,10 @@ fn session_picker_lists_other_machines() {
         [
             "mini",
             "work",
-            "laptop - 1 session",
+            "laptop",
             "work",
-            "spare - connected, no sessions",
-            "xps - unreachable: timed out",
+            "spare",
+            "xps - unreachable",
         ]
     );
     assert_eq!(
@@ -2393,10 +2362,7 @@ fn session_picker_with_machines_render() {
     let mut items = host_grouped_session_items(
         &[sinfo(1, "work"), sinfo(2, "notes")],
         Some(SessionId::new(1)),
-        &SessionCounts {
-            terminals: HashMap::from([(SessionId::new(1), 1), (SessionId::new(2), 2)]),
-            needs_you: HashMap::new(),
-        },
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),

@@ -96,6 +96,24 @@ impl Panes {
             .map(|slot| slot.entity.clone())
     }
 
+    /// Ask every placed terminal to paint. The desk calls this once when an
+    /// attach lands, so the retained frame is replaced without waiting for
+    /// another output byte.
+    pub fn notify_all(&self, cx: &mut Context<Desk>) {
+        for slot in self.by_placement.values() {
+            slot.entity.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// Ask each placed view of these terminals to paint. The desk chrome stays as it is.
+    pub fn notify_terminals(&self, terminals: &[ResourceId], cx: &mut Context<Desk>) {
+        for slot in self.by_placement.values() {
+            if terminals.iter().any(|id| id == &slot.terminal) {
+                slot.entity.update(cx, |_, cx| cx.notify());
+            }
+        }
+    }
+
     pub fn retain(&mut self, live: &[String]) {
         self.by_placement
             .retain(|id, _| live.iter().any(|keep| keep == id));

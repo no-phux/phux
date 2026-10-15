@@ -53,7 +53,7 @@ fn condition_for(args: &mut WaitArgs<'_>) -> Condition {
 
 /// The note when `--output-only` has no shell marks to filter on: fail open
 /// rather than hang or refuse.
-const NO_MARKS_NOTE: &str = "phux: wait --output-only: this pane reports no OSC-133 shell marks, \
+const NO_MARKS_NOTE: &str = "wait --output-only: this pane reports no OSC-133 shell marks, \
      so no line can be identified as your typed input; matching every line. \
      Enable shell integration, or match on text that appears only in output.";
 
@@ -120,7 +120,7 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
                 return json_err::report_no_server(json, &err, &socket_path, "wait");
             }
             Err(err) => {
-                eprintln!("phux: wait failed: {err}");
+                error!("wait failed: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -145,7 +145,7 @@ async fn probe_output_marks(
         .await
         && !phux_client::wait::has_semantic_marks(&screen)
     {
-        eprintln!("{NO_MARKS_NOTE}");
+        info!("{NO_MARKS_NOTE}");
     }
 }
 
@@ -158,7 +158,7 @@ fn report_result(result: &phux_client::wait::WaitResult, json: bool) -> ExitCode
     match result.outcome {
         WaitOutcome::Met => ExitCode::SUCCESS,
         WaitOutcome::TimedOut => {
-            eprintln!("phux: wait timed out after {} polls", result.polls);
+            error!("wait timed out after {} polls", result.polls);
             ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
         }
     }

@@ -55,13 +55,7 @@ impl PromptOverlay {
     /// name and styled with `theme`.
     #[must_use]
     pub fn rename_window(current_name: &str, theme: &Theme) -> Self {
-        Self::new(
-            "rename window",
-            "rename-window",
-            "name",
-            current_name,
-            theme,
-        )
+        Self::new("rename tab", "rename-window", "name", current_name, theme)
     }
 
     /// The `rename-session` prompt, pre-filled with the current name.

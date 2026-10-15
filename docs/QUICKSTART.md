@@ -131,5 +131,5 @@ state before distinguishing a missing server from an unreachable host.
 | Change keys, status, or hooks | [Configuration](./CONFIG.md) |
 | Automate with the full CLI contract | [Agent CLI reference guide](./consumers/agents.md) |
 | Reach a server from another machine | [Remote access](./remote-access.md) |
-| Understand sessions, windows, and panes | [How phux works](./CONCEPTS.md) |
+| Understand sessions, resources, and the Inbox | [How phux works](./CONCEPTS.md) |
 | Compare tools and measured performance | [When to use phux](./when-to-use.md) |

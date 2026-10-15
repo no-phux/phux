@@ -78,7 +78,7 @@ pub(crate) fn run_new(
     // Clap enforces `--json` => `-s NAME`; this guard only keeps a future caller
     // from panicking.
     let Some(name) = requested else {
-        eprintln!("phux: `phux new --json` requires an explicit -s NAME");
+        error!("`phux new --json` requires an explicit -s NAME");
         return ExitCode::from(2);
     };
     if empty {
@@ -195,8 +195,8 @@ fn requested_session_name(
 ) -> Result<Option<String>, ExitCode> {
     match (name, session) {
         (Some(positional), Some(flag)) if positional != flag => {
-            eprintln!(
-                "phux: conflicting session names: '{positional}' (positional) vs '{flag}' (-s) — pass just one"
+            error!(
+                "conflicting session names: '{positional}' (positional) vs '{flag}' (-s) — pass just one"
             );
             Err(ExitCode::FAILURE)
         }
@@ -218,7 +218,8 @@ fn report_invalid_session_name(
         &CliError::new(
             codes::INVALID_SESSION_NAME,
             format!("invalid session name {name:?}: {invalid}"),
-            "pick a non-empty name without a leading `@`, `#`, or `%`, and without `:` or `/@`",
+            "pick a non-empty name of at most 256 bytes, without control characters, a leading \
+             `@`, `#`, or `%`, `:`, or `/@`",
         ),
         2,
     )
@@ -290,9 +291,7 @@ fn run_new_attached(
         if let Some(path) = target.socket_path()
             && let Err(err) = ensure_server(path, &name, None, false)
         {
-            eprintln!(
-                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
-            );
+            warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
         }
         new_session_target(name.clone(), command, seed_cwd(cwd, target.is_remote()))
     };
@@ -351,9 +350,7 @@ fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result
         ));
     };
     if existing.contains(&requested) {
-        eprintln!(
-            "phux: session '{requested}' already exists (use `phux attach {requested}` to join it)"
-        );
+        error!("session '{requested}' already exists (use `phux attach {requested}` to join it)");
         return Err(ExitCode::FAILURE);
     }
     Ok(requested)
@@ -451,8 +448,7 @@ pub(crate) async fn create_empty_session_via_metadata(
     }
     reject_duplicate_session_name(&mut conn, server, name, json).await?;
     let mut notices = Vec::new();
-    let result =
-        phux_client::session::create_empty_session(&mut conn, name, &[], &mut notices).await;
+    let result = phux_client::session::create_empty_session(&mut conn, name, &mut notices).await;
     drop(conn);
     // Printed before the error is reported, in encounter order: a notice
     // collected before a later transport failure must not be dropped.
@@ -573,7 +569,7 @@ pub(crate) async fn create_session_via_metadata(
         None => reject_duplicate_session_name(&mut conn, server, name, json).await?,
     }
 
-    // ADR-0167: a session made in a checkout on this machine carries the
+    // ADR-0168: a session made in a checkout on this machine carries the
     // checkout's project identity from its first record.
     let attrs = match (cwd.as_deref(), server.is_remote()) {
         (Some(dir), false) => phux_client::project_identity::creation_attrs(
@@ -684,7 +680,7 @@ fn refuse_unkeyed_server(conn: &Connection, json: bool) -> Result<(), ExitCode> 
 /// collected, in encounter order.
 fn warn_partial_results(notices: &[String]) {
     for message in notices {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
 }
 
@@ -768,14 +764,22 @@ fn is_taken(existing: &[String], name: &str) -> bool {
     existing.iter().any(|e| e == name)
 }
 
-/// `base` if free, else the first free `base-2`, `base-3`, ...
+/// `base` if free, else the first free `base-2`, `base-3`, ... A suffixed
+/// name shortens `base` so it stays within the session-name byte limit.
 pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
     if !existing.iter().any(|e| e == base) {
         return base.to_owned();
     }
     let mut n: u32 = 2;
     loop {
-        let candidate = format!("{base}-{n}");
+        let suffix = format!("-{n}");
+        let mut end = base
+            .len()
+            .min(phux_client::rename::MAX_SESSION_NAME_BYTES - suffix.len());
+        while !base.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = format!("{}{suffix}", &base[..end]);
         if !existing.iter().any(|e| e == &candidate) {
             return candidate;
         }
@@ -869,6 +873,18 @@ mod tests {
             &mut NameRng::seeded(4),
         );
         assert_eq!(name, sequence[1]);
+    }
+
+    #[test]
+    fn a_suffixed_name_stays_within_the_byte_limit() {
+        let base = "é".repeat(128);
+        let name = unique_session_name(std::slice::from_ref(&base), &base);
+        assert!(
+            name.len() <= phux_client::rename::MAX_SESSION_NAME_BYTES,
+            "{}",
+            name.len()
+        );
+        assert!(name.ends_with("-2"));
     }
 
     /// Every attempt taken ⇒ the first pick gets the numeric suffix, so

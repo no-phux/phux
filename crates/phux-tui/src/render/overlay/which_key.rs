@@ -2,9 +2,10 @@
 //!
 //! After the prefix and `which-key-delay-ms` of hesitation, a floating legend
 //! of every prefix-table continuation from the live [`KeybindingsCfg`],
-//! grouped by what it acts on (pane, window, session, phux itself). Keys bound
-//! to the same action share one row, numeric window jumps collapse to `0-9`,
-//! and a directional family (`h j k l` focus) collapses to one row.
+//! grouped by what it acts on (pane, tab, session, phux itself). Keys bound
+//! to the same action share one row, numeric tab jumps collapse to `0-9`,
+//! and a directional family (`h j k l` focus) collapses to one row. Labels
+//! are the palette's titles, so a key and its palette row read the same.
 //!
 //! It is transparent to input ([`RenderOverlay::is_input_passthrough`]): the
 //! next key dismisses it and runs as if it had never appeared (Esc also
@@ -34,7 +35,7 @@ impl Group {
     const fn header(self) -> &'static str {
         match self {
             Self::Pane => "Pane",
-            Self::Window => "Window",
+            Self::Window => "Tab",
             Self::Session => "Session",
             Self::Phux => "phux",
         }
@@ -110,7 +111,7 @@ const ACTION_ORDER: &[&str] = &[
 
 /// Actions whose bindings differ only by `direction` and read best as one
 /// row (`h j k l  focus`), with that row's label.
-const DIRECTIONAL: &[(&str, &str)] = &[("focus-direction", "focus"), ("resize-pane", "resize")];
+const DIRECTIONAL: &[(&str, &str)] = &[("focus-direction", "Focus"), ("resize-pane", "Resize")];
 
 /// Cardinal directions in the order a directional row lists its keys.
 const DIRECTIONS: [&str; 4] = ["left", "down", "up", "right"];
@@ -244,32 +245,35 @@ fn push_directional(rows: &mut Vec<Row>, bindings: &mut [(usize, usize, &str)]) 
     }
 }
 
-/// A binding's label as a person reads it (`split right`, `freeze pane`):
-/// the action name de-dashed plus its argument values, so new and plugin
-/// actions are never unlabelled, with phrases for the few whose raw
-/// arguments read backwards (`split-pane`, `move-window`).
+/// A binding's label as a person reads it: the palette title of the
+/// [`REGISTRY`](crate::attach::action_registry::REGISTRY) row the binding
+/// commits exactly, else a phrase built from the action name and its
+/// argument values, so new and plugin actions are never unlabelled.
 fn action_label(action: &Action) -> String {
-    let (name, args) = match action {
-        Action::Bare(name) => return name.replace('-', " "),
-        Action::Parameterized(p) => (p.action.as_str(), &p.args),
-    };
+    let resolved = phux_config::keybind::ResolvedAction::from(action);
+    if let Some(spec) = crate::attach::action_registry::REGISTRY
+        .iter()
+        .find(|spec| spec.resolved_action() == resolved)
+    {
+        return spec.title.to_owned();
+    }
+    let (name, args) = (resolved.action.as_str(), &resolved.args);
     let arg = |key: &str| {
         args.get(key)
             .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
     };
     match (name, arg("direction").as_deref(), arg("delta").as_deref()) {
-        ("split-pane", Some("vertical"), _) => return "split right".to_owned(),
-        ("split-pane", Some("horizontal"), _) => return "split below".to_owned(),
-        ("move-window", _, Some("-1")) => return "move window left".to_owned(),
-        ("move-window", _, Some("1")) => return "move window right".to_owned(),
-        ("resize-pane", Some(direction), _) => return format!("resize {direction}"),
-        ("focus-direction", Some(direction), _) => return format!("focus {direction}"),
+        ("split-pane", Some("horizontal"), _) => return "Split below".to_owned(),
+        ("move-window", _, Some("-1")) => return "Move tab left".to_owned(),
+        ("move-window", _, Some("1")) => return "Move tab right".to_owned(),
+        ("resize-pane", Some(direction), _) => return format!("Resize {direction}"),
+        ("focus-direction", Some(direction), _) => return format!("Focus {direction}"),
         _ => {}
     }
     if let ("signal-terminal", Some(signal)) = (name, arg("signal")) {
-        return format!("{signal} pane");
+        return sentence_case(&format!("{signal} pane"));
     }
-    let mut label = name.replace('-', " ");
+    let mut label = name.replace('-', " ").replace("window", "tab");
     for value in args.values() {
         label.push(' ');
         label.push_str(
@@ -278,7 +282,15 @@ fn action_label(action: &Action) -> String {
                 .map_or_else(|| value.to_string(), str::to_owned),
         );
     }
-    label
+    sentence_case(&label)
+}
+
+/// `text` with its first letter upper-cased, the palette's title case.
+fn sentence_case(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 fn is_indexed_select_window(action: &Action) -> bool {
@@ -298,7 +310,7 @@ fn compact_window_jump_keys(keys: &[String]) -> Option<(String, String)> {
     } else {
         format!("{first}-{last}")
     };
-    Some((key, "select window".to_owned()))
+    Some((key, "Go to tab".to_owned()))
 }
 
 /// Cells between two columns of the grid.
@@ -602,13 +614,13 @@ mod tests {
             &cfg_with("C-a", &[("q", "detach"), ("v", "copy-mode")]),
             &Theme::default(),
         );
-        assert!(pairs(&overlay).contains(&("q".to_owned(), "detach".to_owned())));
+        assert!(pairs(&overlay).contains(&("q".to_owned(), "Detach".to_owned())));
         assert!(
             !pairs(&overlay).iter().any(|(k, _)| k == "d"),
             "unbound default keys must not appear"
         );
         let text = render_to_string(&overlay, 120, 30);
-        assert!(text.contains('q') && text.contains("detach"), "{text}");
+        assert!(text.contains('q') && text.contains("Detach"), "{text}");
 
         // A rebound prefix shows in the title.
         let overlay = WhichKeyOverlay::from_config(
@@ -630,14 +642,14 @@ mod tests {
         );
         let overlay = WhichKeyOverlay::from_config(&cfg, &Theme::default());
         assert!(
-            pairs(&overlay).contains(&("%".to_owned(), "split right".to_owned())),
+            pairs(&overlay).contains(&("%".to_owned(), "Split right".to_owned())),
             "rows: {:?}",
             overlay.rows
         );
     }
 
     #[test]
-    fn numeric_window_jumps_collapse_to_one_row() {
+    fn numeric_tab_jumps_collapse_to_one_row() {
         let mut cfg = cfg_with("C-a", &[("d", "detach")]);
         for i in 0..10u8 {
             cfg.prefix_table.insert(
@@ -650,7 +662,7 @@ mod tests {
         }
         let overlay = WhichKeyOverlay::from_config(&cfg, &Theme::default());
         let rows = pairs(&overlay);
-        let collapsed = rows.iter().filter(|(_, a)| a == "select window").count();
+        let collapsed = rows.iter().filter(|(_, a)| a == "Go to tab").count();
         assert_eq!(collapsed, 1);
         assert!(rows.iter().any(|(k, _)| k == "0-9"));
         assert!(!rows.iter().any(|(k, _)| k == "0" || k == "9"));
@@ -697,13 +709,22 @@ mod tests {
         })
     }
 
-    /// Labels read as phrases a person says, not as call syntax.
+    /// Labels read as phrases a person says, not as call syntax, and a
+    /// binding the palette offers reads as its palette title.
     #[test]
     fn labels_read_as_phrases() {
         let s = |v: &str| toml::Value::String(v.to_owned());
         assert_eq!(
             action_label(&Action::Bare("kill-pane".to_owned())),
-            "kill pane"
+            "Kill pane"
+        );
+        assert_eq!(
+            action_label(&Action::Bare("take-input".to_owned())),
+            "Take the wheel"
+        );
+        assert_eq!(
+            action_label(&Action::Bare("window-picker".to_owned())),
+            "Go to tab…"
         );
         assert_eq!(
             action_label(&param(
@@ -713,22 +734,22 @@ mod tests {
                     ("amount", toml::Value::Integer(5))
                 ]
             )),
-            "resize left"
+            "Grow pane left"
         );
         assert_eq!(
             action_label(&param(
                 "move-window",
                 &[("delta", toml::Value::Integer(-1))]
             )),
-            "move window left"
+            "Move tab left"
         );
         assert_eq!(
             action_label(&param("signal-terminal", &[("signal", s("freeze"))])),
-            "freeze pane"
+            "Freeze pane"
         );
         assert_eq!(
             action_label(&param("plugin-action", &[("id", s("summarize"))])),
-            "plugin action summarize"
+            "Plugin action summarize"
         );
     }
 
@@ -747,7 +768,7 @@ mod tests {
         let overlay = WhichKeyOverlay::from_config(&cfg_with("C-a", &refs), &Theme::default());
         let text = render_to_string(&overlay, 160, 40);
         for (_, action) in &entries {
-            let label = action.replace('-', " ");
+            let label = sentence_case(&action.replace('-', " "));
             assert!(text.contains(&label), "{label} missing:\n{text}");
         }
     }
@@ -769,17 +790,17 @@ mod tests {
         }
         let rows = pairs(&WhichKeyOverlay::from_config(&cfg, &Theme::default()));
         assert!(
-            rows.contains(&(": Space".to_owned(), "command palette".to_owned())),
+            rows.contains(&(": Space".to_owned(), "Command palette".to_owned())),
             "{rows:?}"
         );
         assert!(
-            rows.contains(&("h j k l".to_owned(), "focus".to_owned())),
+            rows.contains(&("h j k l".to_owned(), "Focus".to_owned())),
             "{rows:?}"
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
 
-    /// Bindings group under Pane / Window / Session / phux headers, in that
+    /// Bindings group under Pane / Tab / Session / phux headers, in that
     /// order, whatever order the keys sort in.
     #[test]
     fn bindings_render_under_group_headers() {
@@ -801,7 +822,7 @@ mod tests {
             [Group::Pane, Group::Window, Group::Session, Group::Phux]
         );
         let text = render_to_string(&overlay, 160, 40);
-        for header in ["Pane", "Window", "Session", "phux"] {
+        for header in ["Pane", "Tab", "Session", "phux"] {
             assert!(text.contains(header), "{header} missing:\n{text}");
         }
     }

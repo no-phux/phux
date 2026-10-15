@@ -1,17 +1,22 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, LazyLock},
+    time::Instant,
+};
 
 use super::{Settings, geometry::Geometry};
 use gpui::prelude::*;
 use gpui::{
-    Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, SharedString,
-    TextAlign, fill, point, px, size,
+    Bounds, ContentMask, FontFeatures, Hsla, Pixels, ShapedLine, SharedString, TextAlign, fill,
+    point, px, size,
 };
 use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
 use phux_client_runtime::publication::{
-    Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb,
+    Cell, CellMetadata, CursorStyle, CursorWidth, GridDamage, GridFrame, Rgb,
 };
 
 #[derive(Clone, Default)]
@@ -47,19 +52,19 @@ struct Glyph {
 }
 
 /// Consecutive cells of one row holding printable ASCII in one font and
-/// colour, shaped as one line and painted one glyph per cell. A screen of
-/// text is then a few shapes per row instead of one per cell.
+/// colour. Shaped once, with each column forced to the cell width, and
+/// painted as that single line. GPUI's per-glyph paint is the slow path.
 #[derive(Clone)]
 struct GlyphRun {
     bounds: Bounds<Pixels>,
-    color: Hsla,
-    glyphs: Vec<(FontId, GlyphId)>,
+    line: ShapedLine,
 }
 
 #[derive(Clone)]
 enum Ink {
     Glyph(Box<Glyph>),
-    Run(GlyphRun),
+    // ShapedLine carries a 32-wide decoration buffer, so the run stays boxed.
+    Run(Box<GlyphRun>),
 }
 
 /// One painted quad tagged with the row that produced it, so a later frame
@@ -134,9 +139,10 @@ impl Fonts {
         ];
         // Cells never join: a ligature across them would misplace every
         // later glyph of the run. Per-cell shaping never formed one either.
-        let features = FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]));
+        static FEATURES: LazyLock<FontFeatures> =
+            LazyLock::new(|| FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)])));
         let run = faces.clone().map(|mut font| {
-            font.features = features.clone();
+            font.features = FEATURES.clone();
             font
         });
         Self { cell: faces, run }
@@ -149,7 +155,8 @@ impl Fonts {
 /// change; [`prepare`] then reuses it instead of walking and shaping every
 /// cell again. A new frame keeps the shaped rows whose cells still paint the
 /// same and reshapes only the rows that changed, plus a solid cursor's old
-/// and new rows.
+/// and new rows. A scrolled frame moves the kept rows instead of shaping them
+/// again.
 pub(super) struct Scene {
     frame: Arc<GridFrame>,
     bounds: Bounds<Pixels>,
@@ -226,14 +233,24 @@ pub(super) fn prepare(
             prepared.scene = Some(scene);
         }
         Err(error) => {
-            // Nothing left to repaint: release the last frame and its scene.
-            cache.borrow_mut().take();
+            // A rejected reacquire is not a blank. The last scene stays while
+            // its bounds still match, so a reconnect does not flash the pane.
             prepared.report.error = Some(error);
+            if let Some(scene) = scene_at(cache, bounds) {
+                prepared.layers = opacity_layers(&scene, window, cx);
+                prepared.scene = Some(scene);
+            }
         }
     }
     prepared.report.prepare_micros = started.elapsed().as_micros();
     crate::perf::PREPARE.record_elapsed(started);
     prepared
+}
+
+/// The cached scene when a reacquire failed but the pane has not moved.
+fn scene_at(cache: &SceneCache, bounds: Bounds<Pixels>) -> Option<Rc<Scene>> {
+    let scene = Rc::clone(cache.borrow().as_ref()?);
+    (scene.bounds == bounds).then_some(scene)
 }
 
 /// The cached scene when it still paints these inputs, else a new one.
@@ -297,9 +314,45 @@ fn patch(
         return None;
     }
     let rebuilt = rows_to_rebuild(&previous.frame, &frame, &settings);
+    // Hashing both grids costs a full read. Do it only when the in-place
+    // diff would reshape most of the screen, which is what a line of output
+    // does. A few dirty rows are cheaper to repaint than to hash.
+    if (previous.frame.scrollbar.offset != frame.scrollbar.offset
+        || worth_scroll_search(rebuilt.len(), frame.rows))
+        && let Some(scroll) = scroll_of(&previous.frame, &frame)
+    {
+        let scrolled = rows_after_scroll(
+            &previous.frame,
+            &frame,
+            &settings,
+            scroll,
+            &previous.geometry,
+        );
+        if scrolled.len() < rebuilt.len() {
+            shift_scene(&mut previous, scroll);
+            return finish_patch(previous, frame, settings, &scrolled, window);
+        }
+    }
     if rebuilt.len() == usize::from(frame.rows) {
         return None;
     }
+    finish_patch(previous, frame, settings, &rebuilt, window)
+}
+
+/// True when so many rows changed that a scroll shift can beat reshaping them.
+fn worth_scroll_search(rebuilt: usize, rows: u16) -> bool {
+    let height = usize::from(rows);
+    let slack = height / 8;
+    height >= 2 && rebuilt >= height.saturating_sub(slack).max(2)
+}
+
+fn finish_patch(
+    mut previous: Scene,
+    frame: Arc<GridFrame>,
+    settings: Settings,
+    rebuilt: &[u16],
+    window: &gpui::Window,
+) -> Option<Scene> {
     if rebuilt.is_empty() {
         let cursor_changed =
             cursor_key(&previous.frame, &settings) != cursor_key(&frame, &settings);
@@ -314,9 +367,256 @@ fn patch(
     let kept_bounds = previous.bounds;
     let kept_scale = previous.scale;
     let mut builder = Builder::from_kept(frame, settings, geometry, kept_bounds, kept_scale);
-    builder.paint_rows(&rebuilt, window);
+    builder.paint_rows(rebuilt, window);
     let fresh = builder.finish();
-    Some(assemble(previous, fresh, &rebuilt))
+    Some(assemble(previous, fresh, rebuilt))
+}
+
+/// Whole rows the new frame shares with the previous one, moved up or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scroll {
+    /// Content moved toward row 0. The new rows are at the bottom.
+    Up(u16),
+    /// Content moved toward the last row. The new rows are at the top.
+    Down(u16),
+}
+
+impl Scroll {
+    fn rows(self) -> u16 {
+        match self {
+            Self::Up(rows) | Self::Down(rows) => rows,
+        }
+    }
+}
+
+fn scroll_of(previous: &GridFrame, next: &GridFrame) -> Option<Scroll> {
+    if previous.cols != next.cols || previous.rows != next.rows || next.rows < 2 {
+        return None;
+    }
+    // History navigation gives a cheap candidate; each retained row is
+    // still checked before reuse. Live output at the history limit falls
+    // back to the content search below.
+    let delta = i128::from(next.scrollbar.offset) - i128::from(previous.scrollbar.offset);
+    if delta != 0 && delta.unsigned_abs() < u128::from(next.rows) {
+        let rows = delta.unsigned_abs() as u16;
+        return Some(if delta > 0 {
+            Scroll::Up(rows)
+        } else {
+            Scroll::Down(rows)
+        });
+    }
+    let prev = row_fingerprints(previous);
+    let next_rows = row_fingerprints(next);
+    if let Some(shift) = matching_shift(&prev, &next_rows) {
+        let scroll = Scroll::Up(shift);
+        if scroll_holds(previous, next, scroll) {
+            return Some(scroll);
+        }
+    }
+    if let Some(shift) = matching_shift(&next_rows, &prev) {
+        let scroll = Scroll::Down(shift);
+        if scroll_holds(previous, next, scroll) {
+            return Some(scroll);
+        }
+    }
+    None
+}
+
+fn matching_shift(source: &[u64], moved: &[u64]) -> Option<u16> {
+    (1..source.len())
+        .find(|shift| rows_aligned(source, moved, *shift))
+        .and_then(|shift| u16::try_from(shift).ok())
+}
+
+fn rows_aligned(source: &[u64], moved: &[u64], shift: usize) -> bool {
+    let Some(source) = source.get(shift..) else {
+        return false;
+    };
+    let kept = moved.len().saturating_sub(shift);
+    moved[..kept]
+        .iter()
+        .zip(source)
+        .all(|(left, right)| left == right)
+}
+
+fn scroll_holds(previous: &GridFrame, next: &GridFrame, scroll: Scroll) -> bool {
+    let shift = usize::from(scroll.rows());
+    let kept = usize::from(next.rows).saturating_sub(shift);
+    (0..kept).all(|row| {
+        let (prev_row, next_row) = scrolled_pair(scroll, row);
+        rows_paint_alike(previous, next, prev_row, next_row)
+    })
+}
+
+fn scrolled_pair(scroll: Scroll, row: usize) -> (u16, u16) {
+    let shift = usize::from(scroll.rows());
+    let (prev, next) = match scroll {
+        Scroll::Up(_) => (row + shift, row),
+        Scroll::Down(_) => (row, row + shift),
+    };
+    (
+        u16::try_from(prev).unwrap_or(u16::MAX),
+        u16::try_from(next).unwrap_or(u16::MAX),
+    )
+}
+
+fn rows_after_scroll(
+    previous: &GridFrame,
+    next: &GridFrame,
+    settings: &Settings,
+    scroll: Scroll,
+    geometry: &Geometry,
+) -> Vec<u16> {
+    let reverse = match scroll {
+        Scroll::Up(rows) => Scroll::Down(rows),
+        Scroll::Down(rows) => Scroll::Up(rows),
+    };
+    let old_cursor = solid_head(previous, settings);
+    let new_cursor = solid_head(next, settings);
+    (0..next.rows)
+        .filter(|row| {
+            let Some(source) = destination_row(reverse, previous.rows, *row) else {
+                return true;
+            };
+            let source_bounds = geometry.cell_bounds(source, 0, 1);
+            source_bounds.top() < geometry.bounds.top()
+                || source_bounds.bottom() > geometry.bounds.bottom()
+                || old_cursor
+                    .filter(|(at, _)| *at == source)
+                    .map(|(_, col)| col)
+                    != new_cursor.filter(|(at, _)| *at == *row).map(|(_, col)| col)
+                || !rows_paint_alike(previous, next, source, *row)
+        })
+        .collect()
+}
+
+fn destination_row(scroll: Scroll, height: u16, row: u16) -> Option<u16> {
+    match scroll {
+        Scroll::Up(by) if row >= by => Some(row - by),
+        Scroll::Down(by) if row.checked_add(by).is_some_and(|next| next < height) => Some(row + by),
+        _ => None,
+    }
+}
+
+fn shift_scene(scene: &mut Scene, scroll: Scroll) {
+    let height = scene.frame.rows;
+    let geometry = &scene.geometry;
+    shift_quads(&mut scene.backgrounds, scroll, height, geometry);
+    shift_quads(&mut scene.decorations, scroll, height, geometry);
+    shift_inks(&mut scene.inks, scroll, height, geometry);
+    shift_glyphs(&mut scene.glyphs, scroll, height, geometry);
+}
+
+fn shift_quads(quads: &mut Vec<RowQuad>, scroll: Scroll, height: u16, geometry: &Geometry) {
+    quads.retain_mut(|quad| {
+        shift_row(&mut quad.row, &mut quad.bounds, scroll, height, geometry).is_some()
+    });
+}
+
+fn shift_inks(inks: &mut Vec<RowInk>, scroll: Scroll, height: u16, geometry: &Geometry) {
+    inks.retain_mut(|ink| {
+        shift_row(
+            &mut ink.row,
+            ink_bounds(&mut ink.ink),
+            scroll,
+            height,
+            geometry,
+        )
+        .is_some()
+    });
+}
+
+fn shift_glyphs(
+    glyphs: &mut Vec<GlyphObservation>,
+    scroll: Scroll,
+    height: u16,
+    geometry: &Geometry,
+) {
+    glyphs.retain_mut(|glyph| {
+        let Some(dy) = shift_row(&mut glyph.row, &mut glyph.bounds, scroll, height, geometry)
+        else {
+            return false;
+        };
+        glyph.origin.y += dy;
+        glyph.baseline += dy;
+        true
+    });
+}
+
+fn shift_row(
+    row: &mut u16,
+    bounds: &mut Bounds<Pixels>,
+    scroll: Scroll,
+    height: u16,
+    geometry: &Geometry,
+) -> Option<Pixels> {
+    let next = destination_row(scroll, height, *row)?;
+    let dy = geometry.cell_bounds(next, 0, 1).top() - geometry.cell_bounds(*row, 0, 1).top();
+    *row = next;
+    bounds.origin.y += dy;
+    Some(dy)
+}
+
+fn ink_bounds(ink: &mut Ink) -> &mut Bounds<Pixels> {
+    match ink {
+        Ink::Glyph(glyph) => &mut glyph.bounds,
+        Ink::Run(run) => &mut run.bounds,
+    }
+}
+
+fn row_fingerprints(frame: &GridFrame) -> Vec<u64> {
+    (0..frame.rows)
+        .map(|row| row_fingerprint(frame, row))
+        .collect()
+}
+
+fn row_fingerprint(frame: &GridFrame, row: u16) -> u64 {
+    let cols = usize::from(frame.cols);
+    let Some(start) = usize::from(row).checked_mul(cols) else {
+        return 0;
+    };
+    let mut hash = 0xcbf29ce484222325_u64;
+    for index in start..start + cols {
+        hash = mix_cell(hash, frame, index);
+    }
+    hash
+}
+
+fn mix_cell(mut hash: u64, frame: &GridFrame, index: usize) -> u64 {
+    let Some(cell) = frame.buffer.cells.get(index) else {
+        return mix(hash, 0xffff);
+    };
+    hash = mix(hash, u64::from(cell.utf8_len));
+    hash = mix(hash, u64::from(cell.wide));
+    hash = mix(hash, u64::from(cell.flags));
+    hash = mix(hash, u64::from(cell.underline));
+    for byte in color_bytes(cell) {
+        hash = mix(hash, u64::from(byte));
+    }
+    hash = mix_metadata(hash, frame.buffer.metadata.get(index).copied());
+    match text_span(cell, &frame.buffer.utf8) {
+        Some(text) => {
+            for byte in text {
+                hash = mix(hash, u64::from(*byte));
+            }
+            hash
+        }
+        None => mix(hash, 0xff),
+    }
+}
+
+fn mix_metadata(mut hash: u64, metadata: Option<CellMetadata>) -> u64 {
+    let Some(metadata) = metadata else {
+        return mix(hash, 0);
+    };
+    hash = mix(hash, u64::from(metadata.foreground_kind));
+    hash = mix(hash, u64::from(metadata.foreground_palette_index));
+    hash = mix(hash, u64::from(metadata.underline_color_is_default));
+    mix(hash, u64::from(metadata.background_color_is_default))
+}
+
+fn mix(hash: u64, value: u64) -> u64 {
+    hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(value)
 }
 
 fn can_patch(
@@ -331,19 +631,30 @@ fn can_patch(
         && scene.frame.cols == frame.cols
         && scene.frame.rows == frame.rows
         && scene.frame.colors == frame.colors
+        && scene.frame.terminal_id == frame.terminal_id
+        && scene.frame.stream_id == frame.stream_id
+        && scene.frame.bootstrap_id == frame.bootstrap_id
+        && scene.frame.generation <= frame.generation
         && scene.settings.paints_like(settings)
 }
 
 fn rows_to_rebuild(previous: &GridFrame, next: &GridFrame, settings: &Settings) -> Vec<u16> {
     let old = solid_head(previous, settings);
     let new = solid_head(next, settings);
+    // Row damage describes one publication only. A painter can skip generations,
+    // so compare every row unless this is the adjacent frame of the same replica.
+    let exact_rows = next.damage == GridDamage::Rows
+        && previous.generation.checked_add(1) == Some(next.generation)
+        && previous.stream_id == next.stream_id
+        && previous.bootstrap_id == next.bootstrap_id
+        && next.buffer.row_dirty.len() == usize::from(next.rows);
     (0..next.rows)
-        .filter(|row| solid_row_changed(old, new, *row) || !row_paints_alike(previous, next, *row))
+        .filter(|row| {
+            solid_row_changed(old, new, *row)
+                || (!exact_rows || next.is_row_dirty(*row))
+                    && !row_paints_alike(previous, next, *row)
+        })
         .collect()
-}
-
-fn solid_head(frame: &GridFrame, settings: &Settings) -> Option<(u16, u16)> {
-    solid_cursor(frame, settings).then(|| cursor_head(frame))
 }
 
 fn solid_row_changed(old: Option<(u16, u16)>, new: Option<(u16, u16)>, row: u16) -> bool {
@@ -351,6 +662,10 @@ fn solid_row_changed(old: Option<(u16, u16)>, new: Option<(u16, u16)>, row: u16)
         return false;
     }
     old.is_some_and(|(at, _)| at == row) || new.is_some_and(|(at, _)| at == row)
+}
+
+fn solid_head(frame: &GridFrame, settings: &Settings) -> Option<(u16, u16)> {
+    solid_cursor(frame, settings).then(|| cursor_head(frame))
 }
 
 /// Cursor placement that changes quads without changing cell glyphs: a bar,
@@ -376,7 +691,11 @@ struct RowParts<'a> {
 }
 
 fn row_paints_alike(previous: &GridFrame, next: &GridFrame, row: u16) -> bool {
-    let Some(parts) = row_slices(previous, next, row) else {
+    rows_paint_alike(previous, next, row, row)
+}
+
+fn rows_paint_alike(previous: &GridFrame, next: &GridFrame, prev_row: u16, next_row: u16) -> bool {
+    let Some(parts) = row_slices(previous, next, prev_row, next_row) else {
         return false;
     };
     parts
@@ -393,18 +712,30 @@ fn row_paints_alike(previous: &GridFrame, next: &GridFrame, row: u16) -> bool {
             .all(|(left, right)| metadata_matches(left, right))
 }
 
-fn row_slices<'a>(previous: &'a GridFrame, next: &'a GridFrame, row: u16) -> Option<RowParts<'a>> {
+fn row_slices<'a>(
+    previous: &'a GridFrame,
+    next: &'a GridFrame,
+    prev_row: u16,
+    next_row: u16,
+) -> Option<RowParts<'a>> {
     if previous.cols != next.cols {
         return None;
     }
-    let start = usize::from(row).checked_mul(usize::from(previous.cols))?;
-    let end = start.checked_add(usize::from(previous.cols))?;
+    let cols = usize::from(previous.cols);
+    let prev = row_range(prev_row, cols)?;
+    let next_span = row_range(next_row, cols)?;
     Some(RowParts {
-        prev_cells: previous.buffer.cells.get(start..end)?,
-        next_cells: next.buffer.cells.get(start..end)?,
-        prev_meta: previous.buffer.metadata.get(start..end)?,
-        next_meta: next.buffer.metadata.get(start..end)?,
+        prev_cells: previous.buffer.cells.get(prev.clone())?,
+        next_cells: next.buffer.cells.get(next_span.clone())?,
+        prev_meta: previous.buffer.metadata.get(prev)?,
+        next_meta: next.buffer.metadata.get(next_span)?,
     })
+}
+
+fn row_range(row: u16, cols: usize) -> Option<std::ops::Range<usize>> {
+    let start = usize::from(row).checked_mul(cols)?;
+    let end = start.checked_add(cols)?;
+    Some(start..end)
 }
 
 fn cell_paints_alike(left: &Cell, left_utf8: &[u8], right: &Cell, right_utf8: &[u8]) -> bool {
@@ -477,13 +808,22 @@ fn merge_rows<T>(
     rebuilt: &[u16],
     row_of: impl Fn(&T) -> u16,
 ) -> Vec<T> {
-    let mut kept: Vec<T> = previous
-        .into_iter()
-        .filter(|item| rebuilt.binary_search(&row_of(item)).is_err())
-        .collect();
-    kept.extend(fresh);
-    kept.sort_by_key(|item| row_of(item));
-    kept
+    // Both inputs are already in row order, including after a constant scroll
+    // translation. Merge once instead of sorting every retained primitive.
+    let mut merged = Vec::with_capacity(previous.len() + fresh.len());
+    let mut fresh = fresh.into_iter().peekable();
+    for item in previous {
+        let row = row_of(&item);
+        if rebuilt.binary_search(&row).is_ok() {
+            continue;
+        }
+        while fresh.peek().is_some_and(|item| row_of(item) < row) {
+            merged.push(fresh.next().expect("peeked row"));
+        }
+        merged.push(item);
+    }
+    merged.extend(fresh);
+    merged
 }
 
 fn opacity_layers(
@@ -608,7 +948,20 @@ impl Builder {
         if hidden(cell, &self.scene.settings) {
             return;
         }
+        self.prepare_ink(frame, (row, col), cell, bounds, colors, window);
+        // Decorations stay above procedural blocks as well as shaped text.
         self.prepare_decorations(row, cell, bounds, colors);
+    }
+
+    fn prepare_ink(
+        &mut self,
+        frame: &GridFrame,
+        (row, col): (u16, u16),
+        cell: &Cell,
+        bounds: Bounds<Pixels>,
+        colors: CellColors,
+        window: &gpui::Window,
+    ) {
         // Both spacer variants contain no glyph. The head's whole grapheme is
         // shaped in one call; force_width would incorrectly advance combining marks.
         if matches!(cell.wide, 2 | 3) {
@@ -628,6 +981,9 @@ impl Builder {
             self.ascii_cell(row, col, *byte, style, foreground, window);
             return;
         }
+        if cell.wide == 0 && self.prepare_block((row, col), text, bounds, colors, window) {
+            return;
+        }
         self.flush_glyph_run(window);
         let text = String::from_utf8_lossy(text).into_owned();
         let width = if cell.wide == 1 { 2 } else { 1 };
@@ -637,6 +993,32 @@ impl Builder {
             opacity: colors.opacity,
         };
         self.shape_cell((row, col, width), text, style, window);
+    }
+
+    fn prepare_block(
+        &mut self,
+        (row, col): (u16, u16),
+        text: &[u8],
+        bounds: Bounds<Pixels>,
+        colors: CellColors,
+        window: &gpui::Window,
+    ) -> bool {
+        let Some(regions) = block_regions(text) else {
+            return false;
+        };
+        self.flush_glyph_run(window);
+        let foreground = self
+            .glyph_foreground(row, col, colors)
+            .opacity(colors.opacity);
+        self.observe(row, col, bounds, None, foreground);
+        for &(x, y, width, height) in regions {
+            self.scene.decorations.push(RowQuad {
+                row,
+                bounds: block_bounds(bounds, (x, y, width, height), self.scene.geometry.scale),
+                color: foreground,
+            });
+        }
+        true
     }
 
     /// A glyph under a solid block cursor takes the cell's background.
@@ -703,32 +1085,38 @@ impl Builder {
                 color: run.color,
                 ..Default::default()
             }],
-            None,
+            Some(geometry.cell_width),
         );
-        let Some(glyphs) = one_glyph_per_byte(&line, len) else {
+        // A ligature or emoji substitution is not one column per byte.
+        // Shape those cells alone so the grid stays one glyph per column.
+        if !glyphs_match_bytes(&line, len) {
             for (offset, byte) in text.bytes().enumerate() {
                 let style = TextStyle {
                     font: self.fonts.cell[run.style].clone(),
                     color: run.color,
                     opacity: 1.,
                 };
-                let cell = (run.row, run.start + offset as u16, 1);
+                let cell = (
+                    run.row,
+                    run.start + u16::try_from(offset).unwrap_or(u16::MAX),
+                    1,
+                );
                 self.shape_cell(cell, char::from(byte).to_string(), style, window);
             }
             return;
-        };
+        }
         for offset in 0..len {
-            let col = run.start + offset as u16;
+            let col = run.start + u16::try_from(offset).unwrap_or(u16::MAX);
             let bounds = geometry.cell_bounds(run.row, col, 1);
             self.observe(run.row, col, bounds, None, run.color);
         }
+        let width = u16::try_from(len).unwrap_or(u16::MAX);
         self.scene.inks.push(RowInk {
             row: run.row,
-            ink: Ink::Run(GlyphRun {
-                bounds: geometry.cell_bounds(run.row, run.start, len as u16),
-                color: run.color,
-                glyphs,
-            }),
+            ink: Ink::Run(Box::new(GlyphRun {
+                bounds: geometry.cell_bounds(run.row, run.start, width),
+                line,
+            })),
         });
     }
 
@@ -1003,7 +1391,6 @@ impl Prepared {
                 window.paint_quad(fill(*bounds, *color));
             }
             let geometry = scene.geometry;
-            let font_size = px(scene.settings.font_size);
             for ink in &scene.inks {
                 let result = match &ink.ink {
                     Ink::Glyph(glyph) if glyph.opacity < 1. => layers
@@ -1013,7 +1400,7 @@ impl Prepared {
                     Ink::Glyph(glyph) => {
                         paint_line(&glyph.line, glyph.bounds, geometry, window, cx)
                     }
-                    Ink::Run(run) => run.paint(geometry, font_size, window),
+                    Ink::Run(run) => run.paint(geometry, window, cx),
                 };
                 if let Err(error) = result {
                     self.report.error = Some(error);
@@ -1042,42 +1429,43 @@ impl Prepared {
 }
 
 impl GlyphRun {
-    /// Each glyph at its own cell's origin on the shared baseline, exactly
-    /// where a cell shaped alone would put it.
+    /// Paint the shaped line on the cell grid. `force_width` already put each
+    /// base glyph on its column, so this is one line paint rather than one
+    /// call per cell.
     fn paint(
         &self,
         geometry: Geometry,
-        font_size: Pixels,
         window: &mut gpui::Window,
+        cx: &mut gpui::App,
     ) -> Result<(), String> {
         let bounds = self.bounds;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            let baseline = bounds.origin.y + geometry.baseline;
-            let mut x = bounds.origin.x;
-            for (font, glyph) in &self.glyphs {
-                window
-                    .paint_glyph(point(x, baseline), *font, *glyph, font_size, self.color)
-                    .map_err(|error| error.to_string())?;
-                x += geometry.cell_width;
-            }
-            Ok(())
+            self.line
+                .paint(
+                    bounds.origin,
+                    geometry.cell_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .map_err(|error| error.to_string())
         })
     }
 }
 
-/// The glyphs of a line shaped from `len` bytes of ASCII, when each byte
-/// became exactly one non-emoji glyph in order.
-fn one_glyph_per_byte(line: &ShapedLine, len: usize) -> Option<Vec<(FontId, GlyphId)>> {
-    let mut glyphs = Vec::with_capacity(len);
+/// True when `len` bytes of ASCII became one non-emoji glyph each, in order.
+fn glyphs_match_bytes(line: &ShapedLine, len: usize) -> bool {
+    let mut count = 0;
     for run in &line.runs {
         for glyph in &run.glyphs {
-            if glyph.is_emoji || glyph.index != glyphs.len() {
-                return None;
+            if glyph.is_emoji || glyph.index != count {
+                return false;
             }
-            glyphs.push((run.font_id, glyph.id));
+            count += 1;
         }
     }
-    (glyphs.len() == len).then_some(glyphs)
+    count == len
 }
 
 /// Where a line shaped alone puts its baseline within one cell.
@@ -1159,6 +1547,62 @@ fn paint_line(
 
 fn rgb(color: Rgb) -> Hsla {
     gpui::rgb(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)).into()
+}
+
+/// Solid Unicode blocks describe cell coverage, not font ink. Drawing them
+/// from the cell edges avoids font side bearings and line-height gaps in
+/// terminal UIs that use half blocks for smooth panels.
+fn block_regions(text: &[u8]) -> Option<&'static [(u8, u8, u8, u8)]> {
+    Some(match std::str::from_utf8(text).ok()? {
+        "▀" => &[(0, 0, 8, 4)],
+        "▁" => &[(0, 7, 8, 1)],
+        "▂" => &[(0, 6, 8, 2)],
+        "▃" => &[(0, 5, 8, 3)],
+        "▄" => &[(0, 4, 8, 4)],
+        "▅" => &[(0, 3, 8, 5)],
+        "▆" => &[(0, 2, 8, 6)],
+        "▇" => &[(0, 1, 8, 7)],
+        "█" => &[(0, 0, 8, 8)],
+        "▉" => &[(0, 0, 7, 8)],
+        "▊" => &[(0, 0, 6, 8)],
+        "▋" => &[(0, 0, 5, 8)],
+        "▌" => &[(0, 0, 4, 8)],
+        "▍" => &[(0, 0, 3, 8)],
+        "▎" => &[(0, 0, 2, 8)],
+        "▏" => &[(0, 0, 1, 8)],
+        "▐" => &[(4, 0, 4, 8)],
+        "▔" => &[(0, 0, 8, 1)],
+        "▕" => &[(7, 0, 1, 8)],
+        "▖" => &[(0, 4, 4, 4)],
+        "▗" => &[(4, 4, 4, 4)],
+        "▘" => &[(0, 0, 4, 4)],
+        "▙" => &[(0, 0, 4, 8), (4, 4, 4, 4)],
+        "▚" => &[(0, 0, 4, 4), (4, 4, 4, 4)],
+        "▛" => &[(0, 0, 8, 4), (0, 4, 4, 4)],
+        "▜" => &[(0, 0, 8, 4), (4, 4, 4, 4)],
+        "▝" => &[(4, 0, 4, 4)],
+        "▞" => &[(4, 0, 4, 4), (0, 4, 4, 4)],
+        "▟" => &[(4, 0, 4, 8), (0, 4, 4, 4)],
+        _ => return None,
+    })
+}
+
+fn block_bounds(
+    bounds: Bounds<Pixels>,
+    (x, y, width, height): (u8, u8, u8, u8),
+    scale: f32,
+) -> Bounds<Pixels> {
+    let edge = |origin: Pixels, length: Pixels, fraction: u8| {
+        px(
+            ((f32::from(origin) + f32::from(length) * f32::from(fraction) / 8.) * scale).round()
+                / scale,
+        )
+    };
+    let left = edge(bounds.left(), bounds.size.width, x);
+    let top = edge(bounds.top(), bounds.size.height, y);
+    let right = edge(bounds.left(), bounds.size.width, x + width);
+    let bottom = edge(bounds.top(), bounds.size.height, y + height);
+    Bounds::new(point(left, top), size(right - left, bottom - top))
 }
 
 /// The theme's colour for one of the 16 ANSI slots, when a theme names them.
@@ -1373,6 +1817,7 @@ mod tests {
         let geometry = Geometry {
             cell_width: px(10.),
             cell_height: px(20.),
+            scale: 1.,
             ..Default::default()
         };
         let mut prepared = builder(frame(), Settings::default(), geometry);
@@ -1460,15 +1905,18 @@ mod tests {
         let left = painted_frame(vec![left_cell, blank, blank, blank], left_utf8);
         let mut right = painted_frame(vec![right_cell, blank, blank, blank], right_utf8);
         assert!(row_paints_alike(&left, &right, 0));
-        assert!(rows_to_rebuild(&left, &right, &settings).is_empty());
+        assert_eq!(rows_to_rebuild(&left, &right, &settings), Vec::<u16>::new());
 
         right.buffer.cells[0].flags |= CELL_SELECTED;
         assert_eq!(rows_to_rebuild(&left, &right, &settings), vec![0]);
         right.buffer.cells[0].flags = 0;
 
         let bar_left = cursor_at(left, CursorStyle::Bar, 0, 0);
-        let bar_right = cursor_at(right, CursorStyle::Bar, 1, 3);
-        assert!(rows_to_rebuild(&bar_left, &bar_right, &settings).is_empty());
+        let bar_right = cursor_at(right, CursorStyle::Bar, 1, 1);
+        assert_eq!(
+            rows_to_rebuild(&bar_left, &bar_right, &settings),
+            Vec::<u16>::new()
+        );
         assert_ne!(
             cursor_key(&bar_left, &settings),
             cursor_key(&bar_right, &settings)
@@ -1480,6 +1928,132 @@ mod tests {
             rows_to_rebuild(&block_left, &block_right, &settings),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn sparse_damage_keeps_changed_rows_but_skipped_publications_compare_the_whole_grid() {
+        let settings = Settings::default();
+        let previous = row_grid(&["aaaa", "bbbb", "cccc"]);
+        let mut adjacent = row_grid(&["aaaa", "bBbb", "cccc"]);
+        adjacent.generation = 2;
+        adjacent.damage = GridDamage::Rows;
+        adjacent.buffer.row_dirty = vec![false, true, false];
+        assert_eq!(rows_to_rebuild(&previous, &adjacent, &settings), vec![1]);
+
+        let mut skipped = row_grid(&["zaza", "bBbb", "cccc"]);
+        skipped.generation = 3;
+        skipped.damage = GridDamage::Rows;
+        skipped.buffer.row_dirty = vec![false, true, false];
+        assert_eq!(rows_to_rebuild(&previous, &skipped, &settings), vec![0, 1]);
+
+        adjacent.damage = GridDamage::Full;
+        adjacent.buffer.cells[0].flags |= CELL_SELECTED;
+        assert_eq!(rows_to_rebuild(&previous, &adjacent, &settings), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_scrolled_screen_keeps_the_rows_that_moved() {
+        let settings = Settings::default();
+        let previous = row_grid(&["aaa", "bbb", "ccc"]);
+        let next = row_grid(&["bbb", "ccc", "ddd"]);
+        assert_eq!(scroll_of(&previous, &next), Some(Scroll::Up(1)));
+        assert_eq!(
+            rows_after_scroll(
+                &previous,
+                &next,
+                &settings,
+                Scroll::Up(1),
+                &scrolling_geometry()
+            ),
+            vec![2]
+        );
+
+        let previous = cursor_at(previous, CursorStyle::Block, 2, 0);
+        let next = cursor_at(next, CursorStyle::Block, 2, 0);
+        assert_eq!(
+            rows_after_scroll(
+                &previous,
+                &next,
+                &settings,
+                Scroll::Up(1),
+                &scrolling_geometry()
+            ),
+            vec![1, 2]
+        );
+
+        let back = row_grid(&["aaa", "bbb", "ccc"]);
+        let forward = row_grid(&["zzz", "aaa", "bbb"]);
+        assert_eq!(scroll_of(&back, &forward), Some(Scroll::Down(1)));
+        assert_eq!(
+            rows_after_scroll(
+                &back,
+                &forward,
+                &settings,
+                Scroll::Down(1),
+                &scrolling_geometry()
+            ),
+            vec![0]
+        );
+        assert!(scroll_of(&back, &row_grid(&["axa", "bbb", "ccc"])).is_none());
+    }
+
+    #[test]
+    fn scroll_search_runs_only_when_most_rows_changed() {
+        assert!(!worth_scroll_search(1, 40));
+        assert!(!worth_scroll_search(34, 40));
+        assert!(worth_scroll_search(35, 40));
+        assert!(worth_scroll_search(40, 40));
+        assert!(worth_scroll_search(3, 3));
+        assert!(!worth_scroll_search(2, 3));
+        assert!(!worth_scroll_search(0, 1));
+    }
+
+    #[test]
+    fn shifting_a_scene_moves_the_kept_row() {
+        let geometry = Geometry {
+            cell_width: px(8.),
+            cell_height: px(10.),
+            scale: 1.,
+            cols: 3,
+            rows: 3,
+            ..Default::default()
+        };
+        let mut scene = builder(
+            row_grid(&["aaa", "bbb", "ccc"]),
+            Settings::default(),
+            geometry,
+        )
+        .scene;
+        let origin = geometry.cell_bounds(2, 0, 1);
+        scene.backgrounds.push(RowQuad {
+            row: 2,
+            bounds: origin,
+            color: gpui::red(),
+        });
+        shift_scene(&mut scene, Scroll::Up(1));
+        assert_eq!(scene.backgrounds.len(), 1);
+        assert_eq!(scene.backgrounds[0].row, 1);
+        assert_eq!(
+            scene.backgrounds[0].bounds.origin.y,
+            geometry.cell_bounds(1, 0, 1).origin.y
+        );
+    }
+
+    fn row_grid(lines: &[&str]) -> GridFrame {
+        let mut utf8 = Vec::new();
+        let mut cells = Vec::new();
+        for line in lines {
+            for byte in line.as_bytes() {
+                cells.push(text_cell(&mut utf8, &[*byte]));
+            }
+        }
+        let mut frame = frame();
+        frame.cols = u16::try_from(lines.first().map_or(0, |line| line.len())).unwrap_or(0);
+        frame.rows = u16::try_from(lines.len()).unwrap_or(0);
+        frame.buffer.metadata = vec![CellMetadata::default(); cells.len()];
+        frame.buffer.cells = cells;
+        frame.buffer.utf8 = utf8;
+        frame
     }
 
     fn cursor_at(mut frame: GridFrame, style: CursorStyle, row: u16, col: u16) -> GridFrame {
@@ -1684,5 +2258,174 @@ mod tests {
                 ..Default::default()
             }
         ));
+    }
+
+    fn scrolling_geometry() -> Geometry {
+        Geometry {
+            bounds: Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.))),
+            cell_width: px(10.),
+            cell_height: px(20.),
+            scale: 1.,
+            ..Default::default()
+        }
+    }
+
+    fn scrolling_frame(rows: &[&str], offset: u64) -> GridFrame {
+        let mut frame = frame();
+        frame.cols = 2;
+        frame.rows = rows.len() as u16;
+        frame.cursor.visible = false;
+        frame.scrollbar.offset = offset;
+        for row in rows {
+            let cell = text_cell(&mut frame.buffer.utf8, row.as_bytes());
+            frame.buffer.cells.extend([cell, Cell::default()]);
+            frame.buffer.metadata.extend([CellMetadata::default(); 2]);
+        }
+        frame
+    }
+
+    #[test]
+    fn scrolling_reuses_only_exact_rows_in_both_directions_and_at_history_limit() {
+        let settings = Settings::default();
+        let geometry = scrolling_geometry();
+        let old = scrolling_frame(&["A", "B", "C", "D"], 10);
+        let mut next = scrolling_frame(&["B", "C", "D", "E"], 11);
+        assert_eq!(scroll_of(&old, &next), Some(Scroll::Up(1)));
+        assert_eq!(
+            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &geometry),
+            vec![3]
+        );
+        assert_eq!(scroll_of(&next, &old), Some(Scroll::Down(1)));
+        assert_eq!(
+            rows_after_scroll(&next, &old, &settings, Scroll::Down(1), &geometry),
+            vec![0]
+        );
+        next.scrollbar.offset = old.scrollbar.offset;
+        assert_eq!(
+            scroll_of(&old, &next),
+            Some(Scroll::Up(1)),
+            "history at capacity"
+        );
+        next.scrollbar.offset += 1;
+        next.buffer.cells[2].flags |= CELL_SELECTED;
+        next.buffer.cells[4].wide = 1;
+        assert_eq!(
+            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &geometry),
+            vec![1, 2, 3],
+            "selection and wide-head changes must not keep stale ink"
+        );
+        let clipped = Geometry {
+            bounds: Bounds::new(geometry.bounds.origin, size(px(100.), px(30.))),
+            ..geometry
+        };
+        assert_eq!(
+            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &clipped),
+            vec![0, 1, 2, 3],
+            "previously clipped rows must be freshly painted when exposed"
+        );
+    }
+
+    #[test]
+    fn scrolling_invalidates_old_and_new_solid_cursor_ink() {
+        let old = cursor_at(
+            scrolling_frame(&["A", "B", "C", "D"], 0),
+            CursorStyle::Block,
+            1,
+            0,
+        );
+        let next = cursor_at(
+            scrolling_frame(&["B", "C", "D", "E"], 1),
+            CursorStyle::Block,
+            2,
+            0,
+        );
+        assert_eq!(
+            rows_after_scroll(
+                &old,
+                &next,
+                &Settings::default(),
+                Scroll::Up(1),
+                &scrolling_geometry()
+            ),
+            vec![0, 2, 3]
+        );
+    }
+
+    #[test]
+    fn retained_primitives_move_together_on_the_shared_pixel_grid() {
+        let geometry = scrolling_geometry();
+        let mut scene = builder(
+            scrolling_frame(&["A", "B", "C"], 0),
+            Settings::default(),
+            geometry,
+        )
+        .scene;
+        let bounds = geometry.cell_bounds(1, 0, 2);
+        scene.backgrounds.push(RowQuad {
+            row: 1,
+            bounds,
+            color: gpui::red(),
+        });
+        scene.decorations.push(RowQuad {
+            row: 1,
+            bounds,
+            color: gpui::blue(),
+        });
+        scene.glyphs.push(GlyphObservation {
+            row: 1,
+            col: 0,
+            bounds,
+            origin: bounds.origin,
+            baseline: px(35.),
+            foreground: gpui::red(),
+        });
+        shift_scene(&mut scene, Scroll::Up(1));
+        assert_eq!(scene.backgrounds[0].row, 0);
+        assert_eq!(scene.backgrounds[0].bounds, geometry.cell_bounds(0, 0, 2));
+        assert_eq!(scene.decorations[0].bounds, scene.backgrounds[0].bounds);
+        assert_eq!(scene.glyphs[0].row, 0);
+        assert_eq!(scene.glyphs[0].origin.y, px(0.));
+        assert_eq!(scene.glyphs[0].baseline, px(15.));
+    }
+
+    #[test]
+    fn retained_rows_never_cross_replica_or_geometry_fences() {
+        let geometry = Geometry {
+            scale: 1.,
+            ..Default::default()
+        };
+        let scene = builder(frame(), Settings::default(), geometry).scene;
+        let mut next = frame();
+        assert!(can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        next.bootstrap_id += 1;
+        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        next.bootstrap_id -= 1;
+        next.stream_id += 1;
+        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        next.stream_id -= 1;
+        next.generation = 0;
+        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        next.generation = 2;
+        assert!(!can_patch(&scene, &next, scene.bounds, 2., &scene.settings));
+    }
+
+    #[test]
+    fn half_blocks_share_the_exact_device_pixel_boundary() {
+        for scale in [1., 1.25, 1.5, 2.] {
+            let bounds = Bounds::new(
+                point(px(2. / scale), px(3. / scale)),
+                size(px(13. / scale), px(27. / scale)),
+            );
+            let upper = block_bounds(bounds, block_regions("▀".as_bytes()).unwrap()[0], scale);
+            let lower = block_bounds(bounds, block_regions("▄".as_bytes()).unwrap()[0], scale);
+            assert_eq!(upper.bottom(), lower.top());
+            assert_eq!(upper.top(), bounds.top());
+            assert_eq!(lower.bottom(), bounds.bottom());
+            assert_eq!(upper.size.width, bounds.size.width);
+            assert!(
+                block_regions("▀\u{fe0f}".as_bytes()).is_none(),
+                "a grapheme with selectors must keep normal text shaping"
+            );
+        }
     }
 }

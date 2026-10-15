@@ -138,8 +138,9 @@ with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 ### Gates that are CI-only or local-only
 
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
-`just native-smoke`) and `cockpit-ci.yml` (macOS). These have no local
-equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
+`just native-smoke`). `cockpit-ci.yml` is manual only while the Zig Cockpit
+is frozen ([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)). The following have
+no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
 mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
 `just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
 workflow (run `just stress` locally; 2-core runners starve the current-thread
@@ -177,6 +178,11 @@ unlabelled or double-labelled bead exits 1.
   argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
   The `ServerFeature` u32 is closed; the next bit is the trailing word in
   [`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md).
+  The desktop app and Cockpit link the protocol, so a `major.minor` bump also
+  updates `clients/desktop/phux-protocol` and `clients/cockpit/phux-protocol`
+  in the same commit. A test enforces it, and that edit is what makes
+  release-please ship both apps with the new protocol, so their in-app
+  updaters have a compatible build to offer.
 - **Do not document what you did not build.** In `docs/spec/` and
   `docs/consumers/`, a surface the reference implementation does not provide
   carries an `impl-status` marker naming a code symbol, and `just docs-check`

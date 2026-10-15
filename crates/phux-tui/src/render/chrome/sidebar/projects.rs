@@ -1,4 +1,4 @@
-//! Project groups in the Sessions zone (ADR-0167): the group header row and
+//! Project groups in the Sessions zone (ADR-0168): the group header row and
 //! the member rows' indentation. Grouping itself is the projection's job;
 //! this paints what it was handed.
 

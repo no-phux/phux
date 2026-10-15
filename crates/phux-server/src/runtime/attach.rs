@@ -2292,10 +2292,10 @@ fn spawn_pane_or_refusal(
         Ok(None) => {
             warn!(
                 ?client_id,
-                request_id, "SPAWN_RESOURCE: selected owner has no window to host the pane",
+                request_id, "SPAWN_RESOURCE: selected owner has no session to host the pane",
             );
             Err(SpawnError::SpawnFailed(
-                "selected owner has no window to host the pane".to_owned(),
+                "selected owner has no session to host the pane".to_owned(),
             ))
         }
         Err(err) => {

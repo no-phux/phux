@@ -162,8 +162,8 @@ test "the switcher lists this Mac's sessions first, then the remote host's, whic
     try testing.expectEqual(@as(u32, 2), first[2].peer_session.id);
     try testing.expectEqual(local_active.peer.providerId(), first[1].peer_session.coordinator);
     const labels = try sessionsPage(local_active.engine.model, &page);
-    try testing.expect(std.mem.indexOf(u8, labels, "Phux session · This Mac") != null);
-    try testing.expect(std.mem.indexOf(u8, labels, "Phux session · mini") != null);
+    try testing.expect(std.mem.indexOf(u8, labels, "This Mac") != null);
+    try testing.expect(std.mem.indexOf(u8, labels, "mini") != null);
     try testing.expect(std.mem.indexOf(u8, labels, "deploy") != null);
 
     // The host active and this Mac standing by: this Mac still leads.
@@ -175,8 +175,8 @@ test "the switcher lists this Mac's sessions first, then the remote host's, whic
     try testing.expectEqual(@as(u32, 2), second[1].peer_session.id);
     try testing.expectEqual(@as(u32, 1), second[2].session);
     const swapped = try sessionsPage(remote_active.engine.model, &page);
-    try testing.expect(std.mem.indexOf(u8, swapped, "Phux session · This Mac") != null);
-    try testing.expect(std.mem.indexOf(u8, swapped, "Phux session · mini") != null);
+    try testing.expect(std.mem.indexOf(u8, swapped, "This Mac") != null);
+    try testing.expect(std.mem.indexOf(u8, swapped, "mini") != null);
 }
 
 const RestartCounter = struct {

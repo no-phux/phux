@@ -149,10 +149,7 @@
                 </if>
                 <if test="{settingsSection == 4}">
                   <text wrap="true">{workspaceLabel}</text>
-                  <if test="{coordinatorEndpoint}"><text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text></if>
-                  <if test="{connectionDetail}"><text wrap="true" foreground="text_muted">{connectionDetail}</text></if>
-                  <button size="sm" on-press="sessions_open">Sessions</button>
-                  <text wrap="true" foreground="text_muted">Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.</text>
+                  <text wrap="true" foreground="text_muted">Shell and history settings live on the machine that runs the session.</text>
                 </if>
                 <if test="{settingsSection == 5}">
                   <text>Phux Cockpit</text>

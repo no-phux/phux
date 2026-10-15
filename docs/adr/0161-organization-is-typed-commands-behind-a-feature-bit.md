@@ -6,7 +6,7 @@ last-reviewed: 2026-10-13
 
 # 0161 — Organization is typed commands behind a feature bit
 
-**TL;DR.** Session, resource, arrangement, and Inbox edits are typed
+**TL;DR.** Session, resource, arrangement, and Intake edits are typed
 commands on the existing `COMMAND` envelope, advertised by the
 `ORGANIZATION` bit in `features_ext`. Each edit carries an operation id, moves
 and arrangement replaces carry an expected revision, and each answers `Ok`, `Accepted`, or a typed refusal, and is
@@ -52,8 +52,8 @@ surface.
    payload returns the original result without repeating effects; the
    same id with a different payload is refused as a duplicate.
 3. **Structural edits carry an expected `Revision`.** Moves, relaunch,
-   Inbox resolve, and `ArrangementReplace` are compare-and-swap: a mismatch
-   is refused as a conflict naming the current revision. Session
+   Intake resolution (wire `InboxResolve`), and `ArrangementReplace` are
+   compare-and-swap: a mismatch is refused as a conflict naming the current revision. Session
    arrangements may reference members only. Renames, lifetime changes,
    removes, and deletes carry none (amendment below).
 4. **Results.** A command answers `Ok` with value and revision,

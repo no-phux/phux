@@ -345,7 +345,7 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
     })
 }
 
-/// Run the `worktree-created` hooks (ADR-0167): config `[[hooks.worktree-created]]`
+/// Run the `worktree-created` hooks (ADR-0168): config `[[hooks.worktree-created]]`
 /// and enabled plugins' `[[events]]` on it, here in the CLI because the
 /// server never sees a worktree made. Each runs to completion or its
 /// timeout before the session starts, so a plugin can prepare the checkout.
@@ -428,9 +428,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         if json {
             tracing::debug!(error = %err, "auto-spawn failed on the --json worktree path");
         } else {
-            eprintln!(
-                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
-            );
+            warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
         }
     }
 

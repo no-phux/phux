@@ -213,7 +213,7 @@ pub fn document(
 /// `exec` come from it; otherwise from the snapshot: its reported lifetime,
 /// the resources it lists in the session, and their lifecycles (a retained
 /// exited process counts as completed). `project` is the identity its
-/// attributes carry (ADR-0167): the record's, else the snapshot's.
+/// attributes carry (ADR-0168): the record's, else the snapshot's.
 #[must_use]
 pub fn session_json(
     snapshot: &SessionSnapshot,
@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(work["attached_clients"], 1);
     }
 
-    /// ADR-0167: a session's project identity rides additively as `project`.
+    /// ADR-0168: a session's project identity rides additively as `project`.
     #[test]
     fn json_rows_carry_the_project_identity() {
         let snapshot = empty_snapshot();

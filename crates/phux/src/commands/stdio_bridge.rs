@@ -27,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub(crate) fn run_stdio_bridge(socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     if let Err(refusal) = phux_config::socket::refuse_dev_on_production(&socket_path) {
-        eprintln!("phux stdio-bridge: {refusal}");
+        error!("stdio-bridge: {refusal}");
         return ExitCode::FAILURE;
     }
     let origin = ssh_origin_from_env(
@@ -42,8 +42,8 @@ pub(crate) fn run_stdio_bridge(socket: Option<PathBuf>) -> ExitCode {
         let stream = match tokio::net::UnixStream::connect(&socket_path).await {
             Ok(stream) => stream,
             Err(err) => {
-                eprintln!(
-                    "phux stdio-bridge: cannot connect to server socket {}: {err}",
+                error!(
+                    "stdio-bridge: cannot connect to server socket {}: {err}",
                     socket_path.display()
                 );
                 return ExitCode::FAILURE;
@@ -120,7 +120,7 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
         // 0 like stdin EOF.
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("phux stdio-bridge: {err}");
+            error!("stdio-bridge: {err}");
             ExitCode::FAILURE
         }
     }

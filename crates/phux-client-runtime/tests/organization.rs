@@ -488,6 +488,19 @@ fn the_topology_carries_keys_lifetimes_and_exec_state() {
     assert_eq!(topology.panes[0].key, Some(rkey(1)));
     assert_eq!(topology.panes[0].exec, Some(ExecState::Running));
     assert_eq!(topology.handles.key(&ResourceId::local(1)), Some(rkey(1)));
+    event(
+        &mut plane,
+        Some(6),
+        AgentEvent::SessionRenamed {
+            session: skey(1),
+            name: "renamed-work".to_owned(),
+            revision: Revision::new(3),
+        },
+    );
+    let topology = plane.topology().unwrap();
+    assert_eq!(topology.sessions[0].name, "renamed-work");
+    assert_eq!(topology.sessions[0].key, Some(skey(1)));
+    assert_eq!(topology.panes[0].session_name, "renamed-work");
 }
 
 #[test]

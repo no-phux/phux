@@ -1677,4 +1677,35 @@ mod tests {
         let path = std::env::join_paths([&stale, &ours]).unwrap();
         assert_eq!(super::shadowing_phux(&brew, &path), None);
     }
+
+    /// The desktop and Cockpit link the protocol in-process, and a server
+    /// refuses a client whose protocol `major.minor` differs. Their release
+    /// trains only cut a release for commits under their own directory, so a
+    /// protocol bump must edit these pins in the same commit: that commit then
+    /// releases both apps, and their in-app updaters deliver them.
+    #[test]
+    fn app_release_trains_pin_the_protocol_they_link() {
+        let protocol = format!(
+            "{}.{}",
+            phux_protocol::PROTOCOL_VERSION.major,
+            phux_protocol::PROTOCOL_VERSION.minor
+        );
+        for (pin, path) in [
+            (
+                include_str!("../../../../../clients/desktop/phux-protocol"),
+                "clients/desktop/phux-protocol",
+            ),
+            (
+                include_str!("../../../../../clients/cockpit/phux-protocol"),
+                "clients/cockpit/phux-protocol",
+            ),
+        ] {
+            assert_eq!(
+                pin.trim(),
+                protocol,
+                "protocol is {protocol}: set {path} to {protocol} in this commit so the app \
+                 that links it is released with it"
+            );
+        }
+    }
 }

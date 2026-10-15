@@ -590,7 +590,7 @@ pub(super) struct ActionEffects {
     pub(super) toggle_zoom: bool,
     /// Flip the driver's sidebar state (and reflow).
     pub(super) toggle_sidebar: bool,
-    /// ADR-0167: a project group key whose sidebar collapse to flip.
+    /// ADR-0168: a project group key whose sidebar collapse to flip.
     pub(super) toggle_project: Option<String>,
     /// The new focused pane, already applied to the active window.
     pub(super) set_focus: Option<ResourceId>,

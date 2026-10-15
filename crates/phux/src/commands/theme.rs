@@ -178,7 +178,7 @@ fn set(
             );
         }
         Err(super::config::ReloadRingError::Unconfirmed(refusal)) => {
-            eprintln!("phux: config reload could not be confirmed: {refusal}");
+            error!("config reload could not be confirmed: {refusal}");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -335,7 +335,7 @@ fn fail(json: bool, message: &str) -> ExitCode {
             1,
         );
     }
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::FAILURE
 }
 

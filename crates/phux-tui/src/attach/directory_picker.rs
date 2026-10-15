@@ -7,7 +7,7 @@
 //! and every row carries `host`; without the bit the hub lists itself and the
 //! picker says so ([`ListingHost::AttachedInsteadOf`]).
 //!
-//! Rows commit ordinary actions: "open new window here" is
+//! Rows commit ordinary actions: "open new tab here" is
 //! `new-window { cwd }`; `..` and children are `go-to-directory { path }`; a
 //! refused listing keeps `..` and `~`.
 
@@ -172,7 +172,7 @@ fn ordered_children(entries: &[DirectoryEntry]) -> impl Iterator<Item = &Directo
 }
 
 fn open_here_item(path: &str, host: Option<&SatelliteHost>) -> SelectItem {
-    SelectItem::new("open new window here", open_window_at(path, host)).secondary("new window")
+    SelectItem::new("open new tab here", open_window_at(path, host)).secondary("new tab")
 }
 
 fn parent_item(parent: &str, host: Option<&SatelliteHost>) -> SelectItem {
@@ -272,7 +272,7 @@ mod tests {
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(
             labels,
-            ["open new window here", "..", "src/", "www/", ".cache/"]
+            ["open new tab here", "..", "src/", "www/", ".cache/"]
         );
         assert_eq!(committed(&items[0]), ("new-window", Some("/home/u")));
         assert_eq!(committed(&items[1]), ("go-to-directory", Some("/home")));
@@ -389,7 +389,7 @@ mod tests {
             "{}",
             items[0].label
         );
-        assert_eq!(items[1].label, "open new window here");
+        assert_eq!(items[1].label, "open new tab here");
         assert!(items.iter().all(|item| arg(item, "host").is_none()));
         assert_eq!(
             picker_title(&result, &host),

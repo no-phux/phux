@@ -15,8 +15,16 @@ phux-demo Worker  (src/index.ts)
    ▼
 SessionDO  (src/session.ts)   one per session, a plain Durable Object
    └─ instantiates phux-edge (worker/edge/, WASM) and pipes the WebSocket:
-      inbound frame → EdgeSession.on_message → send each returned frame.
+      inbound frame → EdgeSession.on_message → route each returned frame.
        Verifies the token; self-closes on idle / hard-max; releases its cap slot.
+       One session holds SEVERAL views: see "Pairing a phone" below.
+
+   wss://…/session?attach=CODE  ── a paired second screen
+   └─ verify the attach code (attaching reserves nothing) → the same SessionDO;
+      attachment frames go to the view that attached, session frames broadcast,
+      and only the newest view may resize the shared terminal.
+
+   GET /session/pair?code=…     ── has this code been spent yet? (pairing panel)
 
 mode=native → PhuxSessionContainer (src/native-session.ts), one random instance
    └─ worker/Dockerfile: pinned workspace phux (ARG PHUX_VERSION + PHUX_REVISION,
@@ -24,6 +32,38 @@ mode=native → PhuxSessionContainer (src/native-session.ts), one random instanc
       Separate HTTP readiness on port 8082; no probe bytes reach the WS server.
       No secrets or credentials; Cloudflare `enableInternet = false` blocks egress.
 ```
+
+## Pairing a phone
+
+The hosted shell is one session with several views, which is the product's own
+model: `ATTACH`/`ATTACHED`/`ATTACH_READY` carry a client-chosen correlation id and
+the server allocates a client id per attachment. The landing's dialog hands the
+view that opened the session one **attach code**; a phone scans it, opens
+`https://phux.sh/phone#CODE`, and attaches to the *same* session — no install, no
+sign-in, nothing to press.
+
+- The code is minted by the session DO, delivered only in that view's session
+  envelope, and is a signed `scope: "attach"` token (src/token.ts). It cannot open
+  a session, and a session token cannot attach.
+- It is **single-use** (claimed inside the DO's single-threaded window), lives at
+  most five minutes, and never outlives its session.
+- Attaching **reserves nothing**: no global-cap slot, no native admission, no
+  launch or daily budget. The session's own slot, idle clock, and hard expiry
+  remain the only limits.
+- Frames are routed per attachment where the wire says so and broadcast
+  otherwise, because every view looks at the same terminals. That terminal has
+  one geometry and `attach` applies the attaching client's viewport, so **only
+  the newest view may resize it** (src/attach-fanout.ts). That is the tmux rule,
+  and it keeps a phone from being handed a shell wider than its screen.
+- A paired view leaving, or timing out on its own idle clock, detaches that view
+  only. The session ends when the view that opened it does.
+- The code rides in the pairing page's URL **fragment**, so it never reaches a
+  server log or a referrer. The websocket upgrade that spends it carries it in
+  the query string, which the demo Worker's invocation logs do see: the same
+  bearer-in-URL trade the CLI's `phux pair` link makes, bounded by single-use,
+  five minutes, and attach-only.
+- Pairing covers the edge shell (`demo`, `portfolio`, `native-fallback`). Native
+  sessions refuse an attach until that path grows the same offering.
 
 The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
 `HELLO` with `HELLO_OK`, then `ATTACH` with READY-fenced bootstrap (greeting in
@@ -37,7 +77,10 @@ The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
 | `../infra/demo.run.ts` | Worker + DO bindings + container + tuning vars (Alchemy; WASM is uploaded as a compiled module) |
 | `src/index.ts`      | Worker front door: routing, rate-limit, global-cap reserve, token mint, handoff                   |
 | `src/global-cap.ts` | `GlobalCapDO` — global concurrency counter + per-IP rate limiter (self-healing via alarm)         |
-| `src/session.ts`    | `SessionDO` — instantiates phux-edge WASM, pipes the WS, idle/hard-max close, cap release         |
+| `src/session.ts`    | `SessionDO` — instantiates phux-edge WASM, fans out the session's views, idle/hard-max close, cap release |
+| `src/attach-fanout.ts` | view registry: per-attachment routing, newest-view geometry rule             |
+| `src/wire.ts`       | the three frame families the fan-out must read (attach ids), nothing more     |
+| `src/pairing.ts`    | the single-use pairing-code rules, as pure functions                          |
 | `src/token.ts`      | short-lived HMAC-SHA256 session token mint/verify                                                 |
 | `src/native-session.ts` | native container lifecycle, hard expiry, cap release, destruction                         |
 | `src/native-routing.ts` | native mode parsing, reservation TTL, sanitized upstream request                          |
@@ -47,9 +90,12 @@ The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
 ## Lifecycle / guardrails (server-side)
 
 - **Per-IP rate limit** + **global concurrency cap** at the Worker (excess → a
-  "demo at capacity" close, never a queue).
-- **Idle close** (2 min) + **hard-max** (10 min) in the SessionDO so an abandoned
-  tab doesn't pin a DO. Generous, because a session costs ~nothing (no container).
+  "demo at capacity" close, never a queue). A paired view passes the rate limit
+  and nothing else.
+- **Idle close** (2 min per view) + **hard-max** (10 min) in the SessionDO so an
+  abandoned tab doesn't pin a DO. Generous, because a session costs ~nothing (no
+  container). Each attached view carries its own idle clock; only the view that
+  opened the session ends it.
 - Native sessions allow one active shell and two launches per minute per IP.
   They have a 5-minute hard maximum, sleep 15 seconds after the WebSocket
   disconnects, use a soft cap of four, and are bounded by `max_instances = 5`. Their
@@ -58,8 +104,13 @@ The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
   startup-error/timeout, and non-101 requests atomically downgrade to edge.
 - The strongly consistent circuit defaults to three backend failures/60s,
   60s open, and one half-open probe. Capacity rejection does not count.
-- `NATIVE_ENABLED=false` is a deploy-time kill switch. `/healthz` reports only
-  aggregate counts and circuit state; there is no public control endpoint.
+- `NATIVE_ENABLED=false` parks native admission; it is the current default
+  (an unset value means off, so an ordinary deploy cannot re-enable it). The
+  edge fallback stays live and clients report "Native shells are paused."
+  Re-enable deliberately: `gh variable set PHUX_NATIVE_ENABLED --body true`
+  (the worker deploy passes it through), or dispatch site-native-control.yml.
+  `/healthz` reports only aggregate counts and circuit state, including
+  `nativeEnabled`; there is no public control endpoint.
 
 ## Native image pin
 
@@ -85,6 +136,10 @@ enabled and Docker available to Alchemy. Manually: set the `SESSION_TOKEN_SECRET
 CI uses the exact phux wire and allowed Origin to verify native greeting, command
 execution, and graceful edge fallback. A six-hour synthetic verifies native
 independently; manual dispatch supports on-demand probes and fallback exercises.
+`bun run worker:smoke-pair` verifies the pairing surface end to end — one session,
+two attached views, input on one showing up on the other, the code spending once,
+and an attachment reserving no slot — and runs after every worker deploy and in
+the six-hour monitor, because pairing is the anonymous demo's front door.
 See `../DEPLOY.md` for kill switch and version rollback.
 The edge mode needs no Docker; native deployment builds `Dockerfile`. See
 `../DEPLOY.md`.

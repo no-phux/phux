@@ -60,18 +60,6 @@
         }
       ]
     },
-    "clients/cockpit": {
-      "release-type": "simple",
-      "component": "cockpit",
-      "include-component-in-tag": true,
-      "include-v-in-tag": true,
-      "tag-separator": "-",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        { "type": "generic", "path": "app.zon" },
-        { "type": "generic", "path": "build.zig.zon" }
-      ]
-    },
     "clients/desktop": {
       "release-type": "node",
       "component": "desktop",

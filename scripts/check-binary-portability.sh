@@ -34,13 +34,15 @@
 # notes are checked below as a second, artifact-level guard against a compiler
 # declaring an x86-64-v2-or-newer requirement.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 GLIBC_MAX="${PHUX_GLIBC_MAX:-2.35}"
 MACOS_MIN_MAX="${PHUX_MACOS_MIN_MAX:-11.0}"
 failures=0
 
 fail() {
-  printf 'portability: %s\n' "$1" >&2
+  phux_error "portability: $1"
   failures=$((failures + 1))
 }
 
@@ -83,7 +85,7 @@ check_macho() {
   elif [ "$(ver_key "$minos")" -gt "$(ver_key "$MACOS_MIN_MAX")" ]; then
     fail "$bin requires macOS $minos, above the $MACOS_MIN_MAX floor (Xcode/SDK drift?)"
   else
-    printf 'portability: %s requires macOS %s (floor %s)\n' "$bin" "$minos" "$MACOS_MIN_MAX"
+    phux_info "portability: $bin requires macOS $minos (floor $MACOS_MIN_MAX)"
   fi
 }
 
@@ -128,13 +130,13 @@ check_elf() {
     if [ "$key" -gt "$ceiling" ]; then
       fail "$bin requires GLIBC_$maxver, above the $GLIBC_MAX baseline (runner image drift?)"
     else
-      printf 'portability: %s requires at most GLIBC_%s (baseline %s)\n' "$bin" "$maxver" "$GLIBC_MAX"
+      phux_info "portability: $bin requires at most GLIBC_$maxver (baseline $GLIBC_MAX)"
     fi
   fi
 }
 
 [ "$#" -gt 0 ] || {
-  echo "usage: check-binary-portability.sh <binary> [<binary>...]" >&2
+  phux_error "usage: check-binary-portability.sh <binary> [<binary>...]"
   exit 2
 }
 
@@ -147,15 +149,15 @@ for bin in "$@"; do
     Darwin) check_macho "$bin" ;;
     Linux) check_elf "$bin" ;;
     *)
-      echo "portability: unsupported host $(uname -s); skipping" >&2
+      phux_warn "portability: unsupported host $(uname -s); skipping"
       exit 0
       ;;
   esac
 done
 
 if [ "$failures" -ne 0 ]; then
-  printf 'portability: %d problem(s). Release binaries must run on a stock host.\n' "$failures" >&2
+  phux_error "portability: $failures problem(s). Release binaries must run on a stock host."
   exit 1
 fi
 
-printf 'portability: OK (%d binary/binaries)\n' "$#"
+phux_ok "portability: $# binary/binaries"

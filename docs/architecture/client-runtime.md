@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-12
+last-reviewed: 2026-10-14
 ---
 
 # The client runtime
@@ -105,9 +105,17 @@ Harnesses use this lane for synthetic frames, as do the C ABI's
 lane (Unix socket, WebSocket, or QUIC through `phux-dial` and this crate's
 `dial` planners), writes what the plane queues, feeds what arrives, and
 on a drop walks the `reconnect::Ladder`; `is_fatal_refusal` ends the session
-instead. A resync redials at once, a nudge cuts a backoff short and probes
+instead. A Unix-socket target left on the interactive default uses the
+local-upgrade ladder. A session that was attached for at least a second
+redials before that sleep. A resync redials at once, a nudge cuts a backoff
+short and probes
 an attached socket, and the never-attached phase is bounded by attempts
 and wall clock so a caller can derive its wait from `ConnectOptions`.
+An attached session with no inbound bytes for 10 seconds sends that same
+probe. On a byte stream, a send that cannot place another 16 KiB within 15
+seconds is a drop, so a shut window cannot park the driver ahead of the
+probe, and a slow link that keeps accepting data stays up. A WebSocket
+message uses that same 15 seconds for the whole message.
 Every acknowledged submission (`apply_line`, `apply_paste`,
 `apply_tab_completion`) that waits on the wire nudges too, so a half-open
 link is dropped within `probe_timeout` and its receipt follows the

@@ -45,7 +45,7 @@ records with an explicit lifetime, and every change records who made it.
 | Server | The background process that owns your resources. Closing a client does not close it. |
 | Resource | Something you work with: a terminal running a shell, editor, or agent, or an agent conversation. It belongs to exactly one session. |
 | Session | A named group of resources on one server. You attach to it and return to it. |
-| Inbox | The session that holds work you have not organized yet. Every server has one. |
+| Intake | The designated persistent session for work created without a destination. Every server has one. |
 | Arrangement | How a session's resources are laid out: groups, shown as tabs, each holding a split tree of views. |
 | View | One client's presentation of one resource: a pane in the TUI, a tile in Cockpit. |
 | Client | Your view and input path into the server: for example the TUI or Cockpit. |
@@ -91,7 +91,8 @@ for detach, upgrade, crash, and restore boundaries.
   for keys, copying, and navigation.
 - [Run a coding agent](./consumers/getting-started.md).
 - [Connect another machine](./remote-access.md).
-- [Use Cockpit](./consumers/cockpit.md), the native macOS interface.
+- [Use the desktop](./consumers/desktop.md), the native macOS interface.
+  The Zig [Cockpit](./consumers/cockpit.md) is frozen.
 
 The remaining sections describe the model for automation and client
 implementation.
@@ -141,7 +142,7 @@ between servers: working elsewhere means creating a resource there.
 Project, directory, repository, and host are attributes of a session, not
 levels above it.
 
-## Arrangements and the Inbox
+## Arrangements and the Intake
 
 A session may have one shared arrangement. The server owns it and changes
 it by revision, so two clients editing the same tabs see a conflict instead
@@ -150,11 +151,18 @@ never owns one, and a removed resource leaves a named placeholder. Each
 client adapts the arrangement to its own screen. Focus, selection, scroll,
 and window geometry stay local to the client and are never shared.
 
-Resources created without a session land in the server's Inbox session.
-Sessions brought over from an older server keep their members and tabs and
-show up in the Inbox as intact groups until you mark them organized.
-Organizing work, by drag, keyboard, or bulk selection, moves membership
-only and can be undone while the state it changed is unchanged.
+Resources created without a session land in the server's Intake: a real,
+designated persistent session, not a virtual collection. Sessions brought
+over from an older server keep their members and tabs and appear separately
+under Intake while awaiting organization. **Mark session organized** clears only
+that import mark; it does not move, restart, or rename their work.
+Moving work to another session changes membership only and can be undone
+while the state it changed is unchanged. The attention **Inbox** answers
+what needs a person; it is not the Intake session or a move destination.
+
+New servers name their designated session `intake`. Existing names, including
+`inbox` or a name you chose, stay unchanged; Intake is its role, identified by
+the session's permanent key, not a naming convention.
 
 ## Actors
 
@@ -184,9 +192,10 @@ The wire carries five things:
   atoms for a Terminal; appended records for an AgentSession. Both ends run
   the engine for the kinds they show; the wire is not a second screen model.
 - **Organization.** Typed commands that create, rename, move, and delete
-  sessions and resources and replace arrangements. Each carries an
-  operation id and the revision it expects, and answers with a result or a
-  typed refusal.
+  sessions and resources and replace arrangements. Each edit carries an
+  operation id, so a retry is safe; moves and arrangement replaces also
+  carry the revision they expect, while renames and deletes are last writer
+  wins. Each answers with a result or a typed refusal.
 - **Metadata.** Opaque key-value pairs the server stores without
   interpreting.
 
@@ -229,7 +238,7 @@ records current gaps.
 ## Status
 
 The model arrives in stages. Resources, sessions with explicit lifetime,
-arrangements, the owner-local Inbox, the organization store, crash
+arrangements, the owner-local Intake, the organization store, crash
 reconciliation, and typed organization commands land together
 ([ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md),
 [ADR-0161](adr/0161-organization-is-typed-commands-behind-a-feature-bit.md),
@@ -239,7 +248,7 @@ The rows below are what remains.
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
 | Delegated agent credentials and human lease precedence (stage 5) | The `ORGANIZE` and `TERMINATE` verbs and the actor principal fields exist; agents still act with their connection's grant, are attributed by client name, and a deliberate takeover by any principal wins the lease. | [ADR-0163](adr/0163-actors-and-delegated-agent-grants.md) | phux-3q58 |
-| Workspaces across machines (stage 6) | Designed, not built. Sessions link only within one server's view; the Inbox combines owners only as far as each client connects to them. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-lxov |
+| Workspaces across machines (stage 6) | Designed, not built. Sessions link only within one server's view; the Intake combines owners only as far as each client connects to them. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-lxov |
 | Browser resource kind (stage 7) | Designed, not built. Terminal and AgentSession are the only kinds. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-3q58 |
 | On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). Server death ends live processes and loses their terminal history; session and resource records survive and `phux restore` starts fresh PTYs, not the lost processes. The `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
 | Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener still admits every connection with the owner's full grant — a warned transitional posture, not the startup error the spec's target table asks for — and a configured CA or registry path with no mode is ignored rather than refused. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |

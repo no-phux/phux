@@ -16,6 +16,8 @@ const {
 } = Astro.props;
 
 const path = Astro.url.pathname;
+// The landing carries a short top bar of its own; the rest of the site uses
+// the full marketing nav.
 const navigation = minimal ? [
   { href: docsHref("/overview"), label: "Docs" },
   { href: "/embed", label: "Try" },
@@ -80,7 +82,7 @@ const navigation = minimal ? [
           <h2>Product</h2>
           <a href="/demos">Demos</a>
           <a href={docsHref("/consumers/tui")}>CLI</a>
-          <a href={docsHref("/consumers/cockpit")}>Cockpit</a>
+          <a href={docsHref("/consumers/desktop")}>Desktop</a>
           <a href={docsHref("/consumers/web")}>Web</a>
           <a href={docsHref("/consumers/getting-started")}>Agents</a>
         </nav>

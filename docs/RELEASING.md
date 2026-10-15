@@ -29,15 +29,15 @@ same release.
 | `phux-protocol` on crates.io | a human, via `publish-crate.yml` |
 | Integration versions | release-please component PRs |
 | Integration validation, assets, and publication | `agent-integration-release.yml` |
-| Cockpit version and changelog | release-please, under `clients/cockpit` |
-| The `cockpit-vX.Y.Z` tag and draft release | release-please |
-| Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml`, called by `publish.yml` |
-| `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
+| Cockpit version and changelog | frozen at `clients/cockpit/version.txt`; release-please does not cut it ([ADR-0167](adr/0167-cockpit-is-frozen.md)) |
+| The `cockpit-vX.Y.Z` tag and draft release | not cut automatically; `publish.yml` can still publish an existing tag |
+| Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml`, called by `publish.yml` for an existing tag |
+| `phux-cockpit` Homebrew cask | `cockpit-release.yml`, only when that tag is published |
 | Desktop version and changelog | release-please, under `clients/desktop` |
 | The `desktop-vX.Y.Z` tag and draft release | release-please |
 | Desktop ZIP, checksum, runtime qualification, and publication | `desktop-release.yml`, called by `publish.yml` |
 | `PhuxFFI-<tag>.xcframework.zip`, its `.sha256`, and `.provenance` on the root release | `ffi-xcframework.yml`, called by `publish.yml` |
-| Moving `next` prerelease (green `main`), CLI and Cockpit | `next-release.yml` |
+| Moving `next` prerelease (green `main`), CLI and desktop | `next-release.yml`. Cockpit next builds are frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)) |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
 onto the draft release-please made and flips it public only after the complete
@@ -62,7 +62,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Re-build or finish any draft | Dispatch **Actions -> publish** with `tag=vX.Y.Z`, `tag=cockpit-vX.Y.Z`, or a component tag. An empty tag reconciles every ready draft |
 | Publish `phux-protocol` to crates.io | Dispatch **Actions -> publish-crate** with `tag=vX.Y.Z`, `dry_run=false` |
 | Revalidate an integration tag without publishing | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=true` |
-| Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
+| Build the frozen Cockpit locally | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh`. No release PR is opened |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with a public `vX.Y.Z` or `cockpit-vX.Y.Z` tag; it synchronizes that exact version before updating its stage |
 | Check the installers and their release wiring | `bash scripts/check-install-surface.sh` |
@@ -84,14 +84,14 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Release artifacts | called by `publish` | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Cockpit release | called by `publish` | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
 | Desktop release | called by `publish` | Builds the tagged GPUI executable, packages `Phux.app` and a qualification CLI on Apple silicon; verifies ad-hoc signing, archived-app runtime and installer behavior, then uploads and verifies the ZIP/checksum before publishing as a stable release, never latest. |
-| Cockpit SDK head | manual | Builds Cockpit against an explicitly selected SDK ref. Pinned SDK changes still run ordinary Cockpit CI. |
+| Cockpit SDK head | manual | Builds the frozen Cockpit against an explicitly selected SDK ref. Ordinary Cockpit CI does not run. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | called by `publish`, or a manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
 | Stress lane | manual or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
 | Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 | Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Requires a public GitHub release, then synchronizes its exact version and tagged changelog notes before updating its stage. The explicit previous-component-tag issue range makes retries and old-tag recovery independent of Linear's latest baseline. Pre-publication `building` reporting is removed: continuous Linear pipelines complete releases during sync. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
-| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
+| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and the GPUI desktop when its inputs moved, attached to the moving `next` prerelease. No Homebrew. Cockpit is not rebuilt ([ADR-0167](adr/0167-cockpit-is-frozen.md)). `phux update --channel next` follows `channel.json`. |
 
 Linear's direct tag fetch clears checkout's persisted HTTP headers before
 supplying its command-scoped authorization header. Git accumulates extra
@@ -175,8 +175,12 @@ is published.
 
 `scripts/ci/classify-changes.py` owns the product dependency routes;
 `scripts/ci/detect-changes.py` resolves PR merge-base, push and merge-group
-events. All four consumers use `.github/actions/classify-changes` without
-duplicated outer path filters. Unknown paths, unavailable history and empty
+events. `ci.yml`, `native-setup.yml`, and `web-check.yml` use
+`.github/actions/classify-changes` without duplicated outer path filters.
+`cockpit-ci.yml` still contains that action and runs only on
+`workflow_dispatch` ([ADR-0167](adr/0167-cockpit-is-frozen.md)). Rows below
+that name Cockpit are classifier outputs, not runners that start. Unknown
+paths, unavailable history and empty
 diffs request every surface. On pull requests the same classifier also emits
 `test_filterset` (`rdeps(=crate)` union, or empty) so a library change can
 skip unrelated crates after the `--workspace` build. A `tests/`-only diff
@@ -194,21 +198,21 @@ versions different without changing the routing contract.
 |---|---|
 | Handwritten docs, including Cockpit README | Docs guards only (`docs-check`, `install-surface-check`; no Nix) |
 | Docs that code reads: `docs/spec/**`, `docs/reference/**`, `docs/assets/**`, `docs/consumers/agents.md` | Root Rust check/test (full pool) |
-| `docs/dsr-release-fallback.md` | Cockpit |
+| `docs/dsr-release-fallback.md` | Classifier marks `cockpit_needed`; no automatic build |
 | `docs/site/**`, root `CHANGELOG.md` | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
 | Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
-| `just/cockpit.just` | Cockpit tests + shipping app |
+| `just/cockpit.just` | Classifier marks `cockpit_needed`; no automatic build |
 | `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
 | `integrations/**` | Node integration gates |
-| `clients/cockpit/**` source | Cockpit tests + shipping app |
+| `clients/cockpit/**` source | Classifier marks `cockpit_needed`; no automatic build |
 | Browser source | Node/WASM package + Chrome/live-server tests |
-| Root crates | Rust + Cockpit coordinator coverage; browser also runs for its Rust/demo-server dependency closure |
+| Root crates | Root Rust check/test; browser also runs for its Rust/demo-server dependency closure. The classifier may still mark `cockpit_needed` |
 | Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
 | `.config/zig-toolchain.json` | Affected products plus byte-identical engine reproduction |
-| `scripts/install-zig.sh` | Cockpit + native-setup + engine reproduction (Nix phux lanes use flake Zig) |
-| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs. Push to `main` also mirrors the allowlisted product skills to `no-phux/skills` (see `.github/workflows/sync-skills.yml`). |
+| `scripts/install-zig.sh` | Native setup + engine reproduction (Nix phux lanes use flake Zig). The classifier may still mark `cockpit_needed` |
+| Embedded `.agents/skills/using-phux*/**` | Rust check/test; these versioned project skills are compiled product inputs. The classifier may still mark `cockpit_needed`. Push to `main` also mirrors the allowlisted product skills to `no-phux/skills` (see `.github/workflows/sync-skills.yml`). |
 
 `bash scripts/ci/check-classify-changes.sh` exercises routes and actual event
 diffs, including cross-surface renames and the browser server's manifest closure.
@@ -216,7 +220,7 @@ The browser shell is opt-in: `nix develop .#browser -c python3 scripts/ci/web-br
 
 ### Validation and artifact reuse
 
-PR validation is latest-wins. Root and Cockpit main runs are keyed by SHA so a
+PR validation is latest-wins. Root main runs are keyed by SHA so a
 later push cannot cancel validation that an immutable release tag needs. Root
 and browser main checks first look for a seven-day validation receipt. Reuse requires a
 successful run in this repository, the same workflow path, identical routed
@@ -224,15 +228,11 @@ coverage, and the source run's Git tree independently resolved through GitHub's
 Git database. PR head and tested merge trees must agree. Missing, expired,
 untrusted, differently scoped or unavailable evidence runs normal validation.
 
-Cockpit main still performs packaging and lifecycle verification, which exceed
-PR coverage. Its successful main run saves the two final Rust outputs in an
-exact-key cache: clean source tree, compiler versions and Zig executable hash,
-platform/CPU, Xcode/SDK, profile and build flags (including native-engine
-optimization). Unversioned Ghostty source/system-directory overrides cannot
-reuse this cache. Release orchestration waits for that tagged commit's
-validation before restoring them. The manifest verifies both artifact hashes;
-a miss rebuilds from the tagged checkout. Only successful main validation saves
-the shared entry. Dependency caches remain best-effort accelerators.
+Automatic Cockpit packaging is frozen
+([ADR-0167](adr/0167-cockpit-is-frozen.md)). `cockpit-ci.yml` keeps its
+exact-key Rust artifact cache and runs only when dispatched. A published
+`cockpit-vX.Y.Z` tag still goes through `cockpit-release.yml`. Dependency
+caches remain best-effort accelerators.
 
 Signing, packaging, downloaded-byte verification and release lifecycle checks
 remain release-owned. The aborting root `release` profile and unwinding Cockpit
@@ -284,6 +284,7 @@ desktop-v0.1.0
   phux-desktop-0.1.0-macos-arm64.zip
     Phux.app/
   SHA256SUMS
+  desktop-channel.json
 ```
 
 `publish.yml` still requires green `ci.yml` for the exact tagged commit.
@@ -317,7 +318,34 @@ transaction checks run separately. After upload, downloaded checksums and bytes
 must match before `gh release edit` publishes the draft with `--draft=false
 --latest=false`. Use this draft-aware command: the REST
 release-by-tag endpoint does not resolve unpublished drafts. This train does
-not alter the CLI `next` channel or a Homebrew cask.
+not alter the CLI stable release or a Homebrew cask.
+
+Desktop also rides the moving `next` prerelease independently of the CLI and
+Cockpit. `next-release.yml` calls the same build/signature/runtime qualification
+lane with an immutable green-main SHA and `PHUX_CHANNEL=next`. Its assets are
+`phux-desktop-next.<40-character SHA>-macos-arm64.zip` and the matching
+`.zip.sha256` sidecar. Publication uploads both before replacing
+`desktop-channel.json`; it keeps the current and previous desktop revisions
+without pruning another product's artifacts. Older pinned artifacts are also
+preserved when a failed pointer read or publication retry cannot establish the
+previous revision. A CLI-only next publish is not
+evidence that a desktop update is available: clients must read the desktop
+pointer, not `channel.json` or the moving tag's commit.
+
+Both stable and next publish `desktop-channel.json` with `schema_version: 1`,
+`product: desktop`, `channel`, full source `sha`, package `version`, archive
+basename `archive`, archive digest `sha256`, `minimum_macos`, and `published_at`.
+The signed bundle records `PhuxDesktopVersion`, `PhuxBuildSHA`, and
+`PhuxDesktopChannel`; Next freshness compares source revisions, not package
+versions (several green commits can share a version).
+
+The standalone desktop installer defaults to `--channel stable`; `latest` is
+a stable alias. `--channel next` resolves the desktop pointer once and verifies
+the signed bundle's source SHA. `--channel next --revision <SHA>` pins an
+already-published SHA-qualified artifact without reading the moving pointer;
+`--version desktop-vX.Y.Z` pins stable. All installs preserve the coordinator
+CLI and its running server. Installer tests use temporary app/launcher paths
+and mocked downloads, never a production installation.
 
 To recover a draft, dispatch **publish** with `tag=desktop-vX.Y.Z`, never the
 leaf workflow. The release drift check includes desktop drafts, a stable
@@ -413,12 +441,13 @@ The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
 is the pointer `phux update --channel next` reads. Homebrew stays on stable.
-Cockpit rides the same prerelease ([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)):
-`phux-cockpit-next.<sha>-macos-arm64.zip` plus a `.sha256` sidecar in the same
-`"<64 hex>  <archive>"` form, with `cockpit-channel.json` as its pointer. Each
-product rebuilds only when its own inputs moved since its pointer's SHA, and
+New Cockpit next archives are frozen
+([ADR-0167](adr/0167-cockpit-is-frozen.md)).
+[ADR-0138](adr/0138-cockpit-rides-the-next-channel.md) still names the asset
+a resume would publish: `phux-cockpit-next.<sha>-macos-arm64.zip` plus a
+`.sha256` sidecar, with `cockpit-channel.json` as its pointer.
 `scripts/publish-next-channel.sh [--cockpit]` prunes only that product's
-assets.
+assets. The CLI and the desktop each rebuild only when their own inputs moved.
 
 ## Versioning
 
@@ -427,11 +456,13 @@ The workspace shares one `version` in the root `Cargo.toml`
 `version.workspace = true`, and internal workspace dependencies use path-only
 requirements so release bumps do not require duplicate manifest edits.
 
-Cockpit and the three host integrations intentionally version independently.
-Cockpit's version lives in `clients/cockpit/version.txt`, `app.zon`, and
-`build.zig.zon`; the Release Please manifest records the latest released
-version and `clients/cockpit/scripts/check-release-version.sh` requires all four
-copies to agree. Its tags are `cockpit-vX.Y.Z`.
+The host integrations version independently of the workspace. Cockpit's
+source version stays in `clients/cockpit/version.txt`, `app.zon`, and
+`build.zig.zon`. release-please no longer records it
+([ADR-0167](adr/0167-cockpit-is-frozen.md)).
+`clients/cockpit/scripts/check-release-version.sh` still requires
+`version.txt`, `app.zon`, and `build.zig.zon` to agree. It checks the
+release-please manifest only when that key is present.
 
 Integration versions live under `integrations/{opencode,pi,claude}` in the
 Release Please manifest and package lockfiles; Claude's component also
@@ -611,16 +642,16 @@ Linux it rejects ELF notes that declare an x86-64-v2-or-newer ISA requirement.
 
 ## Cutting a Cockpit release
 
-Cockpit is a Release Please component, not part of the Rust workspace version.
-A Cockpit conventional commit updates the shared draft release PR only under
-`clients/cockpit` plus the root release manifest. The PR squash auto-merges once
-`ci` and `commitlint` are green; to land it by hand, mark it ready and squash
-merge. Release Please creates `cockpit-vX.Y.Z`
-and a private draft. Once `ci` is green for that commit, `publish` calls
-`cockpit-release.yml`, which re-tests the exact tag, creates the arm64 ZIP and
-DMG, verifies the downloaded copies and their `SHA256SUMS`, updates and
-remotely verifies `Casks/phux-cockpit.rb`, records signing status in the notes,
-and only then publishes the draft.
+Frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)). release-please does not
+open a Cockpit release PR. The rest of this section is what `publish.yml`
+still does for an existing `cockpit-vX.Y.Z` tag, and what a resume sprint
+turns back on ([FROZEN.md](../clients/cockpit/FROZEN.md)).
+
+Cockpit is not part of the Rust workspace version. For an existing
+`cockpit-vX.Y.Z` tag, `publish` calls `cockpit-release.yml`, which re-tests
+the exact tag, creates the arm64 ZIP and DMG, verifies the downloaded copies
+and their `SHA256SUMS`, updates and remotely verifies `Casks/phux-cockpit.rb`,
+records signing status in the notes, and only then publishes the draft.
 
 Packaged lifecycle qualification uses the soak harness from the workflow
 revision, preserved before checking out the product tag. A harness repair can

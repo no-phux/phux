@@ -13,8 +13,8 @@
 //!   * be absent from `phux --help` and the generated shell completions,
 //!     while its replacement is present.
 //!
-//! The rows today are `phux workspace` (now `phux archive` and `phux
-//! project inspect`) and `phux move-pane` (now `phux mv`).
+//! The table is empty today; each test iterates its rows, so the audit
+//! applies to the next deprecation without changes here.
 //!
 //! No row reaches a live server (one that needs one dials a dead socket),
 //! so the tests are cheap and run in

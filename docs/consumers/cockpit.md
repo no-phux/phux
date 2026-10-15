@@ -6,10 +6,12 @@ last-reviewed: 2026-10-14
 
 # Cockpit
 
-**TL;DR.** Cockpit is the native macOS attach client, independently versioned
-from the CLI. It connects through `phux-client-ffi`; the server owns its
-terminals and keeps them running when a window closes. This guide covers
-installation, behavior, and client integration details.
+**TL;DR.** The Zig Cockpit is frozen. It is not maintained, and CI does not
+build it. The GPUI [desktop](./desktop.md) is the native macOS client. The
+source stays in `clients/cockpit` so a later sprint can resume it. The last
+published release still installs. Resume steps are in
+[FROZEN.md](../../clients/cockpit/FROZEN.md).
+[ADR-0167](../adr/0167-cockpit-is-frozen.md) records the decision.
 
 ---
 

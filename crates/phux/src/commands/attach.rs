@@ -36,7 +36,7 @@ pub(crate) fn interactive_tty_preflight() -> Result<(), ExitCode> {
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
         return Ok(());
     }
-    eprintln!("phux: interactive use requires both stdin and stdout to be terminals");
+    error!("interactive use requires both stdin and stdout to be terminals");
     Err(ExitCode::FAILURE)
 }
 
@@ -59,10 +59,12 @@ pub(crate) fn nested_attach_guard(socket_path: &Path) -> Result<(), ExitCode> {
     ) {
         return Ok(());
     }
-    eprintln!(
-        "phux: refusing to attach from inside one of this server's own panes \
-         (the client would draw itself inside itself).\n      \
-         Switch sessions with the session picker (`C-a s`), or set \
+    error!(
+        "refusing to attach from inside one of this server's own panes \
+         (the client would draw itself inside itself)."
+    );
+    hint!(
+        "Switch sessions with the session picker (`C-a s`), or set \
          {ALLOW_NESTED_ENV}=1 if nesting is intentional."
     );
     Err(ExitCode::from(2))
@@ -90,7 +92,8 @@ fn is_nested_attach(
 /// that return an [`AttachEnd`] rather than exiting inside the driver.
 pub(crate) fn report_attach_end(end: AttachEnd) {
     if let Some(line) = end.explanation() {
-        eprintln!("{line}");
+        // AttachEnd::explanation owns a legacy phux prefix.
+        info!("{}", line.strip_prefix("phux: ").unwrap_or(&line));
     }
 }
 
@@ -133,7 +136,7 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
         configured_spawn_on_attach().as_deref(),
         false,
     ) {
-        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
+        warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
     let rt = match super::cli_runtime() {
@@ -325,8 +328,8 @@ pub(crate) async fn attach_default_with_fallback(
     {
         Ok(end) => Ok(end),
         Err(AttachError::Refused(message)) => {
-            eprintln!(
-                "phux: server could not resolve the last session ({message}); trying existing `{default_name}`"
+            warn!(
+                "server could not resolve the last session ({message}); trying existing `{default_name}`"
             );
             run_attach_once_rec(
                 dial,
@@ -368,8 +371,8 @@ async fn attach_default_with_connection_fallback(
     {
         Ok(end) => Ok(end),
         Err(AttachError::Refused(message)) => {
-            eprintln!(
-                "phux: server could not resolve the last session ({message}); trying existing `{default_name}`"
+            warn!(
+                "server could not resolve the last session ({message}); trying existing `{default_name}`"
             );
             run_attach_once_rec(
                 dial,
@@ -576,13 +579,13 @@ async fn attach_with_reconnect(
                 // an honest, visible countdown instead of ~10 s of blank
                 // terminal (phux-i0e8.2.3).
                 let policy = reconnect_policy(dial);
-                eprintln!(
-                    "phux: lost the server connection; waiting up to {}s for it to come back",
+                warn!(
+                    "lost the server connection; waiting up to {}s for it to come back",
                     policy.deadline.as_secs()
                 );
                 match wait_with_countdown(dial, policy).await {
                     ReconnectOutcome::Connectable(connection) => {
-                        eprintln!("phux: server is back; re-attaching…");
+                        info!("server is back; re-attaching…");
                         // Those two lines live on the primary screen. The alt
                         // screen hides them until quit, which is when they
                         // reappear under the prompt.
@@ -597,9 +600,11 @@ async fn attach_with_reconnect(
                         // `Disconnected` breaking out of this loop straight
                         // to the failure exit code without a second remedy
                         // block (see `run_naked` / `run_attach`).
-                        for line in reconnect_failure_lines(&outcome, policy.deadline) {
-                            eprintln!("{line}");
-                        }
+                        crate::output::error_block(
+                            reconnect_failure_lines(&outcome, policy.deadline)
+                                .iter()
+                                .map(String::as_str),
+                        );
                         break Err(AttachError::Disconnected);
                     }
                 }
@@ -617,7 +622,7 @@ async fn attach_with_reconnect(
             .borrow_mut()
             .drain_unresolved("the connection could not be re-established")
         {
-            eprintln!("phux: {}", report.notice_line());
+            warn!("{}", report.notice_line());
         }
     }
 
@@ -698,26 +703,26 @@ fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Ve
     match outcome {
         ReconnectOutcome::Connectable(_) => Vec::new(),
         ReconnectOutcome::SocketGone => vec![
-            "phux: the server shut down (its socket is gone) and is not restarting".to_owned(),
-            "  start a new one with `phux` (attaches, auto-starting a server) or `phux server`"
+            "the server shut down (its socket is gone) and is not restarting".to_owned(),
+            "start a new one with `phux` (attaches, auto-starting a server) or `phux server`"
                 .to_owned(),
-            "  run `phux doctor` for a health check".to_owned(),
+            "run `phux doctor` for a health check".to_owned(),
         ],
         ReconnectOutcome::TimedOut => vec![
             format!(
-                "phux: the server did not come back within {}s — it may have crashed",
+                "the server did not come back within {}s — it may have crashed",
                 deadline.as_secs()
             ),
             format!(
-                "  server log: {}",
+                "server log: {}",
                 phux_server::telemetry::server_log_path().display()
             ),
-            "  run `phux doctor` for a health check".to_owned(),
+            "run `phux doctor` for a health check".to_owned(),
         ],
         ReconnectOutcome::Refused(err) => vec![
-            format!("phux: the server refused the reconnect: {err}"),
-            "  the credentials this attach dialed with are no longer accepted;".to_owned(),
-            "  re-pair the host with `phux host add HOST` and attach again".to_owned(),
+            format!("the server refused the reconnect: {err}"),
+            "the credentials this attach dialed with are no longer accepted;".to_owned(),
+            "re-pair the host with `phux host add HOST` and attach again".to_owned(),
         ],
     }
 }
@@ -874,7 +879,7 @@ pub(crate) fn run_attach_remote_outcome(
     let endpoint = match Endpoint::parse(&entry.endpoint) {
         Ok(endpoint) => endpoint,
         Err(err) => {
-            eprintln!("phux: remote {:?}: {err}", entry.name);
+            error!("remote {:?}: {err}", entry.name);
             return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
@@ -888,14 +893,14 @@ pub(crate) fn run_attach_remote_outcome(
     let token = match remote::read_token(entry) {
         Ok(token) => token,
         Err(err) => {
-            eprintln!("phux: remote {:?}: {err}", entry.name);
+            error!("remote {:?}: {err}", entry.name);
             return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
     let identity = match entry.client_identity() {
         Ok(identity) => identity,
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
@@ -951,7 +956,7 @@ pub(crate) fn run_attach_over_ssh(
 
     // `exec` only returns on failure.
     let err = command.exec();
-    eprintln!("phux: could not exec {}: {err}", program.to_string_lossy());
+    error!("could not exec {}: {err}", program.to_string_lossy());
     ExitCode::FAILURE
 }
 
@@ -1014,7 +1019,7 @@ pub(crate) fn run_attach_rec(
         seed_command.as_deref(),
         false,
     ) {
-        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
+        warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
     let rt = match super::cli_runtime() {
@@ -1053,9 +1058,11 @@ pub(crate) fn run_attach_rec(
                     .is_ok_and(|view| session_is_missing(view.snapshot(), name))
             }) =>
         {
-            for line in missing_session_lines(explicit_name.as_deref().unwrap_or_default()) {
-                eprintln!("{line}");
-            }
+            crate::output::error_block(
+                missing_session_lines(explicit_name.as_deref().unwrap_or_default())
+                    .iter()
+                    .map(String::as_str),
+            );
             ExitCode::FAILURE
         }
         Err(err) => {
@@ -1084,9 +1091,9 @@ fn session_is_missing(snapshot: &phux_protocol::wire::info::SessionSnapshot, nam
 /// is lookup-only, so the remedy is the verb that creates one.
 fn missing_session_lines(name: &str) -> Vec<String> {
     vec![
-        format!("phux: no session named {name:?} on this server"),
+        format!("no session named {name:?} on this server"),
         format!(
-            "  create it with `phux new {}`, or run `phux ls` to list sessions",
+            "create it with `phux new {}`, or run `phux ls` to list sessions",
             super::ssh_bootstrap::shell_quote(name)
         ),
     ]
@@ -1255,9 +1262,9 @@ fn run_attach_quic_outcome(
         // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
         Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
-            eprintln!("phux: QUIC attach to {target} failed: {err}");
+            error!("QUIC attach to {target} failed: {err}");
             if let Some(hint) = reachability_hint(&err, loopback) {
-                eprintln!("{hint}");
+                hint!("{hint}");
             }
             ExitCode::FAILURE
         }
@@ -1350,13 +1357,13 @@ impl DialRefusal {
     /// wording the planners printed before they returned a typed error.
     fn attach_lines(&self) -> Vec<String> {
         match self {
-            Self::Malformed(err) | Self::BadToken(err) => vec![format!("phux: {err}")],
+            Self::Malformed(err) | Self::BadToken(err) => vec![err.to_owned()],
             Self::Unresolved {
                 target,
                 detail,
                 dns_name,
             } => {
-                let mut lines = vec![format!("phux: QUIC attach to {target} failed: {detail}")];
+                let mut lines = vec![format!("QUIC attach to {target} failed: {detail}")];
                 if *dns_name {
                     lines.push(OVERLAY_REACHABILITY_HINT.to_owned());
                 }
@@ -1364,36 +1371,32 @@ impl DialRefusal {
             }
             Self::UnpinnedQuic { target } => vec![
                 format!(
-                    "phux: refusing to dial non-loopback QUIC server {target} without --cert-fingerprint."
+                    "refusing to dial non-loopback QUIC server {target} without --cert-fingerprint."
                 ),
-                "      Run `phux pair` on the server host to print its certificate fingerprint,"
+                "Run `phux pair` on the server host to print its certificate fingerprint,"
                     .to_owned(),
-                format!("      then pass it: phux attach --quic {target} --cert-fingerprint <FP>"),
+                format!("then pass it: phux attach --quic {target} --cert-fingerprint <FP>"),
             ],
             Self::UnpinnedWs { url } => vec![
                 format!(
-                    "phux: refusing to dial non-loopback WebSocket server {url} without --cert-fingerprint."
+                    "refusing to dial non-loopback WebSocket server {url} without --cert-fingerprint."
                 ),
-                "      Run `phux pair` on the server host, then pass the printed fingerprint."
-                    .to_owned(),
+                "Run `phux pair` on the server host, then pass the printed fingerprint.".to_owned(),
             ],
             Self::Plaintext { url } => vec![
-                format!("phux: refusing plaintext WebSocket attach to non-loopback URL {url}."),
-                "      Use wss:// plus `phux pair` credentials for remote devices.".to_owned(),
+                format!("refusing plaintext WebSocket attach to non-loopback URL {url}."),
+                "Use wss:// plus `phux pair` credentials for remote devices.".to_owned(),
             ],
             Self::NoToken { url } => vec![
-                format!("phux: refusing remote WebSocket attach to {url} without --token."),
-                "      Run `phux pair` on the server host and pass the printed token once."
-                    .to_owned(),
+                format!("refusing remote WebSocket attach to {url} without --token."),
+                "Run `phux pair` on the server host and pass the printed token once.".to_owned(),
             ],
         }
     }
 
     /// Print the attach wording and return the failure exit code.
     pub(crate) fn report_for_attach(&self) -> ExitCode {
-        for line in self.attach_lines() {
-            eprintln!("{line}");
-        }
+        crate::output::error_block(self.attach_lines().iter().map(String::as_str));
         ExitCode::FAILURE
     }
 }
@@ -1585,8 +1588,8 @@ pub(crate) fn predictive_config_for(dial: &Dial) -> PredictiveConfig {
                 .predictive_echo_for(dial_leaves_the_machine(dial)),
         },
         Err(err) => {
-            eprintln!(
-                "phux: config load failed ({err}); predictive echo stays off \
+            warn!(
+                "config load failed ({err}); predictive echo stays off \
                  (an unreadable config is not consent to turn it on)"
             );
             PredictiveConfig::disabled()
@@ -1623,9 +1626,9 @@ fn report_ws_attach_outcome(
         // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
         Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
-            eprintln!("phux: WebSocket attach failed: {err}");
+            error!("WebSocket attach failed: {err}");
             if let Some(hint) = reachability_hint(&err, loopback) {
-                eprintln!("{hint}");
+                hint!("{hint}");
             }
             ExitCode::FAILURE
         }
@@ -1681,9 +1684,9 @@ mod tests {
         assert_eq!(
             unpinned,
             vec![
-                "phux: refusing to dial non-loopback QUIC server mini:8788 without --cert-fingerprint.",
-                "      Run `phux pair` on the server host to print its certificate fingerprint,",
-                "      then pass it: phux attach --quic mini:8788 --cert-fingerprint <FP>",
+                "refusing to dial non-loopback QUIC server mini:8788 without --cert-fingerprint.",
+                "Run `phux pair` on the server host to print its certificate fingerprint,",
+                "then pass it: phux attach --quic mini:8788 --cert-fingerprint <FP>",
             ]
         );
 
@@ -1698,7 +1701,7 @@ mod tests {
         assert_eq!(
             unresolved(true),
             vec![
-                "phux: QUIC attach to mini:8788 failed: name resolution failed: nope".to_owned(),
+                "QUIC attach to mini:8788 failed: name resolution failed: nope".to_owned(),
                 OVERLAY_REACHABILITY_HINT.to_owned(),
             ]
         );
@@ -1713,7 +1716,7 @@ mod tests {
                 url: "wss://h:1".to_owned()
             }
             .attach_lines()[0],
-            "phux: refusing remote WebSocket attach to wss://h:1 without --token."
+            "refusing remote WebSocket attach to wss://h:1 without --token."
         );
     }
 
@@ -1837,8 +1840,8 @@ mod tests {
         assert_eq!(
             missing_session_lines("work"),
             vec![
-                "phux: no session named \"work\" on this server".to_owned(),
-                "  create it with `phux new work`, or run `phux ls` to list sessions".to_owned(),
+                "no session named \"work\" on this server".to_owned(),
+                "create it with `phux new work`, or run `phux ls` to list sessions".to_owned(),
             ]
         );
         assert!(missing_session_lines("my work")[1].contains("`phux new 'my work'`"));
@@ -2305,7 +2308,7 @@ mod tests {
         let gone = reconnect_failure_lines(&ReconnectOutcome::SocketGone, deadline);
         assert_eq!(
             gone[0],
-            "phux: the server shut down (its socket is gone) and is not restarting"
+            "the server shut down (its socket is gone) and is not restarting"
         );
         assert!(
             gone.iter().any(|l| l.contains("phux doctor")),
@@ -2315,14 +2318,14 @@ mod tests {
         let timed_out = reconnect_failure_lines(&ReconnectOutcome::TimedOut, deadline);
         assert_eq!(
             timed_out[0],
-            "phux: the server did not come back within 10s — it may have crashed"
+            "the server did not come back within 10s — it may have crashed"
         );
         assert!(
             timed_out.iter().any(|l| l.contains("phux doctor")),
             "TimedOut must name phux doctor: {timed_out:?}"
         );
         assert!(
-            timed_out.iter().any(|l| l.starts_with("  server log: ")),
+            timed_out.iter().any(|l| l.starts_with("server log: ")),
             "TimedOut points at the server log (the crash reason lives there): {timed_out:?}"
         );
 

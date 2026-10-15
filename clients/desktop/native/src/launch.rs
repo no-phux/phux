@@ -4,7 +4,7 @@
 //! Resolution never writes over or upgrades anything. An explicit `--phux`,
 //! `--socket` or `--session` always wins over discovery, so a qualification
 //! run can pin a same-checkout CLI and a temporary socket. Without
-//! `--session`, the window opens the owner's Inbox, else the most recent
+//! `--session`, the window opens the owner's Intake, else the most recent
 //! session; it never creates one ([`crate::connection::home`]).
 
 use std::path::{Path, PathBuf};

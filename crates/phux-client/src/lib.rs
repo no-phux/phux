@@ -43,11 +43,11 @@ pub mod glance;
 pub mod kill;
 pub mod layout_ops;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
-// `mv`, bulk move, undo, Inbox resolve).
+// `mv`, bulk move, undo, Intake resolve).
 pub mod org;
 pub mod pane_move;
 pub mod perf;
-// Project identity (ADR-0167): discovery, the stored document, grouping.
+// Project identity (ADR-0168): discovery, the stored document, grouping.
 pub mod project_groups;
 pub mod project_identity;
 pub mod record;

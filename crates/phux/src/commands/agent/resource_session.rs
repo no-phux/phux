@@ -57,7 +57,7 @@ pub(crate) enum SessionAction {
     /// `RESOURCE_KINDS` (see `phux status --json`'s `features`).
     Open {
         /// The parent pane: a selector resolving to one Terminal (`@N`,
-        /// `%name`, `session:window.pane`).
+        /// `%name`, `session:group.pane`).
         target: String,
         /// Agent provider slug, e.g. `claude`.
         #[usage(long, value_name = "P")]
@@ -305,7 +305,7 @@ pub(super) fn run_log(
                 } else if json {
                     match serde_json::to_string(&record) {
                         Ok(line) => outln!("{line}"),
-                        Err(err) => eprintln!("phux: could not render record: {err}"),
+                        Err(err) => error!("could not render record: {err}"),
                     }
                 } else {
                     outln!(
@@ -348,7 +348,7 @@ pub(super) fn run_log(
         match outcome.end {
             LogEnd::Retained | LogEnd::SessionClosed | LogEnd::Stopped => ExitCode::SUCCESS,
             LogEnd::Disconnected => {
-                eprintln!("phux: server closed the connection while following {target}");
+                error!("server closed the connection while following {target}");
                 ExitCode::from(EXIT_FAILURE)
             }
         }

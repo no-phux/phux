@@ -85,7 +85,7 @@ pub(super) struct PeerWatch {
     pub(super) stored_project_tag: Option<(String, String)>,
     /// In-flight `GET` of `phux.session.project/v1`.
     pub(super) project_tag_pending: Option<u32>,
-    /// ADR-0167: project groups collapsed in this client's sidebar, read
+    /// ADR-0168: project groups collapsed in this client's sidebar, read
     /// from and written to the state dir.
     pub(super) collapsed_projects: std::collections::BTreeSet<String>,
     /// The peer sweep waits for the first paint: set at construction and

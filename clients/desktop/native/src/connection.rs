@@ -18,7 +18,8 @@ pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
-    Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology, mint_operation,
+    DeliveryOutcome, Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
+    mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -131,15 +132,27 @@ pub struct Connection {
     pub error: Option<String>,
     /// Agent badges keyed by terminal.
     pub agents: HashMap<ResourceId, AgentInfo>,
-    /// Session id to `phux.session.project/v1` tag.
+    /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
+    /// Canonical checkout root for new terminals in that session.
+    pub directories: HashMap<u32, String>,
     /// The arrangement group that shows each terminal, by name.
     pub groups: HashMap<ResourceId, String>,
     session: String,
+    home_key: Option<SessionKey>,
+    key_bootstrap_pending: bool,
+    pinned_home: bool,
+    pinned_verified_epoch: Option<u64>,
     /// Arrangements asked for on this connection, so each is read once.
     fetched: HashSet<ArrangementKey>,
     closed: bool,
     known: HashSet<ResourceId>,
+    /// Terminals this window spawned, admitted before the post-spawn topology
+    /// refresh lists them. The spawn reply names the terminal and the server
+    /// pumps its replica at once, so a new pane can appear without waiting a
+    /// whole `GET_STATE` round trip (which is a full server snapshot on a
+    /// remote link). Cleared on any connection boundary or close.
+    admitted: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,
     path_answers: Vec<PathAnswer>,
@@ -148,6 +161,24 @@ pub struct Connection {
     paint_clock: u64,
     every_terminal: u64,
     paint: HashMap<ResourceId, u64>,
+}
+
+pub(crate) fn sync_home_name(topology: &Topology, name: &mut String, key: &mut Option<SessionKey>) {
+    let home = match *key {
+        Some(key) => topology.session_keyed(&key),
+        None => topology.session_named(name),
+    };
+    if let Some(home) = home {
+        *key = home.key;
+        name.clone_from(&home.name);
+    }
+}
+
+fn designated_intake_session(topology: &Topology, id: u32) -> bool {
+    topology
+        .sessions
+        .iter()
+        .any(|session| session.id == id && session.key.is_some() && session.key == topology.inbox)
 }
 
 struct ActivityListener {
@@ -163,19 +194,49 @@ impl Listener for ActivityListener {
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
+        Self::connect_with_key(socket, session, None)
+    }
+
+    pub(crate) fn connect_with_key(
+        socket: PathBuf,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
         if socket.as_os_str().is_empty() {
             anyhow::bail!("InvalidConnectOptions");
         }
+        Self::connect_target(Target::uds(socket), session, key)
+    }
+
+    /// Attach `session` on a host from the remote registry.
+    pub fn connect_remote(host: &str, session: String) -> anyhow::Result<Self> {
+        Self::connect_remote_with_key(host, session, None)
+    }
+
+    pub(crate) fn connect_remote_with_key(
+        host: &str,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
+        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
+        Self::connect_target(target, session, key)
+    }
+
+    fn connect_target(
+        target: Target,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
         if session.is_empty() || session.len() > 4096 || session.contains('\0') {
             anyhow::bail!("InvalidSessionName");
         }
         let client = Runtime::connect(
-            Target::uds(socket),
+            target,
             ClientOptions {
                 control: ControlOptions {
                     client_name: "phux-desktop".to_owned(),
                     viewport: (0, 0),
-                    attach: Some(AttachTarget::ByName(session.clone())),
+                    attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
                     attach_role: Some(RolePolicy::PRIMARY),
                     auto_attach_foreign_spawns: false,
                     ..ControlOptions::default()
@@ -183,7 +244,11 @@ impl Connection {
                 ..ClientOptions::default()
             },
         )?;
-        Ok(Self::from_client(client, session))
+        let mut connection = Self::from_client(client, session);
+        connection.home_key = key;
+        connection.key_bootstrap_pending = key.is_some();
+        connection.pinned_home = key.is_some();
+        Ok(connection)
     }
 
     fn from_client(client: Client, session: String) -> Self {
@@ -198,11 +263,17 @@ impl Connection {
             error: None,
             agents: HashMap::new(),
             projects: HashMap::new(),
+            directories: HashMap::new(),
             groups: HashMap::new(),
             session,
+            home_key: None,
+            key_bootstrap_pending: false,
+            pinned_home: false,
+            pinned_verified_epoch: None,
             fetched: HashSet::new(),
             closed: false,
             known: HashSet::new(),
+            admitted: HashSet::new(),
             identity: None,
             project_tag: None,
             path_answers: Vec::new(),
@@ -222,7 +293,7 @@ impl Connection {
 
     /// Take events and path answers, and refresh snapshots the batch can change.
     pub fn drain(&mut self) -> Vec<Event> {
-        let observation = self.client.take_observation();
+        let observation = self.client.take_activity();
         if observation.status != self.status {
             log::info!(
                 "connection {:?} -> {:?} epoch={} error={:?}",
@@ -273,7 +344,9 @@ impl Connection {
     /// The terminal is in the latest topology and the runtime will accept input.
     #[must_use]
     pub fn ready(&self, id: &ResourceId) -> bool {
-        !self.closed && self.known.contains(id) && self.client.input_ready(id)
+        !self.closed
+            && (self.known.contains(id) || self.admitted.contains(id))
+            && self.client.input_ready(id)
     }
 
     /// Unknown delivery is outstanding for a known terminal.
@@ -297,15 +370,28 @@ impl Connection {
             .unwrap_or(&[])
     }
 
-    /// Session id whose name is the attach name.
+    /// Attached home session, following its persistent identity through renames.
     #[must_use]
     pub fn home_session(&self) -> Option<u32> {
         self.topology
             .as_ref()?
             .sessions
             .iter()
-            .find(|session| session.name == self.session)
+            .find(|session| match self.home_key {
+                Some(key) => session.key == Some(key),
+                None => session.name == self.session,
+            })
             .map(|session| session.id)
+    }
+
+    pub(crate) const fn home_key(&self) -> Option<SessionKey> {
+        self.home_key
+    }
+
+    pub(crate) fn is_intake_session(&self, id: u32) -> bool {
+        self.topology
+            .as_ref()
+            .is_some_and(|topology| designated_intake_session(topology, id))
     }
 
     /// Whether the server takes typed organization commands (`ORGANIZATION`).
@@ -391,6 +477,7 @@ impl Connection {
             return;
         }
         self.closed = true;
+        self.admitted.clear();
         self.client.close();
     }
 
@@ -510,7 +597,10 @@ impl Connection {
                 self.known.insert(pane.terminal_id.clone());
             }
         }
-        self.paint.retain(|id, _| self.known.contains(id));
+        // Once the topology lists a spawn, the admission has done its job.
+        self.admitted.retain(|id| !self.known.contains(id));
+        self.paint
+            .retain(|id, _| self.known.contains(id) || self.admitted.contains(id));
         if let Some(server) = self.client.server() {
             let next = ConnectionIdentity {
                 server_id: status::server_id(&server),
@@ -520,12 +610,73 @@ impl Connection {
                 self.agents.clear();
                 self.project_tag = None;
                 self.projects.clear();
+                self.directories.clear();
             }
             self.identity = Some(next);
             self.server = Some(server);
         }
         self.topology = topology.or_else(|| self.client.topology());
-        self.rebuild_projects();
+        if let Some(topology) = &self.topology {
+            sync_home_name(topology, &mut self.session, &mut self.home_key);
+        }
+        self.attach_pinned_home();
+    }
+
+    /// Resolve the pinned key before asking the runtime to attach, and verify
+    /// it again after the runtime's redial before admitting the workspace.
+    fn attach_pinned_home(&mut self) {
+        if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
+            return;
+        }
+        if !self.client.organization().is_live() {
+            if self.status == Status::Attached {
+                self.status = Status::Negotiated;
+            }
+            return;
+        }
+        if self.key_bootstrap_pending {
+            let Some(id) = self.home_session() else {
+                self.refuse_replaced_home();
+                return;
+            };
+            self.key_bootstrap_pending = false;
+            self.client
+                .attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(id)));
+            self.status = Status::Negotiated;
+            return;
+        }
+        self.verify_pinned_home();
+    }
+
+    fn verify_pinned_home(&mut self) {
+        let epoch = self.connection_epoch();
+        if self.status != Status::Attached || self.pinned_verified_epoch == Some(epoch) {
+            return;
+        }
+        // A browsing runtime selects a healthy live session with per-terminal
+        // subscriptions; a connection-level attach instead records its home.
+        let attached = self
+            .client
+            .attached_session()
+            .or_else(|| self.client.selected_session());
+        if attached.is_none() || attached != self.home_session() {
+            self.refuse_replaced_home();
+        } else {
+            self.pinned_verified_epoch = Some(epoch);
+        }
+    }
+
+    fn refuse_replaced_home(&mut self) {
+        self.key_bootstrap_pending = false;
+        self.error = Some(format!(
+            "The original home session no longer matches this connection; refusing a name replacement (expected live session {:?}, attached {:?}, key observed {}).",
+            self.home_session(),
+            self.client.attached_session(),
+            self.home_key
+                .is_some_and(|key| self.client.organization().session(&key).is_some())
+        ));
+        self.status = Status::Failed;
+        self.client.close();
     }
 
     fn accept(&mut self, events: &[Event], epoch: u64) {
@@ -539,6 +690,9 @@ impl Connection {
                 self.agents.clear();
                 self.project_tag = None;
                 self.projects.clear();
+                self.directories.clear();
+                // A new boundary can reuse ids; never trust an old admission.
+                self.admitted.clear();
             }
             if let Event::ServerError { message, .. } = event {
                 self.error = Some(message.clone());
@@ -552,22 +706,51 @@ impl Connection {
             if let Event::SessionProject { name, project } = event {
                 note_project(&mut self.project_tag, name, project.as_deref());
             }
+            if let Some(id) = own_spawn(event) {
+                // Our own spawn is live the moment the server answers it; the
+                // topology refresh that lists it is a later round trip.
+                self.admitted.insert(id.clone());
+            }
             if let Event::TerminalClosed { terminal_id, .. } = event {
                 self.agents.remove(terminal_id);
                 self.paint.remove(terminal_id);
+                self.admitted.remove(terminal_id);
             }
         }
-        self.rebuild_projects();
+        if events.iter().any(structural)
+            || events
+                .iter()
+                .any(|event| matches!(event, Event::SessionProject { .. }))
+        {
+            self.rebuild_projects();
+        }
     }
 
     fn rebuild_projects(&mut self) {
         self.projects.clear();
-        let Some((name, project)) = &self.project_tag else {
-            return;
-        };
-        for session in self.topology.iter().flat_map(|topology| &topology.sessions) {
-            if &session.name == name {
-                self.projects.insert(session.id, project.clone());
+        self.directories.clear();
+        if self.organization() {
+            let replica = self.client.organization();
+            for record in replica.sessions() {
+                let Some(id) = record.live.map(phux_protocol::ids::SessionId::get) else {
+                    continue;
+                };
+                if let Some(project) = session_attr(&record.attrs, "project") {
+                    self.projects.insert(id, project.to_owned());
+                }
+                if let Some(directory) = session_attr(&record.attrs, "directory") {
+                    self.directories.insert(id, directory.to_owned());
+                }
+            }
+        }
+        // Older servers report only the single, legacy project tag.
+        if let Some((name, project)) = &self.project_tag {
+            for session in self.topology.iter().flat_map(|topology| &topology.sessions) {
+                if &session.name == name {
+                    self.projects
+                        .entry(session.id)
+                        .or_insert_with(|| project.clone());
+                }
             }
         }
     }
@@ -595,6 +778,13 @@ impl Connection {
             self.paint.insert(id, self.paint_clock);
         }
     }
+}
+
+fn session_attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(key, value)| key == name && !value.is_empty())
+        .map(|(_, value)| value.as_str())
 }
 
 fn note_project(tag: &mut Option<(String, String)>, name: &str, project: Option<&str>) {
@@ -652,13 +842,23 @@ fn now_ms() -> u64 {
 /// An event that can change topology, status, or the server snapshot.
 #[must_use]
 pub fn structural(event: &Event) -> bool {
-    !matches!(
-        event,
-        Event::TerminalChanged { .. }
-            | Event::InputDelivery { .. }
-            | Event::AgentMetadata { .. }
-            | Event::SessionProject { .. }
-    )
+    event.changes_session_graph()
+}
+
+/// The session just became attached. The desk paints every placed terminal once.
+#[must_use]
+pub fn session_attached(event: &Event) -> bool {
+    matches!(event, Event::StatusChanged(Status::Attached))
+}
+
+/// Terminal output and a delivered input. The chrome tree does not depend on it.
+#[must_use]
+pub fn paint_wake(event: &Event) -> bool {
+    match event {
+        Event::TerminalChanged { .. } => true,
+        Event::InputDelivery { outcome, .. } => *outcome != DeliveryOutcome::Refused,
+        _ => false,
+    }
 }
 
 /// The refusal text for acknowledged input, when the outcome was refused.
@@ -896,4 +1096,81 @@ pub fn terminal_label(id: &ResourceId) -> String {
 #[must_use]
 pub fn parse_terminal(value: &str) -> Option<ResourceId> {
     id::parse(value)
+}
+
+/// The terminal id of a spawn this window owns and may place before the
+/// post-spawn topology refresh lists it. A refused spawn names none.
+#[must_use]
+pub fn own_spawn(event: &Event) -> Option<&ResourceId> {
+    match event {
+        Event::TerminalSpawned {
+            terminal_id: Some(id),
+            error: None,
+            ..
+        } => Some(id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod paint_wake_tests {
+    use super::{own_spawn, paint_wake, session_attached, structural};
+    use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
+    use phux_protocol::ResourceId;
+
+    #[test]
+    fn output_and_delivered_input_skip_chrome() {
+        let terminal_id = ResourceId::local(1);
+        assert!(paint_wake(&Event::TerminalChanged {
+            terminal_id: terminal_id.clone(),
+        }));
+        assert!(!structural(&Event::TerminalChanged { terminal_id }));
+        assert!(paint_wake(&Event::InputDelivery {
+            delivery_id: 1,
+            outcome: DeliveryOutcome::Delivered,
+            code: None,
+            message: String::new(),
+        }));
+        assert!(!paint_wake(&Event::InputDelivery {
+            delivery_id: 1,
+            outcome: DeliveryOutcome::Refused,
+            code: None,
+            message: String::new(),
+        }));
+        assert!(structural(&Event::TopologyChanged));
+        assert!(!paint_wake(&Event::TopologyChanged));
+        assert!(session_attached(&Event::StatusChanged(Status::Attached)));
+        assert!(!session_attached(&Event::StatusChanged(Status::Connecting)));
+        assert!(!session_attached(&Event::TopologyChanged));
+    }
+
+    #[test]
+    fn only_a_successful_spawn_is_admitted_before_the_topology_lists_it() {
+        let terminal = ResourceId::local(7);
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 1,
+                terminal_id: Some(terminal.clone()),
+                error: None,
+            }),
+            Some(&terminal)
+        );
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 2,
+                terminal_id: Some(terminal),
+                error: Some("refused".into()),
+            }),
+            None
+        );
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 3,
+                terminal_id: None,
+                error: None,
+            }),
+            None
+        );
+        assert_eq!(own_spawn(&Event::TopologyChanged), None);
+    }
 }

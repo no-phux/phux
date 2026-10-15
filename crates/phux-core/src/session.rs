@@ -26,7 +26,7 @@ pub struct Attrs {
     /// Host label shown beside the name.
     #[serde(default)]
     pub host_label: Option<String>,
-    /// The repository the session was created in (ADR-0167).
+    /// The repository the session was created in (ADR-0168).
     #[serde(default)]
     pub repository: Option<Box<crate::project_identity::SessionProject>>,
 }
@@ -40,7 +40,7 @@ pub struct Session {
     pub name: String,
     /// Whether the session survives empty.
     pub lifetime: SessionLifetime,
-    /// An imported group shown in Inbox until explicitly organized.
+    /// An imported group shown in Intake until explicitly organized.
     #[serde(default)]
     pub awaiting_organization: bool,
     /// Member resources in creation (or arrival) order. Each resource is a

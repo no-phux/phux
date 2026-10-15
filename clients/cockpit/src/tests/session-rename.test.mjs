@@ -126,22 +126,22 @@ test('Sessions navigator keeps a recent list and last-session reopens the previo
     ['alpha', alpha, 2, 1],
     ['beta', beta, 2, 1],
   ];
-  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 1, new Uint8Array());
+  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 0, new Uint8Array());
   const records = rows.flatMap(([label, target], index) => {
     const labelBytes = bytes(label);
     return [index, 0, labelBytes.length, target.length, 0, ...target, ...labelBytes];
   });
   const metadata = rows.flatMap(([, , kind, selectable]) => [kind, selectable, 0]);
   const body = new Uint8Array([...head, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
-  let [model] = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true, navigatorView: 1 }, { kind: 'sessions_open' });
+  let [model] = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'palette_open' });
   [model] = step(model, { kind: 'navigation_loaded', body });
   assert.deepEqual(model.paletteRows.map(row => text(row.label)), ['alpha', 'beta']);
   [model] = step(model, { kind: 'palette_pick', target: beta });
   assert.equal(model.sessionRecent.length, 1);
-  [model] = step({ ...model, paletteOpen: true, navigatorView: 1, engineConnected: true }, { kind: 'navigation_loaded', body });
+  [model] = step({ ...model, paletteOpen: true, navigatorView: 0, engineConnected: true }, { kind: 'navigation_loaded', body });
   [model] = step(model, { kind: 'palette_pick', target: alpha });
   assert.equal(model.sessionRecent.length, 2);
-  [model] = step({ ...model, paletteOpen: true, navigatorView: 1, engineConnected: true }, { kind: 'navigation_loaded', body });
+  [model] = step({ ...model, paletteOpen: true, navigatorView: 0, engineConnected: true }, { kind: 'navigation_loaded', body });
   assert.deepEqual(model.paletteRows.map(row => text(row.label)).slice(0, 2), ['alpha', 'beta']);
   const { initialTabCommands } = await import('../tab-commands.ts');
   const [, cmd] = step({ ...model, tabCommands: initialTabCommands() }, { kind: 'session_last' });
@@ -166,7 +166,7 @@ test('only a listed session row is renamable: never a terminal or a peer group r
     ['mini unavailable', rowTarget(3, 0), 2, 1],
     ['a terminal', rowTarget(1, 7), 0, 1],
   ];
-  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 1, new Uint8Array());
+  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 0, new Uint8Array());
   const records = rows.flatMap(([label, target], index) => {
     const l = bytes(label);
     return [index, 0, l.length, target.length, 0, ...target, ...l];
@@ -174,7 +174,6 @@ test('only a listed session row is renamable: never a terminal or a peer group r
   const metadata = rows.flatMap(([, , kind, selectable]) => [kind, selectable, 0]);
   const body = new Uint8Array([...head, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
   let [model] = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'palette_open' });
-  [model] = step(model, { kind: 'palette_scope', scope: 1 });
   [model] = step(model, { kind: 'navigation_loaded', body });
   assert.deepEqual(model.paletteRows.map(row => row.renamable), [true, true, false, false]);
 });

@@ -113,7 +113,7 @@ impl super::SessionLoop {
         self.apply_stored_project_tag();
     }
 
-    /// Flip one project group's sidebar collapse (ADR-0167), keep it on
+    /// Flip one project group's sidebar collapse (ADR-0168), keep it on
     /// disk, and redraw.
     pub(super) fn toggle_project_group(&mut self, key: String) {
         let collapsed = &mut self.peers.collapsed_projects;

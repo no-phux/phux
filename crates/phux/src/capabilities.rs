@@ -140,8 +140,8 @@ fn schema_contracts() -> Value {
         { "invocation": "phux config agents --json", "schema_version": 2, "kind": "document" },
         { "invocation": "phux config check|plugins --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux plugin --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux workspace inspect --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux workspace save|restore --json", "schema_version": 2, "kind": "document" },
+        { "invocation": "phux project inspect --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux archive export|import", "schema_version": 2, "kind": "document", "note": "the archive file export writes and import reads" },
         { "invocation": "phux worktree --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux host --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux tag --json", "schema_version": 1, "kind": "document" },
@@ -197,7 +197,7 @@ pub(crate) fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux: could not render capabilities: {err}");
+            error!("could not render capabilities: {err}");
             ExitCode::FAILURE
         }
     }

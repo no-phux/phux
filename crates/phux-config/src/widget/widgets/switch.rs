@@ -21,7 +21,7 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
         WidgetOptSpec {
             name: "label",
             aliases: &[],
-            doc: "string, default `\"switch\"` — the chip's text. Rendered \
+            doc: "string, default `\"agents\"` — the chip's text. Rendered \
                   with one space of padding on each side.",
         },
         WidgetOptSpec {
@@ -46,7 +46,7 @@ pub struct SwitchWidget {
 impl Default for SwitchWidget {
     fn default() -> Self {
         Self {
-            label: "switch".to_owned(),
+            label: "agents".to_owned(),
             chip: CellStyle {
                 bold: true,
                 reverse: true,

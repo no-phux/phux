@@ -30,6 +30,8 @@ pub enum InputSlot {
     Rename,
     SessionName,
     SessionDir,
+    HostTarget,
+    HostName,
 }
 
 /// Build the open modal's controls with fresh or prefilled values and give it the keyboard.
@@ -68,7 +70,9 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             );
             input.update(cx, |input, cx| input.focus(window, cx));
         }
-        Modal::Session { create, current } => {
+        Modal::Session {
+            create, current, ..
+        } => {
             let name = modal_input(
                 desk,
                 InputSlot::SessionName,
@@ -90,9 +94,29 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             }
             name.update(cx, |input, cx| input.focus(window, cx));
         }
-        Modal::KillSession { .. } | Modal::Terminate { .. } | Modal::Notifications => {
-            window.focus(&desk.focus, cx)
+        Modal::AddHost => {
+            let target = modal_input(
+                desk,
+                InputSlot::HostTarget,
+                "",
+                "ssh destination, e.g. me@mini",
+                window,
+                cx,
+            );
+            modal_input(
+                desk,
+                InputSlot::HostName,
+                "",
+                "Name (optional, defaults to the host)",
+                window,
+                cx,
+            );
+            target.update(cx, |input, cx| input.focus(window, cx));
         }
+        Modal::KillSession { .. }
+        | Modal::Terminate { .. }
+        | Modal::RemoveHost { .. }
+        | Modal::Notifications => window.focus(&desk.focus, cx),
     }
 }
 
@@ -210,6 +234,11 @@ impl Desk {
                     .input_entity(InputSlot::SessionDir)
                     .map(|input| input.read(cx).value().to_string());
                 self.apply_session(name, directory, window, cx);
+            }
+            (InputSlot::HostTarget | InputSlot::HostName, Some(_)) => {
+                let target = self.input_value(InputSlot::HostTarget, cx);
+                let name = self.input_value(InputSlot::HostName, cx);
+                self.apply_add_host(target, name, window, cx);
             }
             _ => {}
         }
@@ -337,6 +366,15 @@ pub fn layer(
             colors,
             cx,
             |desk, window, cx| desk.confirm_kill_session(window, cx),
+        ),
+        Modal::AddHost => add_host_dialog(desk, colors, cx),
+        Modal::RemoveHost { name } => confirm(
+            format!("Remove {name}?"),
+            "This forgets the machine here. Its server and terminals keep running; `phux host add` registers it again.",
+            "Remove Host",
+            colors,
+            cx,
+            |desk, window, cx| desk.confirm_remove_host(window, cx),
         ),
         Modal::Terminate { title, .. } => confirm(
             format!("Terminate {title}?"),
@@ -508,6 +546,11 @@ fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElem
     let desk_handle = cx.weak_entity();
     let confirm_handle = desk_handle.clone();
     let muted = from_hex(&colors.muted);
+    let confirmation_hint = if desk.modal == Modal::MoveResources {
+        "↑↓ select · ↩ move · esc close"
+    } else {
+        "↑↓ select · ↩ open · esc close"
+    };
     let mut command = Command::new(&state)
         .filterable(false)
         .bordered(false)
@@ -534,7 +577,7 @@ fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElem
                     "{count} {}",
                     if count == 1 { "result" } else { "results" }
                 ))
-                .child("↑↓ select · ↩ open · esc close")
+                .child(confirmation_hint)
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
@@ -706,6 +749,13 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 "{panes} {}",
                 if panes == 1 { "terminal" } else { "terminals" }
             );
+            let detail = if session.key.is_some() && session.key == topology.inbox {
+                format!("Intake · unorganized work · {detail}")
+            } else if session.awaiting_organization {
+                format!("Imported · awaiting organization · {detail}")
+            } else {
+                detail
+            };
             Row {
                 title: session.name.clone(),
                 keywords: detail.clone(),
@@ -727,7 +777,7 @@ fn move_sections(desk: &Desk) -> Vec<Section> {
     };
     let replica = client.organization();
     let selected = &desk.organization.selected;
-    let rows = replica
+    let destinations: Vec<_> = replica
         .sessions()
         .iter()
         .filter(|session| {
@@ -737,15 +787,60 @@ fn move_sections(desk: &Desk) -> Vec<Section> {
                     .is_some_and(|resource| resource.session != session.key)
             })
         })
-        .map(|session| Row {
-            title: session.name.clone(),
-            detail: None,
-            keywords: session.name.clone(),
-            target: Target::Move(session.key, session.name.clone()),
-            command: None,
-        })
         .collect();
-    vec![Section { label: None, rows }]
+    move_destination_sections(&destinations, replica.intake(), selected.len())
+}
+
+fn move_destination_sections(
+    sessions: &[&phux_protocol::wire::frame::SessionRecord],
+    intake: Option<SessionKey>,
+    count: usize,
+) -> Vec<Section> {
+    let mut unorganized = Vec::new();
+    let mut named = Vec::new();
+    for session in sessions {
+        let designated = Some(session.key) == intake;
+        let row = move_destination_row(session, designated, count);
+        if designated {
+            unorganized.push(row);
+        } else {
+            named.push(row);
+        }
+    }
+    [("Unorganized work", unorganized), ("Named sessions", named)]
+        .into_iter()
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(label, rows)| Section {
+            label: Some(label),
+            rows,
+        })
+        .collect()
+}
+
+fn move_destination_row(
+    session: &phux_protocol::wire::frame::SessionRecord,
+    designated: bool,
+    count: usize,
+) -> Row {
+    let (title, name) = if designated {
+        ("Leave unorganized (Intake)".to_owned(), "Intake".to_owned())
+    } else {
+        (session.name.clone(), session.name.clone())
+    };
+    let imported = if !designated && session.awaiting_organization {
+        " · imported session still awaiting organization"
+    } else {
+        ""
+    };
+    Row {
+        title,
+        detail: Some(format!(
+            "Move {count} selected · execution unchanged{imported}"
+        )),
+        keywords: session.name.clone(),
+        target: Target::Move(session.key, name),
+        command: None,
+    }
 }
 
 /// Rank every row against `query` as one flat list; an empty query keeps the sections.
@@ -945,10 +1040,15 @@ fn path_panel(
 
 /// Every notification this window has posted, newest first. Unread entries
 /// carry a dot until the list closes; a click reveals the entry's terminal.
-fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
-    let rows: Vec<AnyElement> = desk
-        .feed
+fn notification_rows(
+    desk: &Desk,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+    agents: bool,
+) -> Vec<AnyElement> {
+    desk.feed
         .items()
+        .filter(|entry| (entry.kind == super::notifications::Kind::Agent) == agents)
         .map(|entry| {
             let id = entry.id;
             let edge = from_hex(&super::view::notification_edge(entry, colors));
@@ -1008,8 +1108,55 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                 }))
                 .into_any_element()
         })
-        .collect();
-    let empty = rows.is_empty();
+        .collect()
+}
+
+fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
+    div()
+        .px(px(10.))
+        .py(px(6.))
+        .text_xs()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(from_hex(&colors.muted))
+        .child(format!("{title} · {unread} unread alerts"))
+        .into_any_element()
+}
+
+fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let agent_rows = notification_rows(desk, colors, cx, true);
+    let general_rows = notification_rows(desk, colors, cx, false);
+    let unread_agents = desk
+        .feed
+        .unread()
+        .filter(|entry| entry.kind == super::notifications::Kind::Agent)
+        .count();
+    let unread_general = desk.feed.unread().count() - unread_agents;
+    let empty = desk.feed.is_empty();
+    let mut rows = vec![notification_heading(
+        "Inbox — agent attention",
+        unread_agents,
+        colors,
+    )];
+    if agent_rows.is_empty() {
+        rows.push(
+            div()
+                .px(px(10.))
+                .py(px(8.))
+                .text_sm()
+                .text_color(from_hex(&colors.muted))
+                .child("No agent attention alerts.")
+                .into_any_element(),
+        );
+    }
+    rows.extend(agent_rows);
+    if !general_rows.is_empty() {
+        rows.push(notification_heading(
+            "Notifications",
+            unread_general,
+            colors,
+        ));
+        rows.extend(general_rows);
+    }
     card(colors, 460.)
         .mt(px(60.))
         .p(px(8.))
@@ -1028,12 +1175,12 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                         .text_base()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Notifications"),
+                        .child("Inbox & notifications"),
                 )
                 .when(!empty, |header| {
                     header.child(
                         Button::new("notifications-clear")
-                            .label("Clear")
+                            .label("Clear all")
                             .ghost()
                             .small()
                             .on_click(cx.listener(|desk, _, window, cx| {
@@ -1042,13 +1189,21 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                     )
                 }),
         )
+        .child(
+            div()
+                .px(px(10.))
+                .py(px(4.))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Inbox holds agent attention alerts; notifications hold errors and command results. Click an agent alert to open its terminal."),
+        )
         .child(if empty {
             div()
                 .px(px(10.))
                 .py(px(16.))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("Nothing yet. Agent alerts, errors, and command results land here.")
+                .child("No alerts or notifications yet. Unorganized work lives in Intake.")
                 .into_any_element()
         } else {
             div()
@@ -1154,6 +1309,36 @@ fn session_dialog(
     .into_any_element()
 }
 
+fn add_host_dialog(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let (Some(target), Some(name)) = (
+        desk.input_entity(InputSlot::HostTarget),
+        desk.input_entity(InputSlot::HostName),
+    ) else {
+        return div().into_any_element();
+    };
+    dialog_card("Add Host", colors)
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Uses the ssh access you already have. phux must be installed on the host; enrollment starts its server, pairs, and finds a direct route."),
+        )
+        .child(Input::new(&target))
+        .child(Input::new(&name))
+        .child(dialog_buttons(
+            Button::new("host-add-ok")
+                .label("Add Host")
+                .primary()
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    let target = desk.input_value(InputSlot::HostTarget, cx);
+                    let name = desk.input_value(InputSlot::HostName, cx);
+                    desk.apply_add_host(target, name, window, cx);
+                })),
+            cx,
+        ))
+        .into_any_element()
+}
+
 fn confirm(
     title: String,
     body: &str,
@@ -1182,7 +1367,63 @@ fn confirm(
 
 #[cfg(test)]
 mod tests {
-    use super::rank;
+    use super::{Target, move_destination_sections, rank, rank_sections};
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::SessionRecord;
+
+    fn session(byte: u8, name: &str) -> SessionRecord {
+        SessionRecord::new(SessionKey::new([byte; 16]).unwrap(), name, Revision::new(1))
+    }
+
+    #[test]
+    fn move_intake_is_an_explicit_destination_not_a_named_session() {
+        let intake = session(1, "legacy-home");
+        let work = session(2, "Intake");
+        let sections = move_destination_sections(&[&work, &intake], Some(intake.key), 2);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].label, Some("Unorganized work"));
+        assert_eq!(sections[0].rows[0].title, "Leave unorganized (Intake)");
+        assert!(
+            sections[0].rows[0]
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("execution unchanged")
+        );
+        assert!(
+            matches!(&sections[0].rows[0].target, Target::Move(key, name) if *key == intake.key && name == "Intake")
+        );
+        assert_eq!(sections[1].label, Some("Named sessions"));
+        assert_eq!(sections[1].rows[0].title, "Intake");
+        assert!(matches!(&sections[1].rows[0].target, Target::Move(key, _) if *key == work.key));
+    }
+
+    #[test]
+    fn missing_or_ineligible_intake_never_fabricates_a_destination() {
+        let work = session(2, "Work");
+        for intake in [None, Some(session(1, "Intake").key)] {
+            let sections = move_destination_sections(&[&work], intake, 1);
+            assert_eq!(sections.len(), 1);
+            assert_eq!(sections[0].label, Some("Named sessions"));
+        }
+        assert!(move_destination_sections(&[], None, 1).is_empty());
+    }
+
+    #[test]
+    fn imported_destination_retains_its_pending_organization_identity() {
+        let mut imported = session(2, "Imported");
+        imported.awaiting_organization = true;
+        let sections = move_destination_sections(&[&imported], None, 1);
+        assert!(
+            sections[0].rows[0]
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("still awaiting organization")
+        );
+        let sections = rank_sections(sections, "Imported");
+        assert_eq!(sections[0].rows.len(), 1);
+    }
 
     fn ranked(items: &[&'static str], query: &str) -> Vec<&'static str> {
         rank(items.to_vec(), query, |item| (*item).to_owned())

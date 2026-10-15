@@ -1,7 +1,7 @@
 //! Choosing which session an untargeted connection attaches.
 //!
 //! A server advertising `ORGANIZATION` is asked for its organization page and
-//! the connection opens the owner's designated Inbox session. Any other
+//! the connection opens the owner's designated Intake session. Any other
 //! server is asked for its state and the connection opens its most recent
 //! session. Neither path creates a session while one exists.
 
@@ -13,12 +13,18 @@ use phux_protocol::wire::info::SessionSnapshot;
 /// The session a connection opens when the page names none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AttachPreference {
-    /// The owner's Inbox session, where untargeted work lands. A server
-    /// without `ORGANIZATION` has no Inbox; the most recent session stands in.
+    /// The owner's Intake session, where untargeted work lands. A server
+    /// without `ORGANIZATION` has no Intake; the most recent session stands in.
     #[default]
-    Inbox,
+    Intake,
     /// The most recently created session the server reports.
     MostRecent,
+}
+
+impl AttachPreference {
+    /// Legacy public spelling of [`Self::Intake`].
+    #[allow(non_upper_case_globals)]
+    pub const Inbox: Self = Self::Intake;
 }
 
 /// Where the connection is in choosing its session.
@@ -26,7 +32,7 @@ pub enum AttachPreference {
 pub(super) enum Discovery {
     /// `HELLO_OK` has not arrived.
     Idle,
-    /// Waiting for the `GET_ORGANIZATION` page that names the Inbox.
+    /// Waiting for the `GET_ORGANIZATION` page that names Intake.
     Organization(u32),
     /// Waiting for the `GET_STATE` snapshot that lists the sessions.
     State(u32),
@@ -35,7 +41,7 @@ pub(super) enum Discovery {
 }
 
 impl Connection {
-    /// Prefer the Inbox or the most recent session for the attach that
+    /// Prefer Intake or the most recent session for the attach that
     /// follows `HELLO_OK`. Has no effect once the attach is chosen.
     pub fn set_attach_preference(&mut self, preference: AttachPreference) {
         self.attach_preference = preference;
@@ -48,10 +54,10 @@ impl Connection {
     }
 
     /// The first request after `HELLO_OK`: the organization page when the
-    /// server has one and the Inbox is wanted, otherwise the server state.
+    /// server has one and Intake is wanted, otherwise the server state.
     pub(super) fn discovery_request(&mut self) -> Vec<u8> {
         let request_id = self.next_pane_request();
-        if self.organization && self.attach_preference == AttachPreference::Inbox {
+        if self.organization && self.attach_preference == AttachPreference::Intake {
             self.discovery = Discovery::Organization(request_id);
             encode(&FrameKind::Command {
                 request_id,
@@ -92,7 +98,7 @@ impl Connection {
             Discovery::Organization(pending) if pending == request_id => {
                 match result {
                     Some(CommandResult::OkWith(CommandValue::OrganizationPage(page))) => {
-                        self.inbox_attach(page)
+                        self.intake_attach(page)
                     }
                     // A refused or failed read (a grant without INVENTORY, for
                     // one) still leaves the legacy state path to try.
@@ -116,18 +122,18 @@ impl Connection {
         })
     }
 
-    /// Attach the designated Inbox when the page names it, it is live on
-    /// this server instance, and it holds work. An empty Inbox falls through
+    /// Attach the designated Intake when the page names it, it is live on
+    /// this server instance, and it holds work. Empty Intake falls through
     /// to the most recent session, so a browser never opens on nothing while
     /// a session with terminals exists.
-    fn inbox_attach(&mut self, page: &OrganizationPage) -> Option<Vec<u8>> {
-        let inbox = page.inbox?;
-        let record = page.sessions.iter().find(|session| session.key == inbox)?;
+    fn intake_attach(&mut self, page: &OrganizationPage) -> Option<Vec<u8>> {
+        let intake = page.intake()?;
+        let record = page.sessions.iter().find(|session| session.key == intake)?;
         if record.members == 0 {
             return None;
         }
         let live = record.live?;
-        self.session_key = Some(inbox);
+        self.session_key = Some(intake);
         Some(self.attach_frame(AttachTarget::ById(live)))
     }
 
@@ -139,7 +145,7 @@ impl Connection {
             .iter()
             .max_by_key(|session| (session.created_at_unix_secs, session.id.get()))
         else {
-            // Legacy fallback: a server without ORGANIZATION has no Inbox, and
+            // Legacy fallback: a server without ORGANIZATION has no Intake, and
             // an empty one has nothing to attach. Creating "default" here
             // keeps a fresh pre-organization server usable from the browser;
             // a server with any session never reaches this branch.

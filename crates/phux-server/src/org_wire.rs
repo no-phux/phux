@@ -267,7 +267,7 @@ pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
     out
 }
 
-/// Wire attribute pairs in core; the `project.*` names (ADR-0167) are one
+/// Wire attribute pairs in core; the `project.*` names (ADR-0168) are one
 /// typed repository identity, and unknown names are ignored.
 #[must_use]
 pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
@@ -543,7 +543,7 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
 mod tests {
     use super::*;
 
-    /// ADR-0167: the `project.*` attribute pairs become one typed identity
+    /// ADR-0168: the `project.*` attribute pairs become one typed identity
     /// on the record and come back out as the same pairs; unknown names drop.
     #[test]
     fn repository_attrs_round_trip_through_the_typed_record() {

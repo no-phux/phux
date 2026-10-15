@@ -59,9 +59,9 @@ impl KillConfirmOverlay {
         let count = targets.len();
         let noun = if count == 1 { "terminal" } else { "terminals" };
         let mut lines = vec![if window.is_empty() {
-            format!("End {count} {noun} in this window.")
+            format!("End {count} {noun} in this tab.")
         } else {
-            format!("End {count} {noun} in window {window}.")
+            format!("End {count} {noun} in tab {window}.")
         }];
         for target in shared.iter().take(MAX_SHARED_LINES) {
             lines.push(format!(
@@ -220,10 +220,7 @@ mod tests {
     fn the_message_counts_terminals_and_names_shared_ones() {
         assert_eq!(
             overlay(&[]).lines(),
-            [
-                "End 2 terminals in window build.",
-                "Enter kill  ·  Esc cancel"
-            ]
+            ["End 2 terminals in tab build.", "Enter kill  ·  Esc cancel"]
         );
         let shared = SharedTarget {
             label: "pane 1".to_owned(),

@@ -67,7 +67,7 @@ test('Commands queue refusal still commits its closed input gate', () => {
 });
 
 test('replacing New Session cancels captured native focus authority first', () => {
-  for (const kind of ['sessions_open', 'commands_open', 'machines_open', 'settings_open', 'new_session_open', 'new_window']) {
+  for (const kind of ['palette_open', 'commands_open', 'machines_open', 'settings_open', 'new_session_open', 'new_window']) {
     const [model, cmd] = step(pendingSession(), { kind });
     const cancel = request(cmd, 'cockpit.new-session');
     assert.equal(cancel?.payload[1], 4, kind);
@@ -194,7 +194,7 @@ test('successful captured Browse Sessions receipt opens Sessions', () => {
   [model, browse] = step(model, { kind: 'machine_pick', target: model.machineRows[0].target });
   const captured = request(browse, 'cockpit.machines').payload.slice(2, 14);
   const [sessions, cmd] = step(model, { kind: 'machines_loaded', body: inventory(model.machines.requestId) });
-  assert.equal(sessions.navigatorView, 1);
+  assert.equal(sessions.navigatorView, 0);
   assert.equal(sessions.paletteScope, 5);
   assert.deepEqual(sessions.paletteHost, captured);
   assert.deepEqual(request(cmd, 'cockpit.navigation').payload.slice(-14), new Uint8Array([5, 12, ...captured]));
@@ -205,8 +205,8 @@ test('successful captured Browse Sessions receipt opens Sessions', () => {
   assert.deepEqual(ignored.paletteHost, captured);
   const [filtered, filteredCmd] = step(sessions, { kind: 'palette_edit', edit: { kind: 'insert_text', text: bytes('work') } });
   assert.deepEqual(request(filteredCmd, 'cockpit.navigation').payload.slice(-12), captured);
-  const [ordinary] = step(filtered, { kind: 'sessions_open' });
-  assert.equal(ordinary.paletteScope, 1);
+  const [ordinary] = step(filtered, { kind: 'palette_open' });
+  assert.equal(ordinary.paletteScope, 0);
   assert.equal(ordinary.paletteHost.length, 0);
 });
 
@@ -220,16 +220,6 @@ test('machine-scoped navigation requires and echoes the exact opaque twelve-byte
   assert.equal(navigationScopedRequest(revision, 0, bytes(''), 5, bytes('This Mac')).length, 0);
   const wrongLength = page.slice(); wrongLength[14] = 11;
   assert.equal(navigationPage(wrongLength), null);
-});
-
-test('late Windows receipt cannot dismiss newer Commands', () => {
-  const base = { ...initialModel()[0], paletteOpen: true, navigatorView: 3, windowActionPending: true, windowActionId: 9 };
-  const [commands] = step(base, { kind: 'commands_open' });
-  const receipt = new Uint8Array(27); receipt[0] = 1; receipt[1] = 1; receipt[3] = 9;
-  const [after, cmd] = step(commands, { kind: 'window_action_loaded', body: receipt });
-  assert.equal(after.paletteOpen, true);
-  assert.equal(after.navigatorView, 4);
-  assert.equal(cmd, null);
 });
 
 test('closing and reopening Rename retires the old request before its late success', () => {
@@ -254,7 +244,6 @@ test('closing and reopening Rename retires the old request before its late succe
 test('uncorrelated modal providers replace their single-flight key on reopen', () => {
   const cases = [
     [{ kind: 'dir_open' }, { kind: 'dir_close' }, 'cockpit.directory', 'cockpit-directory'],
-    [{ kind: 'host_open' }, { kind: 'host_close' }, 'cockpit.remote', 'cockpit-remote'],
   ];
   for (const [open, close, provider, key] of cases) {
     let [model] = step(initialModel()[0], open);
@@ -270,38 +259,11 @@ test('uncorrelated modal providers replace their single-flight key on reopen', (
   assert.equal(request(replacement, 'cockpit.appearance')?.key, 'cockpit-appearance',
     'Settings cleanup replaces its opening request before another generation can open');
 
-  let [host] = step(initialModel()[0], { kind: 'host_open' });
+  let [host] = step(initialModel()[0], { kind: 'add_machine_open' });
   [host] = step(host, { kind: 'host_close' });
-  [host] = step(host, { kind: 'host_open' });
+  [host] = step(host, { kind: 'add_machine_open' });
   [host] = step(host, { kind: 'remote_loaded', body: new Uint8Array([1, 2, 4, ...bytes('mini'), 0]) });
-  assert.equal(host.hostOpen, true, 'an old settled connection cannot close a reopened status-only host panel');
-});
-
-test('leaving Agents for Sessions or Commands retires the inspector surface', () => {
-  for (const destination of [{ kind: 'sessions_open' }, { kind: 'commands_open' }]) {
-    let [model] = step(initialModel()[0], { kind: 'agents_open' });
-    assert.equal(model.agentsMode, true);
-    assert.equal(model.mainAgentsOpen, true);
-    [model] = step(model, destination);
-    assert.equal(model.agentsMode, false, destination.kind);
-    assert.equal(model.mainAgentsOpen, false, destination.kind);
-    assert.equal(model.mainPaletteOpen, true, destination.kind);
-    assert.equal(model.navigatorView, destination.kind === 'sessions_open' ? 1 : 4, destination.kind);
-  }
-});
-
-test('the shipping Sessions command retires an open Agents inspector', () => {
-  let [model] = step(initialModel()[0], { kind: 'agents_open' });
-  assert.equal(model.agentsMode, true);
-  assert.equal(model.mainAgentsOpen, true);
-  const message = commandMsg('navigator.sessions');
-  assert.deepEqual(message, { kind: 'navigator_open', view: 1 });
-  [model] = step(model, message);
-  assert.equal(model.agentsMode, false);
-  assert.equal(model.mainAgentsOpen, false);
-  assert.equal(model.mainPaletteOpen, true);
-  assert.equal(model.navigatorView, 1);
-  assert.equal(model.paletteOpen, true);
+  assert.equal(host.hostOpen, true, 'a connection status reply cannot close a reopened machine sheet');
 });
 
 test('New Window and window closure retire the Settings transaction first', () => {
@@ -344,22 +306,22 @@ test('an invalid or closed active window cannot acquire a projected surface', ()
   for (const activeWindow of [-1, 1, 1.5, 5]) {
     const [observed] = step(initialModel()[0], snapshotMessage());
     const base = { ...observed, activeWindow };
-    const [model] = step(base, { kind: 'agents_open' });
+    const [model] = step(base, { kind: 'palette_open' });
     assert.equal(model.presentation.phase, 3, String(activeWindow));
-    assert.equal(model.mainAgentsOpen, false, String(activeWindow));
-    assert.equal(model.window1AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window2AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window3AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window4AgentsOpen, false, String(activeWindow));
+    assert.equal(model.mainPaletteOpen, false, String(activeWindow));
+    assert.equal(model.window1PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window2PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window3PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window4PaletteOpen, false, String(activeWindow));
   }
 });
 
 test('a pre-snapshot secondary owner without an open window fails closed', () => {
   const malformed = { ...initialModel()[0], activeWindow: 1 };
-  const [model] = step(malformed, { kind: 'agents_open' });
+  const [model] = step(malformed, { kind: 'palette_open' });
   assert.equal(model.presentation.phase, 3);
-  assert.equal(model.mainAgentsOpen, false);
-  assert.equal(model.window1AgentsOpen, false);
+  assert.equal(model.mainPaletteOpen, false);
+  assert.equal(model.window1PaletteOpen, false);
   assert.equal(windows(model).length, 0);
 });
 
@@ -373,7 +335,7 @@ test('malformed presentation records fail closed at exported update and windows 
     { ...valid.presentation, retiredWindows: 2, absentRetiredWindows: 4 },
     { ...valid.presentation, snapshotObserved: false, snapshotActiveWindow: 1 },
     { ...valid.presentation, kind: 2, continuation: 1, navigatorView: 1 },
-    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 1, inspector: true },
+    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 5 },
   ];
   for (const presentation of malformed) {
     const corrupt = { ...valid, presentation, window1Open: true, mainSettingsOpen: true, window1SettingsOpen: true };
@@ -442,22 +404,12 @@ test('malformed creation status clears awaiting and a failed open cannot stall d
   let [model] = step(initialModel()[0], { kind: 'new_session_open' });
   [model] = step(model, { kind: 'new_session_failed', error: bytes('failed') });
   assert.equal(model.pendingSessionAction, null);
-  [model] = step(model, { kind: 'sessions_open' });
+  [model] = step(model, { kind: 'palette_open' });
   assert.equal(model.creatingSession, false);
   assert.equal(model.renameOpen, false);
   assert.equal(model.pendingSessionAction, null);
-  assert.equal(model.navigatorView, 1);
+  assert.equal(model.navigatorView, 0);
   assert.equal(model.paletteOpen, true);
-});
-
-test('Escape cancels the Windows effect and late failure cannot overwrite newer Commands', () => {
-  const base = { ...initialModel()[0], paletteOpen: true, navigatorView: 3, windowActionPending: true, windowActionId: 9 };
-  const [closed, cmd] = step(base, { kind: 'palette_close' });
-  assert.ok(effects(cmd).some(effect => effect.op === 'cancel' && effect.key === 'cockpit-window-command'));
-  const [commands] = step(closed, { kind: 'commands_open' });
-  const [late, ignored] = step(commands, { kind: 'window_action_failed', error: bytes('failed') });
-  assert.deepEqual(late, commands);
-  assert.equal(ignored, null);
 });
 
 test('a snapshot refreshes Connecting machines without clearing the list or scroll', () => {

@@ -381,9 +381,6 @@ const Bridge = struct {
     keybindings_key: u64 = 0,
     keybindings_len: usize = 0,
     keybindings_buffer: [cockpit.keybindings_runtime.max_response_bytes]u8 = undefined,
-    window_pending: bool = false,
-    window_key: u64 = 0,
-    window_buffer: [cockpit.engine.tab_commands.receipt_len]u8 = undefined,
     machines: cockpit.machines.State = .{},
     machine_reply: WorkflowReply(cockpit.machines.max_bytes) = .{},
     machine_browse: cockpit.machine_browse.Capture = .{},
@@ -409,7 +406,7 @@ const Bridge = struct {
     navigation_key: u64 = 0,
     navigation_ok: bool = false,
     navigation_len: usize = 0,
-    navigation_buffer: [@max(cockpit.engine.navigation.max_bytes, cockpit.window_navigation.max_bytes)]u8 = undefined,
+    navigation_buffer: [cockpit.engine.navigation.max_bytes]u8 = undefined,
     /// The core serializes commands until this exact receipt is consumed.
     /// Snapshot/navigation requests have their own independently polled slots.
     command_pending: bool = false,
@@ -425,8 +422,8 @@ const Bridge = struct {
     appearance_key: u64 = 0,
     appearance_len: usize = 0,
     appearance_buffer: [cockpit.engine.appearance.max_bytes]u8 = undefined,
-    /// Connect to Host (`cockpit.remote`): applied synchronously, answered
-    /// through its own completion slot like navigation.
+    /// The registered host's status (`cockpit.remote`): applied
+    /// synchronously, answered through its own completion slot like navigation.
     remote_pending: bool = false,
     remote_key: u64 = 0,
     remote_ok: bool = false,
@@ -564,7 +561,7 @@ const Bridge = struct {
 
     fn interactionMode(model: *const core.Model) InteractionMode {
         if (model.headerMenuWindow >= 0) return .menu;
-        // Connect to Host and Rename Session take text like the switcher;
+        // The machine sheet and Rename Session take text like the switcher;
         // none may type into a terminal behind it.
         return if (model.paletteOpen or model.hostOpen or model.dirOpen or model.renameOpen) .palette else if (model.settingsOpen) .settings else .terminal;
     }
@@ -623,9 +620,8 @@ const Bridge = struct {
             self.posts_unroutable += 1;
             return;
         };
-        // Encode at the normal snapshot capacity first: agent rows use the
-        // remaining room for a drawn prefix, so a smaller buffer could silently
-        // publish less state instead of reporting BufferTooSmall.
+        // Encode at the normal snapshot capacity first, so a smaller buffer
+        // can never silently publish less state instead of BufferTooSmall.
         const encoded: ?[]const u8 = engine.snapshot(&self.event_buffer) catch null;
         const bytes = if (encoded != null and encoded.?.len <= native_sdk.max_effect_channel_bytes) encoded.? else fallback: {
             const invalidated = engine.invalidation();
@@ -674,10 +670,6 @@ const Bridge = struct {
     /// Dialog requests have independent replies and never consume a terminal
     /// command receipt. Keep their dispatch separate from state synchronization.
     fn requestWorkflow(self: *Bridge, name: []const u8, key: u64, payload: []const u8) bool {
-        if (std.mem.eql(u8, name, cockpit.window_navigation.request_name)) {
-            self.requestWindow(key, payload);
-            return true;
-        }
         if (std.mem.eql(u8, name, "cockpit.keybindings")) {
             self.requestKeybindings(key, payload);
             return true;
@@ -868,58 +860,6 @@ const Bridge = struct {
         self.new_session_reply.finish(reply);
     }
 
-    fn requestWindow(self: *Bridge, key: u64, payload: []const u8) void {
-        self.window_pending = true;
-        self.window_key = key;
-        const decoded = cockpit.window_navigation.decodeCommand(payload);
-        var receipt: cockpit.engine.tab_commands.Receipt = .{ .reason = .invalid_command };
-        if (decoded) |command| {
-            receipt.id = command.id;
-            receipt.reason = self.activateWindow(command.target);
-        }
-        if (self.engine) |engine| {
-            receipt.sequence = engine.sequence;
-            receipt.revision = engine.revision;
-            if (receipt.reason == .none) self.announce(engine);
-        }
-        self.window_buffer = receipt.encode();
-    }
-
-    fn activateWindow(self: *Bridge, target: cockpit.window_navigation.Target) cockpit.engine.tab_commands.Reason {
-        const engine = self.engine orelse return .unavailable;
-        const destination = target.resolve(engine.model) orelse return .stale_target;
-        const workspace = engine.model.wsAtConst(destination.window) orelse return .stale_target;
-        self.raiseNativeWindow(destination.window, workspace.window_id) catch return .unavailable;
-        // Native activation may synchronously deliver events. Revalidate the
-        // same identity rather than reuse an index observed before activation.
-        const selected = target.resolve(engine.model) orelse return .stale_target;
-        const intent = protocol.encodeIntent(.{
-            .kind = if (selected.tab != null) .select_tab else .focus_window,
-            .expected_revision = engine.revision,
-            .window = selected.window,
-            .argument = selected.tab orelse 0,
-        });
-        const applied = if (engineFx()) |fx| engine.applyIntent(&intent, fx) else engine.applyIntent(&intent, &cockpit.NoShells{});
-        return if (applied) .none else .stale_target;
-    }
-
-    fn raiseNativeWindow(self: *Bridge, window: usize, captured_id: u64) !void {
-        const runtime = self.runtime orelse return error.RuntimeUnavailable;
-        const id = if (captured_id != 0) captured_id else try nativeWindowId(runtime, window);
-        try runtime.showWindow(id);
-        try runtime.focusWindow(id);
-    }
-
-    fn nativeWindowId(runtime: *native_sdk.Runtime, window: usize) !u64 {
-        // Empty views can precede their first terminal paint, which normally
-        // records the platform ID. Resolve only the epoch-validated live slot.
-        var windows: [native_sdk.platform.max_windows]native_sdk.platform.WindowInfo = undefined;
-        const label = cockpit.scene.windowLabelFor(window);
-        for (runtime.listWindows(&windows)) |info| {
-            if (info.open and std.mem.eql(u8, info.label, label)) return info.id;
-        }
-        return error.WindowUnavailable;
-    }
 
     fn keybindingsEnabled(self: *Bridge) bool {
         const engine = self.engine orelse return false;
@@ -977,9 +917,7 @@ const Bridge = struct {
             self.navigation_len = copyInto(&self.navigation_buffer, "engine unavailable");
             return;
         };
-        const snapshot = if (isWindowNavigation(payload))
-            cockpit.window_labels.encode(engine.model, engine.revision, payload, &self.navigation_buffer)
-        else if (cockpit.machine_browse.navigationToken(payload)) |token|
+        const snapshot = if (cockpit.machine_browse.navigationToken(payload)) |token|
             engine.navigationSnapshotForAttachments(payload, &self.navigation_buffer, self.machine_browse.resolve(engine.model, token) orelse &.{})
         else
             engine.navigationSnapshot(payload, &self.navigation_buffer);
@@ -991,12 +929,6 @@ const Bridge = struct {
         self.navigation_len = bytes.len;
     }
 
-    fn isWindowNavigation(payload: []const u8) bool {
-        if (payload.len < 15) return false;
-        // Only choose the decoder here; it validates lengths, UTF-8 and the
-        // revision fence before reading or returning any catalog records.
-        return payload[0] == 1 and payload[1] == 4 and payload[payload.len - 2] == 4;
-    }
 
     fn requestRemote(self: *Bridge, key: u64, payload: []const u8) void {
         self.remote_pending = true;
@@ -1227,7 +1159,6 @@ const Bridge = struct {
         cancelReply(&self.directory_pending, self.directory_key, key);
         cancelReply(&self.session_pending, self.session_key, key);
         cancelReply(&self.keybindings_pending, self.keybindings_key, key);
-        cancelReply(&self.window_pending, self.window_key, key);
         self.machine_reply.cancel(key);
         self.local_tool_reply.cancel(key);
         self.new_session_reply.cancel(key);
@@ -1240,10 +1171,6 @@ const Bridge = struct {
 
     fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
         const self: *Bridge = @ptrCast(@alignCast(context));
-        if (self.window_pending) {
-            self.window_pending = false;
-            return .{ .key = self.window_key, .ok = true, .bytes = &self.window_buffer };
-        }
         if (self.keybindings_pending) {
             self.keybindings_pending = false;
             return .{ .key = self.keybindings_key, .ok = self.keybindings_len != 0, .bytes = self.keybindings_buffer[0..self.keybindings_len] };
@@ -1307,7 +1234,7 @@ const Bridge = struct {
     }
 
     fn hasWorkflowPending(self: *const Bridge) bool {
-        return self.appearance_pending or self.remote_pending or self.directory_pending or self.session_pending or self.keybindings_pending or self.window_pending or self.hasCreationPending();
+        return self.appearance_pending or self.remote_pending or self.directory_pending or self.session_pending or self.keybindings_pending or self.hasCreationPending();
     }
 
     fn hasCreationPending(self: *const Bridge) bool {
@@ -1824,17 +1751,17 @@ fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Ad
     });
 }
 
-fn overlayOpen(palette: bool, agents: bool, settings: bool, host: bool, dir: bool, rename: bool) bool {
-    return palette or agents or settings or host or dir or rename;
+fn overlayOpen(palette: bool, settings: bool, host: bool, dir: bool, rename: bool) bool {
+    return palette or settings or host or dir or rename;
 }
 
 fn windowOwnsOverlay(model: *const core.Model, window_index: usize) bool {
     return switch (window_index) {
-        0 => overlayOpen(model.mainPaletteOpen, model.mainAgentsOpen, model.mainSettingsOpen, model.mainHostOpen, model.mainDirOpen, model.mainRenameOpen),
-        1 => overlayOpen(model.window1PaletteOpen, model.window1AgentsOpen, model.window1SettingsOpen, model.window1HostOpen, model.window1DirOpen, model.window1RenameOpen),
-        2 => overlayOpen(model.window2PaletteOpen, model.window2AgentsOpen, model.window2SettingsOpen, model.window2HostOpen, model.window2DirOpen, model.window2RenameOpen),
-        3 => overlayOpen(model.window3PaletteOpen, model.window3AgentsOpen, model.window3SettingsOpen, model.window3HostOpen, model.window3DirOpen, model.window3RenameOpen),
-        4 => overlayOpen(model.window4PaletteOpen, model.window4AgentsOpen, model.window4SettingsOpen, model.window4HostOpen, model.window4DirOpen, model.window4RenameOpen),
+        0 => overlayOpen(model.mainPaletteOpen, model.mainSettingsOpen, model.mainHostOpen, model.mainDirOpen, model.mainRenameOpen),
+        1 => overlayOpen(model.window1PaletteOpen, model.window1SettingsOpen, model.window1HostOpen, model.window1DirOpen, model.window1RenameOpen),
+        2 => overlayOpen(model.window2PaletteOpen, model.window2SettingsOpen, model.window2HostOpen, model.window2DirOpen, model.window2RenameOpen),
+        3 => overlayOpen(model.window3PaletteOpen, model.window3SettingsOpen, model.window3HostOpen, model.window3DirOpen, model.window3RenameOpen),
+        4 => overlayOpen(model.window4PaletteOpen, model.window4SettingsOpen, model.window4HostOpen, model.window4DirOpen, model.window4RenameOpen),
         else => false,
     };
 }
@@ -2735,7 +2662,6 @@ const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
-    .{ .path = "components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
     .{ .path = "phux-window-1.native", .source = @embedFile("windows/phux-window-1.native") },
     .{ .path = "phux-window-2.native", .source = @embedFile("windows/phux-window-2.native") },
     .{ .path = "phux-window-3.native", .source = @embedFile("windows/phux-window-3.native") },
@@ -2769,11 +2695,36 @@ fn testWindowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) 
     return WindowView4.build(ui, model);
 }
 
+/// Socket the TypeScript lifecycle test asks the provider to ensure.
+/// `phux server --ensure` daemonizes and survives the test process; the
+/// rig stops that server on the way out.
+const typescript_lifecycle_socket = "/tmp/phux-typescript-lifecycle-test.sock";
+
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+
+/// Same lookup as `crates/phux/tests/common/runner.rs` `phux_bin`: the
+/// build under test, never a `phux` discovered on PATH. `X_OK` is 1 on
+/// both Darwin and Linux.
+fn checkoutPhuxCli() ?[]const u8 {
+    const keys = [_][*:0]const u8{ "CARGO_BIN_EXE_phux", "NEXTEST_BIN_EXE_phux" };
+    for (keys) |key| {
+        const value = std.c.getenv(key) orelse continue;
+        const path = std.mem.span(value);
+        if (path.len == 0 or !std.fs.path.isAbsolute(path)) continue;
+        if (access(path, 1) != 0) continue;
+        return path;
+    }
+    return null;
+}
+
 const Rig = struct {
     app_state: *Adapter.App,
     decorated: native_sdk.App,
     harness: *native_sdk.TestHarness(),
     frame_index: u64 = 1,
+    /// Checkout CLI that `ensure` execs for this rig, when it starts a
+    /// coordinator. Owned by the testing allocator; `stop` frees it.
+    coordinator_cli: ?[]u8 = null,
 
     fn attachFixture(self: *Rig) !cockpit.TerminalRef {
         return self.attachFixtureWithHello(@embedFile("tests/fixtures/hello.bin"));
@@ -2860,13 +2811,27 @@ const Rig = struct {
     /// be bound before the first event, and replaySession starts the app
     /// itself, so both shapes need the unstarted Rig.
     fn create(want_phux: bool, replaying: bool, recorder: ?*native_sdk.runtime.SessionRecorder) !Rig {
+        var coordinator_cli: ?[]u8 = null;
+        errdefer if (coordinator_cli) |cli| std.testing.allocator.free(cli);
+        if (want_phux and !replaying) {
+            const resolved = checkoutPhuxCli() orelse {
+                std.debug.print(
+                    "typescript lifecycle test needs this checkout's phux (CARGO_BIN_EXE_phux or NEXTEST_BIN_EXE_phux); refusing to launch whatever phux is on PATH\n",
+                    .{},
+                );
+                return error.CheckoutPhuxMissing;
+            };
+            // Own the bytes. Other tests call setenv, which may relocate the
+            // environment and invalidate the getenv pointer.
+            coordinator_cli = try std.testing.allocator.dupe(u8, resolved);
+        }
         var core_options: Adapter.CoreOptions = .{};
         installEngine(&core_options, std.testing.allocator, std.testing.io);
         try std.testing.expect(bridge.engine != null);
         if (want_phux) {
             if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
             var config = cockpit.startup.resolvePhuxConfig(.{}, .{
-                .socket = "/tmp/phux-typescript-lifecycle-test.sock",
+                .socket = typescript_lifecycle_socket,
                 .session = "configured-session",
             });
             const remote = (try cockpit.startup.createPhuxProviderFromConfig(
@@ -2874,6 +2839,7 @@ const Rig = struct {
                 std.testing.io,
                 &config,
             )) orelse return error.TestExpectedPhuxProvider;
+            if (coordinator_cli) |cli| remote.local_cli = cli;
             cockpit.attachPhuxProvider(bridge.engine.?.model, remote);
             // Shipping createFromInitialized drops the local seed once Phux is
             // configured. The harness attaches the provider after Engine.create,
@@ -2906,10 +2872,22 @@ const Rig = struct {
         harness.runtime.options.shortcuts = @import("tests/shipping_commands.zig").shortcuts;
         harness.runtime.options.menus = @import("tests/shipping_commands.zig").menus;
         harness.runtime.options.session_recorder = recorder;
-        return .{ .app_state = app_state, .decorated = decorated, .harness = harness };
+        // The rig owns the path from here. Disarm the error free so `stop`
+        // is the only release.
+        const owned_cli = coordinator_cli;
+        coordinator_cli = null;
+        return .{
+            .app_state = app_state,
+            .decorated = decorated,
+            .harness = harness,
+            .coordinator_cli = owned_cli,
+        };
     }
 
     fn boot(self: *Rig) !void {
+        // `server --ensure` reuses a live socket and would not exec the
+        // checkout CLI. Drop a coordinator left by an earlier run first.
+        self.stopCheckoutCoordinator();
         try self.harness.start(self.decorated);
         try self.harness.runtime.dispatchPlatformEvent(self.decorated, .{ .gpu_surface_frame = .{
             .label = canvas_label,
@@ -2936,6 +2914,10 @@ const Rig = struct {
     }
 
     fn stop(self: *Rig) void {
+        // Kill after the app is gone, including when boot or an assertion
+        // fails (`defer` / `errdefer` both land here). Then free the CLI path.
+        defer self.releaseCoordinatorCli();
+        defer self.stopCheckoutCoordinator();
         bridge.retireWorkflows();
         self.app_state.destroy();
         self.harness.destroy(std.testing.allocator);
@@ -2944,6 +2926,26 @@ const Rig = struct {
         bridge.native_replay.deinit();
         if (bridge.engine) |engine| engine.destroy();
         bridge = .{};
+    }
+
+    /// `phux kill --server` is idempotent: a missing socket is success, and
+    /// it does not auto-spawn. The daemon from `server --ensure` is not this
+    /// process's child (`setsid`), so this is the stop.
+    fn stopCheckoutCoordinator(self: *const Rig) void {
+        const cli = self.coordinator_cli orelse return;
+        var child = std.process.spawn(std.testing.io, .{
+            .argv = &.{ cli, "kill", "--server", "--socket", typescript_lifecycle_socket },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(std.testing.io) catch {};
+    }
+
+    fn releaseCoordinatorCli(self: *Rig) void {
+        const cli = self.coordinator_cli orelse return;
+        self.coordinator_cli = null;
+        std.testing.allocator.free(cli);
     }
 
     /// Drain the effects loop until the core has heard engine announcement
@@ -3109,6 +3111,14 @@ test "configured Phux attachment starts native provider lifecycle without a loca
     var rig = try Rig.startWithPhux(true);
     defer rig.stop();
     const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+
+    try std.testing.expect(remote.local_cli != null);
+    try std.testing.expect(std.fs.path.isAbsolute(remote.local_cli.?));
+    var cli_buf: [4096]u8 = undefined;
+    if (remote.localToolCli(&cli_buf)) |used| {
+        try std.testing.expectEqualStrings(remote.local_cli.?, used);
+    }
 
     try std.testing.expect(engine.model.phux() != null);
     try std.testing.expect(engine.model.pointer_state != null);
@@ -3216,40 +3226,6 @@ test "tab opening and closing publish the confirmed model in one channel drain" 
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.tabs.len);
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.engineSequence.lo);
     try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
-}
-
-test "oversized channel snapshots fall back without shortening the visible agent inventory" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const parent = try rig.attachFixture();
-    const engine = bridge.engine.?;
-    try rig.settle(@intCast(engine.sequence), "READY");
-    const remote = engine.model.phux().?;
-    const fixture = @TypeOf(remote.*).test_support;
-    var agents: [24]fixture.AgentSessionFixture = undefined;
-    for (&agents, 0..) |*agent, index| agent.* = .{
-        .id = @intCast(9001 + index),
-        .host = "h" ** 200,
-        .parent = parent.terminal_id.phux.id,
-        .provider_name = "claude",
-        .state = "working",
-    };
-    try fixture.adoptAgentSessions(remote.host, &agents);
-    var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
-    const full = try engine.snapshot(&bytes);
-    try std.testing.expect(full.len > native_sdk.max_effect_channel_bytes);
-
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
-    // The oversized publication is an invalidation, not a silently truncated
-    // snapshot. Its full host reply arrives on the next completion drain.
-    try std.testing.expect(!rig.app_state.model.engineConnected);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    const rows = rig.app_state.model.tabs[0].agents;
-    try std.testing.expectEqual(@as(usize, 24), rows.len);
-    try std.testing.expect(std.mem.indexOf(u8, rows[23].resource, "h" ** 200) != null);
 }
 
 test "native menu commands split and close the focused pane through the engine seam" {
@@ -3708,7 +3684,7 @@ fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled:
     const next = tabMenuItem(menu, "Move Right") orelse return false;
     if (previous_disabled != !menu[previous - 1].enabled) return false;
     if (next_disabled != !menu[next - 1].enabled) return false;
-    return tabMenuItem(menu, "Close View") != null and tabMenuItem(menu, "Kill Tab") != null;
+    return tabMenuItem(menu, "Close Tab") != null and tabMenuItem(menu, "Kill Tab") != null;
 }
 
 fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
@@ -3727,7 +3703,7 @@ fn tabMenuHostIn(rig: *Rig, window_id: native_sdk.platform.WindowId, label: []co
             .window_id = window_id,
             .label = label,
             .move_next_item = tabMenuItem(node.widget.context_menu, "Move Right").?,
-            .close_item = tabMenuItem(node.widget.context_menu, "Close View").?,
+            .close_item = tabMenuItem(node.widget.context_menu, "Close Tab").?,
         };
     }
     return error.TestExpectedTabMenu;
@@ -5833,7 +5809,7 @@ test "workspace menu keyboard and outside dismissal use retained SDK routing" {
     try std.testing.expect(pane.session.selectionActive());
 }
 
-test "workspace menu trigger and rows work through SDK keyboard focus" {
+test "location menu trigger and rows work through SDK keyboard focus" {
     const Keys = struct {
         fn press(rig: *Rig, key: []const u8) !void {
             inline for (.{ .key_down, .key_up }) |kind| {
@@ -5854,7 +5830,7 @@ test "workspace menu trigger and rows work through SDK keyboard focus" {
     var trigger: ?native_sdk.geometry.RectF = null;
     var trigger_id: u64 = 0;
     for (widgets.nodes) |node| {
-        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "Workspace actions")) {
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "Session and machine")) {
             trigger = node.frame;
             trigger_id = node.widget.id;
         }
@@ -5873,7 +5849,7 @@ test "workspace menu trigger and rows work through SDK keyboard focus" {
     try Keys.press(&rig, "Enter");
     try std.testing.expect(!rig.app_state.model.mainHeaderMenuOpen);
     try std.testing.expect(rig.app_state.model.paletteOpen);
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
+    try std.testing.expectEqual(@as(i64, 0), rig.app_state.model.navigatorView);
 }
 
 test "standalone menu dismissal does not consume the next terminal click" {
@@ -6928,40 +6904,6 @@ test "shipping focused palette editor dismisses and moves by keyboard" {
     try std.testing.expect(!rig.app_state.model.paletteOpen);
 }
 
-test "shipping agent inspector arrows and Enter navigate the exact parent" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const engine = bridge.engine.?;
-    const local = engine.model.focusedTerminalRef().?;
-    const parent = try rig.attachFixture();
-    const tree = engine.model.ws().selectedTree().?;
-    _ = try tree.split(tree.focus, .horizontal, local);
-    const remote = engine.model.phux().?;
-    try @TypeOf(remote.*).test_support.adoptAgentSessions(remote.host, &.{
-        .{ .id = 9001, .parent = 9999, .provider_name = "claude", .state = "blocked" },
-        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .state = "blocked" },
-    });
-    try rig.settle(@intCast(engine.sequence), "READY");
-    try rig.dispatch(.agents_open);
-    try rig.settleNavigation();
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
-    try std.testing.expect(rig.app_state.model.paletteOpen);
-    try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
-    // Parent-unavailable autofocus is Refresh; Enter retries rather than jumping.
-    try rig.settleNavigation();
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
-    try rig.settleNavigation();
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteOffset);
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
-    try std.testing.expect(!rig.app_state.model.paletteOpen);
-    try std.testing.expect(parent.eql(engine.model.focusedTerminalRef().?));
-}
-
 test "clicking the selected tab returns Enter to its focused split pane in strip and rail" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -7215,7 +7157,6 @@ const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "windows/components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "windows/components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "windows/components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
-    .{ .path = "windows/components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
 };
 const CompiledChrome = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &main_sources);
 const compiled_fragments = [_]canvas.MarkupFragment{
@@ -7770,87 +7711,6 @@ test "titlebar chrome is a window-drag surface in every window and placement" {
     try rig.reach(.{ .label = "full strip", .tabs = 16 });
     try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
     try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
-}
-
-fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool) !void {
-    const fields = .{ "mainAgentsOpen", "window1AgentsOpen", "window2AgentsOpen", "window3AgentsOpen", "window4AgentsOpen" };
-    inline for (fields, 0..) |field, window| {
-        var scoped = model;
-        inline for (fields) |other| @field(scoped, other) = false;
-        @field(scoped, field) = true;
-        try std.testing.expect(try compiledViewHasLabel(&scoped, window, "Close agent inspector"));
-        if (loaded) {
-            const row = scoped.paletteRows[0];
-            for ([_][]const u8{ row.resource, row.parent, row.nativeId, row.evidence }) |value| {
-                if (value.len != 0) try std.testing.expect(try compiledViewHasLabel(&scoped, window, value));
-            }
-        }
-        for (parity_sizes) |size| {
-            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
-                try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&scoped, size, density, state, window));
-            }
-        }
-    }
-}
-
-test "shipping agent inspection markup handles paging and catalog states in all windows" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const parent = try rig.attachFixture();
-    const engine = bridge.engine.?;
-    const remote = engine.model.phux().?;
-    const fixture = @TypeOf(remote.*).test_support;
-    // 256 UTF-8 bytes is the actual native-id bound, not an ASCII-only proxy.
-    const native_id = "é" ** 128;
-    try fixture.adoptAgentSessions(remote.host, &.{
-        .{ .id = 9001, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .native_id = native_id, .state = "working" },
-        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "codex", .native_id = native_id, .state = "blocked" },
-        .{ .id = 9003, .parent = 9999, .provider_name = "claude", .native_id = native_id, .state = "done" },
-    });
-    try rig.settle(@intCast(engine.sequence), "READY");
-    var snapshot_bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
-    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&snapshot_bytes) });
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    var agent_rows: usize = 0;
-    for (rig.app_state.model.railRows) |row| {
-        if (row.agent) agent_rows += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), agent_rows);
-    for (parity_sizes) |size| {
-        try rig.resize(size);
-        for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
-            try std.testing.expectEqual(@as(usize, 0), try auditChromeAt(&rig.app_state.model, size, density, "populated agent rail"));
-        }
-    }
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    try rig.dispatch(.agents_open);
-    try auditInspectorEveryWindow(rig.app_state.model, "agents loading", false);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents first page", true);
-    var boundary = rig.app_state.model;
-    var boundary_row = boundary.paletteRows[0].*;
-    boundary_row.resource = "phux:1:4294967295@" ++ "s" ** 253;
-    boundary_row.parent = "phux:1:4294967294@" ++ "s" ** 253;
-    const boundary_rows = [_]*const core.SwitcherRow{&boundary_row};
-    boundary.paletteRows = &boundary_rows;
-    try auditInspectorEveryWindow(boundary, "maximum satellite identities", true);
-    try rig.dispatch(.palette_next);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents middle page", true);
-    try rig.dispatch(.palette_next);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents absent parent last page", true);
-    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
-    try rig.dispatch(.{ .navigation_failed = "fixture unavailable" });
-    try auditInspectorEveryWindow(rig.app_state.model, "agents unavailable", false);
-    try fixture.adoptAgentSessions(remote.host, &.{});
-    try rig.dispatch(.palette_retry);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents empty", false);
 }
 
 fn expectParentAttentionChrome(rig: *Rig, label: []const u8, shown: bool) !void {
@@ -8614,7 +8474,7 @@ test "shipping snapshot exposes focused terminal history and fenced recovery" {
     remote.host.terminals.items[0].phase = .live;
     snapshot = try engine.snapshot(&storage);
     try rig.dispatch(.{ .snapshot_loaded = snapshot });
-    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "Recovering terminal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.connectionStatus, "Reconnecting terminal") != null);
 }
 
 test "a bell while the app is deactivated notifies once, on its rising edge" {
@@ -9493,7 +9353,7 @@ test "shipping host dialog removes terminal accessibility targets in the owner w
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 1));
 
-    try rig.dispatch(.host_open);
+    try rig.dispatch(.add_machine_open);
     try std.testing.expect(rig.app_state.model.hostOpen);
     try std.testing.expect(rig.app_state.model.window1HostOpen);
     try std.testing.expect(!rig.app_state.model.mainHostOpen);
@@ -9736,7 +9596,7 @@ test "compiled command session machine and directory rows share the highlighted-
     } else return error.TestExpectedHighlightedMachine;
     try expectHighlightedRowMarker(&rig.app_state.model, machine_label);
 
-    try rig.dispatch(.sessions_open);
+    try rig.dispatch(.palette_open);
     try rig.settleNavigation();
     const session_label = for (rig.app_state.model.paletteRows) |row| {
         if (row.highlighted) break row.label;
@@ -9756,9 +9616,8 @@ test "compiled navigator destinations are one exclusive segmented control in the
     defer rig.stop();
     try rig.settle(0, "READY");
     const cases = [_]struct { label: []const u8, msg: core.Msg, view: i64 }{
-        .{ .label = "Sessions", .msg = .sessions_open, .view = 1 },
+        .{ .label = "Sessions", .msg = .palette_open, .view = 0 },
         .{ .label = "Machines", .msg = .machines_open, .view = 2 },
-        .{ .label = "Windows", .msg = .windows_open, .view = 3 },
         .{ .label = "Commands", .msg = .commands_open, .view = 4 },
     };
     for (cases) |case| {
@@ -9770,22 +9629,16 @@ test "compiled navigator destinations are one exclusive segmented control in the
         var built = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
         defer built.arena.deinit();
         try std.testing.expectEqual(@as(usize, 1), overlayKindCount(built.measured, .dialog));
-        const focused = case.view >= 1 and case.view <= 3;
-        try std.testing.expectEqual(!focused, rig.app_state.model.navigatorBrowse);
         var segments: usize = 0;
         var saw_views = false;
         for (built.measured.nodes) |entry| {
             if (entry.widget.kind == .segmented_control) segments += 1;
             if (std.mem.eql(u8, entry.widget.semantics.label, "Navigator views")) saw_views = true;
         }
-        if (focused) {
-            try std.testing.expect(!saw_views);
-            try std.testing.expect(findWidgetByText(built.measured, .segmented_control, case.label) == null);
-            continue;
-        }
-        // Commands keeps the strip: five destination buttons plus their Tabs register.
+        // Every destination keeps the strip: three destination buttons plus
+        // their Tabs register.
         try std.testing.expect(saw_views);
-        try std.testing.expectEqual(@as(usize, 6), segments);
+        try std.testing.expectEqual(@as(usize, 4), segments);
         const selected = findWidgetByText(built.measured, .segmented_control, case.label) orelse
             return error.TestExpectedNavigatorDestination;
         try std.testing.expect(selected.widget.state.selected);
@@ -9877,20 +9730,6 @@ test "header location trigger names the window's session and machine at a fixed 
     }
 }
 
-test "the Show All Windows chord opens the window overview" {
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    // Installed chords carry registry ids; the chord itself is the contract.
-    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
-        if (std.mem.eql(u8, item.key, "a") and item.modifiers.shift) break item;
-    } else return error.TestExpectedWindowsShortcut;
-    try std.testing.expect(!rig.app_state.model.paletteOpen);
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{ .id = shortcut.id, .key = shortcut.key, .modifiers = shortcut.modifiers, .window_id = 1 } });
-    try std.testing.expect(rig.app_state.model.paletteOpen);
-    try std.testing.expectEqual(@as(i64, 3), rig.app_state.model.navigatorView);
-}
-
 test "shipping menus cap every group at seven and name navigator destinations consistently" {
     const menus = @import("tests/shipping_commands.zig").menus;
     for (menus) |menu| {
@@ -9909,7 +9748,6 @@ test "shipping menus cap every group at seven and name navigator destinations co
     const destinations = [_]struct { command: []const u8, label: []const u8 }{
         .{ .command = "navigator.sessions", .label = "Sessions…" },
         .{ .command = "navigator.machines", .label = "Machines…" },
-        .{ .command = "navigator.windows", .label = "Show All Windows…" },
         .{ .command = "commands.open", .label = "Commands…" },
     };
     for (destinations) |destination| {
@@ -9985,7 +9823,7 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
     try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .palette_close, "Search navigator");
     try rig.dispatch(.palette_close);
 
-    try rig.dispatch(.host_open);
+    try rig.dispatch(.add_machine_open);
     try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .host_close, "Machine destination");
     try std.testing.expect(engineInputSuspended());
     var purpose_two = rig.app_state.model;
@@ -10009,47 +9847,11 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
     try rig.dispatch(.settings_close);
     try rig.settleAppearance();
     try std.testing.expect(!rig.app_state.model.settingsOpen);
-
-    try rig.dispatch(.agents_open);
-    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .palette_close, "Refresh");
-    try std.testing.expect(engineInputSuspended());
-    try rig.dispatch(.palette_close);
 }
 
 fn engineInputSuspended() bool {
     const engine = bridge.engine orelse return false;
     return engine.input_suspended;
-}
-
-test "agentsessionreplace shipping Sessions command retires the Agents inspector" {
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    try rig.dispatch(.agents_open);
-    try std.testing.expect(rig.app_state.model.agentsMode);
-    try std.testing.expect(rig.app_state.model.mainAgentsOpen);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
-
-    const painted = bridge.engine.?.model.wsAtConst(0).?.window_id;
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
-        .name = "navigator.sessions",
-        .window_id = if (painted == 0) 1 else painted,
-        .view_label = canvas_label,
-    } });
-
-    try std.testing.expect(!rig.app_state.model.agentsMode);
-    try std.testing.expect(!rig.app_state.model.mainAgentsOpen);
-    try std.testing.expect(rig.app_state.model.mainPaletteOpen);
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
-    try std.testing.expect(!rig.app_state.model.navigatorBrowse);
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
-
-    try rig.dispatch(.palette_open);
-    try std.testing.expect(rig.app_state.model.navigatorBrowse);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
 }
 
 test "shipping empty session stays inline in terminal space without modal semantics" {
@@ -10060,8 +9862,6 @@ test "shipping empty session stays inline in terminal space without modal semant
     const empty_context = core.WindowChromeContext{
         .title = empty.mainContext.title,
         .detail = empty.mainContext.detail,
-        .emptyName = "keep-empty",
-        .emptyDetail = "This Mac",
         .emptyPicked = true,
         .emptyOpening = empty.mainContext.emptyOpening,
         .location = empty.mainContext.location,
@@ -10314,11 +10114,11 @@ test "connection and command feedback never resize any window's terminal canvas"
     defer rig.stop();
     try rig.settle(0, "READY");
     const states = [_]struct { status: []const u8, reconnect: bool = false, notice: []const u8 = "" }{
-        .{ .status = "Local terminals" },
+        .{ .status = "" },
         .{ .status = "Connecting to build…" },
-        .{ .status = "build / Phux connected" },
+        .{ .status = "Offline" },
         .{ .status = "Connection lost", .reconnect = true },
-        .{ .status = "Phux connected", .notice = "Outcome unknown; check the session before retrying." },
+        .{ .status = "", .notice = "Outcome unknown; check the session before retrying." },
     };
     inline for (.{ core.TabPlacement.top, core.TabPlacement.side }) |placement| {
         for ([_]native_sdk.geometry.SizeF{ .init(900, 420), .init(1100, 640) }) |size| {
@@ -10513,7 +10313,7 @@ test "a focused secondary snapshot keeps main and secondary projections distinct
     // never enters TypeScript. The command's projection slot does.
     engine.model.wsAt(1).?.window_id = 42;
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
-        .name = "tabs.palette",
+        .name = "navigator.sessions",
         .window_id = 42,
     } });
     try rig.settle(4, "READY");
@@ -10540,19 +10340,18 @@ test "a secondary-window switcher is scoped to the focused window" {
     try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Search navigator"));
 }
 
-test "Connect to Host is presented in the secondary window that invoked it" {
-    // The switcher's Connect to Host button is in every window's chrome, but
-    // the panel used to render only in main: invoked from a secondary window
-    // it opened behind the user and took the keyboard with it.
+test "Add Machine is presented in the secondary window that invoked it" {
+    // The machine sheet renders in the window that invoked it, never behind
+    // the user in main, so the keyboard stays where the person is.
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
     try rig.dispatch(.new_window);
     try rig.settle(1, "READY");
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.activeWindow);
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 1, "Remote host"));
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 1, "Machine destination"));
 
-    try rig.dispatch(.host_open);
+    try rig.dispatch(.add_machine_open);
     try std.testing.expect(rig.app_state.model.hostOpen);
     try std.testing.expect(!rig.app_state.model.mainHostOpen);
     try std.testing.expect(rig.app_state.model.window1HostOpen);
@@ -10599,65 +10398,6 @@ test "navigation bridge preserves independently pending catalog and snapshot com
     Bridge.cancel(&service, 44);
     try std.testing.expectEqual(@as(u64, 33), Bridge.poll(&service).?.key);
     try std.testing.expect(!Bridge.hasPending(&service));
-}
-
-test "window inventory traverses the shipping bridge with captured native identities" {
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    try rig.dispatch(.new_window);
-    try rig.settle(1, "READY");
-    const engine = bridge.engine.?;
-    // TestHarness reserves Runtime's startup window but does not create the
-    // platform window. Register that exact ID to exercise real show/focus calls.
-    const native_id = try Bridge.nativeWindowId(&rig.harness.runtime, 0);
-    _ = try rig.harness.runtime.options.platform.services.createWindow(.{ .id = native_id, .label = "main" });
-    var service: Bridge = .{ .engine = engine, .runtime = bridge.runtime };
-    var request = [_]u8{0} ** 15;
-    request[0] = 1;
-    request[1] = 4;
-    std.mem.writeInt(u64, request[2..10], engine.revision, .little);
-    request[13] = 4;
-    Bridge.request(&service, cockpit.engine.navigation.request_name, 81, &request);
-    const reply = Bridge.poll(&service).?;
-    try std.testing.expect(reply.ok);
-    try std.testing.expectEqual(@as(u64, 81), reply.key);
-    try std.testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, reply.bytes[15..17], .little));
-    try std.testing.expectEqual(@as(u8, 4), reply.bytes[17]);
-    var at: usize = 18;
-    for (0..4) |index| {
-        const label_len = reply.bytes[at + 2];
-        const target_len = std.mem.readInt(u16, reply.bytes[at + 3 ..][0..2], .little);
-        const target = cockpit.window_navigation.decodeTarget(reply.bytes[at + 5 ..][0..target_len]).?;
-        try std.testing.expectEqual(@as(u8, @intCast(index / 2)), target.window);
-        try std.testing.expectEqual(index % 2 == 1, target.tab != null);
-        try std.testing.expect(target.resolve(engine.model) != null);
-        at += 5 + target_len + label_len;
-    }
-    try std.testing.expectEqual(@as(u8, 0x4e), reply.bytes[at]);
-    // A stale listing cannot substitute new window contents under old authority.
-    std.mem.writeInt(u64, request[2..10], engine.revision + 1, .little);
-    Bridge.request(&service, cockpit.engine.navigation.request_name, 82, &request);
-    try std.testing.expect(!Bridge.poll(&service).?.ok);
-
-    var encoded: [cockpit.window_navigation.max_target_bytes]u8 = undefined;
-    const target: cockpit.window_navigation.Target = .{ .window = 0, .epoch = engine.model.window_epochs[0] };
-    const target_bytes = target.encode(&encoded);
-    var command = [_]u8{0} ** 20;
-    command[0] = 1;
-    command[1] = 1;
-    std.mem.writeInt(u64, command[2..10], 123, .little);
-    @memcpy(command[10..], target_bytes);
-    Bridge.request(&service, cockpit.window_navigation.request_name, 83, &command);
-    const applied = Bridge.poll(&service).?;
-    try std.testing.expectEqual(@as(u8, 1), applied.bytes[1]);
-    try std.testing.expectEqual(@as(u64, 123), std.mem.readInt(u64, applied.bytes[3..11], .little));
-    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
-    std.mem.writeInt(u64, command[12..20], target.epoch + 1, .little);
-    Bridge.request(&service, cockpit.window_navigation.request_name, 84, &command);
-    const refused = Bridge.poll(&service).?;
-    try std.testing.expectEqual(@as(u8, 2), refused.bytes[1]);
-    try std.testing.expectEqual(@as(u8, 2), refused.bytes[2]);
 }
 
 test "navigation waits for snapshot commit before advancing positional fences" {
@@ -10951,9 +10691,8 @@ test "each window header names its own session, machine and state from window co
     const Chrome = struct {
         /// The primary window and secondary windows 1 and 2 open, no tabs, a
         /// kind 3 primary navigation context, and a kind 5 record naming the
-        /// primary and window 1 but NOT window 2. Before per-window contexts
-        /// every header drew the kind 3 labels: window 1 said "primary-global"
-        /// on "global-host" while it showed "beta" on "mini".
+        /// primary and window 1 but NOT window 2. Each header draws its own
+        /// kind 5 labels, never the kind 3 "primary-global".
         const snapshot = blk: {
             const header = [_]u8{ 1, 2 } ++ [_]u8{0} ** 8 ++ [_]u8{ 7, 0, 0, 0, 0, 0, 0, 0 } ++
                 // active window, placement, tab count, selected, flags, connection, run, width
@@ -10962,7 +10701,7 @@ test "each window header names its own session, machine and state from window co
             const settings = [_]u8{ 0, 255, 0, 0 };
             const secondary = [_]u8{2} ++ [_]u8{ 1, 0, 0, 0, 0, 168, 0 } ++ [_]u8{ 2, 0, 0, 0, 0, 168, 0 };
             const terminal_states = [_]u8{0} ** 5;
-            const navigation = "\x0eprimary-global" ++ "\x0bglobal-host" ++ "\x00";
+            const navigation = "\x0eprimary-global";
             const contexts = [_]u8{ 1, 2 } ++
                 [_]u8{ 0, 0, 2 } ++ "\x05alpha" ++ "\x06studio" ++
                 [_]u8{ 1, 1, 3 } ++ "\x04beta" ++ "\x04mini";
@@ -11022,7 +10761,8 @@ test "each window header names its own session, machine and state from window co
     const model = &rig.app_state.model;
     try std.testing.expect(model.window1Open and model.window2Open);
 
-    // Session identity now lives inside the window's actions menu.
+    // Session identity lives in each window's location menu.
+    rig.app_state.model.headerHosts = true;
     rig.app_state.model.mainHeaderMenuOpen = true;
     try Chrome.expect(model, 0, "alpha", true);
     try Chrome.expect(model, 0, "studio", true);
@@ -11034,9 +10774,9 @@ test "each window header names its own session, machine and state from window co
     try Chrome.expect(model, 1, "mini \u{b7} Offline", true);
     try Chrome.expect(model, 1, "alpha", false);
     try Chrome.expect(model, 1, "primary-global", false);
-    // Window 1's Empty session names its own session and machine.
-    try Chrome.expect(model, 1, "Empty session on mini", true);
-    try Chrome.expect(model, 0, "Empty session on mini", false);
+    // Window 1 shows its own Empty session; the primary does not.
+    try Chrome.expect(model, 1, "Empty session", true);
+    try Chrome.expect(model, 0, "Empty session", false);
 
     // Open without a record: an explicit unknown, never the primary's labels.
     rig.app_state.model.window2HeaderMenuOpen = true;

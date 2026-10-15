@@ -9,7 +9,7 @@
 //! A Terminal is listed while its engine is live or its activation is
 //! current; a record whose execution ended with no engine left (ended by a
 //! restart, awaiting `restore`) is not, since a legacy client could do
-//! nothing with it. The designated Inbox is listed only while it holds such
+//! nothing with it. The designated Intake is listed only while it holds such
 //! a Terminal: older clients know nothing of it.
 //!
 //! Isolated here so it can be deleted with the translation layer.
@@ -88,7 +88,7 @@ impl ServerState {
             };
             let members = self.legacy_panes_of(sid);
             if members.is_empty()
-                && record.key == self.org().authority().inbox_session
+                && record.key == self.org().authority().intake_session()
                 && sid != focus_session
             {
                 continue;

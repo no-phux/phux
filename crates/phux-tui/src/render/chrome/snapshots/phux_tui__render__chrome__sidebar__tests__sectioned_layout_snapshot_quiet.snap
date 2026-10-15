@@ -3,7 +3,8 @@ source: crates/phux-tui/src/render/chrome/sidebar.rs
 expression: "strip_text(&p, rect)"
 ---
  Agents                  │
-   none                  │
+   none need you         │
+                         │
                          │
                          │
                          │
@@ -14,9 +15,8 @@ expression: "strip_text(&p, rect)"
  mini               here │
  ○ development           │
    ● phux           main │
- ◐ feat-auth          ◐1 │
+ ○ feat-auth             │
  devbox                  │
- ○ prod-3             ?2 │
+ ○ prod-3                │
                          │
-                         │
- + new window            ‹
+ + new tab               ‹

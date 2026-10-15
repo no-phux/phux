@@ -34,8 +34,8 @@
   --color-cyan: #7dcfff;
 
   --font-reading:
-    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
-    Arial, sans-serif;
+    -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", "Segoe UI",
+    sans-serif;
   --font-code:
     "Paper Mono", ui-monospace, SFMono-Regular, Menlo,
     Monaco, Consolas, monospace;
@@ -430,21 +430,30 @@ a:hover {
    Marketing retains its product/terminal tokens above. */
 [data-design="reader"] {
   color-scheme: light;
-  --color-bg: #ffffff;
-  --color-bg-soft: #f6f8fb;
-  --color-fg: #202b3b;
-  --color-dim: #5c6879;
-  --color-muted: #5c6879;
-  --color-subtle: #697589;
-  --color-rule: #dce2ea;
-  --color-surface: #f8fafc;
-  --color-surface-raised: #eef3fa;
-  --color-accent: #245dcc;
-  --color-accent-soft: #b4c9ef;
-  --color-cyan: #245dcc;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Local system typography also reaches search dialogs portalled to body.
+     Keep Paper Mono and marketing typography outside the reader untouched. */
+  --font-reading:
+    -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", sans-serif;
+  --font-code: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --font-sans: var(--font-reading);
+  --font-mono: var(--font-code);
+  --color-bg: #faf9f6;
+  --color-bg-soft: #f1f0ec;
+  --color-fg: #242320;
+  --color-dim: #65615a;
+  --color-muted: #65615a;
+  --color-subtle: #69645c;
+  --color-rule: #dedbd4;
+  --color-surface: #f6f5f1;
+  --color-surface-raised: #eae7e0;
+  --color-accent: #705b3f;
+  --color-accent-soft: #c8bda9;
+  --color-cyan: var(--color-accent);
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  --radius-2xl: 10px;
   --page-gutter: clamp(16px, 3vw, 40px);
   --content-wide: 1360px;
   --reading-width: 72ch;
@@ -468,18 +477,17 @@ a:hover {
 }
 [data-design="reader"].dark {
   color-scheme: dark;
-  --color-bg: #10151d;
-  --color-bg-soft: #161e29;
-  --color-fg: #dde5ef;
-  --color-dim: #a2afc0;
-  --color-muted: #a2afc0;
-  --color-subtle: #94a3b8;
-  --color-rule: #2b3748;
-  --color-surface: #131a24;
-  --color-surface-raised: #1d2a3b;
-  --color-accent: #8ab4ff;
-  --color-accent-soft: #385984;
-  --color-cyan: #8ab4ff;
+  --color-bg: #111110;
+  --color-bg-soft: #191918;
+  --color-fg: #e9e6df;
+  --color-dim: #aaa69e;
+  --color-muted: #aaa69e;
+  --color-subtle: #969188;
+  --color-rule: #33312d;
+  --color-surface: #151514;
+  --color-surface-raised: #24231f;
+  --color-accent: #c6b69d;
+  --color-accent-soft: #595044;
 }
 [data-design="reader"] :focus-visible {
   outline: 2px solid var(--color-accent);
@@ -558,7 +566,7 @@ a:hover {
   color: var(--color-fg);
 }
 .docs-navigation-dialog::backdrop {
-  background: rgb(5 12 24 / 45%);
+  background: rgb(17 17 16 / 55%);
 }
 html:has(.docs-navigation-dialog[open]) {
   overflow: hidden;
@@ -981,7 +989,7 @@ html:has(.docs-navigation-dialog[open]) {
 }
 .overview-model-server,
 .overview-model-session,
-.overview-model-inbox {
+.overview-model-intake {
   display: flex;
   flex-direction: column;
   gap: 5px;

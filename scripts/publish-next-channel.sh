@@ -76,7 +76,12 @@ if gh release view next >/dev/null 2>&1; then
   fi
   rm -f "$tmp"
   gh release upload next "${assets[@]}" --clobber
-  gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$sha" -F force=true >/dev/null
+  # Clients resolve assets by release name, so the tag position is cosmetic.
+  # GITHUB_TOKEN can be refused moving it (HTTP 403); never let that strand
+  # uploaded archives without their pointer.
+  if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$sha" -F force=true >/dev/null; then
+    echo "::warning::could not move the next tag to ${sha}; publishing the pointer anyway"
+  fi
   gh release edit next --prerelease --latest=false --target "$sha" --title "next"
 else
   gh release create next "${assets[@]}" \

@@ -37,10 +37,12 @@ moves, not a whole-file rewrite per change.
 
 1. **The store.** `OrgStore` is SQLite through `rusqlite` with the
    `bundled` feature, in WAL mode with `synchronous=FULL`, at
-   `<state_dir>/org/v1.sqlite3`. `ServerConfig` names its location as a
+   `<state_dir>/org/v1.sqlite3` for the profile's own socket; a server on
+   any other socket keeps its own store under `<state_dir>/org/sockets/`,
+   so two servers never share records. `ServerConfig` names its location as a
    path or memory; in-process tests use memory and every test server gets
    its own `XDG_STATE_HOME`. It holds the `AuthorityId`, the designated
-   Inbox session, sessions and intake marks, resources with activations,
+   Intake session, sessions and intake marks, resources with activations,
    arrangements, tombstones (30 days), operation receipts (24 hours or
    10,000, whichever comes first), migration receipts, and the last
    journal sequence. Terminal output is not stored here
@@ -54,10 +56,12 @@ moves, not a whole-file rewrite per change.
    versioned, transactional, and backed up first; an unsupported store
    version is refused, not guessed at.
 3. **First start.** The server mints an `AuthorityId`, imports the live
-   registry and each session's `phux.tui.layout/v1` document with groups
-   intact, designates a persistent Inbox session, and marks imported
-   sessions awaiting organization. A migration receipt makes the import
-   idempotent.
+   registry with each window as a group, designates a persistent Intake
+   session, and marks imported sessions awaiting organization. The import
+   runs only for a live-upgrade handoff that carries no records, and it
+   writes an `import-live-registry/v1` migration receipt. A session's
+   `phux.tui.layout/v1` document is carried as metadata; the next layout
+   write from the TUI is translated into the arrangement (L3 §3.2).
 4. **Activations.** An activation records its id, the server instance
    that started it, its state (starting, running, stopping, completed,
    failed, lost), its outcome, and for a Terminal its

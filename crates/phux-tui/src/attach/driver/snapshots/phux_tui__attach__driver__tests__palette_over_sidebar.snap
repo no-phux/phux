@@ -1,9 +1,9 @@
 ---
 source: crates/phux-tui/src/attach/driver/tests.rs
-expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
+expression: all
 ---
  Agents            ├────────────────────────────────────────────────────────────
-   none            │PANE-BASE
+   none need you   │PANE-BASE
                    │
                    │
                    │
@@ -13,9 +13,9 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    ││ >                                                        │
                    ││ detach                                                   │
                    ││ new-window                                               │
+                   ││                                                          │
  Sessions        1 ││                                                          │
- probe-host   here ││                                                          │
- ○ probe           ││                                                          │
+ ○ probe-sess      ││                                                          │
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
@@ -25,4 +25,4 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │
- + new window      ‹
+ + new tab         ‹

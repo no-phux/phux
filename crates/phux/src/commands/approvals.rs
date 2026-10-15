@@ -60,8 +60,8 @@ pub(crate) fn run_deny(id: &str, socket: Option<PathBuf>) -> ExitCode {
 fn run_decision(id: &str, decision: Decision, yes: bool, socket: Option<PathBuf>) -> ExitCode {
     let verb = decision.as_str();
     let Some(approval) = ApprovalId::parse(id) else {
-        eprintln!(
-            "phux: {verb}: {id:?} is not an approval id (32 lowercase hex digits; see `phux approvals`)"
+        error!(
+            "{verb}: {id:?} is not an approval id (32 lowercase hex digits; see `phux approvals`)"
         );
         return ExitCode::from(2);
     };

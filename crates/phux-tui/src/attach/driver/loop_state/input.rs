@@ -16,6 +16,54 @@ struct PriorView {
     rects: HashMap<ResourceId, crate::layout::Rect>,
 }
 
+/// How much of the view a batch that reported `layout_changed` must redraw,
+/// from the pre-batch and current tilings:
+///
+/// * the same panes on the same cells: only focus (the heavy borders) moved,
+///   so repaint chrome in place — [`RepaintLevel::Chrome`];
+/// * the same rectangles holding different panes: redraw the panes in place
+///   with no whole-screen clear — [`RepaintLevel::Panes`];
+/// * moved rectangles, or a pane with no published grid to draw: a full
+///   clear-and-recompose — [`RepaintLevel::Full`].
+///
+/// The middle arm is what keeps a tab or window click from clearing and
+/// re-compositing the whole screen — the flash a pane on the alternate
+/// screen shows on a terminal that ignores DEC 2026. It is taken only when
+/// the new tiling fully covers the old cells: an identical rectangle
+/// multiset, and every pane `pane_paints` (has a slot and a published
+/// replica), so no stale cell can survive the skipped clear.
+pub(super) fn classify_repaint(
+    before: &HashMap<ResourceId, crate::layout::Rect>,
+    after: &HashMap<ResourceId, crate::layout::Rect>,
+    pane_paints: impl Fn(&ResourceId) -> bool,
+) -> RepaintLevel {
+    if before == after {
+        return RepaintLevel::Chrome;
+    }
+    if same_rects(before, after) && after.keys().all(pane_paints) {
+        return RepaintLevel::Panes;
+    }
+    RepaintLevel::Full
+}
+
+/// Whether two tilings paint the same rectangles, ignoring which pane holds
+/// each (a pane swap, or a switch between same-shaped windows). Order-free.
+pub(super) fn same_rects(
+    a: &HashMap<ResourceId, crate::layout::Rect>,
+    b: &HashMap<ResourceId, crate::layout::Rect>,
+) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let sorted = |m: &HashMap<ResourceId, crate::layout::Rect>| {
+        let mut rects: Vec<(u16, u16, u16, u16)> =
+            m.values().map(|r| (r.y, r.x, r.w, r.h)).collect();
+        rects.sort_unstable();
+        rects
+    };
+    sorted(a) == sorted(b)
+}
+
 impl super::SessionLoop {
     // ---- input ---------------------------------------------------------
 
@@ -112,7 +160,7 @@ impl super::SessionLoop {
         }
         self.reflow_after_input(conn, sidebar, &prior, layout_changed)
             .await?;
-        self.finish_input_side_effects(conn, out, sidebar, layout_changed)
+        self.finish_input_side_effects(conn, out, sidebar, &prior, layout_changed)
             .await?;
         Ok(Step::Continue)
     }
@@ -130,6 +178,28 @@ impl super::SessionLoop {
             orphan_kills: self.orphans_for_switch(),
             review: std::mem::take(&mut self.review),
         }))
+    }
+
+    /// How much of the view a batch that reported `layout_changed` must
+    /// redraw, from the pre-batch and current tilings. See [`classify_repaint`]
+    /// for the rule; the pane liveness probe reads this loop's slots and
+    /// published grids.
+    fn classify_repaint(
+        &self,
+        prior: &PriorView,
+        sidebar: Option<SidebarReservation>,
+    ) -> RepaintLevel {
+        let after = view_rects(
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            self.content(sidebar),
+            self.viewport_dims,
+        );
+        classify_repaint(&prior.rects, &after, |id| {
+            self.mirror.panes.contains_key(id)
+                && crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)
+                    .is_some()
+        })
     }
 
     /// Resize PTYs whose tile changed because this batch moved the view.
@@ -176,6 +246,7 @@ impl super::SessionLoop {
         conn: &mut Connection,
         out: &mut W,
         sidebar: Option<SidebarReservation>,
+        prior: &PriorView,
         layout_changed: bool,
     ) -> Result<(), AttachError> {
         if layout_changed {
@@ -183,8 +254,11 @@ impl super::SessionLoop {
             // keep the agent-metadata watches in step with the set.
             self.sync_agent_meta(conn).await?;
             self.refresh_chrome();
-            // Restores pane content under a just-dismissed overlay.
-            self.repaint_view(out, sidebar, RepaintLevel::Full);
+            // Redraw only what the batch actually moved: a focus change is
+            // chrome, a same-shaped window switch redraws the panes without a
+            // whole-screen clear, and only a moved layout clears.
+            let level = self.classify_repaint(prior, sidebar);
+            self.repaint_view(out, sidebar, level);
         }
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);

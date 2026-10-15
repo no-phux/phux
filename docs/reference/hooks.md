@@ -47,7 +47,7 @@ The table lists every event phux fires; all but `worktree-created` come from the
 |  | `from`? | `PHUX_FROM` |  |
 |  | `terminal-id` | `PHUX_TERMINAL_ID` |  |
 |  | `to` | `PHUX_TO` |  |
-| `worktree-created` | `branch` | `PHUX_BRANCH` | `phux worktree new` created a checkout, before its session starts (ADR-0167). The CLI fires it, not the server, and waits for each hook; `repo` is the primary checkout. |
+| `worktree-created` | `branch` | `PHUX_BRANCH` | `phux worktree new` created a checkout, before its session starts (ADR-0168). The CLI fires it, not the server, and waits for each hook; `repo` is the primary checkout. |
 |  | `repo` | `PHUX_REPO` |  |
 |  | `session` | `PHUX_SESSION` |  |
 |  | `worktree` | `PHUX_WORKTREE` |  |

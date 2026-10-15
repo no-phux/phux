@@ -121,9 +121,10 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The landing at `src/pages/index.astro` stays minimal: headline, one product
-tour, three capabilities, installation, and the iPhone beta and
-release-update signups. Add a section only when it replaces one.
+The landing at `src/pages/index.astro` stays minimal: a short top bar, headline,
+one product tour, three capabilities, and the floating CLI / Desktop / Mobile
+install switcher. Mobile is the iPhone TestFlight request; the release-update
+signup lives on `/more`. Add a section only when it replaces one.
 
 `<HeroDemo client:load>` renders the product tour and owns the hosted
 terminal dialog. The tour (`src/components/tour/`) is a scripted
@@ -132,19 +133,37 @@ an iPhone attached to the same terminals, then an agent asking for input,
 the laptop views detaching while the work continues, and a remote host over
 QUIC. Every chapter states shipped behavior; keep client names, statuses,
 transports, and commands true to the canonical docs, and label beta clients.
-The tour autoplays only while visible with motion allowed, can be paused,
-and lets viewers pick a chapter. Reduced motion and no-JS show each
-chapter's settled state without playback. Any `[data-demo-launch]` link
-opens the dialog; without JavaScript the link falls through to the
+The tour opens with one roughly six-second quick lap, then repeats a
+roughly eighteen-second walkthrough. Commands and connection signals stay
+brisk; each chapter holds its settled result for reading. These are illustrative
+timings, not latency or benchmark claims. Selecting a chapter skips straight to
+walkthrough pacing. Playback runs only while visible with motion allowed and
+can be paused. Reduced motion and no-JS show each
+chapter's settled state without playback. Faint background hosts supply depth,
+not live telemetry or additional story steps. Hovering or focusing the artwork
+fades a full-bleed overlay over the reel with a shell invitation, and downloads
+only the React terminal wrapper; it never authenticates, downloads WASM, or
+allocates a session. Clicking the artwork
+or any `[data-demo-launch]` link opens the dialog; without JavaScript the link falls through to the
 standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The
 anonymous edge tour is a curated, OS-less shell in a Durable Object; the
 optional authenticated Linux tab runs the native container. Label both
-runtimes and their different capabilities. The edge tour has no network or
-processes; do not imply it is a general shell. The live shell supports
-independent split panes with visible controls and keyboard shortcuts; the
-browser interaction contract lives in
+runtimes and their different capabilities, and let the client's fallback copy
+explain a paused native backend instead of pretending it is online. The edge
+tour has no network or processes; do not imply it is a general shell. The live
+shell supports independent split panes with visible controls and keyboard
+shortcuts; the browser interaction contract lives in
 [the web client guide](../consumers/web.md#in-the-page).
+
+The live shell also pairs: the dialog hands out one single-use code, a phone
+opens `/phone#CODE` in its browser, and both screens drive the same session with
+no install and no sign-in. This is the mobile story while the iOS build is in
+TestFlight — the phone's browser is the front door, and the app pairing link
+(Universal Link, `host/pairing.ts`) remains a bonus path rather than a
+requirement. Keep it honest: the shared shell follows the newest screen's size,
+an attached phone reserving nothing, and a spent or stale link failing loudly
+rather than silently serving a different session.
 
 Closing the dialog or switching runtime releases the hosted session, including
 an in-flight attach; hosted demo sessions are intentionally disposable.

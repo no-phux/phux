@@ -1,0 +1,33 @@
+---
+// The phone half of the demo pairing link (see components/PhonePair.tsx).
+//
+// Reached by scanning the QR in the hosted terminal: the code rides in the URL
+// fragment, the page attaches this screen to the same session, and the visitor
+// is driving a shell on their phone in a second. No install: the iOS build is
+// still in TestFlight, so the browser is the front door.
+import BaseLayout from "../layouts/BaseLayout.astro";
+import PhonePair from "../components/PhonePair";
+import { SITE } from "../lib/site";
+---
+
+<BaseLayout
+  title={`Pair a phone — ${SITE.name}`}
+  description={`Attach this phone's browser to a ${SITE.name} demo shell — no install, no sign-in.`}
+  minimal
+>
+  <div class="phone">
+    <h1 class="phone-head">Pair a phone</h1>
+    <p class="phone-lede">
+      Scanning the code on your screen attaches <em>this</em> browser to the same
+      shell. Type here and the other screen sees it.
+    </p>
+    <PhonePair client:only="react" wsUrl={SITE.demoWsUrl} />
+  </div>
+</BaseLayout>
+
+<style>
+  .phone { width: min(100%, 620px); margin: auto; padding-inline: 16px; box-sizing: border-box; display: grid; gap: 12px; align-content: start; }
+  .phone-head { margin: 18px 0 0; font-size: 22px; font-weight: 650; letter-spacing: -0.03em; }
+  .phone-lede { margin: 0 0 6px; color: var(--color-muted); font-size: 13px; line-height: 1.6; }
+  .phone-lede em { color: var(--color-fg); font-style: normal; font-weight: 600; }
+</style>

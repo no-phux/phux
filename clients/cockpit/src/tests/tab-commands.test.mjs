@@ -73,7 +73,7 @@ test('unknown delivery never retries and explicitly cancels unsent selections', 
     assert.equal(model.tabCommands.queue.length, 0);
     assert.equal(model.tabCommands.outcome, 5);
     assert.deepEqual(model.tabCommands.lastId, { hi: 0, lo: 1 });
-    assert.match(new TextDecoder().decode(model.commandNotice), /unknown.*canceled/);
+    assert.match(new TextDecoder().decode(model.commandNotice), /may not have finished.*not sent/);
     [model, command] = step(model, { kind: 'select_target', target: target(3) });
     assert.equal(command.payload[2], 3);
   }
@@ -105,13 +105,13 @@ test('unknown command notice survives ordinary snapshots until a new explicit se
   [model] = step(model, { kind: 'snapshot_loaded', body });
   assert.equal(model.engineConnected, true);
   assert.equal(model.tabCommands.outcome, 5);
-  assert.match(new TextDecoder().decode(model.commandNotice), /unknown.*canceled/);
+  assert.match(new TextDecoder().decode(model.commandNotice), /may not have finished.*not sent/);
   [model] = step(model, { kind: 'select_target', target: target(2) });
   assert.equal(model.tabCommands.outcome, 1);
-  assert.doesNotMatch(new TextDecoder().decode(model.commandNotice), /unknown/);
+  assert.doesNotMatch(new TextDecoder().decode(model.commandNotice), /may not have finished/);
 });
 
-test('target context coexists with agent rows and unknown snapshot extension records', () => {
+test('target context coexists with retired and unknown snapshot extension records', () => {
   const head = new Uint8Array(28);
   head[0] = 1; head[1] = 2; head[20] = 1; head[23] = 2; head[25] = 1; head[26] = 168;
   const contexts = new Uint8Array(80);
@@ -123,13 +123,10 @@ test('target context coexists with agent rows and unknown snapshot extension rec
   const prefix = [...head, 7, 0, 0, 0, 0, title.length, 0, ...title, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0];
   const body = new Uint8Array([...prefix, 99, 3, 0, 1, 2, 3, 2, 80, 0, ...contexts, 1, agent.length, 0, ...agent]);
   const decoded = snapshot(body);
-  assert.equal(decoded.agents.length, 1);
   assert.deepEqual(decoded.tabs[0].target, new Uint8Array([1, 0, ...contexts.subarray(0, 16), 7, 0, 0, 0]));
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
-  assert.equal(model.railRows.length, 2);
+  assert.equal(model.railRows.length, 1);
   assert.deepEqual(model.railRows[0].target, decoded.tabs[0].target);
-  assert.equal(model.railRows[1].agent, true);
-  assert.equal(model.railRows[1].target.length, 0);
   assert.equal(snapshot(new Uint8Array([...prefix, 2, 79, 0, ...contexts.subarray(0, 79)])), null);
 });
 

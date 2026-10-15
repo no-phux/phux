@@ -17,6 +17,8 @@
 #
 # Usage: scripts/build-mobile-ffi-android.sh [--out DIR]
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 INVOKE_CWD="$PWD"
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,12 +28,12 @@ OUT="$ROOT/target/mobile-ffi-android/Artifacts"
 while [[ $# -gt 0 ]]; do
     case "$1" in
     --out)
-        [[ $# -ge 2 ]] || { echo "--out needs a value" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { phux_error "--out needs a value"; exit 2; }
         OUT="$2"; shift ;;
     -h | --help)
         sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
         exit 0 ;;
-    *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
+    *) phux_error "unknown argument: $1 (see --help)"; exit 2 ;;
     esac
     shift
 done
@@ -61,8 +63,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-die() { echo "build-mobile-ffi-android: error: $*" >&2; exit 1; }
-step() { echo "==> $*"; }
+die() { phux_error "$*"; exit 1; }
+step() { phux_info "$*"; }
 
 command -v zig >/dev/null || die "zig is required"
 command -v rustup >/dev/null || die "rustup is required"
@@ -145,7 +147,7 @@ rm -rf "$PREVIOUS"
 PREVIOUS=""
 OUT="$DEST"
 
-echo "build-mobile-ffi-android: wrote $OUT"
-echo "    kotlin:     $OUT/kotlin/$KT_REL"
-echo "    jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/$SO"
-echo "    provenance: $OUT/provenance"
+phux_ok "build-mobile-ffi-android: wrote $OUT"
+phux_info "kotlin:     $OUT/kotlin/$KT_REL"
+phux_info "jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/$SO"
+phux_info "provenance: $OUT/provenance"

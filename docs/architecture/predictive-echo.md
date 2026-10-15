@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-14
 ---
 
 # Predictive local echo
@@ -20,8 +20,11 @@ display is confirmation-gated: nothing paints until the app proves it echoes
 
 `[experimental] predictive-echo` is unset by default, which enables
 prediction only for an attach that leaves the machine; `true` / `false`
-force it ([`../reference/config.md`](../reference/config.md)). The attach
-path builds a `PredictionState` for the focused terminal.
+force it ([`../reference/config.md`](../reference/config.md)). The TUI
+attach path builds a `PredictionState` for the focused terminal. The
+desktop client does not read that flag. It asks the runtime predictor for
+each committed printable, Enter, and Backspace, including on a local
+socket, because that socket may be the near end of a remote tunnel.
 
 ## Why it is client-side
 
@@ -91,6 +94,7 @@ unconfirmed overlay on either screen.
 - `crates/phux-client-core/src/predict/overlay.rs` paints the underlined layer.
 - `crates/phux-client-core/src/predict/reconcile.rs` classifies authoritative output.
 - `crates/phux-tui/src/attach/` connects prediction to input, rendering, and server frames.
+- `clients/desktop/native/src/input.rs` asks the runtime predictor, which publishes the overlay into the frame the desktop already paints.
 
 ## Status
 

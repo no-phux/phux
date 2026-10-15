@@ -17,6 +17,7 @@ import {
   type PhuxController,
   type SessionBackend,
   type SessionFallbackReason,
+  type SessionPair,
 } from "./terminal/core";
 import { waitForMeaningfulCanvasPaint } from "./terminal/canvas-readiness";
 import {
@@ -41,6 +42,8 @@ interface Props {
   focusOnStart?: boolean;
   statusParentOrigin?: string;
   headerActions?: ReactNode;
+  /** Fires on the session envelope, so a host can offer the pairing link. */
+  onSession?: (session: SessionView) => void;
 }
 
 interface Identity {
@@ -54,6 +57,7 @@ interface SessionView {
   backend: SessionBackend;
   expiresAt: number;
   fallbackReason?: SessionFallbackReason;
+  pair?: SessionPair;
 }
 
 interface Attempt {
@@ -145,6 +149,7 @@ export default function PhuxTerminal({
   focusOnStart = false,
   statusParentOrigin,
   headerActions,
+  onSession,
 }: Props) {
   const canvasPrefix = `phux-term-${useId().replace(/[:]/g, "")}`;
   const canvasHost = useRef<HTMLDivElement | null>(null);
@@ -226,8 +231,10 @@ export default function PhuxTerminal({
         ...(event.fallbackReason
           ? { fallbackReason: event.fallbackReason }
           : {}),
+        ...(event.pair ? { pair: event.pair } : {}),
       };
       setSession(next);
+      onSession?.(next);
       if (statusParentOrigin && window.parent !== window) {
         postEmbedSession(
           window.parent,

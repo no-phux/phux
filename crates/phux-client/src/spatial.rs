@@ -389,7 +389,7 @@ fn layout_error(err: LayoutOpsError) -> SpatialError {
         LayoutOpsError::DuplicatePane(_) => SpatialRefusal::new(
             codes::PANE_ALREADY_IN_LAYOUT,
             "the pane being inserted is already present in the persisted layout",
-            "use `phux move-pane` to relocate a pane the layout already holds",
+            "use `phux mv` to relocate a pane the layout already holds",
             2,
         ),
         LayoutOpsError::SamePane => same_pane_error(),
@@ -487,7 +487,7 @@ impl SpatialOp {
                     SpatialRefusal::new(
                         codes::INVALID_SELECTOR,
                         format!("invalid {role} selector {raw:?}: {err}"),
-                        "selector grammar: session, session:window, session:window.pane, @id, `.`",
+                        "selector grammar: session, session:group, session:group.pane, @id, `.`",
                         2,
                     )
                 })
@@ -740,7 +740,7 @@ fn selector_count_error(role: &str, matched: usize) -> SpatialRefusal {
     SpatialRefusal::new(
         codes::SELECTOR_NOT_SINGLE,
         format!("{role} selector matched {matched} panes; use an exact pane selector"),
-        "address exactly one pane, e.g. @N or session:window.pane",
+        "address exactly one pane, e.g. @N or session:group.pane",
         2,
     )
 }

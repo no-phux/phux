@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -9,7 +11,7 @@ require_fixed() {
   local file="$1"
   local needle="$2"
   if ! grep -Fq -- "$needle" "$ROOT/$file"; then
-    printf 'missing: %s: %s\n' "$file" "$needle" >&2
+    phux_error "missing: $file: $needle"
     failures=$((failures + 1))
   fi
 }
@@ -18,7 +20,7 @@ forbid_fixed() {
   local file="$1"
   local needle="$2"
   if grep -Fq -- "$needle" "$ROOT/$file"; then
-    printf 'stale claim: %s: %s\n' "$file" "$needle" >&2
+    phux_error "stale claim: $file: $needle"
     failures=$((failures + 1))
   fi
 }
@@ -27,7 +29,7 @@ forbid_regex() {
   local file="$1"
   local regex="$2"
   if grep -Eq -- "$regex" "$ROOT/$file"; then
-    printf 'stale claim: %s: %s\n' "$file" "$regex" >&2
+    phux_error "stale claim: $file: $regex"
     failures=$((failures + 1))
   fi
 }
@@ -36,7 +38,7 @@ require_regex() {
   local file="$1"
   local regex="$2"
   if ! grep -Eq -- "$regex" "$ROOT/$file"; then
-    printf 'missing regex: %s: %s\n' "$file" "$regex" >&2
+    phux_error "missing regex: $file: $regex"
     failures=$((failures + 1))
   fi
 }
@@ -78,6 +80,26 @@ require_fixed docs/site/.gitignore 'public/install.sh'
 require_fixed docs/site/.gitignore 'public/install-cockpit'
 require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
 require_fixed docs/site/public/_headers '/install-cockpit'
+# The GPUI desktop installer is the third served script, and the landing hands
+# it out for the Desktop target. Pin the same halves as the other two: the
+# copy, the ignore, the cache header, the deploy path filter, and the
+# deploy-side byte-for-byte reachability proof.
+require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-desktop.sh'
+require_fixed docs/site/scripts/sync-docs.ts '"public/install-desktop", "public/install-desktop.sh"'
+require_fixed docs/site/.gitignore 'public/install-desktop'
+require_fixed docs/site/public/_headers '/install-desktop'
+require_fixed .github/workflows/site-deploy.yml '- "scripts/install-desktop.sh"'
+require_fixed .github/workflows/site-deploy.yml 'for path in install-desktop install-desktop.sh; do'
+require_fixed .github/workflows/site-deploy.yml 'cmp scripts/install-desktop.sh "$downloaded"'
+# The landing's third target is Mobile. It carries no command: the hero swaps
+# the command line for the TestFlight request in #install .install-request
+# (#beta-form), wired through wireBetaRequest. Desktop still serves
+# install-desktop.sh. The hero does not offer the desktop next channel.
+require_fixed docs/site/src/pages/index.astro 'install-desktop | sh'
+require_fixed docs/site/src/pages/index.astro 'id: "mobile", label: "Mobile", command: ""'
+require_fixed docs/site/src/pages/index.astro 'class="install-request" id="beta-form"'
+require_fixed docs/site/src/pages/index.astro 'wireBetaRequest('
+forbid_fixed docs/site/src/pages/index.astro '-s -- --channel next'
 
 # Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
 # read the releases/latest redirect before falling back to the release list.
@@ -299,7 +321,7 @@ forbid_fixed .github/workflows/agent-integration-release.yml 'NODE_AUTH_TOKEN: $
 forbid_fixed .github/workflows/agent-integration-release.yml "-type f -name '*.tgz' -o -name '*.tar.gz'"
 
 if [ "$failures" -ne 0 ]; then
-  printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2
+  phux_error "install surface check failed: $failures missing contract item(s)"
   exit 1
 fi
 
@@ -310,4 +332,4 @@ bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check
 bash "$ROOT/scripts/test-install-resolution.sh"
 python3 "$ROOT/scripts/test-install-desktop.py"
-echo "install surface check passed"
+phux_ok "install surface check passed"

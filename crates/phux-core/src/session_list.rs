@@ -91,7 +91,7 @@ pub struct SessionJson {
     /// Members per execution state.
     #[serde(default)]
     pub exec: ExecCounts,
-    /// The repository the session was created in (ADR-0167);
+    /// The repository the session was created in (ADR-0168);
     /// `null` when the session carries no project identity.
     #[serde(default)]
     pub project: Option<crate::project_identity::SessionProject>,

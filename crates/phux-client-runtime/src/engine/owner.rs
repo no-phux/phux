@@ -49,6 +49,8 @@ struct ProjectorSlot {
     /// default). Row damage is relative to that projection, so it is exact
     /// only for the same presentation.
     reader: Option<crate::ViewId>,
+    /// A failed projection or publication breaks the incremental damage chain.
+    valid: bool,
 }
 
 pub(super) struct Owner {
@@ -746,6 +748,7 @@ impl Owner {
                 token,
                 projector,
                 reader: None,
+                valid: false,
             },
         );
         Ok(())

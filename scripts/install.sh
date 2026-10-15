@@ -9,6 +9,48 @@
 # stranger's install.
 set -eu
 
+# BEGIN shared CLI output
+#!/bin/sh
+# Human status only. Source locally or embed in standalone installers with
+# sync-install-resolver.sh. Keep data, help, and child-tool output untouched.
+
+phux_color_enabled() {
+  [ -z "${NO_COLOR:-}" ] || return 1
+  [ "${TERM:-}" != dumb ] || return 1
+  case "${CLICOLOR_FORCE:-}" in ''|0) ;; *) return 0 ;; esac
+  [ "${CLICOLOR:-}" != 0 ] || return 1
+  [ -t 2 ]
+}
+
+# A subshell keeps rendering variables out of the caller's namespace. printf
+# always uses a fixed format: percent signs and backslashes in messages are data.
+phux_message() (
+  phux_label="$1"
+  shift
+  if phux_color_enabled; then
+    case "$phux_label" in
+      error) phux_style=31 ;;
+      warn) phux_style=33 ;;
+      ok) phux_style=32 ;;
+      *) phux_style=36 ;;
+    esac
+    printf '\033[1mphux\033[0m: \033[%sm%s\033[0m: %s\n' "$phux_style" "$phux_label" "$*" >&2
+  else
+    printf 'phux: %s: %s\n' "$phux_label" "$*" >&2
+  fi
+)
+
+phux_error() { phux_message error "$@"; }
+phux_warn() { phux_message warn "$@"; }
+phux_info() { phux_message info "$@"; }
+phux_ok() { phux_message ok "$@"; }
+phux_hint() {
+  printf '%s\n' "$*" | while IFS= read -r phux_line; do
+    printf '  hint: %s\n' "${phux_line#"${phux_line%%[![:space:]]*}"}" >&2
+  done
+}
+# END shared CLI output
+
 usage() {
   cat <<'EOF'
 Usage: scripts/install.sh [--version <vX.Y.Z>] [--channel stable|next] [options]
@@ -30,7 +72,7 @@ EOF
 }
 
 die() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -736,7 +778,7 @@ mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"
 publish_complete=1
 printf '%s\n' "$channel" > "${install_dir}/.phux-channel"
 
-echo "installed phux ${version} for ${target} to ${install_dir}"
+phux_ok "installed phux ${version} for ${target} to ${install_dir}"
 installed_dir="$(cd "$install_dir" && pwd -P)"
 installed_command="${installed_dir}/phux"
 found_command="$(command -v phux 2>/dev/null || true)"

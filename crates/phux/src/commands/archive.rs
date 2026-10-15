@@ -21,15 +21,14 @@ use phux_client::layout_ops::LayoutOps;
 use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind, SessionKey};
 use phux_protocol::wire::frame::{
     ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef, EntryTarget,
-    LaunchMode, LaunchSpec, OrgFilter, SessionLifetime, SpawnResult, SplitDirection,
+    LaunchMode, LaunchSpec, OrgFilter, SpawnResult, SplitDirection,
 };
 use phux_server::runtime::default_socket_path;
 
 use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 
 use crate::commands::agent::{PreparedAgentSession, prepare};
-use crate::commands::new::create_session_via_metadata;
-use crate::commands::{ArchiveAction, WorkspaceAction, cli_runtime, partial, report_no_server};
+use crate::commands::{ArchiveAction, cli_runtime, partial, report_no_server};
 use phux_client::agent_session_record::spawn_with_agent_session_on;
 
 mod bridge;
@@ -50,28 +49,6 @@ pub(crate) fn run_archive(action: &ArchiveAction, socket: Option<PathBuf>) -> Ex
             plan: true,
         } => print_plan(archive),
         ArchiveAction::Import {
-            archive,
-            plan: false,
-        } => run_import(archive, socket),
-    }
-}
-
-/// The deprecated `phux workspace <action>`, run through its replacement:
-/// `inspect` is `phux project inspect`, `save` is `phux archive export`, and
-/// `restore` is `phux archive import`, which starts nothing.
-pub(crate) fn run_workspace_alias(action: &WorkspaceAction, socket: Option<PathBuf>) -> ExitCode {
-    match action {
-        WorkspaceAction::Inspect { path, json } => {
-            crate::commands::project::inspect::run_inspect(path, *json)
-        }
-        WorkspaceAction::Save { output, projection } => {
-            run_export(socket, output.as_ref(), projection.as_deref())
-        }
-        WorkspaceAction::Restore {
-            archive,
-            plan: true,
-        } => print_plan(archive),
-        WorkspaceAction::Restore {
             archive,
             plan: false,
         } => run_import(archive, socket),
@@ -159,9 +136,35 @@ async fn capture_archive(
                 .to_owned(),
         ));
     }
-    let projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
-    let hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
-    let directories = phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
+    // Typed attributes are authoritative and per-session. Singleton metadata
+    // values remain a fallback for older sessions and archives.
+    let mut projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
+    let mut hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
+    let mut directories =
+        phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
+    if let Some(records) = phux_client::org::fetch_from_socket(socket_path)
+        .await
+        .map_err(|err| {
+            CaptureError::Failed(format!("could not capture session attributes: {err}"))
+        })?
+    {
+        for session in records.sessions {
+            for (key, value) in session.attrs {
+                match key.as_str() {
+                    "project" => {
+                        projects.insert(session.name.clone(), value);
+                    }
+                    "directory" => {
+                        directories.insert(session.name.clone(), value);
+                    }
+                    "host" => {
+                        hosts.insert(session.name.clone(), value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
     let (archive, reconcile_warnings) = archive_from_snapshot(
         &snapshot,
         &agent_sessions,
@@ -175,7 +178,7 @@ async fn capture_archive(
         .chain(&layout_warnings)
         .chain(&reconcile_warnings)
     {
-        eprintln!("phux: warning: {warning}");
+        warn!("{warning}");
     }
     serde_json::to_string_pretty(&archive)
         .map_err(|err| CaptureError::Failed(format!("could not render the archive: {err}")))
@@ -241,7 +244,7 @@ fn validate_save_projection_prefix(value: &str) -> Result<(), String> {
 }
 
 fn usage_error(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::from(2)
 }
 
@@ -325,7 +328,7 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
         &socket_path,
         &archive,
         "archive import",
-        Legacy::Refuse,
+        ImportKind::Archive,
         &[],
     )) {
         Ok(imported) => imported,
@@ -334,8 +337,8 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
     };
     let summary = imported.summary();
     for failed in &summary.failed {
-        eprintln!(
-            "phux: archive import: session {:?} failed: {}",
+        error!(
+            "archive import: session {:?} failed: {}",
             failed.name, failed.reason
         );
     }
@@ -356,16 +359,14 @@ pub(crate) enum RestoreError {
     Failed(String),
 }
 
-/// What [`import_archive`] does against a server that does not advertise
-/// `ORGANIZATION`, which cannot add a process to an existing empty session.
+/// Whether import keeps writing the legacy metadata tags after creating the
+/// authoritative organization record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Legacy {
-    /// Refuse: `phux archive import`, which never starts a process, has no
-    /// way to recreate a session there.
-    Refuse,
-    /// Create nothing yet: [`relaunch_imported`] creates each session with
-    /// its seed pane, as one step (`phux project open`).
-    Defer,
+pub(crate) enum ImportKind<'a> {
+    /// `archive import` also keeps writing its legacy metadata tags.
+    Archive,
+    /// `project open` binds the checkout root independently of pane cwd.
+    Project { directory: &'a Path },
 }
 
 /// The sessions [`import_archive`] recreated, ready for
@@ -374,8 +375,6 @@ pub(crate) enum Legacy {
 pub(crate) struct Imported {
     /// Each recreated session's archived plan.
     sessions: Vec<model::CreateRequest>,
-    /// Whether the sessions exist yet: `false` only under [`Legacy::Defer`].
-    created: bool,
     /// Sessions whose archived panes exist as dormant records, by name.
     /// [`relaunch_imported`] relaunches those instead of spawning panes.
     dormant: HashSet<String>,
@@ -385,6 +384,8 @@ pub(crate) struct Imported {
     skipped_existing: Vec<String>,
     /// Sessions the import could not create.
     failed: Vec<model::FailedRestore>,
+    /// Names raced by another creator after restore planning.
+    name_taken: HashSet<String>,
 }
 
 impl Imported {
@@ -403,6 +404,13 @@ impl Imported {
             warnings: self.warnings.clone(),
         }
     }
+    /// Whether import found the requested name already occupied.
+    pub(crate) fn skipped_existing(&self, name: &str) -> bool {
+        self.skipped_existing.iter().any(|skipped| skipped == name)
+    }
+    pub(crate) fn name_taken(&self, name: &str) -> bool {
+        self.name_taken.contains(name)
+    }
 }
 
 /// Recreate the sessions of an already-validated `archive` that are missing
@@ -410,20 +418,19 @@ impl Imported {
 /// becomes a persistent session carrying the archived host, project, and
 /// directory, with its local panes as dormant records in its arrangement
 /// ([`import_dormant_panes`]). Each also carries `attrs`, such as a project
-/// identity (ADR-0167). A session that cannot be created is reported in
+/// identity (ADR-0168). A session that cannot be created is reported in
 /// [`Imported`] rather than aborting the rest.
 ///
 /// # Errors
 ///
-/// [`RestoreError::Reported`] when the server cannot be reached;
-/// [`RestoreError::Failed`] for an invalid archive, or a server without
-/// `ORGANIZATION` under [`Legacy::Refuse`].
+/// [`RestoreError::Failed`] for an invalid archive or a server without
+/// `ORGANIZATION`.
 pub(crate) async fn import_archive(
     socket_path: &Path,
     archive: &model::WorkspaceArchive,
     verb: &str,
-    legacy: Legacy,
-    attrs: &[(String, String)],
+    kind: ImportKind<'_>,
+    extra: &[(String, String)],
 ) -> Result<Imported, RestoreError> {
     let existing = fetch_existing_sessions(socket_path, verb)
         .await
@@ -433,29 +440,23 @@ pub(crate) async fn import_archive(
         .await
         .map_err(|err| RestoreError::Reported(report_no_server(&err, socket_path, verb)))?;
     if !organization {
-        return match legacy {
-            Legacy::Refuse => Err(RestoreError::Failed(format!(
-                "{verb}: this server predates organization records, so it cannot recreate a \
-                 session without starting its panes; upgrade it (`phux upgrade`)"
-            ))),
-            Legacy::Defer => Ok(Imported {
-                sessions: plan.creates,
-                created: false,
-                dormant: HashSet::new(),
-                warnings: Vec::new(),
-                skipped_existing: plan.skipped_existing,
-                failed: Vec::new(),
-            }),
+        let reason = match kind {
+            ImportKind::Archive => "cannot recreate a session without starting its panes",
+            ImportKind::Project { .. } => "cannot create a session with per-session attributes",
         };
+        return Err(RestoreError::Failed(format!(
+            "{verb}: this server predates organization records, so it {reason}; upgrade it (`phux upgrade`)"
+        )));
     }
     let mut sessions = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
     let mut dormant = HashSet::new();
+    let mut name_taken = HashSet::new();
     let mut warnings = Vec::new();
     for create in plan.creates {
         let imported = match check_agent_ownership(&create) {
-            Ok(()) => create_imported_session(socket_path, &create, attrs).await,
-            Err(reason) => Err(reason),
+            Ok(()) => create_imported_session(socket_path, &create, kind, extra).await,
+            Err(reason) => Err(ImportFailure::Other(reason)),
         };
         match imported {
             Ok(outcome) => {
@@ -470,19 +471,24 @@ pub(crate) async fn import_archive(
                 }
                 sessions.push(create);
             }
-            Err(reason) => failed.push(model::FailedRestore {
-                name: create.name,
-                reason,
-            }),
+            Err(reason) => {
+                if matches!(reason, ImportFailure::NameTaken) {
+                    name_taken.insert(create.name.clone());
+                }
+                failed.push(model::FailedRestore {
+                    name: create.name,
+                    reason: reason.message(),
+                });
+            }
         }
     }
     Ok(Imported {
         sessions,
-        created: true,
         dormant,
         warnings,
         skipped_existing: plan.skipped_existing,
         failed,
+        name_taken,
     })
 }
 
@@ -502,7 +508,7 @@ pub(crate) async fn relaunch_imported(socket_path: &Path, imported: Imported) ->
         let outcome = if imported.dormant.contains(&name) {
             relaunch_dormant_session(socket_path, &name).await
         } else {
-            relaunch_one_session(socket_path, create, imported.created).await
+            relaunch_one_session(socket_path, create).await
         };
         match outcome {
             Ok(outcome) => {
@@ -566,38 +572,76 @@ struct ImportOutcome {
     warnings: Vec<String>,
 }
 
+enum ImportFailure {
+    NameTaken,
+    Other(String),
+}
+
+impl From<String> for ImportFailure {
+    fn from(reason: String) -> Self {
+        Self::Other(reason)
+    }
+}
+
+impl ImportFailure {
+    fn message(self) -> String {
+        match self {
+            Self::NameTaken => format!(
+                "the server refused it: {}",
+                phux_client::org::refusal_sentence(&phux_protocol::wire::frame::Refusal::NameTaken,)
+            ),
+            Self::Other(reason) => reason,
+        }
+    }
+}
+
 /// Import one archived session as records: the session, persistent, tagged
 /// with its archived host, project, and directory, then its local panes as
 /// dormant records ([`import_dormant_panes`]). Nothing starts. A session
-/// saved on another host gets no dormant panes: [`relaunch_imported`]
-/// places its panes on that host.
+/// saved on another host gets no dormant panes: [`relaunch_imported`].
 async fn create_imported_session(
     socket_path: &Path,
     create: &model::CreateRequest,
-    attrs: &[(String, String)],
-) -> Result<ImportOutcome, String> {
+    kind: ImportKind<'_>,
+    extra: &[(String, String)],
+) -> Result<ImportOutcome, ImportFailure> {
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not reach the server: {err}"))?;
     let mut notices = Vec::new();
-    let outcome =
-        phux_client::session::create_empty_session(&mut conn, &create.name, attrs, &mut notices)
-            .await
-            .map_err(|err| format!("could not create the session: {err}"))?;
+    let mut attrs = session_attrs(create, kind);
+    attrs.extend(extra.iter().cloned());
+    let outcome = phux_client::session::create_empty_session_with_attrs(
+        &mut conn,
+        &create.name,
+        &attrs,
+        &mut notices,
+    )
+    .await
+    .map_err(|err| format!("could not create the session: {err}"))?;
     for notice in notices {
-        eprintln!("phux: warning: partial results — {notice}");
+        warn!("partial results — {notice}");
     }
     match outcome {
         phux_client::session::CreateEmptyOutcome::Created => {}
+        phux_client::session::CreateEmptyOutcome::Refused(
+            phux_protocol::wire::frame::Refusal::NameTaken,
+        ) => return Err(ImportFailure::NameTaken),
         phux_client::session::CreateEmptyOutcome::Refused(refusal) => {
-            return Err(format!(
+            return Err(ImportFailure::Other(format!(
                 "the server refused it: {}",
                 phux_client::org::refusal_sentence(&refusal)
-            ));
+            )));
         }
-        other => return Err(format!("the server did not create it: {other:?}")),
+        other => {
+            return Err(ImportFailure::Other(format!(
+                "the server did not create it: {other:?}"
+            )));
+        }
     }
-    tag_session(socket_path, create).await?;
+    if matches!(kind, ImportKind::Archive) {
+        tag_session(socket_path, create).await?;
+    }
     if create.host.as_deref().is_some_and(|host| !host.is_empty()) {
         return Ok(ImportOutcome {
             dormant: false,
@@ -855,6 +899,29 @@ async fn relaunch_dormant_session(
     }
 }
 
+/// Attributes belong to the session record, not the legacy singleton tags.
+fn session_attrs(create: &model::CreateRequest, kind: ImportKind<'_>) -> Vec<(String, String)> {
+    let project_root = match kind {
+        ImportKind::Archive => None,
+        ImportKind::Project { directory } => Some(directory.to_string_lossy().into_owned()),
+    };
+    [
+        ("host", create.host.as_deref()),
+        ("project", create.project.as_deref()),
+        (
+            "directory",
+            project_root.as_deref().or(create.directory.as_deref()),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| {
+        value
+            .filter(|value| !value.is_empty())
+            .map(|value| (key.to_owned(), value.to_owned()))
+    })
+    .collect()
+}
+
 /// Write a recreated session's archived host, project, and directory.
 async fn tag_session(socket_path: &Path, create: &model::CreateRequest) -> Result<(), String> {
     if let Some(host) = create.host.as_deref().filter(|host| !host.is_empty()) {
@@ -871,7 +938,7 @@ async fn tag_session(socket_path: &Path, create: &model::CreateRequest) -> Resul
             .await
             .map_err(|err| err.to_string())?;
     }
-    if let Some(directory) = create.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+    if let Some(directory) = create.directory.as_deref().filter(|cwd| !cwd.is_empty()) {
         phux_client::workspace_place::set_session_directory(socket_path, &create.name, directory)
             .await
             .map_err(|err| err.to_string())?;
@@ -931,13 +998,9 @@ struct SessionOutcome {
 /// rest of its split tree with fresh window identities (ADR-0129). Windows with
 /// no captured layout (schema 1) are placed as a linear chain. Any failure past
 /// the seed rolls back every pane created for the session.
-///
-/// With `created`, the session already exists empty and the seed joins it;
-/// without (a deferred legacy import), the seed is created with the session.
 async fn relaunch_one_session(
     socket_path: &Path,
     create: model::CreateRequest,
-    created: bool,
 ) -> Result<SessionOutcome, String> {
     let mut warnings = Vec::new();
     let windows = create.windows.clone();
@@ -966,32 +1029,11 @@ async fn relaunch_one_session(
         .transpose()
         .map_err(|err| format!("could not encode agent session provenance: {err}"))?;
 
-    let seed = if created {
-        let launch = LaunchSpec::new(command.unwrap_or_default())
-            .with_cwd(cwd)
-            .with_env(env.into_iter().collect())
-            .with_restore(agent_session_bytes);
-        launch_into_session(socket_path, &create.name, launch).await?
-    } else {
-        let pane_id = create_session_via_metadata(
-            &crate::commands::server_target::ServerTarget::local(socket_path),
-            &create.name,
-            command,
-            cwd,
-            env,
-            agent_session_bytes,
-            false,
-            None,
-            // An archived session was named: persistent.
-            SessionLifetime::Persistent,
-        )
-        .await
-        .map_err(|_| "could not create the seed pane (see the diagnostic above)".to_owned())?;
-        let Ok(seed_local) = u32::try_from(pane_id) else {
-            return Err("restored terminal id exceeds the local wire-id range".to_owned());
-        };
-        ResourceId::local(seed_local)
-    };
+    let launch = LaunchSpec::new(command.unwrap_or_default())
+        .with_cwd(cwd)
+        .with_env(env.into_iter().collect())
+        .with_restore(agent_session_bytes);
+    let seed = launch_into_session(socket_path, &create.name, launch).await?;
     let mut created_panes = vec![seed.clone()];
     let created = &mut created_panes;
 
@@ -1014,10 +1056,6 @@ async fn relaunch_one_session(
     )
     .await
     {
-        rollback_session(socket_path, created).await;
-        return Err(err);
-    }
-    if let Err(err) = tag_session(socket_path, &create).await {
         rollback_session(socket_path, created).await;
         return Err(err);
     }
@@ -1066,7 +1104,7 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     )
     .await
     {
-        eprintln!("phux: archive: could not roll back a failed session's panes: {err}");
+        warn!("archive: could not roll back a failed session's panes: {err}");
     }
 }
 
@@ -1471,7 +1509,7 @@ async fn fetch_existing_sessions(socket_path: &Path, verb: &str) -> Result<Vec<S
 }
 
 fn fail(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::FAILURE
 }
 

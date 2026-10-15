@@ -5,18 +5,47 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use super::io::{Io, dial};
-use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
+use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
+use crate::reconnect::{earned_immediate, ladder_for};
 use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 
 use crate::control::{ControlError, InboundDelivery, Status, encode};
 
+/// How long an attached session may sit with no inbound bytes before a probe.
+/// A busy session never reaches it: any inbound frame pushes the deadline out.
+const QUIET_PROBE: Duration = Duration::from_secs(10);
+
 enum Decision {
     Stop,
     RetryNow,
     RetryBackoff,
+}
+
+struct Attempt {
+    end: ConnectionEnd,
+    was_attached: bool,
+    elapsed: Duration,
+}
+
+fn attempt(end: ConnectionEnd, was_attached: bool, started: std::time::Instant) -> Attempt {
+    Attempt {
+        end,
+        was_attached,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// A local socket inherits the upgrade poll unless the caller chose a ladder.
+fn options_for(target: &Target, options: ConnectOptions) -> ConnectOptions {
+    let local_socket = matches!(target.transport, Transport::Uds(_));
+    ConnectOptions {
+        ladder: ladder_for(local_socket, options.ladder),
+        ..options
+    }
 }
 
 /// Run one session to its end: connect, then reconnect with backoff on
@@ -28,6 +57,7 @@ pub async fn run_session(
     mut signals: Signals,
     wake: Wake,
 ) {
+    let options = options_for(&target, options);
     let mut backoff = options.ladder.floor;
     let mut attempts: u32 = 0;
     // The never-attached deadline: armed from the first dial, moot once a
@@ -36,7 +66,7 @@ pub async fn run_session(
     let ladder_deadline = tokio::time::Instant::now() + options.initial_budget;
     loop {
         attempts += 1;
-        let Some((end, was_attached)) = run_attempt(
+        let Some(tried) = run_attempt(
             &target,
             options,
             &shared,
@@ -51,15 +81,20 @@ pub async fn run_session(
         };
         // Attached at the moment the connection ended means it was
         // healthy until the drop: the next ladder starts from the floor.
-        if was_attached {
+        if tried.was_attached {
             backoff = options.ladder.floor;
         }
-        match finish_attempt(&shared, end, attempts, options.initial_attempts) {
+        match finish_attempt(&shared, tried.end, attempts, options.initial_attempts) {
             Decision::Stop => {
                 wake();
                 return;
             }
             Decision::RetryNow => wake(),
+            // A settled session redials before sleeping. The floor still
+            // applies when that redial never attaches.
+            Decision::RetryBackoff if earned_immediate(tried.was_attached, tried.elapsed) => {
+                wake();
+            }
             Decision::RetryBackoff => {
                 wake();
                 if wait_to_retry(backoff, &shared, &mut signals, &wake).await {
@@ -118,7 +153,7 @@ async fn run_attempt(
     signals: &mut Signals,
     wake: &Wake,
     ladder_deadline: tokio::time::Instant,
-) -> Option<(ConnectionEnd, bool)> {
+) -> Option<Attempt> {
     let connection = run_connection(target, options, shared, signals, wake);
     if lock(shared).attached_once() {
         return Some(connection.await);
@@ -201,14 +236,14 @@ async fn closed(rx: &mut watch::Receiver<bool>) {
 }
 
 /// One connection: dial, handshake, then pump frames until it ends.
-/// Returns how it ended and whether it was attached at that moment.
+/// Returns how it ended, whether it was attached, and how long it lasted.
 async fn run_connection(
     target: &Target,
     options: ConnectOptions,
     shared: &Shared,
     signals: &mut Signals,
     wake: &Wake,
-) -> (ConnectionEnd, bool) {
+) -> Attempt {
     let name = target.name.as_str();
     let started = std::time::Instant::now();
     tracing::info!(host = name, transport = target.transport.label(), "dialing");
@@ -219,11 +254,11 @@ async fn run_connection(
     let mut io = tokio::select! {
         dialed = dial(target, options) => match dialed {
             Ok(io) => io,
-            Err(end) => return (end, false),
+            Err(end) => return attempt(end, false, started),
         },
         () = closed(&mut signals.close) => {
             lock(shared).close();
-            return (ConnectionEnd::Closed, false);
+            return attempt(ConnectionEnd::Closed, false, started);
         }
     };
     tracing::info!(
@@ -237,7 +272,7 @@ async fn run_connection(
         .await;
     let was_attached = lock(shared).status() == Status::Attached;
     io.close();
-    (end, was_attached)
+    attempt(end, was_attached, started)
 }
 
 struct Pump<'a> {
@@ -248,6 +283,8 @@ struct Pump<'a> {
     signals: &'a mut Signals,
     wake: &'a Wake,
     probe_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// When a quiet attached session should send its next liveness probe.
+    quiet_probe_at: Instant,
 }
 
 impl<'a> Pump<'a> {
@@ -267,6 +304,7 @@ impl<'a> Pump<'a> {
             signals,
             wake,
             probe_deadline: None,
+            quiet_probe_at: Instant::now() + QUIET_PROBE,
         }
     }
 
@@ -317,6 +355,8 @@ impl<'a> Pump<'a> {
         // proves the peer is alive. Clear it; do not only skip start_probe.
         if !reading {
             self.probe_deadline = None;
+            // The backlog is proof of life. Don't probe the moment reads resume.
+            self.note_inbound();
         }
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
@@ -330,7 +370,30 @@ impl<'a> Pump<'a> {
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
             inbound = self.io.read_frames(self.name), if reading => self.accept_inbound(inbound).await,
+            // Re-checked every loop, so a session that attaches while this
+            // select is parked starts its quiet clock on the next wake.
+            () = tokio::time::sleep_until(self.quiet_probe_at), if self.quiet_probe_due(reading) => {
+                self.arm_quiet_probe().await
+            }
         }
+    }
+
+    /// An attached session with room to read, and no probe already in flight.
+    fn quiet_probe_due(&self, reading: bool) -> bool {
+        reading && self.probe_deadline.is_none() && self.session_attached()
+    }
+
+    fn session_attached(&self) -> bool {
+        lock(self.shared).status() == Status::Attached
+    }
+
+    fn note_inbound(&mut self) {
+        self.quiet_probe_at = Instant::now() + QUIET_PROBE;
+    }
+
+    async fn arm_quiet_probe(&mut self) -> Result<(), ConnectionEnd> {
+        self.quiet_probe_at = Instant::now() + QUIET_PROBE;
+        self.start_probe().await
     }
 
     /// Backpressure: a queued-delivery consumer that has fallen behind
@@ -398,6 +461,7 @@ impl<'a> Pump<'a> {
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
         self.probe_deadline = None;
+        self.note_inbound();
         let mut frames = inbound
             .map_err(|error| ConnectionEnd::Dropped(Some(error)))?
             .ok_or_else(|| {
@@ -443,13 +507,10 @@ impl<'a> Pump<'a> {
     }
 
     async fn write_all(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ConnectionEnd> {
-        for frame in frames {
-            self.io
-                .write_frame(self.name, &frame)
-                .await
-                .map_err(|error| ConnectionEnd::Dropped(Some(error)))?;
-        }
-        Ok(())
+        self.io
+            .write_frames(self.name, &frames)
+            .await
+            .map_err(|error| ConnectionEnd::Dropped(Some(error)))
     }
 }
 
@@ -512,6 +573,7 @@ mod tests {
     use tokio::sync::{Notify, watch};
 
     use super::*;
+    use crate::connection::io::SEND_BUDGET;
     use crate::control::{ControlOptions, ControlPlane};
 
     struct WriteFixture {
@@ -652,6 +714,73 @@ mod tests {
             .await
             .expect("close must interrupt a selected outbound write");
         assert!(matches!(end, ConnectionEnd::Closed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_makes_no_progress_drops_the_link() {
+        let mut fixture = WriteFixture::new(1);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "stalled-send",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        tokio::time::advance(SEND_BUDGET).await;
+        let end = running
+            .as_mut()
+            .now_or_never()
+            .expect("a shut window must end the attempt");
+        match end {
+            ConnectionEnd::Dropped(Some(message)) if message == "send stalled" => {}
+            other => panic!("a shut window must drop the attempt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_attached_session_probes() {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut fixture = WriteFixture::new(64 * 1024);
+        let outbound = Arc::clone(&fixture.signals.outbound);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "quiet",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        lock(&fixture.shared).set_status_for_test(Status::Attached);
+        outbound.notify_one();
+        assert!(running.as_mut().now_or_never().is_none());
+        tokio::time::advance(QUIET_PROBE).await;
+        assert!(running.as_mut().now_or_never().is_none());
+
+        let mut written = BytesMut::with_capacity(4096);
+        let mut peer = fixture.peer;
+        while let Some(Ok(read)) = peer.read_buf(&mut written).now_or_never() {
+            if read == 0 {
+                break;
+            }
+        }
+        let mut types = Vec::new();
+        while let Ok(Some(frame)) = phux_protocol::wire::framing::split_frame(&mut written) {
+            types.push(frame[LENGTH_PREFIX_LEN]);
+        }
+        assert!(
+            types.contains(&TYPE_PING),
+            "a quiet attached session must probe; wrote {types:?}"
+        );
     }
 
     /// Pings are answered on the driver; every other frame, and a ping that

@@ -16,6 +16,8 @@
 # Allowed: bin targets and examples, which are leaves. insta's snapshot macros
 # expand env!("CARGO_MANIFEST_DIR") themselves and are not matched here.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if hits="$(git grep -n -E 'env!\("(CARGO_MANIFEST_DIR|CARGO_BIN_EXE_[^"]+)"\)' -- \
@@ -24,8 +26,8 @@ if hits="$(git grep -n -E 'env!\("(CARGO_MANIFEST_DIR|CARGO_BIN_EXE_[^"]+)"\)' -
     ':!crates/*/src/main.rs' \
     ':!crates/*/src/bin/**')"; then
     printf '%s\n' "$hits" >&2
-    printf '\ncache-portable: the lines above compile a checkout path into a library or test.\n' >&2
-    printf 'Read it at run time instead; see the comment in scripts/check-cache-portable.sh.\n' >&2
+    phux_error 'cache-portable: the lines above compile a checkout path into a library or test.'
+    phux_hint 'Read it at run time instead; see the comment in scripts/check-cache-portable.sh.'
     exit 1
 fi
-printf 'cache-portable: no compile-time checkout paths in library or test code\n'
+phux_ok 'cache-portable: no compile-time checkout paths in library or test code'

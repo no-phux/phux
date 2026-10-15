@@ -30,6 +30,9 @@ path = "src/bin/dhat_heap.rs"
 required-features = ["dhat-heap"]
 
 [dependencies]
+# Native ANSI tokens only; already locked transitively. std::io::IsTerminal
+# owns stream detection and output.rs owns policy, avoiding a styling framework.
+anstyle = "1.0"
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # `snapshot --format vt` decodes the server's base64 rendered capture to
@@ -44,7 +47,7 @@ phux-server = { path = "../phux-server", default-features = false, features = ["
 # ticks; depending on it here keeps that path off `phux-server`.
 phux-agent-rules.workspace = true
 phux-client.workspace = true
-# `workspace restore --plan` prints the shared host/directory/project lines.
+# `archive import --plan` prints the shared host/directory/project lines.
 phux-client-core.workspace = true
 # ADR-0133: the attach loop's reconnect cadence is the client runtime's
 # ladder (interactive for the remote lanes, the flat local-upgrade poll for

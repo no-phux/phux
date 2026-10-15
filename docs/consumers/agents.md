@@ -31,7 +31,7 @@ Use the generated [CLI reference](../reference/cli.md), `phux --help`, or
 `run`, `send-keys`, `paste`, `ask`, `agent wait`, and
 `agent send-keys` neither attach nor resize, and never move an attached
 human's focus or viewport. `resize` changes the grid by design but still
-never attaches. Layout verbs (`insert-pane`, `move-pane`, `swap-pane`)
+never attaches. Layout verbs (`insert-pane`, `mv`, `swap-pane`)
 change persisted topology, not client-local focus. CLI and MCP cannot hold
 an input lease beyond the calling process, so MCP has no `take` / `give`
 ([MCP adapter](./mcp.md)); `phux take --ttl SECS` asks the server to release
@@ -167,7 +167,7 @@ they have no attached-client focus history.
 |---|---|
 | `.` | focused session / pane |
 | `name` | session |
-| `name:N` / `name:tag` | window |
+| `name:N` / `name:tag` | group (a tab) of the session's arrangement |
 | `name:N.M` | pane |
 | `@N` | local resource id (either kind) |
 | `host/@N` | satellite resource through a hub |
@@ -182,7 +182,7 @@ child. Handed to an agent-session verb (`emit`, `log`, `session close`)
 it yields the session; handed to a Terminal-facet verb it yields the
 parent pane, so `phux agent prompt %reviewer` and
 `phux agent log %reviewer` name the same agent from two sides. Two live
-sessions sharing a name refuse. `name:N.M` and the window forms resolve
+sessions sharing a name refuse. `name:N.M` and the group forms resolve
 Terminals only.
 
 A selector that names several panes narrows to one: the focused pane if
@@ -391,7 +391,7 @@ absent / `running` / `null` / `false`. Version 4 adds each session's
 count), and `exec` (members per execution state; `dormant` never launched).
 `keep_empty` is `lifetime == "persistent"` and `empty` is `members == 0`.
 `project` is additive and `null` for a session with no project identity
-([ADR-0167](../adr/0167-project-identity-is-a-session-attribute.md)):
+([ADR-0168](../adr/0168-project-identity-is-a-session-attribute.md)):
 sessions whose `project.id` is equal are one repository, on any machine
 (`id` is the normalized `origin` URL, or `path:<host>:<common git dir>`
 without one); `branch` is the branch at creation and `linked_worktree`
@@ -933,6 +933,9 @@ and that start failed, a `no_server` or `transport` error also carries
 the additive `error.auto_start_error`: why the start failed, quoting the
 server's own bind or config error when it exited at startup. Absent
 otherwise.
+CLI parsing and root argument refusals: `usage_error` (exit 2). When
+`--json` is present, these refusals use the same one-line error document;
+stdout remains empty and styling is bypassed.
 Transport: `no_server`, `server_disconnected`, `transport`,
 `remote_unresolved`. Coordinator startup (`phux server --ensure --json`):
 `server_start_timeout`, `server_start_cancelled`, `server_start_failed`.
@@ -964,20 +967,23 @@ be minted, so nothing was typed). Resource: `wrong_resource_kind`, `not_producer
 
 ## 9. Projection scoping
 
-A session's one *named shared* projection is its
-`phux.tui.layout/v1/<session-id>` L3 envelope: window order, split trees,
-pane placement ([metadata protocol](../spec/L3.md) §3.2). The spatial verbs
-mutate it; a cross-session move adds one `MOVE_RESOURCE`. Writes are
-whole-value last-write-wins, and a spatial edit against a vanished anchor
-refuses with a typed code rather than inventing placement (§7). Focus never
-rides the envelope: its focus fields are ignored on read, and
-`phux.tui.focus/v1` is per-client
+A session's one shared projection is its arrangement: group order, split
+trees, pane placement ([organization](../spec/L2.md) §2.4). The spatial
+verbs mutate it with `ARRANGEMENT_REPLACE` naming the revision they read,
+retrying on `CONFLICT`; a cross-session move adds one `MOVE_RESOURCE`.
+Against a server without `ORGANIZATION`, and for named projection keys,
+they write the `phux.tui.layout/v1/<session-id>` L3 envelope instead
+([metadata protocol](../spec/L3.md) §3.2), whole-value last-write-wins. A
+spatial edit against a vanished anchor refuses with a typed code rather
+than inventing placement (§7). Focus is never part of an arrangement: the
+envelope's focus fields are ignored on read, and `phux.tui.focus/v1` is
+per-client
 ([ADR-0049](../adr/0049-client-local-focus-and-advisory-attention.md)).
 
 A script wanting its own arrangement uses its own key prefix
 (`app.foo.layout/v1`, [metadata protocol](../spec/L3.md) §3.5) and names it
 with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
-placement verbs; a cross-session `move-pane` passes it twice or not at all.
+placement verbs; a cross-session `mv` passes it twice or not at all.
 Durability is `phux archive export` / `import`: export writes each
 session's split tree from that envelope
 ([ADR-0129](../adr/0129-projections-are-named-by-key.md)), and import

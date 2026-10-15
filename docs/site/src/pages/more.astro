@@ -68,10 +68,11 @@ const FEATURES = [
         <code tabindex="0">{cliInstall}</code>
         <button type="button" data-copy={cliInstall}>Copy</button>
       </div>
-      <div class="install-cmd">
-        <span>Cockpit for macOS · Experimental {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
+      <div class="install-cmd cockpit-install">
+        <span>Cockpit for macOS · Frozen {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
         <code tabindex="0">{cockpitInstall}</code>
         <button type="button" data-copy={cockpitInstall}>Copy</button>
+        <p>Not maintained. The last published release still installs. Use Desktop.</p>
       </div>
     </div>
     <p class="install-more">
@@ -235,40 +236,6 @@ const FEATURES = [
     });
   })();
 
-  // phux for iPhone → POST /api/beta (TestFlight invite via App Store Connect)
-  (() => {
-    const form = document.getElementById("beta-form");
-    if (!form) return;
-    const note = document.getElementById("beta-note");
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const email = form.email.value.trim();
-      const button = form.querySelector("button");
-      button.disabled = true;
-      try {
-        const response = await fetch("/api/beta", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ email, website: form.website.value }),
-        });
-        const result = await response.json();
-        if (!result.ok) {
-          note.textContent = "Could not request access: " + (result.error ?? "try again.");
-          return;
-        }
-        note.textContent =
-          result.status === "invited"
-            ? "Invite sent. Check " + email + " for an email from TestFlight."
-            : "Request received. The TestFlight invite will go to " + email + ".";
-        form.reset();
-      } catch {
-        note.textContent = "Could not connect. Try again.";
-      } finally {
-        button.disabled = false;
-      }
-    });
-  })();
-
 </script>
 <div
   hidden
@@ -283,6 +250,7 @@ const FEATURES = [
 ></div>
 <script>
   import { registerSiteTools, siteModelContext } from "../webmcp.ts";
+  import { wireBetaRequest } from "../lib/beta.ts";
   const facts = document.querySelector("[data-webmcp]");
   const context = siteModelContext(globalThis);
   if (facts instanceof HTMLElement && context) {
@@ -296,6 +264,11 @@ const FEATURES = [
       releaseUrl: facts.dataset.releaseUrl ?? "",
     });
   }
+  // Shared with the landing; the inline script above owns the copy/join handlers.
+  wireBetaRequest(
+    document.getElementById("beta-form") as HTMLFormElement | null,
+    document.getElementById("beta-note"),
+  );
 </script>
 
 <style>
@@ -390,7 +363,7 @@ const FEATURES = [
   .desktop-install {
     grid-column: 1 / -1;
   }
-  .desktop-install p {
+  .desktop-install p, .cockpit-install p {
     grid-column: 1 / -1;
     margin: 0;
     color: var(--color-dim);

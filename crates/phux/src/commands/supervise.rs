@@ -81,12 +81,12 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: Option<u32>) -> ExitCo
                 ExitCode::SUCCESS
             }
             Ok(LeaseOutcome::Refused(message)) => {
-                eprintln!("phux: {verb} refused for {target}: {message}");
+                error!("{verb} refused for {target}: {message}");
                 ExitCode::from(2)
             }
             Ok(LeaseOutcome::Unexpected(other)) => {
-                eprintln!(
-                    "phux: {target}: {}",
+                error!(
+                    "{target}: {}",
                     phux_client::explain::explain_unexpected(verb, &other)
                 );
                 ExitCode::from(2)
@@ -134,15 +134,12 @@ pub(crate) fn run_signal(
             phux_client::signal::deliver(&socket_path, &selector, wire_signal, key, &mut notices)
                 .await;
         for notice in &notices {
-            eprintln!(
-                "{}",
-                phux_client::state::partial_view_warning("signal", notice)
-            );
+            warn!("{} saw only part of the fleet — {notice}", "signal");
         }
         match result {
             Ok(delivered) => {
                 for message in delivered.interleaved {
-                    eprintln!("phux: warning: partial results — {message}");
+                    warn!("partial results — {message}");
                 }
                 match delivered.outcome {
                     LeaseOutcome::Ok => {
@@ -150,12 +147,12 @@ pub(crate) fn run_signal(
                         ExitCode::SUCCESS
                     }
                     LeaseOutcome::Refused(message) => {
-                        eprintln!("phux: signal refused for {target}: {message}");
+                        error!("signal refused for {target}: {message}");
                         ExitCode::from(2)
                     }
                     LeaseOutcome::Unexpected(other) => {
-                        eprintln!(
-                            "phux: {target}: {}",
+                        error!(
+                            "{target}: {}",
                             phux_client::explain::explain_unexpected("signal", &other)
                         );
                         ExitCode::from(2)
