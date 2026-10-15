@@ -154,6 +154,8 @@ pub struct Desk {
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
+    saves: persist::writer::Writer,
+    _save_errors: Task<()>,
     stable_layout: bool,
     layout_key: Option<SessionKey>,
     layout_migration_pending: bool,
@@ -281,6 +283,16 @@ impl Desk {
         prefs = settings::sanitize_display(&prefs);
         let keymap = settings::effective_keymap(&ghostty, prefs.ghostty_keys);
         let focus = cx.focus_handle();
+        let saves = persist::writer::Writer::default();
+        let errors = saves.errors();
+        let save_errors = cx.spawn(async move |this, cx| {
+            while let Ok(error) = errors.recv().await {
+                let _ = this.update(cx, |desk, cx| {
+                    desk.post(Kind::Error, "Could not save desktop layout", Some(error));
+                    cx.notify();
+                });
+            }
+        });
         let mut desk = Self {
             desktop,
             updates,
@@ -306,6 +318,8 @@ impl Desk {
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,
+            saves,
+            _save_errors: save_errors,
             stable_layout: request.stable_layout,
             layout_key: None,
             layout_migration_pending: false,
@@ -461,44 +475,33 @@ impl Desk {
         if self.session_is_attached() {
             self.repaint_terminals(&events, cx);
         }
-        // A spawn's bootstrap can arrive as a pure paint batch. With work still
-        // pending, run the full pass so the new pane is placed the moment its
-        // replica lands, instead of waiting for the topology refresh.
-        let pending = self
+        // A spawn's bootstrap can arrive as a pure paint batch. Promote only
+        // output that can actually settle an awaiting placement.
+        let awaiting_output = self
             .link
             .as_ref()
-            .is_some_and(|link| link.workspace.pending() > 0);
-        if answers.is_empty() && paint_batch(&events) && !conversation_changed && !pending {
+            .is_some_and(|link| link.workspace.awaiting_output(&events));
+        if answers.is_empty() && paint_batch(&events) && !conversation_changed && !awaiting_output {
             return;
         }
+        self.apply_activity(&events, answers, epoch, cx);
+    }
+
+    fn apply_activity(
+        &mut self,
+        events: &[Event],
+        answers: Vec<PathAnswer>,
+        epoch: u64,
+        cx: &mut Context<Self>,
+    ) {
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
-        if self.agent_epoch != Some(epoch)
-            || events.iter().any(crate::connection::starts_connection)
-        {
-            self.agent_seen.clear();
-            self.feed.retain(|entry| entry.kind != Kind::Agent);
-            self.agent_epoch = Some(epoch);
-        }
-        for event in &events {
-            if crate::connection::starts_connection(event) {
-                self.organization.connection_changed();
-            }
-            self.note_event(event);
-        }
+        self.note_activity(events, epoch);
         if let Some(link) = self.link.as_mut() {
-            link.workspace.handle(&events, &link.connection);
+            link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
-        if let Some(terminal) = self.pending_project_terminal.as_ref()
-            && self
-                .link
-                .as_ref()
-                .is_some_and(|link| link.connection.pane(terminal).is_some())
-            && let Some(terminal) = self.pending_project_terminal.take()
-        {
-            self.reveal_terminal(&terminal);
-        }
+        self.settle_project_terminal();
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -506,14 +509,7 @@ impl Desk {
             self.accept_path(answer);
         }
         self.retain_panes();
-        if self
-            .find
-            .as_ref()
-            .is_some_and(|find| self.placement(find.placement_id.as_str()).is_none())
-        {
-            self.find = None;
-            self.find_input = None;
-        }
+        self.retain_find();
         if self.modal == Modal::Path {
             self.pin_picker();
         }
@@ -523,6 +519,45 @@ impl Desk {
             self.panes.notify_all(cx);
         }
         cx.notify();
+    }
+
+    fn note_activity(&mut self, events: &[Event], epoch: u64) {
+        if self.agent_epoch != Some(epoch)
+            || events.iter().any(crate::connection::starts_connection)
+        {
+            self.agent_seen.clear();
+            self.feed.retain(|entry| entry.kind != Kind::Agent);
+            self.agent_epoch = Some(epoch);
+        }
+        for event in events {
+            if crate::connection::starts_connection(event) {
+                self.organization.connection_changed();
+            }
+            self.note_event(event);
+        }
+    }
+
+    fn settle_project_terminal(&mut self) {
+        if let Some(terminal) = self.pending_project_terminal.as_ref()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.pane(terminal).is_some())
+            && let Some(terminal) = self.pending_project_terminal.take()
+        {
+            self.reveal_terminal(&terminal);
+        }
+    }
+
+    fn retain_find(&mut self) {
+        if self
+            .find
+            .as_ref()
+            .is_some_and(|find| self.placement(find.placement_id.as_str()).is_none())
+        {
+            self.find = None;
+            self.find_input = None;
+        }
     }
 
     /// Output and delivered input paint the panes and leave the chrome tree in place.
@@ -593,6 +628,9 @@ impl Desk {
         } else {
             paths.layout
         };
+        // A preferences edit can still be writing the legacy source. Adoption
+        // must not restore older bytes over the snapshot we just queued.
+        self.flush_saves();
         let missing = matches!(
             FileLayoutStore::new(&path, None).read(),
             persist::StoreValue::Missing
@@ -1201,17 +1239,19 @@ impl Desk {
             return;
         }
         if let Some(saved) = &self.last_saved {
-            // One adoption attempt, not a retry/stat on every PTY wake. A
-            // failed write is reported and can be retried by save or close.
-            self.layout_migration_pending = false;
-            match self.store.write(&persist::layout_value(saved)) {
-                Ok(()) => {}
-                Err(error) => self.post(
-                    Kind::Error,
-                    "Could not save desktop layout",
-                    Some(error.to_string()),
-                ),
-            }
+            self.queue_layout(saved.clone());
+        }
+    }
+
+    fn queue_layout(&mut self, saved: persist::SavedLayout) {
+        self.layout_migration_pending = false;
+        self.saves.layout(self.store.clone(), saved.clone());
+        self.last_saved = Some(saved);
+    }
+
+    fn flush_saves(&mut self) {
+        for error in self.saves.flush() {
+            self.post(Kind::Error, "Could not save desktop layout", Some(error));
         }
     }
 
@@ -1241,7 +1281,7 @@ impl Desk {
             return;
         };
         if self.layout_migration_pending || self.last_saved.as_ref() != Some(&next) {
-            self.persist();
+            self.queue_layout(next);
         }
     }
 
@@ -1252,6 +1292,7 @@ impl Desk {
         }
         self.closed = true;
         self.persist();
+        self.flush_saves();
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
@@ -2985,6 +3026,9 @@ impl Desk {
             |host| format!("host:{host}"),
         );
         let paths = crate::workspace::layout_paths(&authority, &session);
+        // In particular A -> B -> A must see A's latest queued layout. Disk
+        // waits are confined to this read-after-write boundary and close/quit.
+        self.flush_saves();
         self.store = FileLayoutStore::new(paths.layout, None);
         self.last_saved = persist::load_layout(&self.store.read()).initial;
         self.attach(None, cx);

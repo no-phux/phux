@@ -11,10 +11,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AnyView, App, BoxShadow, ClickEvent, Context, CursorStyle, DispatchPhase,
-    DragMoveEvent, Entity, ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, StyleRefinement, Styled, WeakEntity,
-    Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative,
+    AnimationExt, AnyElement, AnyView, App, BoxShadow, ClickEvent, Context, CursorStyle,
+    DispatchPhase, DragMoveEvent, Entity, ExternalPaths, FileDropEvent, Hsla, IntoElement,
+    Keystroke, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, SharedString,
+    StyleRefinement, Styled, WeakEntity, Window, canvas, div, linear_color_stop, linear_gradient,
+    point, px, relative,
 };
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -52,6 +53,9 @@ const RADIUS: f32 = 12.;
 const CONTROLS_EDGE: f32 = 36.;
 /// Left inset that clears the traffic lights.
 const TRAFFIC_LIGHTS: f32 = 78.;
+/// Room for the host-labelled main menu and sidebar toggle, even with the
+/// navigator hidden. Long host names truncate instead of pushing tabs away.
+const MENU_RAIL: f32 = 192.;
 
 /// Paint values for the glass sheet and the cards on it, from the theme.
 struct Glass {
@@ -329,13 +333,9 @@ fn titlebar(
         .as_ref()
         .map(|link| link.workspace.active_id.clone())
         .unwrap_or_default();
-    let lead = if sidebar {
-        (desk.prefs.sidebar_width as f32).max(TRAFFIC_LIGHTS + 36.)
-    } else {
-        TRAFFIC_LIGHTS + 36.
-    };
     let centers = desk.tab_centers.clone();
     let quick = desk.role == desk::WindowRole::Quick;
+    let lead = titlebar_lead(sidebar, quick, desk.prefs.sidebar_width as f32);
     div()
         .h(px(TITLEBAR))
         .w_full()
@@ -351,9 +351,10 @@ fn titlebar(
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .justify_end()
+                .gap(px(2.))
                 .pl(px(TRAFFIC_LIGHTS))
                 .pr(px(8.))
+                .child(main_menu(desk, cx))
                 .when(!quick, |lead| {
                     lead.child(icon_button(
                         "sidebar",
@@ -366,7 +367,12 @@ fn titlebar(
                         desk.shown_chord("sidebar"),
                         cx.listener(|desk, _, window, cx| desk.execute("sidebar", window, cx)),
                     ))
-                }),
+                })
+                .with_spring(
+                    "main-menu-rail",
+                    gpui::SpringAnimation::new(gpui::SpringConfig::new(600., 49., 1.)).to(lead),
+                    |rail, width| rail.w(px(width)),
+                ),
         )
         .child(
             div()
@@ -396,7 +402,6 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
-                .when(!quick, |row| row.child(host_selector(desk, cx)))
                 .child(icon_button(
                     "new-tab",
                     IconName::Plus,
@@ -404,29 +409,8 @@ fn titlebar(
                     desk.shown_chord("new"),
                     cx.listener(|desk, _, window, cx| desk.execute("new", window, cx)),
                 ))
-                .child(icon_button(
-                    "split-right",
-                    IconName::PanelRight,
-                    "Split Right",
-                    desk.shown_chord("split-right"),
-                    cx.listener(|desk, _, window, cx| desk.execute("split-right", window, cx)),
-                ))
-                .child(icon_button(
-                    "split-down",
-                    IconName::PanelBottom,
-                    "Split Down",
-                    desk.shown_chord("split-down"),
-                    cx.listener(|desk, _, window, cx| desk.execute("split-down", window, cx)),
-                ))
                 .child(bell(desk, colors, cx))
-                .child(update_button(desk, cx))
-                .child(icon_button(
-                    "palette",
-                    IconName::Search,
-                    "Command Palette",
-                    desk.shown_chord("palette"),
-                    cx.listener(|desk, _, window, cx| desk.execute("palette", window, cx)),
-                )),
+                .child(update_button(desk, cx)),
         )
 }
 
@@ -779,29 +763,113 @@ fn host_row(
         .into_any_element()
 }
 
-/// The titlebar's active-host picker. Picking a host points this window at it
-/// in place; nothing is opened in a new window. Always shows Local plus every
-/// registered remote, so a window is never stuck on the host it launched with.
-fn host_selector(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
+    if quick {
+        return MENU_RAIL - 28.;
+    }
+    if sidebar { sidebar_width } else { MENU_RAIL }
+}
+
+const MAIN_COMMANDS: &[&[&str]] = &[
+    &["new", "new-session", "folder", "new-window"],
+    &["split-right", "split-down", "view"],
+    &["goto", "palette", "settings"],
+];
+
+/// One persistent entry to workspace actions and host navigation. Building the
+/// popup is deferred until it opens; every action uses the same command path as
+/// shortcuts and the palette. The button stays in the sidebar's titlebar rail.
+pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let current = desk.remote.clone();
     let label = current.clone().unwrap_or_else(|| "Local".to_owned());
     let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
     let handle = cx.weak_entity();
-    let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-        let mut menu = menu.item(host_choice(None, "Local", current.is_none(), &handle));
-        for name in &hosts {
-            let here = current.as_deref() == Some(name.as_str());
-            menu = menu.item(host_choice(Some(name.clone()), name, here, &handle));
+    let menu = move |mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+        for group in MAIN_COMMANDS {
+            menu = menu.separator();
+            for command in *group {
+                menu = menu.item(main_command(command, &handle));
+            }
         }
-        menu
+        let (current, hosts, switch) = (current.clone(), hosts.clone(), handle.clone());
+        menu.separator()
+            .submenu("Switch Host", window, cx, move |mut menu, _, _| {
+                menu = menu.item(host_choice(None, "Local", current.is_none(), &switch));
+                for name in &hosts {
+                    let here = current.as_deref() == Some(name.as_str());
+                    menu = menu.item(host_choice(Some(name.clone()), name, here, &switch));
+                }
+                menu
+            })
+            .item({
+                let handle = handle.clone();
+                PopupMenuItem::new("Add Host…").on_click(move |_, window, cx| {
+                    let _ =
+                        handle.update(cx, |desk, cx| desk.open_modal(Modal::AddHost, window, cx));
+                })
+            })
+            .item(main_command("reconnect", &handle))
     };
-    Button::new("host-selector")
-        .label(label)
-        .ghost()
-        .small()
-        .tooltip("Switch host")
-        .dropdown_menu(menu)
+    div()
+        .flex_1()
+        .min_w_0()
+        .max_w(px(132.))
+        .debug_selector(|| "main-menu-rail".into())
+        .occlude()
+        .child(
+            Button::new("main-menu")
+                .label(label)
+                .dropdown_caret(true)
+                .ghost()
+                .small()
+                .w_full()
+                .tooltip("Main menu · workspace actions and hosts")
+                .dropdown_menu(menu),
+        )
         .into_any_element()
+}
+
+fn main_command(command: &'static str, handle: &WeakEntity<Desk>) -> PopupMenuItem {
+    let spec = crate::settings::builtin_commands()
+        .iter()
+        .find(|spec| spec.id == command)
+        .expect("main menu command is in the catalogue");
+    let handle = handle.clone();
+    PopupMenuItem::new(spec.title)
+        .action(Box::new(Run {
+            id: command.to_owned(),
+        }))
+        .on_click(move |_, window, cx| {
+            let _ = handle.update(cx, |desk, cx| desk.execute(command, window, cx));
+        })
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn the_menu_reserves_space_with_or_without_the_sidebar() {
+        assert_eq!(titlebar_lead(true, false, 248.), 248.);
+        assert_eq!(titlebar_lead(true, false, 180.), 180.);
+        assert_eq!(titlebar_lead(false, false, 248.), MENU_RAIL);
+        assert!(titlebar_lead(false, true, 248.) > TRAFFIC_LIGHTS);
+    }
+
+    #[test]
+    fn every_main_menu_action_uses_the_existing_catalogue() {
+        for command in MAIN_COMMANDS
+            .iter()
+            .flat_map(|group| group.iter())
+            .chain([&"reconnect"])
+        {
+            assert!(
+                crate::settings::builtin_commands()
+                    .iter()
+                    .any(|spec| spec.id == *command)
+            );
+        }
+    }
 }
 
 fn host_choice(
