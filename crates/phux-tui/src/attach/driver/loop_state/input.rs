@@ -363,6 +363,7 @@ impl super::SessionLoop {
             plugin_tx: Some(&self.plugin_tx),
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
+            project_toggle_request: &mut self.project_toggle_request,
             agent_meta: &self.mirror.agent_meta.records,
             vcs: &mut self.vcs,
             input_replay: self.input_replay.as_deref(),
@@ -378,6 +379,10 @@ impl super::SessionLoop {
         )
         .await?;
         self.focus_history = ctx.focus_history;
+        if let Some(key) = self.project_toggle_request.take() {
+            self.toggle_project_group(key);
+            layout_changed = true;
+        }
         if std::mem::take(&mut self.arrangement_write_owed) {
             self.broadcast_layout(conn).await?;
         }

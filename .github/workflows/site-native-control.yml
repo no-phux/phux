@@ -37,14 +37,21 @@ jobs:
         working-directory: docs/site/infra
         run: bun install --frozen-lockfile
       # Redeploys the stack with NATIVE_ENABLED overridden (infra/demo.run.ts).
-      # The next ordinary site-deploy-worker run sets it back to true.
+      # Native is parked by default: an ordinary site-deploy-worker run reads the
+      # PHUX_NATIVE_ENABLED repository variable, which this dispatch does not
+      # change. Set that variable (true) to make a re-enable survive deploys.
       - name: Deploy native kill-switch setting
         working-directory: docs/site/infra
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PHUX_NATIVE_ENABLED: ${{ inputs.enabled }}
-        run: bunx alchemy deploy demo.run.ts --stage prod --yes --no-input
+        run: |
+          bunx alchemy deploy demo.run.ts --stage prod --yes --no-input
+          {
+            echo "Native admission deployed as \`${{ inputs.enabled }}\` for this deploy."
+            echo "Persistence: \`gh variable set PHUX_NATIVE_ENABLED --body \"${{ inputs.enabled }}\"\`."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify edge remains healthy
         working-directory: docs/site
         env:

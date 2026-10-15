@@ -27,6 +27,8 @@ pub struct Options {
     pub fresh: bool,
     pub terminal: Option<String>,
     pub quick: bool,
+    /// Open the native performance monitor at launch; it can also be opened live.
+    pub dev_telemetry: bool,
     /// Directory for presentation evidence and `perf.jsonl`.
     pub evidence: Option<PathBuf>,
     /// Exit 0 once evidence of a presented frame is written.
@@ -34,7 +36,7 @@ pub struct Options {
 }
 
 const USAGE: &str = "usage: phux-desktop [--socket PATH] [--session NAME] [--phux PATH] \
-[--layout PATH] [--fresh] [--terminal ID] [--quick] [--evidence DIR] [--smoke]";
+[--layout PATH] [--fresh] [--terminal ID] [--quick] [--dev-telemetry] [--evidence DIR] [--smoke]";
 
 impl Options {
     /// Parse `args` (without the program name).
@@ -56,6 +58,7 @@ impl Options {
                 "--evidence" => options.evidence = Some(value("--evidence")?.into()),
                 "--fresh" => options.fresh = true,
                 "--quick" => options.quick = true,
+                "--dev-telemetry" => options.dev_telemetry = true,
                 "--smoke" => options.smoke = true,
                 // macOS passes a process serial number to apps opened by Finder.
                 arg if arg.starts_with("-psn_") => {}
@@ -228,6 +231,8 @@ pub fn main() -> ExitCode {
         fresh: options.fresh,
         initial_terminal,
         quick: options.quick,
+        dev_telemetry: options.dev_telemetry
+            || std::env::var("PHUX_DESKTOP_DEV_TELEMETRY").as_deref() == Ok("1"),
         startup_error: resolved.error,
     };
     let evidence = options.evidence.clone().map(|dir| diag::EvidenceOptions {
@@ -277,6 +282,7 @@ mod tests {
             "--terminal",
             "local:3",
             "--quick",
+            "--dev-telemetry",
             "--evidence",
             "/tmp/e",
             "--smoke",
@@ -284,7 +290,7 @@ mod tests {
         .expect("valid");
         assert_eq!(options.socket.as_deref(), Some(Path::new("/tmp/s")));
         assert_eq!(options.session.as_deref(), Some("w"));
-        assert!(options.fresh && options.quick && options.smoke);
+        assert!(options.fresh && options.quick && options.smoke && options.dev_telemetry);
         assert_eq!(options.terminal.as_deref(), Some("local:3"));
     }
 

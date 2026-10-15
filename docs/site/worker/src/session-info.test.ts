@@ -66,4 +66,25 @@ describe("session info wire schema", () => {
       expect(isSessionInfo(value)).toBe(false);
     expect(parseSessionInfo("not json")).toBeUndefined();
   });
+
+  test("carries an attach code that cannot outlive its session", () => {
+    const paired: SessionInfo = {
+      ...edge,
+      pair: { code: "attach.code", expiresAt: edge.expiresAt - 1 },
+    };
+    expect(parseSessionInfo(serializeSessionInfo(paired))).toEqual(paired);
+    for (const pair of [
+      null,
+      "attach.code",
+      {},
+      { code: "", expiresAt: 1 },
+      { code: "x", expiresAt: 0 },
+      { code: "x", expiresAt: 1.5 },
+      // A code that outlives its session would be a credential left behind.
+      { code: "x", expiresAt: edge.expiresAt + 1 },
+      { code: "x", expiresAt: edge.expiresAt, scope: "attach" },
+      { code: "x".repeat(513), expiresAt: edge.expiresAt },
+    ])
+      expect(isSessionInfo({ ...edge, pair })).toBe(false);
+  });
 });

@@ -23,6 +23,7 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 | `connection` | one runtime `Client` per window and its sole event/path-answer drain |
 | `terminal`, `input`, `presentation` | grid painter, input handler, drawable-presented fence receipts |
 | `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
+| `telemetry` | on-demand process CPU intervals and native current/peak resident memory |
 | `fonts`, `hotkeys`, `chrome` | bundled Paper Mono, global quick-terminal chords, titlebar drag |
 
 `workspace`, `settings` and `connection` hold no GPUI types, so their rules
@@ -33,7 +34,8 @@ test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
 
 ```text
 phux-desktop [--socket PATH] [--session NAME] [--phux PATH] [--layout PATH]
-             [--fresh] [--terminal ID] [--quick] [--evidence DIR] [--smoke]
+             [--fresh] [--terminal ID] [--quick] [--dev-telemetry]
+             [--evidence DIR] [--smoke]
 ```
 
 Without `--phux`, the CLI is `PHUX_BIN`, else the first of
@@ -44,6 +46,10 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
+- **Native performance window:** runtime controls and metric semantics are in
+  [Developer performance monitor](../README.md#developer-performance-monitor).
+  The view owns its sampler and cancellable task; `telemetry::Sampler` itself
+  does no background work. `diag::report()` exposes the existing typed report.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr
   (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`).
 - **Metrics:** `diag::report_json()` is one `PerfReport` with kernel

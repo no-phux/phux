@@ -396,6 +396,7 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
+                .when(!quick, |row| row.child(host_selector(desk, cx)))
                 .child(icon_button(
                     "new-tab",
                     IconName::Plus,
@@ -657,9 +658,10 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .child(hosts_section(desk, colors, cx))
 }
 
-/// Registered machines from `phux host ls`: open one in its own window, add
-/// one over ssh, or forget one. Always shown, so adding a host is never hidden.
-/// The filled dot marks the host this window is on.
+/// Registered machines from `phux host ls`: switch this window to one, add one
+/// over ssh, or forget one. Always shown, so adding a host is never hidden. A
+/// plain click points this window at the host; its context menu still opens a
+/// separate window. The filled dot marks the host this window is on.
 fn hosts_section(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
     let header = section_label("Hosts", colors).child(
         Button::new("host-add")
@@ -768,13 +770,53 @@ fn host_row(
                 .tooltip("Host actions")
                 .dropdown_menu(menu.clone()),
         )
-        .on_click(cx.listener(move |desk, _, _, cx| desk.open_host(click.clone(), cx)))
+        .on_click(cx.listener(move |desk, _, _, cx| desk.switch_host(Some(click.clone()), cx)))
         .tooltip({
             let endpoint = entry.endpoint.clone();
             move |window, cx| Tooltip::new(endpoint.clone()).build(window, cx)
         })
         .context_menu(menu)
         .into_any_element()
+}
+
+/// The titlebar's active-host picker. Picking a host points this window at it
+/// in place; nothing is opened in a new window. Always shows Local plus every
+/// registered remote, so a window is never stuck on the host it launched with.
+fn host_selector(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+    let current = desk.remote.clone();
+    let label = current.clone().unwrap_or_else(|| "Local".to_owned());
+    let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
+    let handle = cx.weak_entity();
+    let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+        let mut menu = menu.item(host_choice(None, "Local", current.is_none(), &handle));
+        for name in &hosts {
+            let here = current.as_deref() == Some(name.as_str());
+            menu = menu.item(host_choice(Some(name.clone()), name, here, &handle));
+        }
+        menu
+    };
+    Button::new("host-selector")
+        .label(label)
+        .ghost()
+        .small()
+        .tooltip("Switch host")
+        .dropdown_menu(menu)
+        .into_any_element()
+}
+
+fn host_choice(
+    name: Option<String>,
+    label: &str,
+    checked: bool,
+    handle: &WeakEntity<Desk>,
+) -> PopupMenuItem {
+    let handle = handle.clone();
+    PopupMenuItem::new(label.to_owned())
+        .checked(checked)
+        .on_click(move |_, _, cx| {
+            let name = name.clone();
+            let _ = handle.update(cx, |desk, cx| desk.switch_host(name, cx));
+        })
 }
 
 fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {

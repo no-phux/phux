@@ -26,6 +26,9 @@ pub struct Attrs {
     /// Host label shown beside the name.
     #[serde(default)]
     pub host_label: Option<String>,
+    /// The repository the session was created in (ADR-0168).
+    #[serde(default)]
+    pub repository: Option<Box<crate::project_identity::SessionProject>>,
 }
 
 /// A session record.

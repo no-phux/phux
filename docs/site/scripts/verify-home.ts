@@ -47,9 +47,16 @@ try {
   await page.goto(base);
   assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
   assert.equal(await page.locator("#how-it-works").count(), 0, "no homepage explainer");
-  assert.ok(await page.locator("#testflight form").isVisible(), "TestFlight signup is on the landing");
+  assert.equal(await page.locator("#install .install-request").isHidden(), true, "the hero opens on a command, not the request form");
+  assert.equal(await page.locator(".beta, #testflight").count(), 0, "the landing carries no separate TestFlight band");
   assert.equal(await page.locator(".tour").count(), 1, "one product tour");
-  assert.equal(await page.locator("body > header, .tagline, .tour-bar").count(), 0, "no landing top bars or tagline");
+  assert.equal(await page.locator("body > header").count(), 1, "the landing carries one top bar");
+  assert.deepEqual(
+    await page.locator("body > header nav[aria-label='Primary navigation']").getByRole("link").allInnerTexts(),
+    ["phux", "Docs", "Try", "Source"],
+    "the top bar carries the wordmark and the Docs/Try/Source links",
+  );
+  assert.equal(await page.locator(".tagline, .tour-bar").count(), 0, "no landing tagline");
   assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
   const entry = page.getByRole("link", { name: "Open terminal demo", exact: true });
   await page.locator("astro-island:not([ssr]) .tour-entry").waitFor();
@@ -70,6 +77,13 @@ try {
   await page.keyboard.press("Tab");
   await page.waitForFunction(() => getComputedStyle(document.querySelector(".tour-invitation")!).opacity === "1");
   assert.equal(await page.locator(".tour-invitation").evaluate((node) => getComputedStyle(node).opacity), "1", "keyboard focus reveals the invitation");
+  const invitation = await page.locator(".tour-invitation").boundingBox();
+  const canvas = await page.locator(".tour-canvas").boundingBox();
+  assert.ok(
+    invitation && canvas && invitation.width >= canvas.width - 1 && Math.abs(invitation.height - canvas.height) <= 1,
+    "the invitation is a full-bleed overlay, not a chip in the corner",
+  );
+  assert.match(await page.locator(".tour-invitation").innerText(), /This one is real\.[\s\S]*Open a shell/);
   assert.equal(await page.locator("dialog[open]").count(), 0, "discovery does not launch a session");
   await entry.hover();
   assert.equal(await page.locator("dialog[open]").count(), 0, "hover only prepares the client");
@@ -85,19 +99,25 @@ try {
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install | sh");
   assert.equal(await page.getByRole("status").innerText(), "Install command copied.");
-  // The hero switcher swaps the command on hover, focus, click, and arrows.
+  // The hero switcher swaps the command on hover, focus, click, and arrows, and
+  // turns the third target into the TestFlight request.
   const command = page.locator("#install-command");
+  const line = page.locator("#install .install-line");
+  const request = page.locator("#install .install-request");
   const target = (name: string) => page.locator(`#install [data-install-target="${name}"]`);
+  assert.deepEqual(await page.locator("#install .install-tabs button").allInnerTexts(), ["CLI", "Desktop", "Mobile"], "three install targets");
   await target("desktop").hover();
   assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "hover swaps to the desktop installer");
-  await target("canary").click();
-  assert.equal(await target("canary").getAttribute("aria-pressed"), "true", "the clicked target is pressed");
-  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next", "canary selects the desktop next channel");
-  await page.getByRole("button", { name: "Copy install command" }).click();
-  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next", "copy follows the active target");
-  await target("canary").focus();
+  await target("mobile").click();
+  assert.equal(await target("mobile").getAttribute("aria-pressed"), "true", "the clicked target is pressed");
+  assert.ok(await request.isVisible(), "Mobile asks for an address instead of printing a command");
+  assert.equal(await line.isHidden(), true, "the command line steps aside for the request form");
+  assert.match(await page.locator("#install-note").innerText(), /TestFlight/, "the note describes the mobile target");
+  await target("mobile").focus();
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "arrow keys move the target");
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "arrow keys move the target back to Desktop");
+  assert.equal(await request.isHidden(), true, "a command target hides the request form");
+  assert.equal(await line.isVisible(), true, "a command target restores the command line");
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh", "copy follows the keyboard target");
   // Regression: a content-sized dock widened with the command and slid the
@@ -109,20 +129,21 @@ try {
     });
   const dock = await box("#install");
   const cliTarget = await box('#install [data-install-target="cli"]');
-  for (const name of ["desktop", "canary", "cli"]) {
+  for (const name of ["desktop", "mobile", "cli"]) {
     await target(name).hover();
     assert.deepEqual(await box("#install"), dock, `the dock keeps its box while ${name} is previewed`);
     assert.deepEqual(await box('#install [data-install-target="cli"]'), cliTarget, `targets stay pinned while ${name} is previewed`);
   }
-  // The landing carries the same TestFlight request /more posts.
-  await page.locator("#beta-form input[name=email]").fill("iphone@example.com");
-  await page.locator("#beta-form button[type=submit]").click();
+  // The Mobile target carries the same TestFlight request /more posts.
+  await target("mobile").click();
+  await request.locator("input[name=email]").fill("iphone@example.com");
+  await request.locator("button[type=submit]").click();
   await page.waitForFunction(() => document.querySelector("#beta-note")?.textContent?.includes("Invite sent") ?? false);
-  assert.match(await page.locator("#beta-note").innerText(), /Invite sent/, "the landing reports the invite");
-  assert.equal(beta.payload?.email, "iphone@example.com", "landing signup posts the address");
+  assert.match(await page.locator("#beta-note").innerText(), /Invite sent/, "the hero reports the invite");
+  assert.equal(beta.payload?.email, "iphone@example.com", "the hero request posts the address");
   assert.equal(beta.payload?.website, "", "the honeypot stays empty");
   // Leave the longest command up for the overflow pass below.
-  await target("canary").click();
+  await target("desktop").click();
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no overflow at ${width}px`);

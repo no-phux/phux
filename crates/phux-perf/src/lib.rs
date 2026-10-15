@@ -8,8 +8,8 @@
 //! folds two reports into an interval for `phux perf --watch`. See
 //! `docs/operations.md` §"Performance observability" for the catalog.
 
-// `deny`, not `forbid`: the one `unsafe` in this crate is the pthread QoS
-// call in `sched`, scoped by an `allow` with a `SAFETY` note.
+// `deny`, not `forbid`: native RSS in `process` and pthread QoS in `sched`
+// have narrowly scoped `allow`s with `SAFETY` notes at the FFI calls.
 #![deny(unsafe_code)]
 
 mod counter;

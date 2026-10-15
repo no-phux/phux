@@ -213,12 +213,63 @@
 .tour-distant-host.is-0 { top: 1%; right: 5%; }
 .tour-distant-host.is-1 { bottom: 1%; right: 4%; }
 .tour-distant-host.is-2 { bottom: 4%; left: 52%; width: 9%; opacity: 0.7; }
-.tour-entry { position: absolute; inset: 0; z-index: 1; border-radius: 16px; }
+.tour-entry { position: absolute; inset: 0; z-index: 1; border-radius: 16px; overflow: hidden; }
 .tour-entry:focus-visible { outline-offset: -3px; }
-.tour-invitation { position: absolute; bottom: 8px; left: 50%; display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 24px); padding: 10px 16px; box-sizing: border-box; border: 1px solid #ffffff16; border-radius: 100px; background: #1b1b1de8; box-shadow: 0 4px 20px #0004; color: var(--terminal-muted); font: 12px/1.5 var(--font-reading); opacity: 0; transform: translate(-50%, 5px); transition: opacity 220ms ease, transform 220ms ease; }
-.tour-invitation > span:last-child { color: var(--terminal-fg); }
-.tour-invitation-glyph { color: var(--terminal-fg); font-size: 16px; }
-.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation { opacity: 1; transform: translate(-50%, 0); }
+/* The hover/focus reveal is a full-bleed overlay: a blurred, dimmed pane over
+   the scene with the invitation settling into the middle. It is opacity-only on
+   the backdrop (cheap to composite) and one transform/filter entrance on the
+   copy, so revealing it never re-lays-out the tour. */
+.tour-invitation {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+  background:
+    radial-gradient(120% 130% at 50% 118%, color-mix(in srgb, var(--tour-accent) 20%, transparent), transparent 64%),
+    linear-gradient(180deg, #08080ac4, #08080ae6);
+  backdrop-filter: blur(9px) saturate(1.06);
+  color: var(--terminal-fg);
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.tour-invitation::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 40%, #ffffff14 50%, transparent 60%);
+  opacity: 0;
+  transform: translateX(-110%);
+}
+.tour-invitation-copy {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  opacity: 0;
+  transform: translateY(16px) scale(0.97);
+  filter: blur(7px);
+  transition: opacity 300ms ease, transform 480ms cubic-bezier(.22,.61,.36,1), filter 360ms ease;
+}
+.tour-invitation-glyph { color: var(--tour-accent); font-size: 20px; line-height: 1; }
+.tour-invitation-copy b { font: 600 clamp(18px, 3.4cqi, 26px) var(--font-reading); letter-spacing: -0.02em; }
+.tour-invitation-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 18px;
+  border: 1px solid color-mix(in srgb, var(--tour-accent) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tour-accent) 12%, transparent);
+  box-shadow: 0 12px 34px -18px color-mix(in srgb, var(--tour-accent) 80%, transparent);
+  color: var(--terminal-fg);
+  font: 13px var(--font-reading);
+}
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation { opacity: 1; }
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation-copy { opacity: 1; transform: none; filter: none; }
+.tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation::after { animation: tour-sheen 1200ms cubic-bezier(.4,0,.2,1) 140ms both; }
 .tour-node { pointer-events: none; }
 .tour-window, .tour-host { border-color: #ffffff14; box-shadow: 0 8px 24px #0004; }
 .tour-chrome { background: #ffffff03; border-bottom-color: transparent; }
@@ -226,8 +277,15 @@
 .tour-split-pane { border: 1px solid #ffffff10; border-radius: 0.6em; background: var(--terminal-bg); overflow: hidden; }
 .tour-split-pane + .tour-split-pane { border-left-color: #ffffff10; }
 .tour-split-pane .tour-tabs { border-bottom: 0; padding-top: 0.6em; }
+/* Touch devices get the invitation continuously, but as a bottom chip rather
+   than a pane over the scene: covering the tour would hide the story. */
 @media (hover: none) {
-  .tour-invitation { opacity: 1; transform: translate(-50%, 0); }
+  .tour-invitation { place-content: end center; padding: 0 12px 10px; background: none; backdrop-filter: none; opacity: 1; pointer-events: none; }
+  .tour-invitation::after { display: none; }
+  .tour-invitation-copy { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 9px 16px; border: 1px solid #ffffff16; border-radius: 100px; background: #1b1b1de8; box-shadow: 0 4px 20px #0004; opacity: 1; transform: none; filter: none; }
+  .tour-invitation-copy b { font: 600 13px var(--font-reading); }
+  .tour-invitation-glyph { font-size: 15px; }
+  .tour-invitation-cta { padding: 0; border: 0; background: none; box-shadow: none; }
 }
 @container (max-width: 640px) {
   .tour-distant-host.is-0 { display: none; }
@@ -235,9 +293,11 @@
   .tour-distant-host.is-2 { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tour-invitation { transition: none; }
+  .tour-invitation, .tour-invitation-copy { transition: none; }
+  .tour-canvas:has(.tour-entry:is(:hover, :focus-visible)) .tour-invitation::after { animation: none; }
 }
 
+@keyframes tour-sheen { 0% { opacity: 0; transform: translateX(-110%); } 45% { opacity: 1; } 100% { opacity: 0; transform: translateX(110%); } }
 @keyframes tour-ring { 25% { transform: rotate(14deg); } 75% { transform: rotate(-14deg); } }
 @keyframes tour-drop { from { opacity: 0; transform: translateY(-0.4em); } }
 @keyframes tour-fade { from { opacity: 0; } }

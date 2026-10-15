@@ -8,17 +8,16 @@ import release from "../lib/release.json";
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
 const desktopInstall = "curl -fsSL https://phux.sh/install-desktop | sh";
 const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
-// The desktop canary rides the moving `next` prerelease: same installer, the
-// next channel. `sh -s --` forwards install-desktop.sh's own --channel flag.
-const canaryInstall = `${desktopInstall} -s -- --channel next`;
-// One hover/focus-driven switcher in the hero. The first target is server
-// rendered into #install-command, so a no-JS visitor still sees the CLI curl.
-// Notes stay one line at desktop width; the panel reserves their height so a
-// swap never resizes the dock and never slides a target out from the pointer.
+// One hover/focus-driven switcher in the hero: CLI, Desktop, and the iPhone
+// beta. The first target is server rendered into #install-command, so a no-JS
+// visitor still sees the CLI curl. Command targets carry a command; the mobile
+// target carries none, which swaps the command line for the TestFlight request
+// form. Notes stay one line at desktop width; the dock reserves the row heights
+// so a swap never resizes it and never slides a target out from the pointer.
 const installs = [
   { id: "cli", label: "CLI", command: cliInstall, note: "macOS and Linux · installs phux and phux-mcp" },
   { id: "desktop", label: "Desktop", command: desktopInstall, note: "Apple-silicon macOS · installs the CLI too, then opens Phux.app" },
-  { id: "canary", label: "Canary", command: canaryInstall, note: "Desktop canary · verified green-main builds; back to Stable in Settings" },
+  { id: "mobile", label: "Mobile", command: "", note: "No install: open the demo, scan its code, drive the shell from your phone. App in TestFlight." },
 ];
 // Build-time snapshot; site-deploy.yml rebuilds on every published release.
 const day = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -65,16 +64,37 @@ const features = [
           </div>
         </div>
         <span class="install-rule" aria-hidden="true"></span>
-        <div class="install-line">
-          <span class="install-command">
-            <span class="install-prompt" aria-hidden="true">$</span>
-            <code id="install-command">{cliInstall}</code>
-          </span>
-          <button type="button" class="install-copy" data-copy={cliInstall} aria-label="Copy install command">Copy</button>
+        <div class="install-stage">
+          <div class="install-line">
+            <span class="install-command">
+              <span class="install-prompt" aria-hidden="true">$</span>
+              <code id="install-command">{cliInstall}</code>
+            </span>
+            <button type="button" class="install-copy" data-copy={cliInstall} aria-label="Copy install command">Copy</button>
+          </div>
+          <form class="install-request" id="beta-form" hidden>
+            <input
+              type="email"
+              name="email"
+              required
+              autocomplete="email"
+              placeholder="Apple Account email"
+              aria-label="Email address for the TestFlight invite"
+            />
+            <input
+              class="install-trap"
+              type="text"
+              name="website"
+              tabindex="-1"
+              autocomplete="off"
+              aria-hidden="true"
+            />
+            <button type="submit">Request access</button>
+          </form>
         </div>
         <span class="install-rule" aria-hidden="true"></span>
         <p class="install-note" id="install-note">{installs[0].note}</p>
-        <span class="install-sheen" aria-hidden="true"></span>
+        <p class="copy-status" id="beta-note" role="status" aria-live="polite"></p>
       </div>
       <div class="release">
         macOS &amp; Linux
@@ -102,43 +122,11 @@ const features = [
         <span aria-hidden="true"> · </span>
         <a href={docsHref("/quickstart/install")}>Other installs</a>
       </div>
-      <p class="copy-status" role="status" aria-live="polite"></p>
     </section>
 
     <section class="terminal" aria-label="Try phux">
       <HeroDemo client:load wsUrl={SITE.demoWsUrl} />
       <p class="terminal-note"><a href="/embed" data-demo-launch>Try it in your browser <span aria-hidden="true">↗</span></a> · No install needed.</p>
-    </section>
-
-    <section class="beta" id="testflight" aria-labelledby="beta-title">
-      <p class="beta-kicker">TestFlight beta</p>
-      <h2 id="beta-title">phux on your iPhone</h2>
-      <p class="beta-blurb">
-        Drive the same terminals from your phone. Request access and App Store
-        Connect emails the TestFlight invite.
-      </p>
-      <form class="beta-form" id="beta-form">
-        <input
-          type="email"
-          name="email"
-          required
-          autocomplete="email"
-          placeholder="Apple Account email"
-          aria-label="Email address for the TestFlight invite"
-        />
-        <input
-          class="beta-trap"
-          type="text"
-          name="website"
-          tabindex="-1"
-          autocomplete="off"
-          aria-hidden="true"
-        />
-        <button type="submit">Request access</button>
-      </form>
-      <p class="beta-note" id="beta-note" aria-live="polite">
-        Apple emails the invite to this address.
-      </p>
     </section>
 
     <section class="features" aria-label="What phux does">
@@ -192,17 +180,19 @@ const features = [
     }
   });
 
-  // The dock has a fixed width and reserves its row heights, so a swap moves
-  // nothing. Only the highlight pill travels (transform), and the command
-  // settles with opacity and a short translate. No clip or backdrop animation:
-  // both are what made the first pass stutter.
+  // The dock keeps its fixed width and reserves its stage height, so a swap
+  // moves nothing. Only the target underline travels (transform), and the
+  // command settles with opacity and a short translate. The Mobile target has
+  // no command: it swaps the command line for the TestFlight request form. No
+  // clip or backdrop animation: both are what made the first pass stutter.
   const install = document.querySelector<HTMLElement>("[data-install]");
   const code = install?.querySelector<HTMLElement>("#install-command");
   const note = install?.querySelector<HTMLElement>("#install-note");
   const tabs = install?.querySelector<HTMLElement>(".install-tabs");
+  const line = install?.querySelector<HTMLElement>(".install-line");
+  const request = install?.querySelector<HTMLFormElement>(".install-request");
   const targets = install ? [...install.querySelectorAll<HTMLButtonElement>("[data-install-target]")] : [];
-  if (install && code && note && tabs && targets.length > 0) {
-    const sheen = install.querySelector<HTMLElement>(".install-sheen");
+  if (install && code && note && tabs && line && request && targets.length > 0) {
     const still = matchMedia("(prefers-reduced-motion: reduce)");
     let active = targets[0];
 
@@ -212,8 +202,8 @@ const features = [
       tabs.style.setProperty("--pill-x", `${box.left - frame.left}px`);
       tabs.style.setProperty("--pill-width", `${box.width}px`);
     };
-    // Equal-width tabs mean the pill only ever translates; keep the width set
-    // once per layout and let the transform transition carry the motion.
+    // Equal-width targets mean the mark only ever translates; keep the width
+    // set once per layout and let the transform transition carry the motion.
     const settle = (element: HTMLElement, distance: number, duration: number) => {
       if (still.matches) return;
       element.animate(
@@ -228,22 +218,15 @@ const features = [
         candidate.setAttribute("aria-pressed", String(candidate === target));
       }
       const command = target.dataset.installCommand ?? "";
+      const mobile = command === "";
       code.textContent = command;
       note.textContent = target.dataset.installNote ?? "";
       if (button) button.dataset.copy = command;
+      line.hidden = mobile;
+      request.hidden = !mobile;
       placePill(target);
-      settle(code, 6, 420);
+      settle(mobile ? request : code, mobile ? 4 : 6, mobile ? 340 : 420);
       settle(note, 4, 340);
-      if (sheen && !still.matches) {
-        sheen.animate(
-          [
-            { opacity: 0, transform: "translateX(-70%)" },
-            { opacity: 1, offset: 0.45 },
-            { opacity: 0, transform: "translateX(160%)" },
-          ],
-          { duration: 760, easing: "cubic-bezier(.4,0,.2,1)" },
-        );
-      }
     };
     targets.forEach((target, index) => {
       target.addEventListener("pointerenter", () => swap(target));
@@ -275,30 +258,43 @@ const features = [
 
 <style>
   .home { width: min(100%, 920px); margin: auto; padding-inline: 24px; box-sizing: border-box; }
-  .hero { text-align: center; padding-top: clamp(48px, 8vw, 88px); }
+  .hero { text-align: center; padding-top: clamp(24px, 5vw, 56px); }
   h1 { margin: 0; font-size: clamp(80px, 15vw, 144px); line-height: 1; font-weight: 700; letter-spacing: -0.085em; }
-  /* Liquid glass, built from layered gradients rather than a backdrop filter:
-     a static blur has nothing to refract on this canvas and re-composites on
-     every child animation. */
-  .install { position: relative; width: 100%; margin: 34px auto 0; box-sizing: border-box; border: 1px solid rgba(255, 255, 255, 0.075); border-radius: 20px; overflow: hidden; text-align: left; background: radial-gradient(120% 150% at 50% -30%, rgba(158, 206, 106, 0.10), transparent 58%), linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.014) 46%, rgba(255, 255, 255, 0) 100%), rgba(16, 16, 19, 0.78); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 -1px 0 rgba(0, 0, 0, 0.5), 0 34px 70px -44px rgba(0, 0, 0, 0.95); }
-  .install::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(130% 90% at 18% -25%, rgba(255, 255, 255, 0.09), transparent 58%); }
-  .install-head { display: flex; justify-content: center; padding: 14px 14px 0; }
-  .install-tabs { position: relative; display: flex; padding: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); }
-  .install-tabs::before { content: ""; position: absolute; top: 4px; bottom: 4px; left: 0; width: var(--pill-width, 0); border-radius: 999px; background: rgba(255, 255, 255, 0.10); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10); transform: translateX(var(--pill-x, 0)); transition: transform 460ms cubic-bezier(.22,.61,.36,1); }
-  .install-tabs button { position: relative; z-index: 1; flex: 1 1 0; min-width: 98px; min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--color-muted); font: inherit; font-size: 12.5px; cursor: pointer; transition: color 240ms ease; }
+  /* No dock, no card: the targets, the command or request, and the note are
+     plain type floating on the canvas. Structure comes from spacing and the two
+     hairlines only. */
+  .install { position: relative; width: 100%; margin: 30px auto 0; box-sizing: border-box; text-align: left; }
+  .install-head { display: flex; justify-content: center; }
+  .install-tabs { position: relative; display: flex; gap: 6px; }
+  /* The travelling mark is a hairline under the active target, not a pill. */
+  .install-tabs::before { content: ""; position: absolute; bottom: -6px; left: 0; width: var(--pill-width, 0); height: 1px; background: var(--color-fg); opacity: 0.45; transform: translateX(var(--pill-x, 0)); transition: transform 460ms cubic-bezier(.22,.61,.36,1); }
+  .install-tabs button { position: relative; z-index: 1; flex: 1 1 0; min-width: 76px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 0; background: transparent; color: var(--color-dim); font: inherit; font-size: 12.5px; letter-spacing: 0.01em; cursor: pointer; transition: color 240ms ease; }
   .install-tabs button:hover, .install-tabs button:focus-visible, .install-tabs button[aria-pressed="true"] { color: var(--color-fg); }
-  .install-rule { display: block; height: 1px; margin-top: 14px; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09) 20%, rgba(255, 255, 255, 0.09) 80%, transparent); }
+  .install-rule { display: block; height: 1px; margin-top: 16px; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09) 20%, rgba(255, 255, 255, 0.09) 80%, transparent); }
+  /* Stage: the command line and the TestFlight request share one slot and one
+     reserved height, so switching targets never resizes the dock. */
+  .install-stage { display: grid; align-items: center; min-height: 62px; }
   /* Symmetric gutters put the command on the dock's center line with the copy
      action at the edge; equal 1fr tracks cannot collide because the copy track
      never shrinks below the button. */
-  .install-line { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 14px 16px 16px; }
+  .install-line { grid-area: 1 / 1; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 18px 0 4px; }
+  .install-request { grid-area: 1 / 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+  .install-line[hidden], .install-request[hidden] { display: none; }
   .install-command { grid-column: 2; display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; }
   .install-prompt { color: var(--color-signal); font-family: var(--font-code); font-size: 13px; }
   #install-command { min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 13px; }
-  .install-copy { grid-column: 3; justify-self: end; min-height: 40px; padding: 0 16px; border: 0; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--color-muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 220ms ease, color 220ms ease; }
-  .install-copy:hover { background: rgba(255, 255, 255, 0.11); color: var(--color-fg); }
-  .install-note { min-height: 1.6em; margin: 0; padding: 12px 18px 14px; color: var(--color-dim); font-size: 12px; line-height: 1.6; text-align: center; }
-  .install-sheen { position: absolute; z-index: 2; inset: 0; opacity: 0; pointer-events: none; background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.06) 50%, transparent 62%); }
+  .install-copy { grid-column: 3; justify-self: end; min-height: 40px; padding: 0; border: 0; background: transparent; color: var(--color-dim); font: inherit; font-size: 12px; cursor: pointer; transition: color 220ms ease; }
+  .install-copy:hover { color: var(--color-fg); }
+  /* The request controls carry a hairline outline, not a filled panel: they
+     float with the rest of the hero. */
+  .install-request input { width: min(280px, 100%); padding: 9px 16px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; background: transparent; color: var(--color-fg); font: inherit; font-size: 14px; transition: border-color 200ms ease; }
+  .install-request input::placeholder { color: var(--color-dim); }
+  .install-request input:focus-visible, .install-request button:focus-visible { outline: 2px solid rgba(158, 206, 106, 0.6); outline-offset: 2px; }
+  .install-request button { padding: 10px 20px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; background: transparent; color: var(--color-fg); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 200ms ease; }
+  .install-request button:hover { border-color: rgba(255, 255, 255, 0.3); }
+  .install-request button:disabled { opacity: 0.55; cursor: progress; }
+  .install-request .install-trap { position: absolute; left: -10000px; width: 1px; height: 1px; opacity: 0; }
+  .install-note { min-height: 1.6em; margin: 0; padding: 14px 0 0; color: var(--color-dim); font-size: 12px; line-height: 1.6; text-align: center; }
   .release { margin: 14px 0 0; color: var(--color-dim); font-size: 12px; }
   .release a:hover, .terminal-note a:hover { text-decoration: underline; }
   .latest { position: relative; display: inline-block; }
@@ -317,48 +313,31 @@ const features = [
   .terminal { margin-top: 28px; }
   .terminal-note { margin: 12px 0 0; text-align: center; color: var(--color-dim); font-size: 12px; }
   .terminal-note a { color: var(--color-muted); }
-  /* The beta band carries no card and no rule: it reads as page content, and
-     the only line work on the landing stays inside the install dock. */
-  .beta { margin-top: 76px; text-align: center; }
-  .beta-kicker { margin: 0 0 12px; color: var(--color-signal); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; }
-  .beta h2 { margin: 0 0 10px; font-size: clamp(22px, 3vw, 27px); font-weight: 600; letter-spacing: -0.03em; }
-  .beta-blurb { max-width: 44ch; margin: 0 auto 24px; color: var(--color-muted); font-size: 14px; line-height: 1.65; }
-  .beta-form { display: inline-grid; grid-auto-flow: column; align-items: center; gap: 6px; max-width: 100%; padding: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.03); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); transition: box-shadow 200ms ease; }
-  .beta-form:focus-within { box-shadow: inset 0 0 0 1px rgba(158, 206, 106, 0.45); }
-  .beta-form input { width: 280px; padding: 9px 16px; border: 0; border-radius: 999px; background: transparent; color: var(--color-fg); font: inherit; font-size: 14px; }
-  .beta-form input::placeholder { color: var(--color-dim); }
-  .beta-form input:focus { outline: none; }
-  .beta-form button { padding: 10px 20px; border: 0; border-radius: 999px; background: rgba(255, 255, 255, 0.09); color: var(--color-fg); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 200ms ease; }
-  .beta-form button:hover { background: rgba(255, 255, 255, 0.15); }
-  .beta-form button:disabled { opacity: 0.6; cursor: progress; }
-  .beta-form .beta-trap { position: absolute; left: -10000px; width: 1px; height: 1px; opacity: 0; }
-  .beta-note { min-height: 1.5em; margin: 16px 0 0; color: var(--color-dim); font-size: 12px; }
   .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; margin-top: 64px; padding: 32px 0 48px; border-top: 1px solid var(--color-rule); }
   .features h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
   .features p { margin: 0; color: var(--color-muted); font-size: 14px; line-height: 1.6; }
   .features a:hover h2 { text-decoration: underline; }
   @media (max-width: 820px) {
-    .install-head { padding: 12px 12px 0; }
-    .install-tabs button { min-width: 80px; padding: 0 10px; font-size: 12px; }
-    .install-rule { margin-top: 12px; }
-    .install-line { grid-template-columns: minmax(0, 1fr) auto; padding: 12px 14px; }
+    .install-tabs button { min-width: 76px; padding: 0 8px; font-size: 12px; }
+    .install-line { grid-template-columns: minmax(0, 1fr) auto; padding: 14px 0 2px; }
     .install-command { grid-column: 1; align-items: flex-start; min-height: 34px; }
     .install-copy { grid-column: 2; }
     #install-command { white-space: normal; overflow-wrap: anywhere; font-size: 11.5px; }
-    .install-note { min-height: 3.2em; padding: 10px 16px 12px; }
+    .install-note { min-height: 3.2em; padding: 12px 0 0; }
   }
   @media (max-width: 600px) {
     .home { padding-inline: 20px; }
     .features { grid-template-columns: 1fr; gap: 24px; margin-top: 48px; }
-    .beta { margin-top: 56px; }
-    .beta-form { display: grid; grid-auto-flow: row; grid-template-columns: 1fr; width: 100%; padding: 8px; border-radius: 16px; }
-    .beta-form input { width: 100%; }
-    .beta-form button { width: 100%; }
+    /* A wrapped command needs two lines; the stacked request form needs two
+       rows. Either way the stage keeps both targets the same height. */
+    .install-stage { min-height: 84px; }
+    .install-request { flex-direction: column; align-items: stretch; }
+    .install-request input, .install-request button { width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .install-tabs::before, .install-tabs button, .install-copy, .beta-form, .beta-form button { transition: none; }
+    .install-tabs::before, .install-tabs button, .install-copy, .install-request input, .install-request button { transition: none; }
   }
   @media (scripting: none) {
-    .install-head, .install-rule:first-of-type { display: none; }
+    .install-head { display: none; }
   }
 </style>

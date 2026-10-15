@@ -36,6 +36,7 @@ pub mod input_dispatch;
 mod notify;
 mod onboarding;
 pub mod paint;
+mod project_collapse;
 // `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
 mod pane_state;

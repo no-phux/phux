@@ -99,6 +99,7 @@ mod tests {
                     lifetime: None,
                     members: 0,
                     exec: crate::session_list::ExecCounts::default(),
+                    project: None,
                 }],
             },
             HostJson {

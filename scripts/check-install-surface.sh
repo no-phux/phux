@@ -81,9 +81,9 @@ require_fixed docs/site/.gitignore 'public/install-cockpit'
 require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
 require_fixed docs/site/public/_headers '/install-cockpit'
 # The GPUI desktop installer is the third served script, and the landing hands
-# it out for both Desktop and the Canary (desktop next) segment. Pin the same
-# halves as the other two: the copy, the ignore, the cache header, the deploy
-# path filter, and the deploy-side byte-for-byte reachability proof.
+# it out for the Desktop target. Pin the same halves as the other two: the
+# copy, the ignore, the cache header, the deploy path filter, and the
+# deploy-side byte-for-byte reachability proof.
 require_fixed docs/site/scripts/sync-docs.ts 'scripts/install-desktop.sh'
 require_fixed docs/site/scripts/sync-docs.ts '"public/install-desktop", "public/install-desktop.sh"'
 require_fixed docs/site/.gitignore 'public/install-desktop'
@@ -91,10 +91,15 @@ require_fixed docs/site/public/_headers '/install-desktop'
 require_fixed .github/workflows/site-deploy.yml '- "scripts/install-desktop.sh"'
 require_fixed .github/workflows/site-deploy.yml 'for path in install-desktop install-desktop.sh; do'
 require_fixed .github/workflows/site-deploy.yml 'cmp scripts/install-desktop.sh "$downloaded"'
-# The landing's Canary segment is the desktop next installer. If the flag is
-# ever renamed the served copy must move with install-desktop.sh.
+# The landing's third target is Mobile. It carries no command: the hero swaps
+# the command line for the TestFlight request in #install .install-request
+# (#beta-form), wired through wireBetaRequest. Desktop still serves
+# install-desktop.sh. The hero does not offer the desktop next channel.
 require_fixed docs/site/src/pages/index.astro 'install-desktop | sh'
-require_fixed docs/site/src/pages/index.astro '-s -- --channel next'
+require_fixed docs/site/src/pages/index.astro 'id: "mobile", label: "Mobile", command: ""'
+require_fixed docs/site/src/pages/index.astro 'class="install-request" id="beta-form"'
+require_fixed docs/site/src/pages/index.astro 'wireBetaRequest('
+forbid_fixed docs/site/src/pages/index.astro '-s -- --channel next'
 
 # Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
 # read the releases/latest redirect before falling back to the release list.
@@ -118,6 +123,11 @@ require_fixed scripts/publish-next-channel.sh 'pointer_name="channel.json"'
 require_fixed scripts/publish-next-channel.sh 'pointer_name="cockpit-channel.json"'
 require_fixed scripts/publish-next-channel.sh 'channel_json="$pointer_dir/$pointer_name"'
 require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
+# A refused retarget (workflows:write, which GITHUB_TOKEN cannot hold) must
+# not skip the pointer upload. Both the script and the desktop publish step
+# warn and continue.
+require_fixed scripts/publish-next-channel.sh 'could not retarget the next release to ${sha}; publishing the pointer anyway'
+require_fixed .github/workflows/next-release.yml 'could not retarget the next release to ${SHA}; publishing the pointer anyway'
 forbid_fixed scripts/publish-next-channel.sh 'channel_json#'
 # Cockpit rides the same moving prerelease: the workflow publishes it, the
 # installer and in-app driver follow it, and `phux update` drives the driver.
@@ -322,6 +332,7 @@ fi
 
 bash "$ROOT/scripts/check-product-skills-export.sh"
 bash "$ROOT/scripts/test-pack-release.sh"
+bash "$ROOT/scripts/test-publish-next-channel.sh"
 bash "$ROOT/scripts/test-install.sh"
 bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check

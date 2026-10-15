@@ -23,7 +23,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
 use super::AppOptions;
-use super::actions::{OpenPathDirectory, Quit, Run};
+use super::actions::{OpenPathDirectory, PerformanceMonitor, Quit, Run, StopPerformanceMonitor};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
 
@@ -50,6 +50,7 @@ pub struct Desktop {
     recent_projects: Option<RecentProjects>,
     windows: Vec<Opened>,
     quick: Option<Opened>,
+    performance: Option<AnyWindowHandle>,
     /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
     keymap: Option<Vec<(String, String)>>,
     /// GPUI strokes bound to [`Run`]; a stroke a later keymap drops is masked with `NoAction`.
@@ -88,6 +89,7 @@ impl Desktop {
             recent_projects: None,
             windows: Vec::new(),
             quick: None,
+            performance: None,
             keymap: None,
             bound: Vec::new(),
             hotkey_chords: Vec::new(),
@@ -105,6 +107,25 @@ impl Desktop {
             });
         });
         desktop.update(cx, |desktop, _| desktop._closed = Some(closed));
+        let weak = desktop.downgrade();
+        cx.on_action(move |_: &PerformanceMonitor, cx| {
+            // Menu actions may run while the focused window is leased.
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |desktop, cx| {
+                    if let Err(error) = desktop.open_performance(cx) {
+                        log::error!("could not open performance monitor: {error:#}");
+                    }
+                });
+            });
+        });
+        let weak = desktop.downgrade();
+        cx.on_action(move |_: &StopPerformanceMonitor, cx| {
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |desktop, cx| desktop.stop_performance(cx));
+            });
+        });
         let weak = desktop.downgrade();
         cx.on_system_notification_response(move |response, cx| {
             let _ = weak.update(cx, |desktop, cx| {
@@ -171,6 +192,9 @@ impl Desktop {
         self.updates.update(cx, |updater, cx| {
             updater.start(self.phux.clone(), self.socket.clone(), cx)
         });
+        if options.dev_telemetry {
+            self.open_performance(cx)?;
+        }
         Ok(handle)
     }
 
@@ -541,7 +565,39 @@ impl Desktop {
         });
     }
 
+    fn open_performance(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        if let Some(handle) = self.performance
+            && handle
+                .update(cx, |_, window, _| {
+                    if crate::diag::may_activate() {
+                        window.activate_window();
+                    }
+                })
+                .is_ok()
+        {
+            return Ok(());
+        }
+        self.performance = Some(super::performance::open(cx)?);
+        self.publish_menus(cx);
+        Ok(())
+    }
+
+    fn stop_performance(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.performance.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.publish_menus(cx);
+    }
+
     fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        if self
+            .performance
+            .is_some_and(|handle| handle.window_id() == id)
+        {
+            self.performance = None;
+            self.publish_menus(cx);
+            return;
+        }
         let closed = if let Some(index) = self
             .windows
             .iter()
@@ -687,7 +743,7 @@ impl Desktop {
     /// Menu items name [`Run`] actions; the platform menu shows each one's bound
     /// chord. The palette holds the rest of the catalog.
     fn publish_menus(&self, cx: &mut App) {
-        cx.set_menus(vec![
+        let mut menus = vec![
             Menu::new("Phux").items([
                 MenuItem::action("Settings…", Run::new("settings")),
                 MenuItem::separator(),
@@ -723,7 +779,16 @@ impl Desktop {
                 MenuItem::separator(),
                 MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
             ]),
-        ]);
+        ];
+        let mut developer = vec![MenuItem::action("Performance Monitor", PerformanceMonitor)];
+        if self.performance.is_some() {
+            developer.push(MenuItem::action(
+                "Stop Performance Monitoring",
+                StopPerformanceMonitor,
+            ));
+        }
+        menus.push(Menu::new("Developer").items(developer));
+        cx.set_menus(menus);
     }
 
     /// Replace the global quick-terminal chords. No chords drops the registration.

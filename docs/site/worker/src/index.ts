@@ -16,7 +16,7 @@
 import { SessionDO } from "./session";
 import { GlobalCapDO } from "./global-cap";
 import { RateLimitDO, rateLimitName } from "./rate-limit";
-import { mintToken } from "./token";
+import { mintToken, verifyToken } from "./token";
 import { loadPortfolioSnapshot } from "./portfolio";
 import { PhuxSessionContainer } from "./native-session";
 import type { CircuitConfig } from "./native-admission";
@@ -97,10 +97,54 @@ const CLOSE = {
 } as const;
 
 const SESSION_PATH = "/session";
+/** Same-origin status the pairing panel polls while its QR is on screen. */
+const PAIR_STATUS_PATH = "/session/pair";
 
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Browser origins this Worker answers with CORS; one list, three callers. */
+function allowedOrigins(env: Env): string[] {
+  return (env.ALLOWED_ORIGINS || "https://phux.sh")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function corsHeaders(request: Request, env: Env): Record<string, string> {
+  const origin = request.headers.get("Origin") ?? "";
+  const allowed = allowedOrigins(env).includes(origin);
+  return {
+    vary: "Origin",
+    ...(allowed ? { "access-control-allow-origin": origin } : {}),
+  };
+}
+
+/**
+ * Whether a phone has spent a pairing code yet. The code is the only credential
+ * and it is single-use, so this leaks nothing beyond what its holder could do
+ * anyway: attach to one disposable shell.
+ */
+async function pairStatusResponse(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  const headers = { ...corsHeaders(request, env), "cache-control": "no-store" };
+  if (request.method !== "GET") {
+    return new Response("method not allowed", { status: 405, headers });
+  }
+  const code = url.searchParams.get("code") ?? "";
+  const claims = await verifyToken(env.SESSION_TOKEN_SECRET, code, "attach");
+  if (!claims) {
+    return Response.json({ error: "invalid pairing code" }, { status: 400, headers });
+  }
+  return Response.json(
+    await env.SESSION.getByName(claims.sid).pairStatus(code),
+    { headers },
+  );
 }
 
 function circuitConfig(env: Env): CircuitConfig {
@@ -177,6 +221,10 @@ export default {
       });
     }
 
+    if (url.pathname === PAIR_STATUS_PATH) {
+      return await pairStatusResponse(request, env, url);
+    }
+
     if (url.pathname !== SESSION_PATH) {
       return new Response("not found", { status: 404 });
     }
@@ -197,15 +245,47 @@ export default {
     }
 
     const origin = request.headers.get("Origin") ?? "";
-    const allowedOrigins = (env.ALLOWED_ORIGINS || "https://phux.sh")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (!allowedOrigins.includes(origin)) {
+    if (!allowedOrigins(env).includes(origin)) {
       return rejectUpgrade(CLOSE.BAD_REQUEST, "origin not allowed");
     }
 
     const ip = trustedClientIp(request);
+
+    // ── paired second screen ────────────────────────────────────────────────
+    // A pairing code attaches to the session that minted it: it reserves no
+    // slot, mints no token, and spends nothing. The session's own object decides
+    // whether the code is still spendable, so a leaked link buys one view of one
+    // disposable shell.
+    const attachCode = url.searchParams.get("attach");
+    if (attachCode) {
+      if (mode === "native") {
+        return rejectUpgrade(
+          CLOSE.BAD_REQUEST,
+          "pairing covers the edge shell only",
+        );
+      }
+      const attachKey = await rateLimitName(ip, env.AUTH_COOKIE_SECRET);
+      const attachPerMin = parseInt(env.RATE_LIMIT_PER_MIN, 10) || 10;
+      if (!(await env.RATE_LIMIT.getByName(attachKey).check(attachPerMin))) {
+        return rejectUpgrade(
+          CLOSE.RATE_LIMITED,
+          "rate limited: too many demo requests from your ip, wait a minute",
+        );
+      }
+      const claims = await verifyToken(
+        env.SESSION_TOKEN_SECRET,
+        attachCode,
+        "attach",
+      );
+      if (!claims) {
+        return rejectUpgrade(CLOSE.BAD_REQUEST, "this pairing link is not valid");
+      }
+      const attached = new Request(request.url, request);
+      attached.headers.set("X-Phux-Session", claims.sid);
+      attached.headers.set("X-Phux-Token", attachCode);
+      attached.headers.set("X-Phux-Attach", "1");
+      return await env.SESSION.getByName(claims.sid).fetch(attached);
+    }
 
     // ── (2) per-IP rate limit ────────────────────────────────────────────────
     // A secret-keyed object per source address keeps each sliding window
@@ -313,6 +393,7 @@ export default {
       token = await mintToken(env.SESSION_TOKEN_SECRET, {
         sid,
         exp: Date.now() + ttlMs,
+        scope: "session",
       });
     } catch (err) {
       // Roll back the reservation so a minting failure doesn't leak a slot.

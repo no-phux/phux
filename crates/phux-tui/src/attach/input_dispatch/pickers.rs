@@ -290,8 +290,9 @@ pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 /// The full session-picker rows (host-grouped sessions plus "+ New
 /// session"), one builder for the open and the live refresh.
 ///
-/// A non-empty project tag regroups only the attached host's sessions.
-/// Satellites and other machines stay under their own headers.
+/// A project identity or non-empty project tag regroups only the attached
+/// host's sessions. Satellites and other machines stay under their own
+/// headers; another machine's row names its project.
 pub(in crate::attach) fn session_picker_rows(
     peers: &PeerInputs<'_>,
     workspace: &ArrangementDoc,
@@ -304,14 +305,14 @@ pub(in crate::attach) fn session_picker_rows(
         needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
     };
     let machines = peers.other_machines();
-    let mut items = if peers.project_tags.values().any(|tag| !tag.is_empty()) {
+    let grouped = peers
+        .sessions
+        .iter()
+        .any(|session| phux_client::project_identity::of_session(session).is_some())
+        || peers.project_tags.values().any(|tag| !tag.is_empty());
+    let mut items = if grouped {
         assemble_host_groups(
-            project_grouped_session_items(
-                peers.sessions,
-                peers.focused_session,
-                &counts,
-                peers.project_tags,
-            ),
+            project_grouped_session_items(peers.sessions, peers.focused_session, &counts, peers),
             here,
             peers.hosts,
             &machines,
@@ -332,57 +333,65 @@ pub(in crate::attach) fn session_picker_rows(
     items
 }
 
-/// Attached-host sessions grouped by `phux.session.project/v1`. Untagged
-/// sessions sit under `Sessions`. Each row is an [`attached_session_row`],
-/// joined by session id because names are not unique.
+/// Attached-host sessions grouped by project (ADR-0168): a session's
+/// identity, else its `phux.session.project/v1` label. Groups sort by name;
+/// in each, primary checkouts lead and their linked worktrees follow marked
+/// `└`. A group header counts the panes that need you. Sessions in no
+/// project sit under `Sessions`. Each row is an [`attached_session_row`].
 fn project_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<SessionId>,
     counts: &SessionCounts,
-    project_tags: &HashMap<SessionId, String>,
+    peers: &PeerInputs<'_>,
 ) -> Vec<SelectItem> {
+    use phux_client::project_groups::{Block, GroupRow, group_rows};
     let mut ordered: Vec<_> = sessions.iter().collect();
     ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
-    let lines: Vec<phux_client_core::organization::SessionLine> = ordered
+    let identities: Vec<_> = ordered
         .iter()
-        .map(|session| phux_client_core::organization::SessionLine {
-            name: project_line_name(session.id),
-            host: None,
-            project: project_tags.get(&session.id).cloned(),
+        .map(|session| phux_client::project_identity::of_session(session))
+        .collect();
+    let rows: Vec<GroupRow<'_>> = ordered
+        .iter()
+        .zip(&identities)
+        .map(|(session, identity)| GroupRow {
+            project: identity.as_ref(),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
+            needs_you: counts.needs_you.get(&session.id).copied().unwrap_or(0),
         })
         .collect();
-    let mut items = Vec::new();
-    for group in phux_client_core::organization::group_by_project(&lines) {
-        let header = group
-            .project
-            .clone()
-            .unwrap_or_else(|| "Sessions".to_owned());
-        items.push(SelectItem::header(header));
-        for line in group.sessions {
-            let Some(session) = session_for_project_line(sessions, &line.name) else {
-                continue;
-            };
-            items.push(attached_session_row(session, counts).indented());
+    let mut groups = Vec::new();
+    let mut ungrouped = Vec::new();
+    for block in group_rows(&rows, 1) {
+        match block {
+            Block::Single(index) => ungrouped.push(index),
+            Block::Project(block) => groups.push(block),
         }
     }
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut items = Vec::new();
+    for group in groups {
+        items.push(SelectItem::header(match group.needs_you {
+            0 => group.name.clone(),
+            n => format!("{} - {n} need you", group.name),
+        }));
+        for member in group.members {
+            let mut row = attached_session_row(ordered[member.index], counts).indented();
+            if member.linked {
+                row.label = format!("└ {}", row.label);
+            }
+            items.push(row);
+        }
+    }
+    if !ungrouped.is_empty() {
+        items.push(SelectItem::header("Sessions"));
+        items.extend(
+            ungrouped
+                .into_iter()
+                .map(|index| attached_session_row(ordered[index], counts).indented()),
+        );
+    }
     items
-}
-
-/// Join key for [`phux_client_core::organization::group_by_project`].
-/// `SessionLine` has no id, and the display name is not unique.
-fn project_line_name(id: SessionId) -> String {
-    format!("id:{}", id.get())
-}
-
-fn session_for_project_line<'a>(
-    sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    name: &str,
-) -> Option<&'a phux_protocol::wire::info::SessionInfo> {
-    let raw = name.strip_prefix("id:")?;
-    let id = raw.parse::<u32>().ok()?;
-    sessions
-        .iter()
-        .find(|session| session.id == SessionId::new(id))
 }
 
 /// Session picker rows grouped by host: with no other host exactly
@@ -444,6 +453,9 @@ fn machine_items(host: &HostJson) -> Vec<SelectItem> {
         // The host stays on the row so it still reads once a typed query
         // hides the headers.
         let mut details = vec![format!("on {}", host.label)];
+        if let Some(project) = &session.project {
+            details.push(format!("project {}", project.name));
+        }
         let exec = &session.exec;
         let needs = exec.failed.saturating_add(exec.lost);
         if needs > 0 {

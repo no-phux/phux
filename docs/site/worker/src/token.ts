@@ -9,6 +9,13 @@ const enc = new TextEncoder();
 export interface SessionClaims {
   sid: string; // session id (also the DO name)
   exp: number; // epoch ms expiry
+  /**
+   * What the token is allowed to do. "session" opens a session (the Worker's
+   * own front-door token); "attach" is the single-use pairing code a session
+   * hands to a second screen. Absent means "session", which is what every token
+   * minted before pairing existed was.
+   */
+  scope?: "session" | "attach";
 }
 
 function b64urlEncode(bytes: Uint8Array): string {
@@ -51,7 +58,11 @@ export async function mintToken(secret: string, claims: SessionClaims): Promise<
   return `${payload}.${b64urlEncode(sig)}`;
 }
 
-export async function verifyToken(secret: string, token: string): Promise<SessionClaims | null> {
+export async function verifyToken(
+  secret: string,
+  token: string,
+  scope: "session" | "attach" = "session",
+): Promise<SessionClaims | null> {
   const dot = token.indexOf(".");
   if (dot < 0) return null;
   const payload = token.slice(0, dot);
@@ -73,5 +84,9 @@ export async function verifyToken(secret: string, token: string): Promise<Sessio
   }
   if (typeof claims.exp !== "number" || Date.now() > claims.exp) return null;
   if (typeof claims.sid !== "string" || claims.sid.length === 0) return null;
+  if (claims.scope !== undefined && claims.scope !== "session" && claims.scope !== "attach")
+    return null;
+  // A pairing code can never stand in for a session, and vice versa.
+  if ((claims.scope ?? "session") !== scope) return null;
   return claims;
 }

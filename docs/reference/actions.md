@@ -60,6 +60,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `switch-host` | — | `host` (a registered host name, or `local` for this machine); `name` (the session there) | Re-attach this terminal to a session on another machine |
+| `toggle-project-group` | — | `project` (the group's key, as the sidebar header carries it) | Collapse or expand one project group in the sidebar's Sessions zone (ADR-0168) |
 | `new-session` | Session | `name?` (bare opens an interactive prompt); `cwd?`; `host?` | Create a new session and switch to it |
 | `last-session` | Session |  | Switch back to the previous session |
 | `next-session` | Session |  | Switch to the next session by name |
@@ -84,6 +85,7 @@ Why the dash rows have no palette entry:
 - `session-actions` — opened by Tab in the session picker or right-click on a sidebar session.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
 - `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments or the session picker's machine groups, so a bare palette row would have no target to act on.
+- `toggle-project-group` — requires the `project` arg the sidebar's group header supplies, so a bare palette row would have no group to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.
 - `plugin-pane` — same shape as `plugin-action`: dynamic rows from enabled plugins' manifest `[[panes]]`, carrying `plugin`/`pane` args.

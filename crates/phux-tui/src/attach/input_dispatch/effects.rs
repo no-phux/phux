@@ -115,6 +115,9 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     if effects.switch_host.is_some() {
         *ctx.host_switch_request = effects.switch_host;
     }
+    if effects.toggle_project.is_some() {
+        *ctx.project_toggle_request = effects.toggle_project;
+    }
     record_reattach_request(
         effects.reattach,
         ctx.switch_request,
@@ -587,6 +590,8 @@ pub(super) struct ActionEffects {
     pub(super) toggle_zoom: bool,
     /// Flip the driver's sidebar state (and reflow).
     pub(super) toggle_sidebar: bool,
+    /// ADR-0168: a project group key whose sidebar collapse to flip.
+    pub(super) toggle_project: Option<String>,
     /// The new focused pane, already applied to the active window.
     pub(super) set_focus: Option<ResourceId>,
     /// `true` ⇒ emit `SET_METADATA` carrying the new layout envelope.

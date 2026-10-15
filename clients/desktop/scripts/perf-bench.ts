@@ -475,6 +475,14 @@ try {
   app = launch([host, ...appArgs], "app");
   await until("perf samples", () => samples().length >= 3);
   await Bun.sleep(2000);
+  // A locked display can keep the process and diagnostic timer alive without
+  // presenting a single frame. Such samples are not a desktop paint benchmark.
+  assert(
+    samples().some(
+      (sample) => (sample.frames?.frames ?? 0) > 0 || counter(sample, "desktop.render") > 0,
+    ),
+    `desktop never drew a frame; use the offscreen headless benchmark instead. Evidence: ${evidence}`,
+  );
   const results: Phase[] = [];
   await phase("idle", results);
   flood(hidden);

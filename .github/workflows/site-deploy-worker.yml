@@ -15,6 +15,7 @@ on:
       - "docs/site/bun.lock"
       - "docs/site/scripts/phux-wire.ts"
       - "docs/site/scripts/smoke-native.ts"
+      - "docs/site/scripts/smoke-pair.ts"
       - ".github/workflows/site-deploy-worker.yml"
   workflow_dispatch:
 
@@ -74,6 +75,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Native admission is parked unless this repository variable is
+          # "true"; see infra/demo.run.ts. Unset (empty) stays parked.
+          PHUX_NATIVE_ENABLED: ${{ vars.PHUX_NATIVE_ENABLED }}
 
       - name: Wait for container rollout
         env:
@@ -99,9 +103,20 @@ jobs:
           # A newly attached custom domain can lag the Worker deployment in
           # public DNS. Do not mistake that propagation window for a runtime
           # or WebSocket failure.
+          verify() {
+            # Native is parked unless the repository variable turns it back on
+            # (infra/demo.run.ts); assert the state this deploy actually set.
+            if [[ "${{ vars.PHUX_NATIVE_ENABLED }}" == "true" ]]; then
+              bun run worker:smoke-fallback
+            else
+              bun run scripts/smoke-native.ts --expect-edge
+            fi
+            # Pairing rides the edge shell, so it is always part of the surface.
+            bun run worker:smoke-pair
+          }
           for attempt in {1..30}; do
             if curl --fail --silent --show-error https://shell.phux.sh/healthz >/dev/null; then
-              bun run worker:smoke-fallback
+              verify
               exit 0
             fi
             echo "Waiting for custom-domain DNS (${attempt}/30)"

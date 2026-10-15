@@ -9,6 +9,81 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.76.2](https://github.com/no-phux/phux/compare/v0.76.1...v0.76.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** keep the bootstrap generation broadcast ([0de6695](https://github.com/no-phux/phux/commit/0de6695588643ac1a75acd7440f586b4b43d0d6f))
+
+
+### Documentation
+
+* **site:** name the per-connection routing rule in the worker guide ([447ef0c](https://github.com/no-phux/phux/commit/447ef0ce2a68bf0b124b3d848b955fbdc35ff901))
+
+## [0.76.1](https://github.com/no-phux/phux/compare/v0.76.0...v0.76.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** answer handshake frames to the connection that asked ([ac6e3b6](https://github.com/no-phux/phux/commit/ac6e3b6c9e4f78dab9c94a72217ccea4942575e9))
+* **site:** keep command results on the view that asked ([74d26d0](https://github.com/no-phux/phux/commit/74d26d087f0d325cca8fbb930e2e5834bd1eeaef))
+
+## [0.76.0](https://github.com/no-phux/phux/compare/v0.75.0...v0.76.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** add live native performance monitoring ([e60e87e](https://github.com/no-phux/phux/commit/e60e87e5c05be81c30c1ffb9e167b178f07b181f))
+
+
+### Performance
+
+* **runtime:** keep the last frame across reconnect and size the websocket send budget ([#1392](https://github.com/no-phux/phux/issues/1392)) ([b33f042](https://github.com/no-phux/phux/commit/b33f0426c1b661fd216df75739a032b47be96b5b))
+
+## [0.75.0](https://github.com/no-phux/phux/compare/v0.74.4...v0.75.0) (2026-10-15)
+
+
+### Features
+
+* projects v2 - remote-keyed project identity in session attrs, grouped sidebar, picker, and ls ([#1300](https://github.com/no-phux/phux/issues/1300)) ([45eeb70](https://github.com/no-phux/phux/commit/45eeb7009c74d474eedcdb0224773a14c0fcc0cb))
+
+## [0.74.4](https://github.com/no-phux/phux/compare/v0.74.3...v0.74.4) (2026-10-15)
+
+
+### Bug Fixes
+
+* **site:** route attachment frames by their real attach id ([e6181ed](https://github.com/no-phux/phux/commit/e6181ede29b8c259ff770a5bb0d467459a403467))
+
+## [0.74.3](https://github.com/no-phux/phux/compare/v0.74.2...v0.74.3) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** probe quiet links and echo keys before the round trip ([#1385](https://github.com/no-phux/phux/issues/1385)) ([ec9a265](https://github.com/no-phux/phux/commit/ec9a265e63322b12de8f39b441a9577d4892e72f))
+
+## [0.74.2](https://github.com/no-phux/phux/compare/v0.74.1...v0.74.2) (2026-10-15)
+
+
+### Performance
+
+* **desktop:** measure GPUI redraws headlessly ([#1381](https://github.com/no-phux/phux/issues/1381)) ([61b3e8b](https://github.com/no-phux/phux/commit/61b3e8ba1453e32f9b5ba33ad3b7873cd5b598f7))
+
+## [0.74.1](https://github.com/no-phux/phux/compare/v0.74.0...v0.74.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ci:** align the landing install-surface pins with the Mobile hero ([#1377](https://github.com/no-phux/phux/issues/1377)) ([ec051d9](https://github.com/no-phux/phux/commit/ec051d99a128a84da61a713db47cc524577cdbcd))
+* **site:** assert the parked demo state in the native smokes ([d58cfb5](https://github.com/no-phux/phux/commit/d58cfb58b5162c2eab2415bc063313e34adea2d3))
+
+## [0.74.0](https://github.com/no-phux/phux/compare/v0.73.1...v0.74.0) (2026-10-14)
+
+
+### Features
+
+* **site:** float the landing hero and fade a full-bleed tour overlay ([45b5555](https://github.com/no-phux/phux/commit/45b5555a4e6f72a43c7af8a967b85ed74a73c71a))
+
 ## [0.73.1](https://github.com/no-phux/phux/compare/v0.73.0...v0.73.1) (2026-10-14)
 
 

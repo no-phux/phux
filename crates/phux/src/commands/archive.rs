@@ -329,6 +329,7 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
         &archive,
         "archive import",
         ImportKind::Archive,
+        &[],
     )) {
         Ok(imported) => imported,
         Err(RestoreError::Reported(code)) => return code,
@@ -416,8 +417,9 @@ impl Imported {
 /// on the server at `socket_path`, without starting any process (R16): each
 /// becomes a persistent session carrying the archived host, project, and
 /// directory, with its local panes as dormant records in its arrangement
-/// ([`import_dormant_panes`]). A session that cannot be created is reported
-/// in [`Imported`] rather than aborting the rest.
+/// ([`import_dormant_panes`]). Each also carries `attrs`, such as a project
+/// identity (ADR-0168). A session that cannot be created is reported in
+/// [`Imported`] rather than aborting the rest.
 ///
 /// # Errors
 ///
@@ -428,6 +430,7 @@ pub(crate) async fn import_archive(
     archive: &model::WorkspaceArchive,
     verb: &str,
     kind: ImportKind<'_>,
+    extra: &[(String, String)],
 ) -> Result<Imported, RestoreError> {
     let existing = fetch_existing_sessions(socket_path, verb)
         .await
@@ -452,7 +455,7 @@ pub(crate) async fn import_archive(
     let mut warnings = Vec::new();
     for create in plan.creates {
         let imported = match check_agent_ownership(&create) {
-            Ok(()) => create_imported_session(socket_path, &create, kind).await,
+            Ok(()) => create_imported_session(socket_path, &create, kind, extra).await,
             Err(reason) => Err(ImportFailure::Other(reason)),
         };
         match imported {
@@ -600,12 +603,14 @@ async fn create_imported_session(
     socket_path: &Path,
     create: &model::CreateRequest,
     kind: ImportKind<'_>,
+    extra: &[(String, String)],
 ) -> Result<ImportOutcome, ImportFailure> {
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not reach the server: {err}"))?;
     let mut notices = Vec::new();
-    let attrs = session_attrs(create, kind);
+    let mut attrs = session_attrs(create, kind);
+    attrs.extend(extra.iter().cloned());
     let outcome = phux_client::session::create_empty_session_with_attrs(
         &mut conn,
         &create.name,

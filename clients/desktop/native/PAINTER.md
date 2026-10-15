@@ -37,8 +37,12 @@ Only the size owner proposes a PTY size, after the painted capacity has held
 still.
 
 Each time this view renders, it reacquires and revalidates the slot by
-borrowing the entity's `Arc<Client>`. A terminal keeps the scene it last
-prepared and reuses it while the acquired frame is the same `Arc`, the bounds
+borrowing the entity's `Arc<Client>`. While the connection, publication, and
+prediction fence are unchanged, that reacquire is an atomic publication read:
+it does not take an owner-thread turn or wait behind another pane's output.
+A new publication, reconnect, detach, or prediction fence takes the full
+owner turn and validates replica membership, readiness, and sequence.
+A terminal keeps the scene it last prepared and reuses it while the acquired frame is the same `Arc`, the bounds
 and scale factor are unchanged, and `Settings::paints_like` holds. A new frame
 with the same geometry, palette, and paint settings keeps the shaped rows
 whose cells still match and reshapes the rest, including a solid block
@@ -66,7 +70,6 @@ Terminal columns, not glyph advances, set each origin. Wide heads occupy two
 columns and spacers paint nothing. One device-pixel-rounded cell geometry drives
 baseline, backgrounds, decorations, cursor, clipping and `Geometry::hit` /
 `cell_bounds` for input.
-
 Five underline styles, strike, overline, inverse, faint, invisible, selection,
 cursor shape/width and true color are native. Faint glyphs paint inside a
 `Div::opacity` scope because GPUI's color-emoji path ignores `TextRun.color`.
@@ -94,6 +97,27 @@ remap against true color, and a sparse live-output repaint that leaves a
 neighboring row untouched. Linux needs a Vulkan adapter, hardware or
 lavapipe; macOS uses Metal. The on-screen smoke is still the packaged
 qualification run.
+
+## Headless measurements
+
+`just desktop-perf-headless` runs the same main-thread GPUI pixel binary in
+benchmark mode. No CLI, server, socket, visible window, or production profile:
+an embedded runtime feeds an 80×24 terminal, and GPUI draws it offscreen.
+Three JSON lines report 128 cached redraws, one-row updates, and sustained
+full-width scrolling. `tick_us` covers the in-process VT feed (for changed
+frames) plus the draw; `stages` separate acquisition, scene preparation,
+painting and presentation handoff. `scene` counts reused/patched scenes and
+shaped lines, and `process` carries CPU and peak RSS. A render count check and
+screenshots outside the timed path reject an empty/no-op benchmark.
+
+The default test profile is quick for iteration; use
+`just desktop-perf-headless release` for comparable optimized runs. Compare
+back-to-back runs on the same machine without concurrent builds. This measures
+the terminal view, not the desk's chrome, input-to-pixel latency, compositor
+presentation or production thread contention. Use `perf-bench.ts` with a
+visible desktop for those; it refuses to report a locked-display run that
+never drew a frame. The hosted packaged-app smoke remains the visual release
+qualification.
 
 phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
 script/box-drawing fidelity, and a graphics product decision.
