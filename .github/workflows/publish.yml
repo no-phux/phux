@@ -6,7 +6,7 @@
 # run sweeps all drafts whose own commit's ci is green, so a publish run
 # cancelled under push concurrency cannot strand one. A daily reconcile
 # catches an event that never arrived, and dispatch is the manual door. Leaf
-# workflows (release.yml, cockpit-release.yml, desktop-release.yml, the FFI
+# workflows (release.yml, desktop-release.yml, the FFI
 # builds, agent-integration-release.yml) are called from here. They are not
 # separate buttons.
 #
@@ -46,7 +46,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       phux_tag: ${{ steps.plan.outputs.phux_tag }}
-      cockpit_tag: ${{ steps.plan.outputs.cockpit_tag }}
       desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
       integration_tags: ${{ steps.plan.outputs.integration_tags }}
       blocked: ${{ steps.plan.outputs.blocked }}
@@ -75,17 +74,6 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
-
-  cockpit:
-    name: publish cockpit
-    needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.cockpit_tag != ''
-    uses: ./.github/workflows/cockpit-release.yml
-    permissions:
-      contents: write
-    secrets: inherit
-    with:
-      tag: ${{ needs.plan.outputs.cockpit_tag }}
 
   desktop:
     name: publish desktop
@@ -151,12 +139,3 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
-
-  linear-cockpit:
-    name: report cockpit to Linear
-    needs: [plan, cockpit]
-    if: needs.cockpit.result == 'success'
-    uses: ./.github/workflows/linear-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.plan.outputs.cockpit_tag }}

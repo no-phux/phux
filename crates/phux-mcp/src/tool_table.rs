@@ -419,6 +419,18 @@ pub(crate) const TOOLS: &[Row] = &[
 /// requires every agent-facing verb there to have a tool or a row here.
 pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
     (
+        "logs",
+        "local operator log inventory and tailing, not a model-facing server action",
+    ),
+    (
+        "update",
+        "replaces the operator's installed binaries; installation management stays outside MCP",
+    ),
+    (
+        "channel",
+        "changes the operator's installed release channel; installation management stays outside MCP",
+    ),
+    (
         "config agents",
         "local config inventory of declared agent integrations; `phux_agent_list` covers the live agents",
     ),

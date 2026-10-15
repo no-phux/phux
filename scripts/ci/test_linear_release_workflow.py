@@ -63,32 +63,39 @@ class LinearReleaseWorkflowTests(unittest.TestCase):
     def test_recovery_range_ignores_newer_and_other_component_tags(self):
         self.commit("root previous", {"root": "old\n"})
         self.git("tag", "v0.47.0")
-        self.commit("cockpit previous", {"clients/cockpit/change": "old\n"})
-        self.git("tag", "cockpit-v0.20.0")
+        self.commit("desktop previous", {"clients/desktop/change": "old\n"})
+        self.git("tag", "desktop-v0.20.0")
         self.commit("fix: PHA-406 root change", {"root": "new\n"})
         self.git("tag", "v0.48.0")
-        self.commit("fix: PHA-407 cockpit change", {"clients/cockpit/change": "new\n"})
-        self.git("tag", "cockpit-v0.21.0")
+        self.commit("fix: PHA-407 desktop change", {"clients/desktop/change": "new\n"})
+        self.git("tag", "desktop-v0.21.0")
         self.commit("later root release", {"root": "later\n"})
         self.git("tag", "v0.49.0")
-        for tag, component, expected in (("v0.48.0", "phux", "v0.47.0"),
-                                          ("cockpit-v0.21.0", "cockpit", "cockpit-v0.20.0")):
-            with self.subTest(tag=tag):
-                self.git("checkout", "--quiet", tag)
-                result, values = self.run_step("Resolve the tagged issue scan range", COMPONENT=component)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(values["base"], expected)
-                subjects = self.git("log", "--format=%s", f"{values['base']}..HEAD")
-                self.assertIn("PHA-406" if component == "phux" else "PHA-407", subjects)
-                self.assertNotIn("later root release", subjects)
+        self.git("checkout", "--quiet", "v0.48.0")
+        result, values = self.run_step("Resolve the tagged issue scan range")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["base"], "v0.47.0")
+        subjects = self.git("log", "--format=%s", f"{values['base']}..HEAD")
+        self.assertIn("PHA-406", subjects)
+        self.assertNotIn("later root release", subjects)
 
     def test_first_component_release_has_explicit_ancestor_boundary(self):
         initial = self.git("rev-parse", "HEAD")
-        self.commit("first cockpit release", {"clients/cockpit/change": "first\n"})
-        self.git("tag", "cockpit-v0.1.0")
-        result, values = self.run_step("Resolve the tagged issue scan range", COMPONENT="cockpit")
+        self.commit("first root release", {"root": "first\n"})
+        self.git("tag", "v0.1.0")
+        result, values = self.run_step("Resolve the tagged issue scan range")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(values["base"], initial)
+
+    def test_archived_cockpit_and_other_component_tags_are_rejected(self):
+        for tag in ("cockpit-v0.21.0", "desktop-v0.2.0", "pi-extension-v0.3.0"):
+            with self.subTest(tag=tag):
+                result, values = self.run_step("Resolve Linear pipeline from the tag", TAG=tag)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(values, {})
+        result, values = self.run_step("Resolve Linear pipeline from the tag", TAG="v0.48.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"component": "phux", "changelog": "CHANGELOG.md"})
 
     def test_tagged_notes_survive_old_tag_recovery(self):
         tagged = "## [0.48.0]\n\n### Bug Fixes\n\n* shipped PHA-406\n"

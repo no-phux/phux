@@ -58,7 +58,7 @@ are separate boundaries.
 ┌────────────────────────────────┐   ┌──────────────────────────────┐
 │  TUI client (phux-tui)         │   │  headless consumers          │
 │                                │   │  phux agent verbs, phux-mcp, │
-│  session kernel                │   │  phux-web, Cockpit via FFI   │
+│  session kernel                │   │  phux-web, native via FFI    │
 │  (phux-client-core)            │   │  (same kernel, no ratatui)   │
 │   - libghostty replica per     │   └──────────────────────────────┘
 │     Terminal-kind resource     │
@@ -131,7 +131,7 @@ type. Details in [transport.md](./transport.md).
 | **Pane / view** | Each client | One client's presentation of a resource; focus stays here |
 
 The wire defines resources, sessions, and arrangements. Each client
-presents them its own way: the TUI as tabs and panes, Cockpit as tiles. A
+presents them its own way: the TUI and desktop as tabs and panes. A
 headless consumer speaks L1 and reads organization without mounting views.
 
 ---

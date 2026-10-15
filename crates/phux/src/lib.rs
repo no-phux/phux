@@ -1330,7 +1330,6 @@ fn dispatch(
         Some(Command::Channel { channel, json }) => {
             commands::channel::run(channel, json.json, socket)
         }
-        Some(Command::Cockpit { json }) => commands::cockpit::run(json.json),
         Some(Command::Upgrade {
             close_agent_sessions,
         }) => commands::upgrade::run_upgrade(socket, close_agent_sessions),
@@ -1595,12 +1594,11 @@ fn dispatch(
         Some(Command::Logs {
             server,
             client,
-            cockpit,
             pid,
             follow,
             lines,
             json,
-        }) => commands::logs::run_logs(server, client, cockpit, pid, follow, lines, json),
+        }) => commands::logs::run_logs(server, client, pid, follow, lines, json),
         Some(Command::Report { action, json }) => commands::report::run_report(action, json.json),
         Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => run_service(action, socket),

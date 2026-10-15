@@ -113,26 +113,6 @@ TUI entry points share a layer builder
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
-- **Cockpit** (the frozen Zig macOS app) — one file,
-  `~/Library/Logs/Phux Cockpit/cockpit.log`; `PHUX_COCKPIT_LOG` names a
-  different file. Launch Services gives the app no terminal, so at
-  startup Cockpit points its standard error at that file and the Rust
-  bridge installs its `tracing` subscriber on the same descriptor. The
-  file therefore holds everything the process says: Cockpit's own log
-  lines, the bridge's remote-tunnel lifecycle (resolve, dial, handshake,
-  relay, close, and every failure reason) at info with quinn and rustls
-  at warn, Rust panic text, and the Zig fatal-signal handler's report.
-  `PHUX_COCKPIT_LOG_FILTER` is a `RUST_LOG`-style filter for the bridge's
-  part. A file over 8 MiB rotates to `cockpit.log.1` at the next launch.
-  `phux logs --cockpit` tails it.
-
-### Crash reports
-
-A fatal Cockpit signal leaves the Zig handler's final report in the log and
-a macOS crash report at
-`~/Library/Logs/DiagnosticReports/phux-cockpit-<date>.ips`.
-Read `Triggered by Thread` and that thread's first stack frames to locate
-the fault. Console.app lists the same files under Crash Reports.
 
 ### Local bug reports
 
@@ -226,7 +206,7 @@ there is no per-frame report allocation.
 Degradations such as a full consumer mailbox or dropped stdout backlog warn
 at most once per ten seconds with a `suppressed` count.
 
-A native embedder such as Cockpit reads its client's table with
+A native C ABI embedder reads its client's table with
 `phux_client_perf_json`: the kernel's `kernel.*` rows (frames and bytes
 applied, `kernel.apply`, `kernel.echo.rtt`) and the runtime's `runtime.*`
 rows (`runtime.apply_batches` owner-thread round trips, `runtime.publish`
@@ -400,13 +380,13 @@ closed` at debug.
 ### Finding and tailing the logs
 
 `phux logs` lists the server log, per-PID client logs newest first, their
-state directory, and the Cockpit log on macOS, with existence, size, and age.
+state directory, with existence, size, and age.
 Missing files are marked "not created yet", not treated as errors.
 
-Use `--server`, `--client`, or `--cockpit` to tail a log. `--client` selects
+Use `--server` or `--client` to tail a log. `--client` selects
 the newest unless `--pid PID` is supplied; `-f` follows and `-n NUM` sets the
-tail length. `--json` emits a stable `schema_version` 1 inventory
-(`cockpit_log` is `null` off macOS). `phux service logs` tails the same server
+tail length. `--json` emits a `schema_version` 2 inventory; the retired `cockpit_log`
+field is no longer reported. `phux service logs` tails the same server
 log as `phux logs --server`.
 
 There is no Prometheus/OpenTelemetry exporter, or runtime per-target

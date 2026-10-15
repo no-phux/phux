@@ -20,8 +20,7 @@ error, missing dependency, or test-runner failure is not a reproduced bug.
 Restore the fix and run the relevant ordinary gate before committing.
 
 The permanent deliverable is the behavioral test; there is no `// GUARD:`
-marker, saved patch, or patch-applicability check (Cockpit's retired system
-is described in its [historical guard guide](../clients/cockpit/docs/GUARDS.md)).
+marker, saved patch, or patch-applicability check.
 
 Automatic mutation testing asks a complementary question: can a tool insert a
 small change into current production code without the tests noticing? Generated
@@ -47,11 +46,10 @@ summary so compile errors and timeouts cannot disappear into a single score.
 
 ## Commands and CI
 
-Run from the repository root. Each language runner documents its supported
+Run from the repository root. The Rust runner documents its supported
 scope and budget options:
 
 ```sh
-just mutation-zig --help
 just mutation-rust --help
 ```
 
@@ -105,68 +103,10 @@ behavior:
 python3 scripts/mutation/rust_check.py
 ```
 
-### Zig
-
-Use Python 3.12+, Git, and the repository-pinned Zig. The runner downloads a
-Zentinel source archive at an immutable revision, verifies its SHA-256, and
-builds and tests the tool with two compiler jobs. The pin lives in
-`scripts/mutation/zig-tool.json`. Subsequent runs reuse the verified binary
-under `$XDG_CACHE_HOME/phux/mutation/zentinel` (default `~/.cache`). Source
-mutations and compiler caches remain in disposable private workspaces;
-Zentinel result caching is disabled.
-
-```sh
-just mutation-zig --list --out target/mutation/zig-list
-just mutation-zig --max-mutants 8 --out target/mutation/zig-pilot
-just mutation-zig --diff HEAD --out target/mutation/zig-diff
-just mutation-zig-check
-```
-
-This is an explicit **standalone-module pilot**: the current allowlist in
-`clients/cockpit/mutation/pilot.json` contains Cockpit's real
-`src/cockpit/native/ts_protocol.zig`. Its source and built-in tests are copied
-verbatim. `--scope` selects an allowlisted repository-relative file; unsupported
-files are rejected. Expanding the allowlist requires validating that module's
-imports and test command. The pilot does not run the full native app graph.
-
-`--diff REF` selects supported files changed against that exact commit,
-including tracked working-tree edits. Unlike Rust's `--in-diff`, this is
-**file-scoped**, not changed-line-scoped, and does not compute a merge base.
-An irrelevant diff writes `no_targets` without installing Zentinel; an invalid
-reference fails. Output directories must be new or empty.
-
-The default is eight mutations, serially, with 60 seconds per baseline/mutant
-command and an outer per-invocation bound. The hard count cap is 100. Zentinel
-has no native count cap, so the adapter selects generated IDs and invokes
-`--mutant` for each. Each invocation repeats the baseline with cold caches;
-this cost is why the pilot starts small. `summary.json` records the source
-hashes, tool pin, scope, budgets and outcomes. `candidates.json` and unchanged
-`mutant-NNN.json` reports plus command logs retain the underlying evidence.
-Acceptance checks retain reports, logs and configs under unique
-`target/mutation/zig-check-*` directories even when an assertion or class setup
-fails; disposable compiler caches and binaries are removed.
-
-Killed, survived, compile-error and timeout outcomes stay distinct. Survivors
-do not fail a score gate; a failed baseline or tool invocation fails the run.
-Missing, mismatched, skipped, invalid, compiler-crash or inconsistent mutant
-reports also fail the scan, even when Zentinel itself exits zero. Raw reports
-are retained before validation.
-Process cleanup covers the launch group and observed descendants, including
-separate groups. It is not kernel isolation: immediate unobserved daemonization
-or SIGKILL of the controller can escape cleanup.
-
-The full shipping graph additionally requires same-checkout Rust FFI, Native
-SDK/Ghostty, and Node. Zentinel's minimal command environment strips arbitrary
-FFI/SDK environment overrides, so this adapter deliberately makes no claim
-about that graph. Tool and runner adoption were verified on macOS arm64; a
-Linux CI run is separate evidence. At the pinned revision, Zentinel's aggregate
-`run.duration_ms` is zero; use individual command durations for timing.
-
 ### CI
 
 The [scoped-mutation workflow](../.github/workflows/mutation.yml) runs bounded
-pilots **monthly**, at 05:23 UTC on the first day of the month, to limit CI
-cost. It also supports manual dispatch with Zig, Rust, or both selected.
+Rust pilots on manual dispatch.
 It is separate from required PR checks. Diagnostic artifacts are retained for
 14 days, including on failed runs when the runner produced them. There is no
 mutation-score threshold; baseline and tool errors still fail the scan.
@@ -176,16 +116,13 @@ mutation-score threshold; baseline and tool errors still fail the scan.
 Start with a small file or changed-code scope. Bound the number of mutants,
 workers, and execution time. A capped run is a sample, not exhaustive coverage;
 a diff-scoped run also misses weaknesses elsewhere caused by the change.
-Normal `just cockpit-test` and Rust checks do not install or execute mutation
+Normal Rust checks do not install or execute mutation
 tools.
 
-Rust mutation runs exercise the selected Cargo tests. A Zig module pilot
-exercises the selected module's tests. Neither implies that the full
-Rust → C ABI → Zig → native presentation path was tested.
+Rust mutation runs exercise the selected Cargo tests, not every native
+presentation path. Cross-boundary evidence requires rebuilding and exercising
+the affected consumer from the same mutated checkout. An archive built from
+unmodified sources invalidates that claim.
 
-To claim cross-boundary evidence, rebuild `phux-client-ffi` from the mutated
-checkout and link that archive into the Cockpit test graph from the same
-checkout. Run via Cockpit's private-cache build wrapper and check the source
-root, exit status, and complete Phux verdict. An existing archive from the
-unmodified tree invalidates that claim. Never edit source while Zig is building
-it. See [Cockpit setup](SETUP.md#cockpit) for the ordinary shipping graph gates.
+The former Cockpit-only Zig mutation pilot is preserved with the
+[archived client](./consumers/cockpit.md), not maintained on main.

@@ -93,7 +93,6 @@ More:
   runtime-info  Inspect this binary's protocol and capabilities
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
-  cockpit       Open the native macOS Cockpit app
   mcp           Run the bundled MCP stdio adapter
   skill         Print the agent skill this binary ships with
   completion    Print a shell completion script
@@ -1010,7 +1009,6 @@ Bare `phux channel` reports the rail this install follows and what is published
 there. `phux channel next` follows green `main`; `phux channel latest` (also
 `stable`) follows the numbered GitHub releases. Switching persists the choice
 and runs the same update path as `phux update --channel`, so live panes survive.
-An installed Phux Cockpit switches with it.
 
 Examples:
 phux channel
@@ -1023,31 +1021,6 @@ Arguments:
   [CHANNEL]  Channel to follow. Omit to report the current rail without changing
              it.
              [possible values: stable, next]
-
-Flags:
-      --json           Emit stable, versioned JSON on stdout instead of the
-                       human view. On failure, stdout stays empty and stderr
-                       carries one JSON error object.
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux cockpit`
-
-```text
-Open the native macOS Cockpit app.
-
-Finds Phux Cockpit.app in /Applications or ~/Applications and opens it through
-Launch Services. Set PHUX_COCKPIT_APP to pin a specific bundle. macOS-only; if
-the app is missing the remedy is the curl installer.
-
-Examples:
-phux cockpit
-phux cockpit --json
-
-Usage: phux cockpit [--json]
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -1871,9 +1844,8 @@ Bare `phux logs` prints the inventory: the canonical server log (every spawn
 path writes it), the per-pid client logs, and the state dir that holds them —
 with existence, size, and age, so a fresh machine reads "not created yet"
 instead of an error. `--server` tails the server log, `--client` the newest
-client log (`--pid` picks a specific one), and `--cockpit` the native macOS
-app's log; `-f` follows and `-n` sets the tail length. `--json` emits the
-inventory as a stable document.
+client log (`--pid` picks a specific one); `-f` follows and `-n` sets the tail
+length. `--json` emits the inventory as a stable document.
 
 Usage: phux logs [FLAGS]
 
@@ -1881,14 +1853,12 @@ Flags:
       --server         Tail the canonical server log.
       --client         Tail the newest per-pid client log (or the one `--pid`
                        names).
-      --cockpit        Tail the Phux Cockpit app's log (macOS;
-                       `PHUX_COCKPIT_LOG` overrides the path).
       --pid <PID>      With --client: the client pid whose log to tail, instead
                        of the newest.
-  -f, --follow         Follow the tailed log as it grows (needs --server,
-                       --client, or --cockpit).
+  -f, --follow         Follow the tailed log as it grows (needs --server or
+                       --client).
   -n, --lines <NUM>    How many trailing lines to show; 200 when omitted (needs
-                       --server, --client, or --cockpit).
+                       --server or --client).
       --json           Emit the path inventory as a stable JSON document instead
                        of human text. Inventory only — it cannot combine with a
                        tail.
@@ -4227,10 +4197,6 @@ printed instead — and an unrecognized location is refused rather than
 overwritten.
 
 The previous binaries are kept beside the new ones; `--rollback` puts them back.
-
-On macOS, an installed Phux Cockpit follows the same channel: it is reported by
-`--check` and reinstalled through the Cockpit installer when it is behind. A
-Homebrew Cockpit gets `brew upgrade` instead.
 
 Examples:
 phux update --check

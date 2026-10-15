@@ -45,8 +45,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$url" in
-  *cockpit*.zip) cp "$INSTALL_FIXTURE/cockpit.zip" "$out" ;;
-  *cockpit*SHA256SUMS) cp "$INSTALL_FIXTURE/cockpit.SHA256SUMS" "$out" ;;
   *.sha256) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz.sha256" "$out" ;;
   *) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz" "$out" ;;
 esac
@@ -121,28 +119,6 @@ if [[ $src == */.phux-install.*/phux-mcp && $dst == "${FAIL_INSTALL_DIR:-/nonexi
   : > "$FAIL_MARKER"
   exit 1
 fi
-if [[ -n ${COCKPIT_MV_ACTION:-} && ! -e $COCKPIT_MV_MARKER ]]; then
-  operation=""
-  case "$dst" in
-    */backup/'Phux Cockpit.app') operation=backup ;;
-    "$COCKPIT_MV_APPS/Phux Cockpit.app") operation=publish ;;
-  esac
-  case "$COCKPIT_MV_ACTION" in
-    "$operation-fail") : > "$COCKPIT_MV_MARKER"; exit 1 ;;
-    "$operation-term")
-      /bin/mv "$@"
-      : > "$COCKPIT_MV_MARKER"
-      kill -TERM "$PPID"
-      exit 0
-      ;;
-    "$operation-hup")
-      /bin/mv "$@"
-      : > "$COCKPIT_MV_MARKER"
-      kill -HUP "$PPID"
-      exit 0
-      ;;
-  esac
-fi
 exec /bin/mv "$@"
 EOF
 chmod 755 "$FAKE_BIN/mv"
@@ -152,7 +128,7 @@ cat > "$FAKE_BIN/mkdir" <<'EOF'
 set -euo pipefail
 if [[ ${SIGNAL_AFTER_LOCK_MKDIR:-0} == 1 && ${1:-} != -* && ! -e ${SIGNAL_MARKER:-/nonexistent} ]]; then
   case "$1" in
-    */.phux-install.lock.*|*/.phux-cockpit-install.lock.*)
+    */.phux-install.lock.*)
       /bin/mkdir "$@"
       : > "$SIGNAL_MARKER"
       kill -"${SIGNAL_NAME:-TERM}" "$PPID"
@@ -244,238 +220,6 @@ for signal in TERM HUP; do
 done
 
 echo "installer transaction tests passed"
-
-# --- Cockpit installer -------------------------------------------------------
-#
-# Same discipline as above: the script is served at /install-cockpit and piped
-# to `sh`, so it runs under dash here. macOS-only tools it needs (ditto for
-# bundle placement, xattr for quarantine) are faked; unzip is real on both
-# macOS and the Linux CI runners.
-COCKPIT_VERSION=cockpit-v9.8.7
-COCKPIT_SEMVER=9.8.7
-COCKPIT_ZIP="phux-cockpit-${COCKPIT_SEMVER}-macos-arm64.zip"
-mkdir -p "$FIXTURE/Phux Cockpit.app/Contents/MacOS"
-printf 'cockpit plist\n' > "$FIXTURE/Phux Cockpit.app/Contents/Info.plist"
-printf 'cockpit binary\n' > "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
-chmod 755 "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
-(cd "$FIXTURE" && zip -qr "$TMP/$COCKPIT_ZIP" "Phux Cockpit.app" >/dev/null)
-mv "$TMP/$COCKPIT_ZIP" "$FIXTURE/cockpit.zip"
-(
-  cd "$FIXTURE"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum cockpit.zip | sed "s/cockpit.zip\$/$COCKPIT_ZIP/" > cockpit.SHA256SUMS
-  else
-    shasum -a 256 cockpit.zip | sed "s/cockpit.zip\$/$COCKPIT_ZIP/" > cockpit.SHA256SUMS
-  fi
-  # A dmg line for an asset that is never downloaded: verification must filter
-  # to the zip, not demand the whole file.
-  echo "0000000000000000000000000000000000000000000000000000000000000000  phux-cockpit-${COCKPIT_SEMVER}-macos-arm64.dmg" >> cockpit.SHA256SUMS
-)
-
-cat > "$FAKE_BIN/ditto" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ ${FAIL_DITTO:-0} == 1 && ! -e ${FAIL_MARKER:-/nonexistent-marker} ]]; then
-  mkdir -p "$2/Contents"
-  printf 'partial copy\n' > "$2/Contents/Info.plist"
-  : > "$FAIL_MARKER"
-  exit 1
-fi
-cp -Rf "$1" "$2"
-EOF
-chmod 755 "$FAKE_BIN/ditto"
-
-cat > "$FAKE_BIN/xattr" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-: > "${XATTR_MARKER:-/dev/null}"
-EOF
-chmod 755 "$FAKE_BIN/xattr"
-
-run_cockpit_install() {
-  local apps_dir=$1
-  shift
-  PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" XATTR_MARKER="$TMP/xattr-cleared" \
-    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
-      --os darwin --arch arm64 --applications-dir "$apps_dir" \
-      --bin-dir "$TMP/cockpit-bin" "$@"
-}
-
-COCKPIT_APPS="$TMP/cockpit-apps"
-output="$(run_cockpit_install "$COCKPIT_APPS" 2>"$TMP/cockpit-status.err")"
-grep -Fq "phux: ok: installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" "$TMP/cockpit-status.err"
-grep -Fq 'next: open ' <<<"$output"
-grep -Fq "launcher: " <<<"$output"
-cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$COCKPIT_APPS/Phux Cockpit.app/Contents/Info.plist"
-cmp "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit" "$COCKPIT_APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
-[[ -x $TMP/cockpit-bin/phux-cockpit ]] || {
-  echo "cockpit installer did not write an executable phux-cockpit launcher" >&2
-  exit 1
-}
-[[ -e $TMP/xattr-cleared ]] || {
-  echo "cockpit installer did not clear the quarantine attribute" >&2
-  exit 1
-}
-
-# Re-running the same install replaces the bundle as a unit: no nesting and no
-# files left over from a previous version.
-printf 'obsolete resource\n' > "$COCKPIT_APPS/Phux Cockpit.app/Contents/obsolete"
-run_cockpit_install "$COCKPIT_APPS" > "$TMP/cockpit-repeat.out"
-diff -r "$FIXTURE/Phux Cockpit.app" "$COCKPIT_APPS/Phux Cockpit.app"
-
-# Execute only the printed shell command, with open stubbed. Name-based launch
-# can select a different registered bundle; the installer must name its own
-# absolute destination, with spaces and apostrophes preserved as one argument.
-cat > "$FAKE_BIN/open" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$@" > "$OPEN_ARGUMENTS"
-EOF
-chmod 755 "$FAKE_BIN/open"
-CUSTOM_APPS="$TMP/someone's custom applications"
-output="$(run_cockpit_install "$CUSTOM_APPS")"
-next_command="$(sed -n 's/^next: //p' <<<"$output")"
-PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
-  "$INSTALLER_SH" -c "$next_command"
-printf '%s/Phux Cockpit.app\n' "$(cd "$CUSTOM_APPS" && pwd -P)" > "$TMP/expected-open-arguments"
-cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
-PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/launcher-open-arguments" \
-  "$TMP/cockpit-bin/phux-cockpit"
-cmp "$TMP/expected-open-arguments" "$TMP/launcher-open-arguments"
-
-# Relative destinations are resolved from the install working directory, never
-# from a competing CDPATH entry (whose cd also prints unsolicited stdout).
-mkdir -p "$TMP/relative-cwd" "$TMP/cdpath/apps"
-output="$(cd "$TMP/relative-cwd" && CDPATH="$TMP/cdpath" run_cockpit_install apps)"
-next_command="$(sed -n 's/^next: //p' <<<"$output")"
-PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
-  "$INSTALLER_SH" -c "$next_command"
-printf '%s/Phux Cockpit.app\n' "$(cd "$TMP/relative-cwd/apps" && pwd -P)" > "$TMP/expected-open-arguments"
-cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
-
-# The active publisher owns its lock, even when another installer refuses it.
-COCKPIT_LOCKED="$TMP/cockpit-locked"
-mkdir -p "$COCKPIT_LOCKED/.phux-cockpit-install.lock"
-if run_cockpit_install "$COCKPIT_LOCKED" >"$TMP/cockpit-locked.out" 2>"$TMP/cockpit-locked.err"; then
-  echo 'cockpit installer ignored an active publish lock' >&2
-  exit 1
-fi
-[[ -d $COCKPIT_LOCKED/.phux-cockpit-install.lock ]]
-[[ ! -e "$COCKPIT_LOCKED/Phux Cockpit.app" ]]
-
-# Same lock-acquisition window as the core installer: HUP/TERM after mkdir
-# must recover, and must not steal the live lock above.
-for signal in TERM HUP; do
-  apps="$TMP/cockpit-lock-interrupt-$signal"
-  marker="$TMP/cockpit-lock-interrupt-$signal-reached"
-  mkdir "$apps"
-  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-    XATTR_MARKER="$TMP/xattr-unused-$signal" \
-    SIGNAL_AFTER_LOCK_MKDIR=1 SIGNAL_NAME="$signal" SIGNAL_MARKER="$marker" \
-    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
-      --os darwin --arch arm64 --applications-dir "$apps" \
-      --bin-dir "$TMP/cockpit-bin" \
-      >"$TMP/cockpit-lock-interrupt-$signal.out" 2>"$TMP/cockpit-lock-interrupt-$signal.err"; then
-    echo "cockpit installer unexpectedly succeeded after a $signal lock interruption" >&2
-    exit 1
-  fi
-  [[ -e $marker ]] || { echo "cockpit $signal lock interruption was not reached" >&2; exit 1; }
-  if find "$apps" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
-    echo "cockpit installer stranded a lock after $signal lock interruption" >&2
-    exit 1
-  fi
-  run_cockpit_install "$apps" >/dev/null
-  cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$apps/Phux Cockpit.app/Contents/Info.plist"
-done
-
-# A bare semver normalizes to the release tag.
-output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
-  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_SEMVER" \
-    --os darwin --arch arm64 --applications-dir "$TMP/unused" \
-    --bin-dir "$TMP/cockpit-bin" --dry-run)"
-grep -Fq "tag: $COCKPIT_VERSION" <<<"$output"
-grep -Fq "zip_url: https://github.com/no-phux/phux/releases/download/${COCKPIT_VERSION}/${COCKPIT_ZIP}" <<<"$output"
-grep -Fq "bin_dir: $TMP/cockpit-bin" <<<"$output"
-grep -Fxq 'channel: stable' <<<"$output"
-
-# `--channel next` follows the moving pointer; a stable pin contradicts it,
-# including when next comes from $PHUX_CHANNEL.
-for args in "--channel next" ""; do
-  # shellcheck disable=SC2086
-  if PATH="$FAKE_BIN:/usr/bin:/bin" PHUX_CHANNEL=next \
-    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" $args --version "$COCKPIT_VERSION" \
-      --os darwin --arch arm64 --applications-dir "$TMP/unused" --dry-run \
-      >"$TMP/cockpit-next-conflict.out" 2>"$TMP/cockpit-next-conflict.err"; then
-    echo "cockpit installer accepted a next channel with --version" >&2
-    exit 1
-  fi
-  grep -Fq -- '--version pins a stable tag' "$TMP/cockpit-next-conflict.err"
-done
-if PATH="$FAKE_BIN:/usr/bin:/bin" \
-  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --channel nightly --dry-run \
-    >/dev/null 2>"$TMP/cockpit-bad-channel.err"; then
-  echo "cockpit installer accepted an unknown channel" >&2
-  exit 1
-fi
-grep -Fq -- '--channel must be stable, latest, or next' "$TMP/cockpit-bad-channel.err"
-
-# A failed placement restores the previous install and leaves no lock behind.
-COCKPIT_ROLLBACK="$TMP/cockpit-rollback"
-mkdir -p "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents"
-printf 'old plist\n' > "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents/Info.plist"
-if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" XATTR_MARKER="$TMP/xattr-unused" \
-  FAIL_DITTO=1 FAIL_MARKER="$TMP/ditto-failed" \
-  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
-    --os darwin --arch arm64 --applications-dir "$COCKPIT_ROLLBACK" >"$TMP/cockpit-rollback.out" 2>"$TMP/cockpit-rollback.err"; then
-  echo "cockpit installer unexpectedly succeeded after forced placement failure" >&2
-  exit 1
-fi
-[[ -e $TMP/ditto-failed ]] || { echo 'ditto failure injection was not reached' >&2; exit 1; }
-grep -Fxq 'old plist' "$COCKPIT_ROLLBACK/Phux Cockpit.app/Contents/Info.plist"
-if find "$COCKPIT_ROLLBACK" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
-  echo "cockpit installer left transaction artifacts after rollback" >&2
-  exit 1
-fi
-
-# A backup rename failure must leave the original app intact. A failure or
-# signal at either rename must restore it, including a signal delivered after
-# mv succeeded but before the shell executes its next statement.
-for action in backup-fail backup-term backup-hup publish-fail publish-term publish-hup; do
-  apps="$TMP/cockpit-$action"
-  marker="$TMP/cockpit-$action-reached"
-  mkdir -p "$apps/Phux Cockpit.app/Contents"
-  printf 'old plist\n' > "$apps/Phux Cockpit.app/Contents/Info.plist"
-  if COCKPIT_MV_ACTION="$action" COCKPIT_MV_MARKER="$marker" COCKPIT_MV_APPS="$apps" \
-    run_cockpit_install "$apps" >"$TMP/$action.out" 2>"$TMP/$action.err"; then
-    echo "cockpit installer unexpectedly succeeded after $action" >&2
-    exit 1
-  fi
-  [[ -e $marker ]] || { echo "$action injection was not reached" >&2; exit 1; }
-  grep -Fxq 'old plist' "$apps/Phux Cockpit.app/Contents/Info.plist"
-  if find "$apps" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
-    echo "cockpit installer left transaction artifacts after $action" >&2
-    exit 1
-  fi
-done
-
-# A first-time install has no backup. Failure or interruption during its publish
-# rename must remove the new app rather than leave a partial/uncertain install.
-for action in publish-fail publish-term publish-hup; do
-  apps="$TMP/cockpit-fresh-$action"
-  marker="$TMP/cockpit-fresh-$action-reached"
-  if COCKPIT_MV_ACTION="$action" COCKPIT_MV_MARKER="$marker" COCKPIT_MV_APPS="$apps" \
-    run_cockpit_install "$apps" >"$TMP/fresh-$action.out" 2>"$TMP/fresh-$action.err"; then
-    echo "fresh cockpit install unexpectedly succeeded after $action" >&2
-    exit 1
-  fi
-  [[ -e $marker ]] || { echo "fresh $action injection was not reached" >&2; exit 1; }
-  [[ ! -e "$apps/Phux Cockpit.app" ]]
-  if find "$apps" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
-    echo "fresh cockpit install left transaction artifacts after $action" >&2
-    exit 1
-  fi
-done
-
-echo "cockpit installer transaction tests passed"
 
 # The rollback tests leave a wrapping `mv` in FAKE_BIN. The next-channel
 # path uses a real rename and must not inherit that harness.

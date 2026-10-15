@@ -124,10 +124,10 @@ async function releaseInfo() {
       url: release.url ?? "https://github.com/no-phux/phux/releases",
       publishedAt: release.publishedAt ?? "unknown",
     },
-    cockpit: {
-      tag: release.cockpit?.tag ?? "unknown",
-      url: release.cockpit?.url ?? "https://github.com/no-phux/phux/releases",
-      publishedAt: release.cockpit?.publishedAt ?? "unknown",
+    desktop: {
+      tag: release.desktop?.tag ?? "unknown",
+      url: release.desktop?.url ?? "https://github.com/no-phux/phux/releases",
+      publishedAt: release.desktop?.publishedAt ?? "unknown",
     },
   };
 }

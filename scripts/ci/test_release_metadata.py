@@ -139,10 +139,8 @@ class DetectSkipTests(unittest.TestCase):
         outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
         self.assertEqual(outputs["release_metadata_only"], "true")
         self.assertEqual(outputs["phux_needed"], "false")
-        self.assertEqual(outputs["cockpit_needed"], "false")
-        self.assertEqual(outputs["ffi_needed"], "false")
-        self.assertEqual(outputs["cli_needed"], "false")
-        self.assertEqual(outputs["zig_needed"], "false")
+        for key in ("cockpit_needed", "ffi_needed", "cli_needed", "zig_needed", "shipping_needed"):
+            self.assertNotIn(key, outputs)
         self.assertIn("compile lanes skipped", result.stderr)
 
 

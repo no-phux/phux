@@ -198,8 +198,9 @@ column is the base status word plus at most one relationship clause, about
 | [0164](./0164-pair-links-name-the-magicdns-host.md) | Pair links name the host's MagicDNS name | Accepted (builds on [0141](./0141-pair-mints-only-against-a-live-listener.md), [0091](./0091-certificate-names-the-advertised-address.md)) |
 | [0165](./0165-gpui-desktop-replaces-the-solid-host.md) | GPUI desktop replaces the Solid host | Accepted (supersedes [0139](./0139-solid-desktop-over-native-runtime-views.md)) |
 | [0166](./0166-usage-collection-is-a-supervised-child.md) | Optional usage is a supervised collector child | Proposed |
-| [0167](./0167-cockpit-is-frozen.md) | The Zig Cockpit is frozen | Accepted |
+| [0167](./0167-cockpit-is-frozen.md) | The Zig Cockpit is frozen | Superseded by [0169](./0169-zig-cockpit-lives-in-an-archive.md) |
 | [0168](./0168-project-identity-is-a-session-attribute.md) | Project identity is a session attribute keyed by remote | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md)) |
+| [0169](./0169-zig-cockpit-lives-in-an-archive.md) | Zig Cockpit lives in an archive, not main | Accepted (supersedes [0167](./0167-cockpit-is-frozen.md), [0138](./0138-cockpit-rides-the-next-channel.md)) |
 
 ## When to write an ADR
 

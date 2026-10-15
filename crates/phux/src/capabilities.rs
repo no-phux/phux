@@ -148,10 +148,10 @@ fn schema_contracts() -> Value {
         { "invocation": "phux pair --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux pair ls|prune|rotate|revoke --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux rec|play --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux logs|doctor --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux logs --json", "schema_version": crate::commands::logs::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux doctor --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux update --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux channel --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
-        { "invocation": "phux cockpit --json", "schema_version": crate::commands::cockpit::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux whoami --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },
         { "invocation": "phux watch --json", "schema_version": null, "kind": "ndjson", "note": "event vocabulary is the compatibility contract" },
@@ -218,7 +218,17 @@ mod tests {
                 crate::commands::update::DOCUMENT_SCHEMA_VERSION,
                 "document",
             ),
-            ("phux logs|doctor --json", 1, "document"),
+            (
+                "phux channel --json",
+                crate::commands::update::DOCUMENT_SCHEMA_VERSION,
+                "document",
+            ),
+            (
+                "phux logs --json",
+                crate::commands::logs::DOCUMENT_SCHEMA_VERSION,
+                "document",
+            ),
+            ("phux doctor --json", 1, "document"),
             ("phux --json failures", 1, "error"),
         ] {
             let contract = contracts
@@ -314,8 +324,25 @@ mod tests {
     }
 
     #[test]
+    fn companion_path_does_not_change_retired_command_discovery() {
+        let doc = document(
+            crate::Cli::spec().root,
+            Some(std::path::Path::new(
+                "/src/archive-zig-cockpit/target/debug/phux-mcp",
+            )),
+        );
+        assert_eq!(doc["mcp"]["available"], true);
+        assert!(doc["mcp"]["command"].as_str().unwrap().contains("cockpit"));
+        for key in ["commands", "json_contracts"] {
+            assert!(!doc[key].to_string().contains("cockpit"), "{key}: {doc}");
+        }
+    }
+
+    #[test]
     fn document_is_versioned_sorted_and_hides_plumbing() {
         let doc = document(crate::Cli::spec().root, None);
+        assert!(!doc.to_string().contains("cockpit"));
+        assert!(crate::parse_cli(["phux", "cockpit"]).is_err());
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["binary"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(doc["binary"]["wire_protocol"], "0.9.0");

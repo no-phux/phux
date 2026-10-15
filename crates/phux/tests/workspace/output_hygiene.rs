@@ -30,6 +30,48 @@ fn phux() -> Command {
 }
 
 #[test]
+fn retired_cockpit_command_and_log_flags_are_usage_errors() {
+    for args in [
+        &["cockpit"][..],
+        &["cockpit", "--json"][..],
+        &["logs", "--cockpit"][..],
+        &["logs", "--cockpit", "-f", "-n", "50"][..],
+        &["logs", "--json", "--cockpit"][..],
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?}: {stdout}");
+        assert!(stderr.contains("cockpit"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn help_and_capabilities_do_not_advertise_retired_cockpit() {
+    for args in [
+        &["--help"][..],
+        &["logs", "--help"][..],
+        &["update", "--help"][..],
+        &["channel", "--help"][..],
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(
+            !stdout.to_lowercase().contains("cockpit"),
+            "{args:?}: {stdout}"
+        );
+    }
+
+    let (code, stdout, stderr) = run(&["--capabilities", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("capabilities JSON");
+    // Companion executable paths may contain "cockpit" (including this
+    // worktree's name). Only product command/schema declarations advertise it.
+    for key in ["commands", "json_contracts"] {
+        assert!(!doc[key].to_string().contains("cockpit"), "{key}: {doc}");
+    }
+}
+
+#[test]
 fn redirected_interactive_invocations_do_not_spawn_or_emit_terminal_bytes() {
     for args in [&[][..], &["attach"][..], &["new", "redirected"][..]] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -756,11 +798,39 @@ fn logs_json_inventory_is_pure_json_stdout() {
     assert_eq!(code, 0, "the inventory always answers; stderr={stderr}");
     let doc: serde_json::Value =
         serde_json::from_str(&stdout).expect("`logs --json` stdout must be one JSON document");
-    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["schema_version"], 2);
+    assert!(doc.get("cockpit_log").is_none());
     assert!(
         !stderr.contains(BANNER_FRAGMENT),
         "`logs --json` must not print the banner; got {stderr:?}"
     );
+}
+
+#[test]
+fn server_and_client_logs_still_tail_without_a_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("phux-logs-test");
+    std::fs::create_dir(&state).expect("create log directory");
+    std::fs::write(state.join("server.log"), "server first\nserver last\n").unwrap();
+    std::fs::write(state.join("client-42.log"), "client first\nclient last\n").unwrap();
+
+    for (args, expected) in [
+        (&["logs", "--server", "-n", "1"][..], "server last\n"),
+        (&["logs", "--client", "-n", "1"][..], "client last\n"),
+        (
+            &["logs", "--client", "--pid", "42", "-n", "1"][..],
+            "client last\n",
+        ),
+    ] {
+        let out = phux()
+            .args(args)
+            .env("PHUX_PROFILE", "logs-test")
+            .env("XDG_STATE_HOME", dir.path())
+            .output()
+            .expect("tail log");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{args:?}");
+    }
 }
 
 /// `doctor --json` on a failure exit: the verdict is the stdout document and

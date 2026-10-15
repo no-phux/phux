@@ -32,7 +32,7 @@ records with an explicit lifetime, and every change records who made it.
      VT bytes,   │                  │ key, mouse, and
      verbatim    ▼                  │ paste events
  ┌──────────────────────────────────┴──────────────┐
- │ attach: TUI, CLI, web, Cockpit, desktop, agents │
+ │ attach: TUI, CLI, web, desktop, agents          │
  │ clients show views and send input               │
  │ closing a client or a view leaves work running  │
  └─────────────────────────────────────────────────┘
@@ -47,8 +47,8 @@ records with an explicit lifetime, and every change records who made it.
 | Session | A named group of resources on one server. You attach to it and return to it. |
 | Intake | The designated persistent session for work created without a destination. Every server has one. |
 | Arrangement | How a session's resources are laid out: groups, shown as tabs, each holding a split tree of views. |
-| View | One client's presentation of one resource: a pane in the TUI, a tile in Cockpit. |
-| Client | Your view and input path into the server: for example the TUI or Cockpit. |
+| View | One client's presentation of one resource: a pane in the TUI or desktop. |
+| Client | Your view and input path into the server: for example the TUI or desktop. |
 | Attach / detach | Open / leave a view of existing work, rather than start / stop the work itself. |
 
 A split adds a new resource to the session and a view of it to the current
@@ -92,7 +92,7 @@ for detach, upgrade, crash, and restore boundaries.
 - [Run a coding agent](./consumers/getting-started.md).
 - [Connect another machine](./remote-access.md).
 - [Use the desktop](./consumers/desktop.md), the native macOS interface.
-  The Zig [Cockpit](./consumers/cockpit.md) is frozen.
+  The Zig [Cockpit](./consumers/cockpit.md) is archived outside main.
 
 The remaining sections describe the model for automation and client
 implementation.
@@ -205,7 +205,7 @@ Wire details live in the [encoding reference](./spec/appendix-encoding.md),
 
 ## Consumers are peers
 
-The TUI, headless CLI, browser client, desktop, and Cockpit have no
+The TUI, headless CLI, browser client, and desktop have no
 protocol-level privileges. New capabilities require an ADR extending the
 spec, not a client-specific hook
 ([ADR-0017](adr/0017-tui-not-protocol-privileged.md)). Their interfaces are

@@ -3,29 +3,21 @@
 import assert from "node:assert/strict";
 import { status } from "./lib/output.mjs";
 import {
-  COCKPIT_IMPORT_BASELINE_VERSION,
-  isCockpitImportBaseline,
+  isArchivedRelease,
   desktopReleaseProblems,
   recoveryFor,
 } from "./release-drift-policy.mjs";
 
 assert.deepEqual(recoveryFor("next"), { workflow: "next-release.yml", extraArgs: "" });
 assert.deepEqual(recoveryFor("v0.27.0"), { workflow: "publish.yml", extraArgs: "" });
-assert.deepEqual(recoveryFor("cockpit-v0.16.2"), { workflow: "publish.yml", extraArgs: "" });
+assert.equal(recoveryFor("cockpit-v0.16.2"), null);
 assert.deepEqual(recoveryFor("opencode-plugin-v0.3.0"), { workflow: "publish.yml", extraArgs: "" });
 
-const historyTip = "filtered-cockpit-tip";
-const baseline = {
-  path: "clients/cockpit",
-  version: COCKPIT_IMPORT_BASELINE_VERSION,
-  bootstrapSha: historyTip,
-  historyTip,
-};
-assert.equal(isCockpitImportBaseline(baseline), true);
-assert.equal(isCockpitImportBaseline({ ...baseline, version: "0.16.2" }), false);
-assert.equal(isCockpitImportBaseline({ ...baseline, path: "." }), false);
-assert.equal(isCockpitImportBaseline({ ...baseline, bootstrapSha: undefined }), false);
-assert.equal(isCockpitImportBaseline({ ...baseline, bootstrapSha: "other-tip" }), false);
+assert.equal(isArchivedRelease("cockpit-v0.16.1"), true);
+assert.equal(isArchivedRelease("cockpit-v0.16.2-alpha.1"), true);
+for (const tag of ["v0.50.0", "desktop-v0.2.0", "pi-extension-v0.3.0", "next"]) {
+  assert.equal(isArchivedRelease(tag), false);
+}
 
 const desktop = {
   tag: "desktop-v0.1.0", draft: false, prerelease: false,

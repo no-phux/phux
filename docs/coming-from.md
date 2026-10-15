@@ -32,7 +32,7 @@ both tools do the same job:
 reference.
 
 phux has no tmux scripting language, in-process plugin host, or server-side
-copy mode. The TUI, Cockpit, CLI, and agents use the same terminal protocol.
+copy mode. The TUI, desktop, CLI, and agents use the same terminal protocol.
 [When to use phux](./when-to-use.md) weighs that against tmux.
 
 ## If you used the old phux starter

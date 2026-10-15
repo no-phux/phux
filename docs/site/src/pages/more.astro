@@ -7,7 +7,6 @@ import release from "../lib/release.json";
 
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
 const desktopInstall = "curl -fsSL https://phux.sh/install-desktop | sh";
-const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 
 const FEATURES = [
   {
@@ -67,12 +66,6 @@ const FEATURES = [
         <span>CLI · macOS and Linux {release.tag && <em>{release.tag}</em>}</span>
         <code tabindex="0">{cliInstall}</code>
         <button type="button" data-copy={cliInstall}>Copy</button>
-      </div>
-      <div class="install-cmd cockpit-install">
-        <span>Cockpit for macOS · Frozen {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
-        <code tabindex="0">{cockpitInstall}</code>
-        <button type="button" data-copy={cockpitInstall}>Copy</button>
-        <p>Not maintained. The last published release still installs. Use Desktop.</p>
       </div>
     </div>
     <p class="install-more">
@@ -243,7 +236,6 @@ const FEATURES = [
   data-product={SITE.name}
   data-cli={cliInstall}
   data-desktop={desktopInstall}
-  data-cockpit={cockpitInstall}
   data-docs={SITE.docsUrl}
   data-release-tag={release.tag}
   data-release-url={release.url}
@@ -258,7 +250,6 @@ const FEATURES = [
       productName: facts.dataset.product ?? "",
       cliInstall: facts.dataset.cli ?? "",
       desktopInstall: facts.dataset.desktop ?? "",
-      cockpitInstall: facts.dataset.cockpit ?? "",
       docsUrl: facts.dataset.docs ?? "",
       releaseTag: facts.dataset.releaseTag ?? "",
       releaseUrl: facts.dataset.releaseUrl ?? "",
@@ -363,7 +354,7 @@ const FEATURES = [
   .desktop-install {
     grid-column: 1 / -1;
   }
-  .desktop-install p, .cockpit-install p {
+  .desktop-install p {
     grid-column: 1 / -1;
     margin: 0;
     color: var(--color-dim);

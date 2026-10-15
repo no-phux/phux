@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { latestCockpitRelease, latestCoreRelease, latestDesktopRelease } from "./fetch-release";
+import { latestCoreRelease, latestDesktopRelease } from "./fetch-release";
 
 describe("latestCoreRelease", () => {
   test("selects the newest core release from mixed release streams", () => {
@@ -31,37 +31,6 @@ describe("latestCoreRelease", () => {
         { tag_name: "v0.30.0", prerelease: true },
         { tag_name: "v0.29.0-rc.1" },
         { tag_name: "cockpit-v1.0.0" },
-      ]),
-    ).toBeNull();
-  });
-});
-
-describe("latestCockpitRelease", () => {
-  test("selects the newest cockpit release from mixed release streams", () => {
-    expect(
-      latestCockpitRelease([
-        { tag_name: "v0.31.0" },
-        { tag_name: "opencode-plugin-v0.2.2" },
-        {
-          tag_name: "cockpit-v0.21.0",
-          html_url: "https://github.com/no-phux/phux/releases/tag/cockpit-v0.21.0",
-          published_at: "2026-09-10T05:26:33Z",
-        },
-        { tag_name: "cockpit-v0.20.0" },
-      ]),
-    ).toEqual({
-      tag: "cockpit-v0.21.0",
-      url: "https://github.com/no-phux/phux/releases/tag/cockpit-v0.21.0",
-      publishedAt: "2026-09-10T05:26:33Z",
-    });
-  });
-
-  test("ignores drafts, prereleases, and core tags", () => {
-    expect(
-      latestCockpitRelease([
-        { tag_name: "cockpit-v1.0.0", draft: true },
-        { tag_name: "cockpit-v0.22.0", prerelease: true },
-        { tag_name: "v0.31.0" },
       ]),
     ).toBeNull();
   });
@@ -104,13 +73,13 @@ describe("latestDesktopRelease", () => {
 
 for (const [name, selector, prefix] of [
   ["core", latestCoreRelease, "v"],
-  ["cockpit", latestCockpitRelease, "cockpit-v"],
 ] as const) {
   describe(`${name} numeric precedence`, () => {
     test.each([
       ["patch", "1.2.9", "1.2.10"],
       ["minor", "1.9.99", "1.10.0"],
       ["major", "9.99.99", "10.0.0"],
+      ["large patch", "1.0.9007199254740992", "1.0.9007199254740993"],
     ])("compares the %s numerically regardless of input order", (_component, older, newer) => {
       const releases = [
         { tag_name: `${prefix}${older}` },
@@ -126,13 +95,20 @@ for (const [name, selector, prefix] of [
         { tag_name: `${prefix}998.0.0`, prerelease: true },
         { tag_name: `${prefix}997.0.0-rc.1` },
         { tag_name: "desktop-v999.0.0-alpha.1" },
-        { tag_name: prefix === "v" ? "cockpit-v999.0.0" : "v999.0.0" },
+        { tag_name: "cockpit-v999.0.0" },
         { tag_name: `${prefix}1.2.3` },
       ])).toEqual({ tag: `${prefix}1.2.3`, url: null, publishedAt: null });
     });
 
     test("an empty list has no release", () => {
       expect(selector([])).toBeNull();
+    });
+
+    test("equal versions retain the first release metadata", () => {
+      expect(selector([
+        { tag_name: `${prefix}1.2.3`, html_url: "https://example.test/first" },
+        { tag_name: `${prefix}1.2.3`, html_url: "https://example.test/second" },
+      ])?.url).toBe("https://example.test/first");
     });
   });
 }
@@ -142,6 +118,7 @@ describe("desktop numeric precedence", () => {
     ["patch", "0.1.9", "0.1.10"],
     ["minor", "0.9.99", "0.10.0"],
     ["major", "9.99.99", "10.0.0"],
+    ["large patch", "1.0.9007199254740992", "1.0.9007199254740993"],
   ])("compares the %s numerically regardless of input order", (_component, older, newer) => {
     const releases = [
       { tag_name: `desktop-v${older}` },
@@ -235,7 +212,7 @@ describe("release stamp command", () => {
     expect(result.exitCode).toBe(0);
     expect(result.requestedPages).toEqual([1, 2]);
     expect(result.stamp.tag).toBe("v1.2.10");
-    expect(result.stamp.cockpit.tag).toBe("cockpit-v1.2.10");
+    expect(result.stamp).not.toHaveProperty("cockpit");
     expect(result.stamp.desktop.tag).toBe("desktop-v0.1.1");
     expect(result.stderr).toBe("");
   });
@@ -247,7 +224,6 @@ describe("release stamp command", () => {
     ]);
     expect(result.requestedPages).toEqual([1, 2]);
     expect(result.stamp.tag).toBe("v1.0.0");
-    expect(result.stamp.cockpit.tag).toBeNull();
     expect(result.stamp.desktop.tag).toBeNull();
     expect(result.stderr).toBe("");
   });
@@ -277,7 +253,6 @@ describe("release stamp command", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stamp).toEqual({
       tag: null, url: null, publishedAt: null,
-      cockpit: { tag: null, url: null, publishedAt: null },
       desktop: { tag: null, url: null, publishedAt: null },
     });
     expect(result.stderr).toContain("badges omitted this build");

@@ -8,7 +8,7 @@ last-reviewed: 2026-10-14
 
 **TL;DR.** Use the TUI or the GPUI desktop for interactive work, a host
 integration or MCP for coding agents, and the CLI for scripts. The browser
-client is a demo and developer integration. The Zig Cockpit is frozen.
+client is a demo and developer integration. The Zig Cockpit is archived outside main.
 
 ## Choose an interface
 
@@ -16,7 +16,7 @@ client is a demo and developer integration. The Zig Cockpit is frozen.
 |---|---|
 | Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
 | Use the native macOS app | [Desktop](./desktop.md) |
-| Read the frozen Zig client | [Cockpit](./cockpit.md) |
+| Recover the archived Zig client | [Cockpit archive](./cockpit.md) |
 | Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |

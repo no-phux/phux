@@ -4,8 +4,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-core}"
 case "$scope" in
-    core|native|cockpit|web|profiling|editor) ;;
-    *) phux_error "usage: bash scripts/setup-rust.sh [core|native|cockpit|web|profiling|editor]"; exit 2 ;;
+    core|native|web|profiling|editor) ;;
+    *) phux_error "usage: bash scripts/setup-rust.sh [core|native|web|profiling|editor]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 command -v rustup >/dev/null 2>&1 || {

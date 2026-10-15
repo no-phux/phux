@@ -18,10 +18,10 @@ Two are supported. They are not tiers of the same thing.
 
 | | Nix (`flake.nix`) | Mise (`mise.toml`) |
 |---|---|---|
-| Provides | Compilers, every root gate tool, browser and Cockpit toolchains, observability tools, pinned system libraries | Compilers and runtimes, plus the root gate tools |
-| Runs | Everything, including `just ci-full`, the browser lanes, and Cockpit | `just ci`, once `cargo-nextest` is installed separately |
+| Provides | Compilers, every root gate tool, browser toolchains, observability tools, pinned system libraries | Compilers and runtimes, plus the root gate tools |
+| Runs | Everything, including `just ci-full` and the browser lanes | `just ci`, once `cargo-nextest` is installed separately |
 | Costs | A dev-shell build on first use | Seconds; per-tool downloads |
-| Choose it when | You want one command to reproduce any lane, or you are touching the browser client, Cockpit, or release infrastructure | You already run a working native toolchain and want the pins without adopting Nix |
+| Choose it when | You want one command to reproduce any lane, or you are touching the browser client or release infrastructure | You already run a working native toolchain and want the pins without adopting Nix |
 
 ```sh
 mise install            # toolchains and gate tools
@@ -33,14 +33,13 @@ Then the same commands in either environment:
 
 ```sh
 just doctor             # default scope: native; also core / docs / integrations / web / ci
-                        # cockpit remains a local scope; it is frozen (ADR-0167)
 just ci                 # deterministic/unit bar
 just ci-full            # that plus real-server e2e and agent smoke; the PR bar
 ```
 
 `just` is how you run this repository after the tools are on PATH. It is not
-how you get a compiler. Recipes live in `just/*.just` (`just cockpit-test`
-still works); the root justfile is imports plus `just --list`. Do not add a
+how you get a compiler. Recipes live in `just/*.just`;
+the root justfile is imports plus `just --list`. Do not add a
 third bootstrap (`setup-rust.sh` / `install-zig.sh`) unless you are on the
 native CI path below.
 
@@ -72,7 +71,7 @@ actually hand you. Run it after bumping a pin or `flake.lock`.
 prebuilt entry in Mise's registry, and building it from source can require a
 newer compiler than this repository's Rust pin. Install the
 [official prebuilt binary](https://nexte.st/docs/installation/pre-built-binaries/);
-`bash scripts/doctor.sh ci` reports it missing. Browser, Cockpit, and
+`bash scripts/doctor.sh ci` reports it missing. Browser and
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
@@ -184,7 +183,6 @@ the shell, Cargo, and npm commands below also work directly.
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
-| Cockpit app (frozen) | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test`; not a CI gate |
 | GPUI desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
@@ -213,8 +211,8 @@ wire codec and input atoms are pure Rust. Its `server` feature adds libghostty
 conversions and rendering/replay helpers. `just crate-check phux-protocol`
 checks the former without Zig; `just crate-check phux-protocol server` also
 runs the engine-dependent tests. Broaden wire changes to native consumers
-before handoff. Cockpit's Phux provider needs the same-checkout FFI;
-`just cockpit-test` builds it first.
+before handoff. Native embedders need same-checkout FFI;
+`just ffi-abi` builds the C archive and runs its ABI checks.
 
 ## Native setup
 
@@ -362,30 +360,12 @@ See [desktop architecture](./architecture/desktop.md) for the host seams. The
 desktop build reuses the repository's Apple-toolchain environment helper, so it
 can select host Xcode/Metal without mixing in Nix's linker wrappers.
 
-## Cockpit
+## Archived Zig Cockpit
 
-Frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)). These recipes are a
-local resume path, not a CI gate. See
-[FROZEN.md](../clients/cockpit/FROZEN.md).
-
-Apple-silicon Mac, native Rust/Zig/Xcode, Node 24, Python 3:
-
-```sh
-just doctor cockpit
-just cockpit-test
-just cockpit-node-test   # npm ci --ignore-scripts in clients/cockpit first
-just cockpit-build
-just cockpit-dev
-```
-
-The recipes build `phux-client-ffi` from this checkout. See
-[Cockpit's guide](../clients/cockpit/README.md) for the isolated development
-app versus headless tests versus host-rendering evidence.
-
-### Native SDK live development
-
-The `native dev` loop, automation CLI, and identity-bound diagnostics live in
-[Cockpit's guide](../clients/cockpit/README.md#native-sdk-live-development).
+The app and its exclusive build, install, and release hooks are no longer
+on `main`. Use the [archive recovery guide](./consumers/cockpit.md) to open
+the preserved branch or plan a bot-led reintegration. The Zig pin remains
+required by libghostty, independently of that archived app.
 
 ## Full root validation
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compile every tests/*_abi.c against include/phux/client.h, link it against
-# the static archive `just cockpit-ffi` built, and run it. The static asserts
-# pin the C layouts Cockpit compiles against; the runs pin the refusals an
+# the static archive `just ffi-build` built, and run it. The static asserts
+# pin the C layouts native embedders compile against; the runs pin the refusals an
 # unconnected client gives.
 #
 # Usage: run_abi_checks.sh [PROFILE]   (default ffi-dev)
@@ -13,7 +13,7 @@ root="$(cd "$crate_dir/../.." && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
 archive="$target_dir/$profile/libphux_client_ffi.a"
 if [[ ! -f "$archive" ]]; then
-    echo "missing $archive; run just cockpit-ffi first" >&2
+    echo "missing $archive; run just ffi-build first" >&2
     exit 1
 fi
 

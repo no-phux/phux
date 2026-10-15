@@ -28,7 +28,6 @@ Ask before interrupting or destroying existing work.
 ```sh
 curl -fsSL https://phux.sh/install | sh         # phux CLI
 curl -fsSL https://phux.sh/install-desktop | sh # macOS desktop app (+ CLI)
-curl -fsSL https://phux.sh/install-cockpit | sh # Cockpit (experimental)
 npx skills add no-phux/skills                    # agent skills
 ```
 

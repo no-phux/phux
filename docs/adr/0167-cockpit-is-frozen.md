@@ -11,7 +11,7 @@ GPUI desktop is the native client. Automatic Cockpit CI, next-channel
 builds, and release-please cuts stop. A later sprint can turn those
 back on without reconstructing the app.
 
-Status: Accepted
+Status: Superseded by ADR-0169
 Date: 2026-10-14
 
 ## Context

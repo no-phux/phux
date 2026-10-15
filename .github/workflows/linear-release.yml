@@ -6,7 +6,6 @@
 #
 # Tag -> pipeline:
 #   vX.Y.Z         -> Linear `phux`           (secret LINEAR_RELEASE_ACCESS_KEY)
-#   cockpit-vX.Y.Z -> Linear `phux-cockpit`   (secret LINEAR_COCKPIT_RELEASE_ACCESS_KEY)
 #
 # Continuous Linear pipelines name a release after the short SHA unless `name`
 # is set. We always pass the tag as both name and version so Linear shows
@@ -25,13 +24,13 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Published release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
+        description: "Published root release tag to report (vX.Y.Z)."
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
+        description: "Published root release tag to report (vX.Y.Z)."
         required: true
         type: string
 
@@ -58,16 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           case "$TAG" in
-            cockpit-v[0-9]*)
-              echo "component=cockpit" >> "$GITHUB_OUTPUT"
-              echo "changelog=clients/cockpit/CHANGELOG.md" >> "$GITHUB_OUTPUT"
-              ;;
             v[0-9]*)
               echo "component=phux" >> "$GITHUB_OUTPUT"
               echo "changelog=CHANGELOG.md" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "::error::unsupported Linear tag '${TAG}'; expected vX.Y.Z or cockpit-vX.Y.Z"
+              echo "::error::unsupported Linear tag '${TAG}'; expected vX.Y.Z"
               exit 1
               ;;
           esac
@@ -75,18 +70,11 @@ jobs:
       - name: Require the Linear pipeline access key
         id: keys
         env:
-          COMPONENT: ${{ steps.meta.outputs.component }}
           PHUX_KEY: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
-          COCKPIT_KEY: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
         run: |
           set -euo pipefail
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          if [ "$COMPONENT" = cockpit ]; then
-            if [ -z "$COCKPIT_KEY" ]; then
-              echo "::warning::LINEAR_COCKPIT_RELEASE_ACCESS_KEY is unset; the GitHub release still publishes. Add the phux-cockpit pipeline key to report it to Linear."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ -z "$PHUX_KEY" ]; then
+          if [ -z "$PHUX_KEY" ]; then
             echo "::error::LINEAR_RELEASE_ACCESS_KEY is unset."
             exit 1
           fi
@@ -164,12 +152,9 @@ jobs:
       - name: Resolve the tagged issue scan range
         id: range
         if: success() && steps.keys.outputs.skip != 'true'
-        env:
-          COMPONENT: ${{ steps.meta.outputs.component }}
         run: |
           set -euo pipefail
           pattern='v[0-9]*'
-          if [ "$COMPONENT" = cockpit ]; then pattern='cockpit-v[0-9]*'; fi
           # Exclude this tag and unrelated component tags. An explicit base
           # also establishes the version when a path-filtered range is empty.
           if ! base="$(git describe --tags --match "$pattern" --abbrev=0 HEAD^ 2>/dev/null)"; then
@@ -192,31 +177,9 @@ jobs:
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'cockpit'
-        with:
-          access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
-          command: sync
-          name: ${{ inputs.tag }}
-          version: ${{ inputs.tag }}
-          base_ref: ${{ steps.range.outputs.base }}
-          no_branch_ref_detection: true
-          include_paths: clients/cockpit/**
-          release_notes: release-notes.md
-          links: |
-            GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
-
-      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
-          command: update
-          stage: Released
-          version: ${{ inputs.tag }}
-
-      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'cockpit'
-        with:
-          access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: update
           stage: Released
           version: ${{ inputs.tag }}

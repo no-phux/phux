@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn release_list_names_the_newest_core_release() {
         let body = r#"[
-            {"tag_name":"cockpit-v0.20.0","draft":false,"prerelease":false},
+            {"tag_name":"desktop-v0.20.0","draft":false,"prerelease":false},
             {"tag_name":"v0.32.0","draft":true,"prerelease":false},
             {"tag_name":"v0.33.0-rc.1","draft":false,"prerelease":true},
             {"tag_name":"opencode-plugin-v0.2.2","draft":false,"prerelease":false},

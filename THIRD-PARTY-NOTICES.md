@@ -70,6 +70,7 @@ this tree.
 
 ## Cockpit
 
-The frozen Zig client at clients/cockpit/ ships its own
-THIRD_PARTY_NOTICES.md for the app bundle (fonts, SDK, FFI provenance).
-That file is the notices surface for Cockpit releases.
+The archived Zig client retains its app-bundle notices (fonts, SDK, FFI
+provenance) at `clients/cockpit/THIRD_PARTY_NOTICES.md` on tag
+`archive/zig-cockpit-2026-10-14`. Those notices remain the surface for
+historical Cockpit releases; that client is no longer shipped from main.

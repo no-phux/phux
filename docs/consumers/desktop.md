@@ -20,7 +20,7 @@ Apple-silicon macOS is the first target.
 
 The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
 This is the maintained native client. The Zig [Cockpit](./cockpit.md) is
-frozen ([ADR-0167](../adr/0167-cockpit-is-frozen.md)). The first release requires
+archived outside main ([ADR-0169](../adr/0169-zig-cockpit-lives-in-an-archive.md)). The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
 [Install the Desktop](../INSTALL.md#desktop-app-macos)

@@ -1,181 +1,75 @@
 ---
-audience: humans, consumers
-stability: evolving
+audience: humans, consumers, contributors, agents
+stability: stable
 last-reviewed: 2026-10-14
 ---
 
-# Cockpit
+# Zig Cockpit archive
 
-**TL;DR.** The Zig Cockpit is frozen. It is not maintained, and CI does not
-build it. The GPUI [desktop](./desktop.md) is the native macOS client. The
-source stays in `clients/cockpit` so a later sprint can resume it. The last
-published release still installs. Resume steps are in
-[FROZEN.md](../../clients/cockpit/FROZEN.md).
-[ADR-0167](../adr/0167-cockpit-is-frozen.md) records the decision.
+**TL;DR.** The Zig Cockpit is tabled and removed from main, not lost.
+A published branch and annotated tag retain the complete app and its
+integration hooks. The GPUI desktop is the maintained native client.
 
----
+## Recovery refs
 
-## What it is
+| Ref | Purpose |
+|---|---|
+| `archive/zig-cockpit` branch | Preserved source tree, tests, SDK pins, build scripts, installers, and CI/release hooks |
+| `archive/zig-cockpit-2026-10-14` annotated tag | Immutable pre-removal snapshot at `2d267e7a9` |
 
-Cockpit is a native macOS application over the C ABI in `phux-client-ffi`,
-not a wrapper around the TUI. It renders the server's Terminal-kind resources.
-The app manages tabs, splits, focus, and input; the server runs the shells.
+Both refs are published in `no-phux/phux`. The snapshot includes
+`clients/cockpit/FROZEN.md`, which records the earlier freeze and how its
+automation was disabled. No new Cockpit releases or installs are supported
+from `main`; existing published releases and users' installed copies are
+not deleted or modified. Use the [GPUI desktop](./desktop.md) for maintained
+native development. [ADR-0169](../adr/0169-zig-cockpit-lives-in-an-archive.md)
+records the decision.
 
-Closing a window detaches. Reopening reattaches to the session while its
-server remains alive.
+## Open the preserved app
 
-## Install
-
-Apple silicon, macOS 11 or later. Intel Macs have no release artifact; the
-curl installer and the cask both refuse there.
-
-```sh
-curl -fsSL https://phux.sh/install-cockpit | sh
-phux cockpit
-```
-
-or the Homebrew cask:
+Run from any clone of this repository:
 
 ```sh
-brew trust --tap no-phux/tap   # Homebrew 6 and later
-brew install --cask no-phux/tap/phux-cockpit
+git fetch origin refs/heads/archive/zig-cockpit:refs/remotes/origin/archive/zig-cockpit
+git fetch origin tag archive/zig-cockpit-2026-10-14
+git worktree add -b revive/zig-cockpit ../phux-zig-cockpit archive/zig-cockpit-2026-10-14
 ```
 
-The installer verifies the release checksum before unpacking, places
-`Phux Cockpit.app` in `/Applications` (`~/Applications` when that is not
-writable), writes a `phux-cockpit` launcher beside the CLI, clears
-quarantine, and restores the previous app if placement fails. Pin a release
-with `sh -s -- --version cockpit-vX.Y.Z`, or follow green `main` with
-`sh -s -- --channel next` (also `PHUX_CHANNEL=next`).
+In that worktree, read `clients/cockpit/README.md`, `FROZEN.md`, and
+`docs/SETUP.md` before running `just doctor cockpit`, `just cockpit-test`,
+or `just cockpit-build`. Its SDK pin and Rust FFI belong to that snapshot.
+Never point a development build at the production socket or copy it over
+the installed `phux`.
 
-**Check for Updates…** (View menu or Settings → About) compares the version,
-or on `next` the build SHA, and reinstalls through the same installer, then
-relaunches; remote sessions stay on the server. `phux update` and
-`phux channel` also move an installer-placed Cockpit onto the CLI's channel.
-Homebrew, Nix, and development copies refuse self-update and print the
-native command.
+## Reintegrate with bots
 
-## Authority
+Start a new branch/worktree from current `origin/main`, not from the old
+archive. Merging the archive branch alone does not restore deleted files:
+its tip is already an ancestor of `main`.
 
-Cockpit has the same protocol standing as other clients; it does not own a
-second multiplexer or process-running daemon. Releases use `cockpit-vX.Y.Z`
-tags, independently of the `phux` binary.
+1. Find the dedicated removal commit with
+   `git log origin/main --diff-filter=D --format='%H %s' -- clients/cockpit/build.zig`.
+2. Revert that commit on the revival branch to recover the app **and all
+   integration hooks together**. Resolve conflicts against today's shared
+   code; do not overwrite current runtime, FFI, desktop, or release fixes.
+   For a source-only experiment, instead restore `clients/cockpit` from the
+   snapshot tag and deliberately port the hooks you need.
+3. Have bots trace the current protocol and C ABI against the recovered
+   provider, rebuild same-checkout FFI and fixtures, and adapt the SDK pin,
+   CLI, installer, site, classifier, and release contracts together.
+4. Run the recovered Cockpit tests, no-Phux graph, shipping build, C ABI
+   checks, and actual isolated app/remote acceptance, plus current root,
+   desktop, and browser gates affected by shared changes. A compile is not
+   interactive or remote acceptance.
+5. Request an independent review. Re-enable automatic CI, next publication,
+   release-please versioning, and site promotion only after an explicit
+   revival decision and passing evidence. The archived freeze guide is a
+   historical starting point, not authority to publish.
 
-AgentSession resources appear as rows under their parent terminal, not as
-panes. See [Concepts](../CONCEPTS.md) for product maturity.
-Their committed transcript survives a same-server reconnect
-([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)).
-The C bridge distinguishes full retained replacement from incremental records;
-incremental records may start a newer resumed bootstrap, not just continue a
-live generation. Cockpit keeps the prefix until an explicit full replacement
-or close. Eviction, an older server, or incompatible shared satellite cursors
-fall back to a full replacement; a server restart clears the old incarnation.
+Shared `phux-client-ffi`, mobile bindings, the GPUI desktop, and Zig used to
+build libghostty remain on `main`. They are not part of the cull.
 
-## Limits
+## Thanks
 
-- macOS Apple silicon only.
-- Independently versioned from the CLI; install both when you want both.
-- Direct local PTY sessions in the app are ephemeral and die with it.
-  Durable work uses the phux server.
-
-## Performance
-
-Performance work on Cockpit's Zig renderer is tabled. The app, its build,
-and its CI stay as they are; this note records the deferral.
-
-## Status effects
-
-After each attach barrier releases, `phux-client-ffi` subscribes to the
-connection-wide `AgentEvent` stream (`SUBSCRIBE_EVENTS`). Cwd changes,
-command boundaries, process exits, and terminal closes become typed
-`PhuxClientEffect` status kinds: `PHUX_CLIENT_STATUS_CWD`,
-`_COMMAND_STARTED`, `_COMMAND_FINISHED`, and `_EXITED`
-(`include/phux/client.h` in `phux-client-ffi`).
-
-The subscription covers every Terminal local to the connected server.
-Satellite panes behind a federation hub need explicit per-terminal
-subscriptions. Missing status reads as unknown, not as an error.
-
-An untitled tab uses the live working directory's basename (`/` for root)
-before the attach catalog's name. `EXITED` with reason `Exited` or `Killed`
-closes the pane; other reasons retain their existing handling. A shell's
-`exit` removes its terminal, and nothing is respawned
-([ADR-0162](../adr/0162-organization-records-persist-and-activations-reconcile.md)).
-When a persistent session loses its last pane, Cockpit shows Empty session;
-an ephemeral session is deleted and its window closes
-([ADR-0160](../adr/0160-sessions-own-resources-and-window-is-retired.md)).
-Closing the last window quits. These outcomes do not depend on whether the close event
-or workspace snapshot arrives first.
-
-Command boundaries determine `atPrompt()`. A command that ran for at least
-ten seconds posts a notification under the bell's gate and latch.
-
-`PHUX_CLIENT_STATUS_INPUT_HOLDER` is the server's `terminal_control`
-broadcast (ADR-0033): who holds a terminal's exclusive input lease, restated
-on every lease or lifecycle change, with a flag for "this connection". Only
-the holder's keys reach the PTY; a non-holder's are acked and dropped, so a
-pane whose wheel another client holds must say so rather than look dead.
-`phux_client_queue_acquire_input` (cooperative, or `seize` to preempt) and
-`phux_client_queue_release_input` move the lease; both are correlated
-operations. Taking over is a deliberate user act. Focus, a second attach, and
-reconnect never acquire ([L1.md §8.1](../spec/L1.md)); the attach-time
-alternative is `phux_client_attach_role` with `PRIMARY, DELIBERATE`.
-Cockpit shows a wheel held elsewhere as the focused terminal's window
-status, "Another client is driving", and Take Over Input (Shell menu and
-the command palette) seizes it. Nothing is acquired on focus.
-
-## Who owns the socket
-
-`phux-client-runtime` owns the socket (ADR-0133). Cockpit names a destination;
-the runtime resolves it through the CLI's `[[remote]]` registry and trust
-rules, dials, reconnects, and handles socket I/O on its own thread. It wakes
-Cockpit to call `phux_client_poll`.
-
-Cockpit's owning thread decodes frames because the ABI's per-frame behavior
-uses state confined to that thread. Each `poll` drains one snapshot of the
-bounded runtime queue. Contiguous terminal output reaches the engine in
-batches of at most 256 frames or 1 MiB, publishing each grid once per batch.
-
-- The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
-  explicit. Both a changed `phux_client_connection_epoch` and replacement
-  of the ABI handle retire Cockpit's connection generation and clear its
-  attach/catalog-request latches. Header Reconnect may replace the handle;
-  automatic reconnect normally retains it.
-- Cockpit retains the selected session's confirmed name and server identity.
-  It reuses a numeric ID only on the same server incarnation; after server
-  replacement it attaches that exact name, never a recycled ID or an implicit
-  new session. Frozen pixels do not grant input authority, and held input is
-  not replayed into the replacement coordinator.
-- A bare `host:port` endpoint has no lane and is refused: the registry is
-  what carries the certificate pin and token a routable dial needs.
-
-`phux_client_feed_frame` and `phux_client_outgoing_*` remain as the
-embedded lane that Cockpit's tests stage exact frames through; nothing in
-production drives it.
-
-## Terminal theme
-
-`phux_client_set_terminal_theme` installs a theme's palette 0..15 and its
-default foreground, background, and cursor (ADR-0157) as the defaults of
-every remote replica, now and after every reconnect; NULL clears them.
-They are defaults, not overrides: a program's OSC 4/10/11/12 still wins,
-and OSC 104/110/111/112 revert to the theme. Visible terminals republish,
-and `PhuxTerminalGridMetadata.palette` carries the result. Fill the struct
-from a `colors.toml` with the fixed mapping: 0 `background`, 1..6 `red`
-`green` `yellow` `blue` `magenta` `cyan`, 7 `foreground`, 8 `muted`,
-9..14 the `bright_*` variants, 15 `bright_foreground`, cursor
-`bright_foreground` (`phux theme show NAME --json` prints exactly this as
-`ansi16`). Cleared, `has_foreground` / `has_background` report false
-again and Cockpit's own fallback applies.
-
-## Clipboard (OSC 52)
-
-OSC 52 (the terminal-to-host clipboard-write escape) is governed by
-[ADR-0158](../adr/0158-pane-clipboard-writes-are-client-policy.md): the client
-focused on the pane honours it under `defaults.clipboard-write`. Cockpit does
-not deliver it yet and drops it; the TUI does.
-
-## Build
-
-Build instructions live in the
-[in-tree app README](../../clients/cockpit/README.md).
+A big thank-you to **Chris Tate** for the work that made this native-client
+experiment possible. The archive preserves that work for another day.

@@ -6,7 +6,7 @@
 //! mechanical over it:
 //!
 //! - `c-abi` (default) is `crate::c`: the stable `extern "C"` surface
-//!   `include/phux/client.h` declares, which Cockpit links as a staticlib.
+//!   `include/phux/client.h` declares, available as a native staticlib.
 //! - `uniffi` is `crate::uniffi`: the Swift and Kotlin mobile surface.
 //!
 //! The native desktop app is Rust, so it needs no encoder: it builds this crate

@@ -6,7 +6,6 @@ export type SiteFacts = {
   productName: string;
   cliInstall: string;
   desktopInstall: string;
-  cockpitInstall: string;
   docsUrl: string;
   releaseTag: string;
   releaseUrl: string;
@@ -47,7 +46,6 @@ const DOC_PATHS: Record<string, string> = {
 
 function installCommand(facts: SiteFacts, target: unknown): string {
   if (target === "desktop") return facts.desktopInstall;
-  if (target === "cockpit") return facts.cockpitInstall;
   if (target === "skills") return "npx skills add no-phux/skills";
   return facts.cliInstall;
 }
@@ -63,13 +61,13 @@ export function siteTools(facts: SiteFacts): ModelContextTool[] {
   return [
     {
       name: "get_install_command",
-      description: `Get the installer for the ${facts.productName} CLI, Desktop, frozen Cockpit, or agent skills.`,
+      description: `Get the installer for the ${facts.productName} CLI, Desktop, or agent skills.`,
       inputSchema: {
         type: "object",
         properties: {
           target: {
             type: "string",
-            enum: ["cli", "desktop", "cockpit", "skills"],
+            enum: ["cli", "desktop", "skills"],
             description: `Which installer to return. Defaults to the ${facts.productName} CLI.`,
           },
         },

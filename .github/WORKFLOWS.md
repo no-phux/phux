@@ -1,6 +1,6 @@
 # CI and release workflows
 
-**TL;DR.** Twenty-four workflows in five lanes. Only `ci` and `commitlint`
+**TL;DR.** Workflows run in five lanes. Only `ci` and `commitlint`
 gate `main`. Everything else either self-skips, deploys, or belongs to the
 release train that `release-please.yml` owns end to end. The full runbook,
 the known problems, and the daily health digest live in the private
@@ -10,9 +10,9 @@ the known problems, and the daily health digest live in the private
 
 | Lane | Workflows | Fires on |
 |---|---|---|
-| PR validation | `ci`, `cockpit-ci`, `conventional-commits`, `web-check`, `native-setup` | every non-draft pull request, and `main` |
+| PR validation | `ci`, `conventional-commits`, `web-check`, `native-setup` | every non-draft pull request, and `main` |
 | Opt-in checks | `stress` (label or dispatch), `mutation` (dispatch) | never automatically |
-| Release train | `release-please` and the workflows it calls: `release`, `cockpit-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
+| Release train | `release-please`, `publish` and its leaf workflows: `release`, `desktop-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
 | Site and worker | `site-deploy`, `site-deploy-worker`, `site-rollback-worker`, `site-native-control` | `main` pushes under `docs/`, or an operator |
 | Scheduled ops | `release-drift` (daily), `site-native-monitor` (6-hourly), `native-setup` (weekly), `perf-nightly` (nightly; artifacts only, not a required check) | cron |
 
@@ -22,7 +22,7 @@ The ruleset requires two contexts: **`ci`** and **`commitlint`**.
 
 `ci` is an aggregate job. It depends on every lane inside `ci.yml` and
 applies the skip policy: the classify and workflow-gate jobs must succeed,
-while the product lanes may succeed *or* skip. That is why `cockpit-ci`,
+while the product lanes may succeed *or* skip. That is why
 `web-check` and `native-setup` can self-skip without blocking a merge, and
 why adding a new lane means adding it to that aggregate rather than to the
 ruleset. `perf-icount` is one of those lanes: the aggregate fails when it
@@ -41,16 +41,15 @@ accepted rot risk: the check is real, and it is too expensive to duplicate
 inside `ci.yml`.
 
 A ruleset matches a job's **display name**, not its id. Several jobs here
-differ between the two (`changes` shows as "classify changes",
-`cockpit-ci`'s `test` shows as "Zig 0.16 macOS"), so never assume an id is
-requireable.
+differ between the two (`changes` shows as "classify changes"), so never
+assume an id is requireable.
 
 ## Cancellation rules
 
 Pull requests are latest-wins: a new push cancels the in-flight run.
 
-Pushes to `main` are deliberately **not** latest-wins in `ci` and
-`cockpit-ci`. Their concurrency group includes the commit SHA, so every
+Pushes to `main` are deliberately **not** latest-wins in `ci`.
+Its concurrency group includes the commit SHA, so every
 `main` commit keeps its own validation. A release can be cut from any of
 them, and `release-please` refuses to build a tag until it finds a
 successful run at that exact SHA.
@@ -83,13 +82,11 @@ Renaming any one of those groups breaks that guarantee.
 - **A closed PR still burning runners.** `pr-janitor` cancels runs and
   deletes caches for a closed PR, matching by head SHA so `main` is never
   touched.
-- **Cockpit release stopped with `KEYLESS_RELEASE_STOP`.** The signing or
-  tap secrets are missing; assets stay on the draft until they are set.
 
 ## Conventions
 
 Action versions are SHA-pinned and checked by `just workflow-check`, which
 also validates the path-routing table and the syntax of every file here.
 Shared logic belongs in `.github/actions/` (`classify-changes`,
-`validation-receipt`, `setup-rust-lane`, `cockpit-rust-artifacts`) rather
+`validation-receipt`, `setup-rust-lane`) rather
 than copied between workflows.

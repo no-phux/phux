@@ -32,22 +32,22 @@ baseline: `f6b10675`, branch `docs/cockpit-craft-notes`. The earlier closed
 
 ## Existing sources and observed opportunities
 
-The [product direction](../clients/cockpit/docs/PRODUCT_DIRECTION.md) owns the
-terminal-first ambition; [design system](../clients/cockpit/docs/DESIGN_SYSTEM.md)
-owns chrome tokens and sizing; [decisions](../clients/cockpit/docs/DECISIONS.md)
+The [product direction](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/PRODUCT_DIRECTION.md) owns the
+terminal-first ambition; [design system](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/DESIGN_SYSTEM.md)
+owns chrome tokens and sizing; [decisions](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/DECISIONS.md)
 owns settled tradeoffs. These notes propose refinements, not replacement rules.
 
 Source inspection establishes:
 
-- [Settings markup](../clients/cockpit/src/windows/components/cockpit-settings.native)
+- [Settings markup](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/src/windows/components/cockpit-settings.native)
   renders editable values through repeated Edit/Reset actions, a revealed text
   input and Preview, followed by panel-level Save. It already has search,
   categories and theme choices. The opportunity is better interaction design,
   not adding another settings framework.
-- [Settings vocabulary](../clients/cockpit/src/settings.ts) includes font,
+- [Settings vocabulary](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/src/settings.ts) includes font,
   appearance, cursor, shell and shortcut concerns. Each choice need not look
   like an arbitrary string simply because configuration stores a string.
-- [Commands](../clients/cockpit/src/command-catalog.ts) already include search,
+- [Commands](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/src/command-catalog.ts) already include search,
   navigation, configuration and updates. Improve their presentation and
   discoverability before inventing duplicate command surfaces.
 - The design system already specifies a Geist register, spacing ladder and
@@ -201,11 +201,11 @@ and a terminal window's tabs/buttons in every meaningful state. Compare the
 number of actions, visual hierarchy, geometry and code ownership together.
 Keep source observations separate from live defects and from desired behavior.
 
-Follow [rendering evidence](../clients/cockpit/docs/RENDER_FIDELITY.md): CPU
+Follow [rendering evidence](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/clients/cockpit/docs/RENDER_FIDELITY.md): CPU
 reference screenshots cannot prove CoreText/Metal appearance. A future craft
 slice needs real-app observation with the correct build/PID, scoped behavioral
 checks, and a diff whose ownership is easier to explain. Setup and checks live
-in [SETUP](../docs/SETUP.md#cockpit); this notes-only capture requires docs checks.
+in [SETUP](https://github.com/no-phux/phux/blob/2d267e7a9ac331e91dab44afde9d7dddee64e0d7/docs/SETUP.md#cockpit); this notes-only capture requires docs checks.
 
 The acceptance question is the same on both sides: **does this make the next
 action obvious, and remove effort without hiding essential information?**

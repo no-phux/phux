@@ -143,14 +143,11 @@ secrets the form still records requests.
 ### The curl installers
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's
-`scripts/install.sh` byte for byte; `https://phux.sh/install-cockpit` and
-`https://phux.sh/install-cockpit.sh` do the same for
-`scripts/install-cockpit.sh`, which installs the frozen Cockpit macOS app
-from the last `cockpit-vX.Y.Z` release assets. `https://phux.sh/install-desktop` and
+`scripts/install.sh` byte for byte; `https://phux.sh/install-desktop` and
 `https://phux.sh/install-desktop.sh` serve `scripts/install-desktop.sh`, which
 installs the GPUI `Phux.app` from `desktop-vX.Y.Z` releases.
-`scripts/sync-docs.ts` copies all three into `public/` on every build and all
-six destinations are gitignored, so a published installer cannot drift from
+`scripts/sync-docs.ts` copies both into `public/` on every build and all
+four destinations are gitignored, so a published installer cannot drift from
 the script the release tests exercise.
 Two real files per installer rather than a redirect, because
 `curl https://phux.sh/install` has to work without `-L`.

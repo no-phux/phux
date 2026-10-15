@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFile(join(root, path), "utf8");
 
-const [configText, manifestText, releasePlease, publish, release, linearWorkflow, integrationWorkflow, cockpitVersionText] = await Promise.all([
+const [configText, manifestText, releasePlease, publish, release, linearWorkflow, integrationWorkflow] = await Promise.all([
   read("release-please-config.json"),
   read(".release-please-manifest.json"),
   read(".github/workflows/release-please.yml"),
@@ -18,18 +18,15 @@ const [configText, manifestText, releasePlease, publish, release, linearWorkflow
   read(".github/workflows/release.yml"),
   read(".github/workflows/linear-release.yml"),
   read(".github/workflows/agent-integration-release.yml"),
-  read("clients/cockpit/version.txt"),
 ]);
 const config = JSON.parse(configText);
 const manifest = JSON.parse(manifestText);
-const cockpitVersion = cockpitVersionText.trim();
 
 assert.equal(config["bootstrap-sha"], undefined, "bootstrap-sha must stay removed after the first canonical release");
 assert.equal(config["force-tag-creation"], true, "draft releases require release-please-owned tags");
 assert.equal(config.draft, true, "artifact workflows require private draft releases");
-assert.equal(config.packages?.["clients/cockpit"], undefined, "Cockpit is frozen and is not a release-please package");
-assert.equal(manifest["clients/cockpit"], undefined, "Cockpit is frozen and is not in the release-please manifest");
-assert.match(cockpitVersion, /^\d+\.\d+\.\d+$/, "clients/cockpit/version.txt keeps the frozen source version");
+assert.equal(config.packages?.["clients/cockpit"], undefined, "archived Cockpit is not a release-please package");
+assert.equal(manifest["clients/cockpit"], undefined, "archived Cockpit is not in the release-please manifest");
 
 assert.doesNotMatch(releasePlease, /clients--cockpit--/, "slash-normalized release-please outputs do not exist");
 assert.doesNotMatch(releasePlease, /\bgit tag\b/, "release-please is the sole tag owner");
@@ -46,7 +43,8 @@ assert.doesNotMatch(releasePlease, /wait_validation\.py/, "release-please must n
 assert.doesNotMatch(releasePlease, /uses: \.\/\.github\/workflows\/release\.yml/, "publish.yml owns artifact fan-out");
 
 assert.match(publish, /uses: \.\/\.github\/workflows\/release\.yml/, "publish ships root releases");
-assert.match(publish, /uses: \.\/\.github\/workflows\/cockpit-release\.yml/, "publish ships Cockpit");
+assert.doesNotMatch(publish, /cockpit/, "archived Cockpit has no publication lane");
+assert.match(publish, /uses: \.\/\.github\/workflows\/desktop-release\.yml/, "publish ships GPUI Desktop");
 assert.match(publish, /ffi-android\.yml/, "root releases attach the Android UniFFI zip");
 assert.match(publish, /ffi-xcframework\.yml/, "root releases attach the xcframework");
 assert.match(publish, /linear-release\.yml/, "published releases are reported to Linear");
@@ -94,8 +92,7 @@ assert.ok(
   "Linear continuous pipelines name the SHA unless name is the tag",
 );
 assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come from the tagged changelog");
-assert.match(linearWorkflow, /LINEAR_COCKPIT_RELEASE_ACCESS_KEY/, "Cockpit uses its own Linear pipeline key");
-assert.match(linearWorkflow, /include_paths: clients\/cockpit\/\*\*/, "Cockpit Linear scans only clients/cockpit");
+assert.doesNotMatch(linearWorkflow, /cockpit/i, "archived Cockpit is not reported to Linear");
 
 execFileSync("python3", ["scripts/ci/site_source_pin.py", "--check"], { cwd: root, stdio: "inherit" });
 execFileSync("python3", [

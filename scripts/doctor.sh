@@ -5,8 +5,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
 case "$scope" in
-    docs|core|native|integrations|web|cockpit|desktop|ci) ;;
-    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|cockpit|desktop|ci]"; exit 2 ;;
+    docs|core|native|integrations|web|desktop|ci) ;;
+    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|desktop|ci]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 cd "$DEV_ROOT"
@@ -180,14 +180,6 @@ case "$scope" in
         fi
         if [[ -f clients/phux-vt-web/vendor/ghostty-vt.wasm ]]; then ok 'Committed WASM engine present (run tests to verify ABI)'; else
             fail 'committed ghostty-vt.wasm' 'Restore clients/phux-vt-web/vendor/ghostty-vt.wasm from the checkout; see docs/SETUP.md#browser-client'
-        fi
-        ;;
-    cockpit)
-        native_tools
-        node_tools
-        need python3 'mise install; or: nix develop; or: brew install python'
-        if [[ "$(uname -s)/$(uname -m)" != Darwin/arm64 ]]; then
-            fail 'Cockpit app requires Apple-silicon macOS' 'Use an Apple-silicon Mac for the app and host-rendering checks'
         fi
         ;;
     ci)
