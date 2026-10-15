@@ -48,6 +48,8 @@ pub struct Desktop {
     legacy_layout: Option<PathBuf>,
     legacy_quick: Option<PathBuf>,
     recent_projects: Option<RecentProjects>,
+    _history_errors: Option<Task<()>>,
+    _quit: Option<Subscription>,
     windows: Vec<Opened>,
     quick: Option<Opened>,
     performance: Option<AnyWindowHandle>,
@@ -87,6 +89,8 @@ impl Desktop {
             legacy_layout: None,
             legacy_quick: None,
             recent_projects: None,
+            _history_errors: None,
+            _quit: None,
             windows: Vec::new(),
             quick: None,
             performance: None,
@@ -106,7 +110,17 @@ impl Desktop {
                 let _ = weak.update(cx, |desktop, cx| desktop.window_closed(id, cx));
             });
         });
-        desktop.update(cx, |desktop, _| desktop._closed = Some(closed));
+        desktop.update(cx, |desktop, cx| {
+            desktop._closed = Some(closed);
+            desktop._quit = Some(cx.on_app_quit(|desktop, _| {
+                if let Some(history) = &desktop.recent_projects {
+                    for error in history.flush() {
+                        log::error!("Could not save recent folders: {error}");
+                    }
+                }
+                async {}
+            }));
+        });
         let weak = desktop.downgrade();
         cx.on_action(move |_: &PerformanceMonitor, cx| {
             // Menu actions may run while the focused window is leased.
@@ -146,6 +160,7 @@ impl Desktop {
         self.home_key = None;
         let socket = self.socket.display().to_string();
         self.recent_projects = Some(RecentProjects::load(&socket));
+        self.listen_history_errors(cx);
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
@@ -273,6 +288,30 @@ impl Desktop {
         self.recent_projects
             .as_ref()
             .map_or(&[], RecentProjects::entries)
+    }
+
+    fn listen_history_errors(&mut self, cx: &mut Context<Self>) {
+        let errors = self
+            .recent_projects
+            .as_ref()
+            .expect("desktop launched")
+            .errors();
+        self._history_errors = Some(cx.spawn(async move |this, cx| {
+            while let Ok(error) = errors.recv().await {
+                let _ = this.update(cx, |desktop, cx| {
+                    for opened in desktop.windows.iter().chain(desktop.quick.as_ref()) {
+                        opened.desk.update(cx, |desk, cx| {
+                            desk.post(
+                                super::notifications::Kind::Error,
+                                "Could not save recent folders",
+                                Some(error.clone()),
+                            );
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        }));
     }
 
     pub(crate) fn record_recent_project(

@@ -201,6 +201,13 @@ and organization actions remain available.
 
 ## Connections, settings, and native behavior
 
+The host-labelled **main menu** stays in the titlebar's left rail, above the
+sidebar when it is open. Hiding the sidebar keeps the menu visible and eases
+the tabs into the reclaimed space (without motion when reduced motion is on).
+It brings together new terminals, sessions and windows, Open Folder, splits,
+Mirror Pane, navigation, Settings, reconnect, and host switching. The tab strip
+keeps New Terminal and the notification bell; shortcuts remain unchanged.
+
 Local and registered remote hosts open concurrently with host-qualified
 identity, through the shared registry and dialer; auth refusal, expiry,
 version mismatch, and offline inventory are distinct states. Settings show

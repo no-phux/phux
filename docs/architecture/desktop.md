@@ -63,6 +63,11 @@ Layout files stay at
 Unscoped layouts are imported without overwrite. Malformed or future versions
 are not rewritten.
 
+Layout and recent-folder saves enqueue immutable snapshots to ordered background
+writers. Pending saves to the same path coalesce; serialization, file sync, and
+atomic replacement do not block pane placement or command repaint. Window close
+and app quit flush outstanding saves. Save failures still surface as errors.
+
 ## Identity and independent views
 
 - A qualified terminal is endpoint, serving authority, server incarnation, and
