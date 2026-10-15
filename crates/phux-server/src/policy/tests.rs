@@ -535,7 +535,7 @@ fn native_samples(agent: &WireResourceId) -> [FrameKind; 3] {
                     provider: "omp".into(),
                     command: vec!["omp".into(), "--mode".into(), "rpc-ui".into()],
                     cwd: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::default(),
                     sdk_runtime: None,
                     node_bridge: None,
                     native_id: None,

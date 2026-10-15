@@ -852,7 +852,6 @@ async function createAdapter2(context, startQuery) {
         questions: [],
         fields: boundedJson(request.requestedSchema)
       }, signal);
-      submitted(options2.requestId);
       if (signal.aborted || record(response) && response.cancelled === true) return { action: "cancel" };
       if (!record(response) || !record(response.values) || !validate(response.values).valid) {
         notice("warning", "Claude MCP form answer failed provider schema validation");
@@ -860,9 +859,12 @@ async function createAdapter2(context, startQuery) {
       }
       return protocol.ElicitResultSchema.parse({ action: "accept", content: response.values });
     } catch {
-      submitted(options2.requestId);
       notice("warning", "Claude MCP elicitation cancelled: unsupported schema, UI, or answer");
       return { action: "cancel" };
+    } finally {
+      if (questions.get(options2.requestId)?.signal === signal) {
+        closeQuestion(options2.requestId, "Claude MCP form response submitted to SDK callback");
+      }
     }
   };
   const options = {
@@ -22260,7 +22262,10 @@ var init_codex = __esm({
       capabilities = { prompt: true, interrupt: true, questions: true, follow_up: true };
       providerSessionId;
       currentTurn;
-      endedTurns = /* @__PURE__ */ new Set();
+      endedTurns = /* @__PURE__ */ new Map();
+      promptOperations = /* @__PURE__ */ new Map();
+      pendingStarts = 0;
+      evictedOutcomes = 0;
       questions = /* @__PURE__ */ new Map();
       partials = /* @__PURE__ */ new Map();
       tools = /* @__PURE__ */ new Map();
@@ -22291,18 +22296,37 @@ var init_codex = __esm({
           if (turn.status === "inProgress") this.started(turn.id);
         }
       }
-      async prompt(text, _operationId) {
+      async prompt(text, operationId) {
         if (this.closed || !this.providerSessionId) return { disposition: "refused", detail: "Codex is disconnected" };
+        if (this.pendingStarts + this.promptOperations.size >= MAX_PENDING2) {
+          return { disposition: "refused", detail: "Codex has 128 prompts awaiting correlated turn outcomes" };
+        }
         const params = { threadId: this.providerSessionId, input: [{ type: "text", text, text_elements: [] }] };
+        const evictedBeforeStart = this.evictedOutcomes;
+        this.pendingStarts++;
         try {
           const response = await this.rpc.request("turn/start", params, this.validators.turn);
-          if (response.turn.status === "inProgress" && !this.endedTurns.has(response.turn.id)) this.started(response.turn.id);
-          return { disposition: "admitted", detail: `Codex accepted turn ${response.turn.id}` };
+          const turn = response.turn;
+          if (this.promptOperations.has(turn.id)) {
+            return { disposition: "unknown", detail: "Codex returned a turn already associated with another prompt; input was not retried" };
+          }
+          this.promptOperations.set(turn.id, operationId);
+          const outcome = this.endedTurns.get(turn.id) ?? (turn.status === "inProgress" ? void 0 : turn.status);
+          if (outcome !== void 0) this.completePrompt(turn.id, outcome);
+          else {
+            if (this.evictedOutcomes !== evictedBeforeStart) {
+              return { disposition: "unknown", detail: "Codex terminal correlation history exceeded capacity while turn/start was pending; input was not retried" };
+            }
+            this.started(turn.id);
+          }
+          return { disposition: "admitted", detail: `Codex accepted turn ${turn.id}` };
         } catch (error) {
           return {
             disposition: error instanceof RpcRejected ? "refused" : "unknown",
             detail: error instanceof Error ? error.message : "Codex prompt admission is unknown"
           };
+        } finally {
+          this.pendingStarts--;
         }
       }
       async interrupt(turnId) {
@@ -22312,13 +22336,31 @@ var init_codex = __esm({
         const params = { threadId: this.providerSessionId, turnId };
         try {
           await this.rpc.request("turn/interrupt", params, this.validators.interrupt);
-          return { disposition: "admitted", detail: "Codex acknowledged interruption; awaiting turn/completed" };
+          return { disposition: "completed", detail: `Codex acknowledged interrupt for turn ${turnId}; turn termination is reported separately by turn/completed` };
         } catch (error) {
           return {
             disposition: error instanceof RpcRejected ? "refused" : "unknown",
             detail: error instanceof Error ? error.message : "Codex interruption is unknown"
           };
         }
+      }
+      completePrompt(turnId, status) {
+        if (!this.endedTurns.has(turnId)) this.endedTurns.set(turnId, status);
+        if (this.endedTurns.size > MAX_PENDING2) {
+          const oldest = this.endedTurns.keys().next().value;
+          if (oldest !== void 0) {
+            this.endedTurns.delete(oldest);
+            this.evictedOutcomes++;
+          }
+        }
+        const operationId = this.promptOperations.get(turnId);
+        if (operationId === void 0) return;
+        this.promptOperations.delete(turnId);
+        this.context.result({
+          operation_id: operationId,
+          disposition: "completed",
+          detail: `Codex turn ${turnId} ended with status ${this.endedTurns.get(turnId) ?? status}`
+        });
       }
       started(id) {
         if (this.endedTurns.has(id)) return;
@@ -22353,11 +22395,8 @@ var init_codex = __esm({
             break;
           case "turn/completed": {
             const turn = event.params.turn;
-            this.endedTurns.add(turn.id);
-            if (this.endedTurns.size > MAX_PENDING2) {
-              const oldest = this.endedTurns.values().next().value;
-              if (oldest !== void 0) this.endedTurns.delete(oldest);
-            }
+            if (turn.status === "inProgress") break;
+            this.completePrompt(turn.id, turn.status);
             for (const item of turn.items) this.item(item, true);
             for (const [id, pending] of this.questions) {
               if (pending.closeWithTurn && pending.turnId === turn.id) {

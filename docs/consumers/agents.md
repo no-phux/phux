@@ -395,6 +395,15 @@ blanket claim that a model turn finished. `refused` and `unknown` exit 2
 while still printing the native result document on stdout. `unknown` after
 transport loss MUST NOT trigger a replacement prompt. Pre-submission failures
 use the usual structured stderr error document and leave stdout empty.
+
+Codex prompt completion records the actual provider turn's terminal status,
+including `failed` or `interrupted`; it is not a claim of model success.
+An interrupt's completion acknowledges the SDK/RPC call, while the provider
+reports turn termination separately. Claude MCP forms retire when their
+response is submitted to the SDK callback; their queued answer receipt does
+not claim later provider consumption. Ending a turn does not by itself
+resolve independent questions.
+
 The provider's later events resolve questions and turns. Closing a viewer
 detaches; graceful daemon upgrade keeps the same host-owned SDK session.
 

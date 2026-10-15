@@ -296,7 +296,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                             provider: "omp".into(),
                             command: vec!["omp".into()],
                             cwd: None,
-                            env: Default::default(),
+                            env: std::collections::BTreeMap::new(),
                             sdk_runtime: None,
                             node_bridge: None,
                             native_id: None,

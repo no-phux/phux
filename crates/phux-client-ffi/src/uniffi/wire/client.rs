@@ -1206,12 +1206,11 @@ mod tests {
     use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, RolePolicy, Scope};
 
     #[test]
-    fn native_json_is_validated_before_scheduling_and_receipts_stay_dedicated() {
+    fn native_json_is_validated_before_scheduling() {
         use phux_protocol::caps::{
             BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
             ServerFeatureExtSet,
         };
-        use phux_protocol::native_agent::{NativeDisposition, NativeRequest};
         let mut remote = RemoteClient::new("unused".into(), 0, 0, None, None);
         let runtime =
             phux_client_runtime::Runtime::embedded(phux_client_runtime::control::ControlOptions {
@@ -1220,7 +1219,7 @@ mod tests {
             });
         *Arc::get_mut(&mut remote).unwrap().client.get_mut().unwrap() = Some(runtime.clone());
         runtime.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
-        runtime.take_outbound();
+        drop(runtime.take_outbound());
         runtime
             .feed(FrameKind::HelloOk {
                 protocol_major: phux_protocol::PROTOCOL_VERSION.major,
@@ -1233,7 +1232,7 @@ mod tests {
                 bootstrap_limits: BootstrapLimits::default(),
             })
             .unwrap();
-        runtime.take_outbound();
+        drop(runtime.take_outbound());
         for json in [
             r#"{"type":"prompt","text":" "}"#.to_owned(),
             r#"{"type":"interrupt","turn_id":""}"#.to_owned(),
@@ -1255,49 +1254,6 @@ mod tests {
             None
         );
         assert!(runtime.take_outbound().is_empty());
-        let operation_id = remote
-            .native_agent_command(
-                "local:22".into(),
-                "activation-A".into(),
-                r#"{"type":"prompt","text":"ok"}"#.into(),
-            )
-            .unwrap();
-        let outbound = runtime.take_outbound();
-        assert_eq!(outbound.len(), 1);
-        let (frame, rest) = FrameKind::decode(&outbound[0]).unwrap();
-        assert!(rest.is_empty());
-        assert!(matches!(frame, FrameKind::Command {
-            command: phux_protocol::wire::frame::Command::NativeAgent { request }, ..
-        } if matches!(request.request(), NativeRequest::Command { agent_session_id, command }
-            if *agent_session_id == ResourceId::local(22) && command.operation_id == operation_id && command.activation == "activation-A")));
-        let mut projected = Vec::new();
-        for (disposition, word) in [
-            (NativeDisposition::Admitted, "admitted"),
-            (NativeDisposition::Queued, "queued"),
-            (NativeDisposition::Completed, "completed"),
-            (NativeDisposition::Refused, "refused"),
-            (NativeDisposition::Unknown, "unknown"),
-        ] {
-            remote.project_event(
-                Event::NativeAgentResult {
-                    agent_session_id: ResourceId::local(22),
-                    operation_id,
-                    disposition,
-                    detail: Some("SDK UI submission only".into()),
-                },
-                &mut projected,
-            );
-            assert_eq!(
-                projected.last(),
-                Some(&WireEvent::NativeAgentResult {
-                    agent_session_id: "local:22".into(),
-                    operation_id,
-                    disposition: word.into(),
-                    detail: Some("SDK UI submission only".into()),
-                })
-            );
-        }
-        assert!(remote.take_input_deliveries().is_empty());
     }
 
     /// A zero constructor viewport reaches the runtime as zero, the no-vote

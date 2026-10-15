@@ -20,7 +20,7 @@ struct Fixture {
     parent: phux_core::ids::ResourceId,
     agent: ResourceId,
     parent_wire: ResourceId,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -54,15 +54,89 @@ impl Fixture {
             guardian_key: None,
             guardian_expected: None,
         };
+        let (owner, session, parent, parent_wire) =
+            Self::create_guardian(&state, &root, dir.path(), &peer, &recipe);
+        let delegation = super::super::delegation::delegate_agent(
+            &state,
+            owner,
+            session,
+            crate::delegation::DelegationRequest::default(),
+            None,
+            &root,
+        )
+        .unwrap();
+        let host = state.with_mut(|s| {
+            let host = s.new_client_id();
+            let mut identity = ConnectionIdentity::from(peer);
+            identity.credential = Some(AuthenticatedCredential {
+                id: delegation.credential.id.clone(),
+                principal: "delegated-agent".into(),
+                scopes: delegation
+                    .credential
+                    .scopes()
+                    .grants()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                issued_at: chrono::Utc::now(),
+                expires_at: Some(delegation.credential.expires_at),
+                generation: 0,
+                registry_instance: None,
+            });
+            s.set_connection_identity(host, identity);
+            s.set_connection_grant(
+                host,
+                ConnectionGrant::delegated(
+                    delegation.credential.scopes(),
+                    delegation.credential.principal(),
+                    delegation.credential.on_behalf_of.clone(),
+                    delegation.credential.expires_at,
+                )
+                .unwrap(),
+            );
+            host
+        });
+        let agent = Self::create_agent(
+            &state,
+            &root,
+            owner,
+            parent,
+            &parent_wire,
+            recipe,
+            &delegation.credential.id,
+        );
+        Self {
+            state,
+            root,
+            owner,
+            host,
+            parent,
+            agent,
+            parent_wire,
+            dir,
+        }
+    }
+    fn create_guardian(
+        state: &SharedState,
+        root: &CancellationToken,
+        dir: &std::path::Path,
+        peer: &PeerIdentity,
+        recipe: &SpawnNativeAgent,
+    ) -> (
+        ClientId,
+        phux_core::ids::SessionId,
+        phux_core::ids::ResourceId,
+        ResourceId,
+    ) {
         let (owner, session, parent) = state.with_mut(|s| {
-            s.set_server_socket_path(dir.path().join("isolated.sock"));
+            s.set_server_socket_path(dir.join("isolated.sock"));
             let owner = s.new_client_id();
             s.set_peer_identity(owner, peer.clone());
             s.set_connection_grant(owner, ConnectionGrant::owner());
             let launch = phux_core::TerminalLaunch {
                 env: vec![(
                     NATIVE_HOST_SPEC_ENV.into(),
-                    serde_json::to_string(&recipe).unwrap(),
+                    serde_json::to_string(recipe).unwrap(),
                 )],
                 ..Default::default()
             };
@@ -106,47 +180,19 @@ impl Fixture {
             );
             wire
         });
-        let delegation = super::super::delegation::delegate_agent(
-            &state,
-            owner,
-            session,
-            crate::delegation::DelegationRequest::default(),
-            None,
-            &root,
-        )
-        .unwrap();
-        let host = state.with_mut(|s| {
-            let host = s.new_client_id();
-            let mut identity = ConnectionIdentity::from(peer);
-            identity.credential = Some(AuthenticatedCredential {
-                id: delegation.credential.id.clone(),
-                principal: "delegated-agent".into(),
-                scopes: delegation
-                    .credential
-                    .scopes()
-                    .grants()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                issued_at: chrono::Utc::now(),
-                expires_at: Some(delegation.credential.expires_at),
-                generation: 0,
-                registry_instance: None,
-            });
-            s.set_connection_identity(host, identity);
-            s.set_connection_grant(
-                host,
-                ConnectionGrant::delegated(
-                    delegation.credential.scopes(),
-                    delegation.credential.principal(),
-                    delegation.credential.on_behalf_of.clone(),
-                    delegation.credential.expires_at,
-                )
-                .unwrap(),
-            );
-            host
-        });
-        let agent = state.with_mut(|s| {
+        (owner, session, parent, parent_wire)
+    }
+
+    fn create_agent(
+        state: &SharedState,
+        root: &CancellationToken,
+        owner: ClientId,
+        parent: phux_core::ids::ResourceId,
+        parent_wire: &ResourceId,
+        recipe: SpawnNativeAgent,
+        credential: &str,
+    ) -> ResourceId {
+        state.with_mut(|s| {
             let core = s
                 .create_agent_session(
                     parent,
@@ -169,7 +215,7 @@ impl Fixture {
                     parent: parent_wire.clone(),
                     activation: "activation-A".into(),
                     proof: "private-test-proof".into(),
-                    credential: delegation.credential.id.clone(),
+                    credential: credential.to_owned(),
                     host_pid: None,
                     generation: 0,
                     view: NativeView {
@@ -193,16 +239,39 @@ impl Fixture {
                 .wakes
                 .insert(agent.clone(), Arc::new(Notify::new()));
             agent
-        });
-        Self {
-            state,
-            root,
-            owner,
-            host,
-            parent,
-            agent,
-            parent_wire,
-            _dir: dir,
+        })
+    }
+
+    fn asked_inventory(&self) -> (Option<String>, bool, Option<Vec<u8>>) {
+        self.state.with(|s| {
+            (
+                s.current_agent_asked(self.parent)
+                    .map(|asked| asked.id.clone()),
+                s.agent_is_asked(self.parent),
+                s.metadata().get(
+                    &Scope::Resource(self.parent_wire.clone()),
+                    RESOURCE_ASKED_KEY,
+                ),
+            )
+        })
+    }
+
+    fn completion(
+        &self,
+        generation: u64,
+        operation_id: u64,
+        disposition: NativeDisposition,
+    ) -> NativeRequest {
+        NativeRequest::Complete {
+            agent_session_id: self.agent.clone(),
+            activation: "activation-A".into(),
+            binding_proof: "private-test-proof".into(),
+            generation,
+            result: NativeCommandResult {
+                operation_id,
+                disposition,
+                detail: Some("adapter receipt".into()),
+            },
         }
     }
     fn context(&self, client: ClientId) -> CommandContext {
@@ -237,7 +306,7 @@ impl Fixture {
             .as_u64()
             .unwrap()
     }
-    fn view(&self) -> NativeView {
+    fn view() -> NativeView {
         NativeView {
             activation: "activation-A".into(),
             backend: "omp-rpc".into(),
@@ -270,7 +339,7 @@ impl Fixture {
     async fn ready(&self) -> u64 {
         let generation = self.register().await;
         decode::<NativePublicationReceipt>(
-            self.publish(generation, 1, NativeUpdate::View { view: self.view() })
+            self.publish(generation, 1, NativeUpdate::View { view: Self::view() })
                 .await,
         );
         generation
@@ -457,19 +526,8 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
                 )
                 .await,
             );
-            let inventory = || {
-                fx.state.with(|s| {
-                    (
-                        s.current_agent_asked(fx.parent)
-                            .map(|asked| asked.id.clone()),
-                        s.agent_is_asked(fx.parent),
-                        s.metadata()
-                            .get(&Scope::Resource(fx.parent_wire.clone()), RESOURCE_ASKED_KEY),
-                    )
-                })
-            };
             assert_eq!(
-                inventory(),
+                fx.asked_inventory(),
                 (Some("question-A".into()), true, Some(b"1".to_vec()))
             );
             // Codex nonblocking questions can outlive a completed model turn.
@@ -486,7 +544,7 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
                 .await,
             );
             assert_eq!(
-                inventory(),
+                fx.asked_inventory(),
                 (Some("question-A".into()), true, Some(b"1".to_vec()))
             );
             let second = fx.state.with_mut(|s| {
@@ -527,7 +585,7 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
                 )
                 .await,
             );
-            assert_eq!(inventory(), (None, false, None));
+            assert_eq!(fx.asked_inventory(), (None, false, None));
             assert_eq!(
                 fx.command(
                     second,
@@ -1046,7 +1104,7 @@ async fn provider_identity_is_durable_without_relaunch_or_lifetime_mutation() {
             );
             assert!(saved.env.is_empty());
             assert!(saved.sdk_runtime.is_none() && saved.node_bridge.is_none());
-            let mut forged = fx.view();
+            let mut forged = Fixture::view();
             forged.provider_session_id = Some("not-owner-session".into());
             assert!(matches!(
                 fx.request(
@@ -1216,79 +1274,8 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
                     NativeDisposition::Queued
                 );
                 fx.receive(generation).await;
-                let complete = |disposition| NativeRequest::Complete {
-                    agent_session_id: fx.agent.clone(),
-                    activation: "activation-A".into(),
-                    binding_proof: "private-test-proof".into(),
-                    generation,
-                    result: NativeCommandResult {
-                        operation_id: 110,
-                        disposition,
-                        detail: Some("adapter receipt".into()),
-                    },
-                };
-                match case {
-                    "queued" => assert_eq!(
-                        fx.request(fx.host, complete(NativeDisposition::Queued))
-                            .await,
-                        CommandResult::Ok
-                    ),
-                    "admitted" => assert_eq!(
-                        fx.request(fx.host, complete(NativeDisposition::Admitted))
-                            .await,
-                        CommandResult::Ok
-                    ),
-                    "completed" => assert_eq!(
-                        fx.request(fx.host, complete(NativeDisposition::Completed))
-                            .await,
-                        CommandResult::Ok
-                    ),
-                    "submitted-then-unknown" => {
-                        assert_eq!(
-                            fx.request(fx.host, complete(NativeDisposition::Queued))
-                                .await,
-                            CommandResult::Ok
-                        );
-                        assert_eq!(
-                            fx.request(fx.host, complete(NativeDisposition::Unknown))
-                                .await,
-                            CommandResult::Ok
-                        );
-                    }
-                    "other-operation" => fx.state.with_mut(|s| {
-                        s.native_agents_mut()
-                            .bindings
-                            .get_mut(&fx.agent)
-                            .unwrap()
-                            .answered
-                            .insert("question-A".into(), 999);
-                    }),
-                    "other-activation" => fx.state.with_mut(|s| {
-                        s.native_agents_mut()
-                            .bindings
-                            .get_mut(&fx.agent)
-                            .unwrap()
-                            .operations
-                            .get_mut(&110)
-                            .unwrap()
-                            .command
-                            .activation = "older-activation".into();
-                    }),
-                    "closed-question" => {
-                        decode::<NativePublicationReceipt>(
-                            fx.publish(
-                                generation,
-                                3,
-                                NativeUpdate::QuestionClosed {
-                                    id: "question-A".into(),
-                                    reason: "withdrawn".into(),
-                                },
-                            )
-                            .await,
-                        );
-                    }
-                    _ => {}
-                }
+                let complete = |disposition| fx.completion(generation, 110, disposition);
+                prepare_answer_reservation_case(&fx, generation, case).await;
                 if case != "unknown" {
                     let receipt = fx
                         .request(fx.host, complete(NativeDisposition::Refused))
@@ -1354,6 +1341,73 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
         .await;
 }
 
+async fn prepare_answer_reservation_case(fx: &Fixture, generation: u64, case: &str) {
+    let complete = |disposition| fx.completion(generation, 110, disposition);
+    match case {
+        "queued" => assert_eq!(
+            fx.request(fx.host, complete(NativeDisposition::Queued))
+                .await,
+            CommandResult::Ok
+        ),
+        "admitted" => assert_eq!(
+            fx.request(fx.host, complete(NativeDisposition::Admitted))
+                .await,
+            CommandResult::Ok
+        ),
+        "completed" => assert_eq!(
+            fx.request(fx.host, complete(NativeDisposition::Completed))
+                .await,
+            CommandResult::Ok
+        ),
+        "submitted-then-unknown" => {
+            assert_eq!(
+                fx.request(fx.host, complete(NativeDisposition::Queued))
+                    .await,
+                CommandResult::Ok
+            );
+            assert_eq!(
+                fx.request(fx.host, complete(NativeDisposition::Unknown))
+                    .await,
+                CommandResult::Ok
+            );
+        }
+        "other-operation" => fx.state.with_mut(|s| {
+            s.native_agents_mut()
+                .bindings
+                .get_mut(&fx.agent)
+                .unwrap()
+                .answered
+                .insert("question-A".into(), 999);
+        }),
+        "other-activation" => fx.state.with_mut(|s| {
+            s.native_agents_mut()
+                .bindings
+                .get_mut(&fx.agent)
+                .unwrap()
+                .operations
+                .get_mut(&110)
+                .unwrap()
+                .command
+                .activation = "older-activation".into();
+        }),
+        "closed-question" => {
+            decode::<NativePublicationReceipt>(
+                fx.publish(
+                    generation,
+                    3,
+                    NativeUpdate::QuestionClosed {
+                        id: "question-A".into(),
+                        reason: "withdrawn".into(),
+                    },
+                )
+                .await,
+            );
+        }
+        "local" | "unknown" => {}
+        _ => panic!("unhandled reservation case: {case}"),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn viewer_native_spawn_cannot_acquire_input_authority() {
     tokio::task::LocalSet::new()
@@ -1361,7 +1415,7 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
             use std::os::unix::fs::PermissionsExt;
             let fx = Fixture::new();
             // A real inert guardian process, not a provider or protocol echo.
-            let executable = fx._dir.path().join("guardian");
+            let executable = fx.dir.path().join("guardian");
             std::fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
             let (tx, _rx) = mpsc::channel(32);

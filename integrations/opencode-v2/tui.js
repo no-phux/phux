@@ -1832,6 +1832,8 @@ function parentPane(value) {
 var tui_default = Plugin.define({
   id: "phux.tui",
   setup(ctx) {
+    if (process.env.PHUX_AGENT_REPORTING === "0")
+      return;
     const parent = parentPane(process.env.PHUX_TERMINAL_ID);
     if (parent === null)
       return;

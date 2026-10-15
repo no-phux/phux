@@ -45,7 +45,7 @@ fn all_native_request_roles_round_trip() {
                 provider: "omp".into(),
                 command: vec!["omp".into(), "--mode".into(), "rpc".into()],
                 cwd: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 sdk_runtime: None,
                 node_bridge: None,
                 native_id: Some("actual-provider-session".into()),

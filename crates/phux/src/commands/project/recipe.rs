@@ -346,13 +346,8 @@ fn compile_pane(
             "{label}: `integration` cannot be combined with `command` or `exec`"
         ));
     }
-    let cwd = resolve_cwd(
-        root,
-        pane.cwd.as_deref().or(window.cwd.as_deref()),
-        label,
-    )?;
-    let resolved =
-        resolve_pane_integration(pane.integration.as_deref(), &cwd, label, preference)?;
+    let cwd = resolve_cwd(root, pane.cwd.as_deref().or(window.cwd.as_deref()), label)?;
+    let resolved = resolve_pane_integration(pane.integration.as_deref(), &cwd, label, preference)?;
     let mut compiled = WorkspacePane {
         active: false,
         title: None,
@@ -425,9 +420,7 @@ fn resolve_pane_integration(
         }
         result => result,
     };
-    resolved
-        .map(Some)
-        .map_err(|err| format!("{label}: {err}"))
+    resolved.map(Some).map_err(|err| format!("{label}: {err}"))
 }
 
 /// Splice pane `index` into `layout` beside its split target. The first pane

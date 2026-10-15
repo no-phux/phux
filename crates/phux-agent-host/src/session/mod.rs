@@ -138,7 +138,6 @@ struct Shared {
 struct Sink(Arc<Shared>);
 impl Sink {
     fn update(&self, mut update: NativeUpdate) -> Result<(), HostError> {
-        validate_payload(&update).map_err(HostError::Invalid)?;
         if json_size(&update)? > UPDATE_BYTES {
             return Err(HostError::Invalid(
                 "native update exceeds bounded record envelope".into(),
