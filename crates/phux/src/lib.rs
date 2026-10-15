@@ -1302,8 +1302,11 @@ fn dispatch(
             json,
         }) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
         Some(Command::Organize {
-            undo: true, json, ..
-        }) => commands::organize::run_undo(json, socket),
+            undo: true,
+            session,
+            json,
+            ..
+        }) => commands::organize::run_undo(session.as_deref(), json, socket),
         Some(Command::Organize {
             session,
             dry_run,

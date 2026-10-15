@@ -70,11 +70,12 @@ fn organize_schema() -> Value {
          repository, a repository with no session gets one, and a numbered session holding one \
          repository takes its name. Membership only; every process keeps running. With \
          TYPESAFE_API_KEY set, TypeSafe's Jev judges each pane from its name, title, directory, \
-         and repository (never screen contents); otherwise repository matching decides. Use \
-         dry_run to see the plan first; `phux organize --undo` reverses a run.",
+         and repository (never screen contents); otherwise repository matching decides. \
+         Returns the plan without changing anything unless apply=true; `phux organize --undo` \
+         reverses an applied run.",
         json!({
             "session": { "type": "string", "description": "Only this session's panes may move." },
-            "dry_run": { "type": "boolean", "description": "Return the plan without changing anything." },
+            "apply": { "type": "boolean", "description": "Carry the plan out. Default false: return the plan only." },
             "offline": { "type": "boolean", "description": "Repository matching only; send nothing off the machine." },
             "min_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Confidence a judgment needs to move a pane (default 0.6)." },
             "socket": string_schema(),
@@ -86,7 +87,7 @@ fn organize_schema() -> Value {
 /// `phux_organize`'s arguments, validated before any dial.
 struct OrganizeArgs {
     session: Option<String>,
-    dry_run: bool,
+    apply: bool,
     offline: bool,
     min_confidence: f64,
 }
@@ -94,7 +95,7 @@ struct OrganizeArgs {
 fn organize_args(args: &Value) -> Result<OrganizeArgs, ToolError> {
     strict_object(
         args,
-        &["session", "dry_run", "offline", "min_confidence", "socket"],
+        &["session", "apply", "offline", "min_confidence", "socket"],
         &[],
     )?;
     let min_confidence = match args.get("min_confidence") {
@@ -106,7 +107,7 @@ fn organize_args(args: &Value) -> Result<OrganizeArgs, ToolError> {
     };
     Ok(OrganizeArgs {
         session: crate::cli_adapter::bounded_string(args, "session", false)?,
-        dry_run: bool_arg(args, "dry_run")?,
+        apply: bool_arg(args, "apply")?,
         offline: bool_arg(args, "offline")?,
         min_confidence,
     })
@@ -122,12 +123,12 @@ fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
 
 /// `phux_organize`: what `phux organize --json` prints.
 async fn organize(args: &Value) -> Result<Value, ToolError> {
-    use phux_client::organize::{self, Judge, Options};
+    use phux_client::organize::{self, Options};
     let parsed = organize_args(args)?;
     let socket = socket_arg(args)?;
     let mut conn = Connection::connect(&socket).await?;
     let config = phux_config::loader::load().unwrap_or_default();
-    let (judge, key_error) = Judge::configured(&config.organize, parsed.offline).await;
+    let (judge, key_error) = organize::configured_judge(config.organize, parsed.offline).await;
     let options = Options {
         session: parsed.session,
         judge,
@@ -135,7 +136,8 @@ async fn organize(args: &Value) -> Result<Value, ToolError> {
         jev_timeout: organize::JEV_TIMEOUT,
     };
     let host = phux_config::instance::local_host_name();
-    let mut outcome = organize::run(&mut conn, Some(&host), &options, parsed.dry_run)
+    let dry_run = !parsed.apply;
+    let mut outcome = organize::run(&mut conn, Some(&host), &options, dry_run)
         .await
         .map_err(|err| ToolError::new(format!("organize: {err} ({})", err.code())))?;
     drop(conn);
@@ -144,7 +146,7 @@ async fn organize(args: &Value) -> Result<Value, ToolError> {
         &outcome.plan,
         outcome.applied.as_ref(),
         outcome.judge_error.as_deref(),
-        parsed.dry_run,
+        dry_run,
     ))
 }
 
@@ -289,7 +291,7 @@ mod tests {
                 json!({ "target": "@1", "confirm": true, "extra": 1 }),
             ),
             ("phux_relaunch", json!({})),
-            ("phux_organize", json!({ "dry_run": "yes" })),
+            ("phux_organize", json!({ "apply": "yes" })),
             ("phux_organize", json!({ "min_confidence": 2 })),
             ("phux_organize", json!({ "extra": 1 })),
             ("phux_relaunch", json!({ "target": 3 })),

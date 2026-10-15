@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::organize::{self, Judge, Options, Outcome, StepFailure};
+use phux_client::organize::{self, Options, Outcome, StepFailure};
 
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::server_target::ServerSpec;
@@ -38,7 +38,7 @@ pub(crate) fn run(request: &Request, socket: Option<PathBuf>) -> ExitCode {
         };
         let host = super::ls::local_hostname();
         let config = phux_config::loader::load().unwrap_or_default();
-        let (judge, key_error) = Judge::configured(&config.organize, request.offline).await;
+        let (judge, key_error) = organize::configured_judge(config.organize, request.offline).await;
         let options = Options {
             session: request.session.clone(),
             judge,
@@ -110,6 +110,7 @@ fn report(outcome: &Outcome, request: &Request) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     print_failures(&applied.failures);
+    print_skipped(&applied.skipped);
     if let Some(err) = &outcome.journal_error {
         warn!("could not keep the undo record: {err}");
     } else if !applied.journal.is_empty() {
@@ -122,14 +123,32 @@ fn report(outcome: &Outcome, request: &Request) -> ExitCode {
     }
 }
 
+fn print_skipped(skipped: &[StepFailure]) {
+    for step in skipped {
+        info!("skipped {}: {}", step.step, step.message);
+    }
+}
+
 fn print_failures(failures: &[StepFailure]) {
     for failure in failures {
         warn!("{}: {} ({})", failure.step, failure.message, failure.code);
     }
 }
 
-/// Run `phux organize --undo`.
-pub(crate) fn run_undo(json: bool, socket: Option<PathBuf>) -> ExitCode {
+/// Run `phux organize --undo`. The undo reverses the whole last run, so a
+/// `SESSION` is refused rather than ignored.
+pub(crate) fn run_undo(session: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    if let Some(session) = session {
+        return Refusal::new(
+            codes::USAGE_ERROR,
+            format!(
+                "organize --undo reverses the whole last run; it takes no session ({session:?})"
+            ),
+            "run `phux organize --undo` alone",
+            1,
+        )
+        .emit(json);
+    }
     let (rt, server) = match ServerSpec::local(socket).prepare("organize", json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
@@ -182,6 +201,7 @@ async fn undo_on(conn: &mut phux_client::attach::connection::Connection, json: b
             "schema_version": organize::DOCUMENT_SCHEMA,
             "undone": undone.journal,
             "failures": undone.failures,
+            "skipped": undone.skipped,
         }));
         return if failed { ExitCode::from(2) } else { code };
     }
@@ -192,6 +212,7 @@ async fn undo_on(conn: &mut phux_client::attach::connection::Connection, json: b
         organize::count(undone.journal.created.len(), "session", "deleted"),
     );
     print_failures(&undone.failures);
+    print_skipped(&undone.skipped);
     if failed {
         ExitCode::from(2)
     } else {

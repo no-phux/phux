@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use phux_protocol::ids::{ResourceKey, SessionKey};
+use phux_protocol::ids::{AuthorityId, ResourceKey, SessionKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -83,7 +83,7 @@ impl PaneFacts {
     /// The evidence one Jev question carries about this terminal.
     fn evidence(&self) -> Value {
         let mut map = serde_json::Map::new();
-        map.insert("terminal".into(), json!(self.label));
+        map.insert("terminal".into(), json!(scrub(&self.label)));
         insert_some(&mut map, "title", self.title.as_deref());
         insert_some(&mut map, "working_directory", self.cwd.as_deref());
         insert_some(&mut map, "agent", self.agent.as_deref());
@@ -100,16 +100,41 @@ impl PaneFacts {
             .as_deref()
             .or(self.title.as_deref())
             .unwrap_or("shell");
-        self.cwd
+        let summary = self
+            .cwd
             .as_deref()
-            .map_or_else(|| what.to_owned(), |cwd| format!("{what} in {cwd}"))
+            .map_or_else(|| what.to_owned(), |cwd| format!("{what} in {cwd}"));
+        scrub(&summary)
     }
 }
 
 fn insert_some(map: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
-        map.insert(key.to_owned(), json!(value));
+        map.insert(key.to_owned(), json!(scrub(value)));
     }
+}
+
+/// `text` with the user-info of every URL in it (`scheme://user:pass@`)
+/// replaced, so a title holding a command line does not carry its
+/// credentials to the judge.
+#[must_use]
+pub fn scrub(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let authority_end = tail.find(['/', ' ', '\t', '"', '\'']).unwrap_or(tail.len());
+        match tail[..authority_end].rfind('@') {
+            Some(user_end) => {
+                out.push_str("***");
+                rest = &tail[user_end..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Which terminals the planner may move.
@@ -137,8 +162,11 @@ pub struct NewSession {
     pub name: String,
     /// The project identity it carries (`project.id`).
     pub project_id: String,
-    /// The project's checkout root, for its `project.checkout` attribute.
-    pub checkout: Option<String>,
+    /// The project's display name (`project.name`), which the session name
+    /// may differ from by a numeric suffix.
+    pub project_name: String,
+    /// The project's checkout root (`project.checkout`).
+    pub checkout: String,
 }
 
 /// Where a verdict sends a terminal.
@@ -234,6 +262,7 @@ pub fn candidates(sessions: &[SessionFacts], panes: &[PaneFacts], scope: Scope) 
         new_sessions.push(proposal);
     }
     options.truncate(MAX_OPTIONS - 1);
+    distinct_options(&mut options);
     new_sessions.truncate(
         options
             .iter()
@@ -245,6 +274,23 @@ pub fn candidates(sessions: &[SessionFacts], panes: &[PaneFacts], scope: Scope) 
         new_sessions,
         sessions: adopted,
         renames,
+    }
+}
+
+/// Make every option text distinct, and distinct from [`STAY_OPTION`]: a
+/// later duplicate gains ` #2`, ` #3`, ... so an answer names exactly one
+/// destination and the judge sees every option's own description.
+fn distinct_options(options: &mut [Candidate]) {
+    let mut seen: HashSet<String> = HashSet::from([STAY_OPTION.to_owned()]);
+    for candidate in options.iter_mut() {
+        if seen.contains(&candidate.option) {
+            let base = candidate.option.clone();
+            candidate.option = (2..=seen.len() + 1)
+                .map(|n| format!("{base} #{n}"))
+                .find(|option| !seen.contains(option))
+                .unwrap_or(base);
+        }
+        seen.insert(candidate.option.clone());
     }
 }
 
@@ -260,6 +306,15 @@ fn adopt(
     let mut renames = Vec::new();
     let mut taken: HashSet<String> = sessions.iter().map(|s| s.name.clone()).collect();
     for index in 0..out.len() {
+        if let Some(home) = named_for(&out[index], panes) {
+            // An earlier run adopted it: the name says which repository it
+            // holds, though no attribute does.
+            let session = &mut out[index];
+            session.project_id = Some(home.id);
+            session.project_name = Some(home.name);
+            session.checkout = home.checkout;
+            continue;
+        }
         let Some(home) = adoptable(&out, index, panes, scope) else {
             continue;
         };
@@ -278,6 +333,24 @@ fn adopt(
         session.checkout = home.checkout;
     }
     (out, renames)
+}
+
+/// The repository a session without one is named after: a member works in
+/// a repository whose name is the session's name. A session an earlier run
+/// renamed carries no repository attribute (no command sets one on an
+/// existing session), so its name is the only record of the adoption.
+fn named_for(session: &SessionFacts, panes: &[PaneFacts]) -> Option<Home> {
+    if session.intake || session.project_id.is_some() {
+        return None;
+    }
+    let pane = panes.iter().find(|pane| {
+        pane.session == session.key && pane.project_name.as_deref() == Some(session.name.as_str())
+    })?;
+    Some(Home {
+        id: pane.project_id.clone()?,
+        name: session.name.clone(),
+        checkout: pane.checkout.clone(),
+    })
 }
 
 /// The repository `sessions[index]` should be adopted by: an in-scope,
@@ -386,16 +459,18 @@ fn proposed_session(
     if carried {
         return None;
     }
-    let base = pane
+    let checkout = pane.checkout.clone()?;
+    let project_name = pane
         .project_name
         .clone()
         .unwrap_or_else(|| repo_name_of(id));
-    let name = unique_name(&base, taken);
+    let name = unique_name(&project_name, taken);
     taken.insert(name.clone());
     Some(NewSession {
         name,
         project_id: id.to_owned(),
-        checkout: pane.checkout.clone(),
+        project_name,
+        checkout,
     })
 }
 
@@ -886,6 +961,152 @@ pub fn generated_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// What one organize run read: every session and every terminal with a
+/// record.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// Every session.
+    pub sessions: Vec<SessionFacts>,
+    /// Every terminal with a record.
+    pub panes: Vec<PaneFacts>,
+}
+
+impl Facts {
+    /// The session named `name`.
+    #[must_use]
+    pub fn session_named(&self, name: &str) -> Option<&SessionFacts> {
+        self.sessions.iter().find(|session| session.name == name)
+    }
+
+    /// The scope `session` names: every terminal for `None`, else that
+    /// session's; `None` when no session has that name.
+    #[must_use]
+    pub fn scope(&self, session: Option<&str>) -> Option<Scope> {
+        session.map_or(Some(Scope::All), |name| {
+            self.session_named(name).map(|s| Scope::Session(s.key))
+        })
+    }
+}
+
+/// Schema of the [`Journal`] document.
+pub const JOURNAL_SCHEMA: u8 = 1;
+
+/// What applying a plan did, in order: enough to undo it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Journal {
+    /// Document schema.
+    pub schema_version: u8,
+    /// The server whose records the run changed; undo refuses any other.
+    #[serde(default)]
+    pub authority: Option<AuthorityId>,
+    /// Sessions created.
+    pub created: Vec<CreatedSession>,
+    /// Terminals moved.
+    pub moved: Vec<MovedPane>,
+    /// Sessions renamed.
+    pub renamed: Vec<PlannedRename>,
+}
+
+impl Journal {
+    /// An empty journal at the current schema.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            schema_version: JOURNAL_SCHEMA,
+            authority: None,
+            created: Vec::new(),
+            moved: Vec::new(),
+            renamed: Vec::new(),
+        }
+    }
+
+    /// Whether nothing was done.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.created.is_empty() && self.moved.is_empty() && self.renamed.is_empty()
+    }
+}
+
+/// A session an organize run created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedSession {
+    /// Its key.
+    pub key: SessionKey,
+    /// Its name.
+    pub name: String,
+}
+
+/// A terminal an organize run moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovedPane {
+    /// The terminal.
+    pub pane: ResourceKey,
+    /// The session it left.
+    pub from: SessionKey,
+    /// The session it joined.
+    pub to: SessionKey,
+}
+
+/// `plan` as lines for people: creates, moves, renames, then the
+/// terminals left in place because the judge was unsure.
+#[must_use]
+pub fn plan_lines(plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new();
+    for new in &plan.creates {
+        lines.push(format!("create  {}  ({})", new.name, new.project_id));
+    }
+    for step in &plan.moves {
+        lines.push(format!(
+            "move    {}  {} -> {}  ({:.0}%)",
+            step.label,
+            step.from_name,
+            step.to_name,
+            step.confidence * 100.0
+        ));
+    }
+    for rename in &plan.renames {
+        lines.push(format!("rename  {} -> {}", rename.from, rename.to));
+    }
+    for kept in plan
+        .kept
+        .iter()
+        .filter(|kept| kept.reason == KeptReason::Unsure)
+    {
+        lines.push(format!(
+            "unsure  {}  {} -> {}?  ({:.0}%, left in place)",
+            kept.label,
+            kept.session,
+            kept.suggested.as_deref().unwrap_or("?"),
+            kept.confidence * 100.0
+        ));
+    }
+    lines
+}
+
+/// `3 panes moved`, `1 session created`.
+#[must_use]
+pub fn count(n: usize, noun: &str, verb: &str) -> String {
+    let plural = if n == 1 { "" } else { "s" };
+    format!("{n} {noun}{plural} {verb}")
+}
+
+/// One short line for a status bar or toast: what `journal` did, plus
+/// `failures` failed steps.
+#[must_use]
+pub fn journal_summary(judge: JudgeKind, journal: &Journal, failures: usize) -> String {
+    let mut parts = vec![count(journal.moved.len(), "pane", "moved")];
+    if !journal.created.is_empty() {
+        parts.push(count(journal.created.len(), "session", "created"));
+    }
+    if !journal.renamed.is_empty() {
+        parts.push(count(journal.renamed.len(), "session", "renamed"));
+    }
+    if failures > 0 {
+        parts.push(count(failures, "step", "failed"));
+    }
+    format!("organize ({}): {}", judge.as_str(), parts.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,7 +1185,11 @@ mod tests {
     /// every terminal working there, named after it and deduplicated.
     #[test]
     fn a_new_repository_gets_one_new_session() {
-        let sessions = [intake(1), session(2, "web", None)];
+        let sessions = [
+            intake(1),
+            session(2, "misc", None),
+            session(3, "web", Some("other")),
+        ];
         let panes = [
             pane(10, 1, Some("web")),
             pane(11, 2, Some("web")),
@@ -973,12 +1198,25 @@ mod tests {
         let plan = run(&sessions, &panes, Scope::All);
         assert_eq!(plan.creates.len(), 1, "{plan:?}");
         assert_eq!(plan.creates[0].name, "web-2");
+        assert_eq!(plan.creates[0].project_name, "web");
         assert_eq!(plan.moves.len(), 3);
         assert!(
             plan.moves
                 .iter()
                 .all(|m| m.to.is_none() && m.to_name == "web-2")
         );
+    }
+
+    /// A session named after a repository, carrying no attribute, is that
+    /// repository's home: no twin is created.
+    #[test]
+    fn a_session_named_for_a_repository_is_its_home() {
+        let sessions = [intake(1), session(2, "web", None)];
+        let panes = [pane(10, 1, Some("web")), pane(11, 2, Some("web"))];
+        let plan = run(&sessions, &panes, Scope::All);
+        assert!(plan.creates.is_empty(), "{plan:?}");
+        assert_eq!(plan.moves.len(), 1);
+        assert_eq!(plan.moves[0].to, Some(skey(2)));
     }
 
     /// Session scope renames no other session.
@@ -1106,6 +1344,78 @@ mod tests {
         assert_eq!(verdicts[0].destination, Destination::Existing(skey(2)));
         assert!((verdicts[0].confidence - 0.85).abs() < f64::EPSILON);
         assert!(read_jev_answers(&panes, Scope::All, &candidates, &[json!({})]).is_err());
+    }
+
+    #[test]
+    fn summaries_count_and_pluralize() {
+        let mut journal = Journal::new();
+        assert_eq!(
+            journal_summary(JudgeKind::Jev, &journal, 0),
+            "organize (jev): 0 panes moved"
+        );
+        journal.created.push(CreatedSession {
+            key: skey(1),
+            name: "phux".into(),
+        });
+        assert_eq!(
+            journal_summary(JudgeKind::Heuristic, &journal, 1),
+            "organize (heuristic): 0 panes moved, 1 session created, 1 step failed"
+        );
+    }
+
+    /// Options are distinct: a session named like a proposal or like the
+    /// stay option keeps its own key, and answers resolve to the right one.
+    #[test]
+    fn option_texts_never_collide() {
+        let sessions = [
+            session(1, "misc", None),
+            session(2, "web (new session)", None),
+            session(3, STAY_OPTION, None),
+        ];
+        let panes = [pane(10, 1, Some("web"))];
+        let candidates = candidates(&sessions, &panes, Scope::All);
+        let options: HashSet<&str> = candidates
+            .options
+            .iter()
+            .map(|c| c.option.as_str())
+            .collect();
+        assert_eq!(options.len(), candidates.options.len());
+        assert!(!options.contains(STAY_OPTION));
+        let new = candidates
+            .options
+            .iter()
+            .find(|c| matches!(c.destination, Destination::New(_)))
+            .expect("proposal");
+        assert_ne!(new.option, "web (new session)");
+        assert_eq!(
+            destination_of(&candidates, "web (new session)"),
+            Some(Destination::Existing(skey(2)))
+        );
+        assert_eq!(
+            destination_of(&candidates, &new.option),
+            Some(Destination::New(0))
+        );
+    }
+
+    /// A second run after an adoption is a no-op: the renamed session is
+    /// recognized by name as its repository's home.
+    #[test]
+    fn a_second_run_after_adoption_moves_nothing() {
+        let sessions = [session(1, "phux", None)];
+        let panes = [pane(10, 1, Some("phux")), pane(11, 1, Some("phux"))];
+        let plan = run(&sessions, &panes, Scope::All);
+        assert!(plan.is_empty(), "{plan:?}");
+        assert!(plan.kept.iter().all(|k| k.reason == KeptReason::InPlace));
+    }
+
+    #[test]
+    fn credentials_in_urls_are_scrubbed() {
+        assert_eq!(
+            scrub("psql postgres://me:hunter2@db/app && curl https://x.io/a@b"),
+            "psql postgres://***@db/app && curl https://x.io/a@b"
+        );
+        assert_eq!(scrub("no urls here"), "no urls here");
+        assert_eq!(scrub("git@github.com:a/b"), "git@github.com:a/b");
     }
 
     #[test]

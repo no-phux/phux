@@ -361,6 +361,7 @@ impl super::SessionLoop {
             plugin_actions: &self.settings.plugin_actions,
             plugin_panes: &self.settings.plugin_panes,
             plugin_tx: Some(&self.plugin_tx),
+            background_tx: Some(&self.background_tx),
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
             project_toggle_request: &mut self.project_toggle_request,

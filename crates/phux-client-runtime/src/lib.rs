@@ -11,6 +11,9 @@
 //! - [`perf`]: owner-thread apply and publication telemetry.
 //! - `publication` (feature `engine`): the double-buffered grid.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
+//! - [`project_identity`]: a checkout's repository identity, from git files.
+//! - [`organize`]: the organize judge, its Jev transport, and the undo
+//!   journal (ADR-0170).
 //! - [`runtime`]: [`runtime::Runtime::connect`] and the thread-safe
 //!   [`runtime::Client`] a binding drives.
 //!
@@ -26,7 +29,9 @@ pub mod control;
 pub mod dial;
 pub mod engine;
 pub mod enroll;
+pub mod organize;
 pub mod perf;
+pub mod project_identity;
 #[cfg(feature = "engine")]
 pub mod publication;
 pub mod reconnect;

@@ -1,7 +1,7 @@
 //! One loop iteration: settle the view, then park on the wake-up sources.
 
 use super::{
-    AtomicBool, AttachError, Connection, ESC_FLUSH_IDLE, Ordering, RepaintLevel,
+    AtomicBool, AttachError, Connection, ESC_FLUSH_IDLE, Ordering, PluginRunResult, RepaintLevel,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, Signal, StatusBarPainter, Step,
     desired_mouse_capture, exit_on_signal, mark_focused_seen, peer_gone, sleep_for_or_pending,
     sleep_until_or_pending, sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
@@ -157,15 +157,7 @@ impl super::SessionLoop {
         tokio::select! {
             biased;
 
-            n = self.stdin.read(&mut self.stdin_buf) => {
-                if n.as_ref().is_ok_and(|read| *read > 0) {
-                    phux_perf::echo_hop::record("stdin");
-                }
-                let started = std::time::Instant::now();
-                let result = self.on_stdin(conn, out, sidebar, n).await;
-                phux_client::perf::INPUT_WALL.record_elapsed(started);
-                result
-            },
+            n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin_timed(conn, out, sidebar, n).await,
 
             // Inbound frames, drained in a bounded batch so a burst paints once.
             frame = conn.recv() => {
@@ -222,10 +214,10 @@ impl super::SessionLoop {
                 Ok(Step::Continue)
             }
 
-            // A spawned plugin action finished; failures toast.
-            Some(result) = self.plugin_rx.recv() => {
-                self.on_plugin_result(out, sidebar, &result);
-                Ok(Step::Continue)
+            // A spawned plugin action (failures toast) or organize run (its
+            // result toasts, then the inventory refreshes) finished.
+            finished = recv_finished(&mut self.plugin_rx, &mut self.background_rx) => {
+                self.on_finished(conn, out, sidebar, finished).await
             }
 
             // ADR-0140: the hosts provider answered. Only a changed answer
@@ -242,6 +234,40 @@ impl super::SessionLoop {
                 exit_on_signal(code)
             }
         }
+    }
+
+    /// A finished background job: a plugin action or an organize run.
+    async fn on_finished<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        finished: Finished,
+    ) -> Result<Step, AttachError> {
+        match finished {
+            Finished::Plugin(result) => {
+                self.on_plugin_result(out, sidebar, &result);
+                Ok(Step::Continue)
+            }
+            Finished::Organize(done) => self.on_background_done(conn, out, sidebar, done).await,
+        }
+    }
+
+    /// Stdin readiness, with its echo-hop mark and input wall time.
+    async fn on_stdin_timed<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        n: std::io::Result<usize>,
+    ) -> Result<Step, AttachError> {
+        if n.as_ref().is_ok_and(|read| *read > 0) {
+            phux_perf::echo_hop::record("stdin");
+        }
+        let started = std::time::Instant::now();
+        let result = self.on_stdin(conn, out, sidebar, n).await;
+        phux_client::perf::INPUT_WALL.record_elapsed(started);
+        result
     }
 
     /// SIGWINCH: resize the view, then keep looping.
@@ -293,5 +319,28 @@ async fn recv_shutdown_signal(
         _ = sigterm.recv() => 143,
 
         _ = sighup.recv() => 129,
+    }
+}
+
+/// A background job that finished.
+enum Finished {
+    /// A spawned plugin action.
+    Plugin(PluginRunResult),
+    /// An organize run.
+    Organize(crate::attach::input_dispatch::BackgroundToast),
+}
+
+/// The next finished background job. The loop holds both senders, so
+/// neither channel closes while it runs; a closed one is never selected.
+async fn recv_finished(
+    plugin: &mut tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
+    background: &mut tokio::sync::mpsc::UnboundedReceiver<
+        crate::attach::input_dispatch::BackgroundToast,
+    >,
+) -> Finished {
+    tokio::select! {
+        Some(result) = plugin.recv() => Finished::Plugin(result),
+        Some(done) = background.recv() => Finished::Organize(done),
+        else => std::future::pending().await,
     }
 }

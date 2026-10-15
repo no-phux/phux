@@ -149,6 +149,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub plugin_panes: &'a [PluginPaneEntry],
     /// Plugin-run completion channel; `None` in tests.
     pub plugin_tx: Option<&'a tokio::sync::mpsc::UnboundedSender<PluginRunResult>>,
+    /// Background-run results to toast (organize); `None` in tests, where
+    /// the run is awaited inline.
+    pub background_tx:
+        Option<&'a tokio::sync::mpsc::UnboundedSender<super::organize::BackgroundToast>>,
     /// Out-channel for a requested config reload (dispatch borrows exactly
     /// the state a reload replaces).
     pub reload_request: &'a mut bool,

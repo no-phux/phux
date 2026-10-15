@@ -510,15 +510,16 @@ imported archive's dormant pane); it exits 2 when any was refused.
   "plan": {
     "judge": "jev",
     "creates": [{ "name": "phux", "project_id": "github.com/no-phux/phux",
-                  "checkout": "/src/phux" }],
+                  "project_name": "phux", "checkout": "/src/phux" }],
     "moves": [{ "pane": "<resource key>", "label": "@5", "from": "<session key>",
                 "from_name": "misc", "to": null, "to_name": "phux",
                 "confidence": 0.98 }],
     "renames": [{ "session": "<session key>", "from": "7", "to": "beta" }],
     "kept": [{ "pane": "<resource key>", "label": "@7", "session": "misc",
                "reason": "unsure", "suggested": "beta", "confidence": 0.41 }] },
-  "applied": { "schema_version": 1, "created": [], "moved": [], "renamed": [] },
-  "failures": [] }
+  "applied": { "schema_version": 1, "authority": "<authority id>",
+               "created": [], "moved": [], "renamed": [] },
+  "failures": [], "skipped": [] }
 ```
 
 `organize` puts panes in the sessions they belong in
@@ -528,9 +529,12 @@ not used. A move's `to` is `null` when it lands in a session the run creates.
 `kept[].reason` is `in_place`, `unsure` (below `--min-confidence`),
 `with_its_repository` (a pane in its own repository's session never moves), or
 `no_verdict`. `applied` is `null` for `--dry-run` or an empty plan; each
-`failures[]` entry is `{ step, code, message }` and makes the exit 2.
-`organize --undo --json` is `{ schema_version: 1, undone, failures }`.
-MCP: `phux_organize` (no undo; run `phux organize --undo`).
+`failures[]` entry is `{ step, code, message }` and makes the exit 2;
+`skipped[]` has the same shape and lists steps left alone because the
+records changed since the plan (not an error). `organize --undo --json` is
+`{ schema_version: 1, undone, failures, skipped }`; a record from another
+server refuses `other_server`. MCP: `phux_organize` returns the plan only
+unless `apply: true`; there is no MCP undo (run `phux organize --undo`).
 
 ### `kill`
 

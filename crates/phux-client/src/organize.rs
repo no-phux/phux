@@ -2,54 +2,43 @@
 //! (ADR-0170).
 //!
 //! [`gather`] reads the organization records, the snapshot, and the agent
-//! records into planner facts; [`plan_with`] asks a judge (`TypeSafe`'s Jev
-//! when `TYPESAFE_API_KEY` is set, else repository matching) and gates its
-//! verdicts in [`phux_client_core::organize`]; [`apply`] creates sessions,
-//! moves members, and renames sessions through the typed organization
-//! commands, and returns a [`Journal`] that [`undo`] reverses. The CLI, the
-//! MCP tool, and the TUI all run this one path.
+//! records into planner facts; [`plan_or_fallback`] asks the judge
+//! ([`phux_client_runtime::organize`]: `TypeSafe`'s Jev with a key, else
+//! repository matching) and gates its verdicts in
+//! [`phux_client_core::organize`]; [`apply`] creates sessions, moves
+//! members, and renames sessions through the typed organization commands,
+//! and returns a [`Journal`] that [`undo`] reverses. [`run`] is the whole
+//! button; the CLI, the MCP tool, and the TUI all call it.
 //!
 //! Only metadata leaves the machine: names, titles, working directories,
 //! agent providers, and repository identities. Terminal contents never do.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
 
 use phux_client_core::organize::{
-    self as planner, Candidates, JudgeKind, PaneFacts, Plan, PlanInput, PlannedRename, Scope,
-    SessionFacts, Verdict,
+    self as planner, CreatedSession, MovedPane, PaneFacts, Plan, PlannedRename, SessionFacts,
 };
 use phux_core::project_identity::SessionProject;
 use phux_protocol::ids::{ResourceKey, SessionKey};
-use phux_protocol::wire::frame::{Command, OrgFilter, SessionLifetime};
-use serde::{Deserialize, Serialize};
+use phux_protocol::wire::frame::{Command, OrgFilter, Refusal, SessionLifetime};
+use serde::Serialize;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
 
 use crate::attach::connection::Connection;
 use crate::glance::{self, Sources};
 use crate::org::{self, OrgError, OrgInventory};
 
-pub use phux_client_core::organize::DEFAULT_MIN_CONFIDENCE;
-
-/// The Jev evaluation endpoint.
-pub const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
-
-/// The environment variable holding the `TypeSafe` API key.
-pub const API_KEY_ENV: &str = "TYPESAFE_API_KEY";
-
-/// How long one Jev request may take by default.
-pub const JEV_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long `organize.jev-key-command` may take.
-const KEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+pub use phux_client_core::organize::{
+    DEFAULT_MIN_CONFIDENCE, Facts, JOURNAL_SCHEMA, Journal, count, plan_lines,
+};
+pub use phux_client_runtime::organize::{
+    API_KEY_ENV, INTERACTIVE_JEV_TIMEOUT, JEV_ENDPOINT, JEV_TIMEOUT, Judge, Options, PlanError,
+    clear_journal, journal_path, load_journal, save_journal,
+};
 
 /// First request id for the agent-record reads.
 const AGENT_READ_FIRST_REQUEST_ID: u32 = 0x8000_0000;
-
-/// Schema of the [`Journal`] document.
-const JOURNAL_SCHEMA: u8 = 1;
 
 /// Why organizing failed before anything changed.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +55,18 @@ pub enum OrganizeError {
     /// Jev could not be reached or answered with an error.
     #[error("jev: {0}")]
     Jev(String),
+    /// The undo record belongs to another server.
+    #[error("the last organize run changed another server; nothing to undo here")]
+    OtherServer,
+}
+
+impl From<PlanError> for OrganizeError {
+    fn from(err: PlanError) -> Self {
+        match err {
+            PlanError::NoSuchSession(name) => Self::NoSuchSession(name),
+            PlanError::Jev(why) => Self::Jev(why),
+        }
+    }
 }
 
 impl OrganizeError {
@@ -77,24 +78,8 @@ impl OrganizeError {
             Self::State(_) => "transport",
             Self::NoSuchSession(_) => "no_such_target",
             Self::Jev(_) => "judge_failed",
+            Self::OtherServer => "other_server",
         }
-    }
-}
-
-/// What one organize run read.
-#[derive(Debug, Clone)]
-pub struct Facts {
-    /// Every session.
-    pub sessions: Vec<SessionFacts>,
-    /// Every terminal with a record.
-    pub panes: Vec<PaneFacts>,
-}
-
-impl Facts {
-    /// The session named `name`.
-    #[must_use]
-    pub fn session_named(&self, name: &str) -> Option<&SessionFacts> {
-        self.sessions.iter().find(|session| session.name == name)
     }
 }
 
@@ -227,111 +212,19 @@ impl<'a> ProjectCache<'a> {
     }
 }
 
-/// Which judge to ask.
-#[derive(Debug, Clone)]
-pub enum Judge {
-    /// `TypeSafe`'s Jev, with this API key.
-    Jev(String),
-    /// Repository and directory matching only.
-    Heuristic,
+/// The judge `config` and `offline` allow ([`Judge::configured`]), resolved
+/// on a blocking thread because a key command may run.
+pub async fn configured_judge(
+    config: phux_config::OrganizeCfg,
+    offline: bool,
+) -> (Judge, Option<String>) {
+    tokio::task::spawn_blocking(move || Judge::configured(&config, offline))
+        .await
+        .unwrap_or_else(|err| (Judge::Heuristic, Some(format!("judge setup failed: {err}"))))
 }
 
-impl Judge {
-    /// Jev when [`API_KEY_ENV`] is set and `offline` is false, else the
-    /// heuristic.
-    #[must_use]
-    pub fn from_env(offline: bool) -> Self {
-        if offline {
-            return Self::Heuristic;
-        }
-        std::env::var(API_KEY_ENV)
-            .ok()
-            .filter(|key| !key.trim().is_empty())
-            .map_or(Self::Heuristic, Self::Jev)
-    }
-
-    /// The judge `config` and `offline` allow: the heuristic when either is
-    /// offline; Jev with [`API_KEY_ENV`], else with the key
-    /// `organize.jev-key-command` prints; else the heuristic. The second
-    /// value says why Jev was wanted but is not used.
-    pub async fn configured(
-        config: &phux_config::OrganizeCfg,
-        offline: bool,
-    ) -> (Self, Option<String>) {
-        let judge = Self::from_env(offline || config.offline);
-        let argv = config.jev_key_command.as_deref().unwrap_or_default();
-        if matches!(judge, Self::Jev(_)) || offline || config.offline || argv.is_empty() {
-            return (judge, None);
-        }
-        match key_from_command(argv).await {
-            Ok(key) => (Self::Jev(key), None),
-            Err(why) => (
-                Self::Heuristic,
-                Some(format!("organize.jev-key-command: {why}")),
-            ),
-        }
-    }
-
-    /// Which kind of judge this is.
-    #[must_use]
-    pub const fn kind(&self) -> JudgeKind {
-        match self {
-            Self::Jev(_) => JudgeKind::Jev,
-            Self::Heuristic => JudgeKind::Heuristic,
-        }
-    }
-}
-
-/// How to plan.
-#[derive(Debug, Clone)]
-pub struct Options {
-    /// Which terminals may move: every one, or one session's.
-    pub session: Option<String>,
-    /// Who decides.
-    pub judge: Judge,
-    /// Confidence a verdict needs to move a terminal.
-    pub min_confidence: f64,
-    /// How long one Jev request may take before the heuristic decides.
-    pub jev_timeout: Duration,
-}
-
-/// Plan an organize run over `facts`.
-///
-/// # Errors
-///
-/// [`OrganizeError::NoSuchSession`] for an unknown scope;
-/// [`OrganizeError::Jev`] when Jev fails (nothing has changed).
-pub async fn plan_with(facts: &Facts, options: &Options) -> Result<Plan, OrganizeError> {
-    let scope = match options.session.as_deref() {
-        None => Scope::All,
-        Some(name) => Scope::Session(
-            facts
-                .session_named(name)
-                .ok_or_else(|| OrganizeError::NoSuchSession(name.to_owned()))?
-                .key,
-        ),
-    };
-    let candidates = planner::candidates(&facts.sessions, &facts.panes, scope);
-    let verdicts = match &options.judge {
-        Judge::Jev(key) => {
-            jev_verdicts(key, facts, scope, &candidates, options.jev_timeout).await?
-        }
-        Judge::Heuristic => planner::heuristic_verdicts(&facts.panes, scope, &candidates),
-    };
-    Ok(planner::plan(
-        PlanInput {
-            panes: &facts.panes,
-            scope,
-            candidates: &candidates,
-            judge: options.judge.kind(),
-            min_confidence: options.min_confidence,
-        },
-        &verdicts,
-    ))
-}
-
-/// [`plan_with`], falling back to the heuristic when Jev fails: the plan,
-/// and why Jev was not used when it was asked for.
+/// [`phux_client_runtime::organize::plan_or_fallback`] on a blocking
+/// thread: the plan, and why Jev was not used when it was asked for.
 ///
 /// # Errors
 ///
@@ -340,155 +233,13 @@ pub async fn plan_or_fallback(
     facts: &Facts,
     options: &Options,
 ) -> Result<(Plan, Option<String>), OrganizeError> {
-    match plan_with(facts, options).await {
-        Err(OrganizeError::Jev(why)) => {
-            let fallback = Options {
-                judge: Judge::Heuristic,
-                ..options.clone()
-            };
-            Ok((plan_with(facts, &fallback).await?, Some(why)))
-        }
-        other => other.map(|plan| (plan, None)),
-    }
-}
-
-/// The trimmed stdout of `argv`, which must exit 0 and print something.
-async fn key_from_command(argv: &[String]) -> Result<String, String> {
-    let (program, rest) = argv.split_first().ok_or("empty command")?;
-    let child = tokio::process::Command::new(program)
-        .args(rest)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(KEY_COMMAND_TIMEOUT, child)
-        .await
-        .map_err(|_| "timed out".to_owned())?
-        .map_err(|err| format!("cannot run {program}: {err}"))?;
-    if !output.status.success() {
-        return Err(format!("{program} exited with {}", output.status));
-    }
-    let key = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if key.is_empty() {
-        return Err(format!("{program} printed nothing"));
-    }
-    Ok(key)
-}
-
-async fn jev_verdicts(
-    key: &str,
-    facts: &Facts,
-    scope: Scope,
-    candidates: &Candidates,
-    timeout: Duration,
-) -> Result<Vec<Verdict>, OrganizeError> {
-    let mut responses = Vec::new();
-    for body in planner::jev_request(&facts.panes, scope, candidates) {
-        responses.push(jev_post(key, &body, timeout).await?);
-    }
-    planner::read_jev_answers(&facts.panes, scope, candidates, &responses)
-        .map_err(|err| OrganizeError::Jev(err.to_string()))
-}
-
-/// POST one request body to Jev through `curl`, the API key and body on its
-/// stdin so neither appears in a process listing.
-async fn jev_post(key: &str, body: &Value, timeout: Duration) -> Result<Value, OrganizeError> {
-    let config = curl_config(key, body, timeout);
-    let mut child = tokio::process::Command::new("curl")
-        .args(["--silent", "--show-error", "--config", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|err| OrganizeError::Jev(format!("cannot run curl: {err}")))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(config.as_bytes())
-            .await
-            .map_err(|err| OrganizeError::Jev(format!("cannot write to curl: {err}")))?;
-    }
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| OrganizeError::Jev("timed out".to_owned()))?
-        .map_err(|err| OrganizeError::Jev(err.to_string()))?;
-    read_jev_reply(&output.stdout, &output.stderr, output.status.success())
-}
-
-/// A curl config that POSTs `body` to [`JEV_ENDPOINT`] with `key`.
-fn curl_config(key: &str, body: &Value, timeout: Duration) -> String {
-    let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
-        "url = \"{JEV_ENDPOINT}\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\ndata-binary = \"{}\"\nwrite-out = \"\\n%{{http_code}}\"\nmax-time = {}\n",
-        quote(key.trim()),
-        quote(&body.to_string()),
-        timeout.as_secs().max(1),
-    )
-}
-
-/// The JSON body of a curl run whose stdout ends with `\n<http status>`.
-fn read_jev_reply(stdout: &[u8], stderr: &[u8], ran: bool) -> Result<Value, OrganizeError> {
-    if !ran {
-        let detail = String::from_utf8_lossy(stderr);
-        return Err(OrganizeError::Jev(format!(
-            "request failed: {}",
-            detail.trim()
-        )));
-    }
-    let text = String::from_utf8_lossy(stdout);
-    let text = text.trim_end();
-    let (body, status) = text.rsplit_once('\n').unwrap_or(("", text));
-    let status: u16 = status.trim().parse().unwrap_or(0);
-    if status != 200 {
-        let detail: String = body.chars().take(300).collect();
-        return Err(OrganizeError::Jev(format!(
-            "HTTP {status}: {}",
-            detail.trim()
-        )));
-    }
-    serde_json::from_str(body).map_err(|err| OrganizeError::Jev(format!("unreadable reply: {err}")))
-}
-
-/// What [`apply`] did, in the order it did it: enough to [`undo`] it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Journal {
-    /// Document schema.
-    pub schema_version: u8,
-    /// Sessions created.
-    pub created: Vec<CreatedSession>,
-    /// Terminals moved.
-    pub moved: Vec<MovedPane>,
-    /// Sessions renamed.
-    pub renamed: Vec<PlannedRename>,
-}
-
-impl Journal {
-    /// Whether nothing was done.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.created.is_empty() && self.moved.is_empty() && self.renamed.is_empty()
-    }
-}
-
-/// A session [`apply`] created.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreatedSession {
-    /// Its key.
-    pub key: SessionKey,
-    /// Its name.
-    pub name: String,
-}
-
-/// A terminal [`apply`] moved.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MovedPane {
-    /// The terminal.
-    pub pane: ResourceKey,
-    /// The session it left.
-    pub from: SessionKey,
-    /// The session it joined.
-    pub to: SessionKey,
+    let (facts, options) = (facts.clone(), options.clone());
+    tokio::task::spawn_blocking(move || {
+        phux_client_runtime::organize::plan_or_fallback(&facts, &options)
+    })
+    .await
+    .map_err(|err| OrganizeError::Jev(format!("planning failed: {err}")))?
+    .map_err(OrganizeError::from)
 }
 
 /// One step that did not take effect.
@@ -507,23 +258,33 @@ pub struct StepFailure {
 pub struct Applied {
     /// What took effect.
     pub journal: Journal,
-    /// What did not.
+    /// Steps the server refused or that could not be sent.
     pub failures: Vec<StepFailure>,
+    /// Steps left alone because the records changed since the plan (or the
+    /// run) was made; not failures.
+    pub skipped: Vec<StepFailure>,
 }
 
 /// Carry out `plan`: create its sessions, move its terminals, then rename.
 ///
-/// Moves go in one atomic batch per destination. A step that fails is
-/// reported and the rest continue; a move into a session that failed to
+/// The records are read again first: a terminal no longer in the session
+/// the plan saw it in (a person moved it while the judge thought) is
+/// skipped. Moves go in one atomic batch per destination. A step that fails
+/// is reported and the rest continue; a move into a session that failed to
 /// create is skipped.
 pub async fn apply(conn: &mut Connection, plan: &Plan) -> Applied {
     let mut applied = Applied {
-        journal: Journal {
-            schema_version: JOURNAL_SCHEMA,
-            ..Journal::default()
-        },
-        failures: Vec::new(),
+        journal: Journal::new(),
+        ..Applied::default()
     };
+    let inventory = match org::fetch(conn, OrgFilter::All, 1).await {
+        Ok(inventory) => inventory,
+        Err(err) => {
+            applied.fail("read the records".to_owned(), &err);
+            return applied;
+        }
+    };
+    applied.journal.authority = Some(inventory.authority);
     let mut new_keys: HashMap<String, SessionKey> = HashMap::new();
     for new in &plan.creates {
         match create_session(conn, new).await {
@@ -537,19 +298,7 @@ pub async fn apply(conn: &mut Connection, plan: &Plan) -> Applied {
             Err(err) => applied.fail(format!("create {}", new.name), &err),
         }
     }
-    let mut batches: BTreeMap<SessionKey, Vec<&planner::PlannedMove>> = BTreeMap::new();
-    for step in &plan.moves {
-        let Some(to) = step.to.or_else(|| new_keys.get(&step.to_name).copied()) else {
-            applied.failures.push(StepFailure {
-                step: format!("move {} to {}", step.label, step.to_name),
-                code: "not_found",
-                message: format!("session {:?} was not created", step.to_name),
-            });
-            continue;
-        };
-        batches.entry(to).or_default().push(step);
-    }
-    for (to, steps) in batches {
+    for (to, steps) in batches(plan, &inventory, &new_keys, &mut applied) {
         move_batch(conn, to, &steps, &mut applied).await;
     }
     for rename in &plan.renames {
@@ -559,6 +308,38 @@ pub async fn apply(conn: &mut Connection, plan: &Plan) -> Applied {
         }
     }
     applied
+}
+
+/// The plan's moves by destination, each still valid: a terminal no longer
+/// where the plan saw it is skipped, and a move into a session that failed
+/// to create fails.
+fn batches<'p>(
+    plan: &'p Plan,
+    inventory: &OrgInventory,
+    new_keys: &HashMap<String, SessionKey>,
+    applied: &mut Applied,
+) -> BTreeMap<SessionKey, Vec<&'p planner::PlannedMove>> {
+    let mut batches: BTreeMap<SessionKey, Vec<&planner::PlannedMove>> = BTreeMap::new();
+    for step in &plan.moves {
+        let label = format!("move {} to {}", step.label, step.to_name);
+        let still_there = inventory
+            .resource(&step.pane)
+            .is_some_and(|record| record.session == step.from);
+        if !still_there {
+            applied.skip(label, "moved or gone since the plan");
+            continue;
+        }
+        let Some(to) = step.to.or_else(|| new_keys.get(&step.to_name).copied()) else {
+            applied.failures.push(StepFailure {
+                step: label,
+                code: "not_found",
+                message: format!("session {:?} was not created", step.to_name),
+            });
+            continue;
+        };
+        batches.entry(to).or_default().push(step);
+    }
+    batches
 }
 
 impl Applied {
@@ -593,10 +374,12 @@ async fn move_batch(
             Ok(_) => applied
                 .journal
                 .moved
-                .extend(batch.resources.iter().map(|pane| MovedPane {
-                    pane: *pane,
-                    from: from[pane],
-                    to,
+                .extend(batch.resources.iter().filter_map(|pane| {
+                    Some(MovedPane {
+                        pane: *pane,
+                        from: *from.get(pane)?,
+                        to,
+                    })
                 })),
             Err(err) => applied.fail(format!("move {} terminals", batch.resources.len()), &err),
         }
@@ -607,23 +390,7 @@ async fn create_session(
     conn: &mut Connection,
     new: &planner::NewSession,
 ) -> Result<SessionKey, OrgError> {
-    let mut attrs = vec![
-        (
-            phux_core::project_identity::attr::ID.to_owned(),
-            new.project_id.clone(),
-        ),
-        (
-            phux_core::project_identity::attr::NAME.to_owned(),
-            new.name.clone(),
-        ),
-    ];
-    if let Some(checkout) = &new.checkout {
-        attrs.push((
-            phux_core::project_identity::attr::CHECKOUT.to_owned(),
-            checkout.clone(),
-        ));
-    }
-    attrs.retain(|(_, value)| value.len() <= phux_core::project_identity::MAX_ATTR_BYTES);
+    let attrs = phux_client_runtime::organize::creation_attrs(new);
     let command = Command::SessionCreate {
         operation: org::mint_operation(),
         name: new.name.clone(),
@@ -665,6 +432,12 @@ pub async fn undo(conn: &mut Connection, journal: &Journal) -> Result<Applied, O
         return Err(OrgError::Unsupported.into());
     }
     let inventory = org::fetch(conn, OrgFilter::All, 1).await?;
+    if journal
+        .authority
+        .is_some_and(|authority| authority != inventory.authority)
+    {
+        return Err(OrganizeError::OtherServer);
+    }
     let mut applied = Applied::default();
     undo_renames(conn, &inventory, &journal.renamed, &mut applied).await;
     let back = moves_back(&inventory, &journal.moved, &mut applied);
@@ -672,9 +445,14 @@ pub async fn undo(conn: &mut Connection, journal: &Journal) -> Result<Applied, O
         undo_batch(conn, &inventory, to, &panes, &mut applied).await;
     }
     for created in &journal.created {
+        let step = format!("delete {}", created.name);
         match org::delete_session(conn, created.key).await {
             Ok(_) => applied.journal.created.push(created.clone()),
-            Err(err) => applied.fail(format!("delete {}", created.name), &err),
+            Err(OrgError::Refused(Refusal::NotEmpty { .. })) => {
+                applied.skip(step, "it holds work now; left in place");
+            }
+            Err(OrgError::Refused(Refusal::NotFound)) => applied.skip(step, "already gone"),
+            Err(err) => applied.fail(step, &err),
         }
     }
     Ok(applied)
@@ -760,73 +538,11 @@ async fn undo_batch(
 
 impl Applied {
     fn skip(&mut self, step: String, why: &str) {
-        self.failures.push(StepFailure {
+        self.skipped.push(StepFailure {
             step,
             code: "skipped",
             message: why.to_owned(),
         });
-    }
-}
-
-/// Where the last organize run's [`Journal`] is kept for this profile.
-#[must_use]
-pub fn journal_path() -> PathBuf {
-    phux_config::instance::state_dir()
-        .join("organize")
-        .join("last.json")
-}
-
-/// Keep `journal` as the one [`undo`] reverses next.
-///
-/// # Errors
-///
-/// The file could not be written.
-pub fn save_journal(journal: &Journal) -> std::io::Result<()> {
-    save_journal_at(&journal_path(), journal)
-}
-
-fn save_journal_at(path: &Path, journal: &Journal) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let bytes = serde_json::to_vec_pretty(journal).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
-}
-
-/// The kept [`Journal`], if there is one.
-///
-/// # Errors
-///
-/// The file exists but could not be read or parsed.
-pub fn load_journal() -> std::io::Result<Option<Journal>> {
-    load_journal_at(&journal_path())
-}
-
-fn load_journal_at(path: &Path) -> std::io::Result<Option<Journal>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(std::io::Error::other),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-/// Forget the kept [`Journal`] after it was undone.
-///
-/// # Errors
-///
-/// The file exists but could not be removed.
-pub fn clear_journal() -> std::io::Result<()> {
-    clear_journal_at(&journal_path())
-}
-
-fn clear_journal_at(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
     }
 }
 
@@ -851,6 +567,7 @@ pub fn document(
         "plan": plan,
         "applied": applied.map(|applied| &applied.journal),
         "failures": applied.map_or(&[][..], |applied| applied.failures.as_slice()),
+        "skipped": applied.map_or(&[][..], |applied| applied.skipped.as_slice()),
     })
 }
 
@@ -915,72 +632,14 @@ impl Outcome {
     /// One short line for a status bar or toast.
     #[must_use]
     pub fn summary(&self) -> String {
-        let Some(applied) = &self.applied else {
-            return if self.plan.is_empty() {
-                "organize: every pane is where it belongs".to_owned()
-            } else {
-                format!("organize: {} moves planned", self.plan.moves.len())
-            };
-        };
-        let journal = &applied.journal;
-        let mut parts = vec![count(journal.moved.len(), "pane", "moved")];
-        if !journal.created.is_empty() {
-            parts.push(count(journal.created.len(), "session", "created"));
+        match &self.applied {
+            Some(applied) => {
+                planner::journal_summary(self.plan.judge, &applied.journal, applied.failures.len())
+            }
+            None if self.plan.is_empty() => "organize: every pane is where it belongs".to_owned(),
+            None => format!("organize: {} moves planned", self.plan.moves.len()),
         }
-        if !journal.renamed.is_empty() {
-            parts.push(count(journal.renamed.len(), "session", "renamed"));
-        }
-        if !applied.failures.is_empty() {
-            parts.push(count(applied.failures.len(), "step", "failed"));
-        }
-        format!(
-            "organize ({}): {}",
-            self.plan.judge.as_str(),
-            parts.join(", ")
-        )
     }
-}
-
-/// `3 panes moved`, `1 session created`.
-#[must_use]
-pub fn count(n: usize, noun: &str, verb: &str) -> String {
-    let plural = if n == 1 { "" } else { "s" };
-    format!("{n} {noun}{plural} {verb}")
-}
-
-/// One-line lines describing `plan`, for people.
-#[must_use]
-pub fn plan_lines(plan: &Plan) -> Vec<String> {
-    let mut lines = Vec::new();
-    for new in &plan.creates {
-        lines.push(format!("create  {}  ({})", new.name, new.project_id));
-    }
-    for step in &plan.moves {
-        lines.push(format!(
-            "move    {}  {} -> {}  ({:.0}%)",
-            step.label,
-            step.from_name,
-            step.to_name,
-            step.confidence * 100.0
-        ));
-    }
-    for rename in &plan.renames {
-        lines.push(format!("rename  {} -> {}", rename.from, rename.to));
-    }
-    for kept in plan
-        .kept
-        .iter()
-        .filter(|kept| kept.reason == planner::KeptReason::Unsure)
-    {
-        lines.push(format!(
-            "unsure  {}  {} -> {}?  ({:.0}%, left in place)",
-            kept.label,
-            kept.session,
-            kept.suggested.as_deref().unwrap_or("?"),
-            kept.confidence * 100.0
-        ));
-    }
-    lines
 }
 
 #[cfg(test)]
@@ -988,6 +647,7 @@ pub fn plan_lines(plan: &Plan) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::testkit::{OrgFixture, ScriptSpec};
+    use phux_client_core::organize::JudgeKind;
     use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     use phux_protocol::wire::frame::ExecState;
 
@@ -997,27 +657,43 @@ mod tests {
             .organization(fixture)
     }
 
-    #[test]
-    fn curl_config_escapes_the_body_and_key() {
-        let config = curl_config("k\"ey\n", &serde_json::json!({"a": "b\\c\"d"}), JEV_TIMEOUT);
-        assert!(
-            config.contains(r#"header = "Authorization: Bearer k\"ey""#),
-            "{config}"
-        );
-        assert!(
-            config.contains(r#"data-binary = "{\"a\":\"b\\\\c\\\"d\"}""#),
-            "{config}"
-        );
-    }
-
-    #[test]
-    fn jev_replies_carry_their_status() {
-        let ok = read_jev_reply(b"{\"answers\":{}}\n200", b"", true).expect("ok");
-        assert!(ok.get("answers").is_some());
-        let refused = read_jev_reply(b"{\"error\":\"bad key\"}\n401", b"", true).unwrap_err();
-        assert!(refused.to_string().contains("HTTP 401"), "{refused}");
-        let failed = read_jev_reply(b"", b"curl: (6) no host", false).unwrap_err();
-        assert!(failed.to_string().contains("no host"), "{failed}");
+    /// A terminal moved by someone else after planning is skipped, not
+    /// moved back over their edit, and not journaled.
+    #[tokio::test]
+    async fn apply_skips_terminals_moved_since_the_plan() {
+        let mut fixture = OrgFixture::new();
+        let planned_from = fixture.session("misc", SessionLifetime::Persistent);
+        let now_in = fixture.session("elsewhere", SessionLifetime::Persistent);
+        let target = fixture.session("phux", SessionLifetime::Persistent);
+        let pane = fixture.resource(now_in, Some(ExecState::Running));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (socket, server) = crate::testkit::serve_one(dir.path(), org_spec(fixture));
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let plan = Plan {
+            judge: JudgeKind::Jev,
+            creates: Vec::new(),
+            moves: vec![planner::PlannedMove {
+                pane,
+                label: "@1".into(),
+                from: planned_from,
+                from_name: "misc".into(),
+                to: Some(target),
+                to_name: "phux".into(),
+                confidence: 0.9,
+            }],
+            renames: Vec::new(),
+            kept: Vec::new(),
+        };
+        let applied = apply(&mut conn, &plan).await;
+        assert!(applied.failures.is_empty(), "{:?}", applied.failures);
+        assert_eq!(applied.skipped.len(), 1);
+        assert!(applied.journal.moved.is_empty());
+        let after = org::fetch(&mut conn, OrgFilter::All, 1)
+            .await
+            .expect("fetch");
+        assert_eq!(after.resource(&pane).map(|r| r.session), Some(now_in));
+        drop(conn);
+        server.await.expect("scripted server");
     }
 
     /// A plan's creates, moves, and renames ride the typed commands, and
@@ -1036,7 +712,8 @@ mod tests {
             creates: vec![planner::NewSession {
                 name: "phux".into(),
                 project_id: "github.com/no-phux/phux".into(),
-                checkout: None,
+                project_name: "phux".into(),
+                checkout: "/src/phux".into(),
             }],
             moves: vec![planner::PlannedMove {
                 pane,
@@ -1076,25 +753,5 @@ mod tests {
         assert!(after.session(&created).is_none());
         drop(conn);
         server.await.expect("scripted server");
-    }
-
-    /// A journal survives a write and read, and clearing it twice is fine.
-    #[test]
-    fn journal_persists() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("organize").join("last.json");
-        assert_eq!(load_journal_at(&path).expect("read"), None);
-        let journal = Journal {
-            schema_version: JOURNAL_SCHEMA,
-            created: vec![CreatedSession {
-                key: SessionKey::new([1; 16]).expect("non-zero"),
-                name: "phux".into(),
-            }],
-            ..Journal::default()
-        };
-        save_journal_at(&path, &journal).expect("save");
-        assert_eq!(load_journal_at(&path).expect("read"), Some(journal));
-        clear_journal_at(&path).expect("clear");
-        clear_journal_at(&path).expect("clear twice");
     }
 }

@@ -247,6 +247,7 @@ impl CtxFixture {
             plugin_actions: &self.plugin_actions,
             plugin_panes: &self.plugin_panes,
             plugin_tx: None,
+            background_tx: None,
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
             project_toggle_request: &mut self.project_toggle_request,

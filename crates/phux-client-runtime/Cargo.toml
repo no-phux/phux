@@ -32,6 +32,10 @@ testing = []
 # The `[[remote]]` registry is read through the CLI's own schema and loader,
 # so an entry means one thing to the CLI and to every embedder.
 phux-config.workspace = true
+# Project identity (ADR-0168) and its attribute names: the typed record the
+# repository discovery here produces. A leaf crate (serde, slotmap,
+# thiserror) already in every client's tree through phux-client.
+phux-core.workspace = true
 # QUIC/WSS establishment with the certificate pin and bearer token. The
 # security-sensitive dial path exists once; this crate plans dials and
 # supplies the policy around them.

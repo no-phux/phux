@@ -422,6 +422,12 @@ pub(super) struct SessionLoop {
     plugin_tx: tokio::sync::mpsc::UnboundedSender<PluginRunResult>,
     /// Receiving half; the `plugin_rx` arm toasts failures.
     plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
+    /// Background runs (organize) report their toast here.
+    background_tx:
+        tokio::sync::mpsc::UnboundedSender<crate::attach::input_dispatch::BackgroundToast>,
+    /// Receiving half; the `background_rx` arm toasts and refreshes.
+    background_rx:
+        tokio::sync::mpsc::UnboundedReceiver<crate::attach::input_dispatch::BackgroundToast>,
     /// A pane's QUIC stream bound after the bootstrap reflow skipped it
     /// (it had none yet); the next outcome drain sizes every restored leaf.
     bind_reflow_owed: bool,
@@ -591,6 +597,7 @@ impl SessionLoop {
         }
         let server_features = negotiated.server_features;
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
+        let (background_tx, background_rx) = tokio::sync::mpsc::unbounded_channel();
         let (hosts_tx, hosts_rx) = tokio::sync::mpsc::unbounded_channel();
         let origin = crate::attach::hosts::recorded_origin();
         if origin.is_some() {
@@ -661,6 +668,8 @@ impl SessionLoop {
                 .with_agents_share(settings.sidebar.agents_share),
             plugin_tx,
             plugin_rx,
+            background_tx,
+            background_rx,
             bind_reflow_owed: false,
             _hosts_tx: hosts_tx,
             hosts_rx,

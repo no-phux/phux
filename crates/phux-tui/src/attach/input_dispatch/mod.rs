@@ -32,3 +32,4 @@ pub(super) use effects::{PendingSessionRename, encode_layout_or_log};
 pub(super) use pickers::{SESSION_PICKER_LIVE_KEY, session_picker_rows};
 
 pub(super) use dispatch::{send_replay_frames, terminal_in_alt_screen};
+pub use organize::BackgroundToast;

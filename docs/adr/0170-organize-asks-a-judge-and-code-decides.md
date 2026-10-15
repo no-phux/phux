@@ -43,12 +43,17 @@ repository fact, but not always: a pane titled `tail beta prod logs` in
    the client's filesystem). Per session: its name, repository attributes,
    and its other members' summaries. A question about a pane never lists
    that pane as evidence for its own session. Terminal contents are never
-   read for this.
+   read for this. Titles can hold command lines, so the user-info of any
+   URL in the evidence (`postgres://user:pass@`) is replaced first.
 3. **Candidates are bounded.** Destinations are every session but Intake,
    plus one proposed session per repository an in-scope pane works in that
    no session carries. A numbered (generated-name) session whose panes all
    share one repository is adopted as that repository's home and renamed
-   to it, rather than creating a twin.
+   to it, rather than creating a twin. No command sets attributes on an
+   existing session, so a later run recognizes the adoption by name: a
+   session with no repository attribute, named after a repository one of
+   its panes works in, is that repository's home. Option texts are made
+   distinct, so an answer names exactly one destination.
 4. **The judge only chooses.** Jev answers one Choice question per pane
    over the candidates plus "leave where it is", with a probability and a
    confidence. Without a key, with `--offline`, or with
@@ -58,15 +63,30 @@ repository fact, but not always: a pane titled `tail beta prod logs` in
    nothing and is reported as unsure. A pane already in a session carrying
    its own repository is never moved by any verdict. New sessions are
    created only when a move lands in them.
-6. **Apply and undo.** Creates, then one atomic `RESOURCE_MOVE_MANY` per
-   destination, then renames. Each step reports its own refusal. The run
-   writes `<state_dir>/organize/last.json`; undo renames back, moves back
-   panes still where the run put them, and deletes created sessions only
-   while empty (`SESSION_DELETE` refuses otherwise). Anything changed since
-   is left alone and reported.
-7. **Keys stay out of argv and config.** The key comes from
-   `TYPESAFE_API_KEY` or the argv `organize.jev-key-command` prints; the
-   request goes through `curl` with the key and body on stdin.
+6. **Apply and undo.** The records are read again first, and a pane no
+   longer where the plan saw it is skipped. Then creates (carrying the
+   repository's full identity), one atomic `RESOURCE_MOVE_MANY` per
+   destination, and renames. Each step reports its own refusal. The run
+   writes `<state_dir>/organize/last.json` with the server's authority id;
+   undo refuses another server's record, renames back, moves back panes
+   still where the run put them, and deletes created sessions only while
+   empty (`SESSION_DELETE` refuses otherwise). Anything changed since is
+   skipped and reported, not failed, and the record is cleared once nothing
+   failed.
+7. **Keys stay out of argv, config, and errors.** The key comes from
+   `TYPESAFE_API_KEY` or the first line `organize.jev-key-command` prints
+   (no whitespace or control characters). The request goes through
+   `curl -q` (no `.curlrc`) with the key and body on stdin, every config
+   value escaped; an error never echoes the reply body, and the key is
+   redacted from any error text.
+8. **Surfaces.** The judge, the transport, and the journal live in
+   `phux_client_runtime::organize`, beside repository discovery, so every
+   client shares them. The CLI applies by default (`--dry-run` previews);
+   the MCP tool previews by default (`apply: true` applies), since an agent
+   should show a plan before moving a person's work. The TUI runs on its
+   own control connection off the input loop and toasts the result. Jev's
+   whole run has one time budget (60 seconds, 8 in interactive clients)
+   before repository matching decides.
 
 ## Why
 
@@ -84,10 +104,11 @@ of network calls and credentials and keeps one path for every surface.
   outside git with no telling title stay put.
 - Pane metadata (titles, paths, repository URLs) leaves the machine when
   Jev judges. `--offline` and `organize.offline` stop that.
-- The journal is per client profile, not per server: undo from another
-  machine is not possible, and a second run replaces the first's journal.
-- The TUI waits on the run in its input loop, bounded by an 8-second Jev
-  timeout before the heuristic decides.
+- The journal is per client profile: a second run (from any surface on
+  this profile) replaces the first's, and undo from another machine is not
+  possible.
+- Jev is used whenever a key is available; `organize.offline` is the
+  opt-out, not an opt-in.
 
 ## Alternatives
 

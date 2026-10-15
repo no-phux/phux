@@ -683,6 +683,27 @@ impl super::SessionLoop {
         self.drain_repaint(out, sidebar, &mut repaint);
     }
 
+    /// A background run finished: toast its result, then refresh the
+    /// inventory its moves changed.
+    pub(super) async fn on_background_done<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut crate::attach::connection::Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        done: crate::attach::input_dispatch::BackgroundToast,
+    ) -> Result<super::Step, crate::attach::AttachError> {
+        self.overlays.push(Box::new(ToastOverlay::new(
+            done.title,
+            done.lines,
+            &self.settings.theme,
+        )));
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
+        self.paint_overlay(out, sidebar);
+        self.request_host_inventory(conn).await?;
+        Ok(super::Step::Continue)
+    }
+
     /// A spawned plugin action finished: log it, and toast a failure.
     pub(super) fn on_plugin_result<W: crate::attach::RenderSink>(
         &mut self,

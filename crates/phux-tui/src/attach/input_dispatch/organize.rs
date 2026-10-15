@@ -3,9 +3,7 @@
 //! on the attached server's dedicated control dial, never on the
 //! output-bearing attach connection. The result is a toast.
 
-use std::time::Duration;
-
-use phux_client::organize::{self, Judge, Options, Outcome};
+use phux_client::organize::{self, Options, Outcome};
 use phux_config::keybind::ResolvedAction;
 
 use crate::attach::Dial;
@@ -14,10 +12,6 @@ use crate::render::overlay::ToastOverlay;
 
 use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
-
-/// How long Jev may take before the TUI lets repository matching decide:
-/// the input loop waits on the result.
-const TUI_JEV_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Plan lines a toast shows before summarizing the rest.
 const TOAST_PLAN_LINES: usize = 8;
@@ -45,17 +39,58 @@ pub(super) fn queue(action: &ResolvedAction, ctx: &DispatchCtx<'_>, effects: &mu
     });
 }
 
+/// A finished background organize run, for the driver to toast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundToast {
+    /// The toast title.
+    pub title: String,
+    /// Its lines.
+    pub lines: Vec<String>,
+}
+
+/// Start the run off the input loop: a passthrough notice now, the result
+/// as a toast through `ctx.background_tx` when it lands. Without a channel
+/// (tests) the run is awaited here.
 #[allow(clippy::future_not_send, reason = "TUI state is current-thread bound")]
 pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
     let Some(intent) = intent else {
         return;
     };
+    let Some(dial) = ctx.control_dial.cloned() else {
+        ctx.overlays.push(Box::new(ToastOverlay::new(
+            "Organize failed",
+            vec!["No dedicated control dial; nothing changed.".to_owned()],
+            ctx.theme,
+        )));
+        return;
+    };
+    let Some(tx) = ctx.background_tx.cloned() else {
+        let done = perform(dial, intent).await;
+        *ctx.host_refresh_request = true;
+        ctx.overlays.push(Box::new(ToastOverlay::new(
+            done.title, done.lines, ctx.theme,
+        )));
+        return;
+    };
+    let notice = match intent {
+        Intent::Undo => "Undoing the last organize run…",
+        Intent::Run { .. } => "Organizing… the result will appear here.",
+    };
+    ctx.overlays.push(Box::new(ToastOverlay::passthrough(
+        "Organize",
+        vec![notice.to_owned()],
+        ctx.theme,
+    )));
+    tokio::spawn(async move {
+        let _ = tx.send(perform(dial, intent).await);
+    });
+}
+
+/// Run `intent` on its own control connection to `dial`.
+async fn perform(dial: Dial, intent: Intent) -> BackgroundToast {
+    let host = matches!(dial, Dial::Uds(_)).then(phux_config::instance::local_host_name);
     let result = async {
-        let dial = ctx
-            .control_dial
-            .ok_or_else(|| "No dedicated control dial; nothing changed.".to_owned())?;
-        let host = matches!(dial, Dial::Uds(_)).then(phux_config::instance::local_host_name);
-        let mut conn = Connection::connect_dial(dial)
+        let mut conn = Connection::connect_dial(&dial)
             .await
             .map_err(|err| err.to_string())?;
         match intent {
@@ -64,14 +99,8 @@ pub(super) async fn apply(intent: Option<Intent>, ctx: &mut DispatchCtx<'_>) {
         }
     }
     .await;
-    // The picker and sidebar re-read membership through the driver.
-    *ctx.host_refresh_request = true;
-    let (title, lines) = match result {
-        Ok(done) => done,
-        Err(error) => ("Organize failed".to_owned(), vec![error]),
-    };
-    ctx.overlays
-        .push(Box::new(ToastOverlay::new(title, lines, ctx.theme)));
+    let (title, lines) = result.unwrap_or_else(|error| ("Organize failed".to_owned(), vec![error]));
+    BackgroundToast { title, lines }
 }
 
 async fn run(
@@ -80,12 +109,13 @@ async fn run(
     session: Option<String>,
 ) -> Result<(String, Vec<String>), String> {
     let config = phux_config::loader::load().unwrap_or_default();
-    let (judge, key_error) = Judge::configured(&config.organize, false).await;
+    let (judge, key_error) = organize::configured_judge(config.organize, false).await;
     let options = Options {
         session,
         judge,
         min_confidence: organize::DEFAULT_MIN_CONFIDENCE,
-        jev_timeout: TUI_JEV_TIMEOUT,
+        // The input loop waits on the result.
+        jev_timeout: organize::INTERACTIVE_JEV_TIMEOUT,
     };
     let mut outcome = organize::run(conn, host, &options, false)
         .await
@@ -117,6 +147,12 @@ fn toast_lines(outcome: &Outcome) -> Vec<String> {
                 .iter()
                 .map(|failure| format!("failed: {}: {}", failure.step, failure.message)),
         );
+        lines.extend(
+            applied
+                .skipped
+                .iter()
+                .map(|step| format!("skipped: {}: {}", step.step, step.message)),
+        );
         if !applied.journal.is_empty() {
             lines.push("Undo: organize-undo, or `phux organize --undo`.".to_owned());
         }
@@ -143,7 +179,13 @@ async fn undo(conn: &mut Connection) -> Result<(String, Vec<String>), String> {
         undone
             .failures
             .iter()
-            .map(|failure| format!("{}: {}", failure.step, failure.message)),
+            .map(|failure| format!("failed: {}: {}", failure.step, failure.message)),
+    );
+    lines.extend(
+        undone
+            .skipped
+            .iter()
+            .map(|step| format!("skipped: {}: {}", step.step, step.message)),
     );
     if undone.failures.is_empty() {
         organize::clear_journal().map_err(|err| format!("Undone, but: {err}"))?;
