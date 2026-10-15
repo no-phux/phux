@@ -6,10 +6,12 @@ mod keys;
 mod link;
 mod pointer;
 
+pub(crate) use link::{LinkAdmit, admit_path, admit_url};
+
 use composition::Composition;
 use gpui::{
-    self, App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, KeyDownEvent,
-    KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
+    self, App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle,
+    KeyDownEvent, KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
 };
 use phux_client_runtime::control::{ControlPlane, TerminalResizeOutcome};
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
@@ -139,6 +141,15 @@ fn upgrade_client(client: &Weak<Client>) -> Result<Arc<Client>, InputError> {
     client.upgrade().ok_or(InputError::StaleHandle)
 }
 
+/// A paste or open the terminal refused, for the shell to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputNotice {
+    /// Notification title.
+    pub title: &'static str,
+    /// Notification body.
+    pub body: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
     StaleHandle,
@@ -155,6 +166,8 @@ pub enum KeyDisposition {
     Platform,
     Consumed,
 }
+
+impl EventEmitter<InputNotice> for TerminalInput {}
 
 pub struct TerminalInput {
     client: Weak<Client>,
@@ -178,6 +191,9 @@ pub struct TerminalInput {
     last_motion_cell: Option<(u16, u16)>,
     scroll_remainder: f32,
     option_as_alt: bool,
+    /// Registry host this window attaches to. Absent is the local server.
+    /// A satellite terminal is remote even when this is absent.
+    window_remote: Option<String>,
     last_error: Option<InputError>,
     /// The size and cell pitch this view last proposed.
     fitted: Option<FitProposal>,
@@ -217,6 +233,7 @@ impl TerminalInput {
             last_motion_cell: None,
             scroll_remainder: 0.0,
             option_as_alt: false,
+            window_remote: None,
             last_error: None,
             fitted: None,
             settling: None,
@@ -233,6 +250,16 @@ impl TerminalInput {
     pub fn set_option_as_alt(&mut self, enabled: bool) {
         self.option_as_alt = enabled;
     }
+
+    /// The registry host this window attaches to. Absent is the local server.
+    pub fn set_window_remote(&mut self, remote: Option<String>) {
+        self.window_remote = remote;
+    }
+
+    fn host(&self) -> crate::attach::TerminalHost {
+        crate::attach::terminal_host(self.window_remote.as_deref(), &self.terminal)
+    }
+
     pub fn last_error(&self) -> Option<&InputError> {
         self.last_error.as_ref()
     }
@@ -910,11 +937,40 @@ impl EntityInputHandler for TerminalInput {
     }
 
     fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = crate::attach::clipboard_paste(&item) {
-            let result = self.paste_text(&text, window, cx).map(|_| ());
-            self.record(result);
+        match self.clipboard_attach(&item) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                let result = self.paste_text(&text, window, cx).map(|_| ());
+                self.record(result);
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                cx.emit(InputNotice { title, body });
+            }
+            None => {}
         }
         cx.notify();
+    }
+}
+
+impl TerminalInput {
+    fn clipboard_attach(&self, item: &ClipboardItem) -> Option<crate::attach::PathAttach> {
+        crate::attach::clipboard_for_host(item, &self.host())
+    }
+
+    /// Paste addressed by the shell, not by keyboard focus. A refusal is
+    /// returned so the shell can show it without a nested event.
+    pub fn paste_command(&mut self, cx: &mut Context<Self>) -> Option<InputNotice> {
+        let item = cx.read_from_clipboard()?;
+        match self.clipboard_attach(&item) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                let result = self.paste_requested(&text);
+                self.record(result.map(|_| ()));
+                None
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                Some(InputNotice { title, body })
+            }
+            None => None,
+        }
     }
 }
 

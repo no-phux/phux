@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::presentation::{self, Ticket};
 use gpui::{
-    Context, EventEmitter, FocusHandle, MouseButton, Render, SharedString, Window, canvas, div,
-    prelude::*,
+    Context, EventEmitter, FocusHandle, MouseButton, Render, SharedString, Subscription, Window,
+    canvas, div, prelude::*,
 };
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::ResourceId;
@@ -32,6 +32,13 @@ pub use settings::Settings;
 pub enum TerminalEvent {
     /// A primary click chose this pane. File drops are the pane's, not the surface's.
     Activated,
+    /// A paste or file link this surface refused.
+    Notice {
+        /// Notification title.
+        title: &'static str,
+        /// Notification body.
+        body: String,
+    },
 }
 
 /// A terminal view bound to one runtime publication.
@@ -49,6 +56,11 @@ pub struct Terminal {
     scene: paint::SceneCache,
     surface: presentation::Surface,
     input: gpui::Entity<crate::input::TerminalInput>,
+    /// Forwards a clipboard refusal from [`crate::input::TerminalInput`].
+    /// Kept so the subscription lives with the view.
+    _input_notices: Subscription,
+    /// Registry host this window attaches to. Absent is the local server.
+    window_remote: Option<String>,
     rebind: Arc<AtomicBool>,
     was_focused: bool,
 }
@@ -84,6 +96,7 @@ impl Terminal {
         input.update(cx, |state, _| {
             state.set_option_as_alt(settings.option_as_alt)
         });
+        let _input_notices = subscribe_notices(&input, cx);
         Self {
             element_id: SharedString::from(format!("phux-terminal-{}", view.get())),
             client,
@@ -95,9 +108,26 @@ impl Terminal {
             scene: paint::SceneCache::default(),
             surface: presentation::Surface::default(),
             input,
+            _input_notices,
+            window_remote: None,
             rebind: Arc::new(AtomicBool::new(false)),
             was_focused: false,
         }
+    }
+
+    /// The registry host this window attaches to. Absent is the local server.
+    pub fn set_window_remote(&mut self, remote: Option<String>, cx: &mut Context<Self>) {
+        if self.window_remote == remote {
+            return;
+        }
+        self.window_remote = remote;
+        let remote = self.window_remote.clone();
+        self.input
+            .update(cx, |state, _| state.set_window_remote(remote));
+    }
+
+    fn host(&self) -> crate::attach::TerminalHost {
+        crate::attach::terminal_host(self.window_remote.as_deref(), &self.terminal)
     }
 
     /// Replace font, theme, visibility, input policy, size ownership and app
@@ -128,11 +158,13 @@ impl Terminal {
     /// Run `action` once, now, on this bound entity. It is not stored, so a
     /// later render cannot repeat it, and a request is never replayed onto a
     /// surface that was not yet bound.
-    pub fn request(&mut self, action: HostAction, cx: &mut Context<Self>) {
-        let Some(action) = actions::accept(true, action) else {
-            return;
-        };
-        actions::run(action, &self.input, cx);
+    pub fn request(
+        &mut self,
+        action: HostAction,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::input::InputNotice> {
+        let action = actions::accept(true, action)?;
+        actions::run(action, &self.input, cx)
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -176,13 +208,28 @@ impl Terminal {
         let view = self.view;
         let terminal = self.terminal.clone();
         let focus = self.focus.clone();
+        let remote = self.window_remote.clone();
         self.input =
             cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
+        self._input_notices = subscribe_notices(&self.input, cx);
         cx.observe(&self.input, |_, _, cx| cx.notify()).detach();
         self.input.update(cx, |state, _| {
             state.set_option_as_alt(self.settings.option_as_alt);
+            state.set_window_remote(remote);
         });
     }
+}
+
+fn subscribe_notices(
+    input: &gpui::Entity<crate::input::TerminalInput>,
+    cx: &mut Context<Terminal>,
+) -> Subscription {
+    cx.subscribe(input, |_, _, notice: &crate::input::InputNotice, cx| {
+        cx.emit(TerminalEvent::Notice {
+            title: notice.title,
+            body: notice.body.clone(),
+        });
+    })
 }
 
 impl Render for Terminal {
@@ -269,11 +316,16 @@ impl Render for Terminal {
             })
             .on_mouse_up(MouseButton::Left, {
                 let release = release.clone();
-                cx.listener(move |_this, event: &gpui::MouseUpEvent, window, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, window, cx| {
                     if let Some(url) = release.update(cx, |state, _| {
                         state.release_link(event.position, event.modifiers.platform)
                     }) {
-                        cx.open_url(&url);
+                        match crate::input::admit_url(&url, &this.host()) {
+                            crate::input::LinkAdmit::Open => cx.open_url(&url),
+                            crate::input::LinkAdmit::Refuse { title, body } => {
+                                cx.emit(TerminalEvent::Notice { title, body });
+                            }
+                        }
                     } else {
                         release.update(cx, |state, cx| {
                             let _ = state.mouse_up(event, window, cx);

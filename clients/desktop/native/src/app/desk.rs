@@ -2066,8 +2066,9 @@ impl Desk {
             .focused_placement()
             .filter(|placement| placement.view_id.is_some())
             .map(|placement| placement.id.clone())
+            && let Some(notice) = self.panes.request(&id, action, cx)
         {
-            self.panes.request(&id, action, cx);
+            self.post(Kind::Refusal, notice.title, Some(notice.body));
         }
     }
 
@@ -2176,18 +2177,33 @@ impl Desk {
     }
 
     /// Paste dropped paths into the pane they were dropped on.
+    /// A remote terminal is refused: a path from this Mac names the wrong file there.
     pub fn drop_paths(&mut self, placement_id: &str, paths: &[PathBuf]) {
         self.drop_target = None;
-        if paths.is_empty() {
-            return;
-        }
         let Some(terminal) = self
             .placement(placement_id)
             .and_then(|placement| placement.terminal_id.clone())
         else {
             return;
         };
-        self.paste_text_to(&terminal, &crate::attach::quote_paths(paths));
+        self.paste_host_paths(&terminal, paths);
+    }
+
+    /// Paste paths that live on this Mac, or say why they were not pasted.
+    fn paste_host_paths(&mut self, terminal: &ResourceId, paths: &[PathBuf]) {
+        match crate::attach::attach_paths(&self.terminal_host(terminal), paths) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                self.paste_text_to(terminal, &text);
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                self.post(Kind::Refusal, title, Some(body));
+            }
+            None => {}
+        }
+    }
+
+    fn terminal_host(&self, terminal: &ResourceId) -> crate::attach::TerminalHost {
+        crate::attach::terminal_host(self.remote.as_deref(), terminal)
     }
 
     fn paste_text(&mut self, text: &str) -> bool {
@@ -2264,7 +2280,10 @@ impl Desk {
         let shown = path.display().to_string();
         match mode {
             "paste" => {
-                self.paste_text(&crate::attach::quote_paths(&[path]));
+                let Some(terminal) = self.focused_terminal() else {
+                    return;
+                };
+                self.paste_host_paths(&terminal, &[path]);
             }
             "copy" => self.host_action(HostAction::CopyText(shown), cx),
             _ => self.host_action(HostAction::Open(shown), cx),
@@ -3335,6 +3354,9 @@ impl Desk {
                 if let Some(tab) = self.active_tab_id() {
                     self.focus_placement(&tab, placement_id, window, cx);
                 }
+            }
+            crate::terminal::TerminalEvent::Notice { title, body } => {
+                self.post(Kind::Refusal, title, Some(body.clone()));
             }
         }
         cx.notify();

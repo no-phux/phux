@@ -1935,6 +1935,7 @@ fn pane_view(
     } else if let (Some(terminal), Some(view), Some(settings), Some(client)) =
         (terminal, view, settings, client)
     {
+        let remote = desk.remote.clone();
         let entity = desk.panes_mut().entity_for(
             &placement_id,
             &terminal,
@@ -1944,6 +1945,9 @@ fn pane_view(
             window,
             cx,
         );
+        entity.update(cx, |terminal, cx| {
+            terminal.set_window_remote(remote, cx);
+        });
         // A cached view keeps its last paint until this entity is notified.
         // Chrome refreshes (hover, clock, sidebar) must not reacquire and
         // reshape the terminal. GPUI requires a definite size for that cache.
@@ -1993,6 +1997,12 @@ fn pane_view(
     });
     let id = placement.id.clone();
     let dropping = desk.drop_target.as_deref() == Some(id.as_str());
+    let remote_files = placement.terminal_id.as_ref().is_some_and(|terminal| {
+        !matches!(
+            crate::attach::terminal_host(desk.remote.as_deref(), terminal),
+            crate::attach::TerminalHost::Local
+        )
+    });
     let leaving = desk.motion.is_leaving(&id);
     let controls = find.is_none()
         && !dropping
@@ -2123,7 +2133,9 @@ fn pane_view(
                 ),
             )
         })
-        .when(dropping, |card| card.child(drop_hint(&colors)))
+        .when(dropping, |card| {
+            card.child(drop_hint(&colors, remote_files))
+        })
         .children(find_bar)
         .into_any_element()
 }
@@ -2276,7 +2288,7 @@ fn pane_controls(
 }
 
 /// Shown over the pane a file drag from the OS is above.
-fn drop_hint(colors: &Palette) -> impl IntoElement {
+fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
     let accent = from_hex(&colors.theme.accent);
     div()
         .absolute()
@@ -2306,13 +2318,21 @@ fn drop_hint(colors: &Palette) -> impl IntoElement {
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Drop to attach"),
+                        .child(if remote {
+                            "Can't attach local files"
+                        } else {
+                            "Drop to attach"
+                        }),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(from_hex(&colors.muted))
-                        .child("Paths paste here, ready for your agent"),
+                        .child(if remote {
+                            "This terminal is on another machine"
+                        } else {
+                            "Paths paste here, ready for your agent"
+                        }),
                 ),
         )
 }
