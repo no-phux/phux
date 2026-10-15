@@ -65,6 +65,24 @@ impl AgentInfo {
     pub fn word(&self) -> &'static str {
         state_word(self.state)
     }
+
+    /// Declared working.
+    #[must_use]
+    pub fn working(&self) -> bool {
+        self.state == AgentState::Working
+    }
+
+    /// Declared idle.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.state == AgentState::Idle
+    }
+
+    /// Declared finished (`done`).
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.state == AgentState::Done
+    }
 }
 
 /// What a person reads for an agent state. An undeclared state reads as nothing.
@@ -1302,5 +1320,68 @@ mod paint_wake_tests {
             None
         );
         assert_eq!(own_spawn(&Event::TopologyChanged), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_predicates {
+    use super::{AgentAttention, AgentInfo, AgentState};
+
+    fn info(state: AgentState, attention: AgentAttention) -> AgentInfo {
+        AgentInfo {
+            name: "agent".into(),
+            kind: None,
+            state,
+            attention,
+            changed_at_ms: 0,
+        }
+    }
+
+    fn flags(info: &AgentInfo) -> (bool, bool, bool, bool) {
+        (
+            info.needs_you(),
+            info.working(),
+            info.idle(),
+            info.finished(),
+        )
+    }
+
+    #[test]
+    fn state_predicates_share_one_classifier() {
+        // needs you, working, idle, finished
+        assert_eq!(
+            flags(&info(AgentState::Blocked, AgentAttention::High)),
+            (true, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Done, AgentAttention::Low)),
+            (true, false, false, true),
+            "finished still needs you; it is not a second classifier"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::Normal)),
+            (false, true, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::High)),
+            (true, true, false, false),
+            "asking loudly does not stop the agent being working"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::None)),
+            (false, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::High)),
+            (true, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::Low)),
+            (false, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::High)),
+            (true, false, false, false)
+        );
     }
 }

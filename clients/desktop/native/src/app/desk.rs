@@ -32,7 +32,7 @@ use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::{self, Motion};
 use super::notifications::{Feed, Kind};
-use super::overlays::InputSlot;
+use super::overlays::{GotoPalette, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
 use super::settings_panel::SettingsControls;
@@ -174,6 +174,8 @@ pub struct Desk {
     _subs: Vec<Subscription>,
     /// The list palette shared by commands, goto, sessions, and the path picker.
     pub(crate) palette_state: Option<Entity<CommandState>>,
+    /// Go To state chips. A change keeps the query and realigns by entry.
+    pub(crate) goto: GotoPalette,
     pub(crate) modal_inputs: Vec<(InputSlot, Entity<InputState>, Subscription)>,
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
@@ -336,6 +338,7 @@ impl Desk {
             _clock: None,
             _subs: Vec::new(),
             palette_state: None,
+            goto: GotoPalette::default(),
             modal_inputs: Vec::new(),
             find_input: None,
             conversation_faces: HashMap::new(),
