@@ -25,9 +25,11 @@ use super::desk::{self, Desk, Modal};
 
 mod goto_facts;
 mod goto_filter;
+mod goto_search;
 mod launcher;
 
 pub(crate) use goto_filter::GotoPalette;
+pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
 mod palette_tests;
@@ -297,16 +299,17 @@ impl Desk {
             return;
         };
         let query = state.read(cx).query(cx).to_string();
-        let unfiltered = goto_sections(self);
-        let entries = goto_candidates(&unfiltered);
-        let visible = rank_sections(filter_sections(unfiltered, self.goto.filter), &query);
+        prepare_goto(self, &query);
         let index = state.read(cx).selected_index();
-        self.goto.selected = index.and_then(|index| {
-            visible
+        let selected = index.and_then(|index| {
+            self.goto_search
+                .ranked()
                 .get(index.section)
                 .and_then(|section| section.rows.get(index.row))
                 .and_then(goto_id)
         });
+        let entries = self.goto_search.candidates();
+        self.goto.selected = selected;
         let mut cursor = goto_filter::GotoCursor {
             query,
             selected: self.goto.selected.clone(),
@@ -588,11 +591,13 @@ pub fn find_bar(
 }
 
 /// One palette section: an optional heading and its rows.
+#[derive(Clone)]
 struct Section {
     label: Option<&'static str>,
     rows: Vec<Row>,
 }
 
+#[derive(Clone)]
 struct Row {
     title: SharedString,
     detail: Option<SharedString>,
@@ -947,6 +952,7 @@ fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
     }
 }
 
+#[cfg(test)]
 fn goto_candidates(sections: &[Section]) -> Vec<goto_filter::GotoCandidate> {
     sections
         .iter()
@@ -969,68 +975,73 @@ fn section_ids(sections: &[Section]) -> Vec<Vec<goto_filter::GotoId>> {
 
 /// Rank every row against `query` as one flat list; an empty query keeps the sections.
 fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section> {
-    let query = query.trim();
-    if query.is_empty() {
-        return sections;
-    }
-    let folded = query.to_lowercase();
-    let tokens: Vec<&str> = folded.split_whitespace().collect();
-    let mut ranked: Vec<(i64, Row)> = sections
-        .into_iter()
-        .flat_map(|section| section.rows)
-        .filter_map(|row| {
-            let title = row.title.to_lowercase();
-            let metadata = format!(
-                "{} {} {}",
-                row.category,
-                row.detail.as_deref().unwrap_or_default(),
-                row.keywords,
-            )
-            .to_lowercase();
-            let score = tokens.iter().try_fold(0, |total, token| {
-                let title_score = literal_score(&title, token)
-                    .map(|score| score * 4)
-                    .or_else(|| subsequence_score(&title, token));
-                // Long descriptions are useful search terms, not a fuzzy-match canvas.
-                let metadata_score = literal_score(&metadata, token);
-                title_score
-                    .into_iter()
-                    .chain(metadata_score)
-                    .max()
-                    .map(|score| total + score)
-            })?;
-            let priority = if title == folded {
-                10_000
-            } else if title.starts_with(&folded) {
-                2_000
-            } else {
-                0
-            };
-            Some((score + priority, row))
-        })
-        .collect();
-    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    vec![Section {
-        label: None,
-        rows: ranked.into_iter().map(|(_, row)| row).collect(),
-    }]
+    goto_search::rank_sections(sections, query)
 }
 
-fn literal_score(haystack: &str, token: &str) -> Option<i64> {
-    let index = haystack.find(token)?;
-    let before = haystack[..index].chars().next_back();
-    let word_start = before.is_none_or(|ch| ch.is_whitespace() || "/:._-".contains(ch));
-    let offset = haystack[..index].chars().count().min(60) as i64;
-    Some(if word_start { 200 } else { 120 } - offset)
+/// Fold Go To rows when their metadata revision changes, then rank the query.
+fn prepare_goto(desk: &mut Desk, query: &str) {
+    let revision = search_revision(desk);
+    let filter = desk.goto.filter;
+    if desk.goto_search.needs_rebuild(revision) {
+        let sections = goto_sections(desk);
+        desk.goto_search.rebuild(revision, sections);
+    }
+    desk.goto_search.ensure_ranked(query, filter);
 }
 
-fn subsequence_score(haystack: &str, token: &str) -> Option<i64> {
-    let mut chars = haystack.chars();
-    let mut gaps = 0;
-    for wanted in token.chars() {
-        gaps += chars.position(|ch| ch == wanted)? as i64;
+/// Connection drains cover panes and agents. Tabs are local, so they mix in too.
+fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
+    let Some(link) = desk.link.as_ref() else {
+        return goto_search::SearchRevision {
+            connection: 0,
+            workspace: 0,
+        };
+    };
+    goto_search::SearchRevision {
+        connection: link.connection.revision(),
+        workspace: workspace_stamp(&link.workspace.tabs),
     }
-    Some((60 - gaps).max(1))
+}
+
+fn workspace_stamp(tabs: &[crate::workspace::layout::DeskTab]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for tab in tabs {
+        hash = mix_bytes(hash, tab.id.as_bytes());
+        hash = mix_bytes(hash, tab.focused_id.as_bytes());
+        hash = mix_bytes(hash, tab.title.as_deref().unwrap_or("").as_bytes());
+        hash = mix_node(hash, &tab.root);
+    }
+    hash
+}
+
+fn mix_node(mut hash: u64, node: &crate::workspace::layout::LayoutNode) -> u64 {
+    match node {
+        crate::workspace::layout::LayoutNode::Leaf { placement } => {
+            hash = mix_bytes(hash, placement.id.as_bytes());
+            mix_bytes(hash, placement.terminal_label.as_bytes())
+        }
+        crate::workspace::layout::LayoutNode::Split {
+            id, first, second, ..
+        } => {
+            hash = mix_bytes(hash, id.as_bytes());
+            hash = mix_node(hash, first);
+            mix_node(hash, second)
+        }
+    }
+}
+
+fn mix_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    hash ^= bytes.len() as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    goto_search::PreparedQuery::parse(query).into_terms()
 }
 
 fn path_panel(
