@@ -6,6 +6,7 @@
 
 mod actions;
 mod color;
+mod conversation;
 mod desk;
 mod host;
 mod keys;

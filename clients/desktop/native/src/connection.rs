@@ -7,6 +7,7 @@
 pub mod home;
 pub mod org;
 pub mod path;
+pub mod transcript;
 
 pub use path::{
     PathRow, PathTarget, PickerState, accept_path_answer, begin_picker, can_offer_path_picker,
@@ -132,6 +133,9 @@ pub struct Connection {
     pub error: Option<String>,
     /// Agent badges keyed by terminal.
     pub agents: HashMap<ResourceId, AgentInfo>,
+    /// Committed native conversations keyed by their AgentSession resource.
+    pub conversations: HashMap<ResourceId, transcript::Conversation>,
+    conversation_heads: HashMap<ResourceId, ResourceId>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
     /// Canonical checkout root for new terminals in that session.
@@ -239,6 +243,7 @@ impl Connection {
                     attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
                     attach_role: Some(RolePolicy::PRIMARY),
                     auto_attach_foreign_spawns: false,
+                    subscribe_agent_sessions: true,
                     ..ControlOptions::default()
                 },
                 ..ClientOptions::default()
@@ -262,6 +267,8 @@ impl Connection {
             server: None,
             error: None,
             agents: HashMap::new(),
+            conversations: HashMap::new(),
+            conversation_heads: HashMap::new(),
             projects: HashMap::new(),
             directories: HashMap::new(),
             groups: HashMap::new(),
@@ -359,6 +366,12 @@ impl Connection {
     #[must_use]
     pub fn pane(&self, id: &ResourceId) -> Option<&PaneDescriptor> {
         self.topology.as_ref()?.pane(id)
+    }
+
+    /// Most recently published stream for this exact terminal, including a closed stream.
+    pub fn conversation(&self, terminal: &ResourceId) -> Option<&transcript::Conversation> {
+        self.conversations
+            .get(self.conversation_heads.get(terminal)?)
     }
 
     /// Topology panes, or an empty slice.
@@ -606,6 +619,14 @@ impl Connection {
                 server_id: status::server_id(&server),
                 connection_epoch: epoch,
             };
+            if self
+                .identity
+                .as_ref()
+                .is_some_and(|identity| identity.server_id != next.server_id)
+            {
+                self.conversations.clear();
+                self.conversation_heads.clear();
+            }
             if self.identity.as_ref() != Some(&next) {
                 self.agents.clear();
                 self.project_tag = None;
@@ -703,6 +724,59 @@ impl Connection {
                     note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
                 }
             }
+            let after_boundary = boundary.is_none_or(|boundary| index > boundary);
+            if same_identity && after_boundary {
+                match event {
+                    Event::AgentPublication {
+                        publication,
+                        session,
+                    } => {
+                        if let Some(parent) = session.parent.as_ref()
+                            && self.known.contains(parent)
+                        {
+                            let resource = &publication.resource_id;
+                            if !self.conversations.contains_key(resource)
+                                && let Some(conversation) =
+                                    transcript::Conversation::new(publication, session, epoch)
+                            {
+                                self.conversations.insert(resource.clone(), conversation);
+                            }
+                            if let Some(conversation) = self.conversations.get_mut(resource)
+                                && !conversation.closed
+                                && &conversation.parent == parent
+                            {
+                                conversation.apply(publication, session, epoch);
+                            }
+                            if let Some(conversation) = self.conversations.get(resource)
+                                && !conversation.closed
+                                && &conversation.parent == parent
+                            {
+                                let current = self.conversation_heads.get(parent);
+                                let newer = current.is_none_or(|head| {
+                                    head == resource
+                                        || self.conversations.get(head).is_none_or(|head| {
+                                            conversation.last_activity_ms > head.last_activity_ms
+                                                || (head.closed
+                                                    && conversation.last_activity_ms
+                                                        == head.last_activity_ms)
+                                        })
+                                });
+                                if newer {
+                                    self.conversation_heads
+                                        .insert(parent.clone(), resource.clone());
+                                }
+                            }
+                        }
+                    }
+                    Event::AgentSessionClosed { terminal_id, .. } => {
+                        if let Some(conversation) = self.conversations.get_mut(terminal_id) {
+                            conversation.closed = true;
+                            conversation.revision = conversation.revision.saturating_add(1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if let Event::SessionProject { name, project } = event {
                 note_project(&mut self.project_tag, name, project.as_deref());
             }
@@ -715,8 +789,14 @@ impl Connection {
                 self.agents.remove(terminal_id);
                 self.paint.remove(terminal_id);
                 self.admitted.remove(terminal_id);
+                self.conversation_heads.remove(terminal_id);
+                self.conversations
+                    .retain(|_, conversation| &conversation.parent != terminal_id);
             }
         }
+        self.conversations.retain(|resource, conversation| {
+            self.conversation_heads.get(&conversation.parent) == Some(resource)
+        });
         if events.iter().any(structural)
             || events
                 .iter()

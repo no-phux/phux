@@ -4,6 +4,7 @@ import { registerOmpLifecycle } from "./lifecycle.js";
 import { normalizeTerminalIdentity } from "../../runtime/src/awareness.js";
 import { PhuxError } from "../../runtime/src/errors.js";
 import { boundedResult, createPhuxTools, type ToolContext } from "../../runtime/src/tools.js";
+import { transcriptMode } from "../../runtime/src/transcript.js";
 
 const SELECTION_ENTRY = "sh.phux.omp.selected-target";
 const DIRECT_TARGET = /^(?:[^\s/@]+\/)?@[0-9]+$/;
@@ -37,7 +38,7 @@ export default function phuxExtension(pi: ExtensionAPI): void {
     executable: environment.PHUX_BIN || "phux",
     ...(environment.PHUX_SOCKET ? { socket: environment.PHUX_SOCKET } : {}),
     env: environment,
-  }), parentTarget);
+  }), parentTarget, transcriptMode(environment.PHUX_AGENT_TRANSCRIPT));
 
   function tools(ctx?: ExtensionContext) {
     const startedEpoch = epoch;

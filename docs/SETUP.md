@@ -68,13 +68,19 @@ different Rust, Zig, Node, Bun, usage CLI, or mbx. `just toolchain-parity` is th
 runtime half: it resolves both environments and compares the binaries they
 actually hand you. Run it after bumping a pin or `flake.lock`.
 
-`cargo-nextest` is the one root gate tool Mise does not supply: it has no
+`cargo-nextest` is not supplied by Mise: it has no
 prebuilt entry in Mise's registry, and building it from source can require a
 newer compiler than this repository's Rust pin. Install the
 [official prebuilt binary](https://nexte.st/docs/installation/pre-built-binaries/);
 `bash scripts/doctor.sh ci` reports it missing. Browser, Cockpit, and
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
+
+The runner-policy storage-collapse regression also needs `hardlink`. On macOS,
+install the keg-only utility with `brew install util-linux`, then append
+`/opt/homebrew/opt/util-linux/bin` to the gate shell's `PATH`. The Darwin build
+uses hardlinks without Linux's `--reflink` option; the regression verifies shared
+storage and preserved target metadata rather than accepting an unchanged copy.
 
 ## Binary cache
 

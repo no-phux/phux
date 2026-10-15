@@ -8,9 +8,9 @@ last-reviewed: 2026-10-06
 
 **TL;DR.** `omp plugin install @phux/omp` for CLI-backed terminal and agent
 tools. The extension preserves branch-local targets without attaching or
-changing focus. Inside phux it reports native AgentSession lifecycle for its
-hosting pane only, without starting model requests. Use the shell tool for
-ordinary one-shot commands.
+changing focus. Inside phux it reports the hosting pane's native AgentSession
+lifecycle and conversation for native clients, without starting model requests.
+Use the shell tool for ordinary one-shot commands.
 
 ## Install and load
 
@@ -72,6 +72,7 @@ reload the extension after changing it.
 | `PHUX_PROFILE` | Normal phux CLI profile selection, inherited unchanged. |
 | `PHUX_TARGET` | Optional explicit default `@N` or `host/@N` control target. Never inferred from focus. |
 | `PHUX_TERMINAL_ID` | Hosting pane identity injected by phux; numeric IDs are normalized to `@N`. Do not repurpose this as a sibling target. |
+| `PHUX_AGENT_TRANSCRIPT` | `0` disables conversation records; `full` includes bounded tool output; otherwise prompts, replies, visible thinking and tool summaries/status are emitted without tool output. |
 
 Malformed hosting identity fails extension loading rather than silently disabling
 the self-input guard. When OMP runs outside phux, no hosting pane exists to guard.
@@ -157,7 +158,9 @@ session and window projection, declaration provenance, and native child identity
 Missing, foreign or contradictory evidence disables reporting without mutation.
 An existing child is adopted only with a matching `omp:<native-session-id>`
 declaration, provider and native ID. Declarations contain identity only: never
-`state` or `attention`. No prompt text, tool arguments or tool results are emitted.
+`state` or `attention`. Typed lifecycle records carry no prompt text, tool
+arguments or tool results; conversation entries use the separate bounded
+`phux.transcript/v1` convention below.
 
 An awaited, payload-free `before_agent_start` guard establishes which native loop
 may emit activity; it never reads or injects prompt text. Native `agent_start`
@@ -200,7 +203,9 @@ prepared/active work, an unguarded start, or navigation during
 prepared/active/continuing work therefore retires the
 verified exact child and remains **declaration-only** until extension restart.
 This includes same-ID transcript reload, whose abort can discard completion.
-Same-ID tree navigation preserves the existing loop; idle reload is idempotent.
+Same-ID tree navigation preserves a running loop; an idle leaf change replaces
+the child stream and replays the selected branch rather than retaining abandoned
+replies. Idle reload is idempotent.
 Native ID rotation preserves the proven declaration while replacing its native
 identity. Queued writes retain captured IDs/generations. Missing or contradictory
 ownership stops mutation; replacement children are never closed or relabeled.
@@ -235,6 +240,44 @@ cap. Any uncertain failure disables the reporter for this extension instance;
 mutations are never retried. A timeout can leave a declaration or child behind;
 inspect ownership rather than assuming rollback.
 
+## Native conversation clients
+
+Install or upgrade `@phux/omp`, then start ordinary interactive `omp` inside a
+phux terminal. Its own process remains the session; native clients read its
+AgentSession through the same authenticated phux connection used for the pane.
+No additional listener, provider credentials on the phone, or second omp process
+is needed. Returning to the terminal keeps the same running agent.
+
+OMP maps native `message_update`, `message_end` and tool events to
+[`phux.transcript/v1`](../adr/0156-agent-transcript-records.md). Pi and OMP share
+one message mapper and bounds implementation. Streaming replies replace the
+earlier entry by ID; visible thinking is final-only. The canonical aggregate's
+messages finalize replies before `stop`, even when a detached message hook arrives
+late. Startup and idle navigation replay at most the last 128 selected-branch
+entries. This is a bounded live/replayed window, not the full session archive.
+Transcript text reaches the CLI on stdin, never argv. Turning transcripts off
+leaves the lifecycle timeline and the terminal available.
+
+### Contract research and reuse
+
+OMP's official [RPC contract](https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md)
+is a custom JSONL protocol over the stdio of `omp --mode rpc`, not JSON-RPC 2.0.
+The official [Rust client](https://github.com/can1357/oh-my-pi/tree/main/sdk/rust/omp-rpc)
+supports protocol negotiation, bounded chunk reassembly, command correlation and
+process teardown, but spawning it creates another worker rather than attaching
+to the already running TUI. It is appropriate for a client-owned agent, not for
+this terminal-first path.
+
+The upstream [SDK catalog](https://github.com/can1357/oh-my-pi/tree/main/sdk)
+contains Rust, Python and Go clients, not a Swift client. A persistent local
+multi-client host/attach protocol is tracked as an open
+[upstream proposal](https://github.com/can1357/oh-my-pi/issues/5405), rather than a
+contract this integration can assume. GPUI therefore reuses the existing Rust
+AgentSession reader, and iOS reuses its Swift conversation kit over the existing
+UniFFI-backed phux client. Neither frontend reimplements omp RPC or scrapes VT
+output. Research sources were checked on 2026-10-14; the integration remains
+qualified against its pinned SDK.
+
 ## Native loader smoke check
 
 After dependency setup and build:
@@ -268,8 +311,9 @@ action bodies. Earlier extension handlers deliberately delay before/start/tool/e
 delivery; the SDK's actual detached aggregate path, new/resume/fork, same-ID reload,
 exact-child retirement and restored detector blocking are exercised. Normal idle
 navigation and continuation are also covered, as is a queued follow-up that an
-inert local transport's running loop absorbs through the before hook. No live
-model reasoning is claimed. The delayed-tool case holds a tool-start delivery,
+inert local transport's running loop absorbs through the before hook. The retained
+log must contain both user messages and finalized assistant replies on the same
+exact child. No live model reasoning is claimed. The delayed-tool case holds a tool-start delivery,
 waits for the run's end to report `done` while it is still held, then releases it
 and requires `done` to survive the late delivery.
 

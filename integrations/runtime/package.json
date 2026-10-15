@@ -37,6 +37,10 @@
       "types": "./dist/src/schemas.d.ts",
       "import": "./dist/src/schemas.js"
     },
+    "./message-transcript": {
+      "types": "./dist/src/message-transcript.d.ts",
+      "import": "./dist/src/message-transcript.js"
+    },
     "./transcript": {
       "types": "./dist/src/transcript.d.ts",
       "import": "./dist/src/transcript.js"

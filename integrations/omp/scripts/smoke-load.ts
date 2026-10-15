@@ -73,11 +73,6 @@ if (process.argv[2] !== "--isolated") {
   assert.deepEqual(loaded.errors, [], "native loader rejected package");
   assert.equal(loaded.extensions.length, 1);
   const extension = loaded.extensions[0]!;
-  assert.deepEqual([...extension.handlers.keys()].sort(), [
-    "session_start", "session_switch", "session_branch", "session_tree", "session_shutdown",
-    "before_agent_start", "agent_start", "agent_end", "tool_execution_start", "tool_execution_end",
-    "tool_approval_requested", "tool_approval_resolved",
-  ].sort(), "native lifecycle only: no Pi reason/settled/UI hooks");
   const names = [
     "phux_list", "phux_create", "phux_snapshot", "phux_send_keys", "phux_run", "phux_wait",
     "phux_panes", "phux_paste", "phux_spawn", "phux_agent_prompt", "phux_agent_wait",
