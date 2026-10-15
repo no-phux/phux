@@ -75,15 +75,30 @@ server behind the supervisor.
 
 ## Using it
 
-### Developer performance monitor
+### Command palette
 
-Choose **Developer > Performance Monitor** at any time to opt in. It opens a
-separate native window and starts sampling immediately; neither the desktop nor
-the server needs a restart. Reopening the command raises the same window.
+Press **⇧⌘P** for commands or **⌘P** to find a terminal, agent or tab.
+The native panel has **Commands** and **Go To** controls, host/session context,
+action descriptions, and your effective keyboard shortcuts. Essentials come
+first; search prioritizes command names and also matches descriptions and
+keywords. In Go To, a leading `>` switches to commands and keeps the rest of
+your search.
 
-**Developer > Stop Performance Monitoring** closes the monitor and stops its
-sampler. Closing the window does the same. You can enable it again immediately;
-each new monitor starts a fresh CPU and metric interval.
+Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
+search, then closes the panel; clicking outside also closes it. Commands that
+open a dialog move the keyboard into that dialog.
+
+### Performance monitor
+
+Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
+or **telemetry** to opt in. This is a utility, not a separate Developer menu.
+It opens a native window and starts sampling immediately; neither the desktop
+nor the server needs a restart. Reopening the command raises the same window.
+
+While monitoring, the palette also offers **Stop Performance Monitoring**.
+This closes the monitor and stops its sampler. Closing the window does the
+same. You can enable it again immediately; each new monitor starts a fresh CPU
+and metric interval.
 
 For automatic opening at launch, the native executable accepts `--dev-telemetry`
 or `PHUX_DESKTOP_DEV_TELEMETRY=1`. These are conveniences, not prerequisites for
@@ -99,13 +114,13 @@ The scrollable metric table shows the existing kernel, runtime, renderer, and
 UI-thread instrumentation as interval rates, mean timings, and estimated p95.
 **Pause** freezes the readings and stops sampling; **Resume** starts a fresh
 interval. **Copy JSON** copies the displayed process readings, interval metrics,
-and cumulative report. Sampling stops when the monitor closes; use the
-Developer menu to reopen it. This is local instrumentation: no telemetry is
-uploaded and no metrics history is written by the monitor.
+and cumulative report. Sampling stops when the monitor closes; use the palette
+to reopen it. This is local instrumentation: no telemetry is uploaded and no
+metrics history is written by the monitor.
 
-Without opening the monitor, there is no monitor sampling loop. The Developer
-menu remains available, and the existing cheap atomic render/runtime counters
-remain on. Nothing about enabling or stopping this monitor changes the server.
+Without opening the monitor, there is no monitor sampling loop. The existing
+cheap atomic render/runtime counters remain on. Nothing about enabling or
+stopping this monitor changes the server.
 
 ### Updates
 

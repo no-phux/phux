@@ -967,6 +967,22 @@ impl Desk {
             "reload-config" => self.reload_ghostty(cx),
             "import-ghostty" => self.import_ghostty(cx),
             "reconnect" => self.reconnect(cx),
+            "performance-monitor" | "performance-monitor-stop" => {
+                // Opening/closing windows must wait until this desk's window lease ends.
+                let desktop = self.desktop.clone();
+                let start = id == "performance-monitor";
+                cx.defer(move |cx| {
+                    desktop.update(cx, |desktop, cx| {
+                        if start {
+                            if let Err(error) = desktop.open_performance(cx) {
+                                log::error!("could not open performance monitor: {error:#}");
+                            }
+                        } else {
+                            desktop.stop_performance(cx);
+                        }
+                    });
+                });
+            }
             "resize-left" => self.workspace_mut(|link| link.workspace.nudge(Direction::Left)),
             "resize-right" => self.workspace_mut(|link| link.workspace.nudge(Direction::Right)),
             "resize-up" => self.workspace_mut(|link| link.workspace.nudge(Direction::Up)),

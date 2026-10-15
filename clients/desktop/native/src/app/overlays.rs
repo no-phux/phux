@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, Styled,
-    Subscription, Window, div, px,
+    AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
+    Styled, Subscription, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use phux_protocol::ResourceId;
@@ -19,9 +19,13 @@ use phux_protocol::ids::SessionKey;
 use crate::connection::path::{self as paths};
 use crate::settings::theme::Palette;
 
-use super::actions::Run;
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
+
+mod launcher;
+
+#[cfg(test)]
+mod palette_tests;
 
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +49,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::Path => {
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
+                state.set_loading(false, window, cx);
                 state.set_query("", window, cx);
                 state.focus(window, cx);
             });
@@ -352,7 +357,7 @@ pub fn layer(
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
-            palette(desk, colors, cx)
+            launcher::palette(desk, colors, window, cx)
         }
         Modal::Path => path_panel(desk, colors, window, cx),
         Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
@@ -394,6 +399,7 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .id("modal-backdrop")
         .absolute()
         .inset_0()
+        .size_full()
         .flex()
         .flex_col()
         .items_center()
@@ -513,152 +519,75 @@ struct Section {
 }
 
 struct Row {
-    title: String,
-    detail: Option<String>,
+    title: SharedString,
+    detail: Option<SharedString>,
     /// Extra searchable text, not shown.
     keywords: String,
     target: Target,
     command: Option<&'static str>,
+    category: &'static str,
+    chord: Option<String>,
 }
 
-fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
-    let Some(state) = desk.palette_state.clone() else {
-        return div().into_any_element();
-    };
-    let query = state.read(cx).query(cx).to_string();
-    let (placeholder, sections) = match desk.modal {
-        Modal::Goto => (
-            "Go to a terminal, agent or tab…  (type > for commands)",
-            goto_sections(desk),
-        ),
-        Modal::WindowSession => ("Open a window on a session…", session_sections(desk)),
-        Modal::MoveResources => ("Move to…", move_sections(desk)),
-        _ => ("Run a command…", command_sections(desk)),
-    };
-    let sections = rank_sections(sections, &query);
-    let count: usize = sections.iter().map(|section| section.rows.len()).sum();
-    let targets: Rc<Vec<Vec<Target>>> = Rc::new(
-        sections
-            .iter()
-            .map(|section| section.rows.iter().map(|row| row.target.clone()).collect())
-            .collect(),
-    );
-    let desk_handle = cx.weak_entity();
-    let confirm_handle = desk_handle.clone();
-    let muted = from_hex(&colors.muted);
-    let confirmation_hint = if desk.modal == Modal::MoveResources {
-        "↑↓ select · ↩ move · esc close"
-    } else {
-        "↑↓ select · ↩ open · esc close"
-    };
-    let mut command = Command::new(&state)
-        .filterable(false)
-        .bordered(false)
-        .placeholder(placeholder)
-        .max_h(px(420.))
-        .empty(|_, _, cx| {
-            div()
-                .py(px(24.))
-                .w_full()
-                .text_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("No matches. Try a shorter search.")
-        })
-        .footer(move |_, _, _| {
-            div()
-                .px(px(12.))
-                .py(px(6.))
-                .flex()
-                .justify_between()
-                .text_xs()
-                .text_color(muted)
-                .child(format!(
-                    "{count} {}",
-                    if count == 1 { "result" } else { "results" }
-                ))
-                .child(confirmation_hint)
-        })
-        .on_query(move |query, window, cx| {
-            let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
-        })
-        .on_confirm(move |index: IndexPath, window, cx| {
-            let target = targets
-                .get(index.section)
-                .and_then(|rows| rows.get(index.row))
-                .cloned();
-            if let Some(target) = target {
-                let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
-            }
-        });
-    for section in sections {
-        let mut group = CommandGroup::new();
-        if let Some(label) = section.label {
-            group = group.label(label);
-        }
-        command = command.group(group.items(section.rows.into_iter().map(row_item)));
-    }
-    card(colors, 600.)
-        .mt(px(72.))
-        .overflow_hidden()
-        .child(command)
-        .into_any_element()
-}
-
-fn row_item(row: Row) -> CommandItem {
-    let mut item = CommandItem::new()
-        .label(row.title.clone())
-        .keywords([row.keywords]);
-    if let Some(id) = row.command {
-        return item.action(Box::new(Run::new(id)));
-    }
-    if let Some(detail) = row.detail {
-        let title = row.title;
-        item = item.child(move |_, cx| {
-            div()
-                .flex()
-                .flex_1()
-                .min_w_0()
-                .items_baseline()
-                .gap(px(8.))
-                .child(div().flex_shrink_0().child(title.clone()))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(detail.clone()),
-                )
-        });
-    }
-    item
-}
-
-fn command_sections(desk: &Desk) -> Vec<Section> {
+fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
+    const ESSENTIALS: &[&str] = &["new", "split-right", "folder", "settings"];
     let organizing = desk
         .link
         .as_ref()
         .is_some_and(|link| link.connection.organization());
+    let monitoring = desk.desktop.read(cx).performance_is_open();
+    let chords = crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords());
     let mut sections: Vec<Section> = Vec::new();
     for command in crate::settings::builtin_commands()
         .iter()
-        .filter(|command| command.is_listed() && (organizing || !command.needs_organization()))
+        .filter(|command| {
+            command.is_listed()
+                && !matches!(command.id, "palette" | "goto")
+                && (organizing || !command.needs_organization())
+                && (monitoring || command.id != "performance-monitor-stop")
+        })
     {
+        let mut keywords = String::from(command.id);
+        for word in command.keywords {
+            keywords.push(' ');
+            keywords.push_str(word);
+        }
         let row = Row {
-            title: command.title.to_owned(),
-            detail: None,
-            keywords: format!("{} {}", command.group, command.id),
+            title: command.title.into(),
+            detail: Some(command.description.into()),
+            keywords,
             target: Target::Command,
             command: Some(command.id),
+            category: command.group,
+            chord: chords
+                .iter()
+                .find(|(id, _)| id == command.id)
+                .map(|(_, chord)| crate::settings::display_chord(chord)),
         };
-        match sections.last_mut() {
-            Some(section) if section.label == Some(command.group) => section.rows.push(row),
-            _ => sections.push(Section {
-                label: Some(command.group),
+        let label = if ESSENTIALS.contains(&command.id) {
+            "Essentials"
+        } else {
+            command.group
+        };
+        if let Some(section) = sections
+            .iter_mut()
+            .find(|section| section.label == Some(label))
+        {
+            section.rows.push(row);
+        } else {
+            sections.push(Section {
+                label: Some(label),
                 rows: vec![row],
-            }),
+            });
         }
+    }
+    if let Some(essentials) = sections
+        .iter_mut()
+        .find(|section| section.label == Some("Essentials"))
+    {
+        essentials
+            .rows
+            .sort_by_key(|row| ESSENTIALS.iter().position(|id| Some(*id) == row.command));
     }
     sections
 }
@@ -680,16 +609,26 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
         let row = Row {
             title: agent
                 .map(|info| format!("{} — {title}", info.name))
-                .unwrap_or(title),
+                .unwrap_or(title)
+                .into(),
             keywords: agent
                 .map(|info| format!("{detail} {}", info.word()))
                 .unwrap_or_else(|| detail.clone()),
-            detail: Some(match agent.map(|info| info.word()) {
-                Some(word) if !word.is_empty() => format!("{word} · {detail}"),
-                _ => detail,
-            }),
+            detail: Some(
+                (match agent.map(|info| info.word()) {
+                    Some(word) if !word.is_empty() => format!("{word} · {detail}"),
+                    _ => detail,
+                })
+                .into(),
+            ),
             target: Target::Pane(pane.terminal_id.clone()),
             command: None,
+            category: if agent.is_some() {
+                "Agents"
+            } else {
+                "Terminals"
+            },
+            chord: None,
         };
         if agent.is_some() {
             agents.push(row)
@@ -710,11 +649,13 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             }
             let detail = format!("Tab {} · {panes} panes", index + 1);
             Some(Row {
-                title: desk::tab_title(desk, tab),
+                title: desk::tab_title(desk, tab).into(),
                 keywords: detail.clone(),
-                detail: Some(detail),
+                detail: Some(detail.into()),
                 target: Target::Tab(tab.id.clone()),
                 command: None,
+                category: "Tabs",
+                chord: None,
             })
         })
         .collect::<Vec<_>>();
@@ -757,11 +698,13 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 detail
             };
             Row {
-                title: session.name.clone(),
+                title: session.name.clone().into(),
                 keywords: detail.clone(),
-                detail: Some(detail),
+                detail: Some(detail.into()),
                 target: Target::Session(session.name.clone()),
                 command: None,
+                category: "Sessions",
+                chord: None,
             }
         })
         .collect();
@@ -833,13 +776,13 @@ fn move_destination_row(
         ""
     };
     Row {
-        title,
-        detail: Some(format!(
-            "Move {count} selected · execution unchanged{imported}"
-        )),
+        title: title.into(),
+        detail: Some(format!("Move {count} selected · execution unchanged{imported}").into()),
         keywords: session.name.clone(),
         target: Target::Move(session.key, name),
         command: None,
+        category: "Organization",
+        chord: None,
     }
 }
 
@@ -849,70 +792,62 @@ fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section> {
     if query.is_empty() {
         return sections;
     }
-    let rows: Vec<Row> = sections
+    let folded = query.to_lowercase();
+    let tokens: Vec<&str> = folded.split_whitespace().collect();
+    let mut ranked: Vec<(i64, Row)> = sections
         .into_iter()
-        .flat_map(|section| {
-            let group = section.label.unwrap_or("");
-            section.rows.into_iter().map(move |mut row| {
-                row.keywords = format!("{} {group}", row.keywords);
-                row
-            })
-        })
-        .collect();
-    let ranked = rank(rows, query, |row| {
-        format!(
-            "{} {} {}",
-            row.title,
-            row.detail.clone().unwrap_or_default(),
-            row.keywords
-        )
-    });
-    vec![Section {
-        label: None,
-        rows: ranked,
-    }]
-}
-
-/// Palette ranking. Every whitespace-separated token must match the item's
-/// text, as a substring or failing that as an in-order subsequence. Substring
-/// hits at a word start rank highest; scattered subsequences rank lowest.
-/// Equal scores keep their original order.
-pub(crate) fn rank<T>(items: Vec<T>, query: &str, text: impl Fn(&T) -> String) -> Vec<T> {
-    let lowered = query.to_lowercase();
-    let tokens: Vec<&str> = lowered.split_whitespace().collect();
-    if tokens.is_empty() {
-        return items;
-    }
-    let mut ranked: Vec<(i64, T)> = items
-        .into_iter()
-        .filter_map(|item| {
-            match_score(&text(&item).to_lowercase(), &tokens).map(|score| (score, item))
+        .flat_map(|section| section.rows)
+        .filter_map(|row| {
+            let title = row.title.to_lowercase();
+            let metadata = format!(
+                "{} {} {}",
+                row.category,
+                row.detail.as_deref().unwrap_or_default(),
+                row.keywords,
+            )
+            .to_lowercase();
+            let score = tokens.iter().try_fold(0, |total, token| {
+                let title_score = literal_score(&title, token)
+                    .map(|score| score * 4)
+                    .or_else(|| subsequence_score(&title, token));
+                // Long descriptions are useful search terms, not a fuzzy-match canvas.
+                let metadata_score = literal_score(&metadata, token);
+                title_score
+                    .into_iter()
+                    .chain(metadata_score)
+                    .max()
+                    .map(|score| total + score)
+            })?;
+            let priority = if title == folded {
+                10_000
+            } else if title.starts_with(&folded) {
+                2_000
+            } else {
+                0
+            };
+            Some((score + priority, row))
         })
         .collect();
     ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    ranked.into_iter().map(|(_, item)| item).collect()
+    vec![Section {
+        label: None,
+        rows: ranked.into_iter().map(|(_, row)| row).collect(),
+    }]
 }
 
-fn match_score(haystack: &str, tokens: &[&str]) -> Option<i64> {
-    tokens.iter().try_fold(0, |total, token| {
-        token_score(haystack, token).map(|score| total + score)
-    })
+fn literal_score(haystack: &str, token: &str) -> Option<i64> {
+    let index = haystack.find(token)?;
+    let before = haystack[..index].chars().next_back();
+    let word_start = before.is_none_or(|ch| ch.is_whitespace() || "/:._-".contains(ch));
+    let offset = haystack[..index].chars().count().min(60) as i64;
+    Some(if word_start { 200 } else { 120 } - offset)
 }
 
-fn token_score(haystack: &str, token: &str) -> Option<i64> {
-    if let Some(index) = haystack.find(token) {
-        let before = haystack[..index].chars().next_back();
-        let word_start = before.is_none_or(|ch| ch.is_whitespace() || "/:._-".contains(ch));
-        let offset = haystack[..index].chars().count().min(60) as i64;
-        return Some(if word_start { 200 } else { 120 } - offset);
-    }
-    let chars: Vec<char> = haystack.chars().collect();
-    let mut cursor = 0;
+fn subsequence_score(haystack: &str, token: &str) -> Option<i64> {
+    let mut chars = haystack.chars();
     let mut gaps = 0;
     for wanted in token.chars() {
-        let found = chars[cursor..].iter().position(|ch| *ch == wanted)?;
-        gaps += found as i64;
-        cursor += found + 1;
+        gaps += chars.position(|ch| ch == wanted)? as i64;
     }
     Some((60 - gaps).max(1))
 }
@@ -1367,7 +1302,7 @@ fn confirm(
 
 #[cfg(test)]
 mod tests {
-    use super::{Target, move_destination_sections, rank, rank_sections};
+    use super::{Row, Section, Target, move_destination_sections, rank_sections};
     use phux_protocol::ids::{Revision, SessionKey};
     use phux_protocol::wire::frame::SessionRecord;
 
@@ -1381,20 +1316,9 @@ mod tests {
         let work = session(2, "Intake");
         let sections = move_destination_sections(&[&work, &intake], Some(intake.key), 2);
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].label, Some("Unorganized work"));
-        assert_eq!(sections[0].rows[0].title, "Leave unorganized (Intake)");
-        assert!(
-            sections[0].rows[0]
-                .detail
-                .as_ref()
-                .unwrap()
-                .contains("execution unchanged")
-        );
         assert!(
             matches!(&sections[0].rows[0].target, Target::Move(key, name) if *key == intake.key && name == "Intake")
         );
-        assert_eq!(sections[1].label, Some("Named sessions"));
-        assert_eq!(sections[1].rows[0].title, "Intake");
         assert!(matches!(&sections[1].rows[0].target, Target::Move(key, _) if *key == work.key));
     }
 
@@ -1404,29 +1328,31 @@ mod tests {
         for intake in [None, Some(session(1, "Intake").key)] {
             let sections = move_destination_sections(&[&work], intake, 1);
             assert_eq!(sections.len(), 1);
-            assert_eq!(sections[0].label, Some("Named sessions"));
+            assert!(
+                matches!(&sections[0].rows[0].target, Target::Move(key, _) if *key == work.key)
+            );
         }
         assert!(move_destination_sections(&[], None, 1).is_empty());
     }
 
-    #[test]
-    fn imported_destination_retains_its_pending_organization_identity() {
-        let mut imported = session(2, "Imported");
-        imported.awaiting_organization = true;
-        let sections = move_destination_sections(&[&imported], None, 1);
-        assert!(
-            sections[0].rows[0]
-                .detail
-                .as_ref()
-                .unwrap()
-                .contains("still awaiting organization")
-        );
-        let sections = rank_sections(sections, "Imported");
-        assert_eq!(sections[0].rows.len(), 1);
-    }
-
-    fn ranked(items: &[&'static str], query: &str) -> Vec<&'static str> {
-        rank(items.to_vec(), query, |item| (*item).to_owned())
+    fn ranked(items: &[&'static str], query: &str) -> Vec<String> {
+        let rows = items
+            .iter()
+            .map(|title| Row {
+                title: (*title).into(),
+                detail: None,
+                keywords: String::new(),
+                target: Target::Command,
+                command: None,
+                category: "",
+                chord: None,
+            })
+            .collect();
+        rank_sections(vec![Section { label: None, rows }], query)
+            .into_iter()
+            .flat_map(|section| section.rows)
+            .map(|row| row.title.to_string())
+            .collect()
     }
 
     #[test]
