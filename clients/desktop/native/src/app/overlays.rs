@@ -23,6 +23,7 @@ use crate::settings::theme::Palette;
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 
+mod goto_facts;
 mod goto_filter;
 mod launcher;
 
@@ -603,6 +604,9 @@ struct Row {
     chord: Option<String>,
     /// Agent badge, when this row is one. State chips read its predicates.
     agent: Option<AgentInfo>,
+    /// Passive metadata card. Absent for commands and for a row with nothing
+    /// to show. Highlighting reads this; it does not open the terminal.
+    preview: Option<goto_facts::FactsCard>,
 }
 
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
@@ -640,6 +644,7 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
                 .find(|(id, _)| id == command.id)
                 .map(|(_, chord)| crate::settings::display_chord(chord)),
             agent: None,
+            preview: None,
         };
         let label = if ESSENTIALS.contains(&command.id) {
             "Essentials"
@@ -678,11 +683,19 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
     for pane in link.connection.panes() {
         let agent = link.connection.agents.get(&pane.terminal_id);
         let title = desk.pane_title(Some(&pane.terminal_id));
-        let detail = format!(
-            "{} · {}",
-            pane.session_name,
-            desk::short_path(pane.cwd.clone())
-        );
+        let directory = desk::short_path(pane.cwd.clone());
+        let detail = format!("{} · {directory}", pane.session_name);
+        let card_title = agent
+            .map(|info| info.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| title.clone());
+        let preview = goto_facts::facts_card(Some(&goto_facts::GotoSubject::Pane {
+            title: card_title,
+            agent: agent.cloned(),
+            session: pane.session_name.clone(),
+            directory,
+            tab: tab_label(desk, &pane.terminal_id),
+        }));
         let row = Row {
             title: agent
                 .map(|info| format!("{} — {title}", info.name))
@@ -707,6 +720,7 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             },
             chord: None,
             agent: agent.cloned(),
+            preview,
         };
         if agent.is_some() {
             agents.push(row)
@@ -721,13 +735,18 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
         .iter()
         .enumerate()
         .filter_map(|(index, tab)| {
-            let panes = crate::workspace::layout::placements(&tab.root).len();
-            if panes < 2 {
+            let placed = crate::workspace::layout::placements(&tab.root);
+            if placed.len() < 2 {
                 return None;
             }
-            let detail = format!("Tab {} · {panes} panes", index + 1);
+            let detail = format!("Tab {} · {} panes", index + 1, placed.len());
+            let title = desk::tab_title(desk, tab);
+            let panes = placed
+                .into_iter()
+                .filter_map(|placement| tab_pane(desk, placement))
+                .collect();
             Some(Row {
-                title: desk::tab_title(desk, tab).into(),
+                title: title.clone().into(),
                 keywords: detail.clone(),
                 detail: Some(detail.into()),
                 target: Target::Tab(tab.id.clone()),
@@ -735,6 +754,10 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 category: "Tabs",
                 chord: None,
                 agent: None,
+                preview: goto_facts::facts_card(Some(&goto_facts::GotoSubject::Tab {
+                    title,
+                    panes,
+                })),
             })
         })
         .collect::<Vec<_>>();
@@ -785,6 +808,7 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 category: "Sessions",
                 chord: None,
                 agent: None,
+                preview: None,
             }
         })
         .collect();
@@ -864,7 +888,42 @@ fn move_destination_row(
         category: "Organization",
         chord: None,
         agent: None,
+        preview: None,
     }
+}
+
+/// The tab that shows `terminal`, by the same title the tab row uses.
+fn tab_label(desk: &Desk, terminal: &ResourceId) -> Option<String> {
+    let link = desk.link.as_ref()?;
+    let tab = link.workspace.tabs.iter().find(|tab| {
+        crate::workspace::layout::placements(&tab.root)
+            .iter()
+            .any(|placement| placement.terminal_id.as_ref() == Some(terminal))
+    })?;
+    Some(desk::tab_title(desk, tab))
+}
+
+/// One pane on a tab card: the agent name and its state word, or the terminal
+/// title and its directory. Layout metadata only.
+fn tab_pane(
+    desk: &Desk,
+    placement: &crate::workspace::layout::Placement,
+) -> Option<goto_facts::Fact> {
+    let id = placement.terminal_id.as_ref()?;
+    let link = desk.link.as_ref()?;
+    let pane = link.connection.pane(id)?;
+    let agent = link.connection.agents.get(id);
+    let name = agent
+        .map(|info| info.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| desk.pane_title(Some(id)));
+    let detail = agent
+        .and_then(|info| {
+            let word = info.word();
+            (!word.is_empty()).then(|| word.to_owned())
+        })
+        .unwrap_or_else(|| desk::short_path(pane.cwd.clone()));
+    Some(goto_facts::Fact::new(name, detail))
 }
 
 fn filter_sections(mut sections: Vec<Section>, filter: goto_filter::GotoFilter) -> Vec<Section> {
@@ -1473,6 +1532,7 @@ mod tests {
                 category: "",
                 chord: None,
                 agent: None,
+                preview: None,
             })
             .collect();
         rank_sections(vec![Section { label: None, rows }], query)
@@ -1532,6 +1592,7 @@ mod tests {
             category: "Agents",
             chord: None,
             agent: state.map(agent),
+            preview: None,
         }
     }
 
@@ -1601,5 +1662,57 @@ mod tests {
             &shown[0].rows[0].target,
             Target::Pane(id) if *id == phux_protocol::ResourceId::local(3)
         ));
+    }
+
+    #[test]
+    fn a_filter_keeps_the_highlighted_rows_facts_and_drops_a_hidden_card() {
+        use super::goto_facts::{GotoSubject, facts_card};
+        use crate::connection::AgentState;
+
+        let card = facts_card(Some(&GotoSubject::Pane {
+            title: "Worker".into(),
+            agent: Some(agent(AgentState::Working)),
+            session: "work".into(),
+            directory: "~/repo".into(),
+            tab: None,
+        }))
+        .expect("highlighted worker has a card");
+        let mut worker = goto_row("Worker", Some(AgentState::Working), 2);
+        worker.preview = Some(card.clone());
+        let sections = vec![Section {
+            label: Some("Agents"),
+            rows: vec![worker, goto_row("Idle", Some(AgentState::Idle), 3)],
+        }];
+        let ranked = rank_sections(filter_sections(sections, GotoFilter::Working), "work");
+        let shown = ranked[0].rows[0]
+            .preview
+            .as_ref()
+            .expect("card follows the row");
+        assert_eq!(shown, &card);
+        assert_eq!(
+            shown
+                .facts
+                .iter()
+                .map(|fact| (fact.name.as_str(), fact.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Status", "working"),
+                ("Directory", "~/repo"),
+                ("Session", "work"),
+            ]
+        );
+
+        let hidden = rank_sections(
+            filter_sections(
+                vec![Section {
+                    label: Some("Agents"),
+                    rows: vec![goto_row("Idle", Some(AgentState::Idle), 3)],
+                }],
+                GotoFilter::Working,
+            ),
+            "",
+        );
+        assert!(hidden.is_empty(), "a hidden row takes its card with it");
+        assert!(facts_card(None).is_none());
     }
 }

@@ -18,11 +18,18 @@ use crate::app::color::from_hex;
 use crate::app::desk::{Desk, Modal};
 use crate::settings::theme::Palette;
 
+use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
 use super::{
     Row, Target, command_sections, filter_sections, goto_sections, move_sections, rank_sections,
     session_sections,
 };
+
+/// Narrowest window, less its margins, that fits the list and the facts card.
+/// A narrower window shows the list alone.
+const FACTS_MIN_ROOM: f32 = 840.;
+/// Width of the metadata card beside the Go To list.
+const FACTS_COLUMN: f32 = 280.;
 
 pub(super) fn palette(
     desk: &mut Desk,
@@ -95,16 +102,35 @@ pub(super) fn palette(
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
     let height = (viewport.height.as_f32() - top - 24.).clamp(180., 536.);
-    let width = (viewport.width.as_f32() - 32.).clamp(0., 720.);
-    let compact = width < 560.;
+    let room = (viewport.width.as_f32() - 32.).max(0.);
+    let list_width = room.min(720.);
     let selected = state
         .read(cx)
         .selected_index()
         .or_else(|| (count > 0).then_some(IndexPath::new(0).section(0)));
+    // The card is the highlighted row's metadata. Selection only refreshes
+    // this presentation; confirm is what opens the session.
+    let preview = if desk.modal == Modal::Goto {
+        selected.and_then(|index| {
+            sections
+                .get(index.section)
+                .and_then(|section| section.rows.get(index.row))
+                .and_then(|row| row.preview.clone())
+        })
+    } else {
+        None
+    };
+    let show_facts = preview.is_some() && room >= FACTS_MIN_ROOM;
+    let width = if show_facts {
+        room.min(list_width + FACTS_COLUMN)
+    } else {
+        list_width
+    };
+    let compact = (width - if show_facts { FACTS_COLUMN } else { 0. }) < 560.;
     let mut command = Command::new(&state)
         .filterable(false)
         .bordered(false)
-        .rounded(px(14.))
+        .rounded(px(if show_facts { 0. } else { 14. }))
         .h(px(height))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
@@ -207,7 +233,8 @@ pub(super) fn palette(
             let _ = query_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
         })
         .on_select(move |_, _, cx| {
-            // Kit remains the selection owner; refresh only its presentation.
+            // Kit remains the selection owner. Refresh the facts card only;
+            // highlighting does not acquire, resize, focus, or acknowledge.
             let _ = selection_handle.update(cx, |_, cx| cx.notify());
         })
         .on_confirm(move |index: IndexPath, window, cx| {
@@ -234,7 +261,7 @@ pub(super) fn palette(
             },
         )));
     }
-    div()
+    let panel = div()
         .id("palette-panel")
         .w(px(width))
         .mt(px(top))
@@ -256,9 +283,80 @@ pub(super) fn palette(
         }])
         .overflow_hidden()
         .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(command)
-        .into_any_element()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    let panel = if let Some(card) = preview.filter(|_| show_facts) {
+        panel.child(
+            div()
+                .flex()
+                .h(px(height))
+                .w_full()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(command),
+                )
+                .child(facts_column(card, &colors)),
+        )
+    } else {
+        panel.child(command)
+    };
+    panel.into_any_element()
+}
+
+fn facts_column(card: FactsCard, colors: &Palette) -> impl IntoElement {
+    div()
+        .debug_selector(|| "palette-facts".into())
+        .id("palette-facts")
+        .w(px(FACTS_COLUMN))
+        .h_full()
+        .flex_shrink_0()
+        .p(px(16.))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .border_l_1()
+        .border_color(from_hex(&colors.border))
+        .child(
+            div()
+                .truncate()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(from_hex(&colors.theme.foreground))
+                .child(card.title),
+        )
+        .children(card.facts.into_iter().map(|fact| {
+            div()
+                .flex()
+                .gap(px(12.))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(84.))
+                        .text_size(px(12.))
+                        .text_color(from_hex(&colors.muted))
+                        .child(fact.name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(from_hex(&colors.theme.foreground))
+                        .child(fact.value),
+                )
+        }))
+        .child(
+            div()
+                .pt(px(10.))
+                .text_size(px(11.))
+                .text_color(from_hex(&colors.muted))
+                .child("Press Enter to open."),
+        )
 }
 
 fn header(
