@@ -268,6 +268,103 @@ class BrowserRunnerTests(unittest.TestCase):
             browser.stop(process)
         process.wait.assert_called_once_with(timeout=5)
 
+    def _assert_scratch_sockets_fit(self, scratch, limit):
+        # Literals, not the runner's constants: a shorter budget must not
+        # silently satisfy this check. The created directory is the TMPDIR
+        # child processes inherit.
+        sockets = (
+            f"{scratch}/mbx-session-XXXXXXXX/cache-agent.sock",
+            f"{scratch}/phux-e2e-{'0' * 10}.sock",
+            f"{scratch}/phux-webdriver-{'x' * 8}",
+        )
+        for path in sockets:
+            self.assertLessEqual(len(os.fsencode(path)), limit, path)
+        self.assertIn("mbx-session-XXXXXXXX/cache-agent.sock", browser.NESTED_SOCKET_SUFFIXES)
+        self.assertIn("phux-e2e-" + "0" * 10 + ".sock", browser.NESTED_SOCKET_SUFFIXES)
+        self.assertIn("phux-webdriver-" + "x" * 8, browser.NESTED_SOCKET_SUFFIXES)
+        name = Path(scratch).name
+        self.assertTrue(name.startswith("phux-browser-"))
+        self.assertLessEqual(len(name) - len("phux-browser-"), browser.TEMP_NAME_RANDOM)
+
+    def test_macos_long_tmpdir_scratch_keeps_nested_sockets_under_darwin_limit(self):
+        # A real macOS user temp directory: /var/folders/<2>/<30>/T.
+        long_tmp = "/var/folders/3m/8h8q2n1d4c5b6a7z8y9x0w1v2u3t4s/T"
+        naive = f"{long_tmp}/phux-browser-{'x' * 8}/mbx-session-XXXXXXXX/cache-agent.sock"
+        self.assertGreater(len(os.fsencode(naive)), browser.DARWIN_SOCKET_PATH_MAX)
+
+        base = browser.browser_scratch_base({"TMPDIR": long_tmp}, platform="darwin")
+        self.assertEqual(base, "/tmp")
+        scratch_path = None
+        with browser.browser_scratch_dir(base) as scratch:
+            scratch_path = scratch
+            self.assertTrue(os.path.isdir(scratch))
+            self.assertEqual(Path(scratch).parent, Path("/tmp"))
+            self.assertFalse(str(scratch).startswith(long_tmp))
+            self._assert_scratch_sockets_fit(scratch, browser.DARWIN_SOCKET_PATH_MAX)
+        self.assertFalse(os.path.exists(scratch_path))
+
+    def test_linux_keeps_a_tmpdir_that_still_fits_its_own_limit(self):
+        # One byte past Darwin's limit still fits Linux. Hosted Linux CI
+        # must keep a TMPDIR in that window instead of moving it.
+        base = "/var/tmpdirs"
+        scratch = "phux-browser-" + "x" * 8
+        socket = "mbx-session-XXXXXXXX/cache-agent.sock"
+
+        def length(path):
+            return len(os.fsencode(f"{path}/{scratch}/{socket}"))
+
+        while length(base) <= browser.DARWIN_SOCKET_PATH_MAX:
+            base += "p"
+        self.assertLessEqual(length(base), browser.LINUX_SOCKET_PATH_MAX)
+        self.assertGreater(length(base), browser.DARWIN_SOCKET_PATH_MAX)
+        self.assertEqual(
+            browser.browser_scratch_base({"TMPDIR": base}, platform="linux"),
+            base,
+        )
+        self.assertEqual(
+            browser.browser_scratch_base({"TMPDIR": base}, platform="darwin"),
+            "/tmp",
+        )
+
+    def test_caller_short_tmpdir_is_the_scratch_parent(self):
+        with tempfile.TemporaryDirectory(prefix="phux-caller-", dir="/tmp") as caller:
+            base = browser.browser_scratch_base(
+                {"TMPDIR": caller},
+                platform="darwin",
+                candidates=("/no/such/phux-short-base",),
+            )
+            self.assertEqual(base, caller)
+            with browser.browser_scratch_dir(base) as scratch:
+                self.assertEqual(Path(scratch).parent, Path(caller))
+                self._assert_scratch_sockets_fit(scratch, browser.DARWIN_SOCKET_PATH_MAX)
+
+    def test_unset_tmpdir_keeps_a_short_default(self):
+        default = tempfile.gettempdir()
+        for platform in ("linux", "darwin"):
+            chosen = browser.browser_scratch_base({}, platform=platform)
+            naive = f"{default}/phux-browser-{'x' * 8}/mbx-session-XXXXXXXX/cache-agent.sock"
+            if len(os.fsencode(naive)) <= browser.socket_path_max(platform):
+                self.assertEqual(chosen, default)
+            else:
+                self.assertNotEqual(chosen, default)
+            with browser.browser_scratch_dir(chosen) as scratch:
+                self._assert_scratch_sockets_fit(scratch, browser.socket_path_max(platform))
+
+    def test_no_short_scratch_base_names_the_socket_limit(self):
+        long_tmp = "/var/folders/xx/" + "y" * 30 + "/T"
+        with self.assertRaises(RuntimeError) as caught:
+            browser.browser_scratch_base(
+                {"TMPDIR": long_tmp},
+                platform="darwin",
+                candidates=("/no/such/phux-short-base",),
+            )
+        message = str(caught.exception)
+        self.assertIn("TMPDIR", message)
+        self.assertIn("/tmp", message)
+        self.assertIn(str(browser.DARWIN_SOCKET_PATH_MAX), message)
+        self.assertIn("mbx-session-XXXXXXXX/cache-agent.sock", message)
+        self.assertIn(long_tmp, message)
+
     def test_timeout_reaps_child(self):
         with tempfile.TemporaryDirectory() as scratch:
             pid_file = Path(scratch) / "pid"
