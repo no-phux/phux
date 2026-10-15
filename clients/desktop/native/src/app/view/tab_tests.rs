@@ -313,3 +313,48 @@ fn side_tabs_scroll_and_reorder_using_their_scrolled_positions(cx: &mut TestAppC
         "changing placement cancels the old-axis drag"
     );
 }
+
+#[gpui::test]
+fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(800.), px(360.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(12);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    run(&desk, "tabs-top", cx);
+    let hidden = cx.debug_bounds("tab-fixture-h").unwrap();
+    assert!(hidden.origin.x > px(800.));
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: point(px(300.), px(TITLEBAR / 2.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-420.), px(0.))),
+        ..Default::default()
+    });
+    draw(cx);
+    let g = cx.debug_bounds("tab-fixture-g").unwrap();
+    let h = cx.debug_bounds("tab-fixture-h").unwrap();
+    assert!(g.origin.x >= px(MENU_RAIL));
+    assert!(h.right() < px(800.), "scroll reveals the overflowed tabs");
+    cx.simulate_mouse_down(g.center(), MouseButton::Left, Modifiers::none());
+    draw(cx);
+    let target = point(h.right() - px(2.), h.center().y);
+    cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    assert_eq!(&ids(&desk, cx)[6..8], ["fixture-h", "fixture-g"]);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk
+            .link
+            .as_ref()
+            .unwrap()
+            .workspace
+            .active_id
+            .clone()),
+        "fixture-g"
+    );
+}
