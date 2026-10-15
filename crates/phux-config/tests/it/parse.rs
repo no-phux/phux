@@ -8,8 +8,7 @@ use phux_config::{
     parse_str,
 };
 
-mod common;
-use common::path;
+use crate::common::path;
 
 /// The canonical example from `docs/consumers/tui.md` §4.2.
 const CANONICAL: &str = r##"

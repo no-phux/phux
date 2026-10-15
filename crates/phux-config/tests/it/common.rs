@@ -1,7 +1,7 @@
 //! Shared helpers for the phux-config integration tests.
 //!
-//! Each test binary compiles its own copy of this module and uses only a
-//! subset of it, so unused items are expected.
+//! Shared by the modules of the `it` binary; not every helper has a caller
+//! in every build, so unused items are expected.
 
 #![allow(
     dead_code,
