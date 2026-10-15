@@ -26,17 +26,10 @@ use tokio::net::{UnixListener, UnixStream};
 const DEADLINE: Duration = Duration::from_secs(20);
 
 #[cfg(feature = "engine")]
-#[path = "support/idle_history.rs"]
-mod idle_history;
-
-#[cfg(feature = "engine")]
-#[path = "support/geometry_live.rs"]
 mod geometry_live;
-
-#[path = "support/roster_live.rs"]
+#[cfg(feature = "engine")]
+mod idle_history;
 mod roster_live;
-
-#[path = "support/scoped_live.rs"]
 mod scoped_live;
 
 fn options() -> ClientOptions {

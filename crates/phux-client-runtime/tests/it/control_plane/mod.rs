@@ -31,27 +31,14 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
-#[path = "support/embedded.rs"]
-mod embedded;
-use embedded::*;
+use crate::embedded::*;
 
-#[path = "support/geometry.rs"]
-mod geometry;
-
-#[path = "support/roster.rs"]
-mod roster;
-
-#[path = "support/recovery.rs"]
-mod recovery;
-
-#[path = "support/observation.rs"]
-mod observation;
-
-#[path = "support/views.rs"]
-mod views;
-
-#[path = "support/agent_sessions.rs"]
 mod agent_sessions;
+mod geometry;
+mod observation;
+mod recovery;
+mod roster;
+mod views;
 
 #[cfg(feature = "engine")]
 #[test]
