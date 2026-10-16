@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.82.0](https://github.com/no-phux/phux/compare/v0.81.0...v0.82.0) (2026-10-16)
+
+
+### Features
+
+* **desktop:** unify federated work and navigation ([#1470](https://github.com/no-phux/phux/issues/1470)) ([e65059d](https://github.com/no-phux/phux/commit/e65059d3a67a3b0d9f7850ca8e64047371bafc9b))
+
 ## [0.81.0](https://github.com/no-phux/phux/compare/v0.80.1...v0.81.0) (2026-10-16)
 
 
