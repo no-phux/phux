@@ -25,7 +25,7 @@ impl Destination {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Work {
     pub destination: Destination,
     pub id: u32,
@@ -77,28 +77,36 @@ impl Fleet {
         failures
     }
 
-    fn drain(&mut self, host: &Option<String>) {
+    /// Fold one host's activity into its work. True when the work or the
+    /// host's error changed.
+    fn drain(&mut self, host: &Option<String>) -> bool {
         let Some(observer) = self.observers.get_mut(host) else {
-            return;
+            return false;
         };
         let Some(connection) = observer.connection.as_mut() else {
-            return;
+            return false;
         };
         connection.drain();
-        let online = available(connection);
-        observer.error = connection.error.clone();
-        if online {
-            observer.last = work_on(connection, host.clone());
-            observer.error = None;
+        let (mut last, mut error) = (Vec::new(), connection.error.clone());
+        if available(connection) {
+            last = work_on(connection, host.clone());
+            error = None;
         } else {
-            for work in &mut observer.last {
+            last.clone_from(&observer.last);
+            for work in &mut last {
                 work.online = false;
             }
-            if connection.status.is_terminal() && observer.error.is_none() {
-                observer.error = Some("Disconnected. Retry to refresh this host.".into());
+            if connection.status.is_terminal() && error.is_none() {
+                error = Some("Disconnected. Retry to refresh this host.".into());
             }
         }
+        if observer.last == last && observer.error == error {
+            return false;
+        }
+        observer.last = last;
+        observer.error = error;
         self.revision = self.revision.wrapping_add(1);
+        true
     }
 }
 
@@ -118,53 +126,54 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
     let Some(topology) = connection.topology.as_ref() else {
         return Vec::new();
     };
-    let replica = connection.client.organization();
-    topology
-        .sessions
-        .iter()
-        .map(|session| {
-            let record = session.key.and_then(|key| replica.session(&key));
-            let project = record
-                .and_then(|record| {
-                    let id = attr(&record.attrs, "project.id")?;
-                    let name = attr(&record.attrs, "project.name").unwrap_or(id);
-                    Some((id.to_owned(), name.to_owned()))
-                })
-                .or_else(|| {
-                    connection
-                        .projects
-                        .get(&session.id)
-                        .map(|label| (format!("label:{label}"), label.clone()))
-                });
-            let panes: Vec<_> = connection
-                .panes()
-                .iter()
-                .filter(|pane| pane.session_id == session.id)
-                .collect();
-            Work {
-                destination: Destination {
-                    host: host.clone(),
-                    authority: topology.authority,
-                    key: session.key,
-                    name: session.name.clone(),
-                },
-                id: session.id,
-                project,
-                terminals: panes.len(),
-                needs_you: panes
-                    .iter()
-                    .filter(|pane| {
-                        connection
-                            .agents
-                            .get(&pane.terminal_id)
-                            .is_some_and(crate::connection::AgentInfo::needs_you)
+    connection.with_organization(|replica| {
+        topology
+            .sessions
+            .iter()
+            .map(|session| {
+                let record = session.key.and_then(|key| replica.session(&key));
+                let project = record
+                    .and_then(|record| {
+                        let id = attr(&record.attrs, "project.id")?;
+                        let name = attr(&record.attrs, "project.name").unwrap_or(id);
+                        Some((id.to_owned(), name.to_owned()))
                     })
-                    .count(),
-                intake: session.key.is_some() && session.key == topology.intake(),
-                online: available(connection),
-            }
-        })
-        .collect()
+                    .or_else(|| {
+                        connection
+                            .projects
+                            .get(&session.id)
+                            .map(|label| (format!("label:{label}"), label.clone()))
+                    });
+                let panes: Vec<_> = connection
+                    .panes()
+                    .iter()
+                    .filter(|pane| pane.session_id == session.id)
+                    .collect();
+                Work {
+                    destination: Destination {
+                        host: host.clone(),
+                        authority: topology.authority,
+                        key: session.key,
+                        name: session.name.clone(),
+                    },
+                    id: session.id,
+                    project,
+                    terminals: panes.len(),
+                    needs_you: panes
+                        .iter()
+                        .filter(|pane| {
+                            connection
+                                .agents
+                                .get(&pane.terminal_id)
+                                .is_some_and(crate::connection::AgentInfo::needs_you)
+                        })
+                        .count(),
+                    intake: session.key.is_some() && session.key == topology.intake(),
+                    online: available(connection),
+                }
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -211,8 +220,9 @@ impl Desk {
                         while rx.recv().await.is_ok() {
                             if desk
                                 .update(cx, |desk, cx| {
-                                    desk.fleet.drain(&source);
-                                    cx.notify();
+                                    if desk.fleet.drain(&source) {
+                                        cx.notify();
+                                    }
                                 })
                                 .is_err()
                             {
