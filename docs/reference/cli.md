@@ -99,8 +99,7 @@ More:
   completion    Print a shell completion script
 
 Flags:
-      --rec <PATH>            Record this session to PATH (.cast, .gif, or
-                              .apng)
+      --rec <PATH>            Record this session (.cast, .gif, or .apng)
       --rec-format <FMT>      Recording format, overriding PATH's extension
                               [possible values: cast, gif, apng]
       --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
@@ -1021,8 +1020,7 @@ Attach role:
                                   stays attached. `phux give` hands it back.
 
 Recording:
-      --rec <PATH>                Record this session to PATH (.cast, .gif, or
-                                  .apng)
+      --rec <PATH>                Record this session (.cast, .gif, or .apng)
       --rec-format <FMT>          Recording format, overriding PATH's extension
                                   [possible values: cast, gif, apng]
 

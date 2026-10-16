@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # Module structure

@@ -139,7 +139,7 @@ pub(crate) enum RecFormat {
 /// instead of by a runtime rejection. Headless capture is `phux rec`.
 #[derive(Debug, Args)]
 pub(crate) struct RecOpts {
-    /// Record this session to PATH (.cast, .gif, or .apng)
+    /// Record this session (.cast, .gif, or .apng)
     // Headless capture of one pane is `phux rec`, which is where the
     // format prose lives; the naked attach and `phux attach` keep one line.
     #[usage(long = "rec", value_name = "PATH")]
