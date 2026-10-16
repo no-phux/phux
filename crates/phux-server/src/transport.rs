@@ -397,7 +397,33 @@ fn peer_identity_from_uds(stream: &tokio::net::UnixStream) -> io::Result<PeerIde
     if status != 0 {
         return Err(io::Error::last_os_error());
     }
-    peer_identity_from_credentials(Ok((uid, None)))
+    let mut pid: libc::pid_t = 0;
+    let mut length = u32::try_from(std::mem::size_of::<libc::pid_t>())
+        .map_err(|_| io::Error::other("peer PID credential size is not representable"))?;
+    // SAFETY: the socket is live; the output pointer and length describe one
+    // writable pid_t. LOCAL_PEERPID is kernel-attested, not supplied in HELLO.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &raw mut length,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if usize::try_from(length).ok() != Some(std::mem::size_of::<libc::pid_t>()) {
+        return Err(io::Error::other(
+            "kernel returned an invalid peer PID credential size",
+        ));
+    }
+    let pid = u32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| io::Error::other("kernel returned an invalid peer PID"))?;
+    peer_identity_from_credentials(Ok((uid, Some(pid))))
 }
 
 /// Reject UDS transports on targets without an authenticated peer credential API.
@@ -2015,6 +2041,21 @@ mod tests {
             "reserved {} bytes for a 4-byte header",
             reader.frames.buf.capacity()
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn uds_peer_identity_contains_kernel_attested_process_id() {
+        let directory = tempfile::tempdir().expect("private socket directory");
+        let socket = directory.path().join("peer.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind socket");
+        let _client = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("connect socket");
+        let (stream, _) = listener.accept().await.expect("accept socket");
+        let peer = peer_identity_from_uds(&stream).expect("kernel peer credentials");
+        assert_eq!(peer.uid, rustix::process::geteuid().as_raw());
+        assert_eq!(peer.pid, Some(std::process::id()));
     }
 
     #[test]

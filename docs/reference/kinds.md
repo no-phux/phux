@@ -179,10 +179,13 @@ The kind's facet.
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
 | `APPEND_RESOURCE_OUTPUT` | command `0x1a` | BIND, INPUT | yes | `resource_kinds` | shipped |
+| `NATIVE_AGENT` | command `0x38` | CREATE, BIND, INPUT | yes | none | shipped |
 
 ### Events
 
-None.
+| Event | Tag |
+|---|---|
+| `native_agent_result` | `0x1c` |
 
 ### Resource metadata keys
 
@@ -268,6 +271,9 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_PERF { reset: false }` | OBSERVE | `Global { owner_uds_only: false }` |
 | `GET_PERF { reset: true }` | OBSERVE+BIND | `Global { owner_uds_only: false }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
+| `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
+| `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
+| `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
 | `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
 | `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |

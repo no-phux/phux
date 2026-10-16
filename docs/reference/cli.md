@@ -139,6 +139,8 @@ Commands:
   list              List every pane's detected or declared agent and current
                     state. [aliases: ls]
   log               Read a pane's agent session stream.
+  native-command    Send a typed SDK intent to the exact `AgentSession` and
+                    activation.
   prompt            Hand an agent a turn's worth of work, with a delivery
                     receipt.
   report-state      Report hook-sourced lifecycle evidence to the pane's
@@ -362,6 +364,34 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent native-command`
+
+```text
+Send a typed SDK intent to the exact `AgentSession` and activation.
+
+This never pastes, sends keys, takes another viewer's lease, or assumes that a
+queued dialog response was consumed.
+
+Usage: phux agent native-command <FLAGS> <TARGET>
+
+Arguments:
+  <TARGET>  `AgentSession` resource @N, not its parent Terminal.
+
+Flags:
+      --activation <ACTIVATION>   Exact native activation from the session's
+                                  structured view.
+      --operation-id <OPERATION_ID>  Nonzero command identity; retain it when
+                                  querying an uncertain result.
+      --intent <INTENT>           `NativeIntent` JSON: prompt, interrupt or
+                                  answer with exact IDs.
+      --json                      Emit the actual command receipt as JSON.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux agent prompt`
@@ -1807,33 +1837,37 @@ Arguments:
   [EXTRA]…       Extra arguments appended to the agent command, after `--`.
 
 Flags:
-      --list              List launchable integrations from enabled plugins and
-                          exit.
-      --print             Resolve and print the launch argv (and cwd) without
-                          spawning a pane — a server-free dry run.
-      --json              Emit stable, versioned JSON on stdout instead of the
-                          human view. On failure, stdout stays empty and stderr
-                          carries one JSON error object.
-      --target <TARGET>   Existing local pane beside which to place the launched
-                          pane.
-      --split <SPLIT>     Split axis for explicit placement (requires
-                          `--target`).
-                          [possible values: horizontal, h, vertical, v]
-                          (default: horizontal)
-      --ratio <RATIO>     Fraction of the split retained by TARGET (requires
-                          `--target`).
-                          (default: 0.5)
-      --projection <KEY>  Named projection to place into instead of the shared
-                          default (requires `--target`). Must be
-                          `<prefix>.layout/v1/<session-id>` for TARGET's
-                          session.
-  -c, --cwd <DIR>         Working directory for a `working_directory =
-                          "workspace"` template. Defaults to the current
-                          directory.
-  -h, --help              Print help
+      --list               List launchable integrations from enabled plugins and
+                           exit.
+      --print              Resolve and print the launch argv (and cwd) without
+                           spawning a pane — a server-free dry run.
+      --acp                Use the integration's declared ACP agent, never
+                           terminal input.
+      --session <SESSION>  Existing session that owns a native agent and its
+                           guardian.
+      --json               Emit stable, versioned JSON on stdout instead of the
+                           human view. On failure, stdout stays empty and stderr
+                           carries one JSON error object.
+      --target <TARGET>    Existing local pane beside which to place the
+                           launched pane.
+      --split <SPLIT>      Split axis for explicit placement (requires
+                           `--target`).
+                           [possible values: horizontal, h, vertical, v]
+                           (default: horizontal)
+      --ratio <RATIO>      Fraction of the split retained by TARGET (requires
+                           `--target`).
+                           (default: 0.5)
+      --projection <KEY>   Named projection to place into instead of the shared
+                           default (requires `--target`). Must be
+                           `<prefix>.layout/v1/<session-id>` for TARGET's
+                           session.
+  -c, --cwd <DIR>          Working directory for a `working_directory =
+                           "workspace"` template. Defaults to the current
+                           directory.
+  -h, --help               Print help
 
 Global flags:
-      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux logs`
@@ -2914,7 +2948,7 @@ inside git, the checkout root is used. An unapproved recipe is shown and must be
 approved at the terminal; without a terminal, or with `--json`, it is refused
 (exit 2) until `phux project trust`. No recipe opens one shell at the root.
 
-Usage: phux project open [--json] [TARGET]
+Usage: phux project open [--json] [--prefer-native] [TARGET]
 
 Arguments:
   [TARGET]  Project name or directory.
@@ -2923,6 +2957,9 @@ Flags:
       --json           Build the session without attaching and print a stable
                        JSON document: project, path, session, whether it was
                        created now, and the seed pane's `terminal_id`.
+      --prefer-native  Use declared native SDK integrations when the trusted
+                       recipe names them explicitly; raw terminal commands
+                       remain terminal commands.
   -h, --help           Print help
 
 Global flags:

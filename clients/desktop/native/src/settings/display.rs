@@ -4,6 +4,27 @@
 use super::theme::{default_theme_id, themes};
 use serde_json::{Map, Value};
 
+/// Placement of the workspace tabs, independent of navigator visibility.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TabPosition {
+    /// Compact horizontal tabs in the titlebar.
+    #[default]
+    Top,
+    /// Scrollable vertical tabs beside the workspace.
+    Side,
+}
+
+impl TabPosition {
+    /// Stable JSON value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Side => "side",
+        }
+    }
+}
+
 /// What the window paints and which chords it keeps.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayPrefs {
@@ -21,6 +42,8 @@ pub struct DisplayPrefs {
     pub sidebar_visible: bool,
     /// Sidebar width in points.
     pub sidebar_width: f64,
+    /// Workspace tab placement.
+    pub tab_position: TabPosition,
     /// Agent notifications.
     pub notifications: bool,
     /// Cell width multiplier.
@@ -50,6 +73,7 @@ pub fn default_display() -> DisplayPrefs {
         theme_id: default_theme_id().to_owned(),
         sidebar_visible: true,
         sidebar_width: 248.0,
+        tab_position: TabPosition::Top,
         notifications: true,
         cell_width: 1.0,
         cell_height: 1.0,
@@ -108,6 +132,7 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
             SIDEBAR_MIN,
             SIDEBAR_MAX,
         ),
+        tab_position: display.tab_position,
         notifications: display.notifications,
         cell_width: clamp(round_to(finite(display.cell_width, 1.0), 100.0), 0.5, 2.0),
         cell_height: clamp(round_to(finite(display.cell_height, 1.0), 100.0), 0.5, 2.0),
@@ -150,6 +175,10 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         theme_id: string(object, "themeId").unwrap_or(fallback.theme_id),
         sidebar_visible: object.get("sidebarVisible") != Some(&Value::Bool(false)),
         sidebar_width: number(object, "sidebarWidth").unwrap_or(fallback.sidebar_width),
+        tab_position: match object.get("tabPosition").and_then(Value::as_str) {
+            Some("side") => TabPosition::Side,
+            _ => TabPosition::Top,
+        },
         notifications: object.get("notifications") != Some(&Value::Bool(false)),
         cell_width: number(object, "cellWidth").unwrap_or(fallback.cell_width),
         cell_height: number(object, "cellHeight").unwrap_or(fallback.cell_height),
@@ -176,6 +205,10 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         Value::Bool(display.sidebar_visible),
     );
     object.insert("sidebarWidth".to_owned(), num(display.sidebar_width));
+    object.insert(
+        "tabPosition".to_owned(),
+        Value::String(display.tab_position.as_str().to_owned()),
+    );
     object.insert(
         "notifications".to_owned(),
         Value::Bool(display.notifications),
@@ -217,4 +250,45 @@ fn clamp(value: f64, low: f64, high: f64) -> f64 {
 
 fn round_to(value: f64, steps: f64) -> f64 {
     (value * steps).round() / steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tab_placement_round_trips_without_changing_other_preferences() {
+        for position in [TabPosition::Top, TabPosition::Side] {
+            let prefs = DisplayPrefs {
+                tab_position: position,
+                sidebar_visible: false,
+                sidebar_width: 320.,
+                font_size: 17.,
+                ..default_display()
+            };
+            let value = display_value(&prefs);
+            assert_eq!(value["tabPosition"], position.as_str());
+            assert_eq!(parse_display(&value), prefs);
+        }
+    }
+
+    #[test]
+    fn old_or_unrecognized_tab_placement_preserves_the_rest_of_the_display() {
+        for value in [
+            None,
+            Some(json!("bottom")),
+            Some(json!(null)),
+            Some(json!(42)),
+        ] {
+            let mut display = json!({"sidebarVisible": false, "fontSize": 18});
+            if let Some(value) = value {
+                display["tabPosition"] = value;
+            }
+            let parsed = parse_display(&display);
+            assert_eq!(parsed.tab_position, TabPosition::Top);
+            assert!(!parsed.sidebar_visible);
+            assert_eq!(parsed.font_size, 18.);
+        }
+    }
 }

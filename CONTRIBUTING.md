@@ -135,6 +135,12 @@ surfaces compile under `just lint` and `just doc` with `--all-features`.
 `just e2e` stays out of `just ci` because it spawns real PTY-backed servers
 with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 
+Real-PTY test harnesses set `PHUX_NO_UPDATE_CHECK=1` in the child environment,
+after scrubbing ambient variables or calling `env_clear()`. Private XDG state
+alone still permits the attach's background release lookup; its delayed update
+modal can consume a scripted keystroke. Keep this isolation local to test
+children, not the developer's release settings.
+
 ### Gates that are CI-only or local-only
 
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with

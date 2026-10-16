@@ -37,6 +37,9 @@ use phux_protocol::{
     },
 };
 
+#[path = "support/hub.rs"]
+mod hub;
+
 const BACKGROUND: [u8; 3] = [0x10, 0x14, 0x18];
 const FOREGROUND: [u8; 3] = [0xf4, 0xf4, 0xf4];
 const CURSOR: [u8; 3] = [0xff, 0x00, 0xaa];
@@ -1014,6 +1017,11 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
 /// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
 /// this binary's fixtures.
 const FIXTURES: &[(&str, fn(), bool)] = &[
+    (
+        "app::hub::navigation_and_settings_render",
+        hub::navigation_and_settings_render,
+        false,
+    ),
     (
         "terminal::pixels::glyphs_land_in_their_columns",
         glyphs_land_in_their_columns,

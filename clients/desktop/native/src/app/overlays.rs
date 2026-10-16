@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
-    Styled, Subscription, Window, div, px,
+    Styled, Subscription, Window, div, point, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -27,7 +27,7 @@ mod goto_facts;
 mod goto_filter;
 mod goto_frecency;
 mod goto_search;
-mod launcher;
+pub(crate) mod launcher;
 
 pub(crate) use goto_filter::GotoPalette;
 pub(crate) use goto_frecency::Store as GotoFrecency;
@@ -35,6 +35,13 @@ pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
 mod palette_tests;
+
+/// Transient disclosure state, reset whenever a palette opens.
+#[derive(Default)]
+pub(super) struct PaletteView {
+    all_commands: bool,
+    details: bool,
+}
 
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +63,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::WindowSession
         | Modal::MoveResources
         | Modal::Path => {
+            desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_loading(false, window, cx);
@@ -64,8 +72,12 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             });
         }
         Modal::Settings => {
-            super::settings_panel::prepare(desk, window, cx);
-            window.focus(&desk.focus, cx);
+            desk.settings_page = None;
+            let state = palette_state(desk, window, cx);
+            state.update(cx, |state, cx| {
+                state.set_query("", window, cx);
+                state.focus(window, cx);
+            });
         }
         Modal::Rename { tab_id } => {
             let current = desk
@@ -128,6 +140,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             target.update(cx, |input, cx| input.focus(window, cx));
         }
         Modal::KillSession { .. }
+        | Modal::NativeLaunch
         | Modal::Terminate { .. }
         | Modal::RemoveHost { .. }
         | Modal::Notifications => window.focus(&desk.focus, cx),
@@ -373,6 +386,19 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Work(destination) => {
+                self.close_modal(window, cx);
+                self.navigate_work(destination, cx);
+                self.after_command(window, cx);
+            }
+            Target::Setting(page) => {
+                self.modal = Modal::Settings;
+                self.settings_page = Some(page);
+                self.mark_prepared();
+                super::settings_panel::prepare(self, window, cx);
+                window.focus(&self.focus, cx);
+                cx.notify();
+            }
             Target::Move(key, name) => {
                 let selected = self.organization.selected.clone();
                 self.move_resources_to(selected, key, name, window, cx);
@@ -415,7 +441,12 @@ impl Desk {
                     goto_frecency::Choice::Tab { id, listed },
                 )
             }
-            Target::Command | Target::Session(_) | Target::Move(_, _) | Target::Path(_) => {
+            Target::Command
+            | Target::Session(_)
+            | Target::Work(_)
+            | Target::Setting(_)
+            | Target::Move(_, _)
+            | Target::Path(_) => {
                 goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
             }
         };
@@ -430,6 +461,8 @@ enum Target {
     Pane(ResourceId),
     Tab(String),
     Session(String),
+    Work(super::fleet::Destination),
+    Setting(super::settings_panel::Page),
     Move(SessionKey, String),
     Path(PathItem),
 }
@@ -480,8 +513,12 @@ pub fn layer(
             launcher::palette(desk, colors, window, cx)
         }
         Modal::Path => path_panel(desk, colors, window, cx),
-        Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
+        Modal::Settings if desk.settings_page.is_some() => {
+            super::settings_panel::panel(desk, colors, window, cx)
+        }
+        Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, colors, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
         Modal::KillSession { name, .. } => confirm(
@@ -533,14 +570,33 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .into_any_element()
 }
 
-fn card(colors: &Palette, width: f32) -> gpui::Div {
+// Match the launcher's fine rim and lifted material without washing out text
+// over terminal content. The near-opaque tint works in both theme appearances.
+pub(crate) fn card(colors: &Palette, width: f32) -> gpui::Div {
+    let light = colors.theme.appearance == "light";
     div()
         .w(px(width))
-        .rounded(px(12.))
-        .bg(from_hex(&colors.raised))
+        .rounded(px(14.))
+        .bg(from_hex(&colors.raised).opacity(0.97))
+        .text_color(from_hex(&colors.theme.foreground))
         .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_lg()
+        .border_color(from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }))
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
+                offset: point(px(0.), px(20.)),
+                blur_radius: px(64.),
+                spread_radius: px(-8.),
+                inset: false,
+            },
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
+                offset: point(px(0.), px(2.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ])
         .occlude()
 }
 
@@ -553,21 +609,14 @@ pub fn find_bar(
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
-    div()
+    card(colors, 420.)
         .absolute()
-        .top(px(8.))
-        .right(px(8.))
-        .w(px(380.))
-        .p(px(6.))
-        .rounded(px(8.))
-        .bg(from_hex(&colors.raised))
-        .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_md()
-        .occlude()
+        .top(px(12.))
+        .right(px(12.))
+        .p(px(8.))
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(px(6.))
         .child(
             div().flex_grow(1.).child(
                 Input::new(input)
@@ -577,6 +626,10 @@ pub fn find_bar(
         )
         .child(
             div()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.045))
                 .text_xs()
                 .text_color(from_hex(&colors.muted))
                 .child(desk.find_status()),
@@ -656,8 +709,67 @@ struct Row {
     preview: Option<goto_facts::FactsCard>,
 }
 
+fn simple_row(title: &str, detail: String, category: &'static str, target: Target) -> Row {
+    Row {
+        title: title.to_owned().into(),
+        keywords: detail.clone(),
+        detail: Some(detail.into()),
+        target,
+        command: None,
+        category,
+        chord: None,
+        agent: None,
+        preview: None,
+    }
+}
+
+fn settings_sections() -> Vec<Section> {
+    vec![Section {
+        label: Some("Settings"),
+        rows: super::settings_panel::Page::ALL
+            .into_iter()
+            .map(|page| {
+                let mut row = simple_row(
+                    page.title(),
+                    page.description().to_owned(),
+                    "Settings",
+                    Target::Setting(page),
+                );
+                row.keywords = page.keywords().to_owned();
+                row
+            })
+            .collect(),
+    }]
+}
+
+fn work_rows(desk: &Desk) -> Vec<Row> {
+    desk.work_catalog()
+        .into_iter()
+        .map(|work| {
+            let destination = work.destination;
+            let status = if work.online { "" } else { " · offline" };
+            let intake = if work.intake { " · Intake" } else { "" };
+            let detail = format!(
+                "{} · {} terminals{intake}{status}",
+                destination.host_label(),
+                work.terminals
+            );
+            let mut row = simple_row(
+                &destination.name.clone(),
+                detail,
+                "Work",
+                Target::Work(destination),
+            );
+            if let Some((id, name)) = work.project {
+                row.keywords.push_str(&format!(" {id} {name}"));
+            }
+            row
+        })
+        .collect()
+}
+
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
-    const ESSENTIALS: &[&str] = &["new", "split-right", "folder", "settings"];
+    const ESSENTIALS: &[&str] = &["new", "native-agent", "split-right", "folder", "find"];
     let organizing = desk
         .link
         .as_ref()
@@ -721,9 +833,34 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
     sections
 }
 
+/// A small launch list on open; typing always searches the complete catalogue.
+fn command_results(desk: &Desk, cx: &App, query: &str) -> Vec<Section> {
+    let mut sections = command_sections(desk, cx);
+    if !query.trim().is_empty() {
+        sections.extend(settings_sections());
+        return rank_sections(sections, query);
+    }
+    if !desk.palette_view.all_commands {
+        sections.retain(|section| section.label == Some("Essentials"));
+    }
+    for section in &mut sections {
+        section.label = None;
+    }
+    vec![Section {
+        label: None,
+        rows: sections
+            .into_iter()
+            .flat_map(|section| section.rows)
+            .collect(),
+    }]
+}
+
 fn goto_sections(desk: &Desk) -> Vec<Section> {
     let Some(link) = desk.link.as_ref() else {
-        return Vec::new();
+        return vec![Section {
+            label: Some("Work"),
+            rows: work_rows(desk),
+        }];
     };
     let mut agents = Vec::new();
     let mut terminals = Vec::new();
@@ -808,14 +945,19 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             })
         })
         .collect::<Vec<_>>();
-    [("Agents", agents), ("Terminals", terminals), ("Tabs", tabs)]
-        .into_iter()
-        .filter(|(_, rows)| !rows.is_empty())
-        .map(|(label, rows)| Section {
-            label: Some(label),
-            rows,
-        })
-        .collect()
+    [
+        ("Work", work_rows(desk)),
+        ("Agents", agents),
+        ("Terminals", terminals),
+        ("Tabs", tabs),
+    ]
+    .into_iter()
+    .filter(|(_, rows)| !rows.is_empty())
+    .map(|(label, rows)| Section {
+        label: Some(label),
+        rows,
+    })
+    .collect()
 }
 
 fn session_sections(desk: &Desk) -> Vec<Section> {
@@ -922,13 +1064,13 @@ fn move_destination_row(
         (session.name.clone(), session.name.clone())
     };
     let imported = if !designated && session.awaiting_organization {
-        " · imported session still awaiting organization"
+        " · imported"
     } else {
         ""
     };
     Row {
         title: title.into(),
-        detail: Some(format!("Move {count} selected · execution unchanged{imported}").into()),
+        detail: Some(format!("{count} selected{imported}").into()),
         keywords: session.name.clone(),
         target: Target::Move(session.key, name),
         command: None,
@@ -988,6 +1130,9 @@ fn filter_sections(mut sections: Vec<Section>, filter: goto_filter::GotoFilter) 
 
 fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
     match &row.target {
+        Target::Work(destination) => Some(goto_filter::GotoId::Work(destination.clone())),
+        Target::Command => row.command.map(goto_filter::GotoId::Command),
+        Target::Setting(page) => Some(goto_filter::GotoId::Setting(*page)),
         Target::Pane(id) => Some(goto_filter::GotoId::Pane(id.clone())),
         Target::Tab(id) => Some(goto_filter::GotoId::Tab(id.clone())),
         _ => None,
@@ -1063,12 +1208,15 @@ fn goto_boost(
 fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
     let Some(link) = desk.link.as_ref() else {
         return goto_search::SearchRevision {
-            connection: 0,
+            connection: desk.fleet.revision.rotate_left(32),
             workspace: 0,
         };
     };
     goto_search::SearchRevision {
-        connection: link.connection.revision(),
+        connection: link
+            .connection
+            .revision()
+            .wrapping_add(desk.fleet.revision.rotate_left(32)),
         workspace: workspace_stamp(&link.workspace.tabs),
     }
 }
@@ -1156,6 +1304,7 @@ fn path_panel(
         CommandItem::new().label(search).child(move |_, cx| {
             let terminal_handle = terminal_handle.clone();
             div()
+                .group("path-row")
                 .flex()
                 .flex_1()
                 .min_w_0()
@@ -1173,7 +1322,9 @@ fn path_panel(
                         .filter(|_| !matches!(icon, IconName::ArrowUp))
                         .map(|directory| {
                             Button::new(format!("open-{directory}"))
-                                .label("New terminal here")
+                                .invisible()
+                                .group_hover("path-row", |style| style.visible())
+                                .label("Open terminal")
                                 .ghost()
                                 .xsmall()
                                 .on_click(move |_, window, cx| {
@@ -1196,28 +1347,30 @@ fn path_panel(
         .items(rows)
         .empty(move |_, _, cx| {
             div()
-                .py(px(24.))
+                .py(px(36.))
+                .px(px(24.))
                 .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
                 .text_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
                 .child(if pending { "Searching…" } else { "No paths." })
         })
         .footer(move |_, _, _| {
             div()
                 .px(px(12.))
-                .py(px(6.))
+                .py(px(10.))
                 .flex()
                 .justify_between()
                 .gap(px(12.))
                 .text_xs()
                 .text_color(muted)
                 .child(div().min_w_0().truncate().child(message.clone()))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .child("↩ insert · ⇥ open folder · esc close"),
-                )
+                .child(div().flex_shrink_0().child("Tab: open terminal"))
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
@@ -1252,9 +1405,16 @@ fn notification_rows(
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(8.))
+                .px(px(12.))
+                .py(px(12.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.055))
+                .bg(from_hex(&colors.theme.foreground).opacity(if entry.read {
+                    0.015
+                } else {
+                    0.04
+                }))
                 .flex()
                 .items_start()
                 .gap(px(10.))
@@ -1311,7 +1471,8 @@ fn notification_rows(
 fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
     div()
         .px(px(10.))
-        .py(px(6.))
+        .pt(px(14.))
+        .pb(px(8.))
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(from_hex(&colors.muted))
@@ -1337,8 +1498,10 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     if agent_rows.is_empty() {
         rows.push(
             div()
-                .px(px(10.))
-                .py(px(8.))
+                .px(px(12.))
+                .py(px(16.))
+                .rounded(px(10.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
                 .child("No agent attention alerts.")
@@ -1356,14 +1519,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     }
     card(colors, 460.)
         .mt(px(60.))
-        .p(px(8.))
+        .p(px(12.))
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(8.))
         .child(
             div()
                 .px(px(8.))
-                .py(px(4.))
+                .py(px(8.))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -1372,7 +1535,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                         .text_base()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Inbox & notifications"),
+                        .child("Notifications"),
                 )
                 .when(!empty, |header| {
                     header.child(
@@ -1386,21 +1549,17 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                     )
                 }),
         )
-        .child(
-            div()
-                .px(px(10.))
-                .py(px(4.))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child("Inbox holds agent attention alerts; notifications hold errors and command results. Click an agent alert to open its terminal."),
-        )
         .child(if empty {
             div()
-                .px(px(10.))
-                .py(px(16.))
+                .px(px(20.))
+                .py(px(28.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("No alerts or notifications yet. Unorganized work lives in Intake.")
+                .child("No notifications")
                 .into_any_element()
         } else {
             div()
@@ -1409,6 +1568,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
+                .gap(px(6.))
                 .children(rows)
                 .into_any_element()
         })
@@ -1418,13 +1578,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
 fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
     card(colors, 440.)
         .mt(px(120.))
-        .p(px(16.))
+        .p(px(24.))
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(14.))
         .child(
             div()
-                .text_base()
+                .pb(px(4.))
+                .text_size(px(18.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(from_hex(&colors.theme.foreground))
                 .child(title.to_owned()),
@@ -1433,6 +1594,7 @@ fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
 
 fn dialog_buttons(confirm: Button, cx: &mut Context<Desk>) -> impl IntoElement {
     div()
+        .pt(px(8.))
         .flex()
         .justify_end()
         .gap(px(8.))
@@ -1545,7 +1707,7 @@ fn confirm(
     run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> AnyElement {
     dialog_card(&title, colors)
-        .border_color(from_hex(&colors.theme.danger))
+        .border_color(from_hex(&colors.theme.danger).opacity(0.55))
         .child(
             div()
                 .text_sm()
@@ -1574,6 +1736,39 @@ mod tests {
 
     fn session(byte: u8, name: &str) -> SessionRecord {
         SessionRecord::new(SessionKey::new([byte; 16]).unwrap(), name, Revision::new(1))
+    }
+
+    #[test]
+    fn work_and_settings_rows_preserve_actual_indices_during_filter_realignment() {
+        let work = crate::app::fleet::Destination {
+            host: Some("mini".into()),
+            authority: None,
+            key: Some(SessionKey::new([3; 16]).unwrap()),
+            name: "repo".into(),
+        };
+        let target = phux_protocol::ResourceId::local(7);
+        let rows = vec![
+            super::simple_row("repo", String::new(), "Work", Target::Work(work)),
+            super::simple_row(
+                "Appearance",
+                String::new(),
+                "Settings",
+                Target::Setting(crate::app::settings_panel::Page::Appearance),
+            ),
+            super::simple_row(
+                "agent",
+                String::new(),
+                "Agents",
+                Target::Pane(target.clone()),
+            ),
+        ];
+        let sections = vec![Section { label: None, rows }];
+        let ids = section_ids(&sections);
+        assert_eq!(ids[0].len(), 3);
+        assert_eq!(
+            selection_path(&ids, Some(&GotoId::Pane(target))),
+            Some((0, 2))
+        );
     }
 
     #[test]

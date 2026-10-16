@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.7.0](https://github.com/no-phux/phux/compare/pi-extension-v0.6.0...pi-extension-v0.7.0) (2026-10-16)
+
+
+### Features
+
+* **agent:** support ACP-owned sessions across harnesses ([#1431](https://github.com/no-phux/phux/issues/1431)) ([2696d16](https://github.com/no-phux/phux/commit/2696d16a273f58da0d100dda61816f6a8d50f314))
+
 ## [0.6.0](https://github.com/no-phux/phux/compare/pi-extension-v0.5.1...pi-extension-v0.6.0) (2026-10-15)
 
 

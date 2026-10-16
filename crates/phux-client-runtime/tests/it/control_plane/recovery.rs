@@ -24,6 +24,75 @@ fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
 }
 
 #[test]
+fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        session_recovery: phux_client_runtime::control::SessionRecovery::CallerValidated,
+        auto_attach_foreign_spawns: false,
+        subscribe_agent_sessions: false,
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let initial: Vec<_> = plane
+        .take_outbound()
+        .iter()
+        .map(|bytes| decode(bytes))
+        .collect();
+    let request_id = initial
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::GetState { .. },
+            } => Some(*request_id),
+            _ => None,
+        })
+        .expect("inventory before selecting work");
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
+        })
+        .unwrap();
+    let _ = plane.take_outbound();
+    assert!(!plane.attach_session(AttachTarget::ById(SessionId::new(1))));
+    let _ = plane.take_outbound();
+    plane.attach_terminal_preserving_geometry(&ResourceId::local(1));
+    let _ = plane.take_outbound();
+    for incarnation in [0xAB, 0xCD] {
+        plane.connection_lost(None);
+        plane.connection_opened();
+        let _ = plane.take_outbound();
+        plane.feed(replacement_hello(incarnation)).unwrap();
+        let frames: Vec<_> = plane
+            .take_outbound()
+            .iter()
+            .map(|bytes| decode(bytes))
+            .collect();
+        assert!(frames.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::GetState { .. },
+                ..
+            }
+        )));
+        assert!(
+            frames.iter().all(|frame| !matches!(
+                frame,
+                FrameKind::Attach { .. }
+                    | FrameKind::Command {
+                        command: Command::AttachResource { .. },
+                        ..
+                    }
+            )),
+            "unvalidated replay: {frames:?}"
+        );
+        assert!(plane.selected_session().is_none());
+    }
+}
+
+#[test]
 fn named_attach_reconnect_follows_a_rename_not_the_reused_name() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"original");

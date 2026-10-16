@@ -1,13 +1,13 @@
-//! Go To's agent-state chips.
+//! Go To's agent-state filter.
 //!
-//! Each chip is one shared [`AgentInfo`] predicate. A terminal or tab with no
+//! Each choice is one shared [`AgentInfo`] predicate. A terminal or tab with no
 //! agent stays listed only under All. Changing the filter does not rewrite the
 //! query; the highlight follows the same entry when it is still listed.
 
 use crate::connection::AgentInfo;
 use phux_protocol::ResourceId;
 
-/// The Go To chips, in palette order.
+/// The Go To filter choices, in menu order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum GotoFilter {
     #[default]
@@ -37,16 +37,6 @@ impl GotoFilter {
         }
     }
 
-    pub(crate) fn id(self) -> &'static str {
-        match self {
-            Self::All => "palette-filter-all",
-            Self::NeedsYou => "palette-filter-needs-you",
-            Self::Working => "palette-filter-working",
-            Self::Idle => "palette-filter-idle",
-            Self::Finished => "palette-filter-finished",
-        }
-    }
-
     /// Whether a row stays listed. `None` is a terminal or tab with no agent.
     pub(crate) fn matches(self, agent: Option<&AgentInfo>) -> bool {
         match self {
@@ -62,6 +52,9 @@ impl GotoFilter {
 /// Stable Go To row. The highlight follows this, not the row index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GotoId {
+    Work(crate::app::fleet::Destination),
+    Command(&'static str),
+    Setting(crate::app::settings_panel::Page),
     Pane(ResourceId),
     Tab(String),
 }

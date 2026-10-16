@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.5.0...opencode-plugin-v0.6.0) (2026-10-16)
+
+
+### Features
+
+* **agent:** support ACP-owned sessions across harnesses ([#1431](https://github.com/no-phux/phux/issues/1431)) ([2696d16](https://github.com/no-phux/phux/commit/2696d16a273f58da0d100dda61816f6a8d50f314))
+
 ## [0.5.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.4.0...opencode-plugin-v0.5.0) (2026-10-15)
 
 

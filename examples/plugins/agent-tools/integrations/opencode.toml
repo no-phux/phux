@@ -35,3 +35,11 @@ kind = "opencode"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "opencode", "--kind", "opencode", "--", "opencode"]
 required_executables = ["opencode"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "opencode"
+command = ["opencode","acp"]
+required_executables = ["opencode"]
+working_directory = "workspace"

@@ -133,6 +133,9 @@ impl ServerState {
                 value: value.to_vec(),
             })
             .collect();
+        // Controller ledgers change with SDK traffic, not organization shape.
+        // Capture them at the sealed cut, never in the tree-identity comparison.
+        blob.native_agents = self.native_agents.bindings.values().cloned().collect();
         blob
     }
 
@@ -382,6 +385,7 @@ impl ServerState {
             // (`runtime::delegation::carry_delegations`); not part of the
             // tree's identity.
             delegations: Vec::new(),
+            native_agents: Vec::new(),
         }
     }
 
@@ -418,6 +422,8 @@ impl ServerState {
                         .map(|record| String::from_utf8_lossy(record).into_owned())
                         .collect(),
                     key: Some(desc.key),
+                    native_publications: cut.native_publications.clone(),
+                    native_publication_high_water: cut.native_publication_high_water,
                 })
             })
             .collect();
@@ -532,6 +538,8 @@ fn agent_session_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
             .collect(),
         dropped: carried.dropped,
         ended: carried.ended,
+        native_publications: carried.native_publications.clone(),
+        native_publication_high_water: carried.native_publication_high_water,
     }
 }
 
@@ -643,6 +651,7 @@ impl ServerState {
         }
         self.commit_rebuilt_tree(fresh);
         self.restore_upgrade_metadata(blob);
+        self.restore_native_agents(blob);
         Ok(RebuiltTree {
             exit_watchers: panes.exit_watchers,
             wired_panes: panes.wired,
@@ -1744,6 +1753,7 @@ mod tests {
             metadata: Vec::new(),
             org: None,
             delegations: Vec::new(),
+            native_agents: Vec::new(),
         }
     }
 
@@ -1939,6 +1949,8 @@ mod tests {
             ended: false,
             records: vec!["{\"seq\":1,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned()],
             key: None,
+            native_publications: Vec::new(),
+            native_publication_high_water: 0,
         }
     }
 

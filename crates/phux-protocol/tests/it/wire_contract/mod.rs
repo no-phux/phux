@@ -8,6 +8,7 @@ mod bootstrap_wire;
 mod input_terminal_reply_wire;
 mod journal_shapes;
 mod keyed_signal_shapes;
+mod native_agent_wire;
 mod org_shapes;
 mod wire_layout_recursion;
 mod wire_roundtrip;

@@ -59,7 +59,7 @@ pub struct Terminal {
     scene: paint::SceneCache,
     surface: presentation::Surface,
     input: gpui::Entity<crate::input::TerminalInput>,
-    /// Forwards a clipboard refusal from [`crate::input::TerminalInput`].
+    /// Forwards clipboard refusals and upload requests from [`crate::input::TerminalInput`].
     /// Kept so the subscription lives with the view.
     _input_notices: Subscription,
     /// Registry host this window attaches to. Absent is the local server.

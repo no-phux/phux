@@ -1022,11 +1022,19 @@ pub(crate) enum Command {
         #[usage(long, alias = "dry-run")]
         print: bool,
 
+        /// Use the integration's declared ACP agent, never terminal input.
+        #[usage(long)]
+        acp: bool,
+
+        /// Existing session that owns a native agent and its guardian.
+        #[usage(long, value_name = "SESSION", requires("--acp"))]
+        session: Option<String>,
+
         #[usage(flatten)]
         json: JsonOpt,
 
         /// Existing local pane beside which to place the launched pane.
-        #[usage(long, value_name = "TARGET", conflicts("--list", "--print"))]
+        #[usage(long, value_name = "TARGET", conflicts("--list", "--print", "--acp"))]
         target: Option<String>,
 
         /// Split axis for explicit placement (requires `--target`).
@@ -2796,6 +2804,11 @@ pub(crate) enum ProjectAction {
         /// and the seed pane's `terminal_id`.
         #[usage(long)]
         json: bool,
+
+        /// Use declared native SDK integrations when the trusted recipe names
+        /// them explicitly; raw terminal commands remain terminal commands.
+        #[usage(long)]
+        prefer_native: bool,
     },
 
     /// List the `[[projects]]` catalog and whether each session is open.

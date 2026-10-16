@@ -77,6 +77,12 @@ pub(super) enum UpgradeError {
     /// All pane actors share one bounded preparation window.
     #[error("pane upgrade handoffs did not complete within the aggregate deadline")]
     HandoffDeadline,
+    /// SDK-owned streams are part of a durable provider session, so unlike
+    /// optional attached streams they may never be dropped at an upgrade cut.
+    #[error("native agent {agent:?} did not provide its mandatory upgrade cut")]
+    NativeAgentHandoff {
+        agent: phux_protocol::ids::ResourceId,
+    },
 }
 
 /// A private executable snapshot copied from one opened source inode, so the
@@ -198,6 +204,7 @@ pub(super) struct UpgradePlan {
     _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
     agent_seal: AgentSessionSeal,
+    _native_seal: Option<NativeBrokerSeal>,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -217,11 +224,42 @@ struct UpgradeContext {
     agent_session_senders: Vec<(phux_core::ids::ResourceId, mpsc::Sender<BootstrapRequest>)>,
 }
 
+/// Stop native input/receipt mutation across the sealed upgrade cut. The
+/// durable SDK keeps draining into its bounded output/receipt spool; rollback
+/// resumes this broker, while successful exec replaces it with restored state.
+struct NativeBrokerSeal(SharedState);
+impl NativeBrokerSeal {
+    fn new(state: &SharedState) -> Result<Self, UpgradeError> {
+        let admitted = state.with_mut(|s| {
+            let broker = s.native_agents_mut();
+            if broker.sealed {
+                return false;
+            }
+            broker.sealed = true;
+            true
+        });
+        admitted
+            .then(|| Self(state.clone()))
+            .ok_or(UpgradeError::TreeChanged)
+    }
+}
+impl Drop for NativeBrokerSeal {
+    fn drop(&mut self) {
+        self.0.with_mut(|s| {
+            s.native_agents_mut().sealed = false;
+            for wake in s.native_agents().wakes.values() {
+                wake.notify_waiters();
+            }
+        });
+    }
+}
+
 /// Do everything reversible: snapshot the tree into a handoff blob, stage it in
 /// an inheritable temp file, clear `FD_CLOEXEC` on the blob / listener / every
 /// pane master, and validate the on-disk binary. Returns a [`UpgradePlan`] the
 /// caller execs *after* acking the client.
 pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
+    let native_seal = NativeBrokerSeal::new(state)?;
     let UpgradeContext {
         listener_fd,
         socket_path,
@@ -241,6 +279,19 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
             panes: panes?,
             agent_sessions,
         };
+        if let Some(agent) = state.with(|s| {
+            s.native_agents()
+                .bindings
+                .values()
+                .filter(|binding| !binding.closed)
+                .find(|binding| {
+                    s.terminal_from_wire(&binding.agent)
+                        .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
+                })
+                .map(|binding| binding.agent.clone())
+        }) {
+            return Err(UpgradeError::NativeAgentHandoff { agent });
+        }
         let blob = reassemble_unchanged_tree(
             state,
             listener_fd,
@@ -287,6 +338,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         _delegated_listeners: delegated_listeners,
         _handoffs: handoffs.panes,
         agent_seal,
+        _native_seal: Some(native_seal),
     })
 }
 
@@ -934,6 +986,7 @@ mod tests {
             agent_seal: AgentSessionSeal {
                 bootstraps: Vec::new(),
             },
+            _native_seal: None,
         };
 
         assert_eq!(plan.exec().await.kind(), std::io::ErrorKind::NotFound);
@@ -1208,6 +1261,7 @@ mod tests {
             .send(crate::resource::agent_session::AppendRequest {
                 bytes: bytes::Bytes::copy_from_slice(records.as_bytes()),
                 reply,
+                publication: None,
             })
             .await
             .unwrap();
@@ -1311,6 +1365,8 @@ mod tests {
             records: Vec::new(),
             dropped: 0,
             ended: false,
+            native_publications: Vec::new(),
+            native_publication_high_water: 0,
         }
     }
 
@@ -1497,6 +1553,7 @@ mod tests {
             _delegated_listeners: Vec::new(),
             _handoffs: HashMap::new(),
             agent_seal: seal,
+            _native_seal: None,
         };
         (plan, listener, original)
     }

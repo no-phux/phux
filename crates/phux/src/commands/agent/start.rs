@@ -343,6 +343,7 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
         &kind,
         req.args,
         &workspace_cwd,
+        phux_plugin::LaunchMode::Terminal,
     )
     .map_err(launch_refusal)?;
     let integration_id = resolved.integration_id.clone();

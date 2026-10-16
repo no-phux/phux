@@ -1293,6 +1293,8 @@ fn dispatch(
             integration,
             list,
             print,
+            acp,
+            session,
             json,
             target,
             split,
@@ -1304,6 +1306,12 @@ fn dispatch(
             integration,
             list,
             print,
+            if acp {
+                phux_plugin::LaunchMode::Native
+            } else {
+                phux_plugin::LaunchMode::Terminal
+            },
+            session.as_deref(),
             json.json,
             target,
             split,
@@ -2889,6 +2897,8 @@ mod tests {
             "phux agent hook-payload",
             // Its transcript reader: one `phux.transcript/v1` data object out.
             "phux agent hook-transcript",
+            // Server-bootstrapped durable ACP guardian, never a human verb.
+            "phux agent host",
         ];
 
         /// Collect every hidden row of the tree under `path`: hidden long

@@ -208,10 +208,13 @@ by a newer one, the newer line is the operative reading.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
 - [0001](./0001-language-rust.md) phux is implemented in Rust.
 
+- [0170](./0170-acp-is-the-provider-seam.md) Native agents use the official pinned Rust ACP client and operator-installed native servers or maintained adapters; no private provider SDK bridges.
+
 ## Proposed
 
 Drafted and under review; none of these governs anything yet.
 
+- [0173](./0173-mission-control-is-a-client-composition.md) Mission control is a client composition: it may own a task's worktree, brief, and agent start, and the server learns nothing. An interim store uses the coordinator's nouns until phux-ajxq; merge is Patrick's TTY confirmation at the reviewed SHA. Task workers use the ADR-0163 delegated grant; until MC-1.4b Lead runs with the owner's authority and only while attended.
 - [0166](./0166-usage-collection-is-a-supervised-child.md) Optional usage is one supervised collector child; the terminal runtime and plugin hooks do not host it.
 - [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) A theme is an Omarchy-schema `colors.toml` in `$XDG_DATA_HOME/phux/themes/<name>`, installed by URL or by a plugin, chosen by `[theme] name`; every client maps the same keys onto its chrome and the ANSI-16 palette.
 - [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
