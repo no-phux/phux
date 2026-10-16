@@ -192,6 +192,12 @@ impl ControlPlane {
         signal: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
     ) -> bool {
+        if self.clipboard_focus.as_ref() == Some(terminal_id) {
+            self.clipboard_focus = None;
+            self.events
+                .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
+            self.clipboard_event_bytes = 0;
+        }
         self.forget_agent_metadata(terminal_id);
         self.live_asks.remove(terminal_id);
         self.listings.forget(terminal_id);

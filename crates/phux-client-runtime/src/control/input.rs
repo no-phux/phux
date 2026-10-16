@@ -66,8 +66,27 @@ impl ControlPlane {
     }
 
     /// Report host focus to the terminal.
+    ///
+    /// Local clipboard focus intent is recorded even before bootstrap or
+    /// behind an input fence. Returns whether a wire focus event was queued;
+    /// only input-ready terminals send one.
     pub fn send_focus(&mut self, terminal_id: &ResourceId, event: FocusEvent) -> bool {
-        if self.delivery_fenced(terminal_id) {
+        let changed = match event {
+            FocusEvent::Gained => self.clipboard_focus.as_ref() != Some(terminal_id),
+            FocusEvent::Lost => self.clipboard_focus.as_ref() == Some(terminal_id),
+        };
+        if changed {
+            self.clipboard_focus = match event {
+                FocusEvent::Gained => Some(terminal_id.clone()),
+                FocusEvent::Lost => None,
+            };
+            // A request belongs to the focus interval in which it arrived,
+            // not whichever terminal happens to be focused at the next drain.
+            self.events
+                .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
+            self.clipboard_event_bytes = 0;
+        }
+        if !self.input_ready(terminal_id) {
             return false;
         }
         self.queue_frame(&FrameKind::InputFocus {

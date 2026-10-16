@@ -13,6 +13,7 @@
 //! for — the C ABI has no burst notion, the `UniFFI` surface has no replica
 //! tombstones — but neither gets to decide what the runtime value *means*.
 
+use phux_client_core::engine::ClipboardText;
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::session::HistoryUnavailableReason;
 use phux_client_runtime::control::Event;
@@ -28,6 +29,13 @@ pub enum TerminalSignal {
     Bell {
         /// The terminal.
         terminal_id: ResourceId,
+    },
+    /// A live-only clipboard write; the foreground host applies focus policy.
+    ClipboardWrite {
+        /// The source terminal.
+        terminal_id: ResourceId,
+        /// Clipboard contents, redacted by `Debug`.
+        text: ClipboardText,
     },
     /// The terminal's title changed (OSC 0/2).
     TitleChanged {
@@ -189,6 +197,9 @@ pub enum Lifecycle {
 pub fn terminal_signal(event: Event) -> Result<TerminalSignal, Event> {
     Ok(match event {
         Event::Bell { terminal_id } => TerminalSignal::Bell { terminal_id },
+        Event::ClipboardWrite { terminal_id, text } => {
+            TerminalSignal::ClipboardWrite { terminal_id, text }
+        }
         Event::TitleChanged { terminal_id, title } => {
             TerminalSignal::TitleChanged { terminal_id, title }
         }

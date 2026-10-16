@@ -193,6 +193,47 @@ fn attached_capabilities(
     (remote, queued)
 }
 
+#[test]
+fn live_osc52_output_reaches_the_mobile_publication_once_with_redacted_debug() {
+    let (remote, _) = attached(snapshot(false));
+    remote.send_focus("local:30".into(), true);
+    let client = remote.runtime_client().expect("connected");
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+            seq: 1,
+            bytes: b"\x1b]52;c;cmVtb3RlLWNvcHk=\x07".to_vec().into(),
+        })
+        .expect("live OSC 52");
+    let publication = remote.take_publication();
+    let clipboard: Vec<_> = publication
+        .events
+        .iter()
+        .filter(|event| matches!(event, WireEvent::ClipboardWrite { .. }))
+        .collect();
+    assert_eq!(
+        clipboard,
+        [&WireEvent::ClipboardWrite {
+            terminal_id: "local:30".into(),
+            text: "remote-copy".into(),
+        }]
+    );
+    let debug = format!("{publication:?}");
+    assert!(debug.contains("ClipboardWrite"));
+    assert!(
+        !debug.contains("remote-copy"),
+        "clipboard text must never enter Debug"
+    );
+    assert!(
+        !remote
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, WireEvent::ClipboardWrite { .. }))
+    );
+}
+
 /// The session with both `TERMINAL` and `AGENT` as panes: what a restarted
 /// server, reusing the agent's id for a fresh terminal, lists.
 fn agent_id_as_pane() -> SessionSnapshot {

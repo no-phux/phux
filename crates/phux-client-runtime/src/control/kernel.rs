@@ -191,10 +191,16 @@ impl ControlPlane {
                 phux_client_core::engine::EngineStatus::Bell => self.push_event(Event::Bell {
                     terminal_id: key.terminal_id,
                 }),
-                // ADR-0158 delivery lands in the TUI first; this runtime's
-                // hosts (desktop, mobile) do not honour pane writes yet.
-                phux_client_core::engine::EngineStatus::ClipboardWrite(_) => {
-                    tracing::debug!(terminal_id = ?key.terminal_id, "clipboard write not delivered");
+                phux_client_core::engine::EngineStatus::ClipboardWrite(text) => {
+                    if self.status != super::Status::Attached
+                        || self.clipboard_focus.as_ref() != Some(&key.terminal_id)
+                    {
+                        return;
+                    }
+                    self.push_event(Event::ClipboardWrite {
+                        terminal_id: key.terminal_id,
+                        text,
+                    });
                 }
                 phux_client_core::engine::EngineStatus::Title(title) => {
                     self.fence_topology_read();

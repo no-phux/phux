@@ -384,6 +384,65 @@ fn quic_endpoint_attaches_over_real_loopback_quic() {
     remote.stop_connection();
 }
 
+/// A real remote program's copy must reach the mobile event drain, not only
+/// an engine unit fixture. The server and its socket/state are tempdir-local.
+#[test]
+fn a_remote_programs_osc52_reaches_the_mobile_clipboard_event() {
+    let server = QuicServer::start();
+    let remote = RemoteClient::new(format!("quic://{}", server.addr), 80, 24, None, None);
+    remote.connect().expect("connect");
+    remote.attach_session(SESSION.to_owned());
+    wait_for(&remote, |remote| remote.status() == WireStatus::Attached);
+    // Wait for input so the write is live, not part of the initial bootstrap.
+    // The second read keeps the process alive until connection cleanup.
+    let request_id = remote.spawn_terminal_with_command(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "read trigger; printf '\\033]52;c;cmVtb3RlLWNvcHk=\\007'; read keepalive".into(),
+    ]);
+    assert_ne!(request_id, 0);
+    let mut seen = Vec::new();
+    publish_until(&remote, &mut seen, |publication| {
+        publication.events.iter().any(|event| {
+            matches!(
+                event,
+                WireEvent::TerminalSpawned { request_id: id, terminal_id: Some(_), error: None }
+                    if *id == request_id
+            )
+        })
+    });
+    let terminal_id = seen
+        .iter()
+        .find_map(|event| match event {
+            WireEvent::TerminalSpawned {
+                request_id: id,
+                terminal_id,
+                ..
+            } if *id == request_id => terminal_id.clone(),
+            _ => None,
+        })
+        .expect("spawned terminal");
+    wait_for(&remote, |remote| remote.input_ready(terminal_id.clone()));
+    remote.send_focus(terminal_id.clone(), true);
+    assert_ne!(remote.apply_line(terminal_id.clone(), "copy".into()), 0);
+    publish_until(&remote, &mut seen, |publication| {
+        publication.events.iter().any(|event| {
+            matches!(
+                event,
+                WireEvent::ClipboardWrite { terminal_id: id, text }
+                    if id == &terminal_id && text == "remote-copy"
+            )
+        })
+    });
+    assert_eq!(
+        seen.iter()
+            .filter(|event| matches!(event, WireEvent::ClipboardWrite { .. }))
+            .count(),
+        1
+    );
+    remote.stop_connection();
+}
+
 /// ADR-0153 for the phone: a leaf-pinned client learns the CA on its first
 /// connection; pinned, a different CA is refused by name and never attaches,
 /// and the right one attaches.

@@ -93,6 +93,10 @@ pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, To
 /// events (see [`Event::is_lossless`]) stay.
 pub const EVENT_QUEUE_CAP: usize = 4096;
 
+/// Maximum retained clipboard payload capacity in the undrained event queue.
+/// Clipboard events are droppable, never replayed to recover an overflow.
+pub const CLIPBOARD_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Exact encoded command-body overhead of an `apply_line` /
 /// `apply_tab_completion` batch (a paste plus one key).
 const APPLY_LINE_OVERHEAD: usize = 46;
@@ -458,6 +462,8 @@ pub struct ControlPlane {
     clock_origin: Instant,
     outbound: Vec<Vec<u8>>,
     events: Vec<Event>,
+    clipboard_event_bytes: usize,
+    clipboard_focus: Option<ResourceId>,
     /// How many events the queue cap dropped since the last drain.
     events_dropped: usize,
     damaged: Vec<ResourceId>,
@@ -529,6 +535,8 @@ impl ControlPlane {
             clock_origin: Instant::now(),
             outbound: Vec::new(),
             events: Vec::new(),
+            clipboard_event_bytes: 0,
+            clipboard_focus: None,
             events_dropped: 0,
             damaged: Vec::new(),
             extensions: extensions::Extensions::default(),
@@ -794,6 +802,12 @@ impl ControlPlane {
     /// Release one explicitly withdrawn terminal from both the attach
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
+        if self.clipboard_focus.as_ref() == Some(terminal_id) {
+            self.clipboard_focus = None;
+            self.events
+                .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
+            self.clipboard_event_bytes = 0;
+        }
         self.preserve_terminal_geometry.remove(terminal_id);
         self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);

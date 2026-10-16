@@ -46,6 +46,7 @@ impl ControlPlane {
 
     fn drain_events(&mut self) -> Vec<Event> {
         self.events_dropped = 0;
+        self.clipboard_event_bytes = 0;
         let mut events: Vec<Event> = self
             .damaged
             .drain(..)
