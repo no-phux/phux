@@ -43,7 +43,7 @@ use crate::input::WheelAction;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
 use crate::touch::{TouchGesture, TouchMode, TouchStep};
-use crate::{Mark, Metrics, Overlay, render_cursor_row, render_selected};
+use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selected_appearance};
 
 mod find;
 mod path_picker;
@@ -202,6 +202,11 @@ pub const TITLE_EVENT: &str = "phux-title";
 /// the bell (BEL). The canvas also flashes briefly, unless the page prefers
 /// reduced motion.
 pub const BELL_EVENT: &str = "phux-bell";
+
+/// Bubbling event after a full real canvas paint. `detail` has canonical
+/// `panes`, total cell `cols`/`rows`, and backing `pixelWidth`/`pixelHeight`.
+/// Cursor-only blink redraws do not emit it. Listeners may call the client.
+pub const RENDER_EVENT: &str = "phux-render";
 
 /// How long the visual bell shows, and the least time between two flashes.
 const BELL_FLASH_MS: u32 = 150;
@@ -524,6 +529,53 @@ impl Client {
     /// Fails if no terminal is ready.
     pub fn focus_next_pane(&self) -> Result<(), JsValue> {
         pane_action(&self.app, PaneAction::Next)
+    }
+
+    /// Opt into transparent default cells and borderless pane presentation.
+    /// Other clients remain opaque; this changes no terminal state or wire data.
+    pub fn set_glass_mode(&self, enabled: bool) {
+        let app = self.app.borrow();
+        if app.glass_mode.replace(enabled) != enabled {
+            app.request_paint();
+        }
+    }
+
+    /// Focus one canonical id from the visible pane descriptors, without
+    /// creating another view or connection.
+    ///
+    /// # Errors
+    /// Refuses missing, hidden, unready, or failed terminals.
+    pub fn focus_pane(&self, selector: &str) -> Result<(), JsValue> {
+        let id = self
+            .app
+            .borrow()
+            .session
+            .pane_rects()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| id.to_string() == selector)
+            .ok_or_else(|| JsValue::from_str("That pane is not visible."))?;
+        pane_action(&self.app, PaneAction::Focus(&id))
+    }
+
+    /// Send bounded text through the same structured paste path as the
+    /// clipboard. This does not append Enter or create a terminal.
+    ///
+    /// # Errors
+    /// Refuses more than 4096 UTF-8 bytes or unavailable terminal input.
+    pub fn send_text(&self, text: &str) -> Result<(), JsValue> {
+        if text.len() > 4096 {
+            return Err(JsValue::from_str(
+                "Text exceeds the 4096-byte hosted input limit.",
+            ));
+        }
+        let Some(paste) = crate::input::paste_event(text) else {
+            return Ok(());
+        };
+        if !send_input(&self.app, [InputEvent::Paste(paste)]) {
+            return Err(JsValue::from_str("Terminal input is unavailable."));
+        }
+        Ok(())
     }
 
     /// Close the focused pane's view; its terminal keeps running.
@@ -1007,11 +1059,15 @@ struct App {
     prefix: Cell<bool>,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
+    /// Opt-in appearance; terminal defaults remain opaque elsewhere.
+    glass_mode: Cell<bool>,
     /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
     wheel_carry: Cell<f64>,
     /// The grid the canvas shows, so a cursor blink redraws one row
     /// without reading the whole grid back from the engine.
     painted: RefCell<Option<Grid>>,
+    /// Pane-local cursor rows from the last full paint, without rereading grids.
+    painted_cursor_rows: RefCell<Vec<(phux_protocol::ids::ResourceId, u16)>>,
     /// The program title last published to the page.
     title: RefCell<String>,
     /// The search matches the canvas shows, so a cursor blink keeps them.
@@ -1242,34 +1298,26 @@ impl App {
                 f64::from(pane.rows) * self.metrics.cell_h,
             );
             self.ctx.clip();
-            render_cursor_row(
+            render_cursor_row_appearance(
                 &self.ctx,
                 grid,
                 &self.metrics,
                 self.cursor_on.get(),
                 &overlay,
+                self.glass_mode.get(),
             );
             self.ctx.restore();
             self.paint_pane_border(&pane, true);
         }
     }
 
-    fn paint(&self) {
+    fn paint(&self) -> bool {
         if !self.session.render_visible() {
-            return;
+            return false;
         }
         let grid = self.session.grid();
         let marks = self.search_marks(grid.cols, grid.rows);
-        let mut panes = self.session.pane_rects();
-        let (cols, rows) = if panes.len() <= 1 {
-            (grid.cols, grid.rows)
-        } else {
-            self.session.canvas_dims()
-        };
-        if panes.len() == 1 {
-            panes[0].1.cols = cols;
-            panes[0].1.rows = rows;
-        }
+        let (cols, rows, panes) = self.pane_geometry();
         let geometry = crate::canvas::CanvasGeometry::new(
             &self.metrics,
             cols,
@@ -1277,16 +1325,17 @@ impl App {
             crate::canvas::device_pixel_ratio(),
         );
         if geometry.prepare(&self.canvas, &self.ctx).is_err() {
-            return;
+            return false;
         }
         self.canvas_geometry.set(geometry);
-        self.ctx.set_fill_style_str("#0b0b0d");
-        self.ctx
-            .fill_rect(0.0, 0.0, geometry.width, geometry.height);
+        self.paint_backdrop(&geometry);
         let focused = self.session.focused_pane();
+        let mut cursor_rows = Vec::with_capacity(panes.len());
         for (id, rect) in &panes {
             let active = focused.as_ref() == Some(id);
-            self.paint_pane(id, rect, active, &grid, &marks);
+            if let Some(row) = self.paint_pane(id, rect, active, &grid, &marks) {
+                cursor_rows.push((id.clone(), row));
+            }
             if panes.len() > 1 {
                 self.paint_pane_border(rect, active);
             }
@@ -1297,9 +1346,22 @@ impl App {
                 .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
         self.painted.replace(Some(grid));
+        self.painted_cursor_rows.replace(cursor_rows);
         self.painted_marks.replace(marks);
         self.publish_title();
         self.place_input_surface();
+        true
+    }
+
+    fn paint_backdrop(&self, geometry: &crate::canvas::CanvasGeometry) {
+        if self.glass_mode.get() {
+            self.ctx
+                .clear_rect(0.0, 0.0, geometry.width, geometry.height);
+        } else {
+            self.ctx.set_fill_style_str("#0b0b0d");
+            self.ctx
+                .fill_rect(0.0, 0.0, geometry.width, geometry.height);
+        }
     }
 
     fn paint_pane(
@@ -1309,7 +1371,7 @@ impl App {
         active: bool,
         grid: &phux_vt_web::Grid,
         marks: &[Mark],
-    ) {
+    ) -> Option<u16> {
         self.ctx.save();
         let _ = self.ctx.translate(
             f64::from(rect.x) * self.metrics.cell_w,
@@ -1323,32 +1385,40 @@ impl App {
             f64::from(rect.rows) * self.metrics.cell_h,
         );
         self.ctx.clip();
-        if active {
+        let cursor_row = if active {
             let overlay = Overlay {
                 selected: self.selected_cells(grid.cols),
                 marks,
             };
-            render_selected(
+            render_selected_appearance(
                 &self.ctx,
                 grid,
                 &self.metrics,
                 self.cursor_on.get() && !self.session.viewport_scrolled(),
                 &overlay,
+                self.glass_mode.get(),
             );
+            Some(grid.cursor_row)
         } else if let Some(terminal) = self.session.pane_terminal(id) {
-            render_selected(
+            let grid = terminal.grid();
+            render_selected_appearance(
                 &self.ctx,
-                &terminal.grid(),
+                &grid,
                 &self.metrics,
                 false,
                 &Overlay::default(),
+                self.glass_mode.get(),
             );
-        }
+            Some(grid.cursor_row)
+        } else {
+            None
+        };
         self.ctx.restore();
+        cursor_row
     }
 
     fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
-        if self.session.pane_rects().len() <= 1 {
+        if self.glass_mode.get() || self.session.pane_rects().len() <= 1 {
             return;
         }
         crate::canvas::paint_pane_border(&self.ctx, &self.metrics, rect, active);
@@ -1545,6 +1615,64 @@ impl App {
         self.request_paint();
     }
 
+    /// The exact rectangles the renderer uses, including the published
+    /// single-pane size while a server resize is in flight.
+    fn pane_geometry(
+        &self,
+    ) -> (
+        u16,
+        u16,
+        Vec<(phux_protocol::ids::ResourceId, crate::PaneRect)>,
+    ) {
+        let mut panes = self.session.pane_rects();
+        let (cols, rows) = if panes.len() <= 1 {
+            self.session.dims()
+        } else {
+            self.session.canvas_dims()
+        };
+        if panes.len() == 1 {
+            panes[0].1.cols = cols;
+            panes[0].1.rows = rows;
+        }
+        (cols, rows, panes)
+    }
+
+    fn presentation_detail(&self) -> js_sys::Object {
+        let (cols, rows, panes) = self.pane_geometry();
+        let detail = js_sys::Object::new();
+        let descriptors = js_sys::Array::new();
+        for (id, rect) in panes {
+            let pane = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&pane, &"id".into(), &JsValue::from_str(&id.to_string()));
+            for (key, value) in [
+                ("x", rect.x),
+                ("y", rect.y),
+                ("cols", rect.cols),
+                ("rows", rect.rows),
+            ] {
+                let _ =
+                    js_sys::Reflect::set(&pane, &key.into(), &JsValue::from_f64(f64::from(value)));
+            }
+            if let Some((_, row)) = self
+                .painted_cursor_rows
+                .borrow()
+                .iter()
+                .find(|(painted, _)| painted == &id)
+            {
+                let _ = js_sys::Reflect::set(
+                    &pane,
+                    &"cursorRow".into(),
+                    &JsValue::from_f64(f64::from(*row)),
+                );
+            }
+            descriptors.push(&pane);
+        }
+        let _ = js_sys::Reflect::set(&detail, &"panes".into(), &descriptors);
+        let _ = js_sys::Reflect::set(&detail, &"cols".into(), &JsValue::from_f64(f64::from(cols)));
+        let _ = js_sys::Reflect::set(&detail, &"rows".into(), &JsValue::from_f64(f64::from(rows)));
+        detail
+    }
+
     fn publish_panes(&self) {
         let count = self.session.pane_rects().len();
         let focused = self
@@ -1558,7 +1686,7 @@ impl App {
         let _ = self
             .canvas
             .set_attribute("data-phux-focused-pane", &focused);
-        let detail = js_sys::Object::new();
+        let detail = self.presentation_detail();
         let _ = js_sys::Reflect::set(&detail, &"count".into(), &JsValue::from_f64(count as f64));
         let _ = js_sys::Reflect::set(&detail, &"focused".into(), &JsValue::from_str(&focused));
         let _ = js_sys::Reflect::set(
@@ -1668,8 +1796,10 @@ fn build_app(
         hosted_edge: false,
         prefix: Cell::new(false),
         cursor_on: Cell::new(true),
+        glass_mode: Cell::new(false),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
+        painted_cursor_rows: RefCell::new(Vec::with_capacity(4)),
         title: RefCell::new(String::new()),
         painted_marks: RefCell::new(Vec::new()),
         selection: Cell::new(None),
@@ -3067,6 +3197,7 @@ fn forward_wheel(app: &Rc<RefCell<App>>, at: &web_sys::MouseEvent, delta_y: f64,
 enum PaneAction<'a> {
     Split(&'a str),
     Next,
+    Focus(&'a phux_protocol::ids::ResourceId),
     CloseView,
     Kill,
 }
@@ -3079,6 +3210,7 @@ fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Result<(), JsV
         PaneAction::CloseView => app.session.close_view(),
         PaneAction::Kill => app.session.kill_pane_frame().map(|frame| vec![frame]),
         PaneAction::Next => app.session.focus_next_pane().map(|()| Vec::new()),
+        PaneAction::Focus(id) => app.session.focus_pane(id).map(|()| Vec::new()),
     };
     let result = result.and_then(|frames| {
         if let Err(message) = app.send(frames) {
@@ -3382,6 +3514,35 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Release the App borrow before dispatch: a presentation listener may focus
+/// a pane or resize this same client. No event is emitted without real pixels.
+fn paint_and_publish(app: &Rc<RefCell<App>>) {
+    let (canvas, detail) = {
+        let app = app.borrow();
+        if !app.paint() {
+            return;
+        }
+        let detail = app.presentation_detail();
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"pixelWidth".into(),
+            &JsValue::from_f64(f64::from(app.canvas.width())),
+        );
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"pixelHeight".into(),
+            &JsValue::from_f64(f64::from(app.canvas.height())),
+        );
+        (app.canvas.clone(), detail)
+    };
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&detail);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(RENDER_EVENT, &init) {
+        let _ = canvas.dispatch_event(&event);
+    }
+}
+
 /// The animation-frame callback every paint request shares.
 fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
@@ -3390,11 +3551,10 @@ fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let app = app.borrow();
-        if let Some(frame) = app.bindings.borrow().frame.as_ref() {
+        if let Some(frame) = app.borrow().bindings.borrow().frame.as_ref() {
             frame.pending.set(None);
         }
-        app.paint();
+        paint_and_publish(&app);
     });
     app.borrow()
         .bindings
@@ -4157,3 +4317,7 @@ mod tests {
         assert!(batch.bell, "a flood of bells rings once per drained batch");
     }
 }
+
+#[cfg(test)]
+#[path = "presentation_tests.rs"]
+mod presentation_tests;
