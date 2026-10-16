@@ -1,6 +1,6 @@
 //! Hex colours from the settings theme, as GPUI paint colours, and the Kit theme they drive.
 
-use gpui::{App, Hsla, rgb};
+use gpui::{App, Hsla, px, rgb};
 use gpui_kit::component::{Theme, ThemeMode};
 
 use crate::settings::theme::{Palette, mix};
@@ -39,9 +39,16 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
     let accent_hover = from_hex(&mix(&theme.accent, &theme.foreground, 0.12));
     let accent_active = from_hex(&mix(&theme.accent, &theme.background, 0.18));
     let accent_text = from_hex(&colors.accent_text);
-    let surface = from_hex(&theme.surface);
-    let raised = from_hex(&colors.raised);
-    let border = from_hex(&colors.border);
+    let surface = from_hex(&theme.surface).opacity(0.94);
+    let raised = from_hex(&colors.raised).opacity(0.98);
+    let border = fg.opacity(if mode == ThemeMode::Light { 0.12 } else { 0.14 });
+    // Neutral controls should sit within the material, not read as opaque tiles.
+    // Popovers retain a denser backing so terminal text cannot compete with labels.
+    let control = fg.opacity(if mode == ThemeMode::Light {
+        0.035
+    } else {
+        0.045
+    });
     let hover = from_hex(&colors.hover);
     let active = from_hex(&colors.active);
     let muted = from_hex(&colors.muted);
@@ -51,30 +58,37 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
     let warning = from_hex(&theme.warning);
     let on_status = from_hex(&theme.background);
     Theme::update(cx, |state| {
+        state.radius = px(8.);
+        state.radius_lg = px(14.);
+        state.shadow = true;
         let kit = &mut state.colors;
         kit.background = from_hex(&theme.background);
         kit.foreground = fg;
-        kit.border = fg.opacity(0.08);
+        kit.border = border;
         kit.input = border;
         kit.ring = accent;
         kit.caret = from_hex(&theme.cursor);
         kit.selection = from_hex(&theme.selection);
         kit.overlay = from_hex(&colors.backdrop);
-        kit.popover = surface;
+        kit.popover = raised;
         kit.popover_foreground = fg;
         kit.muted = surface;
         kit.muted_foreground = muted;
-        kit.accent = hover;
+        kit.accent = fg.opacity(if mode == ThemeMode::Light {
+            0.055
+        } else {
+            0.075
+        });
         kit.accent_foreground = fg;
         kit.primary = accent;
         kit.primary_hover = accent_hover;
         kit.primary_active = accent_active;
         kit.primary_foreground = accent_text;
-        kit.secondary = surface;
+        kit.secondary = control;
         kit.secondary_hover = hover;
         kit.secondary_active = active;
         kit.secondary_foreground = fg;
-        kit.button = surface;
+        kit.button = control;
         kit.button_hover = hover;
         kit.button_active = active;
         kit.button_foreground = fg;
@@ -82,7 +96,7 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
         kit.button_primary_hover = accent_hover;
         kit.button_primary_active = accent_active;
         kit.button_primary_foreground = accent_text;
-        kit.button_secondary = surface;
+        kit.button_secondary = control;
         kit.button_secondary_hover = hover;
         kit.button_secondary_active = active;
         kit.button_secondary_foreground = fg;
@@ -99,10 +113,10 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
         kit.warning = warning;
         kit.warning_foreground = on_status;
         kit.list = raised;
-        kit.list_hover = hover;
-        kit.list_active = from_hex(&colors.accent_wash);
-        kit.list_active_border = accent;
-        kit.group_box = surface;
+        kit.list_hover = kit.accent;
+        kit.list_active = accent.opacity(if mode == ThemeMode::Light { 0.12 } else { 0.18 });
+        kit.list_active_border = accent.opacity(0.5);
+        kit.group_box = control;
         kit.group_box_foreground = fg;
         kit.sidebar = surface;
         kit.sidebar_foreground = fg;

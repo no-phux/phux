@@ -14,6 +14,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme, Icon};
 
+use crate::settings::TabPosition;
+
 use super::desk::{Desk, Modal};
 use super::host::RemoteHost;
 use super::keys::gpui_stroke;
@@ -23,7 +25,7 @@ const RADIUS: f32 = 26.;
 const INSET: f32 = 8.;
 const ROW: f32 = 40.;
 const HEADER: f32 = 68.;
-const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 10. + 16.;
+const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 11. + 16.;
 const ENTER: Duration = Duration::from_millis(150);
 const EXIT: Duration = Duration::from_millis(100);
 const SPRING: SpringConfig = SpringConfig::new(950., 48., 1.);
@@ -32,6 +34,7 @@ const SPRING: SpringConfig = SpringConfig::new(950., 48., 1.);
 enum Page {
     Commands,
     Panes,
+    Tabs,
     Hosts,
 }
 
@@ -115,6 +118,7 @@ struct MenuSnapshot {
     current: Option<String>,
     hosts: Vec<RemoteHost>,
     chords: Vec<(String, String)>,
+    tab_position: TabPosition,
 }
 
 pub(super) struct GlassMenu {
@@ -123,6 +127,7 @@ pub(super) struct GlassMenu {
     current: Option<String>,
     hosts: Vec<RemoteHost>,
     chords: Vec<(String, String)>,
+    tab_position: TabPosition,
     page: Page,
     entries: Vec<Entry>,
     selected: Option<usize>,
@@ -168,6 +173,7 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
     let current = desk.remote.clone();
     let hosts = desk.hosts.clone();
     let chords = crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords());
+    let tab_position = desk.prefs.tab_position;
     let owner = cx.entity();
     let weak = cx.weak_entity();
     let result = cx.open_window(
@@ -194,6 +200,7 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
                         current,
                         hosts,
                         chords,
+                        tab_position,
                     },
                     Some(MenuOwner {
                         desk: weak,
@@ -270,6 +277,7 @@ impl GlassMenu {
             current: snapshot.current,
             hosts: snapshot.hosts,
             chords: snapshot.chords,
+            tab_position: snapshot.tab_position,
             page: Page::Commands,
             entries: Vec::new(),
             selected: None,
@@ -327,6 +335,11 @@ impl GlassMenu {
                             Choice::Page(Page::Panes),
                         )
                     },
+                    Entry::new(
+                        "Tab placement",
+                        IconName::PanelLeft,
+                        Choice::Page(Page::Tabs),
+                    ),
                     self.command("goto", IconName::ArrowRight),
                     self.command("palette", IconName::Search),
                     self.command("settings", IconName::Settings),
@@ -341,6 +354,17 @@ impl GlassMenu {
                 self.command("split-down", IconName::PanelBottom),
                 self.command("view", IconName::Copy),
             ],
+            Page::Tabs => [
+                ("tabs-top", IconName::PanelsTopLeft, TabPosition::Top),
+                ("tabs-side", IconName::PanelLeft, TabPosition::Side),
+            ]
+            .into_iter()
+            .map(|(id, icon, position)| {
+                let mut entry = self.command(id, icon);
+                entry.checked = self.tab_position == position;
+                entry
+            })
+            .collect(),
             Page::Hosts => {
                 let mut local = Entry::new("Local", IconName::LaptopMinimal, Choice::Host(None));
                 local.detail = Some("On this Mac".into());
@@ -606,11 +630,13 @@ impl GlassMenu {
                 .unwrap_or_else(|| "Local".into())
                 .into(),
             Page::Panes => "Pane layout".into(),
+            Page::Tabs => "Tab placement".into(),
             Page::Hosts => "Switch host".into(),
         };
         let detail = match self.page {
             Page::Commands => "Switch host",
             Page::Panes => "Split or duplicate this terminal",
+            Page::Tabs => "Choose top or side workspace tabs",
             Page::Hosts => "Local and saved hosts",
         };
         div()
@@ -708,6 +734,7 @@ impl Render for GlassMenu {
                 let selector = match &entry.choice {
                     Choice::Command(id) => Some(*id),
                     Choice::Page(Page::Panes) => Some("panes"),
+                    Choice::Page(Page::Tabs) => Some("tabs"),
                     Choice::Host(None) => Some("local"),
                     _ => None,
                 };
@@ -880,6 +907,7 @@ pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
                             },
                         ],
                         chords,
+                        tab_position: TabPosition::Top,
                     },
                     None,
                     700.,
@@ -918,6 +946,7 @@ pub(super) fn benchmark(cx: &mut gpui::App) -> anyhow::Result<()> {
                     MenuSnapshot {
                         current: None,
                         hosts: Vec::new(),
+                        tab_position: TabPosition::Top,
                         chords: crate::settings::shown_chords(
                             &crate::settings::default_chords(),
                             &crate::settings::default_chords(),
@@ -1001,6 +1030,7 @@ mod tests {
                             current: None,
                             hosts: Vec::new(),
                             chords: Vec::new(),
+                            tab_position: TabPosition::Top,
                         },
                         None,
                         700.,
@@ -1039,6 +1069,7 @@ mod tests {
                         GlassMenu::new(
                             MenuSnapshot {
                                 current: None,
+                                tab_position: TabPosition::Top,
                                 chords: crate::settings::shown_chords(
                                     &crate::settings::default_chords(),
                                     &crate::settings::default_chords(),

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
-    Styled, Subscription, Window, div, px,
+    Styled, Subscription, Window, div, point, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -535,14 +535,33 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .into_any_element()
 }
 
+// Match the launcher's fine rim and lifted material without washing out text
+// over terminal content. The near-opaque tint works in both theme appearances.
 fn card(colors: &Palette, width: f32) -> gpui::Div {
+    let light = colors.theme.appearance == "light";
     div()
         .w(px(width))
-        .rounded(px(12.))
-        .bg(from_hex(&colors.raised))
+        .rounded(px(14.))
+        .bg(from_hex(&colors.raised).opacity(0.97))
+        .text_color(from_hex(&colors.theme.foreground))
         .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_lg()
+        .border_color(from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }))
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
+                offset: point(px(0.), px(20.)),
+                blur_radius: px(64.),
+                spread_radius: px(-8.),
+                inset: false,
+            },
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
+                offset: point(px(0.), px(2.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ])
         .occlude()
 }
 
@@ -555,21 +574,14 @@ pub fn find_bar(
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
-    div()
+    card(colors, 420.)
         .absolute()
-        .top(px(8.))
-        .right(px(8.))
-        .w(px(380.))
-        .p(px(6.))
-        .rounded(px(8.))
-        .bg(from_hex(&colors.raised))
-        .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_md()
-        .occlude()
+        .top(px(12.))
+        .right(px(12.))
+        .p(px(8.))
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(px(6.))
         .child(
             div().flex_grow(1.).child(
                 Input::new(input)
@@ -579,6 +591,10 @@ pub fn find_bar(
         )
         .child(
             div()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.045))
                 .text_xs()
                 .text_color(from_hex(&colors.muted))
                 .child(desk.find_status()),
@@ -1198,17 +1214,23 @@ fn path_panel(
         .items(rows)
         .empty(move |_, _, cx| {
             div()
-                .py(px(24.))
+                .py(px(36.))
+                .px(px(24.))
                 .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
                 .text_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
                 .child(if pending { "Searching…" } else { "No paths." })
         })
         .footer(move |_, _, _| {
             div()
                 .px(px(12.))
-                .py(px(6.))
+                .py(px(10.))
                 .flex()
                 .justify_between()
                 .gap(px(12.))
@@ -1254,9 +1276,16 @@ fn notification_rows(
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(8.))
+                .px(px(12.))
+                .py(px(12.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.055))
+                .bg(from_hex(&colors.theme.foreground).opacity(if entry.read {
+                    0.015
+                } else {
+                    0.04
+                }))
                 .flex()
                 .items_start()
                 .gap(px(10.))
@@ -1313,7 +1342,8 @@ fn notification_rows(
 fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
     div()
         .px(px(10.))
-        .py(px(6.))
+        .pt(px(14.))
+        .pb(px(8.))
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(from_hex(&colors.muted))
@@ -1339,8 +1369,10 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     if agent_rows.is_empty() {
         rows.push(
             div()
-                .px(px(10.))
-                .py(px(8.))
+                .px(px(12.))
+                .py(px(16.))
+                .rounded(px(10.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
                 .child("No agent attention alerts.")
@@ -1358,14 +1390,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     }
     card(colors, 460.)
         .mt(px(60.))
-        .p(px(8.))
+        .p(px(12.))
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(8.))
         .child(
             div()
                 .px(px(8.))
-                .py(px(4.))
+                .py(px(8.))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -1398,8 +1430,12 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
         )
         .child(if empty {
             div()
-                .px(px(10.))
-                .py(px(16.))
+                .px(px(20.))
+                .py(px(28.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
                 .child("No alerts or notifications yet. Unorganized work lives in Intake.")
@@ -1411,6 +1447,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
+                .gap(px(6.))
                 .children(rows)
                 .into_any_element()
         })
@@ -1420,13 +1457,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
 fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
     card(colors, 440.)
         .mt(px(120.))
-        .p(px(16.))
+        .p(px(24.))
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(14.))
         .child(
             div()
-                .text_base()
+                .pb(px(4.))
+                .text_size(px(18.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(from_hex(&colors.theme.foreground))
                 .child(title.to_owned()),
@@ -1435,6 +1473,7 @@ fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
 
 fn dialog_buttons(confirm: Button, cx: &mut Context<Desk>) -> impl IntoElement {
     div()
+        .pt(px(8.))
         .flex()
         .justify_end()
         .gap(px(8.))
@@ -1547,7 +1586,7 @@ fn confirm(
     run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> AnyElement {
     dialog_card(&title, colors)
-        .border_color(from_hex(&colors.theme.danger))
+        .border_color(from_hex(&colors.theme.danger).opacity(0.55))
         .child(
             div()
                 .text_sm()

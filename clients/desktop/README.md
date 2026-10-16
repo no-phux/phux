@@ -151,15 +151,27 @@ Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 with explicit CLI/socket/profile overrides cannot install updates.
 
 The window is a sidebar (agents by urgency, then every session and its panes),
-a tab bar under the traffic lights, split panes, and a status bar. Command-key
-chords belong to the app; everything else reaches the terminal.
+workspace tabs, split panes, and a status bar. Command-key chords belong to the
+app; everything else reaches the terminal.
+
+Choose **Top** or **Side** in **Settings > Window > Tab placement**, or the
+main menu's **Tab placement** page. The choice is saved with your display
+preferences. Side tabs have their own scrollable rail, even with the navigator
+hidden; Quick Terminal keeps compact titlebar tabs. Selecting, closing,
+double-clicking to rename, and dragging to reorder work in either layout.
+The command palette also offers **Tabs on Top** and **Tabs on Side**.
+
+Settings, dialogs, notifications, find controls, and dropdowns use the same
+theme-aware glass treatment. **Settings > Appearance > Font family** previews
+each face in the searchable dropdown, with bundled fonts pinned first.
 
 The titlebar's host picker shows the machine this window is on — **Local**, or a
-registered remote. Picking another machine points this window at it in place: it
-releases the current views and opens that host's home session with its saved
-layout. No new window is opened. A plain click on a host in the sidebar's
-**Hosts** section does the same; its context menu's **Open Window** still opens a
-separate window for a host.
+registered remote. The picker remains visible with the navigator hidden; long
+host names truncate within its capsule. Picking another machine points this
+window at it in place: it releases the current views and opens that host's home
+session with its saved layout. No new window is opened. A plain click on a host
+in the sidebar's **Hosts** section does the same; its context menu's **Open
+Window** still opens a separate window for a host.
 
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |
