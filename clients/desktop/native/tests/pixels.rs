@@ -912,6 +912,106 @@ fn sparse_output_repaints_a_row_without_disturbing_its_neighbor() {
     drop(client);
 }
 
+/// A wheel event between rows shifts the grid by the fraction and fills the
+/// opened space with the row below the viewport, clipped to the grid.
+fn smooth_scroll_paints_the_row_below_the_viewport() {
+    // Ten lines on a four-row screen: amber blocks on the ninth, the cursor
+    // alone on the tenth. Scrolling 1.5 rows up puts the blocks just below
+    // the viewport, half of them showing.
+    let mut payload = Vec::new();
+    for _ in 0..8 {
+        payload.extend_from_slice(b"x\r\n");
+    }
+    payload.extend_from_slice(
+        "\x1b[38;2;255;204;0m\u{2588}\u{2588}\u{2588}\u{2588}\x1b[m\r\n".as_bytes(),
+    );
+    let (client, view) = publish(&payload);
+    let mut cx = gpu();
+    let in_view = Arc::clone(&client);
+    let window = cx
+        .open_window(size(px(480.), px(200.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+        })
+        .expect("offscreen window");
+    let draw = |cx: &mut HeadlessAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+        let painted = window
+            .update(cx, |terminal, _, _| terminal.painted())
+            .expect("painted");
+        let image = cx.capture_screenshot(window.into()).expect("pixels");
+        Shot { image, painted }
+    };
+    let wheel = |cx: &mut HeadlessAppContext,
+                 rows: f32,
+                 geometry: phux_desktop::terminal::geometry::Geometry| {
+        let event = gpui::ScrollWheelEvent {
+            position: gpui::point(
+                geometry.bounds.origin.x + geometry.cell_width / 2.,
+                geometry.bounds.origin.y + geometry.cell_height / 2.,
+            ),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), geometry.cell_height * rows)),
+            ..Default::default()
+        };
+        cx.update_window(window.into(), |_, window, cx| {
+            window.dispatch_event(gpui::PlatformInput::ScrollWheel(event), cx);
+        })
+        .expect("wheel");
+    };
+    let tail = draw(&mut cx);
+    let geometry = tail.painted.geometry;
+    let tail_offset = tail.painted.frame.as_ref().unwrap().scrollbar.offset;
+    assert_eq!(tail.painted.shift, px(0.));
+
+    wheel(&mut cx, 1.5, geometry);
+    let shot = draw(&mut cx);
+    let frame = shot.painted.frame.as_ref().unwrap();
+    assert_eq!(frame.scrollbar.offset, tail_offset - 2);
+    assert_eq!(frame.buffer.fringe.len(), usize::from(frame.cols));
+    let half = geometry.cell_height / 2.;
+    assert!(
+        (shot.painted.shift + half).abs() <= px(1.),
+        "shift {:?}",
+        shot.painted.shift
+    );
+
+    // The bottom of the grid shows the top of the amber fringe row, and
+    // nothing is painted into the padding under the grid.
+    let scale = geometry.scale;
+    let bottom = geometry.bounds.origin.y + geometry.cell_height * f32::from(frame.rows);
+    let band = |top: Pixels, bottom: Pixels| {
+        let (left, top, right, bottom) = inset(
+            device(geometry.bounds.origin.x, scale),
+            device(top, scale),
+            device(geometry.bounds.origin.x + geometry.cell_width * 4., scale),
+            device(bottom, scale),
+        );
+        let mut pixels = Vec::new();
+        for y in top..bottom {
+            for x in left..right {
+                pixels.push(shot.image.get_pixel(x, y).0);
+            }
+        }
+        pixels
+    };
+    let reused = phux_desktop::perf::PREPARE_REUSED.get();
+    assert_mostly(&band(bottom - half + px(1.), bottom), AMBER, "fringe row");
+    assert_blank(
+        &band(bottom + px(1.), bottom + geometry.cell_height),
+        "padding under the grid",
+    );
+
+    // A move within the row keeps the frame and its scene.
+    wheel(&mut cx, -0.25, geometry);
+    let within = draw(&mut cx);
+    assert!(Arc::ptr_eq(within.painted.frame.as_ref().unwrap(), frame));
+    assert!(phux_desktop::perf::PREPARE_REUSED.get() > reused);
+    let quarter = geometry.cell_height * 0.75;
+    assert!((within.painted.shift + quarter).abs() <= px(1.));
+    drop(cx);
+    drop(client);
+}
+
 /// An opt-in, in-process render benchmark. It reuses the pixel fixture's
 /// embedded runtime and main-thread GPUI renderer; screenshots are outside
 /// the timed path but prove that draws reach a real offscreen surface.
@@ -1207,6 +1307,11 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::sparse_output_repaints_a_row_without_disturbing_its_neighbor",
         sparse_output_repaints_a_row_without_disturbing_its_neighbor,
+        false,
+    ),
+    (
+        "terminal::pixels::smooth_scroll_paints_the_row_below_the_viewport",
+        smooth_scroll_paints_the_row_below_the_viewport,
         false,
     ),
 ];

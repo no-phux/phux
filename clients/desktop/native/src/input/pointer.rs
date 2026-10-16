@@ -5,8 +5,10 @@ use gpui::{
     Point, ScrollWheelEvent, TouchPhase, Window, px,
 };
 use phux_client_runtime::{
+    Client,
     control::ControlPlane,
     engine::{MouseMode, Scroll, SelectionGestureEvent},
+    publication::GridFrame,
 };
 use phux_protocol::input::mouse::{MouseAction, MouseButton as WireButton, MouseEvent};
 
@@ -36,7 +38,14 @@ impl TerminalInput {
 
     /// The grid cell under `position`, or `None` when the point misses it.
     fn cell_at(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
-        self.geometry()?.hit(position)
+        self.geometry()?.hit(self.unshifted(position))
+    }
+
+    /// `position` in the grid's whole-row coordinates, undoing the painter's
+    /// sub-row scroll shift.
+    fn unshifted(&self, position: Point<Pixels>) -> Point<Pixels> {
+        let shift = self.metrics.map_or(px(0.), |metrics| metrics.shift);
+        Point::new(position.x, position.y - shift)
     }
 
     fn hit(&self, position: Point<Pixels>) -> bool {
@@ -46,7 +55,7 @@ impl TerminalInput {
     fn surface(&self, position: Point<Pixels>, clamped: bool) -> Result<SurfacePoint, InputError> {
         geometry::surface_at(
             self.geometry().ok_or(InputError::StalePresentation)?,
-            position,
+            self.unshifted(position),
             clamped,
         )
         .ok_or(InputError::StalePresentation)
@@ -252,7 +261,7 @@ impl TerminalInput {
     ) -> Result<bool, InputError> {
         let surface = self.surface(position, false)?;
         self.with_current(false, |control| {
-            if !reporting(control, &self.terminal, modifiers)? {
+            if modifiers.shift || !reporting(control, &self.terminal)? {
                 return Ok(false);
             }
             if !input_ready(control, &self.terminal) {
@@ -305,9 +314,14 @@ impl TerminalInput {
 
     /// Scroll the view under the pointer. Like every macOS scroll view, the
     /// wheel follows the pointer, not keyboard focus, so it needs only this
-    /// window. A sub-line delta accumulates without touching the runtime; a
-    /// whole line takes one control turn and notifies this entity, which
-    /// repaints the observing terminal.
+    /// window.
+    ///
+    /// A local scroll keeps a continuous position: whole rows move the
+    /// runtime view, and the remaining fraction of a row stays here for the
+    /// painter, which shifts the grid up by it and shows the frame's fringe
+    /// row underneath. A move that stays within the current row takes no
+    /// runtime turn. A program that reports the mouse gets whole-line wheel
+    /// presses instead, accumulated across events.
     pub fn scroll(
         &mut self,
         event: &ScrollWheelEvent,
@@ -325,27 +339,78 @@ impl TerminalInput {
             self.scroll_remainder = 0.0;
         }
         let delta = event.delta.pixel_delta(metrics.line_height);
-        self.scroll_remainder += f32::from(delta.y) / f32::from(metrics.line_height).max(1.0);
-        let lines = self.scroll_remainder.trunc() as i64;
-        self.scroll_remainder -= lines as f32;
-        if lines == 0 {
+        let rows_up = f32::from(delta.y) / f32::from(metrics.line_height).max(1.0);
+        let client = self.client()?;
+        let frame = client
+            .acquire_view(self.view)
+            .ok_or(InputError::StalePresentation)?;
+        if self.reports_wheel(&client, &frame, event.modifiers)? {
+            self.scroll_fraction = None;
+            self.scroll_remainder += rows_up;
+            let lines = self.scroll_remainder.trunc() as i64;
+            self.scroll_remainder -= lines as f32;
+            if lines != 0 {
+                self.with_current(false, |control| self.report_scroll(control, lines, event))?;
+            }
             return Ok(true);
         }
-        let local = self.with_current(false, |control| {
-            if reporting(control, &self.terminal, event.modifiers)? {
-                self.report_scroll(control, lines, event)?;
-                Ok(false)
-            } else {
+        let bar = frame.scrollbar;
+        let tail = bar.total.saturating_sub(bar.len);
+        let (offset, fraction) = smooth_target(bar.offset, self.fraction_of(&frame), tail, rows_up);
+        if offset != bar.offset {
+            let rows = i64::try_from(offset).unwrap_or(i64::MAX)
+                - i64::try_from(bar.offset).unwrap_or(i64::MAX);
+            self.with_current(false, |control| {
                 control
-                    .scroll_view(self.view, Scroll::Delta(-lines))
-                    .map_err(engine_error)?;
-                Ok(true)
-            }
-        })?;
-        if local {
-            cx.notify();
+                    .scroll_view(self.view, Scroll::Delta(rows))
+                    .map_err(engine_error)
+            })?;
         }
+        let landed = client
+            .acquire_view(self.view)
+            .map_or(offset, |frame| frame.scrollbar.offset);
+        let fraction = if landed == offset { fraction } else { 0.0 };
+        self.scroll_fraction = (fraction > 0.0).then_some((landed, fraction));
+        cx.notify();
         Ok(true)
+    }
+
+    /// The part of a row above `frame`'s viewport that the painter scrolls
+    /// past, in `[0, 1)`. Zero unless the last local scroll landed on this
+    /// frame's offset and the frame carries the row below its viewport.
+    pub fn fraction_of(&self, frame: &GridFrame) -> f32 {
+        match self.scroll_fraction {
+            Some((offset, fraction))
+                if offset == frame.scrollbar.offset
+                    && frame.buffer.fringe.len() == usize::from(frame.cols) =>
+            {
+                fraction
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Whether the program receives the wheel. Mouse modes change only with
+    /// terminal output, so the answer holds while the replica's sequence
+    /// does and a scroll through idle output asks the runtime once.
+    fn reports_wheel(
+        &mut self,
+        client: &Client,
+        frame: &GridFrame,
+        modifiers: Modifiers,
+    ) -> Result<bool, InputError> {
+        if modifiers.shift {
+            return Ok(false);
+        }
+        let key = (frame.stream_id, frame.bootstrap_id, frame.last_seq);
+        if let Some((cached, reports)) = self.wheel_mode
+            && cached == key
+        {
+            return Ok(reports);
+        }
+        let reports = client.with_control(|control| reporting(control, &self.terminal))?;
+        self.wheel_mode = Some((key, reports));
+        Ok(reports)
     }
 
     fn report_scroll(
@@ -371,6 +436,17 @@ impl TerminalInput {
         }
         Ok(())
     }
+}
+
+/// Where a local scroll of `rows_up` rows (toward history when positive)
+/// lands from `offset` plus `fraction`: the whole-row offset to show and the
+/// part of a row above it to scroll past. The position stays within the
+/// scrollback, and the live tail never shows a fraction.
+fn smooth_target(offset: u64, fraction: f32, tail: u64, rows_up: f32) -> (u64, f32) {
+    let position =
+        (offset as f64 + f64::from(fraction) - f64::from(rows_up)).clamp(0.0, tail as f64);
+    let row = position.floor();
+    (row as u64, (position - row) as f32)
 }
 
 /// Why `validate` rejected or accepted a captured application-mouse release.
@@ -456,11 +532,7 @@ fn button(button: MouseButton) -> WireButton {
 fn reporting(
     control: &ControlPlane,
     terminal: &phux_protocol::ResourceId,
-    modifiers: Modifiers,
 ) -> Result<bool, InputError> {
-    if modifiers.shift {
-        return Ok(false);
-    }
     let mode = control
         .engine()
         .ok_or(InputError::NotReady)?
@@ -473,8 +545,26 @@ fn reporting(
 mod tests {
     use super::{
         InputError, ReleaseFacts, ReleaseFrame, ReleaseValidation, refuse_captured_release,
-        repeats_cell,
+        repeats_cell, smooth_target,
     };
+
+    #[test]
+    fn smooth_target_keeps_a_continuous_position_inside_the_scrollback() {
+        let near = |(row, fraction): (u64, f32), expected: (u64, f32)| {
+            row == expected.0 && (fraction - expected.1).abs() < 1e-4
+        };
+        // Up from the tail by a quarter row shows the row above, mostly scrolled past.
+        assert!(near(smooth_target(10, 0., 10, 0.25), (9, 0.75)));
+        // Down within a row only grows the fraction.
+        assert!(near(smooth_target(9, 0.25, 10, -0.5), (9, 0.75)));
+        // Crossing rows carries the remainder.
+        assert!(near(smooth_target(9, 0.5, 10, 2.75), (6, 0.75)));
+        // The top and the live tail clamp, and the tail has no fraction.
+        assert!(near(smooth_target(1, 0.5, 10, 5.), (0, 0.)));
+        assert!(near(smooth_target(9, 0.5, 10, -3.), (10, 0.)));
+        // No scrollback: nothing moves.
+        assert!(near(smooth_target(0, 0., 0, 1.), (0, 0.)));
+    }
 
     #[test]
     fn motion_in_the_same_cell_is_one_event() {

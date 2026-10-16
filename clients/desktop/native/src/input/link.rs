@@ -797,6 +797,7 @@ mod tests {
                 utf8,
                 metadata: vec![CellMetadata::default(); usize::from(cols) * usize::from(rows)],
                 row_dirty: vec![true; usize::from(rows)],
+                ..GridBuffer::default()
             },
         }
     }

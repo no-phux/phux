@@ -93,6 +93,9 @@ pub struct InputMetrics {
     /// Window scale the painter snapped this grid to.
     pub scale: f32,
     pub cursor_bounds: Bounds<Pixels>,
+    /// How far the painter drew the grid below its whole-row position:
+    /// zero, or negative while a smooth scroll sits between rows.
+    pub shift: Pixels,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,7 +200,14 @@ pub struct TerminalInput {
     /// The cell the last motion event already delivered. A later move inside
     /// that cell is not a new event.
     last_motion_cell: Option<(u16, u16)>,
+    /// Whole wheel rows not yet reported to a mouse-reporting program.
     scroll_remainder: f32,
+    /// The view offset the last local scroll landed on, and the part of a row
+    /// above it the painter scrolls past.
+    scroll_fraction: Option<(u64, f32)>,
+    /// Whether the program reported the wheel at a replica's
+    /// `(stream, bootstrap, sequence)`.
+    wheel_mode: Option<((u64, u64, u64), bool)>,
     option_as_alt: bool,
     /// Registry host this window attaches to. Absent is the local server.
     /// A satellite terminal is remote even when this is absent.
@@ -240,6 +250,8 @@ impl TerminalInput {
             painted_links: link::PaintedLinks::default(),
             last_motion_cell: None,
             scroll_remainder: 0.0,
+            scroll_fraction: None,
+            wheel_mode: None,
             option_as_alt: false,
             window_remote: None,
             last_error: None,
@@ -1104,6 +1116,7 @@ mod tests {
             line_height: px(17.),
             scale: 1.,
             cursor_bounds: bounds,
+            shift: px(0.),
         }
     }
 
@@ -1346,6 +1359,7 @@ mod delivery {
             line_height: px(17.),
             scale: 1.,
             cursor_bounds: bounds,
+            shift: px(0.),
         }
     }
 
@@ -1555,25 +1569,40 @@ mod delivery {
                 .detach();
         });
 
-        // Unfocused, and less than a line: nothing reaches the runtime.
-        cx.update(|window, cx| {
-            input.update(cx, |state, cx| {
-                assert_eq!(state.scroll(&wheel(8.), window, cx), Ok(true));
+        let scroll = |cx: &mut gpui::VisualTestContext, pixels: f32| {
+            cx.update(|window, cx| {
+                input.update(cx, |state, cx| {
+                    assert_eq!(state.scroll(&wheel(pixels), window, cx), Ok(true));
+                });
             });
-        });
-        cx.run_until_parked();
-        assert_eq!(offset(&client), at_tail);
-        assert_eq!(notified.get(), 0);
+            cx.run_until_parked();
+            let frame = client.acquire_view(view).expect("frame");
+            let fraction = cx.update(|_, cx| input.read(cx).fraction_of(&frame));
+            (at_tail - frame.scrollbar.offset, fraction)
+        };
+        let near = |actual: f32, expected: f32| (actual - expected).abs() < 1e-4;
 
-        // The remainder plus this delta crosses two lines.
-        cx.update(|window, cx| {
-            input.update(cx, |state, cx| {
-                assert_eq!(state.scroll(&wheel(30.), window, cx), Ok(true));
-            });
-        });
-        cx.run_until_parked();
-        assert_eq!(offset(&client), at_tail - 2);
+        // Unfocused: half a row up from the tail shows the row above the
+        // viewport, scrolled past by the other half, and repaints.
+        let (back, fraction) = scroll(cx, 8.5);
+        assert_eq!(back, 1);
+        assert!(near(fraction, 0.5), "{fraction}");
         assert_eq!(notified.get(), 1, "the observing terminal repaints");
+
+        // A move within the current row stays local.
+        let (back, fraction) = scroll(cx, -4.25);
+        assert_eq!(back, 1);
+        assert!(near(fraction, 0.75), "{fraction}");
+        assert_eq!(notified.get(), 2);
+
+        // Crossing rows moves the view and keeps the remainder.
+        let (back, fraction) = scroll(cx, 34.);
+        assert_eq!(back, 3);
+        assert!(near(fraction, 0.75), "{fraction}");
+
+        // The live tail never shows a fraction.
+        let (back, fraction) = scroll(cx, -1_000.);
+        assert_eq!((back, fraction), (0, 0.));
     }
 
     #[gpui::test]

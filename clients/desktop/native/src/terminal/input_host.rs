@@ -28,7 +28,8 @@ pub(super) fn present(
         cell_width: report.geometry.cell_width,
         line_height: report.geometry.cell_height,
         scale: report.geometry.scale,
-        cursor_bounds: report.geometry.cell_bounds(row, col, width),
+        cursor_bounds: paint::shifted(report.geometry.cell_bounds(row, col, width), report.shift),
+        shift: report.shift,
     };
     let accepted = input.update(cx, |state, _| {
         state.presented_at(epoch, &frame, metrics).is_ok()
