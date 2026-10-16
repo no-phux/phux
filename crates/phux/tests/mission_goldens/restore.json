@@ -9,7 +9,7 @@
     "created_at": "<timestamp>",
     "description": "more detail",
     "id": "<id>",
-    "repo_project_id": "phux",
+    "repo": "phux",
     "revision": 4,
     "state": "todo",
     "title": "Fix the prompt",

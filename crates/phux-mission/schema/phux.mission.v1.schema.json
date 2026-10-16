@@ -19,7 +19,7 @@
       "required": [
         "id",
         "alias",
-        "repo_project_id",
+        "repo",
         "title",
         "description",
         "state",
@@ -35,11 +35,11 @@
         },
         "alias": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[1-9][0-9]{0,18}$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}/[1-9][0-9]{0,18}$"
         },
-        "repo_project_id": {
+        "repo": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
         },
         "title": {
           "type": "string",
@@ -108,7 +108,7 @@
         "schema": { "$ref": "#/definitions/schemaName" },
         "schema_version": { "const": 1 },
         "verb": {
-          "enum": ["add", "describe", "archive", "restore"]
+          "enum": ["add", "edit", "archive", "restore"]
         },
         "operation_id": {
           "type": "string",

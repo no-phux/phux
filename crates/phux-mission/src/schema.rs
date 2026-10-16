@@ -10,7 +10,7 @@ pub(crate) const USER_VERSION: i64 = 1;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objective (
     id BLOB NOT NULL PRIMARY KEY CHECK (length(id) = 16),
-    repo_project_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
     alias_number INTEGER NOT NULL CHECK (alias_number > 0),
     display_alias TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
@@ -20,10 +20,10 @@ CREATE TABLE IF NOT EXISTS objective (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
-    UNIQUE (repo_project_id, alias_number)
+    UNIQUE (repo, alias_number)
 );
 CREATE TABLE IF NOT EXISTS alias_counter (
-    repo_project_id TEXT NOT NULL PRIMARY KEY,
+    repo TEXT NOT NULL PRIMARY KEY,
     next_number INTEGER NOT NULL CHECK (next_number >= 1)
 );
 CREATE TABLE IF NOT EXISTS run (
@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS event (
 pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // WAL so a reader does not block the writer. FULL makes the commit
+    // durable before the call returns. `journal_mode` reports what was set.
+    let mode: String =
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(Error::Corrupt(format!("journal_mode is {mode}")));
+    }
+    conn.pragma_update(None, "synchronous", "FULL")?;
     let version = user_version(conn)?;
     match version {
         0 => {

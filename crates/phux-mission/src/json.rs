@@ -21,8 +21,8 @@ pub enum Verb {
     List,
     /// `mission show`.
     Show,
-    /// `mission describe`.
-    Describe,
+    /// `mission edit`.
+    Edit,
     /// `mission archive`.
     Archive,
     /// `mission restore`.
@@ -37,7 +37,7 @@ pub struct TaskDocument {
     /// Display alias, `repo/n`.
     pub alias: String,
     /// Repo the alias was allocated under.
-    pub repo_project_id: String,
+    pub repo: String,
     /// Task title.
     pub title: String,
     /// Task description. Empty when none was given.
@@ -61,7 +61,7 @@ impl TaskDocument {
         Self {
             id: objective.id.to_hex(),
             alias: objective.alias.display(),
-            repo_project_id: objective.repo_project_id.clone(),
+            repo: objective.repo.clone(),
             title: objective.title.clone(),
             description: objective.description.clone(),
             state: objective.state.as_str().to_owned(),
@@ -73,7 +73,7 @@ impl TaskDocument {
     }
 }
 
-/// `add`, `describe`, `archive`, and `restore`.
+/// `add`, `edit`, `archive`, and `restore`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MutationDocument {
     /// [`SCHEMA`].

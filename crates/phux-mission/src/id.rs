@@ -4,8 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::Error;
 
-/// Maximum byte length of a repo id.
-pub(crate) const MAX_REPO_BYTES: usize = 64;
+/// Maximum byte length of a repo id. Matches a project id (ADR-0168).
+pub(crate) const MAX_REPO_BYTES: usize = 256;
 
 /// Maximum byte length of a task title.
 pub(crate) const MAX_TITLE_BYTES: usize = 512;
@@ -132,6 +132,16 @@ impl ObjectiveState {
         }
     }
 
+    /// Human spelling. `NeedsYou` is two words.
+    #[must_use]
+    pub const fn as_words(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::Working => "working",
+            Self::NeedsYou => "needs you",
+        }
+    }
+
     pub(crate) fn parse(text: &str) -> Result<Self, Error> {
         match text {
             "todo" => Ok(Self::Todo),
@@ -181,16 +191,17 @@ pub struct Alias {
 }
 
 impl Alias {
-    /// Parse `repo/n`. The number has no leading zeros.
+    /// Parse `repo/n`. The number is the last segment and has no leading zeros.
+    /// A project id such as `github.com/no-phux/phux` may itself contain slashes.
     ///
     /// # Errors
     ///
     /// [`Error::InvalidAlias`] when `text` is not a canonical alias.
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let Some((repo, number)) = text.split_once('/') else {
+        let Some((repo, number)) = text.rsplit_once('/') else {
             return Err(Error::InvalidAlias(text.to_owned()));
         };
-        if number.contains('/') {
+        if repo.is_empty() {
             return Err(Error::InvalidAlias(text.to_owned()));
         }
         let repo = parse_repo(repo).map_err(|_| Error::InvalidAlias(text.to_owned()))?;
@@ -230,10 +241,12 @@ impl std::fmt::Display for Alias {
     }
 }
 
-/// Check a repo id: one leading ASCII letter or digit, then letters,
-/// digits, `.`, `_`, or `-`, at most 64 bytes.
+/// Check a repo id: a project id or a directory name, at most 256 bytes.
+/// Letters, digits, `.`, `_`, `-`, `/`, and `:` are allowed. Slashes separate
+/// path segments and do not begin or end the id.
 pub(crate) fn parse_repo(text: &str) -> Result<String, Error> {
-    if text.is_empty() || text.len() > MAX_REPO_BYTES {
+    if text.is_empty() || text.len() > MAX_REPO_BYTES || text.contains("//") || text.ends_with('/')
+    {
         return Err(Error::InvalidRepo(text.to_owned()));
     }
     let mut chars = text.chars();
@@ -243,10 +256,14 @@ pub(crate) fn parse_repo(text: &str) -> Result<String, Error> {
     if !first.is_ascii_alphanumeric() {
         return Err(Error::InvalidRepo(text.to_owned()));
     }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')) {
+    if !chars.all(repo_char) {
         return Err(Error::InvalidRepo(text.to_owned()));
     }
     Ok(text.to_owned())
+}
+
+const fn repo_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':')
 }
 
 pub(crate) fn parse_title(text: &str) -> Result<String, Error> {
@@ -348,16 +365,28 @@ const fn hex_value(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Alias, OperationId};
+    use super::{Alias, ObjectiveState, OperationId};
 
     #[test]
-    fn alias_accepts_the_full_repo_form_and_refuses_bare_numbers() {
+    fn alias_accepts_a_project_id_and_refuses_bare_numbers() {
         let alias = Alias::parse("phux/3").expect("alias");
         assert_eq!(alias.display(), "phux/3");
         assert_eq!(alias.number, 3);
-        for bad in ["3", "phux", "phux/03", "phux/0", "phux/3/1", "/3", "phux/"] {
+        let remote = Alias::parse("github.com/no-phux/phux/3").expect("project alias");
+        assert_eq!(remote.repo, "github.com/no-phux/phux");
+        assert_eq!(remote.number, 3);
+        assert_eq!(remote.display(), "github.com/no-phux/phux/3");
+        for bad in ["3", "phux", "phux/03", "phux/0", "/3", "phux/", "a//b/1"] {
             assert!(Alias::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn needs_you_is_two_words_for_people_and_snake_case_in_json() {
+        assert_eq!(ObjectiveState::NeedsYou.as_words(), "needs you");
+        assert_eq!(ObjectiveState::NeedsYou.as_str(), "needs_you");
+        assert_eq!(ObjectiveState::Todo.as_words(), "todo");
+        assert_eq!(ObjectiveState::Working.as_words(), "working");
     }
 
     #[test]

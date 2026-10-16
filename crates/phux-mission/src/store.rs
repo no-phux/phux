@@ -30,7 +30,7 @@ pub struct Objective {
     /// Display alias.
     pub alias: Alias,
     /// Repo the alias belongs to.
-    pub repo_project_id: String,
+    pub repo: String,
     /// Title.
     pub title: String,
     /// Description. Empty when unset.
@@ -77,7 +77,7 @@ pub struct Applied {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddObjective {
     /// Repo id the new alias is allocated under.
-    pub repo_project_id: String,
+    pub repo: String,
     /// Title.
     pub title: String,
     /// Description. Empty is allowed.
@@ -88,17 +88,18 @@ pub struct AddObjective {
     pub actor: String,
 }
 
-/// `describe` arguments. At least one of title or description is required.
+/// `edit` arguments. At least one of title or description is required.
+/// `expected_revision` is required: there is no last-write-wins fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DescribeObjective {
+pub struct EditObjective {
     /// Task to edit.
     pub alias: Alias,
     /// New title, when set.
     pub title: Option<String>,
     /// New description, when set.
     pub description: Option<String>,
-    /// Fail when the stored revision is not this value.
-    pub expected_revision: Option<u64>,
+    /// Fail when the stored revision is not this value. Required.
+    pub expected_revision: u64,
     /// Idempotency key.
     pub operation_id: OperationId,
     /// Recorded on the event row.
@@ -110,8 +111,8 @@ pub struct DescribeObjective {
 pub struct RevisionEdit {
     /// Task to edit.
     pub alias: Alias,
-    /// Fail when the stored revision is not this value.
-    pub expected_revision: Option<u64>,
+    /// Fail when the stored revision is not this value. Required.
+    pub expected_revision: u64,
     /// Idempotency key.
     pub operation_id: OperationId,
     /// Recorded on the event row.
@@ -126,8 +127,8 @@ pub struct StateEdit {
     pub alias: Alias,
     /// Requested state, before projection.
     pub state: ObjectiveState,
-    /// Fail when the stored revision is not this value.
-    pub expected_revision: Option<u64>,
+    /// Fail when the stored revision is not this value. Required.
+    pub expected_revision: u64,
     /// Idempotency key.
     pub operation_id: OperationId,
     /// Recorded on the event row.
@@ -143,8 +144,8 @@ pub struct RaiseSignal {
     pub kind: SignalKind,
     /// Free text.
     pub body: String,
-    /// Fail when the stored revision is not this value.
-    pub expected_revision: Option<u64>,
+    /// Fail when the stored revision is not this value. Required.
+    pub expected_revision: u64,
     /// Idempotency key.
     pub operation_id: OperationId,
     /// Recorded on the event row.
@@ -198,13 +199,13 @@ impl Store {
     /// the original objective.
     pub fn add(&mut self, request: AddObjective) -> Result<Applied, Error> {
         let AddObjective {
-            repo_project_id,
+            repo,
             title,
             description,
             operation_id,
             actor,
         } = request;
-        let repo = parse_repo(&repo_project_id)?;
+        let repo = parse_repo(&repo)?;
         let title = parse_title(&title)?;
         let description = parse_description(&description)?;
         let actor = parse_actor(&actor)?;
@@ -239,11 +240,11 @@ impl Store {
         let archived: i64 = i64::from(filter.archived);
         let repo = filter.repo.clone().unwrap_or_default();
         let mut statement = self.conn.prepare(
-            "SELECT id, repo_project_id, alias_number, display_alias, title, description,
+            "SELECT id, repo, alias_number, display_alias, title, description,
                     state, revision, created_at, updated_at, archived
              FROM objective
-             WHERE archived = ?1 AND (?2 = '' OR repo_project_id = ?2)
-             ORDER BY repo_project_id, alias_number",
+             WHERE archived = ?1 AND (?2 = '' OR repo = ?2)
+             ORDER BY repo, alias_number",
         )?;
         let rows = statement.query_map(params![archived, repo], map_objective)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
@@ -264,7 +265,7 @@ impl Store {
     ///
     /// [`Error::EmptyEdit`] when neither field is set, plus revision and
     /// operation conflicts.
-    pub fn describe(&mut self, request: DescribeObjective) -> Result<Applied, Error> {
+    pub fn edit(&mut self, request: EditObjective) -> Result<Applied, Error> {
         if request.title.is_none() && request.description.is_none() {
             return Err(Error::EmptyEdit);
         }
@@ -275,7 +276,7 @@ impl Store {
             .transpose()?;
         let actor = parse_actor(&request.actor)?;
         let digest = digest(
-            "describe",
+            "edit",
             &serde_json::json!({
                 "alias": request.alias.display(),
                 "description": &description,
@@ -285,35 +286,28 @@ impl Store {
         )?;
         let alias = request.alias;
         let expected = request.expected_revision;
-        self.mutate(
-            "describe",
-            &digest,
-            request.operation_id,
-            &actor,
-            |tx, now| {
-                let current = load_checked(tx, &alias, expected)?;
-                let next_title = title.unwrap_or_else(|| current.title.clone());
-                let next_description = description.unwrap_or_else(|| current.description.clone());
-                let changed =
-                    next_title != current.title || next_description != current.description;
-                let objective = if changed {
-                    let previous = current.revision;
-                    let mut updated = current;
-                    updated.title = next_title;
-                    updated.description = next_description;
-                    updated.revision = bump(previous)?;
-                    now.clone_into(&mut updated.updated_at);
-                    write_objective(tx, &updated, previous)?;
-                    updated
-                } else {
-                    current
-                };
-                Ok(MutationBody {
-                    objective,
-                    event_kind: "objective_updated",
-                })
-            },
-        )
+        self.mutate("edit", &digest, request.operation_id, &actor, |tx, now| {
+            let current = load_checked(tx, &alias, expected)?;
+            let next_title = title.unwrap_or_else(|| current.title.clone());
+            let next_description = description.unwrap_or_else(|| current.description.clone());
+            let changed = next_title != current.title || next_description != current.description;
+            let objective = if changed {
+                let previous = current.revision;
+                let mut updated = current;
+                updated.title = next_title;
+                updated.description = next_description;
+                updated.revision = bump(previous)?;
+                now.clone_into(&mut updated.updated_at);
+                write_objective(tx, &updated, previous)?;
+                updated
+            } else {
+                current
+            };
+            Ok(MutationBody {
+                objective,
+                event_kind: "objective_updated",
+            })
+        })
     }
 
     /// Mark the objective archived.
@@ -438,6 +432,17 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn user_version(&self) -> Result<i64, Error> {
         schema::user_version(&self.conn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn durability(&self) -> Result<(String, i64), Error> {
+        let journal: String = self
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let synchronous: i64 = self
+            .conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        Ok((journal, synchronous))
     }
 
     #[cfg(test)]
@@ -619,8 +624,8 @@ fn replay(
 
 fn allocate_alias(tx: &Transaction<'_>, repo: &str) -> Result<Alias, Error> {
     let number: i64 = tx.query_row(
-        "INSERT INTO alias_counter (repo_project_id, next_number) VALUES (?1, 1)
-         ON CONFLICT(repo_project_id) DO UPDATE SET next_number = next_number + 1
+        "INSERT INTO alias_counter (repo, next_number) VALUES (?1, 1)
+         ON CONFLICT(repo) DO UPDATE SET next_number = next_number + 1
          RETURNING next_number",
         params![repo],
         |row| row.get(0),
@@ -644,7 +649,7 @@ fn insert_objective(
         i64::try_from(alias.number).map_err(|_| Error::Corrupt("alias number".to_owned()))?;
     tx.execute(
         "INSERT INTO objective (
-            id, repo_project_id, alias_number, display_alias, title, description,
+            id, repo, alias_number, display_alias, title, description,
             state, revision, created_at, updated_at, archived
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, 0)",
         params![
@@ -708,15 +713,9 @@ fn unresolved_credential_lost(tx: &Transaction<'_>, objective_id: OpaqueId) -> R
     Ok(found.is_some())
 }
 
-fn load_checked(
-    tx: &Transaction<'_>,
-    alias: &Alias,
-    expected: Option<u64>,
-) -> Result<Objective, Error> {
+fn load_checked(tx: &Transaction<'_>, alias: &Alias, expected: u64) -> Result<Objective, Error> {
     let objective = load_alias(tx, alias)?;
-    if let Some(expected) = expected
-        && expected != objective.revision
-    {
+    if expected != objective.revision {
         return Err(Error::RevisionConflict {
             alias: alias.display(),
             expected,
@@ -773,7 +772,7 @@ fn load_alias_conn(conn: &Connection, alias: &Alias) -> Result<Objective, Error>
 
 fn load_display(conn: &Connection, display: &str) -> Result<Objective, Error> {
     conn.query_row(
-        "SELECT id, repo_project_id, alias_number, display_alias, title, description,
+        "SELECT id, repo, alias_number, display_alias, title, description,
                 state, revision, created_at, updated_at, archived
          FROM objective WHERE display_alias = ?1",
         params![display],
@@ -787,7 +786,7 @@ fn load_display(conn: &Connection, display: &str) -> Result<Objective, Error> {
 
 fn load_by_id(tx: &Transaction<'_>, id: OpaqueId) -> Result<Objective, Error> {
     tx.query_row(
-        "SELECT id, repo_project_id, alias_number, display_alias, title, description,
+        "SELECT id, repo, alias_number, display_alias, title, description,
                 state, revision, created_at, updated_at, archived
          FROM objective WHERE id = ?1",
         params![id.as_slice()],
@@ -815,7 +814,7 @@ fn map_objective(row: &rusqlite::Row<'_>) -> rusqlite::Result<Objective> {
             repo: repo.clone(),
             number,
         },
-        repo_project_id: repo,
+        repo,
         title: row.get(4)?,
         description: row.get(5)?,
         state,
@@ -860,7 +859,7 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        AddObjective, DescribeObjective, ListFilter, RaiseSignal, RevisionEdit, StateEdit, Store,
+        AddObjective, EditObjective, ListFilter, RaiseSignal, RevisionEdit, StateEdit, Store,
     };
     use crate::error::Error;
     use crate::{ObjectiveState, OperationId, SignalKind};
@@ -873,7 +872,7 @@ mod tests {
 
     fn add_op(repo: &str, title: &str, operation_id: OperationId) -> AddObjective {
         AddObjective {
-            repo_project_id: repo.to_owned(),
+            repo: repo.to_owned(),
             title: title.to_owned(),
             description: String::new(),
             operation_id,
@@ -891,6 +890,9 @@ mod tests {
         let path = dir.path().join("mission-v1.sqlite");
         let store = Store::open(&path).expect("open");
         assert_eq!(store.user_version().expect("version"), 1);
+        let (journal, synchronous) = store.durability().expect("pragmas");
+        assert_eq!(journal.to_ascii_lowercase(), "wal");
+        assert_eq!(synchronous, 2);
         let tables = store.table_names().expect("tables");
         for name in [
             "alias_counter",
@@ -995,23 +997,23 @@ mod tests {
         let (_dir, mut store) = open();
         let added = store.add(add("phux", "one")).expect("add");
         let alias = added.objective.alias;
-        let described = store
-            .describe(DescribeObjective {
+        let edited = store
+            .edit(EditObjective {
                 alias: alias.clone(),
                 title: Some("renamed".to_owned()),
                 description: None,
-                expected_revision: Some(1),
+                expected_revision: 1,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
-            .expect("describe");
-        assert_eq!(described.objective.revision, 2);
-        assert_eq!(described.objective.title, "renamed");
-        match store.describe(DescribeObjective {
+            .expect("edit");
+        assert_eq!(edited.objective.revision, 2);
+        assert_eq!(edited.objective.title, "renamed");
+        match store.edit(EditObjective {
             alias: alias.clone(),
             title: Some("nope".to_owned()),
             description: None,
-            expected_revision: Some(1),
+            expected_revision: 1,
             operation_id: OperationId::generate().expect("id"),
             actor: "tester".to_owned(),
         }) {
@@ -1036,7 +1038,7 @@ mod tests {
             .record_state(StateEdit {
                 alias: alias.clone(),
                 state: ObjectiveState::Working,
-                expected_revision: Some(1),
+                expected_revision: 1,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
@@ -1047,7 +1049,7 @@ mod tests {
                 alias: alias.clone(),
                 kind: SignalKind::CredentialLost,
                 body: "grant is gone".to_owned(),
-                expected_revision: Some(2),
+                expected_revision: 2,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
@@ -1062,7 +1064,7 @@ mod tests {
             .record_state(StateEdit {
                 alias: alias.clone(),
                 state: ObjectiveState::Working,
-                expected_revision: None,
+                expected_revision: raised.objective.revision,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
@@ -1082,7 +1084,7 @@ mod tests {
         let archived = store
             .archive(RevisionEdit {
                 alias: alias.clone(),
-                expected_revision: Some(1),
+                expected_revision: 1,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
@@ -1101,7 +1103,7 @@ mod tests {
         let restored = store
             .restore(RevisionEdit {
                 alias,
-                expected_revision: Some(2),
+                expected_revision: 2,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
             })
@@ -1172,7 +1174,13 @@ mod tests {
         if std::env::var_os("PHUX_MISSION_EXPECT_BUSY").is_some() {
             let path = std::env::var("PHUX_MISSION_PATH").expect("path");
             match Store::try_open(Path::new(&path)) {
-                Err(Error::Busy) => return,
+                Err(err @ Error::Busy) => {
+                    assert_eq!(
+                        err.to_string(),
+                        "another phux mission command is writing; try again"
+                    );
+                    return;
+                }
                 other => panic!("expected a busy lock, got {other:?}"),
             }
         }

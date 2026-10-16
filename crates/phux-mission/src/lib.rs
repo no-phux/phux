@@ -35,6 +35,6 @@ pub use json::{
     ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, TaskDocument, Verb,
 };
 pub use store::{
-    AddObjective, Applied, DB_FILE, DescribeObjective, ListFilter, Objective, RaiseSignal,
+    AddObjective, Applied, DB_FILE, EditObjective, ListFilter, Objective, RaiseSignal,
     RevisionEdit, Signal, StateEdit, Store, store_path,
 };

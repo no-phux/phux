@@ -21,7 +21,7 @@ pub enum Error {
         supported: i64,
     },
     /// Another writer holds the store lock.
-    #[error("mission store is locked by another writer")]
+    #[error("another phux mission command is writing; try again")]
     Busy,
     /// No objective has this alias.
     #[error("no task {alias}")]
@@ -30,7 +30,7 @@ pub enum Error {
         alias: String,
     },
     /// The caller named a revision the objective no longer has.
-    #[error("revision conflict for {alias}: expected {expected}, store has {actual}")]
+    #[error("{alias} is at rev {actual}; rerun with --expected-revision {actual}")]
     RevisionConflict {
         /// Display alias, such as `phux/3`.
         alias: String,
@@ -52,7 +52,7 @@ pub enum Error {
     #[error("operation id must be 32 hex digits and not all zeros: {0}")]
     InvalidOperationId(String),
     /// The repo id is empty or contains a character an alias cannot carry.
-    #[error("repo id must be 1-64 bytes of letters, digits, `.`, `_`, or `-`: {0}")]
+    #[error("repo id must be 1-256 bytes of letters, digits, `.`, `_`, `-`, `/`, or `:`: {0}")]
     InvalidRepo(String),
     /// A text field is empty, too long, or contains a NUL.
     #[error("{field} {reason}")]
@@ -62,8 +62,8 @@ pub enum Error {
         /// What is wrong with the value.
         reason: &'static str,
     },
-    /// `describe` named neither a title nor a description.
-    #[error("describe needs a title or a description")]
+    /// `edit` named neither a title nor a description.
+    #[error("edit needs a title or a description")]
     EmptyEdit,
     /// The operating system could not mint an id.
     #[error("could not mint an id: {0}")]
