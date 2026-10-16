@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.82.1](https://github.com/no-phux/phux/compare/v0.82.0...v0.82.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **client:** retire QUIC Terminal streams when resources close ([#1476](https://github.com/no-phux/phux/issues/1476)) ([62d8200](https://github.com/no-phux/phux/commit/62d82001bdfe944d2bf663df0257a34343f13ca0))
+
 ## [0.82.0](https://github.com/no-phux/phux/compare/v0.81.0...v0.82.0) (2026-10-16)
 
 
