@@ -335,8 +335,9 @@ jobs:
             grep -Fxq "${base}.sha256" <<<"$names"
           done
 
-      # Only the CLI stream is GitHub's "Latest": installers and `phux update`
-      # resolve the current release from the releases/latest redirect.
+      # Only the CLI stream is GitHub's "Latest". Current clients read the
+      # channel manifest (ADR-0175); binaries released before it still
+      # resolve their one update through the releases/latest redirect.
       - name: Publish the complete release
         env:
           GH_TOKEN: ${{ github.token }}

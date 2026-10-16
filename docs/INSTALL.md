@@ -19,8 +19,8 @@ phux
 
 That is the whole install. The installer puts `phux` and `phux-mcp` in
 `~/.local/bin` and adds that directory to your shell's `PATH` when it is
-missing. It verifies the release `.sha256` sidecar before unpacking, and an
-interrupted install leaves the previous binaries in place.
+missing. It verifies the download against the published SHA-256 before
+unpacking, and an interrupted install leaves the previous binaries in place.
 
 `phux` starts a server and attaches to it. Press `Ctrl-A`, then `d`, to
 detach; run `phux` again to reattach. Continue with the
@@ -183,8 +183,10 @@ phux channel next              # follow green main from now on
 phux channel latest            # back to numbered releases
 ```
 
-`phux update` downloads the release tarball and its `.sha256` sidecar,
-refuses on a checksum mismatch, and replaces `phux` and `phux-mcp` together
+`phux update` reads the channel's release manifest
+(`releases/download/channels/stable.json` or `next.json`; one small file, no
+GitHub API calls), downloads the release tarball, refuses on a mismatch with
+the manifest's SHA-256, and replaces `phux` and `phux-mcp` together
 under a lock with a recovery journal. It then asks a running server to
 graceful-upgrade, the `phux upgrade` path. The previous pair stays in
 `.phux-update-backup/` beside the binaries for `--rollback`. The trust

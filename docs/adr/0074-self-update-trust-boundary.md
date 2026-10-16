@@ -15,6 +15,7 @@ unrecognized location rather than overwriting it.
 
 Status: Accepted
 Date: 2026-08-07
+Amended by [ADR-0175](./0175-one-release-manifest-per-channel.md): decision 1's trust anchor is the channel manifest's digest; a pinned release still uses its sidecar.
 
 ## Context
 
@@ -52,8 +53,7 @@ allowed to trust, and what are we allowed to touch".
    (no symlinks, no non-regular files, no extra members). The one place a new
    binary is *run* is the server's pre-existing pre-commit `--version` check in
    `phux-server/src/runtime/upgrade.rs`, which happens after installation, on
-   the server side, where a failure is harmless because nothing has been closed
-   yet.
+   the server side, where a failure is harmless because nothing has closed yet.
 
 3. **Replacement is crash-durable and permission-preserving.** An advisory lock
    serializes updates and rollbacks. Before either target changes, the old pair

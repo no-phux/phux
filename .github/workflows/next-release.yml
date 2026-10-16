@@ -5,10 +5,11 @@
 # creates a stable version tag and never touches Homebrew.
 # release-please remains the sole owner of stable tags (ADR-0113).
 #
-# Two products ride the one prerelease on their own pointers: channel.json
-# (phux + phux-mcp, three targets) and desktop-channel.json (the GPUI desktop).
-# Each rebuilds only when its own inputs moved since the SHA its pointer names,
-# and each publishes on its own success.
+# Two products ride the one prerelease on their own publication records:
+# channel.json (phux + phux-mcp, three targets) and desktop-channel.json (the
+# GPUI desktop). Each rebuilds only when its own inputs moved since the SHA its
+# record names, and each publishes on its own success. Clients read neither:
+# the `manifest` job derives channels/next.json from both (ADR-0175).
 #
 # Cost: at most one run in flight. A newer green SHA waits instead of
 # cancelling it, and pending runs coalesce to the newest, so a busy main still
@@ -326,3 +327,26 @@ jobs:
               phux-desktop-next.*) gh release delete-asset next "$name" --yes ;;
             esac
           done <<< "$names"
+
+  # next.json (ADR-0175) is rebuilt from the per-product records above on
+  # every gated run, built or not, so a skipped or failed product leaves the
+  # manifest naming what is actually published.
+  manifest:
+    name: publish next manifest
+    needs: [gate, publish]
+    if: ${{ !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and publish next.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A product that cannot be resolved keeps its published entry and
+        # turns this job red; the other product still publishes.
+        run: python3 scripts/ci/release_manifest.py next --out "$RUNNER_TEMP/next.json" --publish
