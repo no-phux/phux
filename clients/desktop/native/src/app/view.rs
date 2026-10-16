@@ -601,20 +601,13 @@ fn tab_strip(
 
 fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let entity = desk.updates.clone();
-    let updater = entity.read(cx);
-    if !updater.desktop_available() || updater.development {
+    let Some(action) = entity.read(cx).desktop_action() else {
         return div().into_any_element();
-    }
-    let busy = updater.busy;
+    };
     Button::new("desktop-update-ready")
-        .label(if busy {
-            "Updating…"
-        } else {
-            "Update & restart"
-        })
+        .label(action.label())
         .small()
-        .disabled(busy)
-        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.install_desktop(cx)))
+        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
         .into_any_element()
 }
 

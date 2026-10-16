@@ -1,6 +1,10 @@
-//! Release checks and explicit updates. No downloaded code runs during a check.
+//! Release checks and explicit updates (ADR-0175). A check reads one channel
+//! manifest; an update stages a verified bundle beside the app while it runs and
+//! a detached helper swaps it in only after this process has exited. No
+//! downloaded code runs during a check.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
@@ -17,6 +21,12 @@ impl Channel {
         match self {
             Self::Stable => "stable",
             Self::Next => "next",
+        }
+    }
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "Stable",
+            Self::Next => "Next",
         }
     }
     fn parse(value: &Value) -> Self {
@@ -91,11 +101,32 @@ fn config_path() -> PathBuf {
     base.join("phux-desktop/updates.json")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where release manifests are published; the channel name completes the URL.
+const MANIFESTS: &str = "https://github.com/no-phux/phux/releases/download/channels";
+const DOWNLOADS: &str = "https://github.com/no-phux/phux/releases/download";
+const TARGET: &str = "aarch64-apple-darwin";
+/// Beside the installed app, so the post-exit swap is a same-volume rename.
+const STAGING_DIR: &str = ".phux-desktop-update";
+/// The installer's lock; every publisher of `Phux.app` takes the same inode.
+const LOCK_FILE: &str = ".phux-desktop-install.lock";
+const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+const STAGE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
     pub revision: String,
     pub channel: Channel,
+    /// The archive digest the manifest publishes; empty for the installed app.
+    pub sha256: String,
+    /// The wire `major.minor` this build links.
+    pub protocol: String,
+}
+
+/// The wire protocol this desktop links.
+pub fn own_protocol() -> String {
+    let version = phux_protocol::PROTOCOL_VERSION;
+    format!("{}.{}", version.major, version.minor)
 }
 
 /// Only the installed, standard bundle can replace itself; bare development
@@ -123,6 +154,8 @@ pub fn installed_release(bundle: &Path) -> anyhow::Result<Release> {
         } else {
             Channel::Stable
         },
+        sha256: String::new(),
+        protocol: own_protocol(),
     })
 }
 
@@ -139,109 +172,112 @@ fn fetch(url: &str) -> anyhow::Result<Value> {
         "--max-time",
         "30",
         "--max-filesize",
-        "8388608",
+        "1048576",
         url,
     ]))?;
-    serde_json::from_str(&text).context("Invalid release metadata")
+    serde_json::from_str(&text).context("Invalid release manifest")
 }
 
-fn stable_version(tag: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = tag.strip_prefix("desktop-v")?.split('.');
+fn strict_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.');
     let number = |part: &str| {
         let value: u64 = part.parse().ok()?;
         (part == value.to_string()).then_some(value)
     };
-    let version = (
+    let parsed = (
         number(parts.next()?)?,
         number(parts.next()?)?,
         number(parts.next()?)?,
     );
-    parts.next().is_none().then_some(version)
+    parts.next().is_none().then_some(parsed)
 }
 
-pub fn stable_releases(value: &Value) -> anyhow::Result<Vec<Release>> {
-    let rows = value.as_array().context("Expected a release list")?;
-    Ok(rows
-        .iter()
-        .filter(|row| row["draft"] == false && row["prerelease"] == false)
-        .filter_map(|row| {
-            let tag = row["tag_name"].as_str()?;
-            stable_version(tag)?;
-            Some(Release {
-                version: tag.strip_prefix("desktop-v")?.to_owned(),
-                revision: String::new(),
-                channel: Channel::Stable,
-            })
-        })
-        .collect())
+fn lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// `major.minor`, decimal without leading zeroes.
+fn protocol_shaped(text: &str) -> bool {
+    let mut parts = text.split('.');
+    let number = |part: Option<&str>| {
+        part.is_some_and(|part| part.parse::<u64>().is_ok_and(|n| part == n.to_string()))
+    };
+    number(parts.next()) && number(parts.next()) && parts.next().is_none()
+}
+
+fn field<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
+    value[key]
+        .as_str()
+        .with_context(|| format!("Desktop manifest entry has no {key}"))
+}
+
+fn not_published(channel: Channel) -> anyhow::Error {
+    anyhow::anyhow!(
+        "No Desktop {} build is published yet. Check again later.",
+        channel.label()
+    )
 }
 
 pub fn latest(channel: Channel) -> anyhow::Result<Release> {
-    if channel == Channel::Next {
-        let pointer =
-            fetch("https://github.com/no-phux/phux/releases/download/next/desktop-channel.json")
-                .map_err(next_fetch_error)?;
-        return next_release(&pointer);
-    }
-    let mut releases = Vec::new();
-    for page in 1..=10 {
-        let value = fetch(&format!(
-            "https://api.github.com/repos/no-phux/phux/releases?per_page=100&page={page}"
-        ))?;
-        releases.extend(stable_releases(&value)?);
-        if value.as_array().is_some_and(|rows| rows.len() < 100) {
-            break;
+    let manifest = fetch(&format!("{MANIFESTS}/{}.json", channel.name())).map_err(|error| {
+        if error.to_string().contains("returned error: 404") {
+            not_published(channel)
+        } else {
+            error
         }
-    }
-    releases
-        .into_iter()
-        .max_by_key(|release| stable_version(&format!("desktop-v{}", release.version)))
-        .context("No published Stable desktop release")
+    })?;
+    manifest_release(&manifest, channel)
 }
 
-/// The Next pointer is absent until a desktop build first qualifies; say so
-/// instead of surfacing curl's HTTP status line.
-fn next_fetch_error(error: anyhow::Error) -> anyhow::Error {
-    if error.to_string().contains("returned error: 404") {
-        anyhow::anyhow!(
-            "No Desktop Next build is published yet. Stay on Stable or check again later."
-        )
-    } else {
-        error
+/// The desktop entry of a channel manifest, validated per ADR-0175 decision 3:
+/// every name and URL must equal what this client derives itself.
+pub fn manifest_release(manifest: &Value, channel: Channel) -> anyhow::Result<Release> {
+    if manifest["schema_version"] != 1 || manifest["channel"] != channel.name() {
+        bail!("Invalid {} release manifest", channel.label());
     }
-}
-
-pub fn next_release(value: &Value) -> anyhow::Result<Release> {
-    if value["schema_version"] != 1 || value["product"] != "desktop" || value["channel"] != "next" {
-        bail!("Invalid Desktop Next channel metadata");
+    let desktop = &manifest["products"]["desktop"];
+    if desktop.is_null() {
+        return Err(not_published(channel));
     }
-    let revision = value["sha"]
-        .as_str()
-        .context("Desktop Next channel has no revision")?;
-    if !valid_revision(revision) {
-        bail!("Invalid Desktop Next revision");
+    let version = field(desktop, "version")?;
+    let revision = field(desktop, "sha")?;
+    let protocol = field(desktop, "protocol")?;
+    if strict_version(version).is_none() || !lower_hex(revision, 40) {
+        bail!("Invalid Desktop version or revision in the manifest");
     }
-    let version = value["version"]
-        .as_str()
-        .context("Desktop Next channel has no version")?;
-    if stable_version(&format!("desktop-v{version}")).is_none() {
-        bail!("Invalid Desktop Next version");
+    if !protocol_shaped(protocol) || !protocol_shaped(field(desktop, "minimum_macos")?) {
+        bail!("Invalid Desktop protocol or minimum macOS in the manifest");
     }
-    if value["archive"] != format!("phux-desktop-next.{revision}-macos-arm64.zip") {
-        bail!("Desktop Next archive does not match its revision");
+    let release = match channel {
+        Channel::Stable => format!("desktop-v{version}"),
+        Channel::Next => "next".to_owned(),
+    };
+    let name = match channel {
+        Channel::Stable => format!("phux-desktop-{version}-macos-arm64.zip"),
+        Channel::Next => format!("phux-desktop-next.{revision}-macos-arm64.zip"),
+    };
+    let artifact = &desktop["artifacts"][TARGET];
+    let expected_url = format!("{DOWNLOADS}/{release}/{name}");
+    if field(desktop, "release")? != release
+        || field(artifact, "name")? != name
+        || field(artifact, "url")? != expected_url
+    {
+        bail!("Desktop manifest names an artifact this client does not derive");
+    }
+    let sha256 = field(artifact, "sha256")?;
+    if !lower_hex(sha256, 64) {
+        bail!("Invalid Desktop archive digest in the manifest");
     }
     Ok(Release {
         version: version.into(),
         revision: revision.into(),
-        channel: Channel::Next,
+        channel,
+        sha256: sha256.into(),
+        protocol: protocol.into(),
     })
-}
-
-fn valid_revision(revision: &str) -> bool {
-    revision.len() == 40
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 pub fn available(current: &Release, target: &Release) -> bool {
@@ -251,8 +287,7 @@ pub fn available(current: &Release, target: &Release) -> bool {
     if target.channel == Channel::Next {
         return current.revision != target.revision;
     }
-    stable_version(&format!("desktop-v{}", target.version))
-        > stable_version(&format!("desktop-v{}", current.version))
+    strict_version(&target.version) > strict_version(&current.version)
 }
 
 #[derive(Clone, Debug)]
@@ -262,20 +297,27 @@ pub struct RuntimeRelease {
     pub available: bool,
     pub mutable: bool,
     pub native_command: Option<String>,
+    /// The installed phux's wire protocol; absent from older CLIs.
+    pub protocol_current: Option<String>,
+    /// The target release's wire protocol, when the CLI knows it.
+    pub protocol_target: Option<String>,
 }
 
 pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRelease> {
-    let text = check_output(Command::new(phux).args([
-        "update",
-        "--check",
-        "--channel",
-        channel.name(),
-        "--json",
-    ]))?;
-    let value: Value = serde_json::from_str(&text)?;
-    if value["schema_version"] != 1 {
+    let text = run_bounded(
+        Command::new(phux).args(["update", "--check", "--channel", channel.name(), "--json"]),
+        None,
+        CHECK_TIMEOUT,
+        "phux release check timed out. Nothing was installed; try Check now again.",
+    )?;
+    runtime_release(&serde_json::from_str(&text)?)
+}
+
+pub fn runtime_release(value: &Value) -> anyhow::Result<RuntimeRelease> {
+    if value["schema_version"] != 1 && value["schema_version"] != 2 {
         bail!("Unsupported phux update response");
     }
+    let text = |key: &str| value["protocol"][key].as_str().map(str::to_owned);
     Ok(RuntimeRelease {
         current: value["current_version"]
             .as_str()
@@ -292,6 +334,8 @@ pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRel
         native_command: value["install"]["native_command"]
             .as_str()
             .map(str::to_owned),
+        protocol_current: text("current"),
+        protocol_target: text("target"),
     })
 }
 
@@ -302,7 +346,7 @@ pub struct RuntimeInstalled {
 }
 
 pub fn runtime_result(value: &Value) -> anyhow::Result<RuntimeInstalled> {
-    if value["schema_version"] != 1 {
+    if value["schema_version"] != 1 && value["schema_version"] != 2 {
         bail!("Unsupported phux update response");
     }
     let result = value["server_handoff"]["result"]
@@ -323,12 +367,16 @@ pub fn runtime_install(
     socket: &Path,
     channel: Channel,
 ) -> anyhow::Result<RuntimeInstalled> {
-    let text = output(
-        Command::new(phux)
-            .arg("--socket")
-            .arg(socket)
-            .args(["update", "--channel", channel.name(), "--json"])
-            .stdin(Stdio::null()),
+    let text = run_bounded(
+        Command::new(phux).arg("--socket").arg(socket).args([
+            "update",
+            "--channel",
+            channel.name(),
+            "--json",
+        ]),
+        None,
+        STAGE_TIMEOUT,
+        "phux update timed out. The previous binaries stay in place; try again.",
     )?;
     let value: Value = serde_json::from_str(&text)?;
     let mut result = runtime_result(&value)?;
@@ -366,54 +414,219 @@ pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstal
     })
 }
 
-pub fn desktop_install(bundle: &Path, target: &Release) -> anyhow::Result<()> {
+fn applications_dir(bundle: &Path) -> anyhow::Result<&Path> {
+    bundle.parent().context("No Applications directory")
+}
+
+/// `<apps>/.phux-desktop-update`, which holds at most one staged `Phux.app`.
+pub fn staging_dir(bundle: &Path) -> anyhow::Result<PathBuf> {
+    Ok(applications_dir(bundle)?.join(STAGING_DIR))
+}
+
+fn lock_file(bundle: &Path) -> anyhow::Result<PathBuf> {
+    Ok(applications_dir(bundle)?.join(LOCK_FILE))
+}
+
+fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
     let mut command = Command::new("/bin/sh");
     command
-        .arg("-s")
-        .arg("--")
-        .arg("--channel")
-        .arg(target.channel.name())
-        .arg("--applications-dir")
-        .arg(bundle.parent().context("No Applications directory")?);
-    if target.channel == Channel::Stable {
-        command.arg("--version").arg(&target.version);
+        .args(["-s", "--", "--stage-dir"])
+        .arg(staging_dir(bundle)?)
+        .args(["--channel", target.channel.name()]);
+    match target.channel {
+        Channel::Stable => command.args(["--version", &target.version]),
+        Channel::Next => command.args(["--revision", &target.revision]),
+    };
+    command.args(["--sha256", &target.sha256]);
+    Ok(command)
+}
+
+/// Download, verify and unpack `target` into the staging directory with the
+/// shipped installer. Nothing outside the staging directory changes.
+pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
+    if !lower_hex(&target.sha256, 64) {
+        bail!("No verified digest for the Desktop update");
     }
-    if target.channel == Channel::Next {
-        command.arg("--revision").arg(&target.revision);
+    let text = run_bounded(
+        &mut stage_command(bundle, target)?,
+        Some(include_bytes!("../../../../scripts/install-desktop.sh")),
+        STAGE_TIMEOUT,
+        "Desktop update download timed out after 15 minutes. Nothing was installed.",
+    )?;
+    let staged = staged_path(&text, &staging_dir(bundle)?)?;
+    let built = installed_release(&staged)?;
+    let matches = match target.channel {
+        Channel::Stable => built.version == target.version,
+        Channel::Next => built.revision == target.revision,
+    };
+    if !matches || built.channel != target.channel {
+        bail!("The staged Desktop bundle is not the release that was checked");
     }
+    Ok(staged)
+}
+
+/// The installer's final `staged: <dir>/Phux.app` line, which must name our
+/// staging directory.
+fn staged_path(stdout: &str, staging: &Path) -> anyhow::Result<PathBuf> {
+    let path = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("staged: "))
+        .map(PathBuf::from)
+        .context("The installer did not report a staged bundle")?;
+    if path != staging.join("Phux.app") || !path.is_dir() {
+        bail!(
+            "The installer staged {} outside the update directory",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+/// `from_bundle APP`: whether any process runs `APP`'s executable. It matches
+/// the command's prefix, so the `ps`/`awk` pipeline (whose own arguments hold
+/// no path) never matches itself; the path travels through the environment,
+/// not awk's escape-processing `-v`.
+macro_rules! from_bundle_fn {
+    () => {
+        r#"from_bundle() {
+  /bin/ps -axww -o command= | PHUX_EXE="$1/Contents/MacOS/phux-desktop" /usr/bin/awk \
+    'index($0, ENVIRON["PHUX_EXE"]) == 1 { found = 1 } END { exit !found }'
+}
+"#
+    };
+}
+
+/// Waits for the app to exit, then takes the installer lock and runs SWAP.
+/// Every path arrives as a positional parameter, never as script text.
+const WAIT_THEN_SWAP: &str = concat!(
+    from_bundle_fn!(),
+    r#"pid=$1; lock=$2; swap=$7
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) waiting for Phux ($pid) to exit"
+# Any instance still running from the installed bundle keeps it in place.
+running() {
+  kill -0 "$pid" 2>/dev/null \
+    || from_bundle "$4"
+}
+i=0
+while running "$@"; do
+  i=$((i + 1))
+  if [ "$i" -ge 600 ]; then
+    echo "Phux did not exit; the staged update stays in place"
+    exit 1
+  fi
+  sleep 1
+done
+exec /usr/bin/lockf -s -t 30 "$lock" /bin/sh -c "$swap" phux-swap "$3" "$4" "$5" "$6""#
+);
+
+const SWAP: &str = concat!(
+    from_bundle_fn!(),
+    r#"staged=$1; installed=$2; relaunch=$3; opener=$4
+staging=${staged%/*}
+previous="$staging/Phux.previous.app"
+if [ ! -d "$staged" ]; then
+  echo "no staged update at $staged; nothing changed"
+  exit 1
+fi
+# Rechecked under the lock: an instance opened while waiting keeps its bundle.
+if from_bundle "$installed"; then
+  echo "Phux is running again from $installed; the staged update stays for the next quit"
+  exit 1
+fi
+rm -rf "$previous"
+if [ -e "$installed" ] && ! mv "$installed" "$previous"; then
+  echo "could not move the installed app aside; nothing changed"
+  exit 1
+fi
+if ! mv "$staged" "$installed"; then
+  [ ! -e "$previous" ] || mv "$previous" "$installed"
+  echo "could not install the staged update; the previous app is restored"
+  exit 1
+fi
+rm -rf "$staging"
+/usr/bin/xattr -d com.apple.quarantine "$installed" 2>/dev/null || true
+echo "installed the update at $installed"
+if [ "$relaunch" = 1 ]; then
+  exec "$opener" "$installed"
+fi"#
+);
+
+fn apply_command(
+    bundle: &Path,
+    staged: &Path,
+    pid: u32,
+    relaunch: bool,
+    opener: &Path,
+) -> anyhow::Result<Command> {
+    let mut command = Command::new("/bin/sh");
     command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    use std::io::Write;
-    child
-        .stdin
-        .take()
-        .context("No installer input")?
-        .write_all(include_bytes!("../../../../scripts/install-desktop.sh"))?;
-    let result = child.wait_with_output()?;
-    if !result.status.success() {
-        bail!("{}", String::from_utf8_lossy(&result.stderr).trim());
-    }
+        .args(["-c", WAIT_THEN_SWAP, "phux-update", &pid.to_string()])
+        .arg(lock_file(bundle)?)
+        .arg(staged)
+        .arg(bundle)
+        .arg(if relaunch { "1" } else { "0" })
+        .arg(opener)
+        .arg(SWAP);
+    Ok(command)
+}
+
+fn update_log() -> Stdio {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Stdio::null();
+    };
+    let dir = PathBuf::from(home).join("Library/Logs/Phux");
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("update.log"))
+        })
+        .map_or_else(|_| Stdio::null(), Stdio::from)
+}
+
+/// Hand the staged bundle to a detached helper that installs it after this
+/// process exits, and relaunches it when asked. The running bundle is never
+/// touched while this process uses it.
+pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut command = apply_command(
+        bundle,
+        staged,
+        std::process::id(),
+        relaunch,
+        Path::new("/usr/bin/open"),
+    )?;
+    command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(update_log())
+        .stderr(update_log())
+        .spawn()
+        .context("Could not start the update helper")?;
     Ok(())
 }
 
-/// Launch Services must wait until this process has saved its windows and quit.
-pub fn restart(bundle: &Path) -> anyhow::Result<()> {
-    restart_command(bundle, std::process::id(), Path::new("/usr/bin/open"))
+/// A staged bundle from an earlier session is discarded at launch, but only
+/// when no helper holds the installer lock.
+pub fn clear_stale_stage(bundle: &Path) {
+    let (Ok(dir), Ok(lock)) = (staging_dir(bundle), lock_file(bundle)) else {
+        return;
+    };
+    if !dir.exists() {
+        return;
+    }
+    let _ = Command::new("/usr/bin/lockf")
+        .args(["-s", "-t", "0"])
+        .arg(lock)
+        .arg("/bin/rm")
+        .arg("-rf")
+        .arg(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
-}
-
-fn restart_command(bundle: &Path, pid: u32, opener: &Path) -> Command {
-    let mut command = Command::new("/bin/sh");
-    command.args(["-c", "i=0; while kill -0 \"$1\" 2>/dev/null; do i=$((i+1)); [ \"$i\" -lt 120 ] || exit 1; sleep 1; done; exec \"$3\" -n \"$2\"", "phux-restart"])
-        .arg(pid.to_string()).arg(bundle).arg(opener);
-    command
+        .status();
 }
 
 fn output(command: &mut Command) -> anyhow::Result<String> {
@@ -430,27 +643,34 @@ fn decode_output(result: std::process::Output) -> anyhow::Result<String> {
     String::from_utf8(result.stdout).context("Invalid updater output")
 }
 
-/// A read-only CLI check must not leave every update control busy forever.
-/// Give it a private process group so its downloader is reaped on timeout too.
-fn check_output(command: &mut Command) -> anyhow::Result<String> {
-    check_output_until(command, std::time::Duration::from_secs(60))
-}
-
-fn check_output_until(
+/// Run `command` in a private process group, feeding `input` on stdin, and kill
+/// the whole group (its downloaders included) when `timeout` elapses, so no
+/// update control stays busy forever.
+fn run_bounded(
     command: &mut Command,
-    timeout: std::time::Duration,
+    input: Option<&'static [u8]>,
+    timeout: Duration,
+    timed_out: &str,
 ) -> anyhow::Result<String> {
     use std::os::unix::process::CommandExt;
-    use std::time::Duration;
     command
         .process_group(0)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command
-        .spawn()
-        .context("Could not start phux release check")?;
+    let mut child = command.spawn().context("Could not start updater command")?;
     let pid = child.id();
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        // A separate writer: the child may fill stdout before it reads all of stdin.
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(bytes);
+        });
+    }
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let _ = tx.send(child.wait_with_output());
@@ -464,7 +684,7 @@ fn check_output_until(
                 .stderr(Stdio::null())
                 .status();
             let _ = rx.recv_timeout(Duration::from_secs(2));
-            bail!("phux release check timed out. Nothing was installed; try Check now again.")
+            bail!("{timed_out}")
         }
     }
 }
@@ -483,6 +703,27 @@ fn failure_message(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STABLE: &str = include_str!("../../../../scripts/fixtures/release-manifest/stable.json");
+    const NEXT: &str = include_str!("../../../../scripts/fixtures/release-manifest/next.json");
+
+    fn manifest(text: &str) -> Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "phux-update-{name}-{}-{nonce} $(touch pwned)",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn preferences_are_opt_in_and_latest_is_stable() {
         let prefs = Preferences::from_value(&json!({"desktop":"latest"}));
@@ -490,41 +731,95 @@ mod tests {
         assert!(!prefs.manage_runtime);
         assert_eq!(prefs.desktop, Channel::Stable);
     }
+
     #[test]
-    fn releases_ignore_cli_drafts_and_prereleases() {
-        let rows = json!([
-            {"tag_name":"v99.0.0", "draft":false,"prerelease":false},
-            {"tag_name":"desktop-v1.2.3", "draft":false,"prerelease":false},
-            {"tag_name":"desktop-v9.0.0", "draft":true,"prerelease":false},
-            {"tag_name":"desktop-v2.0.0-alpha.1", "draft":false,"prerelease":true}
-        ]);
-        assert_eq!(stable_releases(&rows).unwrap().len(), 1);
-        assert!(stable_releases(&json!({})).is_err());
+    fn golden_manifests_name_the_desktop_release() {
+        let stable = manifest_release(&manifest(STABLE), Channel::Stable).unwrap();
+        assert_eq!(stable.version, "1.2.3");
+        assert_eq!(stable.revision, "b".repeat(40));
+        assert_eq!(stable.sha256, "d".repeat(64));
+        assert_eq!(stable.protocol, "0.9");
+        let next = manifest_release(&manifest(NEXT), Channel::Next).unwrap();
+        assert_eq!(next.channel, Channel::Next);
+        assert_eq!(next.revision, "b".repeat(40));
     }
+
+    #[test]
+    fn a_manifest_for_another_channel_is_refused() {
+        assert!(manifest_release(&manifest(STABLE), Channel::Next).is_err());
+        assert!(manifest_release(&manifest(NEXT), Channel::Stable).is_err());
+    }
+
+    #[test]
+    fn every_invalid_manifest_field_is_refused() {
+        let desktop = "/products/desktop";
+        let artifact = "/products/desktop/artifacts/aarch64-apple-darwin";
+        let cases: [(&str, &str, Value); 12] = [
+            ("", "schema_version", json!(2)),
+            (desktop, "version", json!("01.2.3")),
+            (desktop, "version", json!("1.2.3-alpha.1")),
+            (desktop, "sha", json!("B".repeat(40))),
+            (desktop, "sha", json!("../evil")),
+            (desktop, "protocol", json!("0.09")),
+            (desktop, "minimum_macos", json!("latest")),
+            (desktop, "release", json!("desktop-v9.9.9")),
+            (artifact, "name", json!("other.zip")),
+            (
+                artifact,
+                "url",
+                json!("https://evil.example/phux-desktop-1.2.3-macos-arm64.zip"),
+            ),
+            (artifact, "sha256", json!("D".repeat(64))),
+            (artifact, "sha256", json!("d".repeat(63))),
+        ];
+        for (pointer, key, value) in cases {
+            let mut document = manifest(STABLE);
+            document.pointer_mut(pointer).unwrap()[key] = value.clone();
+            assert!(
+                manifest_release(&document, Channel::Stable).is_err(),
+                "{pointer}/{key} = {value} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_channel_without_desktop_reads_as_unpublished() {
+        let mut document = manifest(NEXT);
+        document["products"]
+            .as_object_mut()
+            .unwrap()
+            .remove("desktop");
+        let error = manifest_release(&document, Channel::Next).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "No Desktop Next build is published yet. Check again later."
+        );
+    }
+
     #[test]
     fn channel_switches_allow_return_from_next() {
         let stable = Release {
             version: "1.2.3".into(),
             revision: "a".repeat(40),
-            channel: Channel::Stable,
+            ..Release::default()
         };
         let next = Release {
-            version: "next".into(),
             revision: "b".repeat(40),
             channel: Channel::Next,
+            ..stable.clone()
         };
         assert!(available(&next, &stable));
         assert!(available(&stable, &next));
         assert!(!available(&next, &next));
         assert!(!available(&stable, &stable));
-        assert!(stable_version("desktop-v01.2.3").is_none());
-        assert!(stable_version("desktop-v1.2.3-alpha.1").is_none());
         let older = Release {
             version: "1.2.2".into(),
             ..stable.clone()
         };
         assert!(!available(&stable, &older));
+        assert!(available(&older, &stable));
     }
+
     #[test]
     fn only_standard_bundle_is_replaceable() {
         assert_eq!(
@@ -543,46 +838,254 @@ mod tests {
     }
 
     #[test]
+    fn stage_passes_the_checked_release_and_its_digest() {
+        let bundle = Path::new("/Applications/Phux.app");
+        let stable = Release {
+            version: "1.2.3".into(),
+            sha256: "d".repeat(64),
+            ..Release::default()
+        };
+        let args = |release: &Release| -> Vec<String> {
+            stage_command(bundle, release)
+                .unwrap()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+        let digest = "d".repeat(64);
+        assert_eq!(
+            args(&stable),
+            [
+                "-s",
+                "--",
+                "--stage-dir",
+                "/Applications/.phux-desktop-update",
+                "--channel",
+                "stable",
+                "--version",
+                "1.2.3",
+                "--sha256",
+                &digest,
+            ]
+        );
+        let next = Release {
+            channel: Channel::Next,
+            revision: "b".repeat(40),
+            ..stable
+        };
+        assert!(
+            args(&next)
+                .windows(2)
+                .any(|pair| pair == ["--revision", &"b".repeat(40)])
+        );
+        assert!(stage(bundle, &Release::default()).is_err());
+    }
+
+    /// Network: stages a published release into a scratch "Applications".
+    /// `PHUX_E2E_DESKTOP=<version>:<sha256> cargo test -- --ignored stages_a_published`
+    #[test]
+    #[ignore = "downloads a published release"]
+    fn stages_a_published_release() {
+        let spec = std::env::var("PHUX_E2E_DESKTOP").unwrap();
+        let (version, sha256) = spec.split_once(':').unwrap();
+        let apps = scratch("e2e");
+        let target = Release {
+            version: version.into(),
+            sha256: sha256.into(),
+            ..Release::default()
+        };
+        let staged = stage(&apps.join("Phux.app"), &target).unwrap();
+        assert_eq!(staged, apps.join(".phux-desktop-update/Phux.app"));
+        assert_eq!(installed_release(&staged).unwrap().version, version);
+        let mut wrong = target.clone();
+        wrong.sha256 = "0".repeat(64);
+        assert!(stage(&apps.join("Phux.app"), &wrong).is_err());
+        assert!(!apps.join("Phux.app").exists(), "staging never installs");
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    #[test]
+    fn the_staged_path_must_be_our_staging_bundle() {
+        let dir = scratch("staged-path");
+        let staged = dir.join("Phux.app");
+        std::fs::create_dir(&staged).unwrap();
+        let line = format!("verified\nstaged: {}\n", staged.display());
+        assert_eq!(staged_path(&line, &dir).unwrap(), staged);
+        assert!(staged_path("staged: /tmp/elsewhere/Phux.app\n", &dir).is_err());
+        assert!(staged_path("no marker\n", &dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn fake_app(path: &Path, marker: &str) {
+        std::fs::create_dir_all(path.join("Contents")).unwrap();
+        std::fs::write(path.join("Contents/marker"), marker).unwrap();
+    }
+
+    fn run_swap(apps: &Path, relaunch: bool) -> (std::process::Output, PathBuf) {
+        let opened = apps.join("opened");
+        let opener = apps.join("open");
+        std::fs::write(
+            &opener,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                opened.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bundle = apps.join("Phux.app");
+        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+        // A process that has already exited stands in for the quitting app.
+        let mut exited = Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = exited.id();
+        exited.wait().unwrap();
+        let result = apply_command(&bundle, &staged, pid, relaunch, &opener)
+            .unwrap()
+            .output()
+            .unwrap();
+        (result, opened)
+    }
+
+    #[test]
+    fn the_helper_swaps_after_exit_and_relaunches() {
+        let apps = scratch("swap");
+        let bundle = apps.join("Phux.app");
+        fake_app(&bundle, "old");
+        fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
+        let (result, opened) = run_swap(&apps, true);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+            "new"
+        );
+        assert!(!staging_dir(&bundle).unwrap().exists());
+        assert_eq!(
+            std::fs::read_to_string(&opened).unwrap(),
+            format!("{}\n", bundle.display())
+        );
+        assert!(!apps.join("pwned").exists() && !Path::new("pwned").exists());
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    /// Another instance running from the installed bundle keeps it in place:
+    /// nothing is moved or deleted from under a live process.
+    #[test]
+    fn a_running_instance_keeps_its_bundle() {
+        let apps = scratch("running");
+        let bundle = apps.join("Phux.app");
+        fake_app(&bundle, "old");
+        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+        fake_app(&staged, "new");
+        let executable = bundle.join("Contents/MacOS/phux-desktop");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::copy("/bin/sleep", &executable).unwrap();
+        // A moved platform binary is killed on launch unless re-signed.
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "-f"])
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(signed.status.success(), "{signed:?}");
+        let mut instance = Command::new(&executable).arg("30").spawn().unwrap();
+        let result = Command::new("/bin/sh")
+            .args(["-c", SWAP, "phux-swap"])
+            .arg(&staged)
+            .arg(&bundle)
+            .args(["0", "/usr/bin/true"])
+            .output()
+            .unwrap();
+        instance.kill().unwrap();
+        instance.wait().unwrap();
+        assert!(!result.status.success(), "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+            "old"
+        );
+        assert!(staged.is_dir(), "the staged update stays for the next quit");
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    #[test]
+    fn a_plain_quit_installs_without_relaunching() {
+        let apps = scratch("quit");
+        let bundle = apps.join("Phux.app");
+        fake_app(&bundle, "old");
+        fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
+        let (result, opened) = run_swap(&apps, false);
+        assert!(result.status.success(), "{result:?}");
+        assert!(!opened.exists());
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    #[test]
+    fn a_missing_staged_bundle_leaves_the_installed_app_alone() {
+        let apps = scratch("missing");
+        let bundle = apps.join("Phux.app");
+        fake_app(&bundle, "old");
+        let (result, opened) = run_swap(&apps, true);
+        assert!(!result.status.success());
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+            "old"
+        );
+        assert!(!opened.exists());
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    #[test]
+    fn a_stale_stage_is_cleared_only_when_the_lock_is_free() {
+        let apps = scratch("stale");
+        let bundle = apps.join("Phux.app");
+        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+        fake_app(&staged, "stale");
+        let lock = lock_file(&bundle).unwrap();
+        let mut holder = Command::new("/usr/bin/lockf")
+            .arg(&lock)
+            .args(["/bin/sleep", "5"])
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !lock.exists() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        clear_stale_stage(&bundle);
+        assert!(
+            staged.exists(),
+            "a held lock must protect the staged bundle"
+        );
+        holder.kill().unwrap();
+        holder.wait().unwrap();
+        clear_stale_stage(&bundle);
+        assert!(!staging_dir(&bundle).unwrap().exists());
+        std::fs::remove_dir_all(apps).unwrap();
+    }
+
+    #[test]
     fn runtime_handoff_refusal_is_not_a_restart() {
         let refused =
-            json!({"schema_version":1,"server_handoff":{"result":"refused","detail":"busy"}});
+            json!({"schema_version":2,"server_handoff":{"result":"refused","detail":"busy"}});
         let result = runtime_result(&refused).unwrap();
         assert!(!result.reconnect);
         assert!(result.retry_handoff);
         assert!(result.message.contains("busy"));
-        assert!(runtime_result(&json!({"schema_version":2})).is_err());
+        assert!(runtime_result(&json!({"schema_version":3})).is_err());
         let accepted = json!({"schema_version":1,"server_handoff":{"result":"upgrading"}});
         assert!(runtime_result(&accepted).unwrap().reconnect);
     }
 
     #[test]
-    fn next_requires_a_desktop_ready_pointer_not_the_cli_pointer() {
-        let sha = "a".repeat(40);
-        let pointer = json!({"schema_version":1,"product":"desktop","channel":"next","sha":sha,"version":"0.3.0","archive":format!("phux-desktop-next.{sha}-macos-arm64.zip")});
-        assert_eq!(next_release(&pointer).unwrap().revision, sha);
-        assert!(next_release(&json!({"sha":"a".repeat(40)})).is_err());
-        let mut invalid = pointer.clone();
-        invalid["sha"] = json!("../malicious");
-        assert!(next_release(&invalid).is_err());
-        invalid = pointer.clone();
-        invalid["archive"] = json!("other.zip");
-        assert!(next_release(&invalid).is_err());
-        invalid = pointer;
-        invalid["version"] = json!("bad");
-        assert!(next_release(&invalid).is_err());
-    }
-
-    #[test]
-    fn missing_next_pointer_reads_as_unpublished() {
-        let missing = next_fetch_error(anyhow::anyhow!(
-            "curl: (56) The requested URL returned error: 404"
-        ));
-        assert_eq!(
-            missing.to_string(),
-            "No Desktop Next build is published yet. Stay on Stable or check again later."
-        );
-        let offline = next_fetch_error(anyhow::anyhow!("curl: (6) Could not resolve host"));
-        assert_eq!(offline.to_string(), "curl: (6) Could not resolve host");
+    fn runtime_protocol_is_optional() {
+        let base = json!({"schema_version":2,"current_version":"1.0.0","target_version":"v1.1.0",
+            "update_available":true,"install":{"mutable":true}});
+        let old = runtime_release(&base).unwrap();
+        assert_eq!(old.protocol_current, None);
+        let mut new = base;
+        new["protocol"] = json!({"current":"0.9","target":"0.10"});
+        let release = runtime_release(&new).unwrap();
+        assert_eq!(release.protocol_current.as_deref(), Some("0.9"));
+        assert_eq!(release.protocol_target.as_deref(), Some("0.10"));
     }
 
     #[test]
@@ -600,43 +1103,38 @@ mod tests {
     }
 
     #[test]
-    fn restart_passes_bundle_as_data_without_shell_expansion() {
-        let bundle = Path::new("/Applications/Phux.app; $(touch should-not-exist)");
-        let result = restart_command(bundle, u32::MAX, Path::new("/bin/echo"))
-            .output()
-            .unwrap();
-        assert!(result.status.success());
-        assert_eq!(
-            String::from_utf8(result.stdout).unwrap().trim(),
-            bundle.to_str().unwrap()
+    fn a_timed_out_command_has_its_process_group_killed() {
+        let start = std::time::Instant::now();
+        let result = run_bounded(
+            Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]),
+            None,
+            Duration::from_millis(30),
+            "timed out",
         );
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
-    fn read_only_check_timeout_reaps_the_downloader() {
-        let start = std::time::Instant::now();
-        let result = check_output_until(
-            Command::new("/bin/sh").args(["-c", "sleep 30"]),
-            std::time::Duration::from_millis(30),
-        );
-        assert!(result.unwrap_err().to_string().contains("timed out"));
-        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    fn bounded_runs_feed_stdin() {
+        let text = run_bounded(
+            Command::new("/bin/sh").arg("-s"),
+            Some(b"echo fed\n"),
+            Duration::from_secs(10),
+            "timed out",
+        )
+        .unwrap();
+        assert_eq!(text, "fed\n");
     }
 
     #[cfg(unix)]
     #[test]
     fn runtime_commands_use_explicit_socket_and_never_close_agents() {
         use std::os::unix::fs::PermissionsExt;
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("phux-update-test-{}-{nonce}", std::process::id()));
-        std::fs::create_dir(&dir).unwrap();
+        let dir = scratch("runtime");
         let phux = dir.join("phux");
         let record = dir.join("args");
-        let document = json!({"schema_version":1,"current_version":"1.0.0","target_version":"next","update_available":true,"install":{"mutable":true},"server_handoff":{"result":"upgrading"}});
+        let document = json!({"schema_version":2,"current_version":"1.0.0","target_version":"next","update_available":true,"install":{"mutable":true},"server_handoff":{"result":"upgrading"}});
         std::fs::write(
             &phux,
             format!(

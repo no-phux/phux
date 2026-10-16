@@ -75,7 +75,11 @@ impl Desktop {
             KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
-        let updates = cx.new(|_| super::updates::Updater::new());
+        let updates = cx.new(|cx| {
+            let mut updater = super::updates::Updater::new();
+            updater.watch_quit(cx);
+            updater
+        });
         let desktop = cx.new(|_| Self {
             updates,
             phux: PathBuf::new(),
