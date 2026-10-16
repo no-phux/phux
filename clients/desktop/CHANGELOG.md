@@ -28,6 +28,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.19.0](https://github.com/no-phux/phux/compare/desktop-v0.18.0...desktop-v0.19.0) (2026-10-16)
+
+
+### Features
+
+* **agent:** support ACP-owned sessions across harnesses ([#1431](https://github.com/no-phux/phux/issues/1431)) ([2696d16](https://github.com/no-phux/phux/commit/2696d16a273f58da0d100dda61816f6a8d50f314))
+
 ## [0.18.0](https://github.com/no-phux/phux/compare/desktop-v0.17.0...desktop-v0.18.0) (2026-10-15)
 
 
