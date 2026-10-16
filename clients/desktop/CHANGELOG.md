@@ -28,6 +28,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.22.0](https://github.com/no-phux/phux/compare/desktop-v0.21.0...desktop-v0.22.0) (2026-10-16)
+
+
+### Features
+
+* **desktop:** make menus and palettes quiet by default ([#1473](https://github.com/no-phux/phux/issues/1473)) ([bea8c78](https://github.com/no-phux/phux/commit/bea8c7818699752204e9b19b94bd4b832c512b10))
+
 ## [0.21.0](https://github.com/no-phux/phux/compare/desktop-v0.20.1...desktop-v0.21.0) (2026-10-16)
 
 
