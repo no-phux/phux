@@ -70,7 +70,6 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 |---|---|---|
 | Pull request CI | `pull_request`, `merge_group` | Compile-free guards always run; Rust and Node integration lanes run for their dependency inputs. Draft PRs skip until ready. |
 | Browser CI | shared classifier on PR/main, manual | Node adapters/session tests, shipping package, and three real Chrome canvas/live-server tests. Only engine inputs reproduce the committed WASM binary. |
-| Darwin Nix cache | flake or Zig-pin inputs on PR/main, manual | `nix-darwin-cache.yml` builds the flake's `libghostty-vt` on `xcode-27` and pushes it to Cachix; the Linux archive rides the Rust lanes' devshell. |
 | Native setup | setup inputs, weekly, manual | Uncached native setup/linker assurance; ordinary Rust source changes use the product lanes. |
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title. Live rules require `ci` and `commitlint` (verified 2026-09-09). |
 | pr-janitor | `pull_request` `closed`, or manual dispatch with a PR number | Cancels the closed PR's still-live runs to free standard/macOS concurrency, then deletes its `refs/pull/N/merge` caches to free the 10 GB repository cap. See "Cache budget". |
@@ -117,8 +116,8 @@ then 7m 51s compiling the workspace crates that every code PR changes anyway,
 for a 21-minute `test` job. The four test lanes (`test`, `test (integration)`,
 `e2e`, `uniffi`) each restore a `rust-cache` entry (`build-cache: deps`) that
 holds only third-party artifacts and build-script outputs. The
-libghostty-vt Zig build (198 s cold) is not among them: the devshell links
-the flake's Cachix-served archive instead (docs/SETUP.md). Those builds set `CARGO_INCREMENTAL=0`
+libghostty-vt Zig build (198 s cold) is not among them: libghostty-vt-sys
+downloads a prebuilt archive instead (docs/SETUP.md). Those builds set `CARGO_INCREMENTAL=0`
 and `CARGO_PROFILE_DEV_DEBUG=0`: a cold `--workspace` test build left 2.6 GB
 of `target/debug` against 9.7 GB with line tables, and compiled in 586 s
 against 649 s (run 38518949085). The workspace crates are about 1,500

@@ -7,10 +7,10 @@
 #
 # Steps, in order:
 #   1. Drop unused preinstalled toolchains only when the disk is actually tight.
-#   2. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny, mbx,
-#      and the prebuilt libghostty-vt archive). Realizing the shell builds
-#      that archive on a Cachix miss, and cachix-action pushes it;
-#      pushFilter only excludes paths (sources and nixpkgs tarballs).
+#   2. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny, mbx).
+#      cachix-action pushes what realizing it builds; pushFilter only
+#      excludes paths (sources and nixpkgs tarballs). libghostty-vt is not
+#      part of the shell: its build script downloads a prebuilt archive.
 #   3. mbx (jdx/mr-boxington), the same pinned build cache local shells use
 #      (docs/SETUP.md#build-cache-mbx). It content-keys every compilation,
 #      build-script run, and native (mold) link. The GitHub `objects` payload
@@ -33,12 +33,11 @@
 #      collapses those duplicate target bytes and skips the save when the
 #      copy still does not fit.
 #
-# No CPU fingerprint: the devshell's libghostty-vt archive is built for Zig's
-# `baseline` CPU, as libghostty-vt-sys's source build is unless
+# No CPU fingerprint: libghostty-vt-sys links its prebuilt archive, built for
+# Zig's `baseline` CPU, and builds from source for that CPU too unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise. Its build script declares that
-# variable and LIBGHOSTTY_VT_SYS_LIB_DIR, so mbx keys on both, and a restored
-# archive cannot SIGILL on leaner hosted hardware the way the old host-native
-# build could.
+# variable, so mbx keys on it, and a restored archive cannot SIGILL on leaner
+# hosted hardware the way a host-native build could.
 name: setup-rust-lane
 description: Shared Linux Rust-lane setup — disk headroom, Nix + Cachix, and an mbx or dependency-only build cache.
 

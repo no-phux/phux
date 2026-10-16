@@ -182,9 +182,6 @@ apple_toolchain_env() {
     # link arg) would reach every object and the iOS link; the per-target
     # floors below are the only flags a shipped slice carries.
     unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS
-    # The devshell's prebuilt libghostty-vt is one macOS host archive, and
-    # the build script would link it into every slice, iOS included.
-    unset LIBGHOSTTY_VT_SYS_LIB_DIR
 
     local developer_dir
     developer_dir="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
