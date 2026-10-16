@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.83.0](https://github.com/no-phux/phux/compare/v0.82.1...v0.83.0) (2026-10-16)
+
+
+### Features
+
+* **work:** add the work store, its single-writer keeper, and phux mission ([#1455](https://github.com/no-phux/phux/issues/1455)) ([b7e6085](https://github.com/no-phux/phux/commit/b7e608513dc19b220da3e02b268f408333264880))
+
+
+### Documentation
+
+* **adr:** mission control is a client composition layer with an interim work store ([#1453](https://github.com/no-phux/phux/issues/1453)) ([ad2b385](https://github.com/no-phux/phux/commit/ad2b385da1329ecc2cc4f77767a238d82802c663))
+
 ## [0.82.1](https://github.com/no-phux/phux/compare/v0.82.0...v0.82.1) (2026-10-16)
 
 
