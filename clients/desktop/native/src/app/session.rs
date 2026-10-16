@@ -6,7 +6,6 @@ mod journey_tests;
 mod tests;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use gpui::{
     App, AppContext, Context, Entity, EntityId, KeyBinding, Menu, MenuItem, NoAction, Point,
@@ -840,19 +839,20 @@ impl Desktop {
         if self._hotkey.is_some() {
             return;
         }
+        let presses = crate::hotkeys::presses();
         self._hotkey = Some(cx.spawn(async move |this, cx| {
-            loop {
-                smol::Timer::after(Duration::from_millis(50)).await;
-                let pressed = this
-                    .update(cx, |desktop, _| {
-                        desktop
-                            .hotkeys
-                            .as_ref()
-                            .is_some_and(|hotkeys| !hotkeys.take_pressed().is_empty())
-                    })
-                    .unwrap_or(false);
-                if pressed {
-                    let _ = this.update(cx, |desktop, cx| desktop.toggle_quick(cx));
+            while let Ok(event) = presses.recv().await {
+                let alive = this.update(cx, |desktop, cx| {
+                    if desktop
+                        .hotkeys
+                        .as_ref()
+                        .is_some_and(|hotkeys| hotkeys.pressed(&event))
+                    {
+                        desktop.toggle_quick(cx);
+                    }
+                });
+                if alive.is_err() {
+                    break;
                 }
             }
         }));

@@ -1,10 +1,28 @@
 //! System-wide hotkeys (Ghostty's `keybind = global:...`), for the quick
 //! terminal. Registration goes through Carbon's `RegisterEventHotKey` inside
 //! `global-hotkey`, which needs no Accessibility permission; the OS delivers
-//! presses on the main thread's event loop, and the app drains them.
+//! presses on the main thread's event loop into [`presses`], which the app
+//! awaits.
 
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+/// Every hotkey event this process receives. The handler is process-wide and
+/// can be installed only once, so every registration shares this channel.
+#[must_use]
+pub fn presses() -> async_channel::Receiver<GlobalHotKeyEvent> {
+    static PRESSES: OnceLock<async_channel::Receiver<GlobalHotKeyEvent>> = OnceLock::new();
+    PRESSES
+        .get_or_init(|| {
+            let (tx, rx) = async_channel::unbounded();
+            GlobalHotKeyEvent::set_event_handler(Some(move |event| {
+                let _ = tx.try_send(event);
+            }));
+            rx
+        })
+        .clone()
+}
 
 /// Hotkeys registered by this process. Dropping it unregisters them.
 pub struct GlobalHotkeys {
@@ -32,16 +50,9 @@ impl GlobalHotkeys {
         Ok(())
     }
 
-    /// Chords pressed since the last call, oldest first. Releases are dropped.
-    pub fn take_pressed(&self) -> Vec<String> {
-        let mut pressed = Vec::new();
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state == HotKeyState::Pressed
-                && let Some(chord) = self.chords.get(&event.id)
-            {
-                pressed.push(chord.clone());
-            }
-        }
-        pressed
+    /// Whether `event` presses a chord this registration holds. Releases are not presses.
+    #[must_use]
+    pub fn pressed(&self, event: &GlobalHotKeyEvent) -> bool {
+        event.state == HotKeyState::Pressed && self.chords.contains_key(&event.id)
     }
 }
