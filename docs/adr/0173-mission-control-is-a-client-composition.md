@@ -59,19 +59,13 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
      `phux/12` is a display alias only;
    - every mutation carries an OperationId;
    - every structural edit carries a revision;
-   - exactly one writer: one keeper process per store holds its lock and
-     is the only process that opens it. The CLI, Lead, the board, MCP, and
-     the desktop are clients of that keeper through one client API, which
-     starts the keeper on demand. A keeper owns its host's store, so a
-     task on another host is reached by dialing that host's keeper, never
-     by reading its files. `phux-mission` renders the client's results and
-     never opens the store.
+   - one keeper process per store is its only writer; the CLI, Lead, board,
+     MCP, and desktop call it through one client, and another host's tasks
+     are reached through that host's keeper.
    A herdr-shaped tree keyed by the short label is outside this schema.
    Task history lives in this store. The [ADR-0123](./0123-events-are-journaled.md)
    ring stays bounded and in memory. Clients, including phux-mobile,
-   decode this store through the versioned `phux.mission/v1` JSON contract
-   and the JSON Schema the MC-1.1 pull request commits. That schema is the
-   stable decode surface.
+   decode through `phux.mission/v1` and its committed JSON Schema.
 
 3. **One layer.** The coordinator owns tasks. Until phux-ajxq, the interim
    store is that coordinator. The ops hub is its first read-and-command
@@ -130,30 +124,26 @@ did not confirm. A delegated grant cannot create panes or start workers,
 so until MC-1.4b Lead runs with the owner's authority and only while
 attended; after that it holds the scoped grant and never the owner's.
 A cold restart clears the ledger unless the store raises `credential_lost`.
-A keeper process, not a lock every caller takes, makes the writer the
-one place that projects agent state into tasks. It also gives another
-host something to dial, and that keeper is what the coordinator later
-replaces.
+A keeper, not a lock every caller takes, is one place to project agent
+state and one endpoint another host can dial; the coordinator replaces it.
 
 ## Tradeoffs
 
 Two stores in sequence, interim then coordinator. Every client resolves
 the display alias `phux/12` through the store, and decodes through
 `phux.mission/v1`. Every call is a local socket round trip to the keeper,
-and a keeper that will not start fails every verb until it does. Workers cannot create, organize, terminate, or signal. Until
-MC-1.4b Lead holds the owner's authority only while attended. Shared
+and a keeper that will not start fails every verb until it does. Workers
+cannot create, organize, terminate, or signal. Until MC-1.4b Lead holds
+the owner's authority only while attended. Shared
 `CARGO_TARGET_DIR` and sccache couple task worktrees at the build cache.
 
 ## Alternatives
 
-- Build the coordinator before any task UX. That is the end state, and it
-  blocks the product on phux-ajxq.
-- Store tasks in the server's organization database. That is a protocol
-  change and a second authority beside the coordinator.
-- Herdr-shaped files whose identity is the short key `phux/12`. Those keys
-  will not import as opaque coordinator ids.
-- Let the ops hub, Blackbird, or beads own tasks. Each is a second
-  authority.
+- Build the coordinator first. It blocks the product on phux-ajxq.
+- Store tasks in the server's organization database: a protocol change
+  and a second authority beside the coordinator.
+- Herdr-shaped files keyed by `phux/12`: not importable as opaque ids.
+- Let the ops hub, Blackbird, or beads own tasks: a second authority.
 - Merge automatically, or let an agent merge. Refused.
 - Run task workers or an unattended Lead on the owner's grant, or name
   the user-facing verb `delegate`. Workers would hold terminate and signal
