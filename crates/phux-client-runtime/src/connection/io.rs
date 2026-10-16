@@ -1,20 +1,28 @@
-//! Transport establishment and framed I/O for one connection attempt.
+//! Framed I/O over one established link: the SPEC §5 frame stream every
+//! client lane reads and writes.
+//!
+//! The reconnecting driver pumps an [`Io`] into the control plane; a
+//! one-shot [`crate::session::Session`] reads and writes it directly. Both
+//! get the same framing, send budgets, WebSocket liveness, and typed
+//! [`LinkError`]s, which each words in its own vocabulary.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-internal: the session module reads links; `unreachable_pub` forbids plain `pub`"
+)]
 
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use futures_util::StreamExt;
+use futures_util::FutureExt;
+use phux_dial::DialError;
 use phux_dial::ws::{WsActivity, WsReader, WsWriter, recv_activity_alive};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::framing;
+use phux_protocol::wire::framing::{self, FramingError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::{ConnectOptions, ConnectionEnd, Target, Transport};
 use crate::control::encode;
-use crate::dial::{
-    dial_message, load_token, plan_quic_with_token, plan_ws, quic_closed_message, timed_out,
-};
-use crate::reconnect::is_fatal_refusal;
+use crate::dial::dial_message;
 
 const MAX_INBOUND_BATCH: usize = 256;
 
@@ -34,36 +42,194 @@ const SEND_BUDGET_CEILING: Duration = Duration::from_secs(60);
 /// window does not.
 const SEND_STALL_CHUNK: usize = 16 * 1024;
 
-const SEND_STALLED: &str = "send stalled";
+/// The application-close reason a client's QUIC teardown sends.
+const CLOSE_REASON: &[u8] = b"session closed";
+
+/// Why reading or writing an established link failed.
+///
+/// Typed, so the reconnecting driver can word it for an operator
+/// ([`Self::describe`]) and a one-shot session can keep the OS error kind
+/// its callers classify a gone peer on.
+#[derive(Debug)]
+pub(crate) enum LinkError {
+    /// A read failed at the OS or QUIC stream layer.
+    Read(std::io::Error),
+    /// A write failed at the OS or QUIC stream layer.
+    Write(std::io::Error),
+    /// A write made no progress for [`SEND_BUDGET`].
+    Stalled,
+    /// The peer broke SPEC §5 framing.
+    Framing(FramingError),
+    /// The WebSocket lane failed (I/O, protocol, or liveness).
+    Ws(DialError),
+    /// The QUIC connection closed under a finished stream, for this reason.
+    Closed(DialError),
+}
+
+impl LinkError {
+    /// The driver's operator-facing wording, naming the host.
+    pub(crate) fn describe(&self, name: &str) -> String {
+        match self {
+            Self::Read(error) => format!("{name}: the connection was lost: {error}"),
+            Self::Write(error) => format!("{name}: send failed: {error}"),
+            Self::Stalled => "send stalled".to_owned(),
+            Self::Framing(error) => format!("{name} sent a malformed frame: {error}"),
+            Self::Ws(error) | Self::Closed(error) => dial_message(name, error),
+        }
+    }
+}
+
+/// A QUIC link's connection state, closed when the link is dropped so the
+/// server reaps the consumer at once rather than at its idle timeout.
+#[derive(Debug)]
+pub(crate) struct QuicLink {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    /// Whether the connection may carry per-Terminal streams: a plain QUIC
+    /// stream, not an end-to-end session a relay splices (proto.md §4.2,
+    /// "Relay": such a consumer stays on the single-stream shape).
+    terminal_streams: bool,
+}
+
+impl QuicLink {
+    fn close(&self) {
+        self.connection
+            .close(quinn::VarInt::from_u32(0), CLOSE_REASON);
+    }
+}
+
+impl Drop for QuicLink {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 /// One established lane, read and written as SPEC section 5 frames.
-pub(super) enum Io {
+pub(crate) enum Io {
     Stream {
-        reader: Box<dyn AsyncRead + Unpin + Send>,
-        writer: Box<dyn AsyncWrite + Unpin + Send>,
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
         pending: BytesMut,
         /// Kept so the QUIC endpoint's driver outlives the connection and a
         /// clean close can be issued.
-        quic: Option<(quinn::Endpoint, quinn::Connection)>,
+        quic: Option<QuicLink>,
+        /// The server's pid from Unix-socket peer credentials.
+        peer_pid: Option<i32>,
     },
     Ws {
         reader: WsReader,
         writer: WsWriter,
-        deferred_error: Option<String>,
+        deferred_error: Option<LinkError>,
     },
 }
 
+impl std::fmt::Debug for Io {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Stream { quic: None, .. } => "Io::Stream",
+            Self::Stream { quic: Some(_), .. } => "Io::Stream(quic)",
+            Self::Ws { .. } => "Io::Ws",
+        })
+    }
+}
+
 impl Io {
+    /// A byte-stream lane over `reader` and `writer`.
+    #[cfg(test)]
+    pub(crate) fn stream(
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
+    ) -> Self {
+        Self::framed(reader, writer, None, None)
+    }
+
+    /// A lane over a connected Unix socket, its peer pid captured first
+    /// (credentials are only readable before the split).
+    pub(crate) fn from_unix_stream(stream: tokio::net::UnixStream) -> Self {
+        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
+        let (reader, writer) = stream.into_split();
+        Self::framed(Box::new(reader), Box::new(writer), None, peer_pid)
+    }
+
+    /// A lane over a dialed QUIC stream. Only a plain stream may later carry
+    /// per-Terminal streams; an end-to-end session a relay splices may not.
+    pub(crate) fn quic(
+        endpoint: quinn::Endpoint,
+        connection: quinn::Connection,
+        stream: phux_dial::quic::DialedStream,
+    ) -> Self {
+        let terminal_streams = matches!(stream, phux_dial::quic::DialedStream::Plain { .. });
+        let (reader, writer) = crate::tunnel::host_halves(stream);
+        let link = QuicLink {
+            endpoint,
+            connection,
+            terminal_streams,
+        };
+        Self::framed(reader, writer, Some(link), None)
+    }
+
+    fn framed(
+        reader: Box<dyn AsyncRead + Unpin + Send + Sync>,
+        writer: Box<dyn AsyncWrite + Unpin + Send + Sync>,
+        quic: Option<QuicLink>,
+        peer_pid: Option<i32>,
+    ) -> Self {
+        Self::Stream {
+            reader,
+            writer,
+            pending: BytesMut::with_capacity(64 * 1024),
+            quic,
+            peer_pid,
+        }
+    }
+
+    /// A WebSocket lane over an upgraded connection.
+    pub(crate) fn ws(ws: phux_dial::ws::Ws) -> Self {
+        let (tx, rx) = futures_util::StreamExt::split(ws);
+        Self::Ws {
+            reader: WsReader::new(rx),
+            writer: WsWriter { tx },
+            deferred_error: None,
+        }
+    }
+
+    /// The server's pid from Unix-socket peer credentials; `None` on remote
+    /// lanes or when the platform omits it.
+    pub(crate) const fn peer_pid(&self) -> Option<i32> {
+        match self {
+            Self::Stream { peer_pid, .. } => *peer_pid,
+            Self::Ws { .. } => None,
+        }
+    }
+
+    /// The QUIC connection per-Terminal streams may open on, when this lane
+    /// can carry them (see [`QuicLink`]).
+    pub(crate) fn terminal_stream_connection(&self) -> Option<quinn::Connection> {
+        match self {
+            Self::Stream {
+                quic: Some(link), ..
+            } if link.terminal_streams => Some(link.connection.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether writes can be batched into one: a byte stream that is not
+    /// QUIC (QUIC coalesces in its own send buffer, and WebSocket needs one
+    /// message per frame).
+    pub(crate) const fn batches_writes(&self) -> bool {
+        matches!(self, Self::Stream { quic: None, .. })
+    }
+
     /// The next bounded transport batch, or `Ok(None)` on a clean close.
     /// Cancel-safe: partial bytes stay buffered.
-    pub(super) async fn read_frames(&mut self, name: &str) -> Result<Option<Vec<Bytes>>, String> {
+    pub(crate) async fn read_frames(&mut self) -> Result<Option<Vec<Bytes>>, LinkError> {
         match self {
             Self::Stream {
                 reader,
                 pending,
                 quic,
                 ..
-            } => read_stream_frames(reader, pending, quic.as_ref(), name).await,
+            } => read_stream_frames(reader, pending, quic.as_ref()).await,
             Self::Ws {
                 reader,
                 writer,
@@ -72,20 +238,40 @@ impl Io {
                 if let Some(error) = deferred_error.take() {
                     return Err(error);
                 }
-                read_ws_frames(reader, writer, deferred_error, name).await
+                read_ws_frames(reader, writer, deferred_error).await
             }
         }
     }
 
-    pub(super) async fn write_frame(&mut self, name: &str, frame: &[u8]) -> Result<(), String> {
+    /// The frames available without waiting, possibly none. A clean close
+    /// seen here reads as none; the next [`Self::read_frames`] reports it.
+    pub(crate) fn try_read_frames(&mut self) -> Result<Vec<Bytes>, LinkError> {
         match self {
-            Self::Stream { writer, .. } => write_all_within_budget(writer.as_mut(), frame)
-                .await
-                .map_err(|error| name_send_error(name, error)),
+            Self::Stream {
+                reader, pending, ..
+            } => try_read_stream_frames(reader, pending),
+            Self::Ws {
+                reader,
+                deferred_error,
+                ..
+            } => {
+                if let Some(error) = deferred_error.take() {
+                    return Err(error);
+                }
+                try_read_ws_frame(reader)
+            }
+        }
+    }
+
+    pub(crate) async fn write_frame(&mut self, frame: &[u8]) -> Result<(), LinkError> {
+        match self {
+            Self::Stream { writer, .. } => write_all_within_budget(writer.as_mut(), frame).await,
             Self::Ws { writer, .. } => {
-                budgeted(message_budget(frame.len()), writer.send(frame), |error| {
-                    dial_message(name, &error)
-                })
+                budgeted(
+                    message_budget(frame.len()),
+                    writer.send(frame),
+                    LinkError::Ws,
+                )
                 .await
             }
         }
@@ -93,33 +279,26 @@ impl Io {
 
     /// Write a batch. A byte stream is one `write_all` of the same bytes in
     /// order (one syscall). WebSocket stays one message per frame.
-    pub(super) async fn write_frames(
-        &mut self,
-        name: &str,
-        frames: &[Vec<u8>],
-    ) -> Result<(), String> {
+    pub(crate) async fn write_frames(&mut self, frames: &[Vec<u8>]) -> Result<(), LinkError> {
         if let Self::Stream { writer, .. } = self {
-            return write_stream_batch(writer.as_mut(), name, frames).await;
+            return write_stream_batch(writer.as_mut(), frames).await;
         }
         for frame in frames {
-            self.write_frame(name, frame).await?;
+            self.write_frame(frame).await?;
         }
         Ok(())
     }
 
     /// A liveness probe: a WebSocket ping, or a protocol `PING` the server
     /// answers with `PONG` on the byte-stream lanes.
-    pub(super) async fn probe(&mut self, name: &str) -> Result<(), String> {
+    pub(crate) async fn probe(&mut self) -> Result<(), LinkError> {
         match self {
             Self::Stream { .. } => {
-                self.write_frame(name, &encode(&FrameKind::Ping { nonce: 1 }))
+                self.write_frame(&encode(&FrameKind::Ping { nonce: 1 }))
                     .await
             }
             Self::Ws { writer, .. } => {
-                budgeted(SEND_BUDGET, writer.send_ping(), |error| {
-                    dial_message(name, &error)
-                })
-                .await
+                budgeted(SEND_BUDGET, writer.send_ping(), LinkError::Ws).await
             }
         }
     }
@@ -127,52 +306,58 @@ impl Io {
     /// Move a QUIC connection onto a fresh UDP socket of the same family:
     /// QUIC connection migration, which keeps the incarnation and every
     /// stream. `Ok(false)` on the other lanes, which have no such move.
-    pub(super) fn rebind(&mut self, name: &str) -> Result<bool, String> {
+    pub(crate) fn rebind(&mut self, name: &str) -> Result<bool, String> {
         let Self::Stream {
-            quic: Some((endpoint, _)),
-            ..
+            quic: Some(link), ..
         } = self
         else {
             return Ok(false);
         };
-        let local = endpoint
+        let local = link
+            .endpoint
             .local_addr()
             .map_err(|error| format!("{name}: rebind: no local address: {error}"))?;
         let socket = std::net::UdpSocket::bind(unspecified_like(local))
             .map_err(|error| format!("{name}: rebind: bind a fresh socket: {error}"))?;
-        endpoint
+        link.endpoint
             .rebind(socket)
             .map_err(|error| format!("{name}: rebind: {error}"))?;
         Ok(true)
     }
 
-    pub(super) fn close(self) {
+    /// Close at once: a QUIC connection and its endpoint are told to go.
+    pub(crate) fn close(self) {
         if let Self::Stream {
-            quic: Some((endpoint, connection)),
-            ..
-        } = self
+            quic: Some(link), ..
+        } = &self
         {
-            connection.close(quinn::VarInt::from_u32(0), b"session closed");
-            endpoint.close(quinn::VarInt::from_u32(0), b"");
+            link.close();
+            link.endpoint.close(quinn::VarInt::from_u32(0), b"");
+        }
+    }
+
+    /// Close and wait until the QUIC endpoint has delivered the close, so
+    /// the server reaps this consumer now. Elsewhere dropping the halves
+    /// already is a clean close.
+    pub(crate) async fn shutdown(self) {
+        if let Self::Stream {
+            quic: Some(link), ..
+        } = &self
+        {
+            link.close();
+            link.endpoint.wait_idle().await;
         }
     }
 }
 
 async fn write_stream_batch(
     writer: &mut (dyn AsyncWrite + Unpin + Send),
-    name: &str,
     frames: &[Vec<u8>],
-) -> Result<(), String> {
-    let failed = |error| name_send_error(name, error);
+) -> Result<(), LinkError> {
     match frames {
         [] => Ok(()),
-        [frame] => write_all_within_budget(writer, frame).await.map_err(failed),
-        many => {
-            let joined = join_frames(many);
-            write_all_within_budget(writer, &joined)
-                .await
-                .map_err(failed)
-        }
+        [frame] => write_all_within_budget(writer, frame).await,
+        many => write_all_within_budget(writer, &join_frames(many)).await,
     }
 }
 
@@ -180,14 +365,14 @@ async fn write_stream_batch(
 async fn write_all_within_budget(
     writer: &mut (dyn AsyncWrite + Unpin + Send),
     bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<(), LinkError> {
     let mut offset = 0;
     while offset < bytes.len() {
         let end = offset.saturating_add(SEND_STALL_CHUNK).min(bytes.len());
         budgeted(
             SEND_BUDGET,
             writer.write_all(&bytes[offset..end]),
-            |error| format!("send failed: {error}"),
+            LinkError::Write,
         )
         .await?;
         offset = end;
@@ -205,20 +390,13 @@ fn message_budget(len: usize) -> Duration {
 async fn budgeted<T, E>(
     budget: Duration,
     work: impl std::future::Future<Output = Result<T, E>>,
-    map_err: impl FnOnce(E) -> String,
-) -> Result<T, String> {
+    map_err: impl FnOnce(E) -> LinkError,
+) -> Result<T, LinkError> {
     match tokio::time::timeout(budget, work).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(map_err(error)),
-        Err(_elapsed) => Err(SEND_STALLED.to_owned()),
+        Err(_elapsed) => Err(LinkError::Stalled),
     }
-}
-
-fn name_send_error(name: &str, error: String) -> String {
-    if error == SEND_STALLED {
-        return error;
-    }
-    format!("{name}: {error}")
 }
 
 /// Several frames, in order, as one buffer.
@@ -246,29 +424,41 @@ const fn unspecified_like(addr: std::net::SocketAddr) -> std::net::SocketAddr {
 }
 
 async fn read_stream_frames(
-    reader: &mut Box<dyn AsyncRead + Unpin + Send>,
+    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
     pending: &mut BytesMut,
-    quic: Option<&(quinn::Endpoint, quinn::Connection)>,
-    name: &str,
-) -> Result<Option<Vec<Bytes>>, String> {
+    quic: Option<&QuicLink>,
+) -> Result<Option<Vec<Bytes>>, LinkError> {
     loop {
-        let frames = take_complete_frames(pending, name)?;
+        let frames = take_complete_frames(pending)?;
         if !frames.is_empty() {
             return Ok(Some(frames));
         }
-        let read = reader
-            .read_buf(pending)
-            .await
-            .map_err(|error| format!("{name}: the connection was lost: {error}"))?;
+        let read = reader.read_buf(pending).await.map_err(LinkError::Read)?;
         if read != 0 {
             continue;
         }
-        if let Some((_, connection)) = quic
-            && let Some(reason) = connection.close_reason()
-        {
-            return Err(quic_closed_message(name, &reason));
+        if let Some(reason) = quic.and_then(|link| link.connection.close_reason()) {
+            return Err(LinkError::Closed(phux_dial::quic::close_error(&reason)));
         }
         return Ok(None);
+    }
+}
+
+/// Complete frames already buffered, else whatever one read polled once
+/// (against a no-op waker) adds. Sound because these reads are cancel-safe
+/// and the next `read_frames().await` re-polls with a real waker.
+fn try_read_stream_frames(
+    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
+    pending: &mut BytesMut,
+) -> Result<Vec<Bytes>, LinkError> {
+    let frames = take_complete_frames(pending)?;
+    if !frames.is_empty() {
+        return Ok(frames);
+    }
+    match reader.read_buf(pending).now_or_never() {
+        None | Some(Ok(0)) => Ok(Vec::new()),
+        Some(Ok(_)) => take_complete_frames(pending),
+        Some(Err(error)) => Err(LinkError::Read(error)),
     }
 }
 
@@ -276,12 +466,12 @@ async fn read_stream_frames(
 /// frame is a frozen view of the read buffer. A queued frame therefore keeps
 /// its read slab alive until the consumer decodes it, bounded by the inbound
 /// queue's ceilings (a slab is `pending`'s 64 KiB, or one oversized frame).
-fn take_complete_frames(pending: &mut BytesMut, name: &str) -> Result<Vec<Bytes>, String> {
+fn take_complete_frames(pending: &mut BytesMut) -> Result<Vec<Bytes>, LinkError> {
     let mut frames = Vec::new();
     while frames.len() < MAX_INBOUND_BATCH {
         match framing::split_frame(pending) {
             Ok(Some(frame)) => frames.push(frame.freeze()),
-            Err(error) if frames.is_empty() => return Err(format!("{name}: {error}")),
+            Err(error) if frames.is_empty() => return Err(LinkError::Framing(error)),
             // Preserve already-decoded frames. On error, the malformed bytes
             // remain at the front of `pending` and fail the next pump step.
             Ok(None) | Err(_) => break,
@@ -293,30 +483,23 @@ fn take_complete_frames(pending: &mut BytesMut, name: &str) -> Result<Vec<Bytes>
 async fn read_ws_frames(
     reader: &mut WsReader,
     writer: &mut WsWriter,
-    deferred_error: &mut Option<String>,
-    name: &str,
-) -> Result<Option<Vec<Bytes>>, String> {
+    deferred_error: &mut Option<LinkError>,
+) -> Result<Option<Vec<Bytes>>, LinkError> {
     match recv_activity_alive(reader, writer)
         .await
-        .map_err(|error| dial_message(name, &error))?
+        .map_err(LinkError::Ws)?
     {
         WsActivity::Message(frame) => {
-            validate_ws_frame(&frame, name)?;
-            let mut frames = vec![Bytes::from(frame)];
+            let mut frames = vec![ws_frame(frame)?];
             while frames.len() < MAX_INBOUND_BATCH {
-                let frame = match reader.try_recv_message() {
-                    Ok(Some(frame)) => frame,
-                    Ok(None) => break,
+                match try_read_ws_frame(reader) {
+                    Ok(mut more) if !more.is_empty() => frames.append(&mut more),
+                    Ok(_) => break,
                     Err(error) => {
-                        *deferred_error = Some(dial_message(name, &error));
+                        *deferred_error = Some(error);
                         break;
                     }
-                };
-                if let Err(error) = validate_ws_frame(&frame, name) {
-                    *deferred_error = Some(error);
-                    break;
                 }
-                frames.push(Bytes::from(frame));
             }
             Ok(Some(frames))
         }
@@ -326,138 +509,26 @@ async fn read_ws_frames(
     }
 }
 
-fn validate_ws_frame(frame: &[u8], name: &str) -> Result<(), String> {
-    framing::check_frame(frame)
-        .map(|_| ())
-        .map_err(|error| format!("{name} sent a malformed frame: {error}"))
-}
-
-pub(super) async fn dial(target: &Target, options: ConnectOptions) -> Result<Io, ConnectionEnd> {
-    match &target.transport {
-        Transport::Uds(path) => dial_uds(target.name.as_str(), path, options).await,
-        Transport::Ws(url) => dial_ws(target, url, options).await,
-        Transport::Quic(authority) => dial_quic(target, authority, options).await,
+/// A message tungstenite already decoded, if any. A close seen here is
+/// none; the next read reports it.
+fn try_read_ws_frame(reader: &mut WsReader) -> Result<Vec<Bytes>, LinkError> {
+    match reader.try_recv_message().map_err(LinkError::Ws)? {
+        Some(frame) => Ok(vec![ws_frame(frame)?]),
+        None => Ok(Vec::new()),
     }
 }
 
-async fn dial_uds(
-    name: &str,
-    path: &std::path::Path,
-    options: ConnectOptions,
-) -> Result<Io, ConnectionEnd> {
-    let stream = tokio::time::timeout(options.dial_timeout, tokio::net::UnixStream::connect(path))
-        .await
-        .map_err(|_| ConnectionEnd::Dropped(Some(timed_out(name))))?
-        .map_err(|error| {
-            ConnectionEnd::Dropped(Some(format!(
-                "{name}: could not connect to {}: {error}",
-                path.display()
-            )))
-        })?;
-    let (reader, writer) = stream.into_split();
-    Ok(Io::Stream {
-        reader: Box::new(reader),
-        writer: Box::new(writer),
-        pending: BytesMut::with_capacity(64 * 1024),
-        quic: None,
-    })
-}
-
-async fn dial_ws(target: &Target, url: &str, options: ConnectOptions) -> Result<Io, ConnectionEnd> {
-    let name = target.name.as_str();
-    let resolved = target
-        .resolved()
-        .ok_or_else(|| ConnectionEnd::Refused(format!("{name}: a WebSocket target needs a URL")))?;
-    let ws = tokio::time::timeout(options.dial_timeout, async {
-        // A planning failure is configuration, which no retry changes.
-        let token = match target.token.clone() {
-            Some(token) => Some(token),
-            None => load_token(&resolved).map_err(ConnectionEnd::Refused)?,
-        };
-        let plan = plan_ws(&resolved, url, token).map_err(ConnectionEnd::Refused)?;
-        let connected = phux_dial::ws::dial_with_identity(&plan, &resolved.client_identity).await;
-        // The Authorization header has been sent; drop the owned token now.
-        drop(plan);
-        connected.map_err(|error| classify(name, &error))
-    })
-    .await
-    .map_err(|_| ConnectionEnd::Dropped(Some(timed_out(name))))??;
-    let (tx, rx) = ws.split();
-    Ok(Io::Ws {
-        reader: WsReader::new(rx),
-        writer: WsWriter { tx },
-        deferred_error: None,
-    })
-}
-
-async fn dial_quic(
-    target: &Target,
-    authority: &str,
-    options: ConnectOptions,
-) -> Result<Io, ConnectionEnd> {
-    let name = target.name.as_str();
-    let resolved = target.resolved().ok_or_else(|| {
-        ConnectionEnd::Refused(format!("{name}: a QUIC target needs an authority"))
-    })?;
-    let established = tokio::time::timeout(options.dial_timeout, async {
-        let plan = plan_quic_with_token(&resolved, authority, target.token.clone())
-            .await
-            .map_err(ConnectionEnd::Refused)?;
-        let connected = phux_dial::quic::dial_stream(&plan).await;
-        // The bearer preamble has been written; the owned token goes now.
-        drop(plan);
-        connected.map_err(|error| classify(name, &error))
-    })
-    .await
-    .map_err(|_| ConnectionEnd::Dropped(Some(timed_out(name))))??;
-    let (endpoint, connection, stream) = established;
-    if let Some(reason) = connection.close_reason() {
-        return Err(ConnectionEnd::Dropped(Some(quic_closed_message(
-            name, &reason,
-        ))));
-    }
-    let (reader, writer) = crate::tunnel::host_halves(stream);
-    Ok(Io::Stream {
-        reader,
-        writer,
-        pending: BytesMut::with_capacity(64 * 1024),
-        quic: Some((endpoint, connection)),
-    })
-}
-
-/// A refusal no retry can satisfy ends the session; everything else walks
-/// the ladder.
-fn classify(name: &str, error: &phux_dial::DialError) -> ConnectionEnd {
-    if is_fatal_refusal(error) {
-        ConnectionEnd::Refused(dial_message(name, error))
-    } else {
-        ConnectionEnd::Dropped(Some(dial_message(name, error)))
-    }
+/// One binary message as one frame: the check the server applies to its
+/// own inbound messages, since a message that disagrees with its declared
+/// length would desynchronize the framed stream.
+fn ws_frame(message: Vec<u8>) -> Result<Bytes, LinkError> {
+    framing::check_frame(&message).map_err(LinkError::Framing)?;
+    Ok(Bytes::from(message))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn a_loopback_dial_names_a_missing_captured_token_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let token = dir.path().join("captured-token-file");
-        let mut target = Target::ws("ws://127.0.0.1:1");
-        target.name = "mini".to_owned();
-        target.token_file = Some(token);
-        let Err(err) = dial(&target, ConnectOptions::default()).await else {
-            panic!("a missing token file must refuse the dial");
-        };
-        let text = match err {
-            ConnectionEnd::Refused(text) | ConnectionEnd::Dropped(Some(text)) => text,
-            other => panic!("unexpected end: {other:?}"),
-        };
-        assert!(
-            text.contains("captured-token-file"),
-            "dial must name the captured token file, got {text}"
-        );
-    }
 
     #[test]
     fn a_rebind_socket_keeps_the_peer_family() {
@@ -473,10 +544,10 @@ mod tests {
         FrameKind::Ping { nonce: 7 }.encode(&mut pending);
         pending.extend_from_slice(&[0, 0, 0, 0]);
 
-        let valid = take_complete_frames(&mut pending, "fixture").expect("valid prefix");
+        let valid = take_complete_frames(&mut pending).expect("valid prefix");
 
         assert_eq!(valid.len(), 1);
-        assert!(take_complete_frames(&mut pending, "fixture").is_err());
+        assert!(take_complete_frames(&mut pending).is_err());
     }
 
     #[test]
@@ -486,8 +557,8 @@ mod tests {
             FrameKind::Ping { nonce }.encode(&mut pending);
         }
 
-        let first = take_complete_frames(&mut pending, "fixture").expect("first batch");
-        let second = take_complete_frames(&mut pending, "fixture").expect("second batch");
+        let first = take_complete_frames(&mut pending).expect("first batch");
+        let second = take_complete_frames(&mut pending).expect("second batch");
 
         assert_eq!(first.len(), MAX_INBOUND_BATCH);
         assert_eq!(second.len(), 300 - MAX_INBOUND_BATCH);
@@ -499,6 +570,24 @@ mod tests {
             FrameKind::decode(second.last().expect("last frame")).expect("frame decodes");
         assert!(tail.is_empty());
         assert!(matches!(last_frame, FrameKind::Ping { nonce: 299 }));
+    }
+
+    /// A non-blocking read takes what is buffered and never waits; a
+    /// clean close reads as nothing until the blocking read reports it.
+    #[tokio::test]
+    async fn a_non_blocking_read_takes_what_is_there_and_never_waits() {
+        let (near, mut far) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(near);
+        let mut io = Io::stream(Box::new(reader), Box::new(writer));
+        assert!(io.try_read_frames().expect("nothing yet").is_empty());
+        far.write_all(&encode(&FrameKind::Ping { nonce: 4 }))
+            .await
+            .expect("write");
+        let frames = io.try_read_frames().expect("one frame");
+        assert_eq!(frames.len(), 1);
+        drop(far);
+        assert!(io.try_read_frames().expect("closed").is_empty());
+        assert!(io.read_frames().await.expect("clean close").is_none());
     }
 
     #[test]

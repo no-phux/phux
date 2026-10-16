@@ -29,6 +29,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_kill` | `phux kill` | in-process | no | yes |
 | `phux_rm` | `phux rm` | in-process | no | yes |
 | `phux_relaunch` | `phux relaunch` | in-process | no | no |
+| `phux_organize` | `phux organize` | in-process | no | no |
 | `phux_detach` | `phux detach` | in-process | no | yes |
 | `phux_watch` | `phux watch` | in-process | yes | no |
 | `phux_ask` | `phux ask` | in-process | no | no |

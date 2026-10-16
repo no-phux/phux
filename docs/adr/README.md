@@ -202,7 +202,10 @@ column is the base status word plus at most one relationship clause, about
 | [0168](./0168-project-identity-is-a-session-attribute.md) | Project identity is a session attribute keyed by remote | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md)) |
 | [0169](./0169-zig-cockpit-lives-in-an-archive.md) | Zig Cockpit lives in an archive, not main | Accepted (supersedes [0167](./0167-cockpit-is-frozen.md), [0138](./0138-cockpit-rides-the-next-channel.md)) |
 | [0170](./0170-acp-is-the-provider-seam.md) | ACP is the sole provider seam | Accepted |
+| [0171](./0171-one-transport-phux-client-rides-the-runtime.md) | One transport: phux-client rides the client runtime | Accepted (builds on [0133](./0133-one-client-runtime-below-every-binding.md)) |
+| [0172](./0172-tui-actions-and-jobs-are-declared-once.md) | TUI actions and background jobs are declared once | Accepted (builds on [0100](./0100-the-tui-is-its-own-crate.md), [0174](./0174-organize-asks-a-judge-and-code-decides.md)) |
 | [0173](./0173-mission-control-is-a-client-composition.md) | Mission control is a client composition with an interim work store | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md), [0132](./0132-swarm-members-are-coordinator-clients.md)) |
+| [0174](./0174-organize-asks-a-judge-and-code-decides.md) | Organize asks a judge; code decides | Accepted (builds on [0160](./0160-sessions-own-resources-and-window-is-retired.md), [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md), [0168](./0168-project-identity-is-a-session-attribute.md)) |
 
 ## When to write an ADR
 

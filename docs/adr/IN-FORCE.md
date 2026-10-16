@@ -160,6 +160,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0172](./0172-tui-actions-and-jobs-are-declared-once.md) A TUI action is one registry row carrying its handler, pinned by test to phux-config's `ACTION_NAMES`; background work is a `Job` on one facility with a per-kind in-flight guard, delivered to the driver's one job arm as a toast plus an optional inventory refresh.
 - [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) A plugin `[[sidebar]]` section is a fixed band between Agents and Sessions; its rows are session panes rendered from a closed token vocabulary, and a pane rows only when every token resolves.
 - [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) A plugin `overlay` pane is a Terminal in no window, drawn by the client as a modal box; any action dismisses it by killing its Terminal, and it closes when its process exits.
 - [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) While attached the TUI pushes kitty keyboard flag 1 on the host and pops it in the shared terminal reset; hosts without the protocol stay on the legacy decoder.
@@ -167,6 +168,7 @@ by a newer one, the newer line is the operative reading.
 - [0165](./0165-gpui-desktop-replaces-the-solid-host.md) The desktop is a GPUI application with in-process runtime views, focused-writable geometry, and close-detaches; the shipping app is the Rust executable, not a Solid/NAPI host.
 - [0135](./0135-one-binding-crate.md) A binding crate is one crate: `phux-client-ffi` derives the product vocabulary from the runtime once in `projection/`, and carries one encoder per language behind a feature (`c-abi` by default, `uniffi` for mobile); `phux-mobile-ffi` is deleted.
 - [0134](./0134-connected-lanes-refine-the-binding-boundary.md) A binding holds no connected-client state machine but may keep its decode point; the runtime owns each connected resource's engine thread; UniFFI stays for mobile with the shim in this repo; the C ABI has an embedded and a connected lane.
+- [0171](./0171-one-transport-phux-client-rides-the-runtime.md) `phux-client-runtime` is the only transport; `phux-client`'s `Connection` is a facade over a runtime session, organization edits have one sequencer, and the TUI's bytes ride the runtime before its engine moves.
 - [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
 - [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
@@ -176,6 +178,7 @@ by a newer one, the newer line is the operative reading.
 - [0121](./0121-cli-parser-is-usage-rs.md) The `phux` CLI parses with usage-rs 6.9; one declaration drives parse, help, completions, and the generated CLI reference.
 - [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
 - [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
+- [0174](./0174-organize-asks-a-judge-and-code-decides.md) `phux organize` moves panes to the sessions they belong in: a judge (Jev with a key, else repository matching) picks among known sessions, code gates it by confidence and never pulls a pane from its own repository's session, and a local journal undoes it.
 - [0168](./0168-project-identity-is-a-session-attribute.md) A session made in a git checkout carries a project identity keyed by its normalized `origin` URL, as typed session attributes set at `SESSION_CREATE`; pickers, the sidebar, and `phux ls` group by it, across machines.
 - [0152](./0152-project-recipes-run-only-approved-bytes.md) `phux project open` builds a missing session from `.phux/project.toml` through the restore engine, only after its exact bytes are approved per repository.
 - [0054](./0054-worktree-bound-sessions.md) `phux worktree` derives a session name from the worktree path; no stored state.

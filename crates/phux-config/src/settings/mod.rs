@@ -42,6 +42,8 @@ pub enum SettingSection {
     Experimental,
     /// `[voice]`.
     Voice,
+    /// `[organize]`.
+    Organize,
     /// `[limits]`.
     Limits,
 }
@@ -58,6 +60,7 @@ impl SettingSection {
         Self::Theme,
         Self::Experimental,
         Self::Voice,
+        Self::Organize,
         Self::Limits,
     ];
 
@@ -74,6 +77,7 @@ impl SettingSection {
             Self::Theme => "Theme",
             Self::Experimental => "Experimental",
             Self::Voice => "Voice",
+            Self::Organize => "Organize",
             Self::Limits => "Limits",
         }
     }
@@ -91,6 +95,7 @@ impl SettingSection {
             Self::Theme => "theme",
             Self::Experimental => "experimental",
             Self::Voice => "voice",
+            Self::Organize => "organize",
             Self::Limits => "limits",
         }
     }
@@ -735,6 +740,27 @@ pub const CATALOG: &[SettingSpec] = &[
                  useful clip. 0 would refuse every request, so the editor floor is 1.",
         applies: Applies::NextSpawn,
     },
+    // -- [organize] ---------------------------------------------------------
+    SettingSpec {
+        key: "organize.jev-key-command",
+        section: SettingSection::Organize,
+        kind: SettingKind::Argv,
+        summary: "Command that prints the TypeSafe API key for organize's Jev judge",
+        detail: "Run when TYPESAFE_API_KEY is unset; its trimmed stdout is the key. Unset \
+                 means the environment only, and without a key organize decides by \
+                 repository matching.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
+        key: "organize.offline",
+        section: SettingSection::Organize,
+        kind: SettingKind::Bool,
+        summary: "Organize by repository matching only; send nothing off the machine",
+        detail: "true never asks Jev, even with a key: organize places panes by the \
+                 repository their directory is in. Only pane names, titles, directories, \
+                 and repositories are ever sent, never screen contents.",
+        applies: Applies::NextAttach,
+    },
     // -- [limits] -------------------------------------------------------
     SettingSpec {
         key: "limits.metadata-value-bytes",
@@ -875,6 +901,7 @@ mod tests {
         "experimental.predictive-echo",
         "voice.transcriber",
         "voice.timeout-secs",
+        "organize.jev-key-command",
     ];
 
     /// Composite subtrees under the section tables: composition, not knobs.

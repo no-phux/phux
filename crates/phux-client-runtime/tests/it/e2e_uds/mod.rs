@@ -32,6 +32,8 @@ mod idle_history;
 mod roster_live;
 mod scoped_live;
 
+mod organize_live;
+
 fn options() -> ClientOptions {
     ClientOptions {
         control: ControlOptions {

@@ -54,7 +54,7 @@ chrono.workspace = true
 # real store. `nix`'s `user` feature is a safe wrapper, keeping this crate's
 # `forbid(unsafe_code)`; the same version is already in the tree through
 # phux-server, so this adds a consumer, not new third-party code.
-nix = { version = "0.31", default-features = false, features = ["user"] }
+nix = { version = "0.31", default-features = false, features = ["user", "hostname"] }
 
 [dev-dependencies]
 insta.workspace = true

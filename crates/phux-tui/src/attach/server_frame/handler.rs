@@ -369,7 +369,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             message,
         } => error_frame_outcome(ctx, request_id, code, message),
         // A request-correlated reply that reached the dispatcher instead of
-        // its awaiter (`Connection::await_answer` replays interleaved frames
+        // its awaiter (`Connection::request` returns interleaved frames
         // here). Inert, never terminal: L1 §5 requires clients to tolerate
         // replies interleaved with other traffic.
         FrameKind::CommandResult { request_id, result } => {

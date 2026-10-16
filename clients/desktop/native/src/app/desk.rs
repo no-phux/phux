@@ -3448,6 +3448,7 @@ impl Desk {
         );
         self.locations.insert(previous, self.store.clone());
         self.persist();
+        self.abandon_organize();
         self.abort_uploads(true);
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);

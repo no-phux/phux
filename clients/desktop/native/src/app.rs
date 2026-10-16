@@ -21,6 +21,7 @@ mod motion;
 mod native_launch;
 mod notifications;
 mod organization;
+mod organize;
 mod overlays;
 mod panes;
 mod performance;

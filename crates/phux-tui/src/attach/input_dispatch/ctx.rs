@@ -7,9 +7,10 @@ use phux_protocol::ResourceId;
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
 use crate::attach::focus::FocusHistory;
+use crate::attach::jobs::Jobs;
 use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::AttentionNavigation;
-use crate::attach::plugin_actions::{PluginActionEntry, PluginRunResult};
+use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::attach::sidebar_zones::PeerInputs;
 use crate::layout::{ArrangementDoc, SplitDir};
@@ -147,8 +148,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub plugin_actions: &'a [PluginActionEntry],
     /// Enabled plugins' hostable `[[panes]]`.
     pub plugin_panes: &'a [PluginPaneEntry],
-    /// Plugin-run completion channel; `None` in tests.
-    pub plugin_tx: Option<&'a tokio::sync::mpsc::UnboundedSender<PluginRunResult>>,
+    /// The background-job facility an action's `job` effect starts on
+    /// (ADR-0172); results come back through the driver's job arm.
+    pub jobs: &'a Jobs,
     /// Out-channel for a requested config reload (dispatch borrows exactly
     /// the state a reload replaces).
     pub reload_request: &'a mut bool,

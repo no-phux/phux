@@ -32,6 +32,9 @@ The **Palette** column is the command-palette section the action is offered unde
 | `kill-window` | Tab | `terminals?` (selectors the confirm committed; omitted opens the confirm) | Kill the active tab's terminals… |
 | `kill-session` | Session | `id`, `name` (optional pinned session; defaults to current) | Confirm ending all session work, including resources added meanwhile, and delete it |
 | `delete-empty-session` | Session | `id`, `name` (optional pinned session; defaults to current) | Confirm deletion of an empty session; never terminates members |
+| `organize` | Session |  | Put every pane in the session it belongs in (`phux organize`); moves membership only |
+| `organize-session` | Session |  | Move this session's panes to the sessions they belong in; other sessions stay |
+| `organize-undo` | Session |  | Reverse the last organize run: panes move back, renames revert, created sessions go |
 | `session-actions` | — | `id`, `name`, `host` (pinned picker identity) | Open management for the selected session row |
 | `next-window` | Tab |  | Switch to the next tab |
 | `previous-window` | Tab |  | Switch to the previous tab |

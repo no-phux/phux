@@ -5170,6 +5170,7 @@ dependencies = [
  "libghostty-vt",
  "phux-client-core",
  "phux-config",
+ "phux-core",
  "phux-dial",
  "phux-perf",
  "phux-protocol",
@@ -5202,6 +5203,15 @@ dependencies = [
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
  "unicode-width",
+]
+
+[[package]]
+name = "phux-core"
+version = "0.84.0"
+dependencies = [
+ "serde",
+ "slotmap",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

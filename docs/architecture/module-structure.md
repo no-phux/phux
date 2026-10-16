@@ -150,8 +150,10 @@ over its functions ([`../consumers/sdk.md`](../consumers/sdk.md)).
 
 ```
 src/
-  attach/         — Dial (UDS / QUIC / WS), frame I/O, HELLO, stdin parser,
-                    acknowledged-input replay journal, AttachError / AttachEnd
+  attach/         — Connection, the facade over the runtime's one-shot
+                    session (ADR-0171: no socket, framing, or handshake
+                    code here), stdin parser, acknowledged-input replay
+                    journal, AttachError / AttachEnd
   selector.rs     — TARGET resolution (ADR-0021)
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs, ask.rs,
   spatial.rs, layout_ops.rs, spawn.rs, kill.rs, signal.rs, detach.rs,
@@ -183,7 +185,9 @@ src/
   attach/
     driver/       — the tokio::select! lifecycle; nothing imports from it
     server_frame/ — server frames to client-side effects
-    input_dispatch/, action_registry.rs, actions.rs — keybinding pipeline
+    input_dispatch/, action_registry.rs, actions.rs — keybinding pipeline;
+                    each action is one registry row with its handler (ADR-0172)
+    jobs.rs       — background jobs and their one driver arm (ADR-0172)
     render.rs, paint.rs, repaint.rs, reflow.rs — TerminalRenderer
     pane_state.rs, fleet.rs, focus.rs, copy.rs, directory_picker.rs, ...
   render/         — ratatui chrome
@@ -263,8 +267,9 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 - **`phux-client-runtime`** — the one client orchestration layer (ADR-0133;
   [`client-runtime.md`](./client-runtime.md)): registry target resolution,
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
-  `ControlPlane`, the engine owner thread, grid publication, and
-  `Runtime::connect`. Rust API only. `control/organization.rs` is the
+  `ControlPlane`, the engine owner thread, grid publication,
+  `Runtime::connect`, and the one-shot `session::Session` that verbs ride
+  (ADR-0171). Rust API only. `control/organization.rs` is the
   organization replica: seeded by paged `GetOrganization`, advanced by
   journal events in sequence, refetched on a gap; it retries pending
   operations with the same operation id after reconnect, reports the

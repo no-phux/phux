@@ -157,15 +157,7 @@ impl super::SessionLoop {
         tokio::select! {
             biased;
 
-            n = self.stdin.read(&mut self.stdin_buf) => {
-                if n.as_ref().is_ok_and(|read| *read > 0) {
-                    phux_perf::echo_hop::record("stdin");
-                }
-                let started = std::time::Instant::now();
-                let result = self.on_stdin(conn, out, sidebar, n).await;
-                phux_client::perf::INPUT_WALL.record_elapsed(started);
-                result
-            },
+            n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin_timed(conn, out, sidebar, n).await,
 
             // Inbound frames, drained in a bounded batch so a burst paints once.
             frame = conn.recv() => {
@@ -222,11 +214,9 @@ impl super::SessionLoop {
                 Ok(Step::Continue)
             }
 
-            // A spawned plugin action finished; failures toast.
-            Some(result) = self.plugin_rx.recv() => {
-                self.on_plugin_result(out, sidebar, &result);
-                Ok(Step::Continue)
-            }
+            // A background job (ADR-0172) finished: toast its result and
+            // refresh what it changed.
+            done = self.jobs.next() => self.on_job_done(conn, out, sidebar, done).await,
 
             // ADR-0140: the hosts provider answered. Only a changed answer
             // repaints; the chrome drain is the same one a session-graph
@@ -242,6 +232,23 @@ impl super::SessionLoop {
                 exit_on_signal(code)
             }
         }
+    }
+
+    /// Stdin readiness, with its echo-hop mark and input wall time.
+    async fn on_stdin_timed<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        n: std::io::Result<usize>,
+    ) -> Result<Step, AttachError> {
+        if n.as_ref().is_ok_and(|read| *read > 0) {
+            phux_perf::echo_hop::record("stdin");
+        }
+        let started = std::time::Instant::now();
+        let result = self.on_stdin(conn, out, sidebar, n).await;
+        phux_client::perf::INPUT_WALL.record_elapsed(started);
+        result
     }
 
     /// SIGWINCH: resize the view, then keep looping.

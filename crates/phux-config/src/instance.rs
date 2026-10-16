@@ -227,6 +227,23 @@ pub fn runtime_dir() -> PathBuf {
     path
 }
 
+/// This machine's short host name: the node name up to its first dot, or
+/// `local` when it has none. Project identities without a network remote
+/// name it (ADR-0168).
+#[must_use]
+pub fn local_host_name() -> String {
+    let node = nix::unistd::gethostname()
+        .ok()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let short = node.split('.').next().unwrap_or_default();
+    if short.is_empty() {
+        "local".to_owned()
+    } else {
+        short.to_owned()
+    }
+}
+
 /// The per-user, per-profile state directory holding logs and provisioned
 /// credentials.
 ///

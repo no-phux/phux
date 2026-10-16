@@ -50,7 +50,7 @@ pub(super) fn test_engine_kernel() -> AttachKernel {
 /// Owned backing state for a test [`DispatchCtx`]: set the fields a test
 /// cares about, lend it with [`CtxFixture::ctx`], read results back after.
 /// Borrow-only fields (`control_dial`, `resolver`, `input_replay`,
-/// `keybindings`, `plugin_tx`) start `None` on the lent context.
+/// `keybindings`) start `None` on the lent context.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "mirrors DispatchCtx's independent driver flags one-to-one"
@@ -111,6 +111,8 @@ pub(super) struct CtxFixture {
     pub(super) project_toggle_request: Option<String>,
     pub(super) agent_meta: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) vcs: VcsIndex,
+    /// The fixture's own job facility; await `jobs.next()` for results.
+    pub(super) jobs: crate::attach::jobs::Jobs,
     painted_targets: SidebarTargets,
 }
 
@@ -172,6 +174,7 @@ impl Default for CtxFixture {
             project_toggle_request: None,
             agent_meta: HashMap::new(),
             vcs: VcsIndex::default(),
+            jobs: crate::attach::jobs::Jobs::new(),
             painted_targets: SidebarTargets::default(),
         }
     }
@@ -246,7 +249,7 @@ impl CtxFixture {
             attention_navigation: &mut self.attention_navigation,
             plugin_actions: &self.plugin_actions,
             plugin_panes: &self.plugin_panes,
-            plugin_tx: None,
+            jobs: &self.jobs,
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
             project_toggle_request: &mut self.project_toggle_request,

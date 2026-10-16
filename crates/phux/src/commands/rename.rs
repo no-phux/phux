@@ -20,10 +20,6 @@ pub(crate) fn run_rename(target: &str, new_name: &str, server: ServerSpec) -> Ex
 }
 
 /// Rename the session `session` on `target`; see [`run_rename`].
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "shutdown consumes the connection after the final ordering barrier"
-)]
 pub(crate) async fn run_rename_on(
     target: &ServerTarget,
     session: &str,

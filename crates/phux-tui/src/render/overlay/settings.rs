@@ -90,6 +90,8 @@ struct Editor {
 #[derive(Debug, Clone, Copy, Default)]
 struct Geometry {
     sections: Option<Rect>,
+    /// First visible section's index into [`SettingSection::ALL`].
+    section_offset: usize,
     rows: Rect,
     /// First visible row's index into the visible-row list.
     offset: usize,
@@ -337,6 +339,12 @@ impl SettingsOverlay {
 
     const fn select_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// The first section the column shows in `rows` rows: the selected
+    /// section stays in view when there are more sections than rows.
+    const fn section_offset(&self, rows: usize) -> usize {
+        self.section.saturating_sub(rows.saturating_sub(1))
     }
 
     fn page_rows(&self) -> usize {
@@ -978,11 +986,12 @@ impl SettingsOverlay {
             .get(offset..(offset + list_height.saturating_sub(header)).min(specs.len()))
             .unwrap_or(&[]);
         let mut lines = Vec::with_capacity(list_height);
+        let first_section = self.section_offset(list_height);
         for i in 0..list_height {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if two_column {
-                if i < SettingSection::ALL.len() {
-                    spans.extend(self.section_line(i, section_w).spans);
+                if first_section + i < SettingSection::ALL.len() {
+                    spans.extend(self.section_line(first_section + i, section_w).spans);
                 } else {
                     spans.push(Span::raw(" ".repeat(section_w)));
                 }
@@ -1397,6 +1406,7 @@ impl RenderOverlay for SettingsOverlay {
         };
         let rows_right = modal.x + modal.width.saturating_sub(1);
         self.geometry.set(Geometry {
+            section_offset: self.section_offset(list_height),
             sections: two_column.then(|| {
                 Rect::new(
                     modal.x + 1,
@@ -1459,7 +1469,7 @@ impl RenderOverlay for SettingsOverlay {
                 if let Some(sections) = geometry.sections
                     && sections.contains((col, row).into())
                 {
-                    let index = usize::from(row - sections.y);
+                    let index = geometry.section_offset + usize::from(row - sections.y);
                     if index < SettingSection::ALL.len() {
                         self.select_section(index);
                     }
@@ -1970,6 +1980,20 @@ mod tests {
         let (_dir, mut page) = page_over("[sidebar]\nwidth = 40\n");
         page.focus("sidebar.width");
         insta::assert_snapshot!(render_text(&page, 100, 30));
+    }
+
+    /// More sections than column rows: the selected last section still
+    /// paints, so it can be seen and clicked.
+    #[test]
+    fn the_section_column_keeps_the_selected_section_in_view() {
+        let (_dir, mut page) = page_over("");
+        page.focus("limits.metadata-value-bytes");
+        let text = render_text(&page, 100, 30);
+        let column = |line: &str| line.split('│').nth(1).unwrap_or_default().to_owned();
+        assert!(
+            text.lines().any(|line| column(line).contains("▸Limits")),
+            "{text}"
+        );
     }
 
     #[test]

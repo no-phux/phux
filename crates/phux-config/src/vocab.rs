@@ -6,7 +6,8 @@
 
 use crate::Action;
 
-/// Canonical names of every action the client dispatcher handles.
+/// Canonical names of every action the TUI dispatcher handles. phux-tui's
+/// action registry declares each exactly once (ADR-0172, test-pinned).
 pub const ACTION_NAMES: &[&str] = &[
     "split-pane",
     "move-pane",
@@ -20,6 +21,9 @@ pub const ACTION_NAMES: &[&str] = &[
     "kill-window",
     "kill-session",
     "delete-empty-session",
+    "organize",
+    "organize-session",
+    "organize-undo",
     "session-actions",
     "next-window",
     "previous-window",

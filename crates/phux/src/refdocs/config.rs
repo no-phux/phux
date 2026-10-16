@@ -133,6 +133,12 @@ const SECTIONS: &[Section] = &[
                   that turns an uploaded clip into text for a paste.",
     },
     Section {
+        key: "organize",
+        header: "[organize]",
+        summary: "Who judges where panes belong for `phux organize`: \
+                  `TypeSafe`'s Jev with a key, else repository matching.",
+    },
+    Section {
         key: "limits",
         header: "[limits]",
         summary: "Server-enforced ceilings that are not a per-pane spawn \
@@ -185,6 +191,11 @@ const TRISTATE_ROWS: &[(&str, &str)] = &[
         "voice.timeout-secs",
         "unset — 30. Seconds before the transcriber is killed and the \
          request refused",
+    ),
+    (
+        "organize.jev-key-command",
+        "unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is \
+         the key, run when the variable is unset",
     ),
 ];
 

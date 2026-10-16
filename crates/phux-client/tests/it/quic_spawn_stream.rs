@@ -152,10 +152,6 @@ async fn wait_for_output(connection: &mut Connection, terminal: &ResourceId, nee
     panic!("timed out waiting for {needle:?}; tail={tail:?}");
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "shutdown consumes the connection at its last use"
-)]
 async fn prove_spawned_pane_binds() {
     let tmp = TempDir::new().unwrap();
     let cert = tmp.path().join("cert.pem");

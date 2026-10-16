@@ -11,6 +11,7 @@
 //! certificate.
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bytes::BytesMut;
@@ -20,6 +21,30 @@ use phux_dial::{CertTrust, DialError};
 use phux_protocol::wire::framing;
 
 use crate::target::{Resolved, read_token};
+
+/// A planned dial: how to reach one server, trust already decided.
+///
+/// [`crate::Target::plan`] produces one under the registry's trust rules;
+/// a caller that planned its own (a CLI flag naming a pin) builds it
+/// directly. The reconnecting driver and the one-shot
+/// [`crate::session::Session`] both establish through it.
+#[derive(Debug, Clone)]
+pub enum Dial {
+    /// Connect over the Unix domain socket at this path.
+    Uds(PathBuf),
+    /// Dial a QUIC listener; the plan owns its bearer token.
+    Quic(QuicDial),
+    /// Dial a WebSocket listener; the plan owns its bearer token.
+    Ws(WsDial),
+}
+
+impl Dial {
+    /// A [`Dial::Uds`] for `path`.
+    #[must_use]
+    pub fn uds(path: &Path) -> Self {
+        Self::Uds(path.to_path_buf())
+    }
+}
 
 /// Bound on name resolution plus transport establishment, so "connecting"
 /// never sits through a 75-second OS connect timeout.

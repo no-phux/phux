@@ -14,6 +14,10 @@ pub(crate) struct Organization {
     pub selected: Vec<ResourceKey>,
     pub undo: Option<Box<Committed>>,
     pending: Option<(OperationId, Edit)>,
+    /// Organize Everything: judging in the background.
+    pub planning: bool,
+    /// Organize Everything (or its undo): applying.
+    pub run: Option<Box<super::organize::Run>>,
 }
 
 #[derive(Clone)]
@@ -35,7 +39,7 @@ impl Edit {
 
 impl Organization {
     pub fn busy(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.planning || self.run.is_some()
     }
 
     pub fn toggle(&mut self, resource: ResourceKey) -> Result<(), &'static str> {
@@ -104,6 +108,9 @@ impl Organization {
     pub fn connection_changed(&mut self) {
         self.selected.clear();
         self.undo = None;
+        // An organize run survives a reconnect to the same client: the
+        // runtime resends its operations under their ids and reports an
+        // outcome for each. Replacing the client abandons it (`adopt_host`).
     }
 }
 
@@ -118,6 +125,8 @@ impl Desk {
             "move-resources" => self.open_move(window, cx),
             "select-session-work" => self.select_current_work(cx),
             "undo-organization" => self.undo_organization(cx),
+            "organize-everything" => self.organize_everything(cx),
+            "undo-organize-everything" => self.undo_organize_everything(cx),
             _ => return false,
         }
         true
@@ -263,6 +272,9 @@ impl Desk {
     }
 
     pub(crate) fn note_organization(&mut self, operation: OperationId, outcome: &OrgOutcome) {
+        if self.note_organize(operation, outcome) {
+            return;
+        }
         if let Some((false, sentence)) = self.organization.finish(operation, outcome) {
             self.post(Kind::Error, "Couldn't move", Some(sentence));
         }

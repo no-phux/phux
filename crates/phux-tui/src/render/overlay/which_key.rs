@@ -246,16 +246,17 @@ fn push_directional(rows: &mut Vec<Row>, bindings: &mut [(usize, usize, &str)]) 
 }
 
 /// A binding's label as a person reads it: the palette title of the
-/// [`REGISTRY`](crate::attach::action_registry::REGISTRY) row the binding
+/// [`ACTIONS`](crate::attach::action_registry::ACTIONS) palette row the binding
 /// commits exactly, else a phrase built from the action name and its
 /// argument values, so new and plugin actions are never unlabelled.
 fn action_label(action: &Action) -> String {
     let resolved = phux_config::keybind::ResolvedAction::from(action);
-    if let Some(spec) = crate::attach::action_registry::REGISTRY
+    if let Some((title, _)) = crate::attach::action_registry::ACTIONS
         .iter()
-        .find(|spec| spec.resolved_action() == resolved)
+        .filter(|spec| spec.resolved_action() == resolved)
+        .find_map(crate::attach::action_registry::ActionSpec::palette_row)
     {
-        return spec.title.to_owned();
+        return title.to_owned();
     }
     let (name, args) = (resolved.action.as_str(), &resolved.args);
     let arg = |key: &str| {

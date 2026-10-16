@@ -2718,6 +2718,7 @@ dependencies = [
  "libghostty-vt",
  "phux-client-core",
  "phux-config",
+ "phux-core",
  "phux-dial",
  "phux-perf",
  "phux-protocol",

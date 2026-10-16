@@ -419,6 +419,7 @@ impl NativeController {
         ok_reply(&self.control_request(&mut lane, request).await?)?;
         self.closed.store(true, Ordering::Release);
         lane.connection = None;
+        drop(lane);
         self.generation.send_modify(|_| {});
         Ok(())
     }
@@ -472,6 +473,7 @@ impl NativeController {
         if *self.generation.borrow() == generation || lane.connection.is_none() {
             self.register(&mut lane).await?;
         }
+        drop(lane);
         Ok(())
     }
 

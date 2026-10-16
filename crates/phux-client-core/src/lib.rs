@@ -49,6 +49,7 @@ pub mod layout;
 pub mod multi_pane;
 pub mod org_ops;
 pub mod organization;
+pub mod organize;
 pub mod perf;
 pub mod predict;
 pub mod rename;

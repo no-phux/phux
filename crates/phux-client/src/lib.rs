@@ -1,8 +1,9 @@
 //! phux headless client library.
 //!
 //! The control-plane half of a phux client: connect over UDS, QUIC, or
-//! WebSocket, negotiate HELLO, and drive the wire verbs behind every `phux`
-//! agent verb and the `phux-mcp` adapter (`docs/consumers/sdk.md`). It owns
+//! WebSocket through the client runtime's one transport (ADR-0171), and
+//! drive the wire verbs behind every `phux` agent verb and the `phux-mcp`
+//! adapter (`docs/consumers/sdk.md`). It owns
 //! no PTY and no screen and links no `ratatui`; the interactive attach is
 //! `phux-tui`, which depends on this crate (ADR-0100). The pane-interior
 //! substrate is `phux-client-core`, re-exported as [`layout`],
@@ -47,11 +48,12 @@ pub mod native_agent;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
 // `mv`, bulk move, undo, Intake resolve).
 pub mod org;
+pub mod organize;
 pub mod pane_move;
 pub mod perf;
 // Project identity (ADR-0168): discovery, the stored document, grouping.
 pub mod project_groups;
-pub mod project_identity;
+pub use phux_client_runtime::project_identity;
 pub mod record;
 pub mod resize;
 pub mod resource;

@@ -416,6 +416,7 @@ fn sweep_args(tool: &str) -> Value {
         "phux_agent_set" => json!({ "name": "bot" }),
         "phux_approve" => json!({ "id": "0123456789abcdef0123456789abcdef", "decision": "deny" }),
         "phux_relaunch" => json!({ "target": "@1" }),
+        "phux_organize" => json!({ "offline": true }),
         "phux_plugin_action" | "phux_plugin_profile" => {
             return json!({
                 "plugin_id": "none", "action_id": "none",

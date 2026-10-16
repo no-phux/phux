@@ -2840,3 +2840,40 @@ async fn focusing_another_pane_never_clears_the_screen() {
     drop(client);
     drop(server);
 }
+
+/// ADR-0172: the one job arm toasts a result and, for a job that changed
+/// the session graph, asks for a fresh host inventory; a quiet finish shows
+/// and sends nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
+    use crate::attach::jobs::Toast;
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
+    frames_sent(&mut client, &mut server).await;
+
+    state
+        .on_job_done(&mut client, &mut out, None, JobDone::quiet())
+        .await
+        .unwrap();
+    assert!(!state.overlays.is_active(), "a quiet finish shows nothing");
+    assert!(frames_sent(&mut client, &mut server).await.is_empty());
+
+    let done = JobDone::toast(Toast::new("Organize", "2 panes moved")).refreshing_inventory();
+    state
+        .on_job_done(&mut client, &mut out, None, done)
+        .await
+        .unwrap();
+    assert!(state.overlays.is_active(), "the result toasts");
+    assert!(state.session_picker_dirty && state.peers.chrome_dirty);
+    let sent = frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::GetState { .. },
+                ..
+            }
+        )),
+        "the inventory refresh was requested: {sent:?}"
+    );
+}

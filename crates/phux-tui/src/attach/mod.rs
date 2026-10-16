@@ -33,6 +33,8 @@ mod path_picker;
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod ghost_stress_tests;
 pub mod input_dispatch;
+// ADR-0172: background work that reports back as a toast.
+mod jobs;
 mod notify;
 mod onboarding;
 pub mod paint;
@@ -65,7 +67,7 @@ pub mod update_notice;
 // The headless attach vocabulary, owned by `phux_client` (ADR-0100).
 pub use phux_client::attach::{
     AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial, connection,
-    input, input_replay, outcome, quic, ws,
+    input, input_replay, outcome,
 };
 
 pub use driver::{

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-15
 ---
 
 # Crate dependency graph
@@ -53,7 +53,7 @@ Five boundaries govern dependencies:
    small surface without the full terminal-emulator dependency graph.
 3. **The TUI is two crate edges away from the headless library and the
    substrate, and both edges are one-way** (ADR-0020, ADR-0100). `phux-tui`
-   depends on `phux-client` (connection, transports, the stdin parser, the
+   depends on `phux-client` (the connection facade, the stdin parser, the
    exit vocabulary, the agent-verb helpers its chrome reads) and on
    `phux-client-core` (layout, multi-pane, predict, the session kernel).
    `ratatui` lives only in `phux-tui`; neither dependency declares it, so a
@@ -73,9 +73,10 @@ Five boundaries govern dependencies:
    `Ladder` and fatal-refusal rule, the relay tunnel, the sans-IO control
    plane, the engine owner thread, and grid publication, as a Rust API
    ([`client-runtime.md`](./client-runtime.md)). A connection loop,
-   `select!`, or backoff constant in a binding is in the wrong crate. The
-   server's hub link keeps its own redial ladder; it is a federation
-   dialer, not a client binding.
+   `select!`, or backoff constant in a binding is in the wrong crate. It is
+   also the one client transport (ADR-0171): `phux-client`'s `Connection`
+   rides its one-shot session. The server's hub link keeps its own redial
+   ladder; it is a federation dialer, not a client binding.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the

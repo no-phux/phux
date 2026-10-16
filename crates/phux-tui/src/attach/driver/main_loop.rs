@@ -108,6 +108,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         carried_sidebar,
     )?;
     session.set_control_dial(control_dial.clone());
+    session.set_jobs(crate::attach::jobs::Jobs::process());
     // One bounded runner per `exec` widget, off-loop; the guard aborts them
     // (and their children) when the loop ends.
     session.set_input_replay(input_replay);

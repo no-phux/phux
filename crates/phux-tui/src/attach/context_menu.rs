@@ -82,6 +82,7 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
         row(keybindings, "new tab", "new-window", &[]),
         row(keybindings, "sessions", "session-picker", &[]),
         row(keybindings, "rename…", "rename-session", &[]),
+        row(keybindings, "organize", "organize", &[]),
         row(keybindings, "kill session…", "kill-session", &[]),
         row(
             keybindings,

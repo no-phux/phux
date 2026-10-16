@@ -39,6 +39,12 @@ Imported sessions can also be marked organized without moving their work.
 The bell opens **Inbox & notifications**: agent attention alerts in Inbox,
 errors and command results in Notifications. Its badge counts unread alerts,
 not sessions or messages; an agent alert opens the agent's terminal.
+**Organize Everything** (`⌘⇧O`, in the command palette) does it for every
+pane at once, the way `phux organize` does: each pane joins its
+repository's session, a repository with no session gets one, and a numbered
+session holding one repository takes its name. A notification lists what
+moved; **Undo Organize Everything** reverses it, as does
+`phux organize --undo`.
 
 Closing a pane/window or quitting the app detaches; it does not terminate
 server-owned shells. A desktop crash is separate from a server crash:

@@ -6,40 +6,30 @@ use std::sync::Arc;
 use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
     ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
-    FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, ServerInfo,
-    SessionSnapshot, SpawnResult, StateScope, Status, topology, validate_hello_ok,
+    FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, SessionSnapshot,
+    SpawnResult, StateScope, Status, topology,
 };
 use crate::control::topology::View;
+use crate::handshake::HelloOk;
 
 impl ControlPlane {
     // ----- handshake --------------------------------------------------
 
-    pub(super) fn hello_ok(
-        &mut self,
-        protocol: (u16, u16, u16),
-        server_id: &[u8],
-        server_caps: phux_protocol::caps::ServerCapabilities,
-        profile: BootstrapProfile,
-        limits: BootstrapLimits,
-    ) -> Result<(), ControlError> {
+    pub(super) fn hello_ok(&mut self, answer: HelloOk) -> Result<(), ControlError> {
         if self.handshake_ready {
             return Err(ControlError::Protocol(
                 "server sent duplicate HELLO_OK".to_owned(),
             ));
         }
-        if let Err(error) = validate_hello_ok(
-            &self.offered_caps,
-            protocol.0,
-            protocol.1,
-            protocol.2,
-            profile,
-            limits,
-        ) {
-            let message = error.to_string();
-            self.error = Some(message.clone());
-            return Err(ControlError::Refused(message));
-        }
-        self.requalify_attach_target(server_id)?;
+        let info = match answer.accept(&self.offered_caps) {
+            Ok(info) => info,
+            Err(error) => {
+                let message = error.to_string();
+                self.error = Some(message.clone());
+                return Err(ControlError::Refused(message));
+            }
+        };
+        self.requalify_attach_target(&info.id)?;
         // Replicas survive a reconnect so the same incarnation can resume
         // their streams. A new incarnation recycles resource ids for fresh
         // PTYs (a restarted server reseeds `@1`), and a replica kept under a
@@ -48,7 +38,7 @@ impl ControlPlane {
         let new_incarnation = self
             .server
             .as_ref()
-            .is_some_and(|previous| previous.id != server_id);
+            .is_some_and(|previous| previous.id != info.id);
         if new_incarnation {
             if let Some(engine) = &self.engine {
                 engine.reset_connection();
@@ -58,25 +48,17 @@ impl ControlPlane {
             // readily as an agent session's.
             self.end_agent_incarnation();
         }
-        self.server = Some(ServerInfo {
-            id: server_id.to_vec(),
-            features: server_caps.features,
-            features_ext: server_caps.features_ext,
-            layers: server_caps.layers,
-            protocol,
-            profile,
-            limits,
-        });
+        let (profile, limits) = (info.profile, info.limits);
+        let replay_supported = info.has(ServerFeature::AcknowledgedInput);
+        let server_id = info.id.clone();
+        self.server = Some(info);
         self.ensure_engine(profile, limits)?;
         self.handshake_ready = true;
         self.set_status(Status::Negotiated);
-        let replay_supported = server_caps
-            .features
-            .contains(ServerFeature::AcknowledgedInput);
         let now_ms = self.now_ms();
         let reports =
             self.input_replay
-                .begin_connection_at(Some(server_id), replay_supported, now_ms);
+                .begin_connection_at(Some(&server_id), replay_supported, now_ms);
         self.publish_replay_reports(reports, None);
         if self.options.automatic_lifecycle {
             self.queue_post_handshake();

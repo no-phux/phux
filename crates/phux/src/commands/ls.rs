@@ -268,14 +268,7 @@ fn host_row(name: &str, label: &str, kind: HostKind, endpoint: Option<String>) -
 
 /// This machine's short hostname (`mac.local` becomes `mac`), or `local`.
 pub(crate) fn local_hostname() -> String {
-    let uname = rustix::system::uname();
-    let node = uname.nodename().to_string_lossy();
-    let short = node.split('.').next().unwrap_or_default();
-    if short.is_empty() {
-        "local".to_owned()
-    } else {
-        short.to_owned()
-    }
+    phux_config::instance::local_host_name()
 }
 
 /// The human `--all` listing: one header per machine, its sessions' glance

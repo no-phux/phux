@@ -647,7 +647,7 @@ fn advertised_names(
     quic_endpoint: Option<&str>,
     overlay: &[IpAddr],
 ) -> Vec<String> {
-    use phux_client::attach::ws::WsTarget;
+    use phux_dial::ws::WsTarget;
 
     let mut names: Vec<String> = server_url
         .and_then(|url| WsTarget::parse(url).ok())
