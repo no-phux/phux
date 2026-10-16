@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-16
 ---
 
 # Native terminal painter
@@ -59,8 +59,18 @@ that paint until the terminal itself is notified. The desk withholds that
 notification until the session is attached, then notifies placed terminals
 once. A rejected reacquire keeps the last scene while the bounds still
 match, so a reconnect does not blank the pane. A missing scene, or bounds
-that no longer match, clears the canvas. An ASCII run is one shaped line on
-the cell grid, not one paint call per glyph.
+that no longer match, clears the canvas.
+
+A row's contiguous single-width cells are one shaped line on the cell grid,
+not one shape per cell or word. Spaces and blank cells between glyphs stay in
+the line, and a colour, face or faint change is another `TextRun` of it. The
+line is kept only when every character became one glyph from the cell fonts;
+otherwise its ASCII stretches are shaped again as lines and every other cell
+alone. Wide cells and graphemes of several characters are shaped alone.
+Glyphs are painted directly from the shaped runs, so a run costs no GPUI layer
+of its own. Cell backgrounds, a solid cursor and glyphs share one GPUI paint
+layer (GPUI draws a layer's quads before its sprites); decorations,
+procedural blocks and the other cursors share a second layer above it.
 Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
@@ -71,8 +81,11 @@ columns and spacers paint nothing. One device-pixel-rounded cell geometry drives
 baseline, backgrounds, decorations, cursor, clipping and `Geometry::hit` /
 `cell_bounds` for input.
 Five underline styles, strike, overline, inverse, faint, invisible, selection,
-cursor shape/width and true color are native. Faint glyphs paint inside a
-`Div::opacity` scope because GPUI's color-emoji path ignores `TextRun.color`.
+cursor shape/width and true color are native. Faint text is its colour at
+half alpha. Only a faint cell holding a colour emoji paints inside a
+`Div::opacity` scope, because GPUI's color-emoji path ignores the colour.
+A non-ASCII glyph inside a shared line is still clipped to its own cell, so
+box drawing and symbols that overhang their advance do not ink a neighbour.
 Hyperlink metadata stays in the retained `GridFrame`. Cross-cell ligatures,
 procedural box drawing, blink timers, and Kitty/sixel graphics (`GridFrame`
 carries no image data) are not provided.
@@ -92,9 +105,10 @@ is that thread and runs the fixtures there on every OS. Each one
 publishes a real runtime grid into `Terminal` and reads an offscreen frame
 from GPUI's headless renderer (`HeadlessAppContext` and
 `current_headless_renderer`, behind GPUI `test-support`). They check glyph
-columns, a wide character, the block cursor, selection, theme-palette
-remap against true color, and a sparse live-output repaint that leaves a
-neighboring row untouched. Linux needs a Vulkan adapter, hardware or
+columns, faint ink and box drawing sharing a line with gaps, a wide
+character, the block cursor, selection, theme-palette remap against true
+color, and a sparse live-output repaint that leaves a neighboring row
+untouched. Linux needs a Vulkan adapter, hardware or
 lavapipe; macOS uses Metal. The on-screen smoke is still the packaged
 qualification run.
 
@@ -104,7 +118,9 @@ qualification run.
 benchmark mode. No CLI, server, socket, visible window, or production profile:
 an embedded runtime feeds an 80×24 terminal, and GPUI draws it offscreen.
 Three JSON lines report 128 cached redraws, one-row updates, and sustained
-full-width scrolling. `tick_us` covers the in-process VT feed (for changed
+full-width scrolling. Three more (`wide_*`) repeat cached redraws, whole-screen
+rewrites and scrolling on a 200×60 grid of faint, bold and coloured prose with
+box drawing. `tick_us` covers the in-process VT feed (for changed
 frames) plus the draw; `stages` separate acquisition, scene preparation,
 painting and presentation handoff. `scene` counts reused/patched scenes and
 shaped lines, and `process` carries CPU and peak RSS. A render count check and

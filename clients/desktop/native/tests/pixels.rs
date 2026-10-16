@@ -338,6 +338,39 @@ fn glyphs_land_in_their_columns() {
     assert_ink(&cell_pixels(&shot, 0, 3), "column 3 (C)");
 }
 
+/// Faint text and box drawing share runs with plain text and spaces, and
+/// still land in their own columns; faint ink is visibly dimmer.
+fn faint_text_and_box_drawing_keep_their_columns() {
+    let (client, view) = publish(
+        "\u{1b}[?25l\u{1b}[HH \u{1b}[2mH\u{1b}[0m H\r\n\u{2500}\u{2502} \u{2500}".as_bytes(),
+    );
+    let frame = frame_of(&client, view);
+    assert_eq!(frame.row_text(0), "H H H");
+    let shot = paint(client, view, settings(false));
+    let brightest = |pixels: &[[u8; 4]]| {
+        pixels
+            .iter()
+            .map(|pixel| distance(*pixel, BACKGROUND))
+            .max()
+            .unwrap_or(0)
+    };
+    let plain = cell_pixels(&shot, 0, 0);
+    let faint = cell_pixels(&shot, 0, 2);
+    assert_ink(&plain, "column 0 (plain H)");
+    assert_blank(&cell_pixels(&shot, 0, 1), "column 1 (the gap)");
+    assert_ink(&cell_pixels(&shot, 0, 4), "column 4 (plain H after a gap)");
+    assert!(
+        brightest(&faint) * 4 < brightest(&plain) * 3 && brightest(&faint) > 40,
+        "faint ink {} against plain {}",
+        brightest(&faint),
+        brightest(&plain)
+    );
+    assert_ink(&cell_pixels(&shot, 1, 0), "column 0 (horizontal rule)");
+    assert_ink(&cell_pixels(&shot, 1, 1), "column 1 (vertical rule)");
+    assert_blank(&cell_pixels(&shot, 1, 2), "column 2 (the gap)");
+    assert_ink(&cell_pixels(&shot, 1, 3), "column 3 (horizontal rule)");
+}
+
 fn wide_character_occupies_two_columns() {
     let (client, view) = publish("\u{1b}[?25l\u{1b}[HX中Y".as_bytes());
     let frame = frame_of(&client, view);
@@ -1128,6 +1161,11 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::glyphs_land_in_their_columns",
         glyphs_land_in_their_columns,
+        false,
+    ),
+    (
+        "terminal::pixels::faint_text_and_box_drawing_keep_their_columns",
+        faint_text_and_box_drawing_keep_their_columns,
         false,
     ),
     (
