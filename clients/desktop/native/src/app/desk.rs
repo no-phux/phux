@@ -178,6 +178,8 @@ pub struct Desk {
     viewport: gpui::Size<gpui::Pixels>,
     _wake: Option<Task<()>>,
     _clock: Option<Task<()>>,
+    /// When the armed clock wakes.
+    clock_at: Option<Instant>,
     _subs: Vec<Subscription>,
     /// The list palette shared by commands, goto, sessions, and the path picker.
     pub(crate) palette_state: Option<Entity<CommandState>>,
@@ -505,6 +507,7 @@ impl Desk {
             viewport: gpui::size(gpui::px(1320.), gpui::px(840.)),
             _wake: None,
             _clock: None,
+            clock_at: None,
             _subs: Vec::new(),
             palette_state: None,
             palette_view: Default::default(),
@@ -3336,57 +3339,59 @@ impl Desk {
         }
     }
 
-    /// Expire the peek card and keep agent ages
-    /// current. Armed from every render; the task ends when nothing needs it.
+    /// Expire the peek card and keep agent ages current. Armed from every
+    /// render; it wakes when the next label changes and ends when nothing
+    /// needs it.
     pub(crate) fn ensure_clock(&mut self, cx: &mut Context<Self>) {
-        if self._clock.is_some() || !self.clock_needed() {
+        let Some(wait) = self.clock_wait() else {
+            return;
+        };
+        let at = Instant::now() + wait;
+        if self._clock.is_some() && self.clock_at.is_some_and(|armed| armed <= at) {
             return;
         }
+        self.clock_at = Some(at);
         self._clock = Some(cx.spawn(async move |this, cx| {
+            let mut wait = wait;
             loop {
-                smol::Timer::after(Duration::from_secs(1)).await;
-                let keep = this
+                smol::Timer::after(wait).await;
+                let next = this
                     .update(cx, |desk, cx| {
-                        if desk.tick_clock() {
-                            cx.notify();
-                        }
-                        let keep = desk.clock_needed();
-                        if !keep {
+                        desk.feed.expire_peek(Instant::now());
+                        cx.notify();
+                        let next = desk.clock_wait();
+                        desk.clock_at = next.map(|wait| Instant::now() + wait);
+                        if next.is_none() {
                             desk._clock = None;
                         }
-                        keep
+                        next
                     })
-                    .unwrap_or(false);
-                if !keep {
+                    .ok()
+                    .flatten();
+                let Some(next) = next else {
                     break;
-                }
+                };
+                wait = next;
             }
         }));
     }
 
-    fn clock_needed(&self) -> bool {
-        self.feed.peek().is_some()
-            || self
-                .link
-                .as_ref()
-                .is_some_and(|link| !link.connection.agents.is_empty())
-    }
-
-    /// Expire a peek and report whether the chrome labels moved.
-    fn tick_clock(&mut self) -> bool {
-        let expired = self.feed.expire_peek(Instant::now());
-        expired || self.agent_ages_moved()
-    }
-
-    fn agent_ages_moved(&self) -> bool {
+    /// How long until the peek card expires or an agent's age label changes.
+    pub(crate) fn clock_wait(&self) -> Option<Duration> {
+        let peek = self
+            .feed
+            .peek_expires()
+            .map(|at| at.saturating_duration_since(Instant::now()));
         let now = unix_ms();
-        let earlier = now.saturating_sub(1_000);
-        self.link.as_ref().is_some_and(|link| {
+        let ages = self.link.iter().flat_map(|link| {
             link.connection
                 .agents
                 .values()
-                .any(|info| super::view::ago_changed(info.changed_at_ms, earlier, now))
-        })
+                .map(move |info| super::view::ago_wait(info.changed_at_ms, now))
+        });
+        peek.into_iter()
+            .chain(ages.min().map(Duration::from_millis))
+            .min()
     }
 
     fn retain_panes(&mut self) {
