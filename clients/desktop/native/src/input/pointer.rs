@@ -1,8 +1,8 @@
 use super::{InputError, TerminalInput, engine_error, input_ready, keys, queued};
 use crate::terminal::geometry::{self, Geometry, SurfacePoint};
 use gpui::{
-    App, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, TouchPhase, Window, px,
+    Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollWheelEvent, TouchPhase, Window, px,
 };
 use phux_client_runtime::{
     Client,
@@ -103,7 +103,7 @@ impl TerminalInput {
         &mut self,
         event: &MouseDownEvent,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
         self.current(window, cx)?;
         if !self.hit(event.position) {
@@ -123,6 +123,7 @@ impl TerminalInput {
             return Ok(false);
         }
         self.select(0, event.click_count as u32, event.position, event.modifiers)?;
+        cx.notify();
         Ok(true)
     }
 
@@ -130,7 +131,7 @@ impl TerminalInput {
         &mut self,
         event: &MouseMoveEvent,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
         // Cell-quantized clients send one position per cell (input spec §3.1).
         // A move that stays in that cell must not take the control lock.
@@ -145,6 +146,7 @@ impl TerminalInput {
         self.current(window, cx)?;
         if self.gesture != 0 {
             self.select(1, 1, event.position, event.modifiers)?;
+            cx.notify();
             return Ok(true);
         }
         if let Some(button) = self.reported_button {
@@ -166,13 +168,14 @@ impl TerminalInput {
         &mut self,
         event: &MouseUpEvent,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
         if self.gesture != 0 {
             self.current(window, cx)?;
             let result = self.select(2, 1, event.position, event.modifiers);
             self.gesture = 0;
             result?;
+            cx.notify();
             return Ok(true);
         }
         // Take the captured application button before admission. `current`

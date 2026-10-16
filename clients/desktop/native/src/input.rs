@@ -1543,6 +1543,64 @@ mod delivery {
             .collect()
     }
 
+    /// A local selection change republishes the view without a runtime
+    /// wake. The painter is a cached view, so the input must notify it or the
+    /// new frame waits for unrelated output.
+    #[gpui::test]
+    fn local_selection_notifies_the_painter(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        let notified = std::rc::Rc::new(std::cell::Cell::new(0));
+        let input = cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| state.focus.focus(window, cx));
+            let count = notified.clone();
+            cx.observe(&input, move |_, _| count.set(count.get() + 1))
+                .detach();
+            input
+        });
+        let at = |x: f32| point(px(x), px(8.));
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                let down = gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(2.),
+                    click_count: 1,
+                    ..Default::default()
+                };
+                assert_eq!(state.mouse_down(&down, window, cx), Ok(true));
+            });
+        });
+        assert_eq!(notified.get(), 1, "a press starts a selection");
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                let drag = gpui::MouseMoveEvent {
+                    position: at(30.),
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    ..Default::default()
+                };
+                assert_eq!(state.mouse_move(&drag, window, cx), Ok(true));
+            });
+        });
+        assert_eq!(notified.get(), 2, "a drag extends it");
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                let up = gpui::MouseUpEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(30.),
+                    click_count: 1,
+                    ..Default::default()
+                };
+                assert_eq!(state.mouse_up(&up, window, cx), Ok(true));
+            });
+        });
+        assert_eq!(notified.get(), 3, "a release settles it");
+    }
+
     #[gpui::test]
     fn wheel_scrolls_the_pane_under_the_pointer_and_repaints(cx: &mut TestAppContext) {
         let lines: String = (0..12).map(|line| format!("line {line}\r\n")).collect();

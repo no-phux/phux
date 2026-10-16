@@ -1081,8 +1081,8 @@ impl Desk {
             Send(text) => self.send_text(&text, cx),
             WriteFile { region, mode } => self.write_file(&region, &mode, window, cx),
             FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
-            ScrollLines(rows) => self.scroll_lines(rows as i64),
-            PromptJump(prompts) => self.jump_prompt(prompts as i64),
+            ScrollLines(rows) => self.scroll_lines(rows as i64, cx),
+            PromptJump(prompts) => self.jump_prompt(prompts as i64, cx),
         }
     }
 
@@ -1157,7 +1157,7 @@ impl Desk {
             "find-prev" => self.step_find(-1, window, cx),
             "find-selection" => self.find_selection(window, cx),
             "find-close" => self.close_find(),
-            "follow" | "scroll-bottom" => self.follow(),
+            "follow" | "scroll-bottom" => self.follow(cx),
             "paste-cwd" => self.paste_cwd(),
             "terminate" => self.ask_terminate(),
             "attention" => self.next_attention(),
@@ -1172,16 +1172,16 @@ impl Desk {
                 let size = DisplayPrefs::default().font_size;
                 self.update_prefs(|prefs| prefs.font_size = size, cx);
             }
-            "scroll-page-up" => self.scroll_page(-1),
-            "scroll-page-down" => self.scroll_page(1),
-            "scroll-top" => self.scroll_top(),
+            "scroll-page-up" => self.scroll_page(-1, cx),
+            "scroll-page-down" => self.scroll_page(1, cx),
+            "scroll-top" => self.scroll_top(cx),
             "clear" => self.send_text("\u{000c}", cx),
-            "select-all" => self.select_all(),
+            "select-all" => self.select_all(cx),
             "copy" => self.host_action(HostAction::Copy, cx),
             "paste" => self.host_action(HostAction::Paste, cx),
             "paste-selection" => self.paste_selection(),
-            "prompt-prev" => self.jump_prompt(-1),
-            "prompt-next" => self.jump_prompt(1),
+            "prompt-prev" => self.jump_prompt(-1, cx),
+            "prompt-next" => self.jump_prompt(1, cx),
             "quick-terminal" => self.toggle_quick(cx),
             "new-window" => self.new_window(window, cx),
             "fullscreen" => window.toggle_fullscreen(),
@@ -2335,14 +2335,14 @@ impl Desk {
         client.wake();
     }
 
-    fn scroll_lines(&mut self, rows: i64) {
-        self.with_view(|client, view| {
+    fn scroll_lines(&mut self, rows: i64, cx: &mut Context<Self>) {
+        self.with_view(cx, |client, view| {
             let _ = client.scroll_view(view, Scroll::Delta(rows));
         });
     }
 
-    fn scroll_page(&mut self, direction: i64) {
-        self.with_view(|client, view| {
+    fn scroll_page(&mut self, direction: i64, cx: &mut Context<Self>) {
+        self.with_view(cx, |client, view| {
             let rows = client
                 .acquire_view(view)
                 .map(|frame| frame.rows)
@@ -2354,26 +2354,26 @@ impl Desk {
         });
     }
 
-    fn scroll_top(&mut self) {
-        self.with_view(|client, view| {
+    fn scroll_top(&mut self, cx: &mut Context<Self>) {
+        self.with_view(cx, |client, view| {
             let _ = client.scroll_view(view, Scroll::Top);
         });
     }
 
-    fn follow(&mut self) {
-        self.with_view(|client, view| {
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        self.with_view(cx, |client, view| {
             let _ = client.follow_live_view(view);
         });
     }
 
-    fn jump_prompt(&mut self, prompts: i64) {
-        self.with_view(|client, view| {
+    fn jump_prompt(&mut self, prompts: i64, cx: &mut Context<Self>) {
+        self.with_view(cx, |client, view| {
             let _ = client.scroll_view(view, Scroll::Prompt(prompts));
         });
     }
 
-    fn select_all(&mut self) {
-        self.with_engine(|engine, view| {
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.with_engine(cx, |engine, view| {
             let _ = engine.select_all_view(view);
         });
     }
@@ -3176,19 +3176,32 @@ impl Desk {
             .map(|link| link.connection.client.clone())
     }
 
-    fn with_view(&self, call: impl FnOnce(&Client, phux_client_runtime::ViewId)) {
+    /// Change the focused view locally, then repaint it. A local view change
+    /// republishes without a runtime wake, and the terminal is a cached view.
+    fn with_view(
+        &self,
+        cx: &mut Context<Self>,
+        call: impl FnOnce(&Client, phux_client_runtime::ViewId),
+    ) {
         let Some(view) = self.focused_view() else {
             return;
         };
         let Some(client) = self.client() else { return };
         call(&client, view);
+        if let Some(entity) = self
+            .focused_placement()
+            .and_then(|placement| self.panes.get(&placement.id))
+        {
+            entity.update(cx, |_, cx| cx.notify());
+        }
     }
 
     fn with_engine(
         &self,
+        cx: &mut Context<Self>,
         call: impl FnOnce(&phux_client_runtime::engine::EngineHandle, phux_client_runtime::ViewId),
     ) {
-        self.with_view(|client, view| {
+        self.with_view(cx, |client, view| {
             if let Some(engine) = client.engine() {
                 call(&engine, view);
             }
