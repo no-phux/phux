@@ -249,7 +249,7 @@ impl Desk {
                     .as_ref()
                     .map(|find| find.case_sensitive)
                     .unwrap_or(false);
-                self.run_search(value, case);
+                self.run_search(value, case, cx);
             }
             (InputSlot::Find, Some(shift)) => {
                 self.step_find(if shift { -1 } else { 1 }, window, cx)
@@ -652,7 +652,7 @@ pub fn find_bar(
                         .as_ref()
                         .map(|find| find.query.clone())
                         .unwrap_or_default();
-                    desk.run_search(query, case);
+                    desk.run_search(query, case, cx);
                     desk.after_command(window, cx);
                 })),
         )
