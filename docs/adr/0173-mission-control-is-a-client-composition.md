@@ -51,7 +51,7 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
    compaction stay out of phux.
 
 2. **Interim store.** Until phux-ajxq ships the coordinator, one SQLite
-   store in a `phux-mission` crate holds tasks. Its nouns are the
+   store in a `phux-work` crate holds tasks. Its nouns are the
    coordinator's: Objective, Run, binding, Signal, and event. When the
    coordinator ships, the rows migrate in and this store becomes a
    client of it. The store is coordinator-shaped:
@@ -59,7 +59,13 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
      `phux/12` is a display alias only;
    - every mutation carries an OperationId;
    - every structural edit carries a revision;
-   - exactly one writer holds the store, via a lock and an atomic write.
+   - exactly one writer: one keeper process per store holds its lock and
+     is the only process that opens it. The CLI, Lead, the board, MCP, and
+     the desktop are clients of that keeper through one client API, which
+     starts the keeper on demand. A keeper owns its host's store, so a
+     task on another host is reached by dialing that host's keeper, never
+     by reading its files. `phux-mission` renders the client's results and
+     never opens the store.
    A herdr-shaped tree keyed by the short label is outside this schema.
    Task history lives in this store. The [ADR-0123](./0123-events-are-journaled.md)
    ring stays bounded and in memory. Clients, including phux-mobile,
@@ -124,13 +130,17 @@ did not confirm. A delegated grant cannot create panes or start workers,
 so until MC-1.4b Lead runs with the owner's authority and only while
 attended; after that it holds the scoped grant and never the owner's.
 A cold restart clears the ledger unless the store raises `credential_lost`.
+A keeper process, not a lock every caller takes, makes the writer the
+one place that projects agent state into tasks. It also gives another
+host something to dial, and that keeper is what the coordinator later
+replaces.
 
 ## Tradeoffs
 
 Two stores in sequence, interim then coordinator. Every client resolves
 the display alias `phux/12` through the store, and decodes through
-`phux.mission/v1`. One writer serializes the keeper and the CLI on one
-lock. Workers cannot create, organize, terminate, or signal. Until
+`phux.mission/v1`. Every call is a local socket round trip to the keeper,
+and a keeper that will not start fails every verb until it does. Workers cannot create, organize, terminate, or signal. Until
 MC-1.4b Lead holds the owner's authority only while attended. Shared
 `CARGO_TARGET_DIR` and sccache couple task worktrees at the build cache.
 
