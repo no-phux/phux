@@ -43,7 +43,7 @@ use crate::input::WheelAction;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
 use crate::touch::{TouchGesture, TouchMode, TouchStep};
-use crate::{Mark, Metrics, Overlay, render_cursor_row, render_selected};
+use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selected_appearance};
 
 mod find;
 mod path_picker;
@@ -529,6 +529,15 @@ impl Client {
     /// Fails if no terminal is ready.
     pub fn focus_next_pane(&self) -> Result<(), JsValue> {
         pane_action(&self.app, PaneAction::Next)
+    }
+
+    /// Opt into transparent default cells and borderless pane presentation.
+    /// Other clients remain opaque; this changes no terminal state or wire data.
+    pub fn set_glass_mode(&self, enabled: bool) {
+        let app = self.app.borrow();
+        if app.glass_mode.replace(enabled) != enabled {
+            app.request_paint();
+        }
     }
 
     /// Focus one canonical id from the visible pane descriptors, without
@@ -1050,6 +1059,8 @@ struct App {
     prefix: Cell<bool>,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
+    /// Opt-in appearance; terminal defaults remain opaque elsewhere.
+    glass_mode: Cell<bool>,
     /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
     wheel_carry: Cell<f64>,
     /// The grid the canvas shows, so a cursor blink redraws one row
@@ -1287,12 +1298,13 @@ impl App {
                 f64::from(pane.rows) * self.metrics.cell_h,
             );
             self.ctx.clip();
-            render_cursor_row(
+            render_cursor_row_appearance(
                 &self.ctx,
                 grid,
                 &self.metrics,
                 self.cursor_on.get(),
                 &overlay,
+                self.glass_mode.get(),
             );
             self.ctx.restore();
             self.paint_pane_border(&pane, true);
@@ -1316,9 +1328,7 @@ impl App {
             return false;
         }
         self.canvas_geometry.set(geometry);
-        self.ctx.set_fill_style_str("#0b0b0d");
-        self.ctx
-            .fill_rect(0.0, 0.0, geometry.width, geometry.height);
+        self.paint_backdrop(&geometry);
         let focused = self.session.focused_pane();
         let mut cursor_rows = Vec::with_capacity(panes.len());
         for (id, rect) in &panes {
@@ -1341,6 +1351,17 @@ impl App {
         self.publish_title();
         self.place_input_surface();
         true
+    }
+
+    fn paint_backdrop(&self, geometry: &crate::canvas::CanvasGeometry) {
+        if self.glass_mode.get() {
+            self.ctx
+                .clear_rect(0.0, 0.0, geometry.width, geometry.height);
+        } else {
+            self.ctx.set_fill_style_str("#0b0b0d");
+            self.ctx
+                .fill_rect(0.0, 0.0, geometry.width, geometry.height);
+        }
     }
 
     fn paint_pane(
@@ -1369,17 +1390,25 @@ impl App {
                 selected: self.selected_cells(grid.cols),
                 marks,
             };
-            render_selected(
+            render_selected_appearance(
                 &self.ctx,
                 grid,
                 &self.metrics,
                 self.cursor_on.get() && !self.session.viewport_scrolled(),
                 &overlay,
+                self.glass_mode.get(),
             );
             Some(grid.cursor_row)
         } else if let Some(terminal) = self.session.pane_terminal(id) {
             let grid = terminal.grid();
-            render_selected(&self.ctx, &grid, &self.metrics, false, &Overlay::default());
+            render_selected_appearance(
+                &self.ctx,
+                &grid,
+                &self.metrics,
+                false,
+                &Overlay::default(),
+                self.glass_mode.get(),
+            );
             Some(grid.cursor_row)
         } else {
             None
@@ -1389,7 +1418,7 @@ impl App {
     }
 
     fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
-        if self.session.pane_rects().len() <= 1 {
+        if self.glass_mode.get() || self.session.pane_rects().len() <= 1 {
             return;
         }
         crate::canvas::paint_pane_border(&self.ctx, &self.metrics, rect, active);
@@ -1767,6 +1796,7 @@ fn build_app(
         hosted_edge: false,
         prefix: Cell::new(false),
         cursor_on: Cell::new(true),
+        glass_mode: Cell::new(false),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
         painted_cursor_rows: RefCell::new(Vec::with_capacity(4)),

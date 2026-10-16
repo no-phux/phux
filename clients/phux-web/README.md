@@ -168,3 +168,18 @@ server fixture. The ignored structured-paste wire test additionally needs an
 owned loopback WebSocket echo fixture set at build time with
 `PHUX_PRESENTATION_ECHO_URL`, then `--include-ignored`; it decodes the actual
 sent PHUX frame and does not use a remote shell.
+
+### Transparent glass appearance
+
+`HostedClient.set_glass_mode(true)` opts one existing client into a transparent
+canvas backdrop, no native pane borders, and transparent cells where the
+terminal has no explicit background. Opaque rendering remains the default;
+`set_glass_mode(false)` restores it. The public `render`, `render_selected`,
+and `render_cursor_row` functions keep their signatures and opaque defaults.
+
+Explicit ANSI backgrounds stay opaque even when black or identical to the
+terminal's default RGB. Inverse cells, selection/search overlays and cursor
+colors remain visible. The VT adapter reads the real cell inverse flag from
+the pinned `GhosttyStyle` C ABI. Glass redraws clear the previous row before
+painting glyphs or a blinking cursor, so erased text and wide glyphs leave no
+trails. No CSS blend mode or color-keying is used.

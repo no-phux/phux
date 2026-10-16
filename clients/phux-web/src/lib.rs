@@ -80,6 +80,13 @@ impl HostedClient {
         self.client.resize(cols, rows);
     }
 
+    /// Opt into transparent default cells and no native pane borders. Explicit
+    /// ANSI backgrounds, selection/search and the cursor remain visible.
+    /// The default is opaque; changing appearance does not alter the session.
+    pub fn set_glass_mode(&self, enabled: bool) {
+        self.client.set_glass_mode(enabled);
+    }
+
     /// Split the focused terminal using one new resource on this connection.
     ///
     /// # Errors
@@ -345,10 +352,21 @@ pub fn render_selected(
     cursor_on: bool,
     overlay: &Overlay<'_>,
 ) {
+    render_selected_appearance(ctx, grid, m, cursor_on, overlay, false);
+}
+
+pub(crate) fn render_selected_appearance(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+    overlay: &Overlay<'_>,
+    glass: bool,
+) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
     for row in 0..grid.rows {
-        draw_row(ctx, grid, m, row, overlay);
+        draw_row(ctx, grid, m, row, overlay, glass);
     }
     if cursor_on {
         draw_cursor(ctx, grid, m);
@@ -366,9 +384,20 @@ pub fn render_cursor_row(
     cursor_on: bool,
     overlay: &Overlay<'_>,
 ) {
+    render_cursor_row_appearance(ctx, grid, m, cursor_on, overlay, false);
+}
+
+pub(crate) fn render_cursor_row_appearance(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+    overlay: &Overlay<'_>,
+    glass: bool,
+) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
-    draw_row(ctx, grid, m, grid.cursor_row, overlay);
+    draw_row(ctx, grid, m, grid.cursor_row, overlay, glass);
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
@@ -384,14 +413,23 @@ fn draw_row(
     m: &Metrics,
     row: u16,
     overlay: &Overlay<'_>,
+    glass: bool,
 ) {
     let start = usize::from(row) * usize::from(grid.cols);
     let Some(cells) = grid.cells.get(start..start + usize::from(grid.cols)) else {
         return;
     };
     let y = f64::from(row) * m.cell_h;
+    if glass {
+        // Erase the previous glyph/cursor before repainting transparent cells.
+        ctx.clear_rect(0.0, y, f64::from(grid.cols) * m.cell_w, m.cell_h);
+    }
     for (col, cell) in (0..grid.cols).zip(cells) {
-        let (_, bg) = cell_colors(grid, cell, start + usize::from(col), overlay);
+        let index = start + usize::from(col);
+        if glass && !cell_has_background(cell, index, overlay) {
+            continue;
+        }
+        let (_, bg) = cell_colors(grid, cell, index, overlay);
         ctx.set_fill_style_str(&css(bg));
         ctx.fill_rect(f64::from(col) * m.cell_w, y, m.cell_w, m.cell_h);
     }
@@ -404,11 +442,17 @@ fn draw_row(
     }
 }
 
+fn cell_has_background(cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> bool {
+    cell.bg.is_some()
+        || cell.inverse
+        || overlay.selected.contains(&index)
+        || overlay.marks.iter().any(|mark| mark.cells.contains(&index))
+}
+
 /// A cell's foreground and background under the overlay: the selection
 /// inverts them, a search match takes the match colors.
 fn cell_colors(grid: &Grid, cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> (Rgb, Rgb) {
-    let fg = cell.fg.unwrap_or(grid.default_fg);
-    let bg = cell.bg.unwrap_or(grid.default_bg);
+    let (fg, bg) = base_cell_colors(grid, cell);
     if overlay.selected.contains(&index) {
         return (bg, fg);
     }
@@ -421,6 +465,12 @@ fn cell_colors(grid: &Grid, cell: &GridCell, index: usize, overlay: &Overlay<'_>
         Some(_) => (MARK_TEXT, MARK_BG),
         None => (fg, bg),
     }
+}
+
+fn base_cell_colors(grid: &Grid, cell: &GridCell) -> (Rgb, Rgb) {
+    let fg = cell.fg.unwrap_or(grid.default_fg);
+    let bg = cell.bg.unwrap_or(grid.default_bg);
+    if cell.inverse { (bg, fg) } else { (fg, bg) }
 }
 
 /// Whether a cell draws a glyph: blanks and wide characters' spacer cells
@@ -447,7 +497,9 @@ fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
     let cell = grid
         .cells
         .get(usize::from(row) * usize::from(grid.cols) + usize::from(col));
-    let fg = cell.and_then(|c| c.fg).unwrap_or(grid.default_fg);
+    let (fg, bg) = cell.map_or((grid.default_fg, grid.default_bg), |cell| {
+        base_cell_colors(grid, cell)
+    });
     ctx.set_fill_style_str(&css(fg));
     ctx.fill_rect(x, y, m.cell_w, m.cell_h);
     if let Some(c) = cell.filter(|c| has_glyph(c.ch)) {
@@ -455,7 +507,7 @@ fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
         ctx.begin_path();
         ctx.rect(x, y, m.cell_w, m.cell_h);
         ctx.clip();
-        ctx.set_fill_style_str(&css(c.bg.unwrap_or(grid.default_bg)));
+        ctx.set_fill_style_str(&css(bg));
         draw_glyph(ctx, c.ch, x, y);
         ctx.restore();
     }
@@ -464,3 +516,6 @@ fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
 fn css(c: Rgb) -> String {
     format!("rgb({} {} {})", c.r, c.g, c.b)
 }
+
+#[cfg(test)]
+mod glass_tests;

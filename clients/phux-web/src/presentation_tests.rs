@@ -278,3 +278,59 @@ async fn presentation_send_text_sends_one_bounded_structured_paste_without_enter
     socket.set_onmessage(None);
     client.close();
 }
+
+#[wasm_bindgen_test]
+async fn glass_hosted_mode_clears_backdrop_borders_and_cursor_then_returns_opaque() {
+    let client = fixture(2).await;
+    paint_and_publish(&client.app);
+    let sample = |x: i32, y: i32| {
+        client
+            .app
+            .borrow()
+            .ctx
+            .get_image_data(x, y, 1, 1)
+            .unwrap()
+            .data()
+            .to_vec()
+    };
+    let metrics = client.app.borrow().metrics.clone();
+    let blank_y = (metrics.cell_h * 2.0 + 2.0) as i32;
+    assert_eq!(sample(2, blank_y)[3], 255, "default client remains opaque");
+    client.set_glass_mode(true);
+    paint_and_publish(&client.app);
+    assert_eq!(sample(2, blank_y), [0, 0, 0, 0], "default rows transparent");
+    assert_eq!(sample(0, blank_y), [0, 0, 0, 0], "no native pane border");
+    assert_eq!(
+        sample((metrics.cell_w * 39.0 + 2.0) as i32, blank_y),
+        [0, 0, 0, 0],
+        "no opaque split separator"
+    );
+    assert_eq!(
+        sample(3, 3),
+        [255, 0, 0, 255],
+        "explicit ANSI survives full paint"
+    );
+    let grid = client.app.borrow().session.grid();
+    let cursor_x = (f64::from(grid.cursor_col) * metrics.cell_w + 1.0) as i32;
+    let cursor_y = (f64::from(grid.cursor_row) * metrics.cell_h + 1.0) as i32;
+    assert_eq!(sample(cursor_x, cursor_y)[3], 255);
+    client.app.borrow().blink();
+    assert_eq!(
+        sample(cursor_x, cursor_y)[3],
+        0,
+        "cursor row clears rather than filling opaque default"
+    );
+    client.app.borrow().blink();
+    assert_eq!(sample(cursor_x, cursor_y)[3], 255);
+    client.app.borrow().blink();
+    assert_eq!(sample(cursor_x, cursor_y)[3], 0);
+    assert_eq!(sample(3, 3), [255, 0, 0, 255]);
+    client.set_glass_mode(false);
+    paint_and_publish(&client.app);
+    assert_eq!(
+        sample(2, blank_y)[3],
+        255,
+        "opt-out restores opaque presentation"
+    );
+    client.close();
+}
