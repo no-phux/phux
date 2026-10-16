@@ -73,6 +73,15 @@ manifest_get() {
   manifest_read "$1" "$2" 2>/dev/null
 }
 
+# With 512-byte ulimit blocks the file-size limit itself stops an oversized
+# download at 1 MiB; name that as the size refusal, not a network failure.
+manifest_fetch_failed() {
+  if [ -f "$1" ] && [ "$(wc -c < "$1")" -ge 1048576 ]; then
+    die "the ${manifest_channel} release manifest exceeds 1048576 bytes"
+  fi
+  die "could not download the ${manifest_channel} release manifest (${manifest_url}); retry, or pass --version to pin a release"
+}
+
 # The manifest URL is a constant; CHANNEL is the closed set stable|next.
 fetch_manifest() (
   manifest_channel="$1"
@@ -83,11 +92,9 @@ fetch_manifest() (
   # the exact 1 MiB limit is checked before awk reads it.
   ulimit -f 2048
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 10 --max-time 30 "$manifest_url" -o "$2" \
-      || die "could not download the ${manifest_channel} release manifest (${manifest_url}); retry, or pass --version to pin a release"
+    curl -fsSL --connect-timeout 10 --max-time 30 "$manifest_url" -o "$2" || manifest_fetch_failed "$2"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=30 --tries=1 -O "$2" "$manifest_url" \
-      || die "could not download the ${manifest_channel} release manifest (${manifest_url}); retry, or pass --version to pin a release"
+    wget -q --timeout=30 --tries=1 -O "$2" "$manifest_url" || manifest_fetch_failed "$2"
   else
     die "curl or wget is required to resolve a release; install one or pass --version"
   fi
