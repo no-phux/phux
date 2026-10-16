@@ -70,11 +70,15 @@ closure admission checks view membership, publication and replica identity,
 connection epoch, painted dimensions, viewer role and runtime readiness, then
 queues the operation.
 
-Local selection, copy and scroll need current identity and focus but not input
+Local selection and copy need current identity and focus but not input
 ownership. Shift at press selects locally instead of reporting the mouse; a
-gesture keeps its routing until release. Shift-wheel uses
-`ControlPlane::scroll_view`. Fractional wheel deltas accumulate; application
-reports are capped at 100 ticks per event.
+gesture keeps its routing until release. The wheel scrolls the view under the
+pointer in its own window, focused or not, with current identity. Shift-wheel
+uses `ControlPlane::scroll_view`. Fractional wheel deltas accumulate locally
+and reach the runtime only when they cross a whole line; a gesture's first
+event (`TouchPhase::Started`) discards the previous gesture's remainder. A
+local scroll notifies the input entity, so the observing terminal repaints in
+the next frame. Application reports are capped at 100 ticks per event.
 
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
 copies a truncated string. The editable text model holds only pending IME text
