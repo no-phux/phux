@@ -282,7 +282,7 @@ pub(crate) fn panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                         )))
                         .label(if launching { "Launching…" } else { "Launch" })
                         .small()
-                        .primary()
+                        .ghost()
                         .disabled(busy || !item.native_available || desk.remote.is_some())
                         .on_click(cx.listener(
                             move |desk, _, window, cx| {
@@ -291,27 +291,75 @@ pub(crate) fn panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                         )),
                     ),
             )
-            .children(item.native_detail.as_ref().map(|detail| {
-                div()
-                    .text_xs()
-                    .text_color(from_hex(&colors.muted))
-                    .child(detail.clone())
-            }))
+            .children(
+                item.native_detail
+                    .as_ref()
+                    .filter(|_| !item.native_available)
+                    .map(|detail| {
+                        div()
+                            .text_xs()
+                            .text_color(from_hex(&colors.muted))
+                            .child(detail.clone())
+                    }),
+            )
     });
-    div().w(px(560.)).max_h(px(620.)).p(px(18.)).rounded(px(12.)).bg(from_hex(&colors.raised)).border_1().border_color(from_hex(&colors.border)).shadow_lg().occlude()
+    div()
+        .w(px(560.))
+        .max_h(px(620.))
+        .p(px(18.))
+        .rounded(px(12.))
+        .bg(from_hex(&colors.raised))
+        .border_1()
+        .border_color(from_hex(&colors.border))
+        .shadow_lg()
+        .occlude()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .flex().flex_col().gap(px(12.))
-        .child(div().text_lg().child("New ACP Agent"))
-        .child(div().text_sm().text_color(from_hex(&colors.muted)).child(format!("Launch into ‘{}’. The server owns the ACP agent; desktop and mobile control the same session. Terminal-only profiles remain terminal-only.", desk.session)))
-        .child(div().id("native-launch-list").min_h_0().overflow_y_scroll().flex().flex_col().gap(px(8.)).children(rows))
-        .when(state.loading, |panel| panel.child("Reading configured native integrations…"))
-        .when(!state.loading && state.integrations.is_empty(), |panel| panel.child("No native-capable integrations are configured. Configure a supported integration using the phux CLI, then refresh."))
-        .children(state.error.as_ref().map(|error| div().text_sm().text_color(from_hex(&colors.theme.warning)).child(error.clone())))
-        .child(div().text_xs().text_color(from_hex(&colors.muted)).child("Install and authenticate the profile’s ACP executable on the executing host, then refresh. Nothing is downloaded or approved automatically."))
-        .child(div().flex().justify_end().gap(px(8.))
-            .child(Button::new("native-launch-refresh").label("Refresh").ghost().small().disabled(busy || desk.remote.is_some())
-                .on_click(cx.listener(|desk, _, window, cx| desk.refresh_native_integrations(window, cx))))
-            .child(Button::new("native-launch-close").label("Close").ghost().small()
-                .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)))))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(div().text_lg().child("New Agent"))
+        .child(
+            div()
+                .id("native-launch-list")
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(rows),
+        )
+        .when(state.loading, |panel| panel.child("Loading agents…"))
+        .when(!state.loading && state.integrations.is_empty(), |panel| {
+            panel.child("No agents configured. Add an integration with phux, then refresh.")
+        })
+        .children(state.error.as_ref().map(|error| {
+            div()
+                .text_sm()
+                .text_color(from_hex(&colors.theme.warning))
+                .child(error.clone())
+        }))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(px(8.))
+                .child(
+                    Button::new("native-launch-refresh")
+                        .label("Refresh")
+                        .ghost()
+                        .small()
+                        .disabled(busy || desk.remote.is_some())
+                        .on_click(cx.listener(|desk, _, window, cx| {
+                            desk.refresh_native_integrations(window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("native-launch-close")
+                        .label("Close")
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
+                ),
+        )
         .into_any_element()
 }

@@ -123,7 +123,7 @@ fn catalog() -> Vec<CommandSpec> {
         ),
         spec(
             "goto",
-            "Go to Terminal",
+            "Go To…",
             "General",
             Some("cmd+p"),
             "Find and focus a terminal, agent or tab.",
@@ -139,7 +139,7 @@ fn catalog() -> Vec<CommandSpec> {
         ),
         spec(
             "new",
-            "New Terminal Tab",
+            "New Terminal",
             "Terminal",
             Some("cmd+t"),
             "Open a new terminal in its own tab.",
@@ -147,7 +147,7 @@ fn catalog() -> Vec<CommandSpec> {
         ),
         spec(
             "native-agent",
-            "New ACP Agent…",
+            "New Agent…",
             "Terminal",
             None,
             "Launch a host-owned ACP agent.",

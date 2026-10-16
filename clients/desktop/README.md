@@ -84,9 +84,10 @@ The titlebar **Phux** button, **⌘P**, **⇧⌘P**, and **⌘,** open the same
 searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
 across hosts plus the active session's terminals and tabs; a typed search also
 finds actions and settings. Settings search opens a focused page of live controls,
-with **All settings** to go back instead of a second sidebar. Actions show
-descriptions and effective shortcuts. An empty Actions search shows only essentials;
-typing searches the complete catalog. A leading `>` in
+with **All settings** to go back instead of a second sidebar. Actions start with five everyday commands; **All commands** expands the list.
+Rows show the name and the selected command's shortcut. Typing searches the
+complete catalog, including descriptions and settings. **Filter** narrows Work
+by agent state; **Details** reveals the selected destination's metadata on demand. A leading `>` in
 Work switches to Actions and keeps the rest of your search. Terminals and tabs you open often and recently rise among the
 matches for a typed query; an empty query keeps the list in its sections.
 

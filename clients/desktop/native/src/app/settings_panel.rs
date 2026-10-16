@@ -5,11 +5,12 @@
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, Keystroke, SharedString, Subscription, WeakEntity, Window,
-    div, px, relative,
+    div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
@@ -21,7 +22,6 @@ use phux_client_runtime::control::Status;
 use crate::settings::theme::{self, Palette};
 use crate::settings::{self, DisplayPrefs};
 
-use super::color::from_hex;
 use super::desk::Desk;
 use super::keys::gpui_stroke;
 
@@ -60,21 +60,9 @@ impl Page {
             Self::Connections => "Hosts & connections",
         }
     }
-    pub fn icon(self) -> IconName {
-        match self {
-            Self::Appearance => IconName::Palette,
-            Self::Layout => IconName::PanelLeft,
-            Self::Keyboard => IconName::ALargeSmall,
-            Self::Spacing => IconName::Frame,
-            Self::Ghostty => IconName::SquareTerminal,
-            Self::Updates => IconName::ArrowDown,
-            Self::Connections => IconName::Network,
-        }
-    }
-
     pub fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Theme, font and a live preview",
+            Self::Appearance => "Theme and font",
             Self::Layout => "Tabs, sidebar, glass and agent alerts",
             Self::Keyboard => "Input behavior and every shortcut",
             Self::Spacing => "Line height, cell width, padding and dimming",
@@ -118,47 +106,13 @@ impl SelectItem for FontChoice {
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut font = gpui::font(self.0.clone());
         crate::fonts::resolve(&mut font, cx);
-        let bundled =
-            self.0.as_ref() == crate::fonts::BUNDLED || self.0.as_ref() == crate::fonts::SYMBOLS;
         div()
             .w_full()
-            .flex()
-            .items_center()
-            .gap(px(12.))
             .py(px(5.))
-            .child(
-                div()
-                    .w(px(42.))
-                    .h(px(36.))
-                    .flex_shrink_0()
-                    .rounded(px(8.))
-                    .bg(cx.theme().foreground.opacity(0.05))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .font_family(font.family)
-                    .text_size(px(19.))
-                    .child("Ag"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().text_sm().truncate().child(self.0.clone()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if bundled {
-                                "Bundled with Phux"
-                            } else {
-                                "Font family"
-                            }),
-                    ),
-            )
+            .font_family(font.family)
+            .text_size(px(13.))
+            .truncate()
+            .child(self.0.clone())
     }
 }
 
@@ -408,7 +362,8 @@ pub(crate) fn panel(
         .page(content.title(page.title()));
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
-    let height = (viewport.height.as_f32() - top - 24.).clamp(180., 600.);
+    let preferred_height = if page == Page::Appearance { 340. } else { 600. };
+    let height = (viewport.height.as_f32() - top - 24.).clamp(180., preferred_height);
     super::overlays::card(colors, (viewport.width.as_f32() - 32.).clamp(0., 720.))
         .id("settings-panel")
         .debug_selector(|| "settings-panel".into())
@@ -523,6 +478,19 @@ fn slider_item(
     Some(SettingItem::new(title.to_owned(), field).description(description.to_owned()))
 }
 
+fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
+    let mut font = gpui::font(desk.prefs.font_family.clone());
+    crate::fonts::resolve(&mut font, cx);
+    if font.family.as_ref() == desk.prefs.font_family {
+        item
+    } else {
+        item.description(format!(
+            "{} is unavailable. Using Paper Mono.",
+            desk.prefs.font_family
+        ))
+    }
+}
+
 fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
     let themes = {
         let mut themes = theme::themes();
@@ -531,27 +499,53 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
         }
         themes
     };
-    let cards_handle = handle.clone();
-    let theme_item = SettingItem::render(move |_, _, cx| {
-        let selected = prefs_of(&cards_handle, cx).theme_id;
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(px(10.))
-            .children(
-                themes
-                    .iter()
-                    .map(|theme| theme_card(theme, theme.id == selected, &cards_handle)),
+    let theme_handle = handle.clone();
+    let theme_item = SettingItem::new(
+        "Theme",
+        SettingField::render(move |_, _, cx| {
+            let selected = prefs_of(&theme_handle, cx).theme_id;
+            let label = themes
+                .iter()
+                .find(|theme| theme.id == selected)
+                .map(|theme| theme.name.clone())
+                .unwrap_or_else(|| selected.clone());
+            let choices: Vec<_> = themes
+                .iter()
+                .map(|theme| (theme.id.clone(), theme.name.clone()))
+                .collect();
+            let writer = theme_handle.clone();
+            div().debug_selector(|| "settings-theme".into()).child(
+                Button::new("settings-theme")
+                    .label(label)
+                    .outline()
+                    .small()
+                    .w(px(260.))
+                    .dropdown_caret(true)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (id, name) in &choices {
+                            let id = id.clone();
+                            let writer = writer.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(name.clone())
+                                    .checked(id == selected)
+                                    .on_click(move |_, _, cx| {
+                                        let id = id.clone();
+                                        set_prefs(&writer, cx, |prefs| prefs.theme_id = id);
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
             )
-            .into_any_element()
-    })
+        }),
+    )
     .keywords(["theme", "colors", "dark", "light"]);
-    let mut font_group = SettingGroup::new().title("Font");
+    let mut font_group = SettingGroup::new();
     if let Some(controls) = desk.settings_controls.as_ref() {
         let font = controls.font.clone();
         let dirty = handle.clone();
         let reset = handle.clone();
-        font_group = font_group.item(
+        font_group = font_group.item(font_status(
             SettingItem::new(
                 "Font family",
                 SettingField::render(move |_, _, _| {
@@ -589,20 +583,10 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
                     },
                 ),
             )
-            .description({
-                let mut font = gpui::font(desk.prefs.font_family.clone());
-                crate::fonts::resolve(&mut font, cx);
-                if font.family.as_ref() != desk.prefs.font_family {
-                    format!(
-                        "{} is unavailable; using Paper Mono. Choose an installed font.",
-                        desk.prefs.font_family
-                    )
-                } else {
-                    "Installed fonts and the current selection. Search to filter.".to_owned()
-                }
-            })
             .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]),
-        );
+            desk,
+            cx,
+        ));
     }
     font_group = font_group.item(
         SettingItem::new(
@@ -614,114 +598,11 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
                 |prefs, value| prefs.font_size = value,
             ),
         )
-        .description("Points. ⌘= and ⌘- step it from anywhere."),
+        .description("Points"),
     );
-    let preview_handle = handle.clone();
-    let preview = SettingItem::render(move |_, _, cx| {
-        preview(&prefs_of(&preview_handle, cx), &preview_handle, cx)
-    })
-    .keywords(["preview", "sample"]);
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
-        .group(font_group)
-        .group(SettingGroup::new().title("Preview").item(preview))
-        .group(
-            SettingGroup::new()
-                .title("Theme")
-                .description("Ghostty's theme appears first when your config names one.")
-                .item(theme_item),
-        )
-}
-
-fn theme_card(theme: &theme::Theme, selected: bool, handle: &WeakEntity<Desk>) -> AnyElement {
-    let palette = theme::palette(theme);
-    let id = theme.id.clone();
-    let handle = handle.clone();
-    let swatch = |color: &str| div().size(px(10.)).rounded_full().bg(from_hex(color));
-    div()
-        .id(SharedString::from(format!("theme-card-{}", theme.id)))
-        .w(px(132.))
-        .p(px(10.))
-        .rounded(px(10.))
-        .bg(from_hex(&theme.background))
-        .border_2()
-        .border_color(from_hex(if selected {
-            &theme.accent
-        } else {
-            &palette.border
-        }))
-        .cursor_pointer()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(from_hex(&theme.foreground))
-                .child(theme.name.clone()),
-        )
-        .child(
-            div()
-                .flex()
-                .gap(px(5.))
-                .child(swatch(&theme.accent))
-                .child(swatch(&theme.success))
-                .child(swatch(&theme.warning))
-                .child(swatch(&theme.danger)),
-        )
-        .child(
-            div()
-                .h(px(4.))
-                .w(relative(0.8))
-                .rounded_full()
-                .bg(from_hex(&theme.foreground)),
-        )
-        .child(
-            div()
-                .h(px(4.))
-                .w(relative(0.5))
-                .rounded_full()
-                .bg(from_hex(&palette.muted)),
-        )
-        .on_click(move |_, _, cx| {
-            let id = id.clone();
-            set_prefs(&handle, cx, |prefs| prefs.theme_id = id);
-        })
-        .into_any_element()
-}
-
-/// A live theme and font sample; grid spacing is applied to the terminal itself.
-fn preview(prefs: &DisplayPrefs, handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
-    let Some(desk) = handle.upgrade() else {
-        return div().into_any_element();
-    };
-    let colors = desk.read(cx).palette();
-    let size = prefs.font_size as f32;
-    let mut font = gpui::font(prefs.font_family.clone());
-    crate::fonts::resolve(&mut font, cx);
-    let line = |text: &str, color: &str| div().text_color(from_hex(color)).child(text.to_owned());
-    div()
-        .w_full()
-        .p(px(prefs.padding_y.max(6.) as f32))
-        .px(px(prefs.padding_x.max(8.) as f32))
-        .rounded(px(8.))
-        .bg(from_hex(&colors.theme.background))
-        .font_family(font.family)
-        .text_size(px(size))
-        .line_height(relative(prefs.line_height as f32))
-        .child(line("~/src/phux  main  ✓", &colors.theme.accent))
-        .child(line("$ cargo test --workspace", &colors.theme.foreground))
-        .child(line("   Compiling phux-desktop v0.1.0", &colors.muted))
-        .child(line(
-            "Aa Bb 0123456789  [] {} ()  -> => !=",
-            &colors.theme.foreground,
-        ))
-        .child(line(
-            "test result: ok. 128 passed; 0 failed",
-            &colors.theme.success,
-        ))
-        .into_any_element()
+        .group(font_group.item(theme_item))
 }
 
 fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
@@ -825,7 +706,6 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
 fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let spacing = SettingGroup::new()
         .title("Terminal spacing")
-        .description("Fine-tune the terminal grid. Defaults work with Paper Mono.")
         .items(slider_item(
             desk,
             handle,
@@ -913,7 +793,6 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     }
     let shortcuts = SettingGroup::new()
         .title("Shortcuts")
-        .description("Search above to find a command or a chord.")
         .items(rows.into_iter().map(|(title, group, chord)| {
             let shown = settings::display_chord(&chord);
             let keystroke = gpui_stroke(&chord).and_then(|stroke| Keystroke::parse(&stroke).ok());
@@ -928,7 +807,6 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                         .into_any_element(),
                 }),
             )
-            .description(group.clone())
             .keywords([group, settings::display_chord(&chord)])
         }));
     SettingPage::new("Keyboard")
