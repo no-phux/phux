@@ -19,8 +19,8 @@ pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::{ControlOptions, SessionRecovery};
 use phux_client_runtime::control::{
-    DeliveryOutcome, Event, FileUploadReceipt, PaneDescriptor, PathAnswer, ServerInfo,
-    SpawnRequest, Status, Topology, mint_operation,
+    DeliveryOutcome, Event, FileUploadReceipt, OrganizationReplica, PaneDescriptor, PathAnswer,
+    ServerInfo, SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -514,6 +514,13 @@ impl Connection {
             .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
     }
 
+    /// Read the organization replica in place, under the runtime's control
+    /// lock. `read` must not call back into the client.
+    pub(crate) fn with_organization<R>(&self, read: impl FnOnce(&OrganizationReplica) -> R) -> R {
+        self.client
+            .with_control(|control| read(control.organization()))
+    }
+
     /// The arrangement group name that shows `terminal`, when one is known.
     #[must_use]
     pub fn group_name(&self, terminal: &ResourceId) -> Option<&str> {
@@ -530,16 +537,21 @@ impl Connection {
             self.groups.clear();
             return;
         }
-        let replica = self.client.organization();
-        for session in replica.sessions() {
-            if let Some(arrangement) = session.arrangement
-                && replica.arrangement(&arrangement).is_none()
-                && self.fetched.insert(arrangement)
-            {
+        let (missing, groups) = self.with_organization(|replica| {
+            let missing: Vec<_> = replica
+                .sessions()
+                .iter()
+                .filter_map(|session| session.arrangement)
+                .filter(|arrangement| replica.arrangement(arrangement).is_none())
+                .collect();
+            (missing, org::group_names(replica))
+        });
+        for arrangement in missing {
+            if self.fetched.insert(arrangement) {
                 let _ = self.client.fetch_arrangement(arrangement);
             }
         }
-        self.groups = org::group_names(&replica);
+        self.groups = groups;
     }
 
     /// Create a persistent session whose first terminal starts in
@@ -756,15 +768,15 @@ impl Connection {
         if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
             return;
         }
-        if !self.client.organization().is_live() {
+        let (live, authority) =
+            self.with_organization(|replica| (replica.is_live(), replica.authority()));
+        if !live {
             if self.status == Status::Attached {
                 self.status = Status::Negotiated;
             }
             return;
         }
-        if self.expected_authority.is_some()
-            && self.client.organization().authority() != self.expected_authority
-        {
+        if self.expected_authority.is_some() && authority != self.expected_authority {
             self.error = Some("The host now reports a different authority. Refresh Work and select the session again.".into());
             self.status = Status::Failed;
             self.client.close();
@@ -808,8 +820,9 @@ impl Connection {
             "The original home session no longer matches this connection; refusing a name replacement (expected live session {:?}, attached {:?}, key observed {}).",
             self.home_session(),
             self.client.attached_session(),
-            self.home_key
-                .is_some_and(|key| self.client.organization().session(&key).is_some())
+            self.home_key.is_some_and(
+                |key| self.with_organization(|replica| replica.session(&key).is_some())
+            )
         ));
         self.status = Status::Failed;
         self.client.close();
@@ -937,18 +950,20 @@ impl Connection {
         self.projects.clear();
         self.directories.clear();
         if self.organization() {
-            let replica = self.client.organization();
-            for record in replica.sessions() {
-                let Some(id) = record.live.map(phux_protocol::ids::SessionId::get) else {
-                    continue;
-                };
-                if let Some(project) = session_attr(&record.attrs, "project") {
-                    self.projects.insert(id, project.to_owned());
+            let (projects, directories) = (&mut self.projects, &mut self.directories);
+            self.client.with_control(|control| {
+                for record in control.organization().sessions() {
+                    let Some(id) = record.live.map(phux_protocol::ids::SessionId::get) else {
+                        continue;
+                    };
+                    if let Some(project) = session_attr(&record.attrs, "project") {
+                        projects.insert(id, project.to_owned());
+                    }
+                    if let Some(directory) = session_attr(&record.attrs, "directory") {
+                        directories.insert(id, directory.to_owned());
+                    }
                 }
-                if let Some(directory) = session_attr(&record.attrs, "directory") {
-                    self.directories.insert(id, directory.to_owned());
-                }
-            }
+            });
         }
         // Older servers report only the single, legacy project tag.
         if let Some((name, project)) = &self.project_tag {
