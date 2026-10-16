@@ -555,9 +555,9 @@ mod tests {
         };
         search.ensure_ranked("pane", GotoFilter::All, 0, |_| 0);
         assert_eq!(titles(&search), vec!["worker pane", "helper pane"]);
-        search.ensure_ranked("pane", GotoFilter::All, 1, &boost);
+        search.ensure_ranked("pane", GotoFilter::All, 1, boost);
         assert_eq!(titles(&search), vec!["helper pane", "worker pane"]);
-        search.ensure_ranked("", GotoFilter::All, 1, &boost);
+        search.ensure_ranked("", GotoFilter::All, 1, boost);
         assert_eq!(
             titles(&search),
             vec!["worker pane", "helper pane", "unrelated"]
@@ -570,7 +570,7 @@ mod tests {
                 rows: vec![row_for("pane", 1), row_for("helper pane", 2)],
             }],
         );
-        search.ensure_ranked("pane", GotoFilter::All, 2, &boost);
+        search.ensure_ranked("pane", GotoFilter::All, 2, boost);
         assert_eq!(titles(&search), vec!["pane", "helper pane"]);
     }
 }
