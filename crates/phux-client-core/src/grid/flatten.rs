@@ -2,7 +2,7 @@
 
 use libghostty_vt::Terminal;
 use libghostty_vt::render::{CellIteration, CellIterator, Colors, RowIterator, Snapshot};
-use libghostty_vt::screen::{Cell as RawCell, CellContentTag};
+use libghostty_vt::screen::{Cell as RawCell, CellContentTag, GridRef};
 use libghostty_vt::style::{RgbColor, Style, StyleColor};
 use libghostty_vt::terminal::{Point, PointCoordinate};
 
@@ -24,6 +24,7 @@ pub(super) struct CellContext<'a, 'cb> {
 /// cluster and once per hyperlink URI longer than the current buffer.
 pub(super) struct CellScratch {
     graphemes: String,
+    cluster: Vec<char>,
     hyperlink: Vec<u8>,
 }
 
@@ -31,6 +32,7 @@ impl CellScratch {
     pub(super) fn new() -> Self {
         Self {
             graphemes: String::new(),
+            cluster: vec!['\0'; 8],
             hyperlink: vec![0_u8; 64],
         }
     }
@@ -101,19 +103,43 @@ fn push_flattened_cell(
     let has_hyperlink = raw.has_hyperlink()?;
     let (hyperlink_offset, hyperlink_len) = if has_hyperlink {
         append_hyperlink_uri(
-            context.terminal,
-            at,
+            &context.terminal.grid_ref(Point::Viewport(at))?,
             &mut buffer.utf8,
             &mut scratch.hyperlink,
         )?
     } else {
         NO_HYPERLINK
     };
-    let colors = context.colors;
+    let (record, metadata) = cell_record(
+        raw,
+        style,
+        content_tag,
+        (start, cell_utf8_len),
+        (hyperlink_offset, hyperlink_len),
+        cell.is_selected()?,
+        context.colors,
+    )?;
+    buffer.metadata.push(metadata);
+    buffer.cells.push(record);
+    Ok(())
+}
+
+/// Resolve one cell's colors and flags into its record and provenance. The
+/// text and hyperlink spans already sit in the arena.
+fn cell_record(
+    raw: RawCell,
+    style: Style,
+    content_tag: CellContentTag,
+    (start, cell_utf8_len): (usize, usize),
+    (hyperlink_offset, hyperlink_len): (u32, u32),
+    selected: bool,
+    colors: &Colors,
+) -> Result<(Cell, CellMetadata), GridError> {
+    let has_hyperlink = raw.has_hyperlink()?;
     let fg = resolve_color(style.fg_color, colors.foreground, &colors.palette);
     let bg = cell_background(raw, content_tag, style, colors)?;
     let underline_color = resolve_color(style.underline_color, fg, &colors.palette);
-    let flags = cell_flags(style, cell, raw, has_hyperlink)?;
+    let flags = cell_flags(style, selected, raw, has_hyperlink)?;
     let record = Cell {
         utf8_offset: u32::try_from(start)
             .map_err(|_| GridError::Overflow("cell UTF-8 arena offset exceeds u32"))?,
@@ -137,8 +163,78 @@ fn push_flattened_cell(
         underline_b: underline_color.b,
         reserved: 0,
     };
-    buffer.metadata.push(cell_metadata(style, content_tag));
-    buffer.cells.push(record);
+    Ok((record, cell_metadata(style, content_tag)))
+}
+
+/// Append screen row `y` (history plus active area) to `buffer.fringe`,
+/// `cols` cells sharing the viewport's UTF-8 arena. The render state covers
+/// only the viewport, so this walks grid references; selection is not
+/// reported for the row.
+pub(super) fn fill_fringe_row(
+    context: &CellContext<'_, '_>,
+    y: u32,
+    cols: u16,
+    scratch: &mut CellScratch,
+    buffer: &mut GridBuffer,
+) -> Result<(), GridError> {
+    for x in 0..cols {
+        let reference = context
+            .terminal
+            .grid_ref(Point::Screen(PointCoordinate { x, y }))?;
+        let raw = reference.cell()?;
+        let style = reference.style()?;
+        let content_tag = raw.content_tag()?;
+        let start = buffer.utf8.len();
+        match content_tag {
+            CellContentTag::Codepoint => {
+                let cp = raw.codepoint()?;
+                if cp != 0 {
+                    let ch = char::from_u32(cp).ok_or(GridError::InvalidCodepoint(cp))?;
+                    let mut encoded = [0_u8; 4];
+                    buffer
+                        .utf8
+                        .extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                }
+            }
+            CellContentTag::CodepointGrapheme => {
+                let len = loop {
+                    match reference.graphemes(&mut scratch.cluster) {
+                        Ok(len) => break len,
+                        Err(libghostty_vt::Error::OutOfSpace { required })
+                            if required > scratch.cluster.len() =>
+                        {
+                            scratch.cluster.resize(required, '\0');
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                let mut encoded = [0_u8; 4];
+                for ch in &scratch.cluster[..len] {
+                    buffer
+                        .utf8
+                        .extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                }
+            }
+            CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {}
+        }
+        let text = (start, buffer.utf8.len() - start);
+        let hyperlink = if raw.has_hyperlink()? {
+            append_hyperlink_uri(&reference, &mut buffer.utf8, &mut scratch.hyperlink)?
+        } else {
+            NO_HYPERLINK
+        };
+        let (record, metadata) = cell_record(
+            raw,
+            style,
+            content_tag,
+            text,
+            hyperlink,
+            false,
+            context.colors,
+        )?;
+        buffer.fringe.push(record);
+        buffer.fringe_metadata.push(metadata);
+    }
     Ok(())
 }
 
@@ -174,12 +270,10 @@ fn append_cell_text(
 /// buffer until libghostty reports the whole URI fits, and return its
 /// (offset, length) within that arena.
 fn append_hyperlink_uri(
-    terminal: &Terminal<'static, '_>,
-    at: PointCoordinate,
+    reference: &GridRef<'_>,
     utf8: &mut Vec<u8>,
     scratch: &mut Vec<u8>,
 ) -> Result<(u32, u32), GridError> {
-    let reference = terminal.grid_ref(Point::Viewport(at))?;
     let len = loop {
         match reference.hyperlink_uri(scratch) {
             Ok(len) => break len,
@@ -227,12 +321,12 @@ fn resolve_color(color: StyleColor, fallback: RgbColor, palette: &[RgbColor; 256
 /// hyperlink state into the flag word.
 fn cell_flags(
     style: Style,
-    cell: &CellIteration<'static, '_>,
+    selected: bool,
     raw: RawCell,
     has_hyperlink: bool,
 ) -> Result<u32, GridError> {
     let mut flags = style_flags(style);
-    if cell.is_selected()? {
+    if selected {
         flags |= CELL_SELECTED;
     }
     if raw.is_protected()? {

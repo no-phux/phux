@@ -238,6 +238,12 @@ pub struct GridBuffer {
     /// One flag per viewport row: changed since the previous projection,
     /// including speculative text overlays and their removal.
     pub row_dirty: Vec<bool>,
+    /// The row just below the viewport, `cols` records sharing `utf8`, when
+    /// the projection asked for one; empty otherwise. A consumer that
+    /// scrolls by less than a row paints it under the last viewport row.
+    pub fringe: Vec<Cell>,
+    /// One provenance record per `fringe` cell.
+    pub fringe_metadata: Vec<CellMetadata>,
 }
 
 impl GridBuffer {
@@ -246,6 +252,17 @@ impl GridBuffer {
         self.utf8.clear();
         self.metadata.clear();
         self.row_dirty.clear();
+        self.fringe.clear();
+        self.fringe_metadata.clear();
+    }
+
+    /// The text of fringe cell `col`, as a UTF-8 slice of the arena.
+    #[must_use]
+    pub fn fringe_text(&self, col: usize) -> &[u8] {
+        self.fringe.get(col).map_or(&[], |cell| {
+            let start = cell.utf8_offset as usize;
+            &self.utf8[start..start + usize::from(cell.utf8_len)]
+        })
     }
 
     /// The text of the cell at `index`, as a UTF-8 slice of the arena.
@@ -369,7 +386,20 @@ impl GridProjector {
         terminal: &Terminal<'static, '_>,
         generation: TerminalGeneration,
     ) -> Result<GridSnapshot<'_>, GridError> {
-        let (cols, rows, cursor, colors, damage) = self.fill(terminal, generation)?;
+        self.project_with_fringe(terminal, generation, None)
+    }
+
+    /// [`project`](Self::project), and also flatten screen row `fringe`
+    /// (history plus active area) into [`GridBuffer::fringe`]. Pass the row
+    /// just below a scrolled-back viewport. A row past the screen leaves the
+    /// fringe empty rather than failing the projection.
+    pub fn project_with_fringe(
+        &mut self,
+        terminal: &Terminal<'static, '_>,
+        generation: TerminalGeneration,
+        fringe: Option<u32>,
+    ) -> Result<GridSnapshot<'_>, GridError> {
+        let (cols, rows, cursor, colors, damage) = self.fill(terminal, generation, fringe)?;
         Ok(GridSnapshot {
             cols,
             rows,
@@ -386,6 +416,7 @@ impl GridProjector {
         &mut self,
         terminal: &Terminal<'static, '_>,
         generation: TerminalGeneration,
+        fringe: Option<u32>,
     ) -> Result<(u16, u16, Cursor, Colors, GridDamage), GridError> {
         let RenderWalk {
             snapshot,
@@ -406,20 +437,31 @@ impl GridProjector {
             .ok_or(GridError::Overflow("viewport cell count exceeds usize"))?;
         self.buffer.cells.reserve(expected);
         self.buffer.metadata.reserve(expected);
+        let context = flatten::CellContext {
+            terminal,
+            colors: &colors,
+        };
         flatten::fill_grid_cells(
             rows,
             cells,
             &snapshot,
-            &flatten::CellContext {
-                terminal,
-                colors: &colors,
-            },
+            &context,
             &mut self.buffer,
             &mut self.scratch,
         )?;
         let produced = self.buffer.cells.len();
         if produced != expected {
             return Err(GridError::SparseViewport { produced, expected });
+        }
+        if let Some(y) = fringe
+            && let Err(error) =
+                flatten::fill_fringe_row(&context, y, cols, &mut self.scratch, &mut self.buffer)
+        {
+            self.buffer.fringe.clear();
+            self.buffer.fringe_metadata.clear();
+            if !matches!(error, GridError::Engine(libghostty_vt::Error::InvalidValue)) {
+                return Err(error);
+            }
         }
         if damage == GridDamage::Full {
             self.buffer.row_dirty.iter_mut().for_each(|row| *row = true);

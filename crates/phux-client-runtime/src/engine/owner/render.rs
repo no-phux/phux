@@ -52,15 +52,21 @@ impl Owner {
             terminal.active_screen(),
             Ok(libghostty_vt::screen::Screen::Alternate)
         );
-        let snapshot = slot
-            .projector
-            .project(terminal, slot.token)
-            .map_err(|error| engine_error(error.to_string()))?;
-        let mut colors = frame_colors(&snapshot.colors);
-        apply_default_colors(&mut colors, defaults);
         let bar = terminal
             .scrollbar()
             .map_err(|error| engine_error(format!("scrollbar: {error}")))?;
+        // A scrolled-back viewport also carries the row below it, so a
+        // consumer can scroll by less than a row without another turn.
+        let below = bar.offset.saturating_add(bar.len);
+        let fringe = (below < bar.total)
+            .then(|| u32::try_from(below).ok())
+            .flatten();
+        let snapshot = slot
+            .projector
+            .project_with_fringe(terminal, slot.token, fringe)
+            .map_err(|error| engine_error(error.to_string()))?;
+        let mut colors = frame_colors(&snapshot.colors);
+        apply_default_colors(&mut colors, defaults);
         let mut frame = GridFrame {
             terminal_id: id.clone(),
             generation: 0,
