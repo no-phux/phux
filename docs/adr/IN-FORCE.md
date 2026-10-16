@@ -205,6 +205,7 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
+- [0175](./0175-one-release-manifest-per-channel.md) Every client discovers releases from `channels/{stable,next}.json`, generated from published state; Desktop stages an update and swaps it in after exit.
 - [0169](./0169-zig-cockpit-lives-in-an-archive.md) Zig Cockpit and its exclusive hooks leave main; a published archive branch and annotated tag preserve bot-led recovery. Shared FFI, GPUI desktop, mobile, and libghostty Zig stay.
 - [0113](./0113-next-release-channel.md) `next` is an opt-in moving prerelease of green `main`; stable stays `vX.Y.Z` and Homebrew.
 - [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.

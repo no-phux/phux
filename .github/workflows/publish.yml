@@ -85,6 +85,31 @@ jobs:
     with:
       tag: ${{ needs.plan.outputs.desktop_tag }}
 
+  # The stable manifest (ADR-0175) is a function of what is published, so it
+  # is rebuilt on every run, including the daily reconcile, after both product
+  # lanes settle. A failed lane leaves its draft unpublished, and the manifest
+  # keeps naming that product's previous release.
+  channel-manifest:
+    name: publish stable manifest
+    needs: [plan, phux, desktop]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Build and publish stable.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A product that cannot be resolved keeps its published entry and
+        # turns this job red; the other product still publishes.
+        run: python3 scripts/ci/release_manifest.py stable --out "$RUNNER_TEMP/stable.json" --publish
+
   # Mobile artifacts ride on the root release. They do not gate it: release.yml
   # publishes the CLI tarballs, and a failed framework build is repaired by
   # re-running publish against the same tag.

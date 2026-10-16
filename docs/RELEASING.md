@@ -84,7 +84,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Scoped mutation | manual | Bounded Rust advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 | Linear release report | called by `publish` after a public root release, or manual dispatch | `linear-release.yml`. Requires a public GitHub release, then synchronizes its exact version and tagged changelog notes before updating its stage. The explicit previous-component-tag issue range makes retries and old-tag recovery independent of Linear's latest baseline. Root `vX.Y.Z` goes to pipeline `phux`. |
-| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and the GPUI desktop when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`. |
+| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and the GPUI desktop when its inputs moved, attached to the moving `next` prerelease, then `channels/next.json`. No Homebrew. `phux update --channel next` follows that manifest. |
 
 Linear's direct tag fetch clears checkout's persisted HTTP headers before
 supplying its command-scoped authorization header. Git accumulates extra
@@ -309,8 +309,9 @@ lane with an immutable green-main SHA and `PHUX_CHANNEL=next`. Its assets are
 without pruning another product's artifacts. Older pinned artifacts are also
 preserved when a failed pointer read or publication retry cannot establish the
 previous revision. A CLI-only next publish is not
-evidence that a desktop update is available: clients must read the desktop
-pointer, not `channel.json` or the moving tag's commit.
+evidence that a desktop update is available: clients read the `desktop`
+product of `channels/next.json`, never `channel.json` or the moving tag's
+commit.
 
 Both stable and next publish `desktop-channel.json` with `schema_version: 1`,
 `product: desktop`, `channel`, full source `sha`, package `version`, archive
@@ -320,11 +321,15 @@ The signed bundle records `PhuxDesktopVersion`, `PhuxBuildSHA`, and
 versions (several green commits can share a version).
 
 The standalone desktop installer defaults to `--channel stable`; `latest` is
-a stable alias. `--channel next` resolves the desktop pointer once and verifies
-the signed bundle's source SHA. `--channel next --revision <SHA>` pins an
-already-published SHA-qualified artifact without reading the moving pointer;
-`--version desktop-vX.Y.Z` pins stable. All installs preserve the coordinator
-CLI and its running server. Installer tests use temporary app/launcher paths
+a stable alias. Without a pin it reads the channel manifest once and verifies
+the signed bundle's version and source SHA. `--channel next --revision <SHA>`
+pins an already-published SHA-qualified artifact without reading the
+manifest; `--version desktop-vX.Y.Z` pins stable. `--sha256 <digest>` makes a
+pin verify against a digest the caller already validated instead of the
+sidecar. `--stage-dir <dir>` verifies and unpacks into `<dir>/Phux.app`
+without touching the installed app: the desktop's in-app updater stages this
+way and swaps the bundle in only after it exits. All installs preserve the
+coordinator CLI and its running server. Installer tests use temporary app/launcher paths
 and mocked downloads, never a production installation.
 
 To recover a draft, dispatch **publish** with `tag=desktop-vX.Y.Z`, never the
@@ -411,15 +416,17 @@ binaries from the same tarball.
 **This layout is a consumed contract, not just a convention.** `phux update`
 ([ADR-0074](adr/0074-self-update-trust-boundary.md)) derives
 `phux-<tag>-<target>.tar.gz` and its `"<64 hex>  <archive>"` `.sha256` sidecar
-from this naming, verifies the digest before unpacking, and refuses any
-archive whose members differ. Change them together with
-`scripts/pack-release.sh`, `crates/phux/src/commands/update/release.rs`, and
-`crates/phux/src/commands/update/apply.rs`, or not at all.
+from this naming, refuses a channel manifest that names anything else,
+verifies the digest before unpacking, and refuses any archive whose members
+differ. Change them together with `scripts/pack-release.sh`,
+`scripts/ci/release_manifest.py`, `crates/phux/src/commands/update/release.rs`,
+and `crates/phux/src/commands/update/apply.rs`, or not at all.
 
 The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
-is the pointer `phux update --channel next` reads. Homebrew stays on stable.
+is the CLI's publication record that `channels/next.json` is derived from.
+Homebrew stays on stable.
 `scripts/publish-next-channel.sh` prunes only CLI-family assets. The CLI and
 the desktop each rebuild only when their own inputs moved.
 
@@ -572,20 +579,52 @@ script without a `#!/bin/sh` shebang.
 path filter so an installer change rebuilds the site, and the script must
 stay POSIX `sh`.
 
-The installer downloads the target tarball and `.sha256` sidecar, verifies the
-checksum before unpacking, and installs `phux` + `phux-mcp` into
+The installer downloads the target tarball, verifies it against the channel
+manifest's digest (a `--version` pin uses the `.sha256` sidecar) before
+unpacking, and installs `phux` + `phux-mcp` into
 `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. When that directory is not on `PATH`,
 it appends one idempotent line to the user's shell profile unless
 `--no-modify-path` is passed. Keep the explicit `v0.0.1` refusal as a
 historical safety guard.
 
-With no `--version`, the installer and `phux update` read the
-`releases/latest` redirect, which needs no GitHub API quota. Only the CLI
-stream may be GitHub's Latest release: `release.yml` publishes with
-`--latest`, and the desktop and agent-integration lanes publish with
-`--latest=false`. A redirect naming another stream, or none, falls back to
-the bounded release-list scan. If another stream is ever marked Latest by
+With no `--version`, the installers, `phux update`, and Phux Desktop read
+the channel manifest; see [Channel manifests](#channel-manifests). A pin
+skips it and verifies the pinned release's own sidecar. Only the CLI stream
+may be GitHub's Latest release, for binaries released before the manifest
+that still resolve through the `releases/latest` redirect: `release.yml`
+publishes with `--latest`, and the desktop and agent-integration lanes
+publish with `--latest=false`. If another stream is ever marked Latest by
 hand, repair it with `gh release edit vX.Y.Z --latest`.
+
+## Channel manifests
+
+Every client discovers releases from one file per channel
+([ADR-0175](adr/0175-one-release-manifest-per-channel.md)):
+
+```text
+https://github.com/no-phux/phux/releases/download/channels/stable.json
+https://github.com/no-phux/phux/releases/download/channels/next.json
+```
+
+`scripts/ci/release_manifest.py` writes both from published state, never
+from a run's intent. `stable` takes the newest published `vX.Y.Z` and
+`desktop-vX.Y.Z`, their sidecar digests, their tagged commit, and the
+protocol at that tag. `next` takes the `channel.json` and
+`desktop-channel.json` records on the `next` prerelease and their sidecars.
+`publish` uploads to the `channels` prerelease only when the content, not
+`generated_at`, changed. `publish.yml`'s `channel-manifest` job runs on every
+publish run and the daily reconcile; `next-release.yml`'s `manifest` job runs
+on every gated next run. Either job repairs a missing or stale manifest on its
+next run, and `gh workflow run publish.yml` forces one.
+
+The rendered form is a contract the POSIX installers parse with awk:
+two-space indentation, one member per line, no arrays, and only
+`[A-Za-z0-9._:/+-]` in strings. `render` refuses anything else. The golden
+manifests in `scripts/fixtures/release-manifest/` are read by the generator
+test, the CLI updater tests, the desktop tests, and the installer tests.
+After changing the schema, run
+`python3 scripts/ci/release_manifest.py fixtures` and update every consumer
+in the same change.
 
 ### CPU baselines
 

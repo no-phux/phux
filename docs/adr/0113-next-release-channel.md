@@ -14,6 +14,7 @@ succeeds and coalesced so a burst of merges is one build. `phux update
 Status: Accepted
 Date: 2026-09-12
 Superseded in part by [ADR-0138](./0138-cockpit-rides-the-next-channel.md): decision 2's "no Cockpit" and cancel-in-progress.
+Superseded in part by [ADR-0175](./0175-one-release-manifest-per-channel.md): decisions 3 and 5; clients follow `channels/next.json`, and `channel.json` is its publication record.
 
 ## Context
 

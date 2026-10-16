@@ -48,6 +48,9 @@ ROUTES = DOC_INPUTS + (
       "scripts/check-agent-integration-versions.mjs",
       "scripts/ci/agent-integrations.sh", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),
+    # The golden release manifests (ADR-0175) are include_str! inputs of the
+    # updater's tests; the installers that also read them route on their own.
+    (("scripts/fixtures/release-manifest/*",), RUST),
     # Browser Rust consumers plus the live demo server and local-owner CLI
     # fixture dependency closures (including Cargo dev dependencies). The test checks this
     # against manifests so a new local dependency cannot silently lose coverage.
@@ -98,6 +101,7 @@ WORKFLOWS = (
     "scripts/ci/release_metadata.py", "scripts/ci/test_release_metadata.py",
     "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
     "scripts/ci/publish_plan.py", "scripts/ci/test_publish_plan.py",
+    "scripts/ci/release_manifest.py", "scripts/ci/test_release_manifest.py",
     "scripts/ci/dispatch_integration_publishes.py",
     "scripts/ci/test_dispatch_integration_publishes.py",
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",

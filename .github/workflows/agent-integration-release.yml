@@ -362,5 +362,6 @@ jobs:
           mapfile -t expected < <(find release -maxdepth 1 -type f -exec basename {} \; | sort)
           mapfile -t actual < <(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
           diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}")
-          # Never "Latest": releases/latest must keep naming the CLI release.
+          # Never "Latest": releases/latest must keep naming the CLI release
+          # for pre-manifest binaries (ADR-0175).
           gh release edit "$TAG" --draft=false --latest=false

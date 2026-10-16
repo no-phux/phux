@@ -751,8 +751,9 @@ guarantees:
   across a server binary re-exec, and with them each pane's agent sessions:
   same `@N`, same `phux agent log` history, same record sequence
   ([L1 §4.8](./spec/L1.md)). `phux update` is the user-facing verb
-  built on that handoff: it resolves the published release, verifies the
-  `.sha256` sidecar, replaces the binaries atomically, then calls
+  built on that handoff: it resolves the release from the channel manifest
+  ([ADR-0175](./adr/0175-one-release-manifest-per-channel.md)), verifies the
+  download against its SHA-256, replaces the binaries atomically, then calls
   `phux upgrade`. Default is the latest `vX.Y.Z`; `phux channel next` follows
   green `main`, and `phux channel latest` returns to numbered releases. It writes only to installs it maintains — a Homebrew,
   Cargo, or Nix install gets the exact native command instead
