@@ -448,11 +448,66 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         None,
         // A worktree's session is named after it: persistent.
         phux_protocol::wire::frame::SessionLifetime::Persistent,
+        &[],
     )) {
         // The create already told us the seed pane's id; `--json` just stops
         // throwing it away.
         Ok(terminal_id) => emit_binding(json, branch, cwd, name, terminal_id),
         Err(code) => code,
+    }
+}
+
+/// A session created for one mission task. The name is derived from the
+/// worktree path. Prints nothing on success. The seed pane stays the
+/// worktree shell; the worker pane is launched separately.
+pub(crate) struct TaskSession {
+    /// Session name bound to the worktree.
+    pub session: String,
+}
+
+/// `git worktree add` plus a persistent session whose attributes include
+/// `mission.task`. The caller prints the mission document.
+pub(crate) fn create_task_worktree(
+    repo: &Path,
+    branch: &str,
+    dest: &Path,
+    from: &str,
+    socket: &Path,
+    mission_task: &str,
+) -> Result<TaskSession, ExitCode> {
+    if let Some(parent) = dest.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        error!("could not create {}: {err}", parent.display());
+        return Err(ExitCode::FAILURE);
+    }
+    let dest_str = dest.to_string_lossy().into_owned();
+    if let Err(err) = git_bytes(repo, &["worktree", "add", "-b", branch, &dest_str, from]) {
+        error!("{err}");
+        return Err(ExitCode::FAILURE);
+    }
+    let name = session_name_for(dest);
+    let socket_path = socket.to_path_buf();
+    fire_worktree_created(dest, branch, repo, &name, &socket_path);
+    let rt = cli_runtime()?;
+    if let Err(err) = super::server::ensure_server_unseeded(&socket_path, false) {
+        warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
+    }
+    let extra = vec![("mission.task".to_owned(), mission_task.to_owned())];
+    match rt.block_on(super::new::create_session_via_metadata(
+        &super::server_target::ServerTarget::local(&socket_path),
+        &name,
+        None,
+        Some(dest.to_string_lossy().into_owned()),
+        BTreeMap::new(),
+        None,
+        false,
+        None,
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
+        &extra,
+    )) {
+        Ok(_terminal_id) => Ok(TaskSession { session: name }),
+        Err(code) => Err(code),
     }
 }
 

@@ -157,6 +157,9 @@ fn handle(store: &mut Store, request: Request) -> Response {
         Request::RecordState(request) => store.record_state(request).map(Response::Applied),
         Request::RaiseSignal(request) => store.raise_signal(request).map(Response::Applied),
         Request::Signals { alias } => store.signals(&alias).map(Response::Signals),
+        Request::PlanStart(request) => store.plan_start(&request).map(Response::StartPlan),
+        Request::ReplayStart(request) => store.replay_start(&request).map(Response::StartReplay),
+        Request::CommitStart(request) => store.commit_start(request).map(Response::StartApplied),
     };
     result.unwrap_or_else(|err| Response::Fault(err.into()))
 }

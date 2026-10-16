@@ -33,6 +33,7 @@ mod id;
 mod lock;
 mod schema;
 mod service;
+mod start;
 mod store;
 mod wire;
 
@@ -40,6 +41,7 @@ pub use client::{Client, Launcher};
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};
 pub use service::{Endpoint, KeeperExit, run_keeper};
+pub use start::{StartApplied, StartBinding, StartPlan, StartRequest};
 pub use store::{
     AddObjective, Applied, DB_FILE, EditObjective, ListFilter, Objective, RaiseSignal,
     RevisionEdit, Signal, StateEdit, Store, store_path,

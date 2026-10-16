@@ -167,7 +167,7 @@ pub struct ListFilter {
 /// store; everything else goes through [`crate::Client`].
 #[derive(Debug)]
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     /// `None` when the caller already holds the lock, as the keeper does.
     _lock: Option<FileLock>,
 }
@@ -598,7 +598,7 @@ struct MutationBody {
     event_kind: &'static str,
 }
 
-fn bump(revision: u64) -> Result<u64, Error> {
+pub(crate) fn bump(revision: u64) -> Result<u64, Error> {
     revision
         .checked_add(1)
         .ok_or_else(|| Error::Corrupt("revision wrapped".to_owned()))
@@ -610,11 +610,11 @@ pub(crate) fn lock_path(db: &Path) -> PathBuf {
     db.with_file_name(name)
 }
 
-fn timestamp() -> String {
+pub(crate) fn timestamp() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-fn digest(kind: &str, body: &serde_json::Value) -> Result<String, Error> {
+pub(crate) fn digest(kind: &str, body: &serde_json::Value) -> Result<String, Error> {
     Ok(serde_json::to_string(&serde_json::json!({
         "body": body,
         "kind": kind,
@@ -708,7 +708,7 @@ fn insert_signal(
     Ok(())
 }
 
-fn project_state(
+pub(crate) fn project_state(
     tx: &Transaction<'_>,
     objective_id: OpaqueId,
     requested: ObjectiveState,
@@ -733,7 +733,11 @@ fn unresolved_credential_lost(tx: &Transaction<'_>, objective_id: OpaqueId) -> R
     Ok(found.is_some())
 }
 
-fn load_checked(tx: &Transaction<'_>, alias: &Alias, expected: u64) -> Result<Objective, Error> {
+pub(crate) fn load_checked(
+    tx: &Transaction<'_>,
+    alias: &Alias,
+    expected: u64,
+) -> Result<Objective, Error> {
     let objective = load_alias(tx, alias)?;
     if expected != objective.revision {
         return Err(Error::RevisionConflict {
@@ -745,7 +749,7 @@ fn load_checked(tx: &Transaction<'_>, alias: &Alias, expected: u64) -> Result<Ob
     Ok(objective)
 }
 
-fn write_objective(
+pub(crate) fn write_objective(
     tx: &Transaction<'_>,
     objective: &Objective,
     previous: u64,
@@ -786,7 +790,7 @@ fn load_alias(tx: &Transaction<'_>, alias: &Alias) -> Result<Objective, Error> {
     load_display(tx, &alias.display())
 }
 
-fn load_alias_conn(conn: &Connection, alias: &Alias) -> Result<Objective, Error> {
+pub(crate) fn load_alias_conn(conn: &Connection, alias: &Alias) -> Result<Objective, Error> {
     load_display(conn, &alias.display())
 }
 

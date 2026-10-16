@@ -23,6 +23,8 @@ pub enum Verb {
     Show,
     /// `mission edit`.
     Edit,
+    /// `mission start`.
+    Start,
     /// `mission archive`.
     Archive,
     /// `mission restore`.
@@ -42,7 +44,7 @@ pub struct TaskDocument {
     pub title: String,
     /// Task description. Empty when none was given.
     pub description: String,
-    /// `todo`, `working`, or `needs_you`.
+    /// `todo`, `working`, `queued`, or `needs_you`.
     pub state: String,
     /// Structural revision, starting at 1.
     pub revision: u64,
@@ -156,6 +158,95 @@ impl ListDocument {
                 .iter()
                 .map(TaskDocument::from_objective)
                 .collect(),
+        }
+    }
+}
+
+/// The run a `start` created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunDocument {
+    /// Lowercase hex of the run id.
+    pub id: String,
+    /// Per-task attempt number, starting at 1.
+    pub ordinal: u64,
+    /// Harness kind.
+    pub agent_kind: String,
+    /// Model, or empty.
+    pub model: String,
+    /// `running` or `queued`.
+    pub state: String,
+}
+
+/// The worker binding. Null on a queued start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BindingDocument {
+    /// Session name.
+    pub session: String,
+    /// Organization session key.
+    pub session_key: String,
+    /// Worker pane id, decimal.
+    pub terminal_id: String,
+    /// Worktree path.
+    pub worktree_path: String,
+    /// Branch name.
+    pub branch: String,
+    /// Tab label, such as `#3 Billing page`.
+    pub tab_title: String,
+}
+
+/// `start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StartDocument {
+    /// [`SCHEMA`].
+    pub schema: &'static str,
+    /// [`SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Always [`Verb::Start`].
+    pub verb: Verb,
+    /// Hex operation id.
+    pub operation_id: String,
+    /// True when this id was already admitted and nothing was written.
+    pub idempotent_replay: bool,
+    /// `started` or `queued`.
+    pub disposition: String,
+    /// Set when the task was queued.
+    pub queue_position: Option<u64>,
+    /// The objective after the write.
+    pub task: TaskDocument,
+    /// The run row.
+    pub run: RunDocument,
+    /// The binding, or null when queued.
+    pub binding: Option<BindingDocument>,
+}
+
+impl StartDocument {
+    /// Build the `start` document.
+    #[must_use]
+    pub fn from_applied(applied: &phux_work::StartApplied) -> Self {
+        Self {
+            schema: SCHEMA,
+            schema_version: SCHEMA_VERSION,
+            verb: Verb::Start,
+            operation_id: applied.operation_id.to_hex(),
+            idempotent_replay: applied.idempotent_replay,
+            disposition: applied.disposition.clone(),
+            queue_position: applied.queue_position,
+            task: TaskDocument::from_objective(&applied.objective),
+            run: RunDocument {
+                id: applied.run_id.to_hex(),
+                ordinal: applied.ordinal,
+                agent_kind: applied.agent_kind.clone(),
+                model: applied.model.clone(),
+                state: applied.run_state.clone(),
+            },
+            binding: applied.binding.as_ref().map(|binding| BindingDocument {
+                session: binding.session.clone(),
+                session_key: binding.session_key.clone(),
+                terminal_id: binding.terminal_id.clone(),
+                worktree_path: binding.worktree_path.clone(),
+                branch: binding.branch.clone(),
+                tab_title: binding.tab_title.clone(),
+            }),
         }
     }
 }

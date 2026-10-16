@@ -264,6 +264,9 @@ pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
     if let Some(repository) = &a.repository {
         out.extend(repository.to_attrs());
     }
+    if let Some(task) = &a.mission_task {
+        out.push(("mission.task".to_owned(), task.clone()));
+    }
     out
 }
 
@@ -277,6 +280,7 @@ pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
             "project" => a.project = Some(value.clone()),
             "directory" => a.directory = Some(std::path::PathBuf::from(value)),
             "host" => a.host_label = Some(value.clone()),
+            "mission.task" => a.mission_task = Some(value.clone()),
             _ => {}
         }
     }
@@ -557,12 +561,18 @@ mod tests {
         };
         let mut pairs = vec![("project".to_owned(), "label".to_owned())];
         pairs.extend(identity.to_attrs());
+        pairs.push(("mission.task".to_owned(), "abc".to_owned()));
         pairs.push(("unknown".to_owned(), "x".to_owned()));
         let core = core_attrs(&pairs);
         assert_eq!(core.repository.as_deref(), Some(&identity));
         assert_eq!(core.project.as_deref(), Some("label"));
+        assert_eq!(core.mission_task.as_deref(), Some("abc"));
         let back = attrs(&core);
         assert!(!back.iter().any(|(name, _)| name == "unknown"));
+        assert!(
+            back.iter()
+                .any(|(name, value)| name == "mission.task" && value == "abc")
+        );
         assert_eq!(core_attrs(&back), core);
     }
 

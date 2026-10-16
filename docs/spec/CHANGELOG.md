@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # Wire-protocol changelog
@@ -18,6 +18,7 @@ must equal `PROTOCOL_VERSION` in `crates/phux-protocol/src/lib.rs`;
 
 | Version | Date       | Notes                                        |
 |---------|------------|----------------------------------------------|
+| 0.9.0-draft.72 | 2026-10-16 | Mission task attribute ([L2.md](./L2.md) §2.2). `SESSION_CREATE` may set `mission.task`, the opaque hex id of the mission task a session was created for, and the server keeps that name on the session record beside the names it already knew. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.71 | 2026-10-15 | ACP-owned native agents ([L1.md](./L1.md) §5.5.1): new `NATIVE_AGENT = 0x38` behind `features_ext.NATIVE_AGENT = 0x00000040`, with a bounded serde-JSON request body, explicit guardian/AgentSession creation, activation-fenced typed prompt/interrupt/human answer commands, and exclusive delegated host registration/publication/completion. Clients without the negotiated bit refuse locally before transmitting; terminal input is never a fallback. Dedicated `native_agent_result` events preserve operation identities and submission/admission/unknown semantics rather than pretending to acknowledge PTY input. Native stream/controller ledgers and the same external ACP worker cross graceful daemon upgrade. Provider resume IDs update the durable public launch recipe without relaunching; bootstrap proofs and SDK paths never enter portable archives. Existing frame layouts are unchanged; `PROTOCOL_VERSION` remains `0.9.0`. |
 | 0.9.0-draft.70 | 2026-10-14 | Session project identity ([ADR-0168](../adr/0168-project-identity-is-a-session-attribute.md)). [L2.md](./L2.md) §2.2 names the session attributes, adding the repository identity `project.id`, `project.name`, `project.checkout`, `project.branch`, `project.linked_worktree`, and `project.host`, which `SESSION_CREATE` sets through its existing `attr` field and the server keeps on the session record. [L1.md](./L1.md) §9.1: the snapshot extension's `SESSION_STATE` gains field-tagged `3 attr` (`str key \|\| str value`, repeated, at most 64), the session's attributes in order. A decoder that predates it skips the field, and a snapshot whose sessions carry no attributes keeps its earlier bytes. Additive per proto §6.3; `PROTOCOL_VERSION` remains `0.9.0`. |
 | 0.9.0-draft.69 | 2026-10-13 | Checkpoint-v2 is no longer decoded ([proto.md](./proto.md) §6.2). `LibghosttyCheckpointV2 = 2` stays a reserved `EngineCodec` id and `EngineCodecSet` bit, but the reference native client engine drops its v2 decoder: no current server produces v2 and no current client offers it, so `HELLO_OK` validation already refused a v2 selection. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added or removed, and `PROTOCOL_VERSION` stays `0.9.0`. |

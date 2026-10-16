@@ -7,6 +7,7 @@
     { "$ref": "#/definitions/list" },
     { "$ref": "#/definitions/show" },
     { "$ref": "#/definitions/mutation" },
+    { "$ref": "#/definitions/start" },
     { "$ref": "#/definitions/error" }
   ],
   "definitions": {
@@ -49,7 +50,7 @@
           "type": "string"
         },
         "state": {
-          "enum": ["todo", "working", "needs_you"]
+          "enum": ["todo", "working", "queued", "needs_you"]
         },
         "revision": {
           "type": "integer",
@@ -120,6 +121,71 @@
         "task": { "$ref": "#/definitions/task" }
       }
     },
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schema_version",
+        "verb",
+        "operation_id",
+        "idempotent_replay",
+        "disposition",
+        "queue_position",
+        "task",
+        "run",
+        "binding"
+      ],
+      "properties": {
+        "schema": { "$ref": "#/definitions/schemaName" },
+        "schema_version": { "const": 1 },
+        "verb": { "const": "start" },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "idempotent_replay": { "type": "boolean" },
+        "disposition": { "enum": ["started", "queued"] },
+        "queue_position": { "type": ["integer", "null"], "minimum": 1 },
+        "task": { "$ref": "#/definitions/task" },
+        "run": { "$ref": "#/definitions/run" },
+        "binding": {
+          "anyOf": [{ "$ref": "#/definitions/binding" }, { "type": "null" }]
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "ordinal", "agent_kind", "model", "state"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "agent_kind": { "type": "string", "minLength": 1 },
+        "model": { "type": "string" },
+        "state": { "enum": ["running", "queued"] }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "session_key",
+        "terminal_id",
+        "worktree_path",
+        "branch",
+        "tab_title"
+      ],
+      "properties": {
+        "session": { "type": "string", "minLength": 1 },
+        "session_key": { "type": "string", "minLength": 1 },
+        "terminal_id": { "type": "string", "pattern": "^[0-9]+$" },
+        "worktree_path": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "tab_title": { "type": "string", "minLength": 1 }
+      }
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,
@@ -140,6 +206,11 @@
                 "mission_unsupported_schema",
                 "mission_busy",
                 "mission_store",
+                "mission_already_started",
+                "mission_worktree_bound",
+                "mission_not_startable",
+                "mission_confirmation_required",
+                "mission_start_failed",
                 "usage_error"
               ]
             },

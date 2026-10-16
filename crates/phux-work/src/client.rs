@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use crate::error::Error;
 use crate::id::Alias;
 use crate::service::Endpoint;
+use crate::start::{StartApplied, StartPlan, StartRequest};
 use crate::store::{
     AddObjective, Applied, EditObjective, ListFilter, Objective, RaiseSignal, RevisionEdit, Signal,
     StateEdit,
@@ -176,6 +177,42 @@ impl Client {
     pub fn signals(&self, alias: Alias) -> Result<Vec<Signal>, Error> {
         match self.call(Request::Signals { alias })? {
             Response::Signals(signals) => Ok(signals),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Whether `request` would launch or queue. Does not write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], plus the start refusals.
+    pub fn plan_start(&self, request: &StartRequest) -> Result<StartPlan, Error> {
+        match self.call(Request::PlanStart(request.clone()))? {
+            Response::StartPlan(plan) => Ok(plan),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// The stored start when `request` repeats an admitted operation.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn replay_start(&self, request: &StartRequest) -> Result<Option<StartApplied>, Error> {
+        match self.call(Request::ReplayStart(request.clone()))? {
+            Response::StartReplay(applied) => Ok(applied),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Insert the run and, when `request.launch` is set, its binding.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], plus [`Error::AtCapacity`].
+    pub fn commit_start(&self, request: StartRequest) -> Result<StartApplied, Error> {
+        match self.call(Request::CommitStart(request))? {
+            Response::StartApplied(applied) => Ok(applied),
             other => Err(unexpected(&other)),
         }
     }

@@ -104,6 +104,20 @@ impl OperationId {
     pub(crate) const fn as_slice(&self) -> &[u8] {
         &self.0
     }
+
+    /// A child id for a follow-up write of the same operation.
+    ///
+    /// `tag` is mixed into the first byte. The all-zero result, which
+    /// [`Self::parse`] refuses, becomes a one in the last byte.
+    #[must_use]
+    pub fn derive(self, tag: u8) -> Self {
+        let mut bytes = self.0;
+        bytes[0] ^= tag;
+        if bytes == [0; 16] {
+            bytes[15] = 1;
+        }
+        Self(bytes)
+    }
 }
 
 impl Serialize for OperationId {
@@ -136,6 +150,8 @@ pub enum ObjectiveState {
     Todo,
     /// A worker is in progress.
     Working,
+    /// Waiting for an agent slot. Stored as `queued`.
+    Queued,
     /// A person has to look. Stored as `needs_you`.
     NeedsYou,
 }
@@ -147,6 +163,7 @@ impl ObjectiveState {
         match self {
             Self::Todo => "todo",
             Self::Working => "working",
+            Self::Queued => "queued",
             Self::NeedsYou => "needs_you",
         }
     }
@@ -157,6 +174,7 @@ impl ObjectiveState {
         match self {
             Self::Todo => "todo",
             Self::Working => "working",
+            Self::Queued => "queued",
             Self::NeedsYou => "needs you",
         }
     }
@@ -165,6 +183,7 @@ impl ObjectiveState {
         match text {
             "todo" => Ok(Self::Todo),
             "working" => Ok(Self::Working),
+            "queued" => Ok(Self::Queued),
             "needs_you" => Ok(Self::NeedsYou),
             _ => Err(Error::Corrupt(format!("unknown objective state {text}"))),
         }
