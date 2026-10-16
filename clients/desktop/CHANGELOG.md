@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.25.0](https://github.com/no-phux/phux/compare/desktop-v0.24.0...desktop-v0.25.0) (2026-10-16)
+
+
+### Features
+
+* **desktop:** clarify session hosts with subtle glass accents ([78a24a5](https://github.com/no-phux/phux/commit/78a24a5af7b96bc2f2c8a7e6fc96919d83d5c0d2))
+
 ## [0.24.0](https://github.com/no-phux/phux/compare/desktop-v0.23.0...desktop-v0.24.0) (2026-10-16)
 
 
