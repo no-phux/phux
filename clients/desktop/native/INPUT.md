@@ -84,7 +84,9 @@ wheel is asked once per replica sequence, since only output changes mouse
 modes. A reporting program gets whole-line presses: fractional deltas
 accumulate across events, a gesture's first event (`TouchPhase::Started`)
 discards the previous remainder, and reports are capped at 100 ticks per
-event.
+event. A local selection change republishes the view without a runtime wake,
+so the input notifies its painter after a press, drag or release; the desk
+does the same after keyboard scroll, prompt jumps, follow and select-all.
 
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
 copies a truncated string. The editable text model holds only pending IME text
