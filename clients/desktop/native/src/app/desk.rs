@@ -300,9 +300,14 @@ fn tab_coordinate(position: TabPosition, x: f32, y: f32) -> f32 {
     }
 }
 
-/// Terminal damage and delivered input. Chrome, toasts, and layout stay put.
-fn paint_batch(events: &[Event]) -> bool {
-    !events.is_empty() && events.iter().all(crate::connection::paint_wake)
+/// Terminal damage, delivered input, and agent metadata that repeated every
+/// badge (`agents_noted` false). Chrome, toasts, and layout stay put.
+fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
+    !events.is_empty()
+        && events.iter().all(|event| {
+            crate::connection::paint_wake(event)
+                || (!agents_noted && matches!(event, Event::AgentMetadata { .. }))
+        })
 }
 
 fn unix_ms() -> u64 {
@@ -550,7 +555,7 @@ impl Desk {
     fn on_activity(&mut self, cx: &mut Context<Self>) {
         let _drain = crate::diag::DRAIN.timer();
         crate::diag::DRAIN_WAKES.incr();
-        let (events, answers, uploads, epoch) = {
+        let (events, answers, uploads, epoch, agents_noted) = {
             let Some(link) = self.link.as_mut() else {
                 return;
             };
@@ -559,6 +564,7 @@ impl Desk {
                 link.connection.take_path_answers(),
                 link.connection.take_file_upload_receipts(),
                 link.connection.connection_epoch(),
+                link.connection.agents_noted(),
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
@@ -578,7 +584,11 @@ impl Desk {
             .link
             .as_ref()
             .is_some_and(|link| link.workspace.awaiting_output(&events));
-        if answers.is_empty() && paint_batch(&events) && !conversation_changed && !awaiting_output {
+        if answers.is_empty()
+            && paint_batch(&events, agents_noted)
+            && !conversation_changed
+            && !awaiting_output
+        {
             if had_uploads {
                 cx.notify();
             }
@@ -4029,5 +4039,28 @@ impl gpui::Render for Desk {
 impl gpui::Focusable for Desk {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
+    }
+}
+
+#[cfg(test)]
+mod paint_batch_tests {
+    use super::paint_batch;
+    use phux_client_runtime::control::Event;
+    use phux_protocol::ResourceId;
+
+    #[test]
+    fn repeated_agent_metadata_rides_the_paint_path() {
+        let output = Event::TerminalChanged {
+            terminal_id: ResourceId::local(1),
+        };
+        let metadata = Event::AgentMetadata {
+            terminal_id: ResourceId::local(1),
+            value: None,
+        };
+        assert!(paint_batch(std::slice::from_ref(&output), false));
+        assert!(paint_batch(&[output.clone(), metadata.clone()], false));
+        assert!(!paint_batch(&[output, metadata], true));
+        assert!(!paint_batch(&[], false));
+        assert!(!paint_batch(&[Event::TopologyChanged], false));
     }
 }

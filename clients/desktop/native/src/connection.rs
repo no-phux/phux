@@ -151,6 +151,8 @@ pub struct Connection {
     pub error: Option<String>,
     /// Agent badges keyed by terminal.
     pub agents: HashMap<ResourceId, AgentInfo>,
+    /// The last drain's agent metadata changed a badge.
+    agents_noted: bool,
     /// Committed native conversations keyed by their AgentSession resource.
     pub conversations: HashMap<ResourceId, transcript::Conversation>,
     conversation_heads: HashMap<ResourceId, ResourceId>,
@@ -342,6 +344,7 @@ impl Connection {
             server: None,
             error: None,
             agents: HashMap::new(),
+            agents_noted: false,
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),
             projects: HashMap::new(),
@@ -828,7 +831,15 @@ impl Connection {
         self.client.close();
     }
 
+    /// Whether the last [`Self::drain`]'s agent metadata changed any badge.
+    /// Metadata that repeats a badge changes nothing a window shows.
+    #[must_use]
+    pub fn agents_noted(&self) -> bool {
+        self.agents_noted
+    }
+
     fn accept(&mut self, events: &[Event], epoch: u64) {
+        self.agents_noted = false;
         let boundary = events.iter().rposition(starts_connection);
         let same_identity = self
             .identity
@@ -849,7 +860,8 @@ impl Connection {
             if let Event::AgentMetadata { terminal_id, value } = event {
                 let after_boundary = boundary.is_none_or(|boundary| index > boundary);
                 if same_identity && after_boundary {
-                    note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
+                    self.agents_noted |=
+                        note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
                 }
             }
             let after_boundary = boundary.is_none_or(|boundary| index > boundary);
@@ -1017,16 +1029,16 @@ fn note_project(tag: &mut Option<(String, String)>, name: &str, project: Option<
     }
 }
 
+/// Fold one badge into `agents`. True when the map changed.
 fn note_agent(
     agents: &mut HashMap<ResourceId, AgentInfo>,
     terminal: &ResourceId,
     bytes: Option<&[u8]>,
     now: u64,
-) {
+) -> bool {
     let folded = badge(terminal, bytes);
     if folded.name.is_empty() {
-        agents.remove(terminal);
-        return;
+        return agents.remove(terminal).is_some();
     }
     let (state, attention) = (folded.state, folded.attention);
     let previous = agents
@@ -1042,16 +1054,18 @@ fn note_agent(
     } else {
         previous.map(|(_, _, at)| at).unwrap_or(now)
     };
-    agents.insert(
-        terminal.clone(),
-        AgentInfo {
-            name: folded.name,
-            kind: folded.kind,
-            state,
-            attention,
-            changed_at_ms,
-        },
-    );
+    let next = AgentInfo {
+        name: folded.name,
+        kind: folded.kind,
+        state,
+        attention,
+        changed_at_ms,
+    };
+    if agents.get(terminal) == Some(&next) {
+        return false;
+    }
+    agents.insert(terminal.clone(), next);
+    true
 }
 
 fn now_ms() -> u64 {
@@ -1496,5 +1510,28 @@ mod agent_predicates {
             flags(&info(AgentState::Unknown, AgentAttention::High)),
             (true, false, false, false)
         );
+    }
+}
+
+#[cfg(test)]
+mod note_agent_tests {
+    use super::note_agent;
+    use phux_protocol::ResourceId;
+    use std::collections::HashMap;
+
+    #[test]
+    fn a_repeated_badge_changes_nothing() {
+        let terminal = ResourceId::local(1);
+        let working = br#"{"name":"Claude","kind":"claude","state":"working"}"#;
+        let blocked = br#"{"name":"Claude","kind":"claude","state":"blocked"}"#;
+        let mut agents = HashMap::new();
+        assert!(note_agent(&mut agents, &terminal, Some(working), 10));
+        assert!(!note_agent(&mut agents, &terminal, Some(working), 20));
+        assert_eq!(agents[&terminal].changed_at_ms, 10);
+        assert!(note_agent(&mut agents, &terminal, Some(blocked), 30));
+        assert_eq!(agents[&terminal].changed_at_ms, 30);
+        assert!(note_agent(&mut agents, &terminal, None, 40));
+        assert!(!note_agent(&mut agents, &terminal, None, 50));
+        assert!(agents.is_empty());
     }
 }
