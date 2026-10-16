@@ -94,19 +94,6 @@ impl Glass {
     }
 }
 
-/// The palette with translucent washes and hairlines, so hovered and
-/// selected chrome tints the glass instead of covering it.
-fn chrome_palette(desk: &Desk) -> Palette {
-    let mut colors = desk.palette();
-    let ink = colors.theme.foreground.clone();
-    let alpha = crate::settings::theme::with_alpha;
-    colors.hover = alpha(&ink, 0.06);
-    colors.active = alpha(&ink, 0.11);
-    colors.border = alpha(&ink, 0.08);
-    colors.divider = alpha(&ink, 0.08);
-    colors
-}
-
 #[derive(Clone)]
 struct ResourceDrag {
     keys: Vec<ResourceKey>,
@@ -176,17 +163,20 @@ fn chrome_slot(
 
 fn build_titlebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
-    let colors = chrome_palette(desk);
-    titlebar(desk, sidebar, &colors, cx).into_any_element()
+    let look = desk.look();
+    let colors = &look.chrome;
+    titlebar(desk, sidebar, colors, cx).into_any_element()
 }
 
 fn build_sidebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    let colors = chrome_palette(desk);
-    sidebar_column(desk, &colors, cx).into_any_element()
+    let look = desk.look();
+    let colors = &look.chrome;
+    sidebar_column(desk, colors, cx).into_any_element()
 }
 
 fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    let colors = chrome_palette(desk);
+    let look = desk.look();
+    let colors = &look.chrome;
     div()
         .w(px(TAB_RAIL))
         .h_full()
@@ -212,20 +202,22 @@ fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .child(tab_strip(desk, TabPosition::Side, &colors, cx)),
+                .child(tab_strip(desk, TabPosition::Side, colors, cx)),
         )
         .into_any_element()
 }
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    let colors = chrome_palette(desk);
-    overlays::layer(desk, &colors, window, cx)
+    let look = desk.look();
+    let colors = &look.chrome;
+    overlays::layer(desk, colors, window, cx)
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
-    let colors = chrome_palette(desk);
-    let glass = Glass::of(&colors, desk.prefs.terminal_opacity);
+    let look = desk.look();
+    let colors = &look.chrome;
+    let glass = Glass::of(colors, desk.prefs.terminal_opacity);
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     desk.set_viewport(window.viewport_size());
     desk.sync_title(window);
@@ -313,7 +305,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                         cx,
                     ))
                 })
-                .child(main_column(desk, &colors, window, cx)),
+                .child(main_column(desk, colors, window, cx)),
         )
         .child(chrome_slot(
             &mut desk.chrome.overlays,
@@ -779,7 +771,8 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
 /// A stable entry point; the material and interaction live in their own window.
 pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let label = "Phux";
-    let colors = chrome_palette(desk);
+    let look = desk.look();
+    let colors = &look.chrome;
     let menu_ink = from_hex(&colors.theme.foreground);
     div()
         .flex_1()
@@ -1785,16 +1778,9 @@ fn empty_action(
 }
 
 fn command_kbd(desk: &Desk, id: &str) -> Option<Kbd> {
-    let chord = settings_chord(desk, id)?;
-    let keystroke = Keystroke::parse(&gpui_stroke(&chord)?).ok()?;
+    let chord = desk.bound_chord(id)?;
+    let keystroke = Keystroke::parse(&gpui_stroke(chord)?).ok()?;
     Some(Kbd::new(keystroke))
-}
-
-fn settings_chord(desk: &Desk, id: &str) -> Option<String> {
-    crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords())
-        .into_iter()
-        .find(|(command, _)| command == id)
-        .map(|(_, chord)| chord)
 }
 
 fn zoomed_pane(
@@ -1935,8 +1921,9 @@ fn pane_view(
 ) -> AnyElement {
     let focused =
         desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
-    let colors = chrome_palette(desk);
-    let glass = Glass::of(&colors, desk.prefs.terminal_opacity);
+    let look = desk.look();
+    let colors = &look.chrome;
+    let glass = Glass::of(colors, desk.prefs.terminal_opacity);
     let placement_id = placement.id.clone();
     let terminal = placement.terminal_id.clone();
     let view = placement.view_id;
@@ -1945,7 +1932,7 @@ fn pane_view(
     let client = desk.client();
     desk.prepare_pending_native(&placement_id, window, cx);
     let body = if desk.conversation_visible(&placement_id) {
-        super::conversation::render(desk, &placement_id, &colors, window, cx)
+        super::conversation::render(desk, &placement_id, colors, window, cx)
     } else if let (Some(terminal), Some(view), Some(settings), Some(client)) =
         (terminal, view, settings, client)
     {
@@ -1993,7 +1980,7 @@ fn pane_view(
         .as_ref()
         .filter(|find| find.placement_id == placement.id)
         .map(|find| find.case_sensitive);
-    let find_bar = find.map(|case| overlays::find_bar(desk, case, &colors, cx));
+    let find_bar = find.map(|case| overlays::find_bar(desk, case, colors, cx));
     let dim = (!focused && leaves > 1 && !zoomed)
         .then_some(1. - desk.prefs.unfocused_opacity as f32)
         .filter(|amount| *amount > 0.);
@@ -2039,7 +2026,7 @@ fn pane_view(
         glass.edge
     };
     let controls_bar = if controls {
-        Some(pane_controls(desk, placement, zoomed, &colors, cx).into_any_element())
+        Some(pane_controls(desk, placement, zoomed, colors, cx).into_any_element())
     } else {
         None
     };
@@ -2148,9 +2135,7 @@ fn pane_view(
                 ),
             )
         })
-        .when(dropping, |card| {
-            card.child(drop_hint(&colors, remote_files))
-        })
+        .when(dropping, |card| card.child(drop_hint(colors, remote_files)))
         .children(find_bar)
         .into_any_element()
 }
