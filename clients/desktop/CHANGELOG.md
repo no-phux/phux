@@ -4,6 +4,9 @@
 
 ### Features
 
+- Make session ownership explicit with readable **Runs on …** host chips,
+  restrained per-host glass tints, and an active session/host titlebar label
+  that remains visible with the sidebar hidden.
 - Add an explicit configured ACP-agent launch picker through the titlebar,
   File menu, workspace glass menu and command palette, server-owned conversation
   commands and native permission dialogs. Keep terminal-attached conversations

@@ -29,8 +29,12 @@ instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `~/Library/Logs/phux-desktop.log`.
 
 The sidebar shows one **Work** catalog across Local and registered hosts, grouped
-by repository identity when available. Each session names its host; selecting it
-restores its layout in this window without moving or restarting its processes.
+by repository identity when available. Each session has a **Runs on …** host chip
+on its own line, with a stable, lightly tinted glass accent. The titlebar repeats
+the active session and its host even with the sidebar hidden. Names, not colors,
+identify hosts; long names are available in the session tooltip, and offline
+inventory stays explicitly labeled. Selecting a session restores its layout in
+this window without moving or restarting its processes.
 Intake and imported sessions remain ordinary work, not a separate navigation root.
 Select work and choose
 **Organize Selected Work…** to move it to a named session, or explicitly

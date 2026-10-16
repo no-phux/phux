@@ -57,8 +57,7 @@ const SIDEBAR_ICON: f32 = 16.;
 const CONTROLS_EDGE: f32 = 36.;
 /// Left inset that clears the traffic lights.
 const TRAFFIC_LIGHTS: f32 = 78.;
-/// Room for the host-labelled main menu and sidebar toggle, even with the
-/// navigator hidden. Long host names truncate instead of pushing tabs away.
+/// Room for the search menu and sidebar toggle, even with the navigator hidden.
 const MENU_RAIL: f32 = 224.;
 const TAB_RAIL: f32 = 212.;
 
@@ -94,6 +93,97 @@ impl Glass {
     }
 }
 
+/// Stable per route, independent of inventory order and the selected session.
+fn host_tint(host: Option<&str>, colors: &Palette) -> Hsla {
+    let hue = host.map_or(190., |name| {
+        let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+        });
+        (hash % 360) as f32
+    });
+    gpui::hsla(
+        hue / 360.,
+        0.58,
+        if colors.theme.appearance == "light" {
+            0.38
+        } else {
+            0.72
+        },
+        1.,
+    )
+}
+
+fn host_chip(host: Option<&str>, online: bool, colors: &Palette) -> impl IntoElement {
+    let label = host.unwrap_or("Local");
+    let tint = host_tint(host, colors);
+    let detail = format!("Runs on {label}");
+    div()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .px(px(6.))
+        .py(px(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(tint.opacity(0.18))
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(tint.opacity(0.13), 0.),
+            linear_color_stop(tint.opacity(0.05), 1.),
+        ))
+        .child(div().size(px(5.)).flex_shrink_0().rounded_full().bg(tint))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(px(10.))
+                .text_color(from_hex(&colors.subtext))
+                .child(detail),
+        )
+        .when(!online, |chip| {
+            chip.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(from_hex(&colors.muted))
+                    .child("· offline"),
+            )
+        })
+}
+
+fn workspace_identity(desk: &Desk, colors: &Palette) -> impl IntoElement {
+    let host = desk.remote.as_deref();
+    let full = format!("{} · Runs on {}", desk.session, host.unwrap_or("Local"));
+    div()
+        .id("workspace-identity")
+        .debug_selector(|| "workspace-identity".into())
+        .w(px(180.))
+        .min_w_0()
+        .flex_shrink_0()
+        .px(px(8.))
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(1.))
+        .child(
+            div()
+                .w_full()
+                .truncate()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(desk.session.clone()),
+        )
+        .child(host_chip(
+            host,
+            desk.link
+                .as_ref()
+                .is_some_and(|link| link.connection.status == Status::Attached),
+            colors,
+        ))
+        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+}
 #[derive(Clone)]
 struct ResourceDrag {
     keys: Vec<ResourceKey>,
@@ -418,6 +508,7 @@ fn titlebar(
                     |rail, width| rail.w(px(width)),
                 ),
         )
+        .child(workspace_identity(desk, colors))
         .when(desk.tab_position() == TabPosition::Top, |bar| {
             bar.child(tab_strip(desk, TabPosition::Top, colors, cx))
         })
@@ -954,16 +1045,12 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
 
 fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
     let target = work.destination.clone();
-    let badge = if work.online {
-        target.host_label().to_owned()
-    } else {
-        format!("{} · offline", target.host_label())
-    };
+    let tip = format!("{} · Runs on {}", target.name, target.host_label());
     let selector = format!("work-{}-{}", target.host_label(), work.id);
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
-        .min_h(px(SIDEBAR_ROW))
+        .min_h(px(52.))
         .px(px(8.))
         .py(px(4.))
         .rounded(px(6.))
@@ -983,9 +1070,18 @@ fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) 
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .text_sm()
-                .child(target.name.clone()),
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_sm()
+                        .child(target.name.clone()),
+                )
+                .child(host_chip(target.host.as_deref(), work.online, colors)),
         )
         .when(work.needs_you > 0, |row| {
             row.child(pill(
@@ -994,16 +1090,8 @@ fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) 
                 &colors.theme.accent,
             ))
         })
-        .child(
-            div()
-                .max_w(px(76.))
-                .min_w_0()
-                .truncate()
-                .text_size(px(10.))
-                .text_color(from_hex(&colors.muted))
-                .child(badge),
-        )
         .opacity(if work.online { 1. } else { 0.55 })
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(target.clone(), cx)))
         .into_any_element()
 }
@@ -1146,18 +1234,20 @@ fn session_block(
         None => "Session",
     };
     let session_tip = format!(
-        "{name} · {details} · {} terminals",
+        "{name} · Runs on {} · {details} · {} terminals",
+        desk.remote.as_deref().unwrap_or("Local"),
         panes.len() + extra.len()
     );
     let header = div()
         .id(SharedString::from(format!("session-{id}")))
         .group("session")
-        .h(px(SIDEBAR_ROW))
+        .min_h(px(52.))
         .px(px(8.))
         .flex()
         .items_center()
         .gap(px(8.))
         .rounded(px(6.))
+        .bg(host_tint(desk.remote.as_deref(), colors).opacity(0.07))
         .cursor_pointer()
         .hover(|style| style.bg(from_hex(&colors.hover)))
         .child(
@@ -1171,19 +1261,23 @@ fn session_block(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(name.to_owned()),
-        )
-        .child(
-            div()
-                .text_size(px(10.))
-                .text_color(from_hex(&colors.muted))
-                .max_w(px(76.))
-                .min_w_0()
-                .truncate()
-                .child(desk.remote.clone().unwrap_or_else(|| "Local".into())),
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(name.to_owned()),
+                )
+                .child(host_chip(
+                    desk.remote.as_deref(),
+                    link.connection.status == Status::Attached,
+                    colors,
+                )),
         )
         .when(
             intake_badge(designated, awaiting) == Some("imported"),
