@@ -144,6 +144,10 @@ pub struct Desk {
     ghostty: settings::GhosttyConfig,
     /// Built-in chords with Ghostty's binds layered on while `ghostty_keys`.
     keymap: Vec<(String, String)>,
+    /// The chord each command shows, from `keymap`.
+    chords: HashMap<String, Chord>,
+    /// Paint values for the current preferences, Ghostty config and keymap.
+    look: RefCell<Option<Rc<Look>>>,
     pub modal: Modal,
     /// The modal whose controls were last built and focused.
     prepared: Modal,
@@ -310,6 +314,95 @@ fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
         })
 }
 
+/// The chord a command shows: as bound, and in menu glyphs.
+struct Chord {
+    bound: String,
+    shown: String,
+}
+
+fn shown_chords(keymap: &[(String, String)]) -> HashMap<String, Chord> {
+    settings::shown_chords(keymap, &settings::default_chords())
+        .into_iter()
+        .map(|(command, bound)| {
+            let shown = settings::display_chord(&bound);
+            (command, Chord { bound, shown })
+        })
+        .collect()
+}
+
+/// Paint values derived from the display preferences, the Ghostty config and
+/// the keymap. A desk builds it once per change, not once per frame.
+pub(crate) struct Look {
+    /// The preferences this look was built from.
+    prefs: DisplayPrefs,
+    pub palette: crate::settings::theme::Palette,
+    /// The palette with translucent washes and hairlines, so hovered and
+    /// selected chrome tints the glass instead of covering it.
+    pub chrome: crate::settings::theme::Palette,
+    /// Every terminal's settings except `focused` and `size_owner`.
+    terminal: TerminalSettings,
+}
+
+impl Look {
+    fn new(
+        prefs: &DisplayPrefs,
+        ghostty: &settings::GhosttyConfig,
+        keymap: &[(String, String)],
+    ) -> Self {
+        let extra = settings::ghostty_theme(ghostty);
+        let theme = crate::settings::theme::theme_by_id(&prefs.theme_id, extra.as_slice());
+        let palette = crate::settings::theme::palette(&theme);
+        let alpha = crate::settings::theme::with_alpha;
+        let mut chrome = palette.clone();
+        let ink = &palette.theme.foreground;
+        chrome.hover = alpha(ink, 0.06);
+        chrome.active = alpha(ink, 0.11);
+        chrome.border = alpha(ink, 0.08);
+        chrome.divider = alpha(ink, 0.08);
+        let from_hex = super::color::from_hex;
+        let theme = &palette.theme;
+        let terminal = TerminalSettings {
+            font: gpui::font(prefs.font_family.clone()),
+            font_size: prefs.font_size as f32,
+            line_height: prefs.line_height as f32,
+            cell_width_scale: prefs.cell_width as f32,
+            cell_height_scale: prefs.cell_height as f32,
+            foreground: Some(from_hex(&theme.foreground)),
+            background: Some(from_hex(&alpha(&theme.background, prefs.terminal_opacity))),
+            host_fills_background: true,
+            cursor: Some(from_hex(&theme.cursor)),
+            selection_background: from_hex(&theme.selection),
+            selection_foreground: from_hex(
+                theme
+                    .selection_foreground
+                    .as_deref()
+                    .unwrap_or(&theme.foreground),
+            ),
+            palette: theme.palette.as_ref().and_then(|entries| {
+                if entries.len() != 16 {
+                    return None;
+                }
+                let mut parsed = [gpui::Hsla::default(); 16];
+                for (slot, color) in parsed.iter_mut().zip(entries) {
+                    *slot = from_hex(color);
+                }
+                Some(parsed)
+            }),
+            cursor_visible: true,
+            blink_visible: true,
+            option_as_alt: prefs.option_as_alt,
+            app_chords: settings::app_chords(keymap),
+            ..TerminalSettings::default()
+        };
+        Self {
+            prefs: prefs.clone(),
+            palette,
+            chrome,
+            terminal,
+        }
+    }
+}
+
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -381,8 +474,10 @@ impl Desk {
             focus,
             prefs,
             ghostty_found: text.is_some(),
+            chords: shown_chords(&keymap),
             keymap,
             ghostty,
+            look: RefCell::new(None),
             modal: Modal::None,
             prepared: Modal::None,
             find: None,
@@ -1218,6 +1313,9 @@ impl Desk {
     /// Deferred: a desk is often opened from inside a `Desktop` update.
     pub fn sync_bindings(&mut self, cx: &mut Context<Self>) {
         self.keymap = settings::effective_keymap(&self.ghostty, self.prefs.ghostty_keys);
+        self.chords = shown_chords(&self.keymap);
+        // Every Ghostty config change resyncs the bindings, so the look follows it too.
+        *self.look.get_mut() = None;
         let desktop = self.desktop.clone();
         let keymap = self.keymap.clone();
         let ghostty = self.ghostty.clone();
@@ -1243,15 +1341,14 @@ impl Desk {
         &self.keymap
     }
 
-    pub fn app_chords(&self) -> Vec<String> {
-        settings::app_chords(&self.keymap)
+    /// The chord `id` shows in menus and tooltips, in glyphs.
+    pub fn shown_chord(&self, id: &str) -> Option<String> {
+        self.chords.get(id).map(|chord| chord.shown.clone())
     }
 
-    pub fn shown_chord(&self, id: &str) -> Option<String> {
-        settings::shown_chords(&self.keymap, &settings::default_chords())
-            .into_iter()
-            .find(|(command, _)| command == id)
-            .map(|(_, chord)| settings::display_chord(&chord))
+    /// The chord `id` shows, as bound (`cmd+t`).
+    pub(crate) fn bound_chord(&self, id: &str) -> Option<&str> {
+        self.chords.get(id).map(|chord| chord.bound.as_str())
     }
 
     /// A modal, or the focused pane's find bar, owns the keyboard.
@@ -3036,60 +3133,31 @@ impl Desk {
         placement: &Placement,
         focused: bool,
     ) -> Option<TerminalSettings> {
-        let terminal = placement.terminal_id.clone()?;
-        let colors = self.palette();
-        let opacity = crate::settings::theme::with_alpha(
-            &colors.theme.background,
-            self.prefs.terminal_opacity,
-        );
-        let mut settings = TerminalSettings {
-            font: gpui::font(self.prefs.font_family.clone()),
-            font_size: self.prefs.font_size as f32,
-            line_height: self.prefs.line_height as f32,
-            cell_width_scale: self.prefs.cell_width as f32,
-            cell_height_scale: self.prefs.cell_height as f32,
-            foreground: Some(super::color::from_hex(&colors.theme.foreground)),
-            background: Some(super::color::from_hex(&opacity)),
-            host_fills_background: true,
-            cursor: Some(super::color::from_hex(&colors.theme.cursor)),
-            selection_background: super::color::from_hex(&colors.theme.selection),
-            selection_foreground: super::color::from_hex(
-                colors
-                    .theme
-                    .selection_foreground
-                    .as_deref()
-                    .unwrap_or(&colors.theme.foreground),
-            ),
-            ..TerminalSettings::default()
-        };
-        settings.palette = colors.theme.palette.as_ref().and_then(|entries| {
-            let mut parsed = [gpui::Hsla::default(); 16];
-            if entries.len() != 16 {
-                return None;
-            }
-            for (slot, color) in parsed.iter_mut().zip(entries) {
-                *slot = super::color::from_hex(color);
-            }
-            Some(parsed)
-        });
+        placement.terminal_id.as_ref()?;
+        let mut settings = self.look().terminal.clone();
         settings.focused = focused;
-        settings.cursor_visible = true;
-        settings.blink_visible = true;
-        settings.option_as_alt = self.prefs.option_as_alt;
         settings.size_owner = self
             .link
             .as_ref()
             .is_some_and(|link| link.workspace.size_owner(placement));
-        settings.app_chords = self.app_chords();
-        let _ = terminal;
         Some(settings)
     }
 
+    /// Paint values for the current preferences, rebuilt only after they change.
+    pub(crate) fn look(&self) -> Rc<Look> {
+        let mut cached = self.look.borrow_mut();
+        match cached.as_ref() {
+            Some(look) if look.prefs == self.prefs => look.clone(),
+            _ => {
+                let look = Rc::new(Look::new(&self.prefs, &self.ghostty, &self.keymap));
+                *cached = Some(look.clone());
+                look
+            }
+        }
+    }
+
     pub fn palette(&self) -> crate::settings::theme::Palette {
-        let extra = settings::ghostty_theme(&self.ghostty);
-        let extras = extra.as_slice();
-        let theme = crate::settings::theme::theme_by_id(&self.prefs.theme_id, extras);
-        crate::settings::theme::palette(&theme)
+        self.look().palette.clone()
     }
 
     pub fn client(&self) -> Option<Arc<Client>> {

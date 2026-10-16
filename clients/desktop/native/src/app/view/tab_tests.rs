@@ -437,3 +437,39 @@ fn pane_actions_stay_open_after_the_pointer_leaves_the_capsule(cx: &mut TestAppC
     draw(cx);
     assert!(desk.read_with(cx, |desk, _| desk.pane_menu_open.is_none()));
 }
+
+#[gpui::test]
+fn the_look_is_built_once_until_preferences_change(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (_, desk, _) = fixture(cx);
+    desk.update(cx, |desk, cx| {
+        let first = desk.look();
+        assert!(std::rc::Rc::ptr_eq(&first, &desk.look()));
+        assert_eq!(first.palette, desk.palette());
+        desk.apply_prefs(|prefs| prefs.terminal_opacity = 0.5, cx);
+        let second = desk.look();
+        assert!(!std::rc::Rc::ptr_eq(&first, &second));
+        assert!(std::rc::Rc::ptr_eq(&second, &desk.look()));
+        desk.sync_bindings(cx);
+        assert!(!std::rc::Rc::ptr_eq(&second, &desk.look()));
+    });
+}
+
+#[gpui::test]
+fn shown_chords_follow_the_keymap(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (_, desk, _) = fixture(cx);
+    desk.read_with(cx, |desk, _| {
+        let shown =
+            crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords());
+        assert!(!shown.is_empty());
+        for (command, chord) in shown {
+            assert_eq!(desk.bound_chord(&command), Some(chord.as_str()));
+            assert_eq!(
+                desk.shown_chord(&command),
+                Some(crate::settings::display_chord(&chord))
+            );
+        }
+        assert_eq!(desk.shown_chord("no-such-command"), None);
+    });
+}

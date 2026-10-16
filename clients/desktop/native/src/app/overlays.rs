@@ -775,7 +775,6 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
         .as_ref()
         .is_some_and(|link| link.connection.organization());
     let monitoring = desk.desktop.read(cx).performance_is_open();
-    let chords = crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords());
     let mut sections: Vec<Section> = Vec::new();
     for command in crate::settings::builtin_commands()
         .iter()
@@ -798,10 +797,7 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
             target: Target::Command,
             command: Some(command.id),
             category: command.group,
-            chord: chords
-                .iter()
-                .find(|(id, _)| id == command.id)
-                .map(|(_, chord)| crate::settings::display_chord(chord)),
+            chord: desk.shown_chord(command.id),
             agent: None,
             preview: None,
         };
