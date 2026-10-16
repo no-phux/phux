@@ -135,6 +135,7 @@ pub struct Desk {
     pub remote: Option<String>,
     pub session: String,
     home_key: Option<SessionKey>,
+    expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pub phux: PathBuf,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
@@ -155,6 +156,7 @@ pub struct Desk {
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
+    locations: HashMap<PathBuf, FileLayoutStore>,
     saves: persist::writer::Writer,
     _save_errors: Task<()>,
     stable_layout: bool,
@@ -185,6 +187,7 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) settings_page: Option<super::settings_panel::Page>,
     pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
@@ -194,12 +197,15 @@ pub struct Desk {
     pub(crate) collapsed: std::collections::HashSet<String>,
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,
+    pub(crate) fleet: super::fleet::Fleet,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
     /// A host switch is resolving its target's home session.
+    #[cfg(feature = "ui-fixtures")]
     pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    #[cfg(feature = "ui-fixtures")]
     pub(super) main_menu: Option<gpui::WindowHandle<super::glass_menu::GlassMenu>>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
@@ -363,6 +369,7 @@ impl Desk {
             remote: request.remote.clone(),
             session: request.session.clone(),
             home_key: request.home_key,
+            expected_authority: None,
             phux,
             focus,
             prefs,
@@ -380,6 +387,7 @@ impl Desk {
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,
+            locations: HashMap::new(),
             saves,
             _save_errors: save_errors,
             stable_layout: request.stable_layout,
@@ -404,14 +412,18 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            settings_page: None,
             native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
             hosts: Vec::new(),
+            fleet: Default::default(),
             host_adding: None,
+            #[cfg(feature = "ui-fixtures")]
             host_switching: false,
             drag_region: None,
+            #[cfg(feature = "ui-fixtures")]
             main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
@@ -486,7 +498,8 @@ impl Desk {
             ),
         };
         match connected {
-            Ok(connection) => {
+            Ok(mut connection) => {
+                connection.expect_authority(self.expected_authority);
                 let mut workspace = Workspace::new(
                     self.session.clone(),
                     WorkspaceOptions {
@@ -494,6 +507,9 @@ impl Desk {
                         initial_terminal: initial,
                     },
                 );
+                if self.home_key.is_some() {
+                    workspace.preserve_empty();
+                }
                 // A secondary window shows new terminals; every other window restores its own layout.
                 if self.role != WindowRole::Fresh {
                     workspace.restore(self.last_saved.clone());
@@ -677,7 +693,7 @@ impl Desk {
                 if local {
                     desktop.observe_topology(topology);
                 }
-                desktop.sync_window_session(desk, &name);
+                desktop.sync_window_session(desk, &name, self.remote.as_deref(), self.role);
             });
         }
         if self.session == name {
@@ -1402,6 +1418,8 @@ impl Desk {
             return;
         }
         self.closed = true;
+        self.fleet.clear();
+        #[cfg(feature = "ui-fixtures")]
         if let Some(menu) = self.main_menu.take() {
             let _ =
                 gpui::AnyWindowHandle::from(menu).update(cx, |_, window, _| window.remove_window());
@@ -1599,6 +1617,7 @@ impl Desk {
         let desk = cx.entity().downgrade();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
+        let navigation = self.upload_epoch;
         cx.spawn_in(window, async move |_, cx| {
             // Validation, trust checks and recipe launches can block.
             let result = smol::unblock(move || host::open_project(&phux, &socket, &path)).await;
@@ -1613,7 +1632,12 @@ impl Desk {
                             Some(error.to_string()),
                         );
                     }
-                    desk.open_project_window(opened.session, opened.terminal, cx);
+                    if desk.upload_epoch == navigation {
+                        desk.open_project_window(opened.session, opened.terminal, cx);
+                    } else {
+                        desk.post(Kind::Info, "Project ready on Local", Some(opened.session));
+                        cx.notify();
+                    }
                 }
                 Err(error) => {
                     desk.post(Kind::Error, "Could not open folder", Some(error));
@@ -1661,20 +1685,15 @@ impl Desk {
         terminal: ResourceId,
         cx: &mut Context<Self>,
     ) {
-        if self.session == session {
-            self.show_project_terminal(terminal, cx);
-            return;
+        if self.remote.is_some() || self.session != session {
+            let key = self
+                .work_catalog()
+                .into_iter()
+                .find(|work| work.destination.host.is_none() && work.destination.name == session)
+                .and_then(|work| work.destination.key);
+            self.adopt_work(None, session, key, None, cx);
         }
-        if let Err(error) = self.desktop.update(cx, |desktop, cx| {
-            desktop.open_project(session, terminal, cx)
-        }) {
-            self.post(
-                Kind::Error,
-                "Could not show project",
-                Some(error.to_string()),
-            );
-            cx.notify();
-        }
+        self.show_project_terminal(terminal, cx);
     }
 
     fn open_rename_session(&mut self) {
@@ -3327,7 +3346,10 @@ impl Desk {
             let result = listed.await;
             let _ = desk.update(cx, |desk, cx| {
                 match result {
-                    Ok(hosts) => desk.hosts = hosts,
+                    Ok(hosts) => {
+                        desk.hosts = hosts;
+                        desk.sync_fleet(cx);
+                    }
                     // No CLI is already explained at launch; the section just stays empty.
                     Err(error) => log::warn!("host list: {error}"),
                 }
@@ -3337,30 +3359,11 @@ impl Desk {
         .detach();
     }
 
-    /// Open a window on registered host `name`, or raise the one already open.
-    pub(crate) fn open_host(&mut self, name: String, cx: &mut Context<Self>) {
-        let desk = cx.entity().downgrade();
-        let host = name.clone();
-        self.desktop.update(cx, |desktop, cx| {
-            desktop.open_host(
-                name,
-                move |result, cx| {
-                    if let Err(error) = result {
-                        let _ = desk.update(cx, |desk, cx| {
-                            desk.post(Kind::Error, &format!("Could not open {host}"), Some(error));
-                            cx.notify();
-                        });
-                    }
-                },
-                cx,
-            )
-        });
-    }
-
     /// Point this window at another host in place: `None` is this machine,
     /// `Some(name)` a registered remote. The current connection and views are
     /// released and the target's home session and saved layout take their
     /// place. No new window is opened.
+    #[cfg(feature = "ui-fixtures")]
     pub(crate) fn switch_host(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         if self.host_switching || self.remote == name {
             return;
@@ -3392,7 +3395,54 @@ impl Desk {
     }
 
     /// The in-place half of [`Self::switch_host`], once the target's home is known.
+    #[cfg(feature = "ui-fixtures")]
     fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
+        self.adopt_work(name, session, None, None, cx);
+    }
+
+    fn work_layout_path(
+        &self,
+        host: Option<&str>,
+        session: &str,
+        key: Option<SessionKey>,
+    ) -> PathBuf {
+        let authority = host.map_or_else(
+            || self.socket.display().to_string(),
+            |host| format!("host:{host}"),
+        );
+        if let Some(key) = key {
+            let paths = persist::session_layout_paths(&authority, key);
+            return if self.role == WindowRole::Quick {
+                paths.quick
+            } else {
+                paths.layout
+            };
+        }
+        let paths = crate::workspace::layout_paths(&authority, session);
+        if self.role == WindowRole::Quick {
+            paths.quick
+        } else {
+            paths.layout
+        }
+    }
+
+    pub(super) fn adopt_work(
+        &mut self,
+        name: Option<String>,
+        session: String,
+        key: Option<SessionKey>,
+        authority: Option<phux_protocol::ids::AuthorityId>,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.work_layout_path(
+            self.remote.as_deref(),
+            &self.session,
+            self.link
+                .as_ref()
+                .and_then(|link| link.connection.home_key())
+                .or(self.home_key),
+        );
+        self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abort_uploads(true);
         if let Some(link) = self.link.as_mut() {
@@ -3407,24 +3457,45 @@ impl Desk {
         self.find_input = None;
         self.pending_project_terminal = None;
         self.connect_error = None;
+        self.goto_search = Default::default();
         self.remote = name.clone();
         self.session = session.clone();
-        self.home_key = None;
+        if self.role == WindowRole::Fresh {
+            self.role = WindowRole::Main;
+        }
+        let id = cx.entity_id();
+        self.desktop.update(cx, |desktop, _| {
+            desktop.sync_window_session(id, &session, name.as_deref(), self.role)
+        });
+        self.home_key = key;
+        self.expected_authority = authority;
+        self.modal = Modal::None;
+        self.prepared = Modal::None;
+        self.modal_inputs.clear();
+        self.picker = None;
+        self.organization = Default::default();
+        self.creates.clear();
+        self.renames.clear();
+        self.kills.clear();
         self.layout_key = None;
         self.last_saved = None;
         self.open_fresh = false;
-        let authority = name.as_ref().map_or_else(
-            || self.socket.display().to_string(),
-            |host| format!("host:{host}"),
-        );
-        let paths = crate::workspace::layout_paths(&authority, &session);
+        let path = self.work_layout_path(name.as_deref(), &session, key);
         // In particular A -> B -> A must see A's latest queued layout. Disk
         // waits are confined to this read-after-write boundary and close/quit.
         self.flush_saves();
-        self.store = FileLayoutStore::new(paths.layout, None);
-        self.last_saved = persist::load_layout(&self.store.read()).initial;
+        self.store = self
+            .locations
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| FileLayoutStore::new(path, None));
+        let loaded = persist::load_layout(&self.store.read());
+        self.layout_blocked = loaded.blocked;
+        self.persist_writes = self.role != WindowRole::Fresh && !loaded.blocked;
+        self.layout_migration_pending = false;
+        self.last_saved = loaded.initial;
         self.attach(None, cx);
-        self.refresh_hosts(cx);
+        self.sync_fleet(cx);
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
         cx.notify();

@@ -124,6 +124,59 @@ fn assert_desk_focus(desk: &Entity<Desk>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn empty_actions_show_only_essentials_and_the_last_row_clears_the_footer(cx: &mut TestAppContext) {
+    let (handle, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-shift-p");
+    let last = cx
+        .debug_bounds("palette-result-settings")
+        .expect("last essential action");
+    let footer = cx
+        .debug_bounds("hub-footer")
+        .expect("shared keyboard footer");
+    assert!(
+        last.bottom() <= footer.top(),
+        "the compact action surface must not clip its last row: {last:?} vs {footer:?}"
+    );
+    assert!(
+        cx.debug_bounds("palette-result-new-session").is_none(),
+        "other actions remain searchable instead of crowding the default list"
+    );
+}
+
+#[gpui::test]
+fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "line height");
+    keys(cx, "enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        Some(crate::app::settings_panel::Page::Spacing)
+    );
+    assert!(cx.debug_bounds("settings-panel").is_some());
+    let back = cx.debug_bounds("palette-mode-commands").unwrap();
+    cx.simulate_click(back.center(), gpui::Modifiers::none());
+    render(cx);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.modal.clone()),
+        Modal::Commands
+    );
+    keys(cx, "escape");
+    assert_desk_focus(&desk, cx);
+    keys(cx, "cmd-,");
+    type_text(cx, "remote");
+    keys(cx, "enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        Some(crate::app::settings_panel::Page::Connections)
+    );
+    keys(cx, "escape");
+    assert_desk_focus(&desk, cx);
+}
+
+#[gpui::test]
 fn palette_query_ranks_a_title_before_incidental_metadata_and_dispatches_it(
     cx: &mut TestAppContext,
 ) {

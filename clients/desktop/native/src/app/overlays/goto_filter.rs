@@ -62,6 +62,9 @@ impl GotoFilter {
 /// Stable Go To row. The highlight follows this, not the row index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GotoId {
+    Work(crate::app::fleet::Destination),
+    Command(&'static str),
+    Setting(crate::app::settings_panel::Page),
     Pane(ResourceId),
     Tab(String),
 }

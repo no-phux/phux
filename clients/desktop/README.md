@@ -28,8 +28,11 @@ instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`.
 
-The sidebar's **Intake sessions** group contains the designated Intake (unorganized
-work) and imported sessions awaiting organization. Select work and choose
+The sidebar shows one **Work** catalog across Local and registered hosts, grouped
+by repository identity when available. Each session names its host; selecting it
+restores its layout in this window without moving or restarting its processes.
+Intake and imported sessions remain ordinary work, not a separate navigation root.
+Select work and choose
 **Organize Selected Work…** to move it to a named session, or explicitly
 **Leave unorganized (Intake)**. Moving changes membership, never execution.
 Imported sessions can also be marked organized without moving their work.
@@ -77,12 +80,14 @@ server behind the supervisor.
 
 ### Command palette
 
-Press **⇧⌘P** for commands or **⌘P** to find a terminal, agent or tab.
-The native panel has **Commands** and **Go To** controls, host/session context,
-action descriptions, and your effective keyboard shortcuts. Essentials come
-first; search prioritizes command names and also matches descriptions and
-keywords. In Go To, a leading `>` switches to commands and keeps the rest of
-your search. Terminals and tabs you open often and recently rise among the
+The titlebar **Phux** button, **⌘P**, **⇧⌘P**, and **⌘,** open the same
+searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
+across hosts plus the active session's terminals and tabs; a typed search also
+finds actions and settings. Settings search opens a focused page of live controls,
+with **All settings** to go back instead of a second sidebar. Actions show
+descriptions and effective shortcuts. An empty Actions search shows only essentials;
+typing searches the complete catalog. A leading `>` in
+Work switches to Actions and keeps the rest of your search. Terminals and tabs you open often and recently rise among the
 matches for a typed query; an empty query keeps the list in its sections.
 
 Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
@@ -154,8 +159,7 @@ The window is a sidebar (agents by urgency, then every session and its panes),
 workspace tabs, split panes, and a status bar. Command-key chords belong to the
 app; everything else reaches the terminal.
 
-Choose **Top** or **Side** in **Settings > Window > Tab placement**, or the
-main menu's **Tab placement** page. The choice is saved with your display
+Choose **Top** or **Side** in **Settings > Layout & notifications > Tab placement**. The choice is saved with your display
 preferences. Side tabs have their own scrollable rail, even with the navigator
 hidden; Quick Terminal keeps compact titlebar tabs. Selecting, closing,
 double-clicking to rename, and dragging to reorder work in either layout.
@@ -165,13 +169,13 @@ Settings, dialogs, notifications, find controls, and dropdowns use the same
 theme-aware glass treatment. **Settings > Appearance > Font family** previews
 each face in the searchable dropdown, with bundled fonts pinned first.
 
-The titlebar's host picker shows the machine this window is on — **Local**, or a
-registered remote. The picker remains visible with the navigator hidden; long
-host names truncate within its capsule. Picking another machine points this
-window at it in place: it releases the current views and opens that host's home
-session with its saved layout. No new window is opened. A plain click on a host
-in the sidebar's **Hosts** section does the same; its context menu's **Open
-Window** still opens a separate window for a host.
+Hosts are context on work, not window owners. The sidebar and Work search keep
+all registered hosts' sessions available while the selected session changes.
+Offline inventory stays visible and cannot be opened until it is refreshed.
+**Settings > Hosts & connections** adds or forgets machines and refreshes inventory.
+Catalog discovery never attaches terminal streams or starts work; selecting an
+empty session keeps it empty. Tabs and splits still belong to the selected
+session, not to a new cross-server Workspace record.
 
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |
