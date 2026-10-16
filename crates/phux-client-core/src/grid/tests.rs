@@ -272,3 +272,50 @@ fn generation_change_rebuilds_at_identical_geometry() {
     assert_eq!(third.buffer.utf8, b"ab");
     assert_eq!(third.buffer.cell_text(0), b"a");
 }
+
+#[test]
+fn a_scrolled_back_projection_carries_the_row_below_the_viewport() {
+    let mut lines = String::new();
+    for line in 0..8 {
+        lines.push_str("row");
+        lines.push_str(&line.to_string());
+        lines.push_str("\r\n");
+    }
+    let mut terminal = seeded_terminal(6, 3, lines.as_bytes());
+    terminal.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Delta(-3));
+    let bar = terminal.scrollbar().expect("scrollbar");
+    let below = u32::try_from(bar.offset + bar.len).expect("row");
+    let mut projector = GridProjector::new().expect("projector");
+    let snapshot = projector
+        .project_with_fringe(&terminal, 0, Some(below))
+        .expect("project");
+    let buffer = snapshot.buffer;
+    assert_eq!(buffer.fringe.len(), 6, "one record per column");
+    assert_eq!(buffer.fringe_metadata.len(), 6);
+    let last_row: String = (0..6)
+        .map(|col| String::from_utf8_lossy(buffer.cell_text(2 * 6 + col)).into_owned())
+        .collect();
+    let fringe: String = (0..6)
+        .map(|col| String::from_utf8_lossy(buffer.fringe_text(col)).into_owned())
+        .collect();
+    let next = |row: &str| {
+        let n: u32 = row.trim_start_matches("row").parse().expect("row number");
+        format!("row{}", n + 1)
+    };
+    assert_eq!(fringe, next(&last_row));
+
+    // A row past the screen leaves the fringe empty, and plain projection
+    // never carries one.
+    let past = projector
+        .project_with_fringe(&terminal, 0, Some(10_000))
+        .expect("project");
+    assert!(past.buffer.fringe.is_empty());
+    assert!(
+        projector
+            .project(&terminal, 0)
+            .expect("project")
+            .buffer
+            .fringe
+            .is_empty()
+    );
+}
