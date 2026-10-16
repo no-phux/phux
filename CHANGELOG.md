@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.81.0](https://github.com/no-phux/phux/compare/v0.80.1...v0.81.0) (2026-10-16)
+
+
+### Features
+
+* **web:** expose real pane views and transparent glass rendering ([#1466](https://github.com/no-phux/phux/issues/1466)) ([b6fc27d](https://github.com/no-phux/phux/commit/b6fc27dddcca0c1c45b511ce5afbf6c762923b7b))
+
 ## [0.80.1](https://github.com/no-phux/phux/compare/v0.80.0...v0.80.1) (2026-10-16)
 
 
