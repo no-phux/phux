@@ -1,0 +1,209 @@
+diff --git a/gpui-pre-macos/src/events.rs b/gpui-pre-macos/src/events.rs
+index 71bcb10..f049e24 100644
+--- a/gpui-pre-macos/src/events.rs
++++ b/gpui-pre-macos/src/events.rs
+@@ -335,6 +335,36 @@ pub(crate) unsafe fn platform_input_from_native(
+     }
+ }
+ 
++/// Text eligible for the press-and-hold opt-out, after IME-first routing and
++/// keybindings have declined the event. Native characters preserve Caps Lock
++/// and keyboard-layout behavior that GPUI's shortcut-oriented key_char omits.
++///
++/// # Safety
++/// `native_event` must be a live NSEvent key-down event.
++pub(crate) unsafe fn printable_repeat_text(
++    native_event: id,
++    event: &KeyDownEvent,
++) -> Option<String> {
++    let modifiers = event.keystroke.modifiers;
++    if !event.is_held || modifiers.platform || modifiers.control || modifiers.function {
++        return None;
++    }
++    event.keystroke.key_char.as_ref()?;
++    // SAFETY: The caller supplies a live key-down NSEvent. Its NSString is
++    // borrowed only while that event is alive, and copied before returning.
++    unsafe {
++        let characters = native_event.characters();
++        if characters.is_null() {
++            return None;
++        }
++        let text = characters.to_str();
++        if text.is_empty() || text.chars().any(char::is_control) {
++            return None;
++        }
++        Some(text.to_owned())
++    }
++}
++
+ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
+     unsafe {
+         use cocoa::appkit::*;
+@@ -572,3 +602,89 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
+     }
+     String::from_utf16(&buffer[..buffer_size]).unwrap_or_default()
+ }
++
++#[cfg(test)]
++mod repeat_tests {
++    use super::*;
++    use cocoa::{base::nil, foundation::NSPoint};
++
++    fn down(stroke: &str) -> KeyDownEvent {
++        KeyDownEvent {
++            keystroke: Keystroke::parse(stroke).expect("stroke"),
++            is_held: true,
++            prefer_character_input: false,
++        }
++    }
++
++    fn repeat_text(
++        event: &KeyDownEvent,
++        text: &str,
++        flags: NSEventModifierFlags,
++    ) -> Option<String> {
++        objc2::rc::autoreleasepool(|_| {
++            // SAFETY: Create and use the NSEvent and its strings within one
++            // autorelease pool. No window, input source, or application is needed.
++            unsafe {
++                let native = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
++                    nil,
++                    NSEventType::NSKeyDown,
++                    NSPoint::new(0., 0.),
++                    flags,
++                    0.,
++                    0,
++                    nil,
++                    crate::ns_string(text),
++                    crate::ns_string(&event.keystroke.key),
++                    YES,
++                    0,
++                );
++                assert!(!native.is_null());
++                printable_repeat_text(native, event)
++            }
++        })
++    }
++
++    #[test]
++    fn repeat_text_preserves_native_caps_lock_and_layout_characters() {
++        use NSEventModifierFlags as F;
++        for (stroke, native_text, flags) in [
++            ("a->a", "A", F::NSAlphaShiftKeyMask),
++            (
++                "shift-a->A",
++                "a",
++                F::NSAlphaShiftKeyMask | F::NSShiftKeyMask,
++            ),
++            ("alt-a->å", "å", F::NSAlternateKeyMask),
++        ] {
++            assert_eq!(
++                repeat_text(&down(stroke), native_text, flags).as_deref(),
++                Some(native_text)
++            );
++        }
++        assert_eq!(
++            repeat_text(&down("space-> "), " ", F::empty()).as_deref(),
++            Some(" ")
++        );
++    }
++
++    #[test]
++    fn repeat_text_excludes_shortcuts_controls_dead_keys_and_initial_presses() {
++        use NSEventModifierFlags as F;
++        for (stroke, text, flags) in [
++            ("cmd-space-> ", " ", F::NSCommandKeyMask),
++            ("cmd-enter->\n", "\r", F::NSCommandKeyMask),
++            ("cmd-tab->\t", "\t", F::NSCommandKeyMask),
++            ("ctrl-space-> ", " ", F::NSControlKeyMask),
++            ("fn-space-> ", " ", F::NSFunctionKeyMask),
++            ("enter->\n", "\r", F::empty()),
++            ("tab->\t", "\t", F::empty()),
++            ("e->e", "", F::empty()),
++            ("left", "\u{f702}", F::empty()),
++        ] {
++            assert_eq!(repeat_text(&down(stroke), text, flags), None, "{stroke:?}");
++        }
++        let mut initial = down("a->a");
++        initial.is_held = false;
++        assert_eq!(repeat_text(&initial, "a", F::empty()), None);
++    }
++}
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 9fc3c95..9650294 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -1,6 +1,7 @@
+ use crate::{
+     BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
+-    TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,
++    TISGetInputSourceProperty, WindowFrameSource,
++    events::{platform_input_from_native, printable_repeat_text},
+     kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
+     ns_string, renderer,
+ };
+@@ -2846,12 +2847,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
+                 return YES;
+             }
+ 
+-            if key_down_event.is_held
+-                && let Some(key_char) = key_down_event.keystroke.key_char.as_ref()
+-            {
++            // SAFETY: AppKit supplied a live key-down event to this callback.
++            if let Some(text) = unsafe { printable_repeat_text(native_event, &key_down_event) } {
+                 let handled = with_input_handler(this, |input_handler| {
+                     if !input_handler.apple_press_and_hold_enabled() {
+-                        input_handler.replace_text_in_range(None, key_char);
++                        input_handler.replace_text_in_range(None, &text);
+                         return YES;
+                     }
+                     NO
+diff --git a/gpui-pre/src/app/test_context.rs b/gpui-pre/src/app/test_context.rs
+index e7a8c06..dd059e1 100644
+--- a/gpui-pre/src/app/test_context.rs
++++ b/gpui-pre/src/app/test_context.rs
+@@ -617,7 +617,7 @@ impl TestAppContext {
+     }
+ 
+     /// Returns the `TestWindow` backing the given handle.
+-    pub(crate) fn test_window(&self, window: AnyWindowHandle) -> TestWindow {
++    pub fn test_window(&self, window: AnyWindowHandle) -> TestWindow {
+         self.app
+             .borrow_mut()
+             .windows
+diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
+index 4167aa0..4eb1f1e 100644
+--- a/gpui-pre/src/input.rs
++++ b/gpui-pre/src/input.rs
+@@ -128,6 +128,7 @@ pub trait EntityInputHandler: 'static + Sized {
+ pub struct ElementInputHandler<V> {
+     view: Entity<V>,
+     element_bounds: Bounds<Pixels>,
++    apple_press_and_hold_enabled: bool,
+ }
+ 
+ impl<V: 'static> ElementInputHandler<V> {
+@@ -138,11 +139,23 @@ impl<V: 'static> ElementInputHandler<V> {
+         ElementInputHandler {
+             view,
+             element_bounds,
++            apple_press_and_hold_enabled: true,
+         }
+     }
++
++    /// Disable the macOS accent picker so held printable keys repeat instead.
++    /// Other platform text input, including IME composition, is unchanged.
++    pub fn with_apple_press_and_hold_enabled(mut self, enabled: bool) -> Self {
++        self.apple_press_and_hold_enabled = enabled;
++        self
++    }
+ }
+ 
+ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
++    fn apple_press_and_hold_enabled(&mut self) -> bool {
++        self.apple_press_and_hold_enabled
++    }
++
+     fn selected_text_range(
+         &mut self,
+         ignore_disabled_input: bool,

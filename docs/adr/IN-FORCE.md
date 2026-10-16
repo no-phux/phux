@@ -208,6 +208,8 @@ by a newer one, the newer line is the operative reading.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
 - [0001](./0001-language-rust.md) phux is implemented in Rust.
 
+- [0170](./0170-acp-is-the-provider-seam.md) Native agents use the official pinned Rust ACP client and operator-installed native servers or maintained adapters; no private provider SDK bridges.
+
 ## Proposed
 
 Drafted and under review; none of these governs anything yet.

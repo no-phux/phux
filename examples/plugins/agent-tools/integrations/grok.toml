@@ -34,3 +34,11 @@ kind = "grok"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-grok-wrap.sh"]
 required_executables = ["grok"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "grok"
+command = ["grok","agent","--no-leader","stdio"]
+required_executables = ["grok"]
+working_directory = "workspace"

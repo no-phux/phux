@@ -1211,7 +1211,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     let mut archived: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&source_archive).expect("read source archive"))
             .expect("parse source archive");
-    assert_eq!(archived["schema_version"], 2);
+    assert_eq!(archived["schema_version"], 3);
     let agent = archived["sessions"]
         .as_array()
         .expect("sessions")

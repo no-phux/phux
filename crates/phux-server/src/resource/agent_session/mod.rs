@@ -24,6 +24,23 @@ pub mod ring;
 pub use record::{RecordError, StreamAsk, StreamEvidence, ValidRecord};
 pub use ring::RecordRing;
 
+/// Publication identity verified by the dedicated native broker.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NativeAppendIdentity {
+    /// Host-monotonic publication id.
+    pub id: u64,
+    /// SHA-256 of the exact normalized update.
+    pub fingerprint: String,
+}
+/// Acceptance stored atomically with the native record append.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NativeAppendAccepted {
+    /// Original identity and payload fingerprint.
+    pub identity: NativeAppendIdentity,
+    /// Original stamps and state/ask evidence.
+    pub accepted: AppendAccepted,
+}
+
 /// Depth of the append and bootstrap mailboxes; a full one refuses appends
 /// with `OVERFLOW` (ADR-0103 §3).
 const AGENT_SESSION_MAILBOX: usize = 64;
@@ -36,10 +53,12 @@ pub struct AppendRequest {
     pub bytes: Bytes,
     /// Where the stamped header, or the refusal, is returned.
     pub reply: oneshot::Sender<Result<AppendAccepted, AppendRejection>>,
+    /// `Some` only after exclusive controller authorization.
+    pub publication: Option<NativeAppendIdentity>,
 }
 
 /// What the server stamped onto an accepted append.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AppendAccepted {
     /// Sequence of the append's first record; the rest follow contiguously.
     pub first_seq: u64,
@@ -99,6 +118,10 @@ pub struct AgentSessionBootstrap {
     /// Whether the stream already accepted `session_end`; a graceful upgrade
     /// carries it so the resumed engine keeps refusing later records.
     pub ended: bool,
+    /// Bounded native publication receipts, independent of transcript eviction.
+    pub native_publications: Vec<NativeAppendAccepted>,
+    /// Old ids below this cursor can never append again.
+    pub native_publication_high_water: u64,
 }
 
 /// The `AgentSession` facet. `provider` and `native_id` are immutable, so
@@ -146,6 +169,8 @@ pub struct AgentSessionActor {
     append_rx: mpsc::Receiver<AppendRequest>,
     /// Inbound bootstrap cuts.
     bootstrap_rx: mpsc::Receiver<BootstrapRequest>,
+    native_publications: std::collections::VecDeque<NativeAppendAccepted>,
+    native_publication_high_water: u64,
 }
 
 impl std::fmt::Debug for AgentSessionActor {
@@ -211,6 +236,8 @@ impl AgentSessionActor {
                 sealed: false,
                 append_rx,
                 bootstrap_rx,
+                native_publications: std::collections::VecDeque::new(),
+                native_publication_high_water: 0,
             },
             handle,
             exit_notify,
@@ -235,6 +262,8 @@ impl AgentSessionActor {
         actor.core.seq = carried.base_seq;
         actor.ended.store(carried.ended, Ordering::Relaxed);
         actor.ring.add_dropped(carried.dropped);
+        actor.native_publications = carried.native_publications.into();
+        actor.native_publication_high_water = carried.native_publication_high_water;
         for record in carried.records {
             actor.ring.push(record);
         }
@@ -306,14 +335,53 @@ impl AgentSessionActor {
             records: self.ring.records_from(start).cloned().collect(),
             dropped: self.ring.dropped(),
             ended: self.ended.load(Ordering::Relaxed),
+            native_publications: self.native_publications.iter().cloned().collect(),
+            native_publication_high_water: self.native_publication_high_water,
         }
+    }
+
+    /// Resolve a native identity before seal and record validation: acknowledged
+    /// retries return their original stamps without projecting evidence again.
+    fn native_append_replay(
+        &self,
+        identity: &NativeAppendIdentity,
+    ) -> Option<Result<AppendAccepted, AppendRejection>> {
+        if let Some(prior) = self
+            .native_publications
+            .iter()
+            .find(|prior| prior.identity.id == identity.id)
+        {
+            return Some(if prior.identity == *identity {
+                Ok(prior.accepted.clone())
+            } else {
+                Err(AppendRejection::Overflow(
+                    "native publication identity conflicts with its payload".into(),
+                ))
+            });
+        }
+        (identity.id <= self.native_publication_high_water).then(|| {
+            Err(AppendRejection::Overflow(
+                "native publication receipt expired; identity cannot be replayed".into(),
+            ))
+        })
     }
 
     /// Validate, stamp, retain, and broadcast one append, all-or-nothing.
     /// Records share the append's timestamp and ship in one
     /// [`PaneOutput::Live`] sequenced by the last record.
     fn handle_append(&mut self, request: AppendRequest) {
-        let AppendRequest { bytes, reply } = request;
+        let AppendRequest {
+            bytes,
+            reply,
+            publication,
+        } = request;
+        if let Some(result) = publication
+            .as_ref()
+            .and_then(|identity| self.native_append_replay(identity))
+        {
+            let _ = reply.send(result);
+            return;
+        }
         if self.sealed {
             let _ = reply.send(Err(AppendRejection::Overflow(
                 "the server is upgrading; retry the append".to_owned(),
@@ -379,13 +447,26 @@ impl AgentSessionActor {
             bytes: payload,
             at: std::time::Instant::now(),
         });
-        let _ = reply.send(Ok(AppendAccepted {
+        let accepted = AppendAccepted {
             first_seq,
             last_seq,
             ts_ms,
             evidence,
             ask,
-        }));
+        };
+        if let Some(identity) = publication {
+            self.native_publication_high_water = identity.id;
+            self.native_publications.push_back(NativeAppendAccepted {
+                identity,
+                accepted: accepted.clone(),
+            });
+            while self.native_publications.len()
+                > phux_protocol::native_agent::MAX_NATIVE_OPERATIONS
+            {
+                self.native_publications.pop_front();
+            }
+        }
+        let _ = reply.send(Ok(accepted));
     }
 
     /// Refuse Terminal-only supervisory requests (the runtime already
@@ -436,7 +517,11 @@ pub fn icount_actor() -> AgentSessionActor {
 #[must_use]
 pub fn icount_append_and_replay(actor: &mut AgentSessionActor, bytes: Bytes) -> Option<usize> {
     let (reply, rx) = oneshot::channel();
-    actor.handle_append(AppendRequest { bytes, reply });
+    actor.handle_append(AppendRequest {
+        bytes,
+        reply,
+        publication: None,
+    });
     rx.blocking_recv().ok()?.ok()?;
     let cut = actor.bootstrap(None);
     Some(cut.records.iter().map(Bytes::len).sum())
@@ -500,6 +585,7 @@ mod tests {
         actor.handle_append(AppendRequest {
             bytes: Bytes::copy_from_slice(payload.as_bytes()),
             reply,
+            publication: None,
         });
         rx.blocking_recv().expect("the engine always replies")
     }
@@ -839,6 +925,7 @@ mod tests {
                     .try_send(AppendRequest {
                         bytes: Bytes::copy_from_slice(b"{\"type\":\"stop\"}"),
                         reply,
+                        publication: None,
                     })
                     .expect("the append mailbox has room");
 

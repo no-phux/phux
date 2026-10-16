@@ -512,6 +512,9 @@ point before any handler or satellite branch:
 | `GET_PERF { reset: false }` | `OBSERVE` | Global |
 | `GET_PERF { reset: true }` | `OBSERVE` and `BIND` | Global |
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
+| `NATIVE_AGENT { type: spawn }` | `CREATE` and `BIND` | the session the command's key names, resolved from `spec.session` (the exact organization session name) to its Group |
+| `NATIVE_AGENT { type: command }` | `INPUT` | named Terminal subject: the exact AgentSession resource ID, never an inferred latest child; prompt/interrupt also obey the shared parent input lease, and every answer intent additionally requires human authority |
+| `NATIVE_AGENT { type: register/receive/complete/publish/close }` | `BIND` | the named resource's parent Terminal; additionally requires the reserved exclusive controller binding proof, activation, authenticated host identity, and current connection generation |
 | `GET_ORGANIZATION` | `INVENTORY` | filtered to the organization records the grant inventories: a session through its Group, a resource through its session; authority totals and the Intake designation (raw `inbox` field) only with Global |
 | `SESSION_CREATE` | `CREATE` | Global; a launch in the same command needs nothing more |
 | `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | `ORGANIZE` | the session the command's key names, resolved side-effect-free to its Group; an absent key resolves to no subject |

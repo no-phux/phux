@@ -34,11 +34,13 @@ export default function phuxExtension(pi: ExtensionAPI): void {
   pi.on("session_tree", invalidateSelection);
   pi.on("session_shutdown", invalidateSelection);
 
-  registerOmpLifecycle(pi, new PhuxCli({
-    executable: environment.PHUX_BIN || "phux",
-    ...(environment.PHUX_SOCKET ? { socket: environment.PHUX_SOCKET } : {}),
-    env: environment,
-  }), parentTarget, transcriptMode(environment.PHUX_AGENT_TRANSCRIPT));
+  if (environment.PHUX_AGENT_REPORTING !== "0") {
+    registerOmpLifecycle(pi, new PhuxCli({
+      executable: environment.PHUX_BIN || "phux",
+      ...(environment.PHUX_SOCKET ? { socket: environment.PHUX_SOCKET } : {}),
+      env: environment,
+    }), parentTarget, transcriptMode(environment.PHUX_AGENT_TRANSCRIPT));
+  }
 
   function tools(ctx?: ExtensionContext) {
     const startedEpoch = epoch;

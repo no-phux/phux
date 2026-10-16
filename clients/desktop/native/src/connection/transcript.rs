@@ -22,6 +22,8 @@ pub struct Conversation {
     pub epoch: u64,
     pub stream: AgentStreamInfo,
     pub state: AgentSessionState,
+    /// Cached shared native projection, absent for explicitly terminal-attached streams.
+    pub native: Option<phux_protocol::native_agent::NativeView>,
     pub entries: VecDeque<TranscriptEntry>,
     pub closed: bool,
     pub revision: u64,
@@ -48,6 +50,7 @@ impl Conversation {
                 native_id: info.native_id.clone(),
                 status: AgentSessionStatus::Unknown,
             },
+            native: None,
             entries: VecDeque::new(),
             closed: false,
             revision: 0,
@@ -88,13 +91,15 @@ impl Conversation {
             self.last_activity_ms = self.last_activity_ms.max(record.ts_ms);
             if let Some(entry) = record.transcript_entry() {
                 if !self.has_transcript {
-                    self.entries.clear();
-                    self.bytes = 0;
+                    // ACP setup/auth/capability notices must not disappear when prose starts.
+                    self.entries
+                        .retain(|entry| entry.id.starts_with("notification:"));
+                    self.bytes = self.entries.iter().map(entry_bytes).sum();
                     self.omitted = false;
                     self.has_transcript = true;
                 }
                 self.upsert(entry);
-            } else if !self.has_transcript
+            } else if (!self.has_transcript || record.kind == AgentEventKind::Notification)
                 && let Some(entry) = timeline(record)
             {
                 self.upsert(entry);
@@ -154,10 +159,13 @@ fn timeline(record: &AgentEventRecord) -> Option<TranscriptEntry> {
             .data_str("question")
             .unwrap_or("Agent needs your answer")
             .to_owned(),
-        AgentEventKind::Notification => record
-            .data_str("message")
-            .unwrap_or("Agent notification")
-            .to_owned(),
+        AgentEventKind::Notification => {
+            let message = record.data_str("message").unwrap_or("Agent notification");
+            match record.data_str("level").filter(|level| !level.is_empty()) {
+                Some(level) => format!("{level}: {message}"),
+                None => message.to_owned(),
+            }
+        }
         AgentEventKind::Stop => "Turn finished".to_owned(),
         AgentEventKind::SessionEnd => "Session ended".to_owned(),
         AgentEventKind::State => {
@@ -166,7 +174,15 @@ fn timeline(record: &AgentEventRecord) -> Option<TranscriptEntry> {
         AgentEventKind::ProviderRaw | AgentEventKind::Unknown(_) => return None,
     };
     Some(TranscriptEntry {
-        id: format!("timeline:{}", record.seq),
+        id: format!(
+            "{}:{}",
+            if record.kind == AgentEventKind::Notification {
+                "notification"
+            } else {
+                "timeline"
+            },
+            record.seq
+        ),
         role: TranscriptRole::System,
         text,
         truncated: false,
@@ -445,5 +461,54 @@ mod tests {
             2,
         );
         assert!(!conversation.stop_requested);
+    }
+
+    #[test]
+    fn sdk_auth_and_capability_notices_remain_visible_alongside_prose() {
+        let info = AgentSessionInfo {
+            parent: Some(ResourceId::local(1)),
+            ..Default::default()
+        };
+        let notice = |seq, message| AgentEventRecord {
+            seq,
+            ts_ms: 0,
+            kind: AgentEventKind::Notification,
+            data: json!({"level":"warning","message":message}),
+        };
+        let first = publication(
+            AgentRecordMode::Replace,
+            2,
+            vec![
+                notice(1, "Authenticate on the executing host"),
+                row(2, "reply", "Existing transcript"),
+            ],
+        );
+        let mut conversation = Conversation::new(&first, &info, 1).unwrap();
+        conversation.apply(&first, &info, 1);
+        conversation.apply(
+            &publication(
+                AgentRecordMode::Append,
+                3,
+                vec![notice(
+                    3,
+                    "Native capability unavailable; no terminal fallback",
+                )],
+            ),
+            &info,
+            1,
+        );
+        let text = conversation
+            .entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "warning: Authenticate on the executing host",
+                "Existing transcript",
+                "warning: Native capability unavailable; no terminal fallback",
+            ]
+        );
     }
 }

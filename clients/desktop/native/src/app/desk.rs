@@ -21,7 +21,7 @@ use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
-use crate::settings::{self, DisplayPrefs};
+use crate::settings::{self, DisplayPrefs, TabPosition};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
 use crate::workspace::persist::{self, FileLayoutStore};
@@ -88,6 +88,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    NativeLaunch,
     Path,
     MoveResources,
     Rename {
@@ -134,6 +135,7 @@ pub struct Desk {
     pub remote: Option<String>,
     pub session: String,
     home_key: Option<SessionKey>,
+    expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pub phux: PathBuf,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
@@ -154,6 +156,7 @@ pub struct Desk {
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
+    locations: HashMap<PathBuf, FileLayoutStore>,
     saves: persist::writer::Writer,
     _save_errors: Task<()>,
     stable_layout: bool,
@@ -166,14 +169,15 @@ pub struct Desk {
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
     pub(crate) split_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
-    /// Horizontal tab centers from the last prepaint, in tab order.
-    pub(crate) tab_centers: Rc<RefCell<Vec<f32>>>,
+    /// Painted tab centers, including scroll offsets, for the current orientation.
+    pub(crate) tab_geometry: Rc<RefCell<TabGeometry>>,
     viewport: gpui::Size<gpui::Pixels>,
     _wake: Option<Task<()>>,
     _clock: Option<Task<()>>,
     _subs: Vec<Subscription>,
     /// The list palette shared by commands, goto, sessions, and the path picker.
     pub(crate) palette_state: Option<Entity<CommandState>>,
+    pub(super) palette_view: super::overlays::PaletteView,
     /// Go To state chips. A change keeps the query and realigns by entry.
     pub(crate) goto: GotoPalette,
     /// Folded Go To rows. Rebuilt when pane, agent, or tab metadata changes.
@@ -184,6 +188,8 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) settings_page: Option<super::settings_panel::Page>,
+    pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -192,12 +198,15 @@ pub struct Desk {
     pub(crate) collapsed: std::collections::HashSet<String>,
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,
+    pub(crate) fleet: super::fleet::Fleet,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
     /// A host switch is resolving its target's home session.
+    #[cfg(feature = "ui-fixtures")]
     pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    #[cfg(feature = "ui-fixtures")]
     pub(super) main_menu: Option<gpui::WindowHandle<super::glass_menu::GlassMenu>>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
@@ -215,6 +224,7 @@ pub struct Desk {
     /// The placement whose top edge, or whose pane controls, the pointer is over.
     pub(crate) chrome_hover: Option<String>,
     pub(crate) controls_hover: Option<String>,
+    pub(crate) pane_menu_open: Option<String>,
     /// The placement a file drag from the OS is over.
     pub(crate) drop_target: Option<String>,
     /// Uploads waiting for a receipt before any path is pasted.
@@ -244,9 +254,50 @@ enum Drag {
     },
     Tab {
         id: String,
-        start_x: f32,
+        position: TabPosition,
+        start: f32,
         moved: bool,
     },
+}
+
+#[derive(Default)]
+pub(crate) struct TabGeometry {
+    position: TabPosition,
+    centers: Vec<f32>,
+}
+
+impl TabGeometry {
+    pub(crate) fn prepare(&mut self, position: TabPosition, count: usize) {
+        self.position = position;
+        self.centers.clear();
+        self.centers.resize(count, f32::NAN);
+    }
+
+    pub(crate) fn record(&mut self, index: usize, position: TabPosition, bounds: Bounds<Pixels>) {
+        if self.position == position
+            && let Some(center) = self.centers.get_mut(index)
+        {
+            *center = tab_coordinate(
+                position,
+                (bounds.origin.x + bounds.size.width / 2.).as_f32(),
+                (bounds.origin.y + bounds.size.height / 2.).as_f32(),
+            );
+        }
+    }
+
+    fn drop_index(&self, from: usize, position: TabPosition, x: f32, y: f32) -> usize {
+        if self.position != position {
+            return from;
+        }
+        tab_drop_index(from, &self.centers, tab_coordinate(position, x, y))
+    }
+}
+
+fn tab_coordinate(position: TabPosition, x: f32, y: f32) -> f32 {
+    match position {
+        TabPosition::Top => x,
+        TabPosition::Side => y,
+    }
 }
 
 /// Terminal damage and delivered input. Chrome, toasts, and layout stay put.
@@ -320,6 +371,7 @@ impl Desk {
             remote: request.remote.clone(),
             session: request.session.clone(),
             home_key: request.home_key,
+            expected_authority: None,
             phux,
             focus,
             prefs,
@@ -337,6 +389,7 @@ impl Desk {
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,
+            locations: HashMap::new(),
             saves,
             _save_errors: save_errors,
             stable_layout: request.stable_layout,
@@ -348,12 +401,13 @@ impl Desk {
             agent_epoch: None,
             drag: None,
             split_bounds: Rc::default(),
-            tab_centers: Rc::default(),
+            tab_geometry: Rc::default(),
             viewport: gpui::size(gpui::px(1320.), gpui::px(840.)),
             _wake: None,
             _clock: None,
             _subs: Vec::new(),
             palette_state: None,
+            palette_view: Default::default(),
             goto: GotoPalette::default(),
             goto_search: GotoSearch::default(),
             goto_frecency: GotoFrecency::default(),
@@ -361,13 +415,18 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            settings_page: None,
+            native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
             hosts: Vec::new(),
+            fleet: Default::default(),
             host_adding: None,
+            #[cfg(feature = "ui-fixtures")]
             host_switching: false,
             drag_region: None,
+            #[cfg(feature = "ui-fixtures")]
             main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
@@ -379,6 +438,7 @@ impl Desk {
             motion: Motion::default(),
             chrome_hover: None,
             controls_hover: None,
+            pane_menu_open: None,
             drop_target: None,
             uploads: Vec::new(),
             upload_epoch: 0,
@@ -423,6 +483,8 @@ impl Desk {
     }
 
     fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
+        // Native launch completions belong to the client that initiated them.
+        self.native_launch = Default::default();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
             self.connect_error = Some("No session to open".into());
@@ -440,7 +502,8 @@ impl Desk {
             ),
         };
         match connected {
-            Ok(connection) => {
+            Ok(mut connection) => {
+                connection.expect_authority(self.expected_authority);
                 let mut workspace = Workspace::new(
                     self.session.clone(),
                     WorkspaceOptions {
@@ -448,6 +511,9 @@ impl Desk {
                         initial_terminal: initial,
                     },
                 );
+                if self.home_key.is_some() {
+                    workspace.preserve_empty();
+                }
                 // A secondary window shows new terminals; every other window restores its own layout.
                 if self.role != WindowRole::Fresh {
                     workspace.restore(self.last_saved.clone());
@@ -531,11 +597,15 @@ impl Desk {
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
         self.note_activity(events, epoch);
+        // A reexec resets layout placements, not the ACP owner or its editor.
+        // Reopen its guardian before waiting for the exact fresh activation.
+        self.remember_native_focus();
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
         self.settle_project_terminal();
+        self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -627,7 +697,7 @@ impl Desk {
                 if local {
                     desktop.observe_topology(topology);
                 }
-                desktop.sync_window_session(desk, &name);
+                desktop.sync_window_session(desk, &name, self.remote.as_deref(), self.role);
             });
         }
         if self.session == name {
@@ -928,6 +998,7 @@ impl Desk {
             "rename-session" => self.open_rename_session(),
             "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
+            "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
                 self.workspace_call(|link| link.workspace.split(&link.connection, Axis::Row, false))
@@ -978,6 +1049,8 @@ impl Desk {
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
+            "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
+            "tabs-side" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Side, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
             "font-down" => self.update_prefs(|prefs| prefs.font_size -= 1.0, cx),
             "font-reset" => {
@@ -1258,6 +1331,14 @@ impl Desk {
         if self.prefs == before {
             return false;
         }
+        if self.prefs.tab_position != before.tab_position {
+            if matches!(self.drag, Some(Drag::Tab { .. })) {
+                self.drag = None;
+            }
+            self.tab_geometry
+                .borrow_mut()
+                .prepare(self.tab_position(), 0);
+        }
         if self.prefs.ghostty_keys != before.ghostty_keys {
             self.sync_bindings(cx);
         }
@@ -1341,6 +1422,8 @@ impl Desk {
             return;
         }
         self.closed = true;
+        self.fleet.clear();
+        #[cfg(feature = "ui-fixtures")]
         if let Some(menu) = self.main_menu.take() {
             let _ =
                 gpui::AnyWindowHandle::from(menu).update(cx, |_, window, _| window.remove_window());
@@ -1538,6 +1621,7 @@ impl Desk {
         let desk = cx.entity().downgrade();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
+        let navigation = self.upload_epoch;
         cx.spawn_in(window, async move |_, cx| {
             // Validation, trust checks and recipe launches can block.
             let result = smol::unblock(move || host::open_project(&phux, &socket, &path)).await;
@@ -1552,7 +1636,12 @@ impl Desk {
                             Some(error.to_string()),
                         );
                     }
-                    desk.open_project_window(opened.session, opened.terminal, cx);
+                    if desk.upload_epoch == navigation {
+                        desk.open_project_window(opened.session, opened.terminal, cx);
+                    } else {
+                        desk.post(Kind::Info, "Project ready on Local", Some(opened.session));
+                        cx.notify();
+                    }
                 }
                 Err(error) => {
                     desk.post(Kind::Error, "Could not open folder", Some(error));
@@ -1600,20 +1689,15 @@ impl Desk {
         terminal: ResourceId,
         cx: &mut Context<Self>,
     ) {
-        if self.session == session {
-            self.show_project_terminal(terminal, cx);
-            return;
+        if self.remote.is_some() || self.session != session {
+            let key = self
+                .work_catalog()
+                .into_iter()
+                .find(|work| work.destination.host.is_none() && work.destination.name == session)
+                .and_then(|work| work.destination.key);
+            self.adopt_work(None, session, key, None, cx);
         }
-        if let Err(error) = self.desktop.update(cx, |desktop, cx| {
-            desktop.open_project(session, terminal, cx)
-        }) {
-            self.post(
-                Kind::Error,
-                "Could not show project",
-                Some(error.to_string()),
-            );
-            cx.notify();
-        }
+        self.show_project_terminal(terminal, cx);
     }
 
     fn open_rename_session(&mut self) {
@@ -2110,10 +2194,16 @@ impl Desk {
         let Some(terminal) = self.focused_terminal() else {
             return;
         };
+        if self.refuse_native_input(&terminal) {
+            return;
+        }
         let events = typed_keys(text);
         let client = self.client();
         let Some(client) = client else { return };
         let sent = client.with_control(|control| {
+            if crate::input::native_owned(control, &terminal) {
+                return false;
+            }
             events
                 .into_iter()
                 .all(|event| control.send_key(&terminal, event))
@@ -2230,6 +2320,9 @@ impl Desk {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         match crate::attach::attach_paths(&self.terminal_host(terminal), paths) {
             Some(crate::attach::PathAttach::Paste(text)) => {
                 self.paste_text_to(terminal, &text);
@@ -2248,6 +2341,37 @@ impl Desk {
         crate::attach::terminal_host(self.remote.as_deref(), terminal)
     }
 
+    /// A pending or retained native owner never turns back into a raw PTY.
+    pub(super) fn native_owned_terminal(&self, terminal: &ResourceId) -> bool {
+        let Some(link) = self.link.as_ref() else {
+            return false;
+        };
+        self.native_launch
+            .owns_terminal(&link.connection.client, terminal)
+            || link.connection.conversations.values().any(|conversation| {
+                conversation.parent == *terminal && conversation.native.is_some()
+            })
+            || link
+                .connection
+                .client
+                .with_control(|control| crate::input::native_owned(control, terminal))
+    }
+
+    fn refuse_native_input(&mut self, terminal: &ResourceId) -> bool {
+        if !self.native_owned_terminal(terminal) {
+            return false;
+        }
+        self.post(
+            Kind::Refusal,
+            crate::attach::PASTE_REFUSED,
+            Some(
+                "Native ACP agents do not accept raw terminal input or file drops. Use the structured conversation. Nothing was sent."
+                    .into(),
+            ),
+        );
+        true
+    }
+
     fn paste_text(&mut self, text: &str) -> bool {
         let Some(terminal) = self.focused_terminal() else {
             return false;
@@ -2257,11 +2381,14 @@ impl Desk {
 
     /// Queue a bracketed paste. False, with a notification, when the terminal is not ready.
     fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
+        if self.refuse_native_input(terminal) {
+            return false;
+        }
         let Some(client) = self.client() else {
             return false;
         };
         let queued = client.with_control(|control| {
-            if !control.input_ready(terminal) {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
             let _ = control.apply_paste(terminal, text);
@@ -2286,6 +2413,9 @@ impl Desk {
         batch: crate::attach::UploadBatch,
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         let Some(client) = self.client() else {
             self.post(
                 Kind::Refusal,
@@ -2341,6 +2471,9 @@ impl Desk {
                 crate::attach::PASTE_REFUSED,
                 Some("The terminal changed before the upload started. Nothing was pasted.".into()),
             );
+            return;
+        }
+        if self.refuse_native_input(&started.terminal) {
             return;
         }
         let current = self.destination_of(&started.terminal);
@@ -2408,6 +2541,9 @@ impl Desk {
     /// Paste a server path. `input_ready` here means the terminal can take
     /// keystrokes, not that its files are on this machine.
     fn paste_uploaded(&mut self, terminal: &ResourceId, text: &str) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         let Some(client) = self.client() else {
             self.post(
                 Kind::Refusal,
@@ -2419,7 +2555,7 @@ impl Desk {
             return;
         };
         let queued = client.with_control(|control| {
-            if !control.input_ready(terminal) {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
             let _ = control.apply_paste(terminal, text);
@@ -2439,8 +2575,11 @@ impl Desk {
     }
 
     /// The placed terminal and the host [`crate::attach::terminal_host`] names.
-    /// Absent when that terminal is no longer on screen.
+    /// Absent when that terminal is no longer on screen or belongs to native ACP.
     fn destination_of(&self, terminal: &ResourceId) -> Option<crate::attach::UploadDestination> {
+        if self.native_owned_terminal(terminal) {
+            return None;
+        }
         let link = self.link.as_ref()?;
         let placed = link.workspace.tabs.iter().any(|tab| {
             crate::workspace::layout::placements(&tab.root)
@@ -3186,8 +3325,10 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
-        self.conversation_faces
-            .retain(|placement, _| live.contains(placement));
+        let connection = self.link.as_ref().map(|link| &link.connection);
+        self.conversation_faces.retain(|placement, face| {
+            face.retain_for_placement(live.contains(placement), connection)
+        });
     }
 
     pub fn panes(&self) -> &Panes {
@@ -3209,7 +3350,10 @@ impl Desk {
             let result = listed.await;
             let _ = desk.update(cx, |desk, cx| {
                 match result {
-                    Ok(hosts) => desk.hosts = hosts,
+                    Ok(hosts) => {
+                        desk.hosts = hosts;
+                        desk.sync_fleet(cx);
+                    }
                     // No CLI is already explained at launch; the section just stays empty.
                     Err(error) => log::warn!("host list: {error}"),
                 }
@@ -3219,30 +3363,11 @@ impl Desk {
         .detach();
     }
 
-    /// Open a window on registered host `name`, or raise the one already open.
-    pub(crate) fn open_host(&mut self, name: String, cx: &mut Context<Self>) {
-        let desk = cx.entity().downgrade();
-        let host = name.clone();
-        self.desktop.update(cx, |desktop, cx| {
-            desktop.open_host(
-                name,
-                move |result, cx| {
-                    if let Err(error) = result {
-                        let _ = desk.update(cx, |desk, cx| {
-                            desk.post(Kind::Error, &format!("Could not open {host}"), Some(error));
-                            cx.notify();
-                        });
-                    }
-                },
-                cx,
-            )
-        });
-    }
-
     /// Point this window at another host in place: `None` is this machine,
     /// `Some(name)` a registered remote. The current connection and views are
     /// released and the target's home session and saved layout take their
     /// place. No new window is opened.
+    #[cfg(feature = "ui-fixtures")]
     pub(crate) fn switch_host(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         if self.host_switching || self.remote == name {
             return;
@@ -3274,7 +3399,54 @@ impl Desk {
     }
 
     /// The in-place half of [`Self::switch_host`], once the target's home is known.
+    #[cfg(feature = "ui-fixtures")]
     fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
+        self.adopt_work(name, session, None, None, cx);
+    }
+
+    fn work_layout_path(
+        &self,
+        host: Option<&str>,
+        session: &str,
+        key: Option<SessionKey>,
+    ) -> PathBuf {
+        let authority = host.map_or_else(
+            || self.socket.display().to_string(),
+            |host| format!("host:{host}"),
+        );
+        if let Some(key) = key {
+            let paths = persist::session_layout_paths(&authority, key);
+            return if self.role == WindowRole::Quick {
+                paths.quick
+            } else {
+                paths.layout
+            };
+        }
+        let paths = crate::workspace::layout_paths(&authority, session);
+        if self.role == WindowRole::Quick {
+            paths.quick
+        } else {
+            paths.layout
+        }
+    }
+
+    pub(super) fn adopt_work(
+        &mut self,
+        name: Option<String>,
+        session: String,
+        key: Option<SessionKey>,
+        authority: Option<phux_protocol::ids::AuthorityId>,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.work_layout_path(
+            self.remote.as_deref(),
+            &self.session,
+            self.link
+                .as_ref()
+                .and_then(|link| link.connection.home_key())
+                .or(self.home_key),
+        );
+        self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abort_uploads(true);
         if let Some(link) = self.link.as_mut() {
@@ -3289,24 +3461,45 @@ impl Desk {
         self.find_input = None;
         self.pending_project_terminal = None;
         self.connect_error = None;
+        self.goto_search = Default::default();
         self.remote = name.clone();
         self.session = session.clone();
-        self.home_key = None;
+        if self.role == WindowRole::Fresh {
+            self.role = WindowRole::Main;
+        }
+        let id = cx.entity_id();
+        self.desktop.update(cx, |desktop, _| {
+            desktop.sync_window_session(id, &session, name.as_deref(), self.role)
+        });
+        self.home_key = key;
+        self.expected_authority = authority;
+        self.modal = Modal::None;
+        self.prepared = Modal::None;
+        self.modal_inputs.clear();
+        self.picker = None;
+        self.organization = Default::default();
+        self.creates.clear();
+        self.renames.clear();
+        self.kills.clear();
         self.layout_key = None;
         self.last_saved = None;
         self.open_fresh = false;
-        let authority = name.as_ref().map_or_else(
-            || self.socket.display().to_string(),
-            |host| format!("host:{host}"),
-        );
-        let paths = crate::workspace::layout_paths(&authority, &session);
+        let path = self.work_layout_path(name.as_deref(), &session, key);
         // In particular A -> B -> A must see A's latest queued layout. Disk
         // waits are confined to this read-after-write boundary and close/quit.
         self.flush_saves();
-        self.store = FileLayoutStore::new(paths.layout, None);
-        self.last_saved = persist::load_layout(&self.store.read()).initial;
+        self.store = self
+            .locations
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| FileLayoutStore::new(path, None));
+        let loaded = persist::load_layout(&self.store.read());
+        self.layout_blocked = loaded.blocked;
+        self.persist_writes = self.role != WindowRole::Fresh && !loaded.blocked;
+        self.layout_migration_pending = false;
+        self.last_saved = loaded.initial;
         self.attach(None, cx);
-        self.refresh_hosts(cx);
+        self.sync_fleet(cx);
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
         cx.notify();
@@ -3471,10 +3664,21 @@ impl Desk {
         cx.notify();
     }
 
-    pub fn begin_tab_drag(&mut self, id: String, x: f32, cx: &mut Context<Self>) {
+    /// Quick windows keep their compact titlebar regardless of the main layout.
+    pub(crate) fn tab_position(&self) -> TabPosition {
+        if self.role == WindowRole::Quick {
+            TabPosition::Top
+        } else {
+            self.prefs.tab_position
+        }
+    }
+
+    pub fn begin_tab_drag(&mut self, id: String, x: f32, y: f32, cx: &mut Context<Self>) {
+        let position = self.tab_position();
         self.drag = Some(Drag::Tab {
             id,
-            start_x: x,
+            position,
+            start: tab_coordinate(position, x, y),
             moved: false,
         });
         cx.notify();
@@ -3527,8 +3731,14 @@ impl Desk {
                 self.workspace_mut(|link| link.workspace.resize_split(&id, ratio));
                 cx.notify();
             }
-            Some(Drag::Tab { id, start_x, moved }) => {
-                if !*moved && (x - *start_x).abs() < 6. {
+            Some(Drag::Tab {
+                id,
+                position,
+                start,
+                moved,
+            }) => {
+                let coordinate = tab_coordinate(*position, x, y);
+                if !*moved && (coordinate - *start).abs() < 6. {
                     return;
                 }
                 *moved = true;
@@ -3538,7 +3748,7 @@ impl Desk {
                     .as_ref()
                     .and_then(|link| link.workspace.tabs.iter().position(|tab| tab.id == id));
                 let Some(from) = from else { return };
-                let to = tab_drop_index(from, &self.tab_centers.borrow(), x);
+                let to = self.tab_geometry.borrow().drop_index(from, *position, x, y);
                 if to != from {
                     self.workspace_mut(|link| link.workspace.move_tab(from, to));
                 }
@@ -3603,6 +3813,10 @@ impl Desk {
                     );
                     return;
                 };
+                if self.refuse_native_input(&terminal) {
+                    cx.notify();
+                    return;
+                }
                 self.start_upload(&terminal, batch.clone(), cx);
             }
         }
@@ -3610,11 +3824,14 @@ impl Desk {
     }
 }
 
-/// Where a dragged tab lands: after the last other tab whose center is left of `x`.
-pub(crate) fn tab_drop_index(from: usize, centers: &[f32], x: f32) -> usize {
+/// Where a dragged tab lands along either axis, excluding its own center.
+pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> usize {
+    if from >= centers.len() || centers.iter().any(|center| !center.is_finite()) {
+        return from;
+    }
     let mut to = 0;
     for (index, center) in centers.iter().enumerate() {
-        if index != from && x > *center {
+        if index != from && coordinate > *center {
             to = if index < from { index + 1 } else { index };
         }
     }
@@ -3623,7 +3840,8 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], x: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{pane_label, tab_drop_index};
+    use super::{TabGeometry, pane_label, tab_drop_index};
+    use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
 
@@ -3673,6 +3891,44 @@ mod tests {
         assert_eq!(tab_drop_index(2, &centers, 10.), 0);
         // A small move inside its own slot stays put.
         assert_eq!(tab_drop_index(1, &centers, 160.), 1);
+    }
+
+    #[test]
+    fn tab_reordering_uses_the_painted_axis_and_rejects_stale_geometry() {
+        let mut geometry = TabGeometry::default();
+        for position in [TabPosition::Top, TabPosition::Side] {
+            geometry.prepare(position, 3);
+            // Before the new strip has painted, no drop may reorder the workspace.
+            assert_eq!(geometry.drop_index(1, position, 500., 500.), 1);
+            for index in 0..3 {
+                // Nonzero origins model the titlebar/rail and a scrolled strip.
+                let bounds = gpui::Bounds::new(
+                    gpui::point(
+                        gpui::px(200. + index as f32 * 100.),
+                        gpui::px(-40. + index as f32 * 40.),
+                    ),
+                    gpui::size(gpui::px(80.), gpui::px(32.)),
+                );
+                geometry.record(index, position, bounds);
+            }
+            match position {
+                TabPosition::Top => {
+                    assert_eq!(geometry.drop_index(0, position, 500., -1000.), 2);
+                    assert_eq!(geometry.drop_index(2, position, 220., 1000.), 0);
+                }
+                TabPosition::Side => {
+                    assert_eq!(geometry.drop_index(0, position, -1000., 100.), 2);
+                    assert_eq!(geometry.drop_index(2, position, 1000., -30.), 0);
+                }
+            }
+            let other = if position == TabPosition::Top {
+                TabPosition::Side
+            } else {
+                TabPosition::Top
+            };
+            assert_eq!(geometry.drop_index(1, other, 1000., 1000.), 1);
+        }
+        assert_eq!(tab_drop_index(2, &[], 10.), 2);
     }
 }
 
