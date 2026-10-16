@@ -11,6 +11,7 @@ last-reviewed: 2026-05-28
 Status: Accepted
 Date: 2026-05-25
 See [ADR-0132](./0132-swarm-members-are-coordinator-clients.md) for swarm members as coordinator clients; Mux-class product policy stays out.
+See [ADR-0173](./0173-mission-control-is-a-client-composition.md) for task worktrees, briefs, and agent launch as a client composition.
 
 ## Context
 
