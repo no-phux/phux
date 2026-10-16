@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.85.0](https://github.com/no-phux/phux/compare/v0.84.0...v0.85.0) (2026-10-16)
+
+
+### Features
+
+* **organize:** one-step organize, and one client transport (ADR-0170, 0171, 0172) ([#1416](https://github.com/no-phux/phux/issues/1416)) ([492e820](https://github.com/no-phux/phux/commit/492e8203f86e38c7da1a8070f44ee90bdf6ace54))
+
 ## [0.84.0](https://github.com/no-phux/phux/compare/v0.83.0...v0.84.0) (2026-10-16)
 
 
