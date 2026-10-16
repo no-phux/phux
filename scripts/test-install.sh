@@ -225,18 +225,26 @@ echo "installer transaction tests passed"
 # path uses a real rename and must not inherit that harness.
 rm -f "$FAKE_BIN/mv"
 
-NEXT_SHA=0123456789abcdef0123456789abcdef01234567
-NEXT_BINS="$TMP/next-bins"
-NEXT_FIXTURE="$TMP/next-fixture"
-mkdir -p "$NEXT_BINS" "$NEXT_FIXTURE"
-printf 'next phux\n' > "$NEXT_BINS/phux"
-printf 'next phux-mcp\n' > "$NEXT_BINS/phux-mcp"
-chmod 755 "$NEXT_BINS/phux" "$NEXT_BINS/phux-mcp"
-bash "$ROOT/scripts/pack-release.sh" \
-  --id "next.${NEXT_SHA}" --target "$TARGET" --bin-dir "$NEXT_BINS" --out-dir "$NEXT_FIXTURE"
-cat > "$NEXT_FIXTURE/channel.json" <<EOF
-{"schema_version":1,"channel":"next","sha":"${NEXT_SHA}","version":"9.8.7"}
-EOF
+# Unpinned installs resolve from the channel manifest (ADR-0175) and verify
+# against its digest; the sidecar is never fetched. The fixture is the golden
+# manifest with this run's real artifact digest, re-rendered in the
+# generator's exact form.
+write_manifest() {
+  local channel=$1 out=$2 sha=$3 digest=$4
+  python3 - "$ROOT/scripts/fixtures/release-manifest/$channel.json" "$out" "$sha" "$digest" "$TARGET" <<'PY'
+import json, sys
+golden, out, sha, digest, target = sys.argv[1:]
+m = json.load(open(golden))
+phux = m["products"]["phux"]
+phux["sha"] = sha
+artifact = phux["artifacts"][target]
+if m["channel"] == "next":
+    artifact["name"] = f"phux-next.{sha}-{target}.tar.gz"
+    artifact["url"] = f"https://github.com/no-phux/phux/releases/download/next/{artifact['name']}"
+artifact["sha256"] = digest
+open(out, "w").write(json.dumps(m, indent=2) + "\n")
+PY
+}
 
 cat > "$FAKE_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -246,27 +254,63 @@ out=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) out=$2; shift 2 ;;
-    -fsSL|-fsSLI|-f|-s|-S|-L|-I|-q) shift ;;
-    -w) shift 2 ;;
     http*) url=$1; shift ;;
     *) shift ;;
   esac
 done
-payload() {
-  case "$url" in
-    *channel.json) cat "$INSTALL_FIXTURE/channel.json" ;;
-    *.sha256) cat "$INSTALL_FIXTURE/phux-next.0123456789abcdef0123456789abcdef01234567-x86_64-unknown-linux-gnu.tar.gz.sha256" ;;
-    *next.*) cat "$INSTALL_FIXTURE/phux-next.0123456789abcdef0123456789abcdef01234567-x86_64-unknown-linux-gnu.tar.gz" ;;
-    *) echo "unexpected url: $url" >&2; exit 1 ;;
-  esac
-}
-if [[ -n "$out" ]]; then
-  payload > "$out"
-else
-  payload
-fi
+printf '%s\n' "$url" >> "$INSTALL_FIXTURE/calls"
+case "$url" in
+  https://github.com/no-phux/phux/releases/download/channels/*.json) file="$INSTALL_FIXTURE/${url##*/}" ;;
+  *.tar.gz) file="$INSTALL_FIXTURE/${url##*/}" ;;
+  *) echo "unexpected url: $url" >&2; exit 22 ;;
+esac
+[[ -f $file ]] || exit 22
+if [[ -n "$out" ]]; then cp "$file" "$out"; else cat "$file"; fi
 EOF
 chmod 755 "$FAKE_BIN/curl"
+
+digest_of() { awk '{ print $1 }' "$1.sha256"; }
+
+STABLE_DIR="$TMP/stable-install"
+mkdir "$STABLE_DIR"
+STABLE_ARCHIVE="$FIXTURE/phux-${VERSION}-${TARGET}.tar.gz"
+write_manifest stable "$FIXTURE/stable.json" "$(printf 'a%.0s' {1..40})" "$(digest_of "$STABLE_ARCHIVE")"
+: > "$FIXTURE/calls"
+PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 \
+    --install-dir "$STABLE_DIR" >"$TMP/stable.out" 2>"$TMP/stable.err"
+grep -Fq "phux: ok: installed phux ${VERSION}" "$TMP/stable.err"
+grep -Fxq stable "$STABLE_DIR/.phux-channel"
+cmp "$BINS/phux" "$STABLE_DIR/phux"
+if grep -Fq '.sha256' "$FIXTURE/calls"; then echo "manifest install fetched a sidecar" >&2; exit 1; fi
+
+# A digest the archive does not hash to installs nothing and keeps the old pair.
+write_manifest stable "$FIXTURE/stable.json" "$(printf 'a%.0s' {1..40})" "$(printf '0%.0s' {1..64})"
+printf 'old phux\n' > "$STABLE_DIR/phux"
+if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 \
+    --install-dir "$STABLE_DIR" >"$TMP/tampered.out" 2>"$TMP/tampered.err"; then
+  echo "installer accepted an archive that does not match the manifest digest" >&2
+  exit 1
+fi
+grep -Fq 'checksum mismatch' "$TMP/tampered.err"
+grep -Fxq 'old phux' "$STABLE_DIR/phux"
+if find "$STABLE_DIR" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
+  echo "installer left transaction artifacts after a digest mismatch" >&2
+  exit 1
+fi
+
+NEXT_SHA=0123456789abcdef0123456789abcdef01234567
+NEXT_BINS="$TMP/next-bins"
+NEXT_FIXTURE="$TMP/next-fixture"
+mkdir -p "$NEXT_BINS" "$NEXT_FIXTURE"
+printf 'next phux\n' > "$NEXT_BINS/phux"
+printf 'next phux-mcp\n' > "$NEXT_BINS/phux-mcp"
+chmod 755 "$NEXT_BINS/phux" "$NEXT_BINS/phux-mcp"
+bash "$ROOT/scripts/pack-release.sh" \
+  --id "next.${NEXT_SHA}" --target "$TARGET" --bin-dir "$NEXT_BINS" --out-dir "$NEXT_FIXTURE"
+write_manifest next "$NEXT_FIXTURE/next.json" "$NEXT_SHA" \
+  "$(digest_of "$NEXT_FIXTURE/phux-next.${NEXT_SHA}-${TARGET}.tar.gz")"
 
 NEXT_DIR="$TMP/next-install"
 mkdir "$NEXT_DIR"
@@ -293,4 +337,4 @@ output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
     --os linux --arch x86_64 --install-dir "$NEXT_DIR" --dry-run)"
 grep -Fxq 'channel: stable' <<<"$output"
 
-echo "next-channel installer tests passed"
+echo "manifest installer tests passed"

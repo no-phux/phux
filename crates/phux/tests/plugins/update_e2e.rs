@@ -75,7 +75,7 @@ fn the_unknown_source_refusal_follows_the_json_error_contract() {
 }
 
 /// A bad `--version` is diagnosed offline: tag validation runs before the
-/// release index is consulted, so a typo costs one message and no round trip.
+/// release manifest is consulted, so a typo costs one message and no round trip.
 #[test]
 fn a_tag_that_is_not_a_release_tag_is_refused_without_network() {
     for bad in ["nightly", "1.2.3", "v1.2.3/../evil", "latest"] {

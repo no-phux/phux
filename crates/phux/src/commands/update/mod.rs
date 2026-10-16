@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use usage::Args;
 
 use self::channel::Channel;
-use self::release::{Artifact, NextHead, ReleaseSource, Version};
+use self::release::{Artifact, Published, ReleaseSource, Version};
 use self::source::{Install, InstallSource, UnknownReason};
 use super::json_err::{self, CliError, codes};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
@@ -45,7 +45,8 @@ pub(crate) enum UpdateError {
     InvalidTag(String),
     /// This OS/architecture has no published release artifact.
     UnsupportedPlatform(String),
-    /// The release index or an artifact could not be downloaded.
+    /// The release manifest was unreachable or invalid, or an artifact could
+    /// not be downloaded.
     Fetch(String),
     /// The `.sha256` sidecar was unusable, or the download could not be
     /// hashed. Distinct from a mismatch: nothing disagreed, something was
@@ -126,7 +127,8 @@ impl UpdateError {
                 "build from source: see docs/INSTALL.md#from-source".to_owned()
             }
             Self::Fetch(_) => "check network access to github.com, then retry; \
-                 `phux update --check` re-reads the release index"
+                 `phux update --check` re-reads the release manifest, and \
+                 `--version vX.Y.Z` installs a pinned release without it"
                 .to_owned(),
             Self::Checksum(_) | Self::ChecksumMismatch { .. } => {
                 "nothing was installed. Re-run to download again; if it \
@@ -229,6 +231,22 @@ pub(crate) struct Plan {
     pub(crate) update_available: bool,
     /// The release target triple for this host.
     pub(crate) host_target: &'static str,
+    /// The digest the channel manifest publishes for the target, when the
+    /// target is the release the manifest names. `None` for an explicit
+    /// `--version` pin, which is verified against its sidecar instead.
+    pub(crate) expected_sha256: Option<String>,
+    /// The protocol `major.minor` the target speaks, when the manifest names
+    /// it.
+    pub(crate) target_protocol: Option<String>,
+}
+
+/// The protocol `major.minor` this build speaks.
+fn current_protocol() -> String {
+    format!(
+        "{}.{}",
+        phux_protocol::PROTOCOL_VERSION.major,
+        phux_protocol::PROTOCOL_VERSION.minor
+    )
 }
 
 /// Why `phux update` will not perform an update itself.
@@ -436,6 +454,10 @@ impl Outcome {
             "platform": {
                 "target": self.plan.host_target,
             },
+            "protocol": {
+                "current": current_protocol(),
+                "target": self.plan.target_protocol,
+            },
             "artifact": self.artifact.as_ref().map(|artifact| serde_json::json!({
                 "archive": artifact.archive,
                 "archive_url": artifact.archive_url,
@@ -603,20 +625,26 @@ fn handoff_line(handoff: &Handoff) -> String {
     }
 }
 
-/// Build the stable-channel plan: what is installed, what is published,
-/// and what would change. Pure given the resolved inputs.
+/// Build the stable-channel plan: what is installed, what the manifest
+/// names, and what would change. Pure given the resolved inputs. `latest` is
+/// `None` only for a pin whose manifest could not be read.
 fn plan_stable(
     install: Install,
     current: Version,
     installed_channel: Channel,
     current_sha: Option<&str>,
-    latest_tag: &str,
+    latest: Option<&Published>,
     requested: Option<&str>,
     host_target: &'static str,
 ) -> Result<Plan, UpdateError> {
-    release::validate_tag(latest_tag)?;
-    let target_tag = requested.unwrap_or(latest_tag).to_owned();
+    let target_tag = requested
+        .or_else(|| latest.map(|latest| latest.tag.as_str()))
+        .ok_or_else(|| UpdateError::Fetch("no stable release was resolved".to_owned()))?
+        .to_owned();
     let target = release::validate_tag(&target_tag)?;
+    // The manifest vouches only for the release it names; a pin to any other
+    // tag is verified against that release's own sidecar.
+    let named = latest.filter(|latest| latest.version == target);
     let switching = installed_channel != Channel::Stable;
     Ok(Plan {
         install,
@@ -624,11 +652,13 @@ fn plan_stable(
         channel: Channel::Stable,
         current_sha: current_sha.map(str::to_owned),
         latest_sha: None,
-        latest_tag: latest_tag.to_owned(),
+        latest_tag: latest.map_or_else(|| target_tag.clone(), |latest| latest.tag.clone()),
         target_tag,
         changes_version: target != current || switching,
         update_available: target > current || switching,
         host_target,
+        expected_sha256: named.map(|latest| latest.sha256.clone()),
+        target_protocol: named.map(|latest| latest.protocol.clone()),
     })
 }
 
@@ -637,10 +667,9 @@ fn plan_next(
     current: Version,
     installed_channel: Channel,
     current_sha: Option<&str>,
-    head: &NextHead,
+    head: &Published,
     host_target: &'static str,
 ) -> Plan {
-    let tag = format!("next.{}", head.sha);
     let same_sha = current_sha == Some(head.sha.as_str());
     let changes = installed_channel != Channel::Next || !same_sha;
     Plan {
@@ -649,11 +678,13 @@ fn plan_next(
         channel: Channel::Next,
         current_sha: current_sha.map(str::to_owned),
         latest_sha: Some(head.sha.clone()),
-        latest_tag: tag.clone(),
-        target_tag: tag,
+        latest_tag: head.tag.clone(),
+        target_tag: head.tag.clone(),
         changes_version: changes,
         update_available: changes,
         host_target,
+        expected_sha256: Some(head.sha256.clone()),
+        target_protocol: Some(head.protocol.clone()),
     }
 }
 
@@ -688,29 +719,35 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
         .and_then(channel::read_file)
         .unwrap_or_else(Channel::from_build);
     let current_sha = channel::build_sha().map(str::to_owned);
+    let published = env
+        .releases
+        .manifest(target_channel)
+        .and_then(|body| release::parse_manifest(&body, target_channel, host_target));
     let plan = match target_channel {
+        Channel::Next => plan_next(
+            install,
+            current,
+            installed_channel,
+            current_sha.as_deref(),
+            &published?,
+            host_target,
+        ),
         Channel::Stable => {
-            let latest_tag = env.releases.latest_tag()?;
+            // A pin does not depend on discovery: it is the way back to a
+            // known release when the manifest is unreachable or wrong.
+            let latest = match opts.tag {
+                Some(_) => published.ok(),
+                None => Some(published?),
+            };
             plan_stable(
                 install,
                 current,
                 installed_channel,
                 current_sha.as_deref(),
-                &latest_tag,
+                latest.as_ref(),
                 opts.tag.as_deref(),
                 host_target,
             )?
-        }
-        Channel::Next => {
-            let head = env.releases.next_head()?;
-            plan_next(
-                install,
-                current,
-                installed_channel,
-                current_sha.as_deref(),
-                &head,
-                host_target,
-            )
         }
     };
 
@@ -769,20 +806,24 @@ fn install_release(
     };
     let staging = apply::Staging::create(&bin_dir)?;
 
-    // Both downloads land in staging, removed on every exit path.
+    // Downloads land in staging, removed on every exit path.
     let archive_path = staging.path().join(&artifact.archive);
-    let sidecar_path = staging.path().join(format!("{}.sha256", artifact.archive));
     env.releases
         .download(&artifact.archive_url, &archive_path)?;
-    env.releases
-        .download(&artifact.checksum_url, &sidecar_path)?;
-
-    let sidecar = std::fs::read_to_string(&sidecar_path).map_err(|err| {
-        UpdateError::Checksum(format!("could not read the .sha256 sidecar: {err}"))
-    })?;
 
     // The gate: nothing below runs unless the published digest matches.
-    let digest = apply::verify_archive(&archive_path, &sidecar, &artifact.archive)?;
+    let digest = if let Some(expected) = plan.expected_sha256.as_deref() {
+        apply::verify_digest(&archive_path, expected, &artifact.archive)?
+    } else {
+        // A pin the manifest does not name: its own sidecar is the anchor.
+        let sidecar_path = staging.path().join(format!("{}.sha256", artifact.archive));
+        env.releases
+            .download(&artifact.checksum_url, &sidecar_path)?;
+        let sidecar = std::fs::read_to_string(&sidecar_path).map_err(|err| {
+            UpdateError::Checksum(format!("could not read the .sha256 sidecar: {err}"))
+        })?;
+        apply::verify_archive(&archive_path, &sidecar, &artifact.archive)?
+    };
 
     let staged = apply::unpack_verified(&archive_path, &artifact.stage, staging.path())?;
 
@@ -854,6 +895,8 @@ fn rollback(
         changes_version: target != current,
         update_available: false,
         host_target: release::host_target().unwrap_or("unknown"),
+        expected_sha256: None,
+        target_protocol: None,
     };
     let handoff = if opts.no_restart {
         Handoff::Skipped
@@ -1039,7 +1082,7 @@ mod tests {
 
     use super::apply::BACKUP_DIR;
     use super::channel::{self, Channel};
-    use super::release::{Artifact, NextHead, ReleaseSource, Version, host_target};
+    use super::release::{Artifact, Published, ReleaseSource, Version, host_target};
     use super::source::{Install, InstallSource};
     use super::{
         Action, Handoff, Outcome, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan_next,
@@ -1064,23 +1107,82 @@ mod tests {
         host_target().expect("tests run on a platform with a published artifact")
     }
 
-    /// A [`ReleaseSource`] backed by a map of URL to bytes; no network.
+    const PHUX_TARGETS: [&str; 3] = [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ];
+    const UNUSED_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    /// A channel manifest in the ADR-0175 shape, naming `version` (stable) or
+    /// `sha` (next) with `digest` for this host's artifact.
+    fn manifest(channel: Channel, version: &str, sha: &str, digest: &str) -> String {
+        let artifacts: serde_json::Map<String, serde_json::Value> = PHUX_TARGETS
+            .iter()
+            .map(|triple| {
+                let artifact = match channel {
+                    Channel::Stable => Artifact::new(&format!("v{version}"), triple),
+                    Channel::Next => Artifact::next(sha, triple),
+                };
+                let digest = if *triple == target() {
+                    digest
+                } else {
+                    UNUSED_DIGEST
+                };
+                (
+                    (*triple).to_owned(),
+                    serde_json::json!({
+                        "name": artifact.archive,
+                        "url": artifact.archive_url,
+                        "sha256": digest,
+                    }),
+                )
+            })
+            .collect();
+        let release = match channel {
+            Channel::Stable => format!("v{version}"),
+            Channel::Next => "next".to_owned(),
+        };
+        serde_json::json!({
+            "schema_version": 1,
+            "channel": channel.as_str(),
+            "generated_at": "2026-01-01T00:00:00Z",
+            "products": {"phux": {
+                "version": version,
+                "release": release,
+                "sha": sha,
+                "protocol": "0.9",
+                "artifacts": artifacts,
+            }},
+        })
+        .to_string()
+    }
+
+    /// A [`ReleaseSource`] backed by a manifest per channel and a map of URL
+    /// to bytes; no network.
     #[derive(Debug)]
     struct FakeReleases {
-        latest: String,
-        next: Option<NextHead>,
+        manifests: HashMap<&'static str, String>,
         files: HashMap<String, Vec<u8>>,
         downloads: RefCell<Vec<String>>,
     }
 
     impl FakeReleases {
+        /// A stable manifest naming `latest`, whose artifact is not served.
         fn new(latest: &str) -> Self {
-            Self {
-                latest: latest.to_owned(),
-                next: None,
+            let mut fake = Self {
+                manifests: HashMap::new(),
                 files: HashMap::new(),
                 downloads: RefCell::new(Vec::new()),
-            }
+            };
+            let version = latest.trim_start_matches('v');
+            fake.name(Channel::Stable, version, &"c".repeat(40), UNUSED_DIGEST);
+            fake
+        }
+
+        fn name(&mut self, channel: Channel, version: &str, sha: &str, digest: &str) {
+            self.manifests
+                .insert(channel.as_str(), manifest(channel, version, sha, digest));
         }
 
         fn serve(&mut self, url: &str, bytes: Vec<u8>) {
@@ -1089,14 +1191,11 @@ mod tests {
     }
 
     impl ReleaseSource for FakeReleases {
-        fn latest_tag(&self) -> Result<String, UpdateError> {
-            Ok(self.latest.clone())
-        }
-
-        fn next_head(&self) -> Result<NextHead, UpdateError> {
-            self.next
-                .clone()
-                .ok_or_else(|| UpdateError::Fetch("the next channel pointer is missing".to_owned()))
+        fn manifest(&self, channel: Channel) -> Result<String, UpdateError> {
+            self.manifests
+                .get(channel.as_str())
+                .cloned()
+                .ok_or_else(|| UpdateError::Fetch(format!("no {} manifest", channel.as_str())))
         }
 
         fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
@@ -1164,26 +1263,33 @@ mod tests {
         Version::parse(text).unwrap()
     }
 
-    /// Build a release tarball plus its sidecar and serve both at the URLs
-    /// the real artifact naming would use.
+    /// Build a release tarball plus its sidecar, serve both at the URLs the
+    /// real artifact naming would use, and name it in the stable manifest.
     fn publish(fake: &mut FakeReleases, workdir: &Path, tag: &str) -> Artifact {
-        publish_artifact(fake, workdir, Artifact::new(tag, target()), tag)
+        let (artifact, digest) = publish_artifact(fake, workdir, Artifact::new(tag, target()), tag);
+        fake.name(
+            Channel::Stable,
+            tag.trim_start_matches('v'),
+            &"c".repeat(40),
+            &digest,
+        );
+        artifact
     }
 
     fn publish_next(fake: &mut FakeReleases, workdir: &Path, sha: &str) -> Artifact {
-        fake.next = Some(NextHead {
-            sha: sha.to_owned(),
-            version: Some("9.9.9".to_owned()),
-        });
-        publish_artifact(fake, workdir, Artifact::next(sha, target()), sha)
+        let (artifact, digest) =
+            publish_artifact(fake, workdir, Artifact::next(sha, target()), sha);
+        fake.name(Channel::Next, "9.9.9", sha, &digest);
+        artifact
     }
 
+    /// A packed release served with its sidecar; the manifest is untouched.
     fn publish_artifact(
         fake: &mut FakeReleases,
         workdir: &Path,
         artifact: Artifact,
         label: &str,
-    ) -> Artifact {
+    ) -> (Artifact, String) {
         let build = workdir.join("build").join(&artifact.stage);
         fs::create_dir_all(&build).unwrap();
         for name in ["phux", "phux-mcp"] {
@@ -1211,7 +1317,13 @@ mod tests {
             &artifact.checksum_url,
             format!("{digest}  {}\n", artifact.archive).into_bytes(),
         );
-        artifact
+        (artifact, digest)
+    }
+
+    /// The release a manifest names, as `parse_manifest` would return it.
+    fn published(channel: Channel, version: &str, sha: &str) -> Published {
+        let body = manifest(channel, version, sha, UNUSED_DIGEST);
+        super::release::parse_manifest(&body, channel, target()).unwrap()
     }
 
     /// A bin directory holding a "current" install.
@@ -1227,13 +1339,14 @@ mod tests {
 
     #[test]
     fn plan_stable_classifies_updates_downgrades_and_bad_tags() {
+        let latest = published(Channel::Stable, "0.13.0", &"c".repeat(40));
         let plan = |requested| {
             plan_stable(
                 direct(Path::new("/home/ada/.local/bin/phux")),
                 version("0.12.1"),
                 Channel::Stable,
                 None,
-                "v0.13.0",
+                Some(&latest),
                 requested,
                 target(),
             )
@@ -1241,11 +1354,16 @@ mod tests {
         let newer = plan(None).unwrap();
         assert!(newer.update_available && newer.changes_version);
         assert_eq!(newer.target_tag, "v0.13.0");
+        assert_eq!(newer.expected_sha256.as_deref(), Some(UNUSED_DIGEST));
+        assert_eq!(newer.target_protocol.as_deref(), Some("0.9"));
 
-        // An explicit older tag is a change, not an update.
+        // An explicit older tag is a change, not an update, and the manifest
+        // does not vouch for it.
         let older = plan(Some("v0.11.0")).unwrap();
         assert!(!older.update_available && older.changes_version);
         assert_eq!(older.target_tag, "v0.11.0");
+        assert_eq!(older.expected_sha256, None);
+        assert_eq!(older.target_protocol, None);
 
         let err = plan(Some("nightly")).unwrap_err();
         assert!(matches!(err, UpdateError::InvalidTag(_)), "{err:?}");
@@ -1398,10 +1516,54 @@ mod tests {
         assert_eq!(doc["server_handoff"]["result"], "upgrading");
         assert!(doc["artifact"]["sha256"].is_string());
         assert!(doc["backup"].is_string());
+        assert_eq!(doc["protocol"]["target"], "0.9");
+        assert_eq!(doc["protocol"]["current"], super::current_protocol());
 
+        // The manifest's digest is the gate; the sidecar is not fetched.
         let fetched = fake.downloads.borrow().clone();
-        assert!(fetched.contains(&artifact.archive_url));
-        assert!(fetched.contains(&artifact.checksum_url));
+        assert_eq!(fetched, vec![artifact.archive_url]);
+    }
+
+    /// A pin to a release the manifest does not name is verified against that
+    /// release's own sidecar, and still works when the manifest is gone.
+    #[test]
+    fn a_pin_verifies_its_sidecar_and_survives_a_missing_manifest() {
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
+        let mut fake = FakeReleases::new("v9.9.9");
+        let (pinned, _) = publish_artifact(
+            &mut fake,
+            scratch.path(),
+            Artifact::new("v9.9.8", target()),
+            "v9.9.8",
+        );
+        let pin = UpdateOpts {
+            tag: Some("v9.9.8".to_owned()),
+            ..opts()
+        };
+
+        let outcome = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &pin).unwrap();
+        assert_eq!(outcome.action, Action::Installed);
+        assert_eq!(outcome.plan.latest_tag, "v9.9.9");
+        assert_eq!(fs::read(bin.join("phux")).unwrap(), b"phux v9.9.8");
+        assert!(fake.downloads.borrow().contains(&pinned.checksum_url));
+
+        fake.manifests.clear();
+        let outcome = run(
+            &fake,
+            direct(&bin.join("phux")),
+            Handoff::Skipped,
+            &UpdateOpts {
+                dry_run: true,
+                ..pin
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.action, Action::Planned);
+        assert_eq!(outcome.plan.latest_tag, "v9.9.8");
+
+        let err = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap_err();
+        assert!(matches!(err, UpdateError::Fetch(_)), "{err:?}");
     }
 
     /// A tampered archive and a missing artifact both fail without touching
@@ -1517,10 +1679,7 @@ mod tests {
     #[test]
     fn check_on_next_does_not_download_an_archive() {
         let mut fake = FakeReleases::new("v0.13.0");
-        fake.next = Some(NextHead {
-            sha: NEXT_SHA.to_owned(),
-            version: Some("0.13.0".to_owned()),
-        });
+        fake.name(Channel::Next, "0.13.0", NEXT_SHA, UNUSED_DIGEST);
         let outcome = run(
             &fake,
             direct(Path::new("/home/ada/.local/bin/phux")),
@@ -1563,17 +1722,12 @@ mod tests {
         );
         assert_eq!(channel::read_file(&bin), Some(Channel::Next));
         let fetched = fake.downloads.borrow().clone();
-        assert!(fetched.contains(&artifact.archive_url));
-        assert!(fetched.contains(&artifact.checksum_url));
-        assert!(!fetched.iter().any(|url| url.contains("/v0.13.0/")));
+        assert_eq!(fetched, vec![artifact.archive_url]);
     }
 
     #[test]
     fn plan_next_is_up_to_date_only_on_the_same_sha() {
-        let head = NextHead {
-            sha: NEXT_SHA.to_owned(),
-            version: Some("0.13.0".to_owned()),
-        };
+        let head = published(Channel::Next, "0.13.0", NEXT_SHA);
         let plan = |sha| {
             plan_next(
                 direct(Path::new("/home/ada/.local/bin/phux")),

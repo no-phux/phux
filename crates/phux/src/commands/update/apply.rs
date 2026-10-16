@@ -106,14 +106,29 @@ pub(crate) fn expected_digest(sidecar: &str, archive: &str) -> Result<String, Up
     Ok(digest.to_ascii_lowercase())
 }
 
-/// Verify `archive` against `sidecar`, returning the agreed digest. This is
-/// the trust anchor: everything downstream runs only on `Ok`.
+/// Verify `archive` against `sidecar`, returning the agreed digest. Used for
+/// an explicit `--version` pin, which the channel manifest does not name.
 pub(crate) fn verify_archive(
     archive: &Path,
     sidecar: &str,
     archive_name: &str,
 ) -> Result<String, UpdateError> {
-    let expected = expected_digest(sidecar, archive_name)?;
+    verify_digest(
+        archive,
+        &expected_digest(sidecar, archive_name)?,
+        archive_name,
+    )
+}
+
+/// Verify `archive` against a published digest (the channel manifest's, or a
+/// sidecar's), returning it. This is the trust anchor: everything downstream
+/// runs only on `Ok`.
+pub(crate) fn verify_digest(
+    archive: &Path,
+    expected: &str,
+    archive_name: &str,
+) -> Result<String, UpdateError> {
+    let expected = expected.to_ascii_lowercase();
     let actual = sha256_file(archive)
         .map_err(|err| UpdateError::Checksum(format!("could not hash the download: {err}")))?;
     if actual == expected {
