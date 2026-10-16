@@ -52,8 +52,8 @@ be updated in the same change.
 The comparison reads `benchmarks/icount-baseline.json`. Each scenario's
 instruction count may rise by at most 5 percent. An equal rise passes. A drop
 passes. A missing or extra scenario fails. Exact allocation counts for encode
-and decode stay in `crates/phux-protocol/tests/hot_path_alloc.rs` and run with
-the unit tests. The instruction job does not compile that test again.
+and decode stay in `crates/phux-protocol/tests/it/hot_path_alloc.rs` and run
+with the unit tests. The instruction job does not compile that test again.
 
 ## How to read a failure
 

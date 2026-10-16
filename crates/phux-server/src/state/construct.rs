@@ -41,6 +41,7 @@ impl ServerState {
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::default(),
+            native_agents: super::native_agent::NativeAgents::default(),
         }
     }
 }

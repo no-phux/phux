@@ -56,7 +56,7 @@ ROUTES = DOC_INPUTS + (
       "crates/phux-client-runtime/*",
       "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
       "crates/phux-server/*", "crates/phux-server-testkit/*",
-      "crates/phux-agent-rules/*", "crates/phux/*", "crates/phux-client/*",
+      "crates/phux-agent-rules/*", "crates/phux-agent-host/*", "crates/phux/*", "crates/phux-client/*",
       "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
       "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
@@ -208,6 +208,20 @@ def plan(mode, targets, e2e):
     return {"unit_mode": mode, "unit_targets": targets, "e2e_needed": e2e}
 
 
+def gating_features(directory, binary, root=ROOT):
+    """Non-default `required-features` of one `[[test]]` target, `+`-joined.
+
+    A gated target is skipped unless its features are on, so the narrow lane
+    names them to keep building the target the diff touched.
+    """
+    manifest = tomllib.loads((root / "crates" / directory / "Cargo.toml").read_text())
+    defaults = set(manifest.get("features", {}).get("default", []))
+    for target in manifest.get("test", []):
+        if target.get("name") == binary:
+            return "+".join(f for f in target.get("required-features", []) if f not in defaults)
+    return ""
+
+
 def narrow_targets(paths, packages, root=ROOT):
     targets = []
     for path in paths:
@@ -217,7 +231,8 @@ def narrow_targets(paths, packages, root=ROOT):
         name = package_named(parsed[0], packages) if parsed else None
         if name is None:
             return None
-        targets.append(f"{name}:{parsed[1]}")
+        features = gating_features(*parsed, root) if parsed[1] != "*" else ""
+        targets.append(f"{name}:{parsed[1]}" + (f":{features}" if features else ""))
     return targets
 
 

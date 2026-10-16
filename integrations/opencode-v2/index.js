@@ -2422,6 +2422,7 @@ var src_default = Plugin.define({
   async setup(ctx) {
     const options = readOptions(ctx.options);
     const environment = process.env;
+    const reportLifecycle = environment.PHUX_AGENT_REPORTING !== "0" && options.serverLifecycle === true;
     const environmentTarget = readEnvironmentTarget(environment.PHUX_TARGET);
     const parent = parentPane(environment.PHUX_TERMINAL_ID);
     const cli = new PhuxCli(cliOptions(options, environment));
@@ -2477,7 +2478,7 @@ var src_default = Plugin.define({
       if (emission !== null)
         event.system.push({ type: "text", text: emission.text });
     });
-    if (options.serverLifecycle === true) {
+    if (reportLifecycle) {
       await ctx.tool.hook("execute.before", async (event) => {
         await lifecycle.toolStart(event.sessionID, event.tool, event.id);
       });
@@ -2494,7 +2495,7 @@ var src_default = Plugin.define({
           selectedTargets.delete(deleted);
           await terminals.release(deleted);
         }
-        if (options.serverLifecycle === true)
+        if (reportLifecycle)
           await applyServerEvent(lifecycle, event);
       }
     })();
@@ -2508,7 +2509,7 @@ var src_default = Plugin.define({
       await events.catch(() => {
         return;
       });
-      if (options.serverLifecycle === true)
+      if (reportLifecycle)
         await lifecycle.dispose();
       await terminals.releaseAll();
       selectedTargets.clear();

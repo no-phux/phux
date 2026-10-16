@@ -14,7 +14,7 @@ use gpui::{
 use gpui_kit::component::command::CommandState;
 use gpui_kit::component::input::InputState;
 use phux_client_runtime::Client;
-use phux_client_runtime::control::{DeliveryOutcome, Event, PathAnswer, Status};
+use phux_client_runtime::control::{DeliveryOutcome, Event, FileUploadReceipt, PathAnswer, Status};
 use phux_client_runtime::engine::{Scroll, TextRegion};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
@@ -32,7 +32,7 @@ use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::{self, Motion};
 use super::notifications::{Feed, Kind};
-use super::overlays::InputSlot;
+use super::overlays::{GotoFrecency, GotoPalette, GotoSearch, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
 use super::settings_panel::SettingsControls;
@@ -88,6 +88,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    NativeLaunch,
     Path,
     MoveResources,
     Rename {
@@ -174,10 +175,17 @@ pub struct Desk {
     _subs: Vec<Subscription>,
     /// The list palette shared by commands, goto, sessions, and the path picker.
     pub(crate) palette_state: Option<Entity<CommandState>>,
+    /// Go To state chips. A change keeps the query and realigns by entry.
+    pub(crate) goto: GotoPalette,
+    /// Folded Go To rows. Rebuilt when pane, agent, or tab metadata changes.
+    pub(crate) goto_search: GotoSearch,
+    /// Opens remembered for Go To ranking. Visits follow a listed destination only.
+    pub(crate) goto_frecency: GotoFrecency,
     pub(crate) modal_inputs: Vec<(InputSlot, Entity<InputState>, Subscription)>,
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -192,6 +200,7 @@ pub struct Desk {
     pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    pub(super) main_menu: Option<gpui::WindowHandle<super::glass_menu::GlassMenu>>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
@@ -210,6 +219,18 @@ pub struct Desk {
     pub(crate) controls_hover: Option<String>,
     /// The placement a file drag from the OS is over.
     pub(crate) drop_target: Option<String>,
+    /// Uploads waiting for a receipt before any path is pasted.
+    uploads: Vec<PendingUpload>,
+    /// Bumped when the connection is replaced, so a late read does not upload.
+    upload_epoch: u64,
+    /// File reads still off the UI thread.
+    uploads_reading: u32,
+}
+
+struct PendingUpload {
+    transfer_id: u64,
+    destination: crate::attach::UploadDestination,
+    local_source: Option<PathBuf>,
 }
 
 pub struct Link {
@@ -376,10 +397,14 @@ impl Desk {
             _clock: None,
             _subs: Vec::new(),
             palette_state: None,
+            goto: GotoPalette::default(),
+            goto_search: GotoSearch::default(),
+            goto_frecency: GotoFrecency::default(),
             modal_inputs: Vec::new(),
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
@@ -387,6 +412,7 @@ impl Desk {
             host_adding: None,
             host_switching: false,
             drag_region: None,
+            main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
@@ -398,6 +424,9 @@ impl Desk {
             chrome_hover: None,
             controls_hover: None,
             drop_target: None,
+            uploads: Vec::new(),
+            upload_epoch: 0,
+            uploads_reading: 0,
         };
         if let Some(error) = request.startup_error {
             desk.post(Kind::Error, "Could not start the phux server", Some(error));
@@ -438,6 +467,8 @@ impl Desk {
     }
 
     fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
+        // Native launch completions belong to the client that initiated them.
+        self.native_launch = Default::default();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
             self.connect_error = Some("No session to open".into());
@@ -499,17 +530,22 @@ impl Desk {
     fn on_activity(&mut self, cx: &mut Context<Self>) {
         let _drain = crate::diag::DRAIN.timer();
         crate::diag::DRAIN_WAKES.incr();
-        let (events, answers, epoch) = {
+        let (events, answers, uploads, epoch) = {
             let Some(link) = self.link.as_mut() else {
                 return;
             };
             (
                 link.connection.drain(),
                 link.connection.take_path_answers(),
+                link.connection.take_file_upload_receipts(),
                 link.connection.connection_epoch(),
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
+        let had_uploads = !uploads.is_empty();
+        if had_uploads {
+            self.finish_uploads(uploads);
+        }
         let conversation_changed = self.conversation_receipts(&events);
         // Notify cached terminals even for mixed agent/PTY batches, but keep
         // the last frame while disconnected instead of reacquiring a view.
@@ -523,6 +559,9 @@ impl Desk {
             .as_ref()
             .is_some_and(|link| link.workspace.awaiting_output(&events));
         if answers.is_empty() && paint_batch(&events) && !conversation_changed && !awaiting_output {
+            if had_uploads {
+                cx.notify();
+            }
             return;
         }
         self.apply_activity(&events, answers, epoch, cx);
@@ -538,11 +577,15 @@ impl Desk {
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
         self.note_activity(events, epoch);
+        // A reexec resets layout placements, not the ACP owner or its editor.
+        // Reopen its guardian before waiting for the exact fresh activation.
+        self.remember_native_focus();
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
         self.settle_project_terminal();
+        self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -935,6 +978,7 @@ impl Desk {
             "rename-session" => self.open_rename_session(),
             "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
+            "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
                 self.workspace_call(|link| link.workspace.split(&link.connection, Axis::Row, false))
@@ -1358,8 +1402,13 @@ impl Desk {
             return;
         }
         self.closed = true;
+        if let Some(menu) = self.main_menu.take() {
+            let _ =
+                gpui::AnyWindowHandle::from(menu).update(cx, |_, window, _| window.remove_window());
+        }
         self.persist();
         self.flush_saves();
+        self.abort_uploads(false);
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
@@ -1443,6 +1492,7 @@ impl Desk {
             .as_ref()
             .is_some_and(|link| matches!(link.connection.status, Status::Closed | Status::Failed));
         if closed || self.link.is_none() {
+            self.abort_uploads(true);
             if let Some(link) = self.link.as_mut() {
                 link.workspace.release_all(&link.connection);
                 link.connection.close();
@@ -2111,8 +2161,9 @@ impl Desk {
             .focused_placement()
             .filter(|placement| placement.view_id.is_some())
             .map(|placement| placement.id.clone())
+            && let Some(notice) = self.panes.request(&id, action, cx)
         {
-            self.panes.request(&id, action, cx);
+            self.post(Kind::Refusal, notice.title, Some(notice.body));
         }
     }
 
@@ -2120,10 +2171,16 @@ impl Desk {
         let Some(terminal) = self.focused_terminal() else {
             return;
         };
+        if self.refuse_native_input(&terminal) {
+            return;
+        }
         let events = typed_keys(text);
         let client = self.client();
         let Some(client) = client else { return };
         let sent = client.with_control(|control| {
+            if crate::input::native_owned(control, &terminal) {
+                return false;
+            }
             events
                 .into_iter()
                 .all(|event| control.send_key(&terminal, event))
@@ -2221,18 +2278,75 @@ impl Desk {
     }
 
     /// Paste dropped paths into the pane they were dropped on.
-    pub fn drop_paths(&mut self, placement_id: &str, paths: &[PathBuf]) {
+    /// A remote terminal uploads the files and pastes the server path.
+    pub fn drop_paths(&mut self, placement_id: &str, paths: &[PathBuf], cx: &mut Context<Self>) {
         self.drop_target = None;
-        if paths.is_empty() {
-            return;
-        }
         let Some(terminal) = self
             .placement(placement_id)
             .and_then(|placement| placement.terminal_id.clone())
         else {
             return;
         };
-        self.paste_text_to(&terminal, &crate::attach::quote_paths(paths));
+        self.paste_host_paths(&terminal, paths, cx);
+    }
+
+    /// Paste paths that live on this Mac, or upload them when the terminal does not.
+    fn paste_host_paths(
+        &mut self,
+        terminal: &ResourceId,
+        paths: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
+        match crate::attach::attach_paths(&self.terminal_host(terminal), paths) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                self.paste_text_to(terminal, &text);
+            }
+            Some(crate::attach::PathAttach::Upload(batch)) => {
+                self.start_upload(terminal, batch, cx);
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                self.post(Kind::Refusal, title, Some(body));
+            }
+            None => {}
+        }
+    }
+
+    fn terminal_host(&self, terminal: &ResourceId) -> crate::attach::TerminalHost {
+        crate::attach::terminal_host(self.remote.as_deref(), terminal)
+    }
+
+    /// A pending or retained native owner never turns back into a raw PTY.
+    pub(super) fn native_owned_terminal(&self, terminal: &ResourceId) -> bool {
+        let Some(link) = self.link.as_ref() else {
+            return false;
+        };
+        self.native_launch
+            .owns_terminal(&link.connection.client, terminal)
+            || link.connection.conversations.values().any(|conversation| {
+                conversation.parent == *terminal && conversation.native.is_some()
+            })
+            || link
+                .connection
+                .client
+                .with_control(|control| crate::input::native_owned(control, terminal))
+    }
+
+    fn refuse_native_input(&mut self, terminal: &ResourceId) -> bool {
+        if !self.native_owned_terminal(terminal) {
+            return false;
+        }
+        self.post(
+            Kind::Refusal,
+            crate::attach::PASTE_REFUSED,
+            Some(
+                "Native ACP agents do not accept raw terminal input or file drops. Use the structured conversation. Nothing was sent."
+                    .into(),
+            ),
+        );
+        true
     }
 
     fn paste_text(&mut self, text: &str) -> bool {
@@ -2244,11 +2358,14 @@ impl Desk {
 
     /// Queue a bracketed paste. False, with a notification, when the terminal is not ready.
     fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
+        if self.refuse_native_input(terminal) {
+            return false;
+        }
         let Some(client) = self.client() else {
             return false;
         };
         let queued = client.with_control(|control| {
-            if !control.input_ready(terminal) {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
             let _ = control.apply_paste(terminal, text);
@@ -2264,6 +2381,208 @@ impl Desk {
             );
         }
         queued
+    }
+
+    /// Read local files off the UI thread, upload them, and paste nothing yet.
+    fn start_upload(
+        &mut self,
+        terminal: &ResourceId,
+        batch: crate::attach::UploadBatch,
+        cx: &mut Context<Self>,
+    ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
+        let Some(client) = self.client() else {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("Not connected. Nothing was pasted.".into()),
+            );
+            return;
+        };
+        let Some(started) = self.destination_of(terminal) else {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("That terminal is gone. Nothing was pasted.".into()),
+            );
+            return;
+        };
+        if matches!(started.host, crate::attach::TerminalHost::Local) {
+            if let crate::attach::UploadBatch::Paths(paths) = batch {
+                self.paste_text_to(terminal, &crate::attach::quote_paths(&paths));
+            }
+            return;
+        }
+        let epoch = self.upload_epoch;
+        self.uploads_reading = self.uploads_reading.saturating_add(1);
+        cx.spawn(async move |this, cx| {
+            let prepared = smol::unblock(move || crate::attach::prepare_upload(batch)).await;
+            let _ = this.update(cx, |desk, cx| {
+                desk.uploads_reading = desk.uploads_reading.saturating_sub(1);
+                desk.commit_uploads(epoch, &client, &started, prepared);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn commit_uploads(
+        &mut self,
+        epoch: u64,
+        client: &Arc<Client>,
+        started: &crate::attach::UploadDestination,
+        prepared: Vec<Result<crate::attach::PreparedUpload, crate::attach::UploadPrepareError>>,
+    ) {
+        // A replaced connection already explained the abort. A late read stops.
+        if self.upload_epoch != epoch {
+            return;
+        }
+        if self
+            .client()
+            .is_none_or(|current| !Arc::ptr_eq(&current, client))
+        {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("The terminal changed before the upload started. Nothing was pasted.".into()),
+            );
+            return;
+        }
+        if self.refuse_native_input(&started.terminal) {
+            return;
+        }
+        let current = self.destination_of(&started.terminal);
+        if !crate::attach::same_upload_destination(started, current.as_ref()) {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("The terminal changed before the upload started. Nothing was pasted.".into()),
+            );
+            for item in &prepared {
+                if let Err(error) = item {
+                    self.post(Kind::Refusal, error.title, Some(error.body.clone()));
+                }
+            }
+            return;
+        }
+        for item in prepared {
+            match item {
+                Err(error) => self.post(Kind::Refusal, error.title, Some(error.body)),
+                Ok(file) => {
+                    let transfer_id =
+                        client.put_file(started.terminal.clone(), file.extension, file.bytes);
+                    self.uploads.push(PendingUpload {
+                        transfer_id,
+                        destination: started.clone(),
+                        local_source: file.local_source,
+                    });
+                }
+            }
+        }
+    }
+
+    fn finish_uploads(&mut self, receipts: Vec<FileUploadReceipt>) {
+        for receipt in receipts {
+            let Some(index) = self
+                .uploads
+                .iter()
+                .position(|pending| pending.transfer_id == receipt.transfer_id)
+            else {
+                continue;
+            };
+            let pending = self.uploads.remove(index);
+            let current = self.destination_of(&pending.destination.terminal);
+            match crate::attach::follow_upload(
+                &pending.destination,
+                current.as_ref(),
+                &receipt,
+                pending.local_source.as_deref(),
+            ) {
+                crate::attach::UploadFollowup::Paste { terminal, text } => {
+                    let more = self
+                        .uploads
+                        .iter()
+                        .any(|pending| pending.destination.terminal == terminal);
+                    let text = if more { format!("{text} ") } else { text };
+                    self.paste_uploaded(&terminal, &text);
+                }
+                crate::attach::UploadFollowup::Notice { title, body } => {
+                    self.post(Kind::Refusal, title, Some(body));
+                }
+            }
+        }
+    }
+
+    /// Paste a server path. `input_ready` here means the terminal can take
+    /// keystrokes, not that its files are on this machine.
+    fn paste_uploaded(&mut self, terminal: &ResourceId, text: &str) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
+        let Some(client) = self.client() else {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some(format!(
+                    "The file is on that machine at {text}. Nothing was pasted."
+                )),
+            );
+            return;
+        };
+        let queued = client.with_control(|control| {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
+                return false;
+            }
+            let _ = control.apply_paste(terminal, text);
+            true
+        });
+        if queued {
+            client.wake();
+            return;
+        }
+        self.post(
+            Kind::Refusal,
+            crate::attach::PASTE_REFUSED,
+            Some(format!(
+                "The file is on that machine at {text}. The terminal was not ready, so nothing was pasted."
+            )),
+        );
+    }
+
+    /// The placed terminal and the host [`crate::attach::terminal_host`] names.
+    /// Absent when that terminal is no longer on screen or belongs to native ACP.
+    fn destination_of(&self, terminal: &ResourceId) -> Option<crate::attach::UploadDestination> {
+        if self.native_owned_terminal(terminal) {
+            return None;
+        }
+        let link = self.link.as_ref()?;
+        let placed = link.workspace.tabs.iter().any(|tab| {
+            crate::workspace::layout::placements(&tab.root)
+                .iter()
+                .any(|placement| placement.terminal_id.as_ref() == Some(terminal))
+        });
+        if !placed {
+            return None;
+        }
+        Some(crate::attach::UploadDestination {
+            terminal: terminal.clone(),
+            host: self.terminal_host(terminal),
+        })
+    }
+
+    fn abort_uploads(&mut self, notify: bool) {
+        let pending = std::mem::take(&mut self.uploads);
+        let reading = self.uploads_reading > 0;
+        self.upload_epoch = self.upload_epoch.wrapping_add(1);
+        if notify && (!pending.is_empty() || reading) {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("The terminal changed before the upload finished. Nothing was pasted.".into()),
+            );
+        }
     }
 
     fn write_file(
@@ -2309,7 +2628,10 @@ impl Desk {
         let shown = path.display().to_string();
         match mode {
             "paste" => {
-                self.paste_text(&crate::attach::quote_paths(&[path]));
+                let Some(terminal) = self.focused_terminal() else {
+                    return;
+                };
+                self.paste_host_paths(&terminal, &[path], cx);
             }
             "copy" => self.host_action(HostAction::CopyText(shown), cx),
             _ => self.host_action(HostAction::Open(shown), cx),
@@ -2980,8 +3302,10 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
-        self.conversation_faces
-            .retain(|placement, _| live.contains(placement));
+        let connection = self.link.as_ref().map(|link| &link.connection);
+        self.conversation_faces.retain(|placement, face| {
+            face.retain_for_placement(live.contains(placement), connection)
+        });
     }
 
     pub fn panes(&self) -> &Panes {
@@ -3070,6 +3394,7 @@ impl Desk {
     /// The in-place half of [`Self::switch_host`], once the target's home is known.
     fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
         self.persist();
+        self.abort_uploads(true);
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
@@ -3397,6 +3722,27 @@ impl Desk {
                 if let Some(tab) = self.active_tab_id() {
                     self.focus_placement(&tab, placement_id, window, cx);
                 }
+            }
+            crate::terminal::TerminalEvent::Notice { title, body } => {
+                self.post(Kind::Refusal, title, Some(body.clone()));
+            }
+            crate::terminal::TerminalEvent::Upload(batch) => {
+                let Some(terminal) = self
+                    .placement(placement_id)
+                    .and_then(|placement| placement.terminal_id.clone())
+                else {
+                    self.post(
+                        Kind::Refusal,
+                        crate::attach::PASTE_REFUSED,
+                        Some("That terminal is gone. Nothing was pasted.".into()),
+                    );
+                    return;
+                };
+                if self.refuse_native_input(&terminal) {
+                    cx.notify();
+                    return;
+                }
+                self.start_upload(&terminal, batch.clone(), cx);
             }
         }
         cx.notify();

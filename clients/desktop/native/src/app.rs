@@ -8,9 +8,11 @@ mod actions;
 mod color;
 mod conversation;
 mod desk;
+mod glass_menu;
 mod host;
 mod keys;
 mod motion;
+mod native_launch;
 mod notifications;
 mod organization;
 mod overlays;
@@ -59,7 +61,7 @@ pub struct AppOptions {
 
 /// Open the desktop on an already-initialized GPUI app.
 ///
-/// Parent must call `gpui_kit::init` and `application().with_assets(assets::Assets)`
+/// Parent must call `gpui_kit::init` and `application().with_assets(crate::assets::Assets)`
 /// before this. The returned handle is `WindowHandle<gpui_kit::component::Root>`.
 ///
 /// Activity is not polled. Each window waits on [`crate::connection::Connection::activity`]
@@ -68,6 +70,18 @@ pub struct AppOptions {
 pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
     let desktop = Desktop::install(cx);
     desktop.update(cx, |desktop, cx| desktop.launch(options, cx))
+}
+
+/// Open the real menu material in a standalone native fixture.
+#[cfg(feature = "ui-fixtures")]
+pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
+    glass_menu::preview(cx)
+}
+
+/// Measure native menu creation without opening visible windows.
+#[cfg(feature = "ui-fixtures")]
+pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
+    glass_menu::benchmark(cx)
 }
 
 /// Command ids the palette, menus, and key bindings dispatch through [`Run`].

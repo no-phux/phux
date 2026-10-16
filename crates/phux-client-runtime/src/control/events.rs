@@ -348,6 +348,18 @@ pub enum Event {
         /// Authoritative committed stream, if one had published.
         stream: Option<AgentStreamInfo>,
     },
+    /// An SDK intent resolved, independently of terminal input delivery.
+    /// Queued is submission only; Unknown must never trigger automatic replay.
+    NativeAgentResult {
+        /// The exact `AgentSession` resource.
+        agent_session_id: ResourceId,
+        /// The identity returned by `native_agent_command`.
+        operation_id: u64,
+        /// The factual admission or completion stage.
+        disposition: phux_protocol::native_agent::NativeDisposition,
+        /// Provider or broker detail, preserved without guessing a stage.
+        detail: Option<String>,
+    },
     /// One acknowledged input operation resolved. Lossless: never dropped
     /// by the queue cap.
     InputDelivery {
@@ -456,6 +468,7 @@ impl Event {
                 | Self::TerminalsClosed { .. }
                 | Self::OrganizationOperation { .. }
                 | Self::InputDelivery { .. }
+                | Self::NativeAgentResult { .. }
                 | Self::CommandResult { .. }
                 | Self::InputHolderChanged { .. }
                 | Self::AgentPublication { .. }
@@ -474,6 +487,7 @@ impl Event {
             self,
             Self::TerminalChanged { .. }
                 | Self::InputDelivery { .. }
+                | Self::NativeAgentResult { .. }
                 | Self::AgentMetadata { .. }
                 | Self::SessionProject { .. }
         )

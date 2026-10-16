@@ -50,6 +50,10 @@ use super::{
 )]
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
+        Command::NativeAgent { request } => {
+            enc.write_u8(super::COMMAND_TAG_NATIVE_AGENT);
+            enc.write_bytes(request.encoded());
+        }
         Command::AttachResource {
             terminal_id,
             role_policy,
@@ -317,6 +321,15 @@ fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> 
 pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
+    if tag == super::COMMAND_TAG_NATIVE_AGENT {
+        let bytes = dec.read_bytes()?;
+        if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+            return Err(DecodeError::NativeAgentLimitExceeded);
+        }
+        let request = crate::native_agent::NativeRequestPayload::decode(bytes)
+            .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+        return Ok(Command::NativeAgent { request });
+    }
     // Each family claims a disjoint tag set and returns `None` (reading
     // nothing) for the rest.
     if let Some(command) = decode_terminal_subscription_command(tag, dec)? {
@@ -945,6 +958,20 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     let tag = {
         let mut body_enc = Encoder::new(&mut body);
         match event {
+            AgentEvent::NativeAgentResult {
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
+            } => {
+                encode_terminal_id(agent_session_id, &mut body_enc);
+                body_enc.write_u64_be(*operation_id);
+                body_enc.write_u8(disposition.to_u8());
+                if let Some(detail) = detail {
+                    body_enc.write_str(detail);
+                }
+                super::EVENT_TAG_NATIVE_AGENT_RESULT
+            }
             AgentEvent::CommandStarted => EVENT_TAG_COMMAND_STARTED,
             AgentEvent::CommandFinished { exit_code } => {
                 encode_optional_i32(*exit_code, &mut body_enc);
@@ -1110,6 +1137,32 @@ fn encode_asked_fields(
     }
 }
 
+fn decode_native_result_event(body: &[u8]) -> Result<AgentEvent, DecodeError> {
+    if body.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+        return Err(DecodeError::NativeAgentLimitExceeded);
+    }
+    let mut dec = Decoder::new(body);
+    let agent_session_id = decode_terminal_id(&mut dec)?;
+    let operation_id = dec.read_u64_be()?;
+    let Some(disposition) = crate::native_agent::NativeDisposition::from_u8(dec.read_u8()?) else {
+        return Ok(AgentEvent::Unknown {
+            tag: super::EVENT_TAG_NATIVE_AGENT_RESULT,
+            body: body.to_vec(),
+        });
+    };
+    let detail = if dec.remaining_in_body() == 0 {
+        None
+    } else {
+        Some(dec.read_str()?.to_owned())
+    };
+    Ok(AgentEvent::NativeAgentResult {
+        agent_session_id,
+        operation_id,
+        disposition,
+        detail,
+    })
+}
+
 pub(in crate::wire) fn decode_agent_event(
     dec: &mut Decoder<'_>,
 ) -> Result<AgentEvent, DecodeError> {
@@ -1118,6 +1171,7 @@ pub(in crate::wire) fn decode_agent_event(
 
     let mut body_dec = Decoder::new(body);
     let event = match tag {
+        super::EVENT_TAG_NATIVE_AGENT_RESULT => decode_native_result_event(body)?,
         EVENT_TAG_COMMAND_STARTED => AgentEvent::CommandStarted,
         EVENT_TAG_COMMAND_FINISHED => AgentEvent::CommandFinished {
             exit_code: decode_optional_i32(&mut body_dec)?,

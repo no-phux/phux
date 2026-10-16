@@ -18,6 +18,23 @@
         "type": "github"
       }
     },
+    "ghostty": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792105760,
+        "narHash": "sha256-B9UlRNtp7hFmqgDjzwJo6xf9YuSvQq0Sa2j8xBiTq/U=",
+        "owner": "phall1",
+        "repo": "ghostty",
+        "rev": "11e797c05f162911fb64804d37337e7224ab501f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "phall1",
+        "repo": "ghostty",
+        "rev": "11e797c05f162911fb64804d37337e7224ab501f",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791260994,
@@ -37,6 +54,7 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
+        "ghostty": "ghostty",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }

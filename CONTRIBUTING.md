@@ -121,6 +121,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
+| Ghostty source pin | `scripts/check-ghostty-pin.sh` | `just ghostty-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |
@@ -133,6 +134,12 @@ Unit and e2e tests share the default feature set; optional profiling
 surfaces compile under `just lint` and `just doc` with `--all-features`.
 `just e2e` stays out of `just ci` because it spawns real PTY-backed servers
 with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
+
+Real-PTY test harnesses set `PHUX_NO_UPDATE_CHECK=1` in the child environment,
+after scrubbing ambient variables or calling `env_clear()`. Private XDG state
+alone still permits the attach's background release lookup; its delayed update
+modal can consume a scripted keystroke. Keep this isolation local to test
+children, not the developer's release settings.
 
 ### Gates that are CI-only or local-only
 

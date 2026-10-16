@@ -189,6 +189,13 @@ impl ApprovalOutcome {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
+    /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
+    /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
+    /// requests additionally require exclusive binding proof and generation.
+    NativeAgent {
+        /// Exact typed native launch, control, or controller operation.
+        request: crate::native_agent::NativeRequestPayload,
+    },
     /// Subscribe to one resource's content stream (SPEC §5.1): a fresh
     /// bootstrap generation, then `RESOURCE_OUTPUT`. Does not resize.
     /// Re-attaching replaces the generation. The verb a federation hub relays
@@ -1175,6 +1182,17 @@ pub enum AgentEvent {
         awaiting_organization: bool,
         /// Its revision after the change.
         revision: Revision,
+    },
+    /// A later native SDK operation outcome, distinct from PTY delivery.
+    NativeAgentResult {
+        /// Exact SDK-owned `AgentSession`.
+        agent_session_id: ResourceId,
+        /// Original native operation identity.
+        operation_id: u64,
+        /// Actual controller-reported disposition.
+        disposition: crate::native_agent::NativeDisposition,
+        /// Factual stage or outcome explanation.
+        detail: Option<String>,
     },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.

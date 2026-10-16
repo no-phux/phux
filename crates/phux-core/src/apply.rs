@@ -32,7 +32,7 @@ use crate::keys::{
 use crate::org::{
     Delta, Event, InverseEdit, Org, Receipt, RecordRef, RevisionPin, Transition, Undo,
 };
-use crate::resource::{Provenance, Resource, ResourceKind};
+use crate::resource::{LaunchSpec, Provenance, Resource, ResourceKind};
 use crate::session::{Attrs, MAX_NAME_BYTES, Session};
 
 /// Apply `cmd`, issued by `actor` at `now`, to `org`.
@@ -175,7 +175,11 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             mode,
         } => resource_terminate(tx, *resource, *activation, *mode),
         Op::ResourceRemove { resource } => resource_remove(tx, *resource),
-        Op::ResourceRelaunch { resource, expected } => resource_relaunch(tx, *resource, *expected),
+        Op::ResourceRelaunch {
+            resource,
+            expected,
+            launch,
+        } => resource_relaunch(tx, *resource, *expected, launch.as_ref()),
         Op::ArrangementReplace {
             owner,
             expected,
@@ -196,6 +200,11 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             resource,
             activation,
         } => activation_lost(tx, *resource, *activation),
+        Op::ResourceLaunchReported {
+            resource,
+            activation,
+            launch,
+        } => resource_launch_reported(tx, *resource, *activation, launch),
     }
 }
 
@@ -1143,19 +1152,29 @@ fn resource_relaunch(
     tx: &mut Tx<'_>,
     key: ResourceKey,
     expected: Revision,
+    replacement: Option<&LaunchSpec>,
 ) -> Result<Out, Refusal> {
     let r = tx.checked_resource(key, expected)?;
     require_inactive(r)?;
-    let spec = r
-        .launch
-        .clone()
-        .ok_or_else(|| Refusal::invalid("resource", "no launch spec to relaunch"))?;
+    if replacement.is_some_and(|launch| launch.kind() != r.kind) {
+        return Err(Refusal::invalid(
+            "launch",
+            "launch spec is for another kind",
+        ));
+    }
+    let spec = replacement
+        .or(r.launch.as_ref())
+        .ok_or_else(|| Refusal::invalid("resource", "no launch spec to relaunch"))?
+        .clone();
     let id = r
         .activation
         .as_ref()
         .map_or(ActivationId::FIRST, |a| a.id.next());
     let (instance, now) = (tx.org.instance(), tx.now);
     let record = tx.resource_mut(key).ok_or(Refusal::NotFound)?;
+    if replacement.is_some() {
+        record.launch = Some(spec.clone());
+    }
     record.activation = Some(Activation::starting(id, instance, now));
     tx.events.push(Event::ActivationChanged {
         resource: key,
@@ -1228,6 +1247,33 @@ fn arrangement_replace(
 }
 
 // ---- executor reports ------------------------------------------------------
+
+fn resource_launch_reported(
+    tx: &mut Tx<'_>,
+    resource: ResourceKey,
+    activation: ActivationId,
+    launch: &LaunchSpec,
+) -> Result<Out, Refusal> {
+    let current = matching_activation(tx, resource, activation)?;
+    if !current.state.is_current() {
+        return Err(Refusal::Stale {
+            current: Some(current.id),
+        });
+    }
+    let record = tx.resource(resource).ok_or(Refusal::NotFound)?;
+    if launch.kind() != record.kind {
+        return Err(Refusal::invalid(
+            "launch",
+            "launch spec is for another kind",
+        ));
+    }
+    if record.launch.as_ref() == Some(launch) {
+        return Ok(Out::ok(Some(record.revision)));
+    }
+    let record = tx.resource_mut(resource).ok_or(Refusal::NotFound)?;
+    record.launch = Some(launch.clone());
+    Ok(Out::ok(Some(record.revision)))
+}
 
 fn activation_started(
     tx: &mut Tx<'_>,

@@ -706,6 +706,8 @@ pub(crate) const EVENT_TAG_LEASE_CHANGED: u8 = 0x19;
 pub(crate) const EVENT_TAG_INTAKE_CHANGED: u8 = 0x1a;
 /// Wire tag for [`AgentEvent::ResourceRenamed`] (`docs/spec/L1.md` §5.7).
 pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
+/// Wire tag for [`AgentEvent::NativeAgentResult`].
+pub(crate) const EVENT_TAG_NATIVE_AGENT_RESULT: u8 = 0x1c;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
@@ -759,6 +761,7 @@ enum CommandTag {
     DelegateAgent = 0x35,
     RevokeDelegation = 0x36,
     SessionKill = 0x37,
+    NativeAgent = 0x38,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -824,6 +827,8 @@ pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf a
 pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
 /// Wire tag for [`Command::CloseTabResources`].
 pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResources as u8;
+/// Wire tag for [`Command::NativeAgent`].
+pub(crate) const COMMAND_TAG_NATIVE_AGENT: u8 = CommandTag::NativeAgent as u8;
 }
 
 // Organization commands (`docs/spec/L1.md` §5.7), contiguous from `0x1e`;

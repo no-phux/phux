@@ -1,4 +1,4 @@
-//! One runtime client, one event and path-answer drain.
+//! One runtime client, one event, path-answer, and file-upload drain.
 //!
 //! The runtime owns dial, reconnect, and input delivery. This module installs
 //! the sole [`Listener`] and wakes a bounded channel; it does not poll and it
@@ -19,8 +19,8 @@ pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
-    DeliveryOutcome, Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
-    mint_operation,
+    DeliveryOutcome, Event, FileUploadReceipt, PaneDescriptor, PathAnswer, ServerInfo,
+    SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -64,6 +64,24 @@ impl AgentInfo {
     #[must_use]
     pub fn word(&self) -> &'static str {
         state_word(self.state)
+    }
+
+    /// Declared working.
+    #[must_use]
+    pub fn working(&self) -> bool {
+        self.state == AgentState::Working
+    }
+
+    /// Declared idle.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.state == AgentState::Idle
+    }
+
+    /// Declared finished (`done`).
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.state == AgentState::Done
     }
 }
 
@@ -160,6 +178,7 @@ pub struct Connection {
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,
     path_answers: Vec<PathAnswer>,
+    file_uploads: Vec<FileUploadReceipt>,
     wake_rx: async_channel::Receiver<()>,
     revision: u64,
     paint_clock: u64,
@@ -298,6 +317,7 @@ impl Connection {
             identity: None,
             project_tag: None,
             path_answers: Vec::new(),
+            file_uploads: Vec::new(),
             wake_rx,
             revision: 0,
             paint_clock: 0,
@@ -312,7 +332,7 @@ impl Connection {
         self.wake_rx.clone()
     }
 
-    /// Take events and path answers, and refresh snapshots the batch can change.
+    /// Take events, path answers, and file-upload receipts, and refresh snapshots the batch can change.
     pub fn drain(&mut self) -> Vec<Event> {
         let observation = self.client.take_activity();
         if observation.status != self.status {
@@ -329,6 +349,8 @@ impl Connection {
             log::trace!("event {event:?}");
         }
         self.path_answers.extend(self.client.take_path_answers());
+        self.file_uploads
+            .extend(self.client.take_file_upload_receipts());
         let changed = observation.events.iter().any(structural);
         let was = self.status;
         if changed {
@@ -360,6 +382,13 @@ impl Connection {
     /// Path answers stashed by [`Self::drain`] since the last take.
     pub fn take_path_answers(&mut self) -> Vec<PathAnswer> {
         std::mem::take(&mut self.path_answers)
+    }
+
+    /// File-upload receipts stashed by [`Self::drain`] since the last take.
+    ///
+    /// The queue is lossless. A caller that ignores a receipt must not paste.
+    pub fn take_file_upload_receipts(&mut self) -> Vec<FileUploadReceipt> {
+        std::mem::take(&mut self.file_uploads)
     }
 
     /// The terminal is in the latest topology and the runtime will accept input.
@@ -749,6 +778,11 @@ impl Connection {
                             && self.known.contains(parent)
                         {
                             let resource = &publication.resource_id;
+                            let native = self.client.with_control(|control| {
+                                control
+                                    .engine()
+                                    .and_then(|engine| engine.native_agent_view(resource))
+                            });
                             if !self.conversations.contains_key(resource)
                                 && let Some(conversation) =
                                     transcript::Conversation::new(publication, session, epoch)
@@ -760,6 +794,13 @@ impl Connection {
                                 && &conversation.parent == parent
                             {
                                 conversation.apply(publication, session, epoch);
+                                // Losing a projection is not a cutover to PTY input,
+                                // nor permission to keep old ACP controls interactive.
+                                if let Some(native) = native {
+                                    conversation.native = Some(native);
+                                } else if let Some(native) = conversation.native.as_mut() {
+                                    native.connected = false;
+                                }
                             }
                             if let Some(conversation) = self.conversations.get(resource)
                                 && !conversation.closed
@@ -1302,5 +1343,68 @@ mod paint_wake_tests {
             None
         );
         assert_eq!(own_spawn(&Event::TopologyChanged), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_predicates {
+    use super::{AgentAttention, AgentInfo, AgentState};
+
+    fn info(state: AgentState, attention: AgentAttention) -> AgentInfo {
+        AgentInfo {
+            name: "agent".into(),
+            kind: None,
+            state,
+            attention,
+            changed_at_ms: 0,
+        }
+    }
+
+    fn flags(info: &AgentInfo) -> (bool, bool, bool, bool) {
+        (
+            info.needs_you(),
+            info.working(),
+            info.idle(),
+            info.finished(),
+        )
+    }
+
+    #[test]
+    fn state_predicates_share_one_classifier() {
+        // needs you, working, idle, finished
+        assert_eq!(
+            flags(&info(AgentState::Blocked, AgentAttention::High)),
+            (true, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Done, AgentAttention::Low)),
+            (true, false, false, true),
+            "finished still needs you; it is not a second classifier"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::Normal)),
+            (false, true, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::High)),
+            (true, true, false, false),
+            "asking loudly does not stop the agent being working"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::None)),
+            (false, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::High)),
+            (true, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::Low)),
+            (false, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::High)),
+            (true, false, false, false)
+        );
     }
 }

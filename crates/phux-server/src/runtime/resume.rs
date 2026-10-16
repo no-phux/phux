@@ -72,6 +72,7 @@ mod tests {
             metadata: Vec::new(),
             org: None,
             delegations: Vec::new(),
+            native_agents: Vec::new(),
         }
     }
 

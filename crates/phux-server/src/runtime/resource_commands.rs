@@ -28,6 +28,45 @@ use crate::state::{ClientId, SharedState};
 /// none. Records are at most 16 KiB, so this fits several per chunk.
 const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 
+/// Validate parent ownership and kind in the same state borrow that registers
+/// the child, before allocating any resource or publishing its identity.
+fn validate_agent_parent(
+    state: &crate::state::ServerState,
+    parent: phux_core::ids::ResourceId,
+) -> Result<(), SpawnError> {
+    if state.native_owned_terminal(parent) {
+        return Err(SpawnError::SpawnFailed(
+            "an SDK-owned guardian reserves one native source; external hook sources cannot bind it".into(),
+        ));
+    }
+    match state
+        .registry()
+        .resource(parent)
+        .map(|resource| resource.kind)
+    {
+        Some(phux_core::ResourceKind::Terminal) => Ok(()),
+        Some(_) => Err(SpawnError::ParentKindMismatch),
+        None => Err(SpawnError::ParentNotFound),
+    }
+}
+
+async fn bind_agent_stream(
+    state: &SharedState,
+    parent: phux_core::ids::ResourceId,
+    handle: &crate::resource::ResourceHandle,
+) {
+    if let Some(parent_handle) = state.with(|s| s.resource_handle(parent).cloned())
+        && let Ok(facet) = handle.agent_session()
+    {
+        let _ = parent_handle
+            .control
+            .send(crate::resource::ControlRequest::BindAgentSession {
+                append: facet.append.clone(),
+            })
+            .await;
+    }
+}
+
 /// Handle a `SPAWN_RESOURCE` whose kind is `AgentSession` (ADR-0103 §1).
 /// The parent must be a live local Terminal (an `AgentSession` parent is
 /// `ParentKindMismatch`, ADR-0104 §5); a satellite-addressed spawn is relayed
@@ -96,12 +135,7 @@ pub(crate) async fn spawn_agent_session(
             native_id: resource.native_id.clone(),
             state: None,
         };
-        let parent_kind = s.registry().resource(core_parent).map(|r| r.kind);
-        match parent_kind {
-            Some(phux_core::ResourceKind::Terminal) => {}
-            Some(_) => return Err(SpawnError::ParentKindMismatch),
-            None => return Err(SpawnError::ParentNotFound),
-        }
+        validate_agent_parent(s, core_parent)?;
         let actor = s.actor_for(client_id);
         let core = s
             .create_agent_session(core_parent, &facet, &actor)
@@ -148,16 +182,7 @@ pub(crate) async fn spawn_agent_session(
     );
 
     // ADR-0103 §6: the parent's `REPORT_AGENT_STATE` now lands on this stream.
-    if let Some(parent_handle) = state.with(|s| s.resource_handle(core_parent).cloned())
-        && let Ok(facet) = bundle.handle.agent_session()
-    {
-        let _ = parent_handle
-            .control
-            .send(crate::resource::ControlRequest::BindAgentSession {
-                append: facet.append.clone(),
-            })
-            .await;
-    }
+    bind_agent_stream(state, core_parent, &bundle.handle).await;
 
     let instance = resource
         .bind_instance
@@ -260,76 +285,236 @@ pub(crate) async fn handle_append_resource_output(
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
 ) -> CommandResult {
-    let Some((core, handle)) = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned().map(|h| (core, h)))
-    }) else {
+    if state.with(|s| s.native_agents().bindings.contains_key(terminal_id)) {
         return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such resource: {terminal_id:?}"),
+            code: ErrorCode::NotProducer,
+            message: "SDK-owned streams require the reserved native controller".to_owned(),
         };
-    };
-    let session = match handle.agent_session() {
-        Ok(session) => session,
-        Err(error) => return crate::runtime::commands::wrong_resource_kind(error),
-    };
+    }
     if !state.with(|s| s.client_may_produce(client_id)) {
         return CommandResult::Error {
             code: ErrorCode::NotProducer,
             message: "appending to a resource stream requires a local owner connection".to_owned(),
         };
     }
-
-    let (reply, rx) = oneshot::channel();
-    if session
-        .append
-        .try_send(AppendRequest { bytes, reply })
-        .is_err()
-    {
+    // A non-native producer cannot masquerade as a registered SDK controller
+    // merely by emitting the reserved provider_raw schema on an attached stream.
+    let forged = std::str::from_utf8(&bytes).is_ok_and(|text| {
+        text.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|record| {
+                record["data"]["schema"].as_str()
+                    == Some(phux_protocol::native_agent::NATIVE_SCHEMA)
+            })
+        })
+    });
+    if forged {
         return CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "the session's append queue is full".to_owned(),
+            code: ErrorCode::NotProducer,
+            message: "native controller schema is reserved".to_owned(),
         };
     }
-    let accepted = match rx.await {
-        Ok(Ok(accepted)) => accepted,
-        Ok(Err(AppendRejection::Invalid(error))) => {
-            return CommandResult::Error {
-                code: ErrorCode::RecordInvalid,
-                message: error.to_string(),
-            };
-        }
-        Ok(Err(AppendRejection::Overflow(message))) => {
-            return CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message,
-            };
-        }
-        Ok(Err(AppendRejection::Closed)) | Err(_) => {
-            return CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "the session closed before the append landed".to_owned(),
-            };
-        }
-    };
-
-    if let Some(evidence) = accepted.evidence {
-        publish_stream_evidence(state, core, handle.parent, evidence).await;
+    match append_native_output(state, terminal_id, bytes).await {
+        Ok(accepted) => CommandResult::OkWith(CommandValue::Json(format!(
+            "{{\"seq\":{},\"ts_ms\":{}}}",
+            accepted.first_seq, accepted.ts_ms
+        ))),
+        Err(error) => error,
     }
-    publish_stream_ask(state, handle.parent, accepted.ask, accepted.evidence);
-    CommandResult::OkWith(CommandValue::Json(format!(
-        "{{\"seq\":{},\"ts_ms\":{}}}",
-        accepted.first_seq, accepted.ts_ms
-    )))
 }
 
-/// Feed a streamed question into the parent's ask ledger (ADR-0036), and
-/// retract the stream's ask when the turn ends.
+pub(super) async fn append_native_output(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    bytes: Bytes,
+) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+    append_output(state, terminal_id, bytes, None).await
+}
+
+pub(super) async fn append_native_publication(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    bytes: Bytes,
+    identity: crate::resource::agent_session::NativeAppendIdentity,
+) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+    append_output(state, terminal_id, bytes, Some(identity)).await
+}
+
+/// The one validated ingress path: native authority is checked by the
+/// dedicated broker before entry; generic producers are checked above.
+async fn append_output(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    bytes: Bytes,
+    publication: Option<crate::resource::agent_session::NativeAppendIdentity>,
+) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+    let native_identity = publication.clone();
+    let (core, handle) = state
+        .with(|s| {
+            s.terminal_from_wire(terminal_id).and_then(|core| {
+                s.resource_handle(core)
+                    .cloned()
+                    .map(|handle| (core, handle))
+            })
+        })
+        .ok_or_else(|| CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: format!("no such resource: {terminal_id:?}"),
+        })?;
+    let session = handle
+        .agent_session()
+        .map_err(crate::runtime::commands::wrong_resource_kind)?;
+    let (reply, rx) = oneshot::channel();
+    session
+        .append
+        .try_send(AppendRequest {
+            bytes,
+            reply,
+            publication,
+        })
+        .map_err(|_| CommandResult::Error {
+            code: ErrorCode::Overflow,
+            message: "the session's append queue is full".to_owned(),
+        })?;
+    let accepted = rx
+        .await
+        .map_err(|_| CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: "the session closed before the append landed".to_owned(),
+        })?
+        .map_err(append_rejection)?;
+    if let Some(identity) = native_identity {
+        if let Some(evidence) = accepted.evidence {
+            publish_native_evidence(
+                state,
+                terminal_id,
+                core,
+                handle.parent,
+                evidence,
+                accepted.last_seq,
+                identity.id == u64::MAX,
+            )
+            .await;
+        }
+        // Native ask inventory belongs to the committed broker projection, not
+        // an append continuation that may resume after closure or supersession.
+    } else {
+        if let Some(evidence) = accepted.evidence {
+            publish_stream_evidence(state, core, handle.parent, evidence).await;
+        }
+        publish_stream_ask(
+            state,
+            handle.parent,
+            accepted.ask.clone(),
+            accepted.evidence,
+            false,
+        );
+    }
+    Ok(accepted)
+}
+
+fn append_rejection(rejection: AppendRejection) -> CommandResult {
+    match rejection {
+        AppendRejection::Invalid(error) => CommandResult::Error {
+            code: ErrorCode::RecordInvalid,
+            message: error.to_string(),
+        },
+        AppendRejection::Overflow(message) => CommandResult::Error {
+            code: ErrorCode::Overflow,
+            message,
+        },
+        AppendRejection::Closed => CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: "the session closed before the append landed".to_owned(),
+        },
+    }
+}
+
+const fn evidence_state(
+    evidence: StreamEvidence,
+) -> (
+    Option<&'static str>,
+    Option<phux_protocol::wire::frame::ReportedAgentState>,
+) {
+    use phux_protocol::wire::frame::ReportedAgentState;
+    match evidence {
+        StreamEvidence::Working => (Some("working"), Some(ReportedAgentState::Working)),
+        StreamEvidence::Blocked => (Some("blocked"), Some(ReportedAgentState::Blocked)),
+        StreamEvidence::Done => (Some("done"), Some(ReportedAgentState::Done)),
+        StreamEvidence::Retract => (None, None),
+    }
+}
+
+fn claim_native_evidence(
+    s: &mut crate::state::ServerState,
+    agent: &phux_protocol::ids::ResourceId,
+    session: phux_core::ids::ResourceId,
+    seq: u64,
+    closure: bool,
+    word: Option<&str>,
+) -> bool {
+    let Some(binding) = s.native_agents_mut().bindings.get_mut(agent) else {
+        return false;
+    };
+    if (binding.closed && !closure) || seq <= binding.evidence_seq {
+        return false;
+    }
+    binding.evidence_seq = seq;
+    if let Some(facet) = s
+        .registry_mut()
+        .resource_mut(session)
+        .and_then(|resource| resource.agent.as_mut())
+    {
+        facet.state = word.map(str::to_owned);
+    }
+    true
+}
+
+async fn publish_native_evidence(
+    state: &SharedState,
+    agent: &phux_protocol::ids::ResourceId,
+    session: phux_core::ids::ResourceId,
+    parent: Option<phux_core::ids::ResourceId>,
+    evidence: StreamEvidence,
+    seq: u64,
+    closure: bool,
+) {
+    let (word, reported) = evidence_state(evidence);
+    let parent_handle =
+        state.with(|s| parent.and_then(|parent| s.resource_handle(parent).cloned()));
+    let Some(parent_handle) = parent_handle else {
+        state.with_mut(|s| {
+            claim_native_evidence(s, agent, session, seq, closure, word);
+        });
+        return;
+    };
+    // Waiting for mailbox capacity must not authorize a later stale enqueue.
+    let Ok(permit) = parent_handle.control.reserve().await else {
+        return;
+    };
+    let (reply, rx) = oneshot::channel();
+    let enqueued = state.with_mut(|s| {
+        if !claim_native_evidence(s, agent, session, seq, closure, word) {
+            return false;
+        }
+        permit.send(crate::resource::ControlRequest::ReportStreamState {
+            state: reported,
+            reply,
+        });
+        true
+    });
+    if enqueued && let Ok(Err(reason)) = rx.await {
+        debug!(%reason, "native append: parent declined the stream evidence");
+    }
+}
+
+/// Feed a streamed question into the parent's ask ledger (ADR-0036).
+/// Legacy turn completion withdraws asks; SDK questions outlive the turn.
 fn publish_stream_ask(
     state: &SharedState,
     parent: Option<phux_core::ids::ResourceId>,
     ask: Option<crate::resource::agent_session::StreamAsk>,
     evidence: Option<StreamEvidence>,
+    native_publication: bool,
 ) {
     let Some(parent) = parent else {
         return;
@@ -348,10 +533,9 @@ fn publish_stream_ask(
             )
             .emit_payload()
         } else {
-            if matches!(
-                evidence,
-                Some(StreamEvidence::Done | StreamEvidence::Retract)
-            ) {
+            if matches!(evidence, Some(StreamEvidence::Retract))
+                || (!native_publication && matches!(evidence, Some(StreamEvidence::Done)))
+            {
                 s.retract_agent_asked(parent, crate::agent_asked::AskedSource::Stream);
             }
             None
@@ -673,6 +857,8 @@ mod tests {
             ],
             dropped: 0,
             ended: false,
+            native_publications: Vec::new(),
+            native_publication_high_water: 0,
         };
         for budget in [1, 3, 7, 13, 64] {
             let limits = BootstrapLimits::new(budget, 1024).unwrap();
@@ -723,6 +909,8 @@ mod tests {
             records: Vec::new(),
             dropped: 0,
             ended: false,
+            native_publications: Vec::new(),
+            native_publication_high_water: 0,
         };
         let frames: Vec<_> = bootstrap_frames(
             &phux_protocol::ids::ResourceId::local(1),

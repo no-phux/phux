@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const ARCHIVE_SCHEMA_VERSION: u8 = 2;
+pub(crate) const ARCHIVE_SCHEMA_VERSION: u8 = 3;
 const LEGACY_ARCHIVE_SCHEMA_VERSION: u8 = 1;
+const AGENT_SESSION_ARCHIVE_SCHEMA_VERSION: u8 = 2;
+pub(crate) const RESTORE_SUMMARY_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceArchive {
@@ -53,6 +55,9 @@ pub(crate) struct WorkspacePane {
     pub(crate) command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) agent_session: Option<WorkspaceAgentSession>,
+    /// Explicit SDK owner recipe; never inferred from a terminal command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) native_launch: Option<phux_protocol::native_agent::SpawnNativeAgent>,
     /// Extra environment for this pane's process. Written by a project
     /// recipe (ADR-0152); `archive export` never captures a live pane's env.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -143,6 +148,7 @@ pub(crate) struct CreateRequest {
     pub(crate) project: Option<String>,
     pub(crate) command: Option<Vec<String>>,
     pub(crate) agent_session: Option<WorkspaceAgentSession>,
+    pub(crate) native_launch: Option<phux_protocol::native_agent::SpawnNativeAgent>,
     /// The seed pane's extra environment (see [`WorkspacePane::env`]).
     pub(crate) env: BTreeMap<String, String>,
     /// `(window index, pane index)` into [`Self::windows`] of the pane whose
@@ -162,10 +168,12 @@ pub(crate) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
         .map_err(|err| format!("invalid workspace archive JSON: {err}"))?;
     if !matches!(
         archive.schema_version,
-        LEGACY_ARCHIVE_SCHEMA_VERSION | ARCHIVE_SCHEMA_VERSION
+        LEGACY_ARCHIVE_SCHEMA_VERSION
+            | AGENT_SESSION_ARCHIVE_SCHEMA_VERSION
+            | ARCHIVE_SCHEMA_VERSION
     ) {
         return Err(format!(
-            "unsupported workspace archive schema {}; expected {LEGACY_ARCHIVE_SCHEMA_VERSION} or {ARCHIVE_SCHEMA_VERSION}",
+            "unsupported workspace archive schema {}; expected 1, 2 or {ARCHIVE_SCHEMA_VERSION}",
             archive.schema_version
         ));
     }
@@ -204,6 +212,7 @@ pub(crate) fn restore_plan(
                 .clone()
                 .or_else(|| pane.and_then(|pane| pane.command.clone())),
             agent_session: pane.and_then(|pane| pane.agent_session.clone()),
+            native_launch: pane.and_then(|pane| pane.native_launch.clone()),
             env: pane.map(|pane| pane.env.clone()).unwrap_or_default(),
             seed_position,
             windows: session.windows.clone(),
@@ -260,6 +269,20 @@ fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
             ));
         }
         for pane in session.windows.iter().flat_map(|window| &window.panes) {
+            if let Some(native) = &pane.native_launch {
+                if archive.schema_version != ARCHIVE_SCHEMA_VERSION {
+                    return Err("native SDK recipes require workspace archive schema 3".to_owned());
+                }
+                if pane.command.is_some() || pane.agent_session.is_some() {
+                    return Err("a native SDK pane cannot also declare a terminal command or TUI agent session".to_owned());
+                }
+                if native.guardian.is_some()
+                    || native.guardian_key.is_some()
+                    || native.guardian_expected.is_some()
+                {
+                    return Err("archived native SDK recipes cannot carry source resource bindings or host runtime paths".to_owned());
+                }
+            }
             if let Some(agent) = &pane.agent_session {
                 phux_client::agent_session_record::AgentSessionRecord::new(
                     &agent.plugin_id,

@@ -1,5 +1,91 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add an explicit configured ACP-agent launch picker through the titlebar,
+  File menu, workspace glass menu and command palette, server-owned conversation
+  commands and native permission dialogs. Keep terminal-attached conversations
+  explicitly labeled, with independent draft/scroll preservation.
+- Surface executing-host prerequisites and queued/completed/refused/unknown
+  outcomes without silent installs, automatic approvals or terminal-key fallback.
+
+### Bug Fixes
+
+- Preserve an ACP conversation's editor, pending receipts and question drafts
+  when a graceful server handoff recreates desktop layout placements. Rebind
+  only to the same endpoint, parent, AgentSession and ACP activation; a
+  replacement owner never inherits the old draft.
+- Keep native draft editing and Stop available while a provider question blocks
+  another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+- Keep New ACP Agent clicks out of the titlebar's window-drag region.
+- Reveal a newly launched ACP guardian from its authoritative catalog identity
+  before waiting for the resulting agent subscription. Native controls still
+  require the exact returned AgentSession and activation.
+- Restore the focused ACP guardian after a daemon handoff even when it is not
+  the session's home terminal, retaining the original editor and draft.
+- Reject raw terminal input and file drops for pending or retained ACP owners
+  before filesystem access or remote upload, including during reconnects.
+
+## [0.19.0](https://github.com/no-phux/phux/compare/desktop-v0.18.0...desktop-v0.19.0) (2026-10-16)
+
+
+### Features
+
+* **agent:** support ACP-owned sessions across harnesses ([#1431](https://github.com/no-phux/phux/issues/1431)) ([2696d16](https://github.com/no-phux/phux/commit/2696d16a273f58da0d100dda61816f6a8d50f314))
+
+## [0.18.0](https://github.com/no-phux/phux/compare/desktop-v0.17.0...desktop-v0.18.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** rank Go To matches by bounded frecency ([#1451](https://github.com/no-phux/phux/issues/1451)) ([caaa2e3](https://github.com/no-phux/phux/commit/caaa2e3689971c6c2c1ee9f09e59937ed2f7eaf6))
+
+## [0.17.0](https://github.com/no-phux/phux/compare/desktop-v0.16.0...desktop-v0.17.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** prepare a bounded Unicode-safe Go To search ([#1445](https://github.com/no-phux/phux/issues/1445)) ([7d76576](https://github.com/no-phux/phux/commit/7d765769290845e9598c4bc4b305a770e99ed514))
+* **desktop:** upload remote drops and paste the server path ([#1442](https://github.com/no-phux/phux/issues/1442)) ([7e80053](https://github.com/no-phux/phux/commit/7e800537e2ffc191f7bcbe4e99e432cc807cbb1d))
+
+## [0.16.0](https://github.com/no-phux/phux/compare/desktop-v0.15.0...desktop-v0.16.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** show metadata facts for the highlighted Go To row ([#1444](https://github.com/no-phux/phux/issues/1444)) ([01ddef3](https://github.com/no-phux/phux/commit/01ddef32d530acf6fa552ad53d75709859164540))
+
+
+## [0.15.0](https://github.com/no-phux/phux/compare/desktop-v0.14.2...desktop-v0.15.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** filter Go To by agent state ([#1438](https://github.com/no-phux/phux/issues/1438)) ([24180f2](https://github.com/no-phux/phux/commit/24180f28f18201d0cb48507666524014e3810565))
+
+## [0.14.2](https://github.com/no-phux/phux/compare/desktop-v0.14.1...desktop-v0.14.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** keep remote terminals from pasting local file paths ([#1437](https://github.com/no-phux/phux/issues/1437)) ([2f31362](https://github.com/no-phux/phux/commit/2f3136264d67e69764f934feded3bd9bddbc3860))
+
+## [0.14.1](https://github.com/no-phux/phux/compare/desktop-v0.14.0...desktop-v0.14.1) (2026-10-15)
+
+
+### Build System
+
+* **nix:** link a Cachix-served libghostty-vt instead of building Zig ([#1434](https://github.com/no-phux/phux/issues/1434)) ([baebc3a](https://github.com/no-phux/phux/commit/baebc3abd3798fcfb3180336d0de8e55e698cebb))
+
+## [0.14.0](https://github.com/no-phux/phux/compare/desktop-v0.13.1...desktop-v0.14.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** give workspace menu native glass and spring motion ([#1432](https://github.com/no-phux/phux/issues/1432)) ([a82e993](https://github.com/no-phux/phux/commit/a82e993636ef493c561ded53101323ab9a775b21))
+
 ## [0.13.1](https://github.com/no-phux/phux/compare/desktop-v0.13.0...desktop-v0.13.1) (2026-10-15)
 
 

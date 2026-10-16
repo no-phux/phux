@@ -18,9 +18,18 @@ use crate::app::color::from_hex;
 use crate::app::desk::{Desk, Modal};
 use crate::settings::theme::Palette;
 
+use super::goto_facts::FactsCard;
+use super::goto_filter::GotoFilter;
 use super::{
-    Row, Target, command_sections, goto_sections, move_sections, rank_sections, session_sections,
+    Row, Target, command_sections, move_sections, prepare_goto, query_terms, rank_sections,
+    session_sections,
 };
+
+/// Narrowest window, less its margins, that fits the list and the facts card.
+/// A narrower window shows the list alone.
+const FACTS_MIN_ROOM: f32 = 840.;
+/// Width of the metadata card beside the Go To list.
+const FACTS_COLUMN: f32 = 280.;
 
 pub(super) fn palette(
     desk: &mut Desk,
@@ -33,28 +42,31 @@ pub(super) fn palette(
     };
     let query = state.read(cx).query(cx).to_string();
     let (placeholder, verb, sections) = match desk.modal {
-        Modal::Goto => (
-            "Search terminals, agents and tabs…",
-            "Go to",
-            goto_sections(desk),
-        ),
+        Modal::Goto => {
+            prepare_goto(desk, &query);
+            (
+                "Search terminals, agents and tabs…",
+                "Go to",
+                desk.goto_search.cloned_sections(),
+            )
+        }
         Modal::WindowSession => (
             "Find a session to open in a window…",
             "Open window",
-            session_sections(desk),
+            rank_sections(session_sections(desk), &query),
         ),
         Modal::MoveResources => (
             "Find a destination for selected work…",
             "Move work",
-            move_sections(desk),
+            rank_sections(move_sections(desk), &query),
         ),
         _ => (
             "What would you like to do?",
             "Run command",
-            command_sections(desk, cx),
+            rank_sections(command_sections(desk, cx), &query),
         ),
     };
-    let sections = rank_sections(sections, &query);
+    desk.align_goto_highlight(&sections, &state, window, cx);
     let count: usize = sections.iter().map(|section| section.rows.len()).sum();
     let targets: Vec<Vec<Target>> = sections
         .iter()
@@ -77,24 +89,59 @@ pub(super) fn palette(
         format!("{host} / {}", desk.session)
     });
     let empty_query = query.trim().is_empty();
+    let filter = desk.goto.filter;
+    let narrowed = desk.modal == Modal::Goto && filter != GotoFilter::All;
+    let chrome = if desk.modal == Modal::Goto {
+        160.
+    } else {
+        124.
+    };
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
     let height = (viewport.height.as_f32() - top - 24.).clamp(180., 536.);
-    let width = (viewport.width.as_f32() - 32.).clamp(0., 720.);
-    let compact = width < 560.;
+    let room = (viewport.width.as_f32() - 32.).max(0.);
+    let list_width = room.min(720.);
     let selected = state
         .read(cx)
         .selected_index()
         .or_else(|| (count > 0).then_some(IndexPath::new(0).section(0)));
+    // The card is the highlighted row's metadata. Selection only refreshes
+    // this presentation; confirm is what opens the session.
+    let preview = if desk.modal == Modal::Goto {
+        selected.and_then(|index| {
+            sections
+                .get(index.section)
+                .and_then(|section| section.rows.get(index.row))
+                .and_then(|row| row.preview.clone())
+        })
+    } else {
+        None
+    };
+    let show_facts = preview.is_some() && room >= FACTS_MIN_ROOM;
+    let width = if show_facts {
+        room.min(list_width + FACTS_COLUMN)
+    } else {
+        list_width
+    };
+    let compact = (width - if show_facts { FACTS_COLUMN } else { 0. }) < 560.;
     let mut command = Command::new(&state)
         .filterable(false)
         .bordered(false)
-        .rounded(px(14.))
+        .rounded(px(if show_facts { 0. } else { 14. }))
         .h(px(height))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
-        .max_h(px((height - 124.).max(56.)))
-        .header(move |_, _, _| header(&modal, &context, remote, &header_colors, &header_handle))
+        .max_h(px((height - chrome).max(56.)))
+        .header(move |_, _, _| {
+            header(
+                &modal,
+                &context,
+                remote,
+                filter,
+                &header_colors,
+                &header_handle,
+            )
+        })
         .empty(move |_, _, _| {
             div()
                 .w_full()
@@ -112,7 +159,9 @@ pub(super) fn palette(
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(from_hex(&empty_colors.theme.foreground))
-                        .child(if empty_query {
+                        .child(if empty_query && narrowed {
+                            "No agents in this state"
+                        } else if empty_query {
                             "Nothing to navigate to yet"
                         } else {
                             "No matching results"
@@ -181,7 +230,8 @@ pub(super) fn palette(
             let _ = query_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
         })
         .on_select(move |_, _, cx| {
-            // Kit remains the selection owner; refresh only its presentation.
+            // Kit remains the selection owner. Refresh the facts card only;
+            // highlighting does not acquire, resize, focus, or acknowledge.
             let _ = selection_handle.update(cx, |_, cx| cx.notify());
         })
         .on_confirm(move |index: IndexPath, window, cx| {
@@ -193,8 +243,8 @@ pub(super) fn palette(
                 let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
             }
         });
-    let folded_query = query.to_lowercase();
-    let tokens: Vec<&str> = folded_query.split_whitespace().collect();
+    let terms = query_terms(&query);
+    let tokens: Vec<&str> = terms.iter().map(String::as_str).collect();
     for (section_index, section) in sections.into_iter().enumerate() {
         let mut group = CommandGroup::new();
         if let Some(label) = section.label {
@@ -208,7 +258,7 @@ pub(super) fn palette(
             },
         )));
     }
-    div()
+    let panel = div()
         .id("palette-panel")
         .w(px(width))
         .mt(px(top))
@@ -230,98 +280,205 @@ pub(super) fn palette(
         }])
         .overflow_hidden()
         .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(command)
-        .into_any_element()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    let panel = if let Some(card) = preview.filter(|_| show_facts) {
+        panel.child(
+            div()
+                .flex()
+                .h(px(height))
+                .w_full()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(command),
+                )
+                .child(facts_column(card, &colors)),
+        )
+    } else {
+        panel.child(command)
+    };
+    panel.into_any_element()
+}
+
+fn facts_column(card: FactsCard, colors: &Palette) -> impl IntoElement {
+    div()
+        .debug_selector(|| "palette-facts".into())
+        .id("palette-facts")
+        .w(px(FACTS_COLUMN))
+        .h_full()
+        .flex_shrink_0()
+        .p(px(16.))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .border_l_1()
+        .border_color(from_hex(&colors.border))
+        .child(
+            div()
+                .truncate()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(from_hex(&colors.theme.foreground))
+                .child(card.title),
+        )
+        .children(card.facts.into_iter().map(|fact| {
+            div()
+                .flex()
+                .gap(px(12.))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(84.))
+                        .text_size(px(12.))
+                        .text_color(from_hex(&colors.muted))
+                        .child(fact.name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(from_hex(&colors.theme.foreground))
+                        .child(fact.value),
+                )
+        }))
+        .child(
+            div()
+                .pt(px(10.))
+                .text_size(px(11.))
+                .text_color(from_hex(&colors.muted))
+                .child("Press Enter to open."),
+        )
 }
 
 fn header(
     modal: &Modal,
     context: &SharedString,
     remote: bool,
+    filter: GotoFilter,
     colors: &Palette,
     desk: &WeakEntity<Desk>,
 ) -> AnyElement {
     let navigation = *modal == Modal::Goto;
     let commands = desk.clone();
     let goto = desk.clone();
-    div()
-        .h(px(48.))
+    let modes = div()
         .flex_shrink_0()
-        .px(px(12.))
         .flex()
         .items_center()
-        .justify_between()
-        .gap(px(16.))
-        .child(
-            div()
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .when(matches!(modal, Modal::Commands | Modal::Goto), |this| {
-                    this.child(
-                        div()
-                            .debug_selector(|| "palette-mode-commands".into())
-                            .child(
-                                Button::new("palette-mode-commands")
-                                    .label("Commands")
-                                    .small()
-                                    .ghost()
-                                    .toggled(!navigation)
-                                    .when(!navigation, |this| this.bg(from_hex(&colors.active)))
-                                    .on_click(move |_, window, cx| {
-                                        let _ = commands.update(cx, |desk, cx| {
-                                            if desk.modal != Modal::Commands {
-                                                desk.execute("palette", window, cx);
-                                            }
-                                        });
-                                    }),
-                            ),
-                    )
+        .gap(px(2.))
+        .when(matches!(modal, Modal::Commands | Modal::Goto), |this| {
+            this.child(
+                div()
+                    .debug_selector(|| "palette-mode-commands".into())
                     .child(
-                        div().debug_selector(|| "palette-mode-goto".into()).child(
-                            Button::new("palette-mode-goto")
-                                .label("Go To")
-                                .small()
-                                .ghost()
-                                .toggled(navigation)
-                                .when(navigation, |this| this.bg(from_hex(&colors.active)))
-                                .on_click(move |_, window, cx| {
-                                    let _ = goto.update(cx, |desk, cx| {
-                                        if desk.modal != Modal::Goto {
-                                            desk.execute("goto", window, cx);
-                                        }
-                                    });
-                                }),
-                        ),
-                    )
-                })
-                .when(*modal == Modal::WindowSession, |this| {
-                    this.child("Open Session")
-                })
-                .when(*modal == Modal::MoveResources, |this| {
-                    this.child("Move Selected Work")
-                }),
+                        Button::new("palette-mode-commands")
+                            .label("Commands")
+                            .small()
+                            .ghost()
+                            .toggled(!navigation)
+                            .when(!navigation, |this| this.bg(from_hex(&colors.active)))
+                            .on_click(move |_, window, cx| {
+                                let _ = commands.update(cx, |desk, cx| {
+                                    if desk.modal != Modal::Commands {
+                                        desk.execute("palette", window, cx);
+                                    }
+                                });
+                            }),
+                    ),
+            )
+            .child(
+                div().debug_selector(|| "palette-mode-goto".into()).child(
+                    Button::new("palette-mode-goto")
+                        .label("Go To")
+                        .small()
+                        .ghost()
+                        .toggled(navigation)
+                        .when(navigation, |this| this.bg(from_hex(&colors.active)))
+                        .on_click(move |_, window, cx| {
+                            let _ = goto.update(cx, |desk, cx| {
+                                if desk.modal != Modal::Goto {
+                                    desk.execute("goto", window, cx);
+                                }
+                            });
+                        }),
+                ),
+            )
+        })
+        .when(*modal == Modal::WindowSession, |this| {
+            this.child("Open Session")
+        })
+        .when(*modal == Modal::MoveResources, |this| {
+            this.child("Move Selected Work")
+        });
+    let context = div()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(11.))
+        .text_color(from_hex(&colors.theme.foreground).opacity(0.9))
+        .child(
+            Icon::new(if remote {
+                IconName::Globe
+            } else {
+                IconName::HardDrive
+            })
+            .xsmall(),
         )
+        .child(div().truncate().child(context.clone()));
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
         .child(
             div()
-                .min_w_0()
+                .h(px(48.))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .text_size(px(11.))
-                .text_color(from_hex(&colors.theme.foreground).opacity(0.9))
-                .child(
-                    Icon::new(if remote {
-                        IconName::Globe
-                    } else {
-                        IconName::HardDrive
-                    })
-                    .xsmall(),
-                )
-                .child(div().truncate().child(context.clone())),
+                .justify_between()
+                .gap(px(16.))
+                .child(modes)
+                .child(context),
         )
+        .when(navigation, |this| {
+            this.child(state_filters(filter, colors, desk))
+        })
+        .into_any_element()
+}
+
+fn state_filters(filter: GotoFilter, colors: &Palette, desk: &WeakEntity<Desk>) -> AnyElement {
+    div()
+        .h(px(36.))
+        .flex_shrink_0()
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .children(GotoFilter::ALL.map(|choice| {
+            let desk = desk.clone();
+            let active = choice == filter;
+            let wash = colors.active.clone();
+            div().debug_selector(|| choice.id().into()).child(
+                Button::new(choice.id())
+                    .label(choice.label())
+                    .small()
+                    .ghost()
+                    .toggled(active)
+                    .when(active, move |this| this.bg(from_hex(&wash)))
+                    .on_click(move |_, window, cx| {
+                        let _ = desk.update(cx, |desk, cx| {
+                            desk.set_goto_filter(choice, window, cx);
+                        });
+                    }),
+            )
+        }))
         .into_any_element()
 }
 

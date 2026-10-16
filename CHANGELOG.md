@@ -9,6 +9,38 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.80.0](https://github.com/no-phux/phux/compare/v0.79.4...v0.80.0) (2026-10-16)
+
+
+### Features
+
+* **agent:** support ACP-owned sessions across harnesses ([#1431](https://github.com/no-phux/phux/issues/1431)) ([2696d16](https://github.com/no-phux/phux/commit/2696d16a273f58da0d100dda61816f6a8d50f314))
+
+## [0.79.4](https://github.com/no-phux/phux/compare/v0.79.3...v0.79.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ci:** share mbx target copies when Darwin hardlink does not ([#1452](https://github.com/no-phux/phux/issues/1452)) ([3958833](https://github.com/no-phux/phux/commit/3958833d939487a29537279ab08fb648c5a74542))
+
+
+### Build System
+
+* **nix:** bump libghostty-vt to upstream main and prebuild it on macOS ([#1454](https://github.com/no-phux/phux/issues/1454)) ([12dff37](https://github.com/no-phux/phux/commit/12dff37d8810fcb9f2c1d92d777e35b3306e694c))
+
+## [0.79.3](https://github.com/no-phux/phux/compare/v0.79.2...v0.79.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **ci:** keep browser-gate scratch sockets under the macOS path limit ([#1448](https://github.com/no-phux/phux/issues/1448)) ([6707de1](https://github.com/no-phux/phux/commit/6707de182593a853ddba47ba96f17a97f94428c0))
+## [0.79.2](https://github.com/no-phux/phux/compare/v0.79.1...v0.79.2) (2026-10-15)
+
+
+### Build System
+
+* **nix:** link a Cachix-served libghostty-vt instead of building Zig ([#1434](https://github.com/no-phux/phux/issues/1434)) ([baebc3a](https://github.com/no-phux/phux/commit/baebc3abd3798fcfb3180336d0de8e55e698cebb))
+
 ## [0.79.1](https://github.com/no-phux/phux/compare/v0.79.0...v0.79.1) (2026-10-15)
 
 

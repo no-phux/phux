@@ -8,6 +8,7 @@
 //! Output that does not change that link is not a new target. Dragging off,
 //! scrolling, resizing, or replacing the connection cancels the gesture.
 
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use phux_client_runtime::publication::GridFrame;
@@ -89,6 +90,249 @@ fn tidy(mut url: &str) -> &str {
 
 fn allowed(uri: &str) -> bool {
     SCHEMES.iter().any(|scheme| uri.starts_with(scheme))
+}
+
+/// Schemes a click may hand to the system, besides a `file://` URL that
+/// [`admit_url`] still has to accept.
+const OPENABLE: &[&str] = &["https://", "http://", "mailto:", "ssh://", "ftp://"];
+
+/// How many symlinks one click will follow. Linux's `MAXSYMLINKS`.
+const MAX_SYMLINKS: usize = 40;
+
+/// Title when a click does not open.
+pub(crate) const LINK_REFUSED: &str = "Link not opened";
+
+/// Whether a clicked link may be handed to the system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LinkAdmit {
+    /// Open the original URL.
+    Open,
+    /// Do not open. Show this notice.
+    Refuse {
+        /// Notification title.
+        title: &'static str,
+        /// Notification body.
+        body: String,
+    },
+}
+
+/// `file://` links from a remote terminal name that host's files. A nonlocal
+/// authority, an app bundle, or an executable is not opened on this Mac
+/// either. Other schemes already allowed by [`link_in`] still open.
+#[must_use]
+pub(crate) fn admit_url(url: &str, host: &crate::attach::TerminalHost) -> LinkAdmit {
+    if OPENABLE.iter().any(|scheme| url.starts_with(scheme)) {
+        return LinkAdmit::Open;
+    }
+    let Some((authority, path)) = file_url(url) else {
+        return refuse("This link was not opened.");
+    };
+    if let crate::attach::TerminalHost::Remote { label } = host {
+        return refuse(&remote_file_body(label.as_deref()));
+    }
+    if !local_authority(&authority) {
+        return refuse("This file link names another machine, so it was not opened.");
+    }
+    let Some(path) = decoded_path(&path) else {
+        return refuse("This file link was not opened.");
+    };
+    admit_launch(Path::new(&path))
+}
+
+/// Whether a path this app is about to hand to the default application may
+/// be opened. Bundles, executables, and nonlocal paths are refused.
+/// [`HostAction::Open`](crate::terminal::HostAction::Open)'s only caller writes
+/// a mode `0o600` `.txt` export under the temp directory; this check is what
+/// keeps a different path from launching.
+#[must_use]
+pub(crate) fn admit_path(path: &Path) -> LinkAdmit {
+    admit_launch(path)
+}
+
+fn admit_launch(path: &Path) -> LinkAdmit {
+    match launch_block(path) {
+        LaunchBlock::Open => LinkAdmit::Open,
+        LaunchBlock::Remote => {
+            refuse("This file link names another machine, so it was not opened.")
+        }
+        LaunchBlock::Program => refuse("This file is an app or a program, so it was not opened."),
+    }
+}
+
+fn refuse(body: &str) -> LinkAdmit {
+    LinkAdmit::Refuse {
+        title: LINK_REFUSED,
+        body: body.to_owned(),
+    }
+}
+
+fn remote_file_body(label: Option<&str>) -> String {
+    match label {
+        Some(name) => format!("This file link came from {name}. It was not opened on this Mac."),
+        None => "This file link came from another machine. It was not opened on this Mac.".into(),
+    }
+}
+
+/// `(authority, path)` of a `file:` URL. The path still includes its query
+/// and fragment, and is not percent-decoded.
+fn file_url(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case("file") {
+        return None;
+    }
+    let rest = rest.strip_prefix("//")?;
+    if let Some(path) = rest.strip_prefix('/') {
+        Some((String::new(), format!("/{path}")))
+    } else if let Some((authority, path)) = rest.split_once('/') {
+        Some((percent_decode(authority)?, format!("/{path}")))
+    } else if rest.is_empty() {
+        Some((String::new(), "/".to_owned()))
+    } else {
+        Some((percent_decode(rest)?, "/".to_owned()))
+    }
+}
+
+fn local_authority(authority: &str) -> bool {
+    authority.is_empty() || authority.eq_ignore_ascii_case("localhost")
+}
+
+/// Absolute path with query and fragment removed. `None` when decoding fails
+/// or the path is not absolute.
+fn decoded_path(raw: &str) -> Option<String> {
+    let bare = raw.split(['?', '#']).next().unwrap_or(raw);
+    let decoded = percent_decode(bare)?;
+    if decoded.contains('\0') || !decoded.starts_with('/') {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn percent_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let value = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+            out.push(value);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+enum LaunchBlock {
+    Open,
+    /// The path names another machine (`//server`, `/net`, a symlink there).
+    Remote,
+    /// An app bundle, a known launcher extension, an executable, or a loop.
+    Program,
+}
+
+fn launch_block(path: &Path) -> LaunchBlock {
+    // `//server/share` is a UNC path. Lexical normalization collapses the
+    // extra slash, so this has to be read from the path as given.
+    if path_starts_with_unc(path) {
+        return LaunchBlock::Remote;
+    }
+    let mut current = lexical_normal(path);
+    for _ in 0..MAX_SYMLINKS {
+        if is_automount(&current) {
+            return LaunchBlock::Remote;
+        }
+        if is_bundle(&current) || launches_by_extension(&current) {
+            return LaunchBlock::Program;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&current) else {
+            return LaunchBlock::Open;
+        };
+        if meta.file_type().is_symlink() {
+            let Ok(target) = std::fs::read_link(&current) else {
+                return LaunchBlock::Program;
+            };
+            if path_starts_with_unc(&target) {
+                return LaunchBlock::Remote;
+            }
+            current = if target.is_absolute() {
+                lexical_normal(&target)
+            } else {
+                match current.parent() {
+                    Some(parent) => lexical_normal(&parent.join(target)),
+                    None => return LaunchBlock::Program,
+                }
+            };
+            continue;
+        }
+        return if meta.is_file() && is_executable(&meta) {
+            LaunchBlock::Program
+        } else {
+            LaunchBlock::Open
+        };
+    }
+    LaunchBlock::Program
+}
+
+fn lexical_normal(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The automounter's host map. Checked before any stat, which would reach
+/// the other machine.
+fn is_automount(path: &Path) -> bool {
+    cfg!(unix)
+        && path
+            .components()
+            .nth(1)
+            .is_some_and(|component| component.as_os_str() == "net")
+}
+
+fn path_starts_with_unc(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.starts_with("//") || text.starts_with("\\\\")
+}
+
+fn is_bundle(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".app") && lower.len() > ".app".len()
+    })
+}
+
+fn launches_by_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "command" | "exe" | "bat" | "cmd"
+            )
+        })
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Connection and replica the painted frame was admitted under.
@@ -203,7 +447,10 @@ impl PaintedLinks {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameStamp, PaintedLinks, allowed, link_in, url_around};
+    use super::{
+        FrameStamp, LINK_REFUSED, LinkAdmit, PaintedLinks, admit_path, admit_url, allowed, link_in,
+        url_around,
+    };
     use phux_client_core::grid::{Cell, CellMetadata, GridBuffer, GridDamage};
     use phux_client_runtime::publication::{Cursor, FrameColors, GridFrame, Scrollbar};
     use std::sync::Arc;
@@ -345,6 +592,134 @@ mod tests {
         let mut links = hold(&file);
         assert!(links.press(0, 1));
         assert_eq!(links.release(0, 6).as_deref(), Some("file:///tmp/a"));
+    }
+
+    #[test]
+    fn web_links_open_and_file_links_follow_the_host() {
+        let remote = crate::attach::TerminalHost::Remote {
+            label: Some("mini".to_owned()),
+        };
+        assert!(matches!(
+            admit_url("https://phux.dev/docs", &remote),
+            LinkAdmit::Open
+        ));
+        assert!(matches!(
+            admit_url("file:///tmp/notes.txt", &remote),
+            LinkAdmit::Refuse {
+                title: LINK_REFUSED,
+                ..
+            }
+        ));
+        match admit_url(
+            "file://mini.local/tmp/notes.txt",
+            &crate::attach::TerminalHost::Local,
+        ) {
+            LinkAdmit::Refuse { body, .. } => assert!(body.contains("another machine"), "{body}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(matches!(
+            admit_url(
+                "file://localhost/tmp/phux-link-does-not-exist.txt",
+                &crate::attach::TerminalHost::Local
+            ),
+            LinkAdmit::Open
+        ));
+        assert!(matches!(
+            admit_url(
+                "file:///Applications/Safari.app",
+                &crate::attach::TerminalHost::Local
+            ),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(
+                "file:///Applications/Safari.app/../notes.txt",
+                &crate::attach::TerminalHost::Local
+            ),
+            LinkAdmit::Open
+        ));
+        assert!(matches!(
+            admit_url("file:///tmp/Foo%2Eapp", &crate::attach::TerminalHost::Local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(
+                "file:////server/share/a.txt",
+                &crate::attach::TerminalHost::Local
+            ),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url("javascript:alert(1)", &crate::attach::TerminalHost::Local),
+            LinkAdmit::Refuse { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn programs_bundles_and_automounts_are_not_opened() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = std::env::temp_dir().join(format!("phux-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("notes.txt");
+        std::fs::write(&doc, b"hi").unwrap();
+        let program = dir.join("run");
+        std::fs::write(&program, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bundle = dir.join("Tool.app");
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let alias = dir.join("alias.txt");
+        symlink(&bundle, &alias).unwrap();
+        let share = dir.join("share");
+        symlink("/net/elsewhere/share/notes.txt", &share).unwrap();
+        let looped = dir.join("loop");
+        symlink("loop", &looped).unwrap();
+        let command = dir.join("build.command");
+        std::fs::write(&command, b"echo hi\n").unwrap();
+
+        let local = crate::attach::TerminalHost::Local;
+        assert!(matches!(
+            admit_url(&file_url_of(&doc), &local),
+            LinkAdmit::Open
+        ));
+        assert!(matches!(admit_path(&doc), LinkAdmit::Open));
+        assert!(matches!(
+            admit_url(&file_url_of(&program), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(admit_path(&program), LinkAdmit::Refuse { .. }));
+        assert!(matches!(
+            admit_url(&file_url_of(&bundle), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(&file_url_of(&alias), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(&file_url_of(&share), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(&file_url_of(&looped), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url(&file_url_of(&command), &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        assert!(matches!(
+            admit_url("file:///net/other/share/notes.txt", &local),
+            LinkAdmit::Refuse { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn file_url_of(path: &std::path::Path) -> String {
+        format!("file://{}", path.display())
     }
 
     fn hold(frame: &Arc<GridFrame>) -> PaintedLinks {

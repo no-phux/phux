@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # Native terminal input
@@ -52,6 +52,15 @@ There is no string registry and no second listener.
   `APPLY_INPUT` is acknowledged; a larger one, or one for a satellite pane,
   goes as one atomic `INPUT_PASTE` and is never split. Outcomes stay with the
   connection's event drain.
+- ACP conversation controls do **not** enter this terminal input path.
+  `ControlPlane::native_agent_command` targets the exact AgentSession/activation,
+  current turn or current question. Kit owns its text fields and dialogs;
+  dedicated native receipts distinguish queued submission from admission.
+  Disconnected/stale ACP controls never fall back to a paste, Return or Escape.
+  Pending launches and retained native ownership also fence raw input and file
+  drops before reading files or starting uploads, even when the native view is
+  temporarily unavailable. Explicit **Attached TUI** mode retains terminal input
+  semantics only for terminals without a native owner.
 
 ## Admission and semantics
 

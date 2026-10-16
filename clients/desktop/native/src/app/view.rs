@@ -18,7 +18,7 @@ use gpui::{
     point, px, relative,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, Side};
+use gpui_kit::base::Disableable;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
@@ -436,6 +436,18 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
+                .child(
+                    div().occlude().child(
+                        Button::new("launch-native-agent")
+                            .label("New Agent")
+                            .ghost()
+                            .small()
+                            .tooltip("Launch a server-owned ACP conversation")
+                            .on_click(cx.listener(|desk, _, window, cx| {
+                                desk.execute("native-agent", window, cx)
+                            })),
+                    ),
+                )
                 .child(icon_button(
                     "new-tab",
                     IconName::Plus,
@@ -884,114 +896,11 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
     if sidebar { sidebar_width } else { MENU_RAIL }
 }
 
-const MAIN_COMMANDS: &[&[(&str, IconName)]] = &[
-    &[
-        ("new", IconName::Plus),
-        ("new-session", IconName::Folder),
-        ("folder", IconName::FolderOpen),
-        ("new-window", IconName::Frame),
-    ],
-    &[
-        ("goto", IconName::ArrowRight),
-        ("palette", IconName::Search),
-        ("settings", IconName::Settings),
-    ],
-];
-
-const PANE_COMMANDS: &[(&str, IconName)] = &[
-    ("split-right", IconName::PanelRight),
-    ("split-down", IconName::PanelBottom),
-    ("view", IconName::Copy),
-];
-
-/// One persistent entry to workspace actions and host navigation. Building the
-/// popup is deferred until it opens; every action uses the same command path as
-/// shortcuts and the palette. The button stays in the sidebar's titlebar rail.
+/// A stable entry point; the material and interaction live in their own window.
 pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
-    let current = desk.remote.clone();
-    let label = current.clone().unwrap_or_else(|| "Local".to_owned());
-    let hosts: Vec<String> = desk.hosts.iter().map(|host| host.name.clone()).collect();
-    let handle = cx.weak_entity();
-    let tab_position = desk.prefs.tab_position;
+    let label = desk.remote.clone().unwrap_or_else(|| "Local".to_owned());
     let colors = chrome_palette(desk);
     let menu_ink = from_hex(&colors.theme.foreground);
-    let menu = move |mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
-        menu = menu
-            .min_w(px(256.))
-            .max_w(px(320.))
-            .scrollable(true)
-            .max_h((window.viewport_size().height - px(TITLEBAR + GUTTER * 2.)).max(px(80.)));
-        for (command, icon) in MAIN_COMMANDS[0] {
-            menu = menu.item(main_command(command, *icon, &handle));
-        }
-        let pane_handle = handle.clone();
-        menu = menu.submenu_with_icon(
-            Some(IconName::LayoutDashboard.into()),
-            "Pane Layout",
-            window,
-            cx,
-            move |mut menu, _, _| {
-                for (command, icon) in PANE_COMMANDS {
-                    menu = menu.item(main_command(command, *icon, &pane_handle));
-                }
-                menu.min_w(px(224.))
-            },
-        );
-        let tabs_handle = handle.clone();
-        menu = menu.submenu_with_icon(
-            Some(IconName::PanelLeft.into()),
-            "Tab Placement",
-            window,
-            cx,
-            move |menu, _, _| {
-                menu.min_w(px(208.))
-                    .check_side(Side::Right)
-                    .item(
-                        main_command("tabs-top", IconName::LayoutDashboard, &tabs_handle)
-                            .checked(tab_position == TabPosition::Top),
-                    )
-                    .item(
-                        main_command("tabs-side", IconName::PanelLeft, &tabs_handle)
-                            .checked(tab_position == TabPosition::Side),
-                    )
-            },
-        );
-        menu = menu.separator();
-        for (command, icon) in MAIN_COMMANDS[1] {
-            menu = menu.item(main_command(command, *icon, &handle));
-        }
-        let (current, hosts, switch) = (current.clone(), hosts.clone(), handle.clone());
-        menu.separator()
-            .submenu_with_icon(
-                Some(IconName::Network.into()),
-                "Switch Host",
-                window,
-                cx,
-                move |mut menu, _, _| {
-                    menu = menu
-                        .min_w(px(224.))
-                        .max_w(px(320.))
-                        .scrollable(true)
-                        .check_side(Side::Right)
-                        .item(host_choice(None, "Local", current.is_none(), &switch));
-                    for name in &hosts {
-                        let here = current.as_deref() == Some(name.as_str());
-                        menu = menu.item(host_choice(Some(name.clone()), name, here, &switch));
-                    }
-                    menu
-                },
-            )
-            .item({
-                let handle = handle.clone();
-                PopupMenuItem::new("Add Host…")
-                    .icon(IconName::Plus)
-                    .on_click(move |_, window, cx| {
-                        let _ = handle
-                            .update(cx, |desk, cx| desk.open_modal(Modal::AddHost, window, cx));
-                    })
-            })
-            .item(main_command("reconnect", IconName::RefreshCw, &handle))
-    };
     div()
         .flex_1()
         .min_w_0()
@@ -1005,31 +914,19 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .dropdown_caret(true)
                 .ghost()
                 .small()
-                .w_full()
                 .rounded_full()
+                .h(px(30.))
+                .px(px(10.))
+                .w_full()
                 .border_1()
                 .border_color(menu_ink.opacity(0.10))
                 .bg(menu_ink.opacity(0.045))
                 .text_color(menu_ink)
-                .dropdown_menu(menu),
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    super::glass_menu::toggle(desk, window, cx);
+                })),
         )
         .into_any_element()
-}
-
-fn main_command(command: &'static str, icon: IconName, handle: &WeakEntity<Desk>) -> PopupMenuItem {
-    let spec = crate::settings::builtin_commands()
-        .iter()
-        .find(|spec| spec.id == command)
-        .expect("main menu command is in the catalogue");
-    let handle = handle.clone();
-    PopupMenuItem::new(spec.title)
-        .icon(icon)
-        .action(Box::new(Run {
-            id: command.to_owned(),
-        }))
-        .on_click(move |_, window, cx| {
-            let _ = handle.update(cx, |desk, cx| desk.execute(command, window, cx));
-        })
 }
 
 #[cfg(test)]
@@ -1043,66 +940,10 @@ mod menu_tests {
         assert_eq!(titlebar_lead(false, false, 248.), MENU_RAIL);
         assert!(titlebar_lead(false, true, 248.) > TRAFFIC_LIGHTS);
     }
-
-    #[test]
-    fn menu_icons_are_in_the_shipping_asset_bundle() {
-        use gpui::AssetSource;
-
-        let assets = gpui_kit::assets::Assets;
-        for icon in MAIN_COMMANDS
-            .iter()
-            .flat_map(|group| group.iter())
-            .chain(PANE_COMMANDS.iter())
-            .map(|(_, icon)| *icon)
-            .chain([
-                IconName::LayoutDashboard,
-                IconName::Network,
-                IconName::Plus,
-                IconName::RefreshCw,
-            ])
-        {
-            assert!(
-                assets.load(&icon.path()).unwrap().is_some(),
-                "missing menu icon: {icon:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_main_menu_action_uses_the_existing_catalogue() {
-        for command in MAIN_COMMANDS
-            .iter()
-            .flat_map(|group| group.iter().map(|(command, _)| command))
-            .chain(PANE_COMMANDS.iter().map(|(command, _)| command))
-            .chain([&"reconnect"])
-        {
-            assert!(
-                crate::settings::builtin_commands()
-                    .iter()
-                    .any(|spec| spec.id == *command)
-            );
-        }
-    }
 }
 
 #[cfg(test)]
 mod tab_tests;
-
-fn host_choice(
-    name: Option<String>,
-    label: &str,
-    checked: bool,
-    handle: &WeakEntity<Desk>,
-) -> PopupMenuItem {
-    let handle = handle.clone();
-    PopupMenuItem::new(label.to_owned())
-        .icon(IconName::Network)
-        .checked(checked)
-        .on_click(move |_, _, cx| {
-            let name = name.clone();
-            let _ = handle.update(cx, |desk, cx| desk.switch_host(name, cx));
-        })
-}
 
 fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
     let enabled = desk
@@ -2212,11 +2053,13 @@ fn pane_view(
     // The terminal holds the keyboard only while no modal or find field does.
     let settings = desk.terminal_settings(placement, focused && !desk.text_field_has_keys());
     let client = desk.client();
+    desk.prepare_pending_native(&placement_id, window, cx);
     let body = if desk.conversation_visible(&placement_id) {
         super::conversation::render(desk, &placement_id, &colors, window, cx)
     } else if let (Some(terminal), Some(view), Some(settings), Some(client)) =
         (terminal, view, settings, client)
     {
+        let remote = desk.remote.clone();
         let entity = desk.panes_mut().entity_for(
             &placement_id,
             &terminal,
@@ -2226,6 +2069,9 @@ fn pane_view(
             window,
             cx,
         );
+        entity.update(cx, |terminal, cx| {
+            terminal.set_window_remote(remote, cx);
+        });
         // A cached view keeps its last paint until this entity is notified.
         // Chrome refreshes (hover, clock, sidebar) must not reacquire and
         // reshape the terminal. GPUI requires a definite size for that cache.
@@ -2275,6 +2121,12 @@ fn pane_view(
     });
     let id = placement.id.clone();
     let dropping = desk.drop_target.as_deref() == Some(id.as_str());
+    let remote_files = placement.terminal_id.as_ref().is_some_and(|terminal| {
+        !matches!(
+            crate::attach::terminal_host(desk.remote.as_deref(), terminal),
+            crate::attach::TerminalHost::Local
+        )
+    });
     let leaving = desk.motion.is_leaving(&id);
     let controls = find.is_none()
         && !dropping
@@ -2344,7 +2196,7 @@ fn pane_view(
             if let Some(tab) = desk.active_tab_id() {
                 desk.focus_placement(&tab, &drop_id, window, cx);
             }
-            desk.drop_paths(&drop_id, paths.paths());
+            desk.drop_paths(&drop_id, paths.paths(), cx);
             desk.after_command(window, cx);
         }))
         .on_file_drop_exit(cx.listener(move |desk, _: &FileDropEvent, _, cx| {
@@ -2405,7 +2257,9 @@ fn pane_view(
                 ),
             )
         })
-        .when(dropping, |card| card.child(drop_hint(&colors)))
+        .when(dropping, |card| {
+            card.child(drop_hint(&colors, remote_files))
+        })
         .children(find_bar)
         .into_any_element()
 }
@@ -2558,7 +2412,7 @@ fn pane_controls(
 }
 
 /// Shown over the pane a file drag from the OS is above.
-fn drop_hint(colors: &Palette) -> impl IntoElement {
+fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
     let accent = from_hex(&colors.theme.accent);
     div()
         .absolute()
@@ -2588,13 +2442,21 @@ fn drop_hint(colors: &Palette) -> impl IntoElement {
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Drop to attach"),
+                        .child(if remote {
+                            "Drop to upload"
+                        } else {
+                            "Drop to attach"
+                        }),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(from_hex(&colors.muted))
-                        .child("Paths paste here, ready for your agent"),
+                        .child(if remote {
+                            "Sent to that machine, then its path is pasted"
+                        } else {
+                            "Paths paste here, ready for your agent"
+                        }),
                 ),
         )
 }
