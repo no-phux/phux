@@ -57,7 +57,7 @@ ROUTES = DOC_INPUTS + (
       "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
       "crates/phux-server/*", "crates/phux-server-testkit/*",
       "crates/phux-agent-rules/*", "crates/phux/*", "crates/phux-client/*",
-      "crates/phux-mission/*",
+      "crates/phux-mission/*", "crates/phux-work/*",
       "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
       "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",

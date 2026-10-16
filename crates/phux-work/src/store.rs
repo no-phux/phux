@@ -13,13 +13,13 @@ use crate::id::{
 use crate::lock::{self, FileLock};
 use crate::schema;
 
-/// File name under `mission/`.
-pub const DB_FILE: &str = "mission-v1.sqlite";
+/// File name under `work/`.
+pub const DB_FILE: &str = "work-v1.sqlite";
 
-/// `<state_dir>/mission/mission-v1.sqlite`.
+/// `<state_dir>/work/work-v1.sqlite`.
 #[must_use]
 pub fn store_path(state_dir: &Path) -> PathBuf {
-    state_dir.join("mission").join(DB_FILE)
+    state_dir.join("work").join(DB_FILE)
 }
 
 /// One objective row.
@@ -48,7 +48,7 @@ pub struct Objective {
 }
 
 /// A signal row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Signal {
     /// Opaque id.
     pub id: OpaqueId,
@@ -63,7 +63,7 @@ pub struct Signal {
 }
 
 /// Result of an admitted or replayed mutation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Applied {
     /// Objective after the write, or the snapshot stored for this operation.
     pub objective: Objective,
@@ -74,7 +74,7 @@ pub struct Applied {
 }
 
 /// `add` arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AddObjective {
     /// Repo id the new alias is allocated under.
     pub repo: String,
@@ -90,7 +90,7 @@ pub struct AddObjective {
 
 /// `edit` arguments. At least one of title or description is required.
 /// `expected_revision` is required: there is no last-write-wins fallback.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EditObjective {
     /// Task to edit.
     pub alias: Alias,
@@ -107,7 +107,7 @@ pub struct EditObjective {
 }
 
 /// `archive` and `restore` arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RevisionEdit {
     /// Task to edit.
     pub alias: Alias,
@@ -121,7 +121,7 @@ pub struct RevisionEdit {
 
 /// Direct state write. An unresolved `credential_lost` signal overrides
 /// any requested state with `needs_you`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateEdit {
     /// Task to edit.
     pub alias: Alias,
@@ -136,7 +136,7 @@ pub struct StateEdit {
 }
 
 /// Record a signal. `credential_lost` projects the objective to `needs_you`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RaiseSignal {
     /// Task the signal belongs to.
     pub alias: Alias,
@@ -153,7 +153,7 @@ pub struct RaiseSignal {
 }
 
 /// Which objectives [`Store::list`] returns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ListFilter {
     /// Restrict to one repo. `None` lists every repo.
     pub repo: Option<String>,
@@ -162,10 +162,14 @@ pub struct ListFilter {
 }
 
 /// Open SQLite store. The lock is held until drop.
+///
+/// The keeper ([`crate::service`]) is the only process that opens a host's
+/// store; everything else goes through [`crate::Client`].
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
-    _lock: FileLock,
+    /// `None` when the caller already holds the lock, as the keeper does.
+    _lock: Option<FileLock>,
 }
 
 impl Store {
@@ -507,6 +511,22 @@ impl Store {
             lock::set_private_dir(parent)?;
         }
         let lock = lock::acquire(&lock_path(path), block)?;
+        let Self { conn, .. } = Self::open_held(path)?;
+        Ok(Self {
+            conn,
+            _lock: Some(lock),
+        })
+    }
+
+    /// Open `path` while the caller holds the lock at [`lock_path`].
+    pub(crate) fn open_held(path: &Path) -> Result<Self, Error> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+            lock::set_private_dir(parent)?;
+        }
         let _file = lock::create_private(path)?;
         let conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -516,7 +536,7 @@ impl Store {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
-        Ok(Self { conn, _lock: lock })
+        Ok(Self { conn, _lock: None })
     }
 
     fn mutate(
@@ -584,7 +604,7 @@ fn bump(revision: u64) -> Result<u64, Error> {
         .ok_or_else(|| Error::Corrupt("revision wrapped".to_owned()))
 }
 
-fn lock_path(db: &Path) -> PathBuf {
+pub(crate) fn lock_path(db: &Path) -> PathBuf {
     let mut name = db.as_os_str().to_os_string();
     name.push(".lock");
     db.with_file_name(name)
@@ -866,7 +886,7 @@ mod tests {
 
     fn open() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::open(&dir.path().join("mission-v1.sqlite")).expect("open");
+        let store = Store::open(&dir.path().join("work-v1.sqlite")).expect("open");
         (dir, store)
     }
 
@@ -887,7 +907,7 @@ mod tests {
     #[test]
     fn schema_is_created_at_user_version_one_and_mode_0600() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("mission-v1.sqlite");
+        let path = dir.path().join("work-v1.sqlite");
         let store = Store::open(&path).expect("open");
         assert_eq!(store.user_version().expect("version"), 1);
         let (journal, synchronous) = store.durability().expect("pragmas");
@@ -924,7 +944,7 @@ mod tests {
     #[test]
     fn an_unknown_user_version_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("mission-v1.sqlite");
+        let path = dir.path().join("work-v1.sqlite");
         {
             let conn = rusqlite::Connection::open(&path).expect("sqlite");
             conn.pragma_update(None, "user_version", 2_i64)
@@ -1129,7 +1149,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("mission-v1.sqlite");
+        let path = dir.path().join("work-v1.sqlite");
         let mut children = Vec::new();
         for index in 0..4 {
             let operation = format!("{:032x}", index + 1);
@@ -1177,7 +1197,7 @@ mod tests {
                 Err(err @ Error::Busy) => {
                     assert_eq!(
                         err.to_string(),
-                        "another phux mission command is writing; try again"
+                        "another process holds the work store; try again"
                     );
                     return;
                 }
@@ -1185,7 +1205,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("mission-v1.sqlite");
+        let path = dir.path().join("work-v1.sqlite");
         let mut store = Store::open(&path).expect("open");
         store.add(add("phux", "kept")).expect("add");
         let child = spawn_self(&[("PHUX_MISSION_EXPECT_BUSY", "1")], &path);

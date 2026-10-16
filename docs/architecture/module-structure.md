@@ -292,11 +292,19 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 - **`phux-crash`** — fatal-signal handler trimmed from an upstream crate
   (Apache-2.0 only) that
   restores the terminal from an alternate signal stack before re-raising.
-- **`phux-mission`** — local mission task store, schema v1. SQLite at
-  `<state_dir>/mission/mission-v1.sqlite`, mode `0600`. Objectives, runs,
-  bindings, signals, and an append-only event log. `phux mission` is a thin
-  CLI over it and does not contact a server. The JSON contract is
-  `phux.mission/v1` (`crates/phux-mission/schema/phux.mission.v1.schema.json`).
+- **`phux-work`** — durable work store, the interim single-host form of the
+  ADR-0092 coordinator. SQLite at `<state_dir>/work/work-v1.sqlite`, mode
+  `0600`, schema v1: objectives, runs, bindings, signals, and an append-only
+  event log. One keeper process per store (`run_keeper`, run as
+  `phux mission keeper`) holds the lock and is the only writer; every
+  surface calls it through `Client`, which starts a keeper when none
+  answers. The keeper socket is a private exchange between equal builds,
+  not `phux-coordinator/1`.
+- **`phux-mission`** — mission control over `phux-work`: the
+  `phux.mission/v1` documents
+  (`crates/phux-mission/schema/phux.mission.v1.schema.json`). It renders
+  what the work client returns and never opens the store. `phux mission`
+  contacts no phux server.
 - **`phux-perf`** — lock-free telemetry primitives and the `PerfReport`
   behind `GET_PERF` (ADR-0096); no workspace dependencies.
 - **`phux-server-testkit`** — shared scaffolding for the server's wire

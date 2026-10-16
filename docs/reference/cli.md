@@ -61,7 +61,7 @@ Agents:
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
-  mission       Track tasks in the local mission store
+  mission       Track tasks in the local work store
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -1949,10 +1949,10 @@ Global flags:
 ## `phux mission`
 
 ```text
-Track tasks in the local mission store
+Track tasks in the local work store
 
-Reads and writes the mission database in the phux state directory and never
-contacts a server. With no subcommand, prints this help.
+Every verb is a call to the work store's keeper, which `phux mission` starts on
+demand; no phux server is contacted. With no subcommand, prints this help.
 
 `--json` prints a document whose `schema` is `phux.mission/v1`. Exit status: 0
 success; 1 the task is missing, the revision is stale, the operation id was
@@ -1965,6 +1965,7 @@ Commands:
   add      Add a task and print its alias
   archive  Archive a task
   edit     Change a task's title or description
+  keeper   Run the keeper that writes the work store
   list     List tasks
   restore  Restore an archived task
   show     Show one task
@@ -2042,6 +2043,22 @@ Flags:
                                   empty and stderr carries one JSON error
                                   object.
   -h, --help                      Print help
+```
+
+## `phux mission keeper`
+
+```text
+Run the keeper that writes the work store
+
+The one process that opens this state directory's work store. The other verbs
+start it on demand, so it rarely needs running by hand. It exits after
+`--idle-exit` seconds without a request.
+
+Usage: phux mission keeper [--idle-exit <SECS>]
+
+Flags:
+      --idle-exit <SECS>  Seconds without a request before exiting. Default 600.
+  -h, --help              Print help
 ```
 
 ## `phux mission list`

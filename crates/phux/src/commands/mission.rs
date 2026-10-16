@@ -1,20 +1,23 @@
-//! `phux mission`: the local task store. No server is contacted.
+//! `phux mission`: tasks in the local work store. Every verb is a call to
+//! the store's keeper (`phux mission keeper`), started on demand. No phux
+//! server is contacted.
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use phux_mission::{
-    AddObjective, Alias, EditObjective, ListDocument, ListFilter, MutationDocument, OperationId,
-    RevisionEdit, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb,
+use phux_mission::{ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb};
+use phux_work::{
+    AddObjective, Alias, Client, EditObjective, Endpoint, KeeperExit, Launcher, ListFilter,
+    OperationId, RevisionEdit,
 };
 
 use super::json_err::codes;
 
-/// How long `open_store` keeps retrying a held writer lock.
-const LOCK_BUDGET: Duration = Duration::from_secs(2);
-const LOCK_PAUSE_START: Duration = Duration::from_millis(20);
-const LOCK_PAUSE_CAP: Duration = Duration::from_millis(200);
+/// A keeper with no request for this long exits; the next verb starts another.
+const KEEPER_IDLE_EXIT: Duration = Duration::from_secs(600);
+/// Overrides [`KEEPER_IDLE_EXIT`] for a keeper started without `--idle-exit`.
+const KEEPER_IDLE_ENV: &str = "PHUX_WORK_IDLE_EXIT_SECS";
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum MissionAction {
@@ -97,6 +100,16 @@ pub(crate) enum MissionAction {
         #[usage(flatten)]
         json: super::JsonOpt,
     },
+    /// Run the keeper that writes the work store
+    ///
+    /// The one process that opens this state directory's work store. The
+    /// other verbs start it on demand, so it rarely needs running by hand.
+    /// It exits after `--idle-exit` seconds without a request.
+    Keeper {
+        /// Seconds without a request before exiting. Default 600.
+        #[usage(long, value_name = "SECS")]
+        idle_exit: Option<u64>,
+    },
 }
 
 #[derive(Debug, usage::Args)]
@@ -135,9 +148,12 @@ fn print_help() -> ExitCode {
 }
 
 fn run_action(action: MissionAction) -> ExitCode {
+    if let MissionAction::Keeper { idle_exit } = action {
+        return keeper(idle_exit);
+    }
     let json = wants_json(&action);
-    let mut store = match open_store(json) {
-        Ok(store) => store,
+    let store = match client(json) {
+        Ok(client) => client,
         Err(code) => return code,
     };
     match action {
@@ -148,7 +164,7 @@ fn run_action(action: MissionAction) -> ExitCode {
             op,
             ..
         } => add(
-            &mut store,
+            &store,
             json,
             &title,
             description.as_deref(),
@@ -165,7 +181,7 @@ fn run_action(action: MissionAction) -> ExitCode {
             op,
             ..
         } => edit(
-            &mut store,
+            &store,
             json,
             &alias,
             title.as_deref(),
@@ -174,11 +190,12 @@ fn run_action(action: MissionAction) -> ExitCode {
             &op,
         ),
         MissionAction::Archive { alias, rev, op, .. } => {
-            set_archived(&mut store, json, &alias, &rev, &op, true)
+            set_archived(&store, json, &alias, &rev, &op, true)
         }
         MissionAction::Restore { alias, rev, op, .. } => {
-            set_archived(&mut store, json, &alias, &rev, &op, false)
+            set_archived(&store, json, &alias, &rev, &op, false)
         }
+        MissionAction::Keeper { .. } => unreachable!("handled above"),
     }
 }
 
@@ -190,31 +207,50 @@ const fn wants_json(action: &MissionAction) -> bool {
         | MissionAction::Edit { json, .. }
         | MissionAction::Archive { json, .. }
         | MissionAction::Restore { json, .. } => json.json,
+        MissionAction::Keeper { .. } => false,
     }
 }
 
-fn open_store(json: bool) -> Result<phux_mission::Store, ExitCode> {
-    let path = phux_mission::store_path(&phux_config::instance::state_dir());
-    let started = Instant::now();
-    let mut pause = LOCK_PAUSE_START;
-    loop {
-        match phux_mission::Store::try_open(&path) {
-            Ok(store) => return Ok(store),
-            Err(phux_mission::Error::Busy) => {
-                let elapsed = started.elapsed();
-                if elapsed >= LOCK_BUDGET {
-                    return Err(fail(json, &phux_mission::Error::Busy));
-                }
-                std::thread::sleep(pause.min(LOCK_BUDGET.saturating_sub(elapsed)));
-                pause = (pause * 2).min(LOCK_PAUSE_CAP);
-            }
-            Err(err) => return Err(fail(json, &err)),
+fn endpoint() -> Endpoint {
+    Endpoint::new(
+        &phux_config::instance::state_dir(),
+        &phux_config::instance::runtime_dir(),
+    )
+}
+
+fn client(json: bool) -> Result<Client, ExitCode> {
+    let endpoint = endpoint();
+    let program = phux_config::instance::running_executable().map_err(|err| {
+        fail(
+            json,
+            &phux_work::Error::Keeper(format!("could not find this phux binary: {err}")),
+        )
+    })?;
+    let log = endpoint.store.parent().map(|dir| dir.join("keeper.log"));
+    let launcher = Launcher {
+        program,
+        args: vec!["mission".into(), "keeper".into()],
+        log,
+    };
+    Ok(Client::new(endpoint, Some(launcher)))
+}
+
+fn keeper(idle_exit: Option<u64>) -> ExitCode {
+    let idle = idle_exit
+        .or_else(|| std::env::var(KEEPER_IDLE_ENV).ok()?.parse().ok())
+        .map_or(KEEPER_IDLE_EXIT, Duration::from_secs);
+    match phux_work::run_keeper(&endpoint(), idle) {
+        Ok(KeeperExit::StoreFailed) => ExitCode::from(1),
+        Ok(KeeperExit::Idle | KeeperExit::AlreadyRunning | KeeperExit::Stale) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("{err}");
+            ExitCode::from(1)
         }
     }
 }
 
 fn add(
-    store: &mut phux_mission::Store,
+    store: &Client,
     json: bool,
     title: &str,
     description: Option<&str>,
@@ -241,8 +277,8 @@ fn add(
     }
 }
 
-fn list(store: &phux_mission::Store, json: bool, repo: Option<&str>, archived: bool) -> ExitCode {
-    match store.list(&ListFilter {
+fn list(store: &Client, json: bool, repo: Option<&str>, archived: bool) -> ExitCode {
+    match store.list(ListFilter {
         repo: repo.map(str::to_owned),
         archived,
     }) {
@@ -273,12 +309,12 @@ fn list(store: &phux_mission::Store, json: bool, repo: Option<&str>, archived: b
     }
 }
 
-fn show(store: &phux_mission::Store, json: bool, alias: &str) -> ExitCode {
+fn show(store: &Client, json: bool, alias: &str) -> ExitCode {
     let alias = match parse_alias(json, alias) {
         Ok(alias) => alias,
         Err(code) => return code,
     };
-    match store.show(&alias) {
+    match store.show(alias) {
         Ok(task) if json => crate::output::json(&ShowDocument::new(&task)),
         Ok(task) => {
             out!(
@@ -299,7 +335,7 @@ fn show(store: &phux_mission::Store, json: bool, alias: &str) -> ExitCode {
 }
 
 fn edit(
-    store: &mut phux_mission::Store,
+    store: &Client,
     json: bool,
     alias: &str,
     title: Option<&str>,
@@ -308,7 +344,7 @@ fn edit(
     op: &OpOpt,
 ) -> ExitCode {
     if title.is_none() && description.is_none() {
-        return fail(json, &phux_mission::Error::EmptyEdit);
+        return fail(json, &phux_work::Error::EmptyEdit);
     }
     let alias = match parse_alias(json, alias) {
         Ok(alias) => alias,
@@ -336,7 +372,7 @@ fn edit(
 }
 
 fn set_archived(
-    store: &mut phux_mission::Store,
+    store: &Client,
     json: bool,
     alias: &str,
     rev: &RevOpt,
@@ -376,7 +412,7 @@ fn set_archived(
 fn emit_mutation(
     json: bool,
     verb: Verb,
-    applied: &phux_mission::Applied,
+    applied: &phux_work::Applied,
     human: &str,
     with_rev: bool,
 ) -> ExitCode {
@@ -396,7 +432,7 @@ fn emit_mutation(
 }
 
 fn require_expected(
-    store: &phux_mission::Store,
+    store: &Client,
     json: bool,
     alias: &Alias,
     expected: Option<u64>,
@@ -404,7 +440,7 @@ fn require_expected(
     if let Some(expected) = expected {
         return Ok(expected);
     }
-    match store.show(alias) {
+    match store.show(alias.clone()) {
         Ok(task) => Err(usage(
             json,
             &format!(
@@ -507,7 +543,7 @@ fn actor() -> String {
         .unwrap_or_else(|| "cli".to_owned())
 }
 
-fn fail(json: bool, err: &phux_mission::Error) -> ExitCode {
+fn fail(json: bool, err: &phux_work::Error) -> ExitCode {
     let (code, exit, remedy) = classify(err);
     if json {
         emit_json_error(code, &err.to_string(), remedy, exit)
@@ -528,48 +564,54 @@ fn usage(json: bool, message: &str, remedy: &str) -> ExitCode {
     }
 }
 
-const fn classify(err: &phux_mission::Error) -> (&'static str, u8, &'static str) {
+const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
     match err {
-        phux_mission::Error::NotFound { .. } => (
+        phux_work::Error::NotFound { .. } => (
             codes::MISSION_NOT_FOUND,
             1,
             "check the alias with `phux mission list`",
         ),
-        phux_mission::Error::RevisionConflict { .. } => (
+        phux_work::Error::RevisionConflict { .. } => (
             codes::MISSION_REVISION_CONFLICT,
             1,
             "rerun with --expected-revision set to the revision named in the error",
         ),
-        phux_mission::Error::OperationConflict { .. } => (
+        phux_work::Error::OperationConflict { .. } => (
             codes::MISSION_OPERATION_CONFLICT,
             1,
             "use a new operation id; this id already names a different write",
         ),
-        phux_mission::Error::UnsupportedSchema { .. } => (
+        phux_work::Error::UnsupportedSchema { .. } => (
             codes::MISSION_UNSUPPORTED_SCHEMA,
             1,
             "this binary reads mission schema version 1 only",
         ),
-        phux_mission::Error::Busy => (
+        phux_work::Error::Busy => (
             codes::MISSION_BUSY,
             1,
-            "retry after the other writer finishes",
+            "retry; if it persists, check `keeper.log` beside the work store",
         ),
-        phux_mission::Error::InvalidAlias(_)
-        | phux_mission::Error::InvalidOperationId(_)
-        | phux_mission::Error::InvalidRepo(_)
-        | phux_mission::Error::InvalidText { .. }
-        | phux_mission::Error::EmptyEdit => {
-            (codes::USAGE_ERROR, 2, "run `phux mission --help` for usage")
-        }
-        phux_mission::Error::Io(_)
-        | phux_mission::Error::Sqlite(_)
-        | phux_mission::Error::Json(_)
-        | phux_mission::Error::Random(_)
-        | phux_mission::Error::Corrupt(_) => (
+        phux_work::Error::Keeper(_) => (
             codes::MISSION_STORE,
             1,
-            "check permissions on the mission store",
+            "retry; if it persists, check `keeper.log` beside the work store",
+        ),
+        phux_work::Error::InvalidAlias(_)
+        | phux_work::Error::InvalidOperationId(_)
+        | phux_work::Error::InvalidRepo(_)
+        | phux_work::Error::InvalidText { .. }
+        | phux_work::Error::EmptyEdit => {
+            (codes::USAGE_ERROR, 2, "run `phux mission --help` for usage")
+        }
+        phux_work::Error::Io(_)
+        | phux_work::Error::Sqlite(_)
+        | phux_work::Error::Json(_)
+        | phux_work::Error::Random(_)
+        | phux_work::Error::Corrupt(_)
+        | phux_work::Error::Store(_) => (
+            codes::MISSION_STORE,
+            1,
+            "check permissions on the work store",
         ),
     }
 }

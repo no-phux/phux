@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use crate::store::{Applied, Objective};
+use phux_work::{Applied, Objective};
 
 /// Schema name carried on every mission JSON document.
 pub const SCHEMA: &str = "phux.mission/v1";

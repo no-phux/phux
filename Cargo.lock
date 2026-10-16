@@ -2474,6 +2474,7 @@ dependencies = [
  "phux-relay",
  "phux-server",
  "phux-tui",
+ "phux-work",
  "portable-pty",
  "qrcode",
  "rcgen",
@@ -2685,16 +2686,10 @@ dependencies = [
 
 [[package]]
 name = "phux-mission"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
- "chrono",
- "getrandom 0.2.17",
- "rusqlite",
- "rustix",
+ "phux-work",
  "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2871,6 +2866,20 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "phux-work"
+version = "0.79.4"
+dependencies = [
+ "chrono",
+ "getrandom 0.2.17",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

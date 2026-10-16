@@ -106,6 +106,25 @@ impl OperationId {
     }
 }
 
+impl Serialize for OperationId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for OperationId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Objective lifecycle stored on the row.
 ///
 /// `NeedsYou` is the needs-you state. An unresolved [`SignalKind::CredentialLost`]

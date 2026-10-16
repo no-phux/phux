@@ -1328,10 +1328,11 @@ pub(crate) enum Command {
         yes: bool,
     },
 
-    /// Track tasks in the local mission store
+    /// Track tasks in the local work store
     ///
-    /// Reads and writes the mission database in the phux state directory and
-    /// never contacts a server. With no subcommand, prints this help.
+    /// Every verb is a call to the work store's keeper, which `phux mission`
+    /// starts on demand; no phux server is contacted. With no subcommand,
+    /// prints this help.
     ///
     /// `--json` prints a document whose `schema` is `phux.mission/v1`.
     /// Exit status: 0 success; 1 the task is missing, the revision is stale,

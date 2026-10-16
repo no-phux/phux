@@ -1,0 +1,30 @@
+[package]
+name = "phux-work"
+description = "Durable work store and its keeper: objectives, runs, bindings, signals, and an append-only event log, written only by one keeper per host."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+# Opaque 16-byte ids. `getrandom` 0.2 is already in Cargo.lock; this names
+# that line rather than pulling a new crate version.
+getrandom = "0.2"
+# Exclusive writer lock, the same `flock` the workload store uses, and
+# `poll` for the keeper's idle exit. The binary already depends on rustix
+# 1.1, so this adds no crate version.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "event"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

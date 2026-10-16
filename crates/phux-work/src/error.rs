@@ -1,28 +1,34 @@
-//! Store failures. A failed mutation leaves the file as it was.
+//! Work store failures. A failed mutation leaves the file as it was.
 
-/// Why a mission store operation failed.
+/// Why a work store operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The filesystem refused a create, lock, or permission change.
-    #[error("mission store io: {0}")]
+    #[error("work store io: {0}")]
     Io(#[from] std::io::Error),
     /// SQLite refused a statement.
-    #[error("mission store: {0}")]
+    #[error("work store: {0}")]
     Sqlite(#[from] rusqlite::Error),
     /// A stored JSON snapshot did not encode or decode.
-    #[error("mission store json: {0}")]
+    #[error("work store json: {0}")]
     Json(#[from] serde_json::Error),
     /// `PRAGMA user_version` is not the version this binary reads.
-    #[error("mission store schema version {found} is newer than this binary reads ({supported})")]
+    #[error("work store schema version {found} is newer than this binary reads ({supported})")]
     UnsupportedSchema {
         /// The version stored in the file.
         found: i64,
         /// The newest version this binary reads.
         supported: i64,
     },
-    /// Another writer holds the store lock.
-    #[error("another phux mission command is writing; try again")]
+    /// Another process holds the store lock and no keeper answered.
+    #[error("another process holds the work store; try again")]
     Busy,
+    /// The keeper could not be started or broke the request exchange.
+    #[error("work keeper: {0}")]
+    Keeper(String),
+    /// The keeper's store failed; the text is the keeper's own error.
+    #[error("{0}")]
+    Store(String),
     /// No objective has this alias.
     #[error("no task {alias}")]
     NotFound {
@@ -58,9 +64,9 @@ pub enum Error {
     #[error("{field} {reason}")]
     InvalidText {
         /// Field name.
-        field: &'static str,
+        field: String,
         /// What is wrong with the value.
-        reason: &'static str,
+        reason: String,
     },
     /// `edit` named neither a title nor a description.
     #[error("edit needs a title or a description")]
@@ -69,12 +75,15 @@ pub enum Error {
     #[error("could not mint an id: {0}")]
     Random(String),
     /// A row on disk breaks a store invariant.
-    #[error("mission store corrupt: {0}")]
+    #[error("work store corrupt: {0}")]
     Corrupt(String),
 }
 
 impl Error {
-    pub(crate) const fn invalid_text(field: &'static str, reason: &'static str) -> Self {
-        Self::InvalidText { field, reason }
+    pub(crate) fn invalid_text(field: &str, reason: &str) -> Self {
+        Self::InvalidText {
+            field: field.to_owned(),
+            reason: reason.to_owned(),
+        }
     }
 }

@@ -235,16 +235,16 @@ fn default_repo_uses_the_directory_name_when_there_is_no_remote() {
 }
 
 #[test]
-fn a_held_lock_fails_busy_after_a_short_retry() {
+fn a_store_held_outside_a_keeper_fails_busy_after_a_short_retry() {
     let xdg = common::XdgDirs::fresh("mission-lock");
-    let path = phux_mission::store_path(&xdg.state.join("phux-missiontest"));
-    let mut store = phux_mission::Store::open(&path).expect("open");
+    let path = phux_work::store_path(&xdg.state.join("phux-missiontest"));
+    let mut store = phux_work::Store::open(&path).expect("open");
     store
-        .add(phux_mission::AddObjective {
+        .add(phux_work::AddObjective {
             repo: "phux".to_owned(),
             title: "kept".to_owned(),
             description: String::new(),
-            operation_id: phux_mission::OperationId::generate().expect("id"),
+            operation_id: phux_work::OperationId::generate().expect("id"),
             actor: "tester".to_owned(),
         })
         .expect("add");
@@ -254,6 +254,7 @@ fn a_held_lock_fails_busy_after_a_short_retry() {
     xdg.apply(&mut command);
     command.env("HOME", &xdg.state);
     command.env("PHUX_PROFILE", "missiontest");
+    command.env("PHUX_WORK_IDLE_EXIT_SECS", KEEPER_IDLE_SECS);
     let output = command
         .args(["mission", "list", "--json"])
         .output()
@@ -272,11 +273,11 @@ fn a_held_lock_fails_busy_after_a_short_retry() {
     assert_eq!(doc["error"]["code"], "mission_busy");
     assert_eq!(
         doc["error"]["message"],
-        "another phux mission command is writing; try again"
+        "another process holds the work store; try again"
     );
     assert_valid(&schema_validator(), &doc);
     let tasks = store
-        .list(&phux_mission::ListFilter {
+        .list(&phux_work::ListFilter {
             repo: None,
             archived: false,
         })
@@ -440,17 +441,77 @@ fn errors_and_replay(schema: &jsonschema::Validator, xdg: &common::XdgDirs) {
     assert_valid(schema, &replay_doc);
 }
 
-fn mission(xdg: &common::XdgDirs, args: &[&str]) -> Output {
+/// Keepers these tests start exit this soon after their last request.
+const KEEPER_IDLE_SECS: &str = "3";
+
+#[test]
+fn concurrent_adds_go_through_one_keeper_and_none_is_lost() {
+    let xdg = common::XdgDirs::fresh("mission-concurrent");
+    let children: Vec<_> = (0..8)
+        .map(|index| {
+            let mut command = mission_command(&xdg);
+            command
+                .args([
+                    "mission",
+                    "add",
+                    &format!("task-{index}"),
+                    "--repo",
+                    "phux",
+                    "--json",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            command.spawn().expect("spawn phux")
+        })
+        .collect();
+    let mut aliases = std::collections::BTreeSet::new();
+    for child in children {
+        let output = child.wait_with_output().expect("wait");
+        assert_success("concurrent add", &output);
+        let doc: Value = serde_json::from_slice(&output.stdout).expect("json");
+        aliases.insert(doc["task"]["alias"].as_str().expect("alias").to_owned());
+    }
+    let expected: std::collections::BTreeSet<_> = (1..=8).map(|n| format!("phux/{n}")).collect();
+    assert_eq!(aliases, expected);
+
+    let list = mission(&xdg, &["mission", "list", "--json"]);
+    assert_success("list", &list);
+    let doc: Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(doc["tasks"].as_array().expect("tasks").len(), 8);
+}
+
+#[test]
+fn a_second_keeper_exits_at_once_while_one_serves() {
+    let xdg = common::XdgDirs::fresh("mission-keeper");
+    let add = mission(&xdg, &["mission", "add", "First", "--repo", "phux"]);
+    assert_eq!(add.status.code(), Some(0), "{}", stderr(&add));
+
+    let started = std::time::Instant::now();
+    let second = mission(&xdg, &["mission", "keeper", "--idle-exit", "30"]);
+    assert_eq!(second.status.code(), Some(0), "{}", stderr(&second));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a second keeper served instead of exiting"
+    );
+}
+
+fn mission_command(xdg: &common::XdgDirs) -> std::process::Command {
     let mut command = common::phux_cmd(runner::phux_bin());
     xdg.apply(&mut command);
     command.env("HOME", &xdg.state);
-    command.args(args).output().expect("spawn phux")
+    command.env("PHUX_WORK_IDLE_EXIT_SECS", KEEPER_IDLE_SECS);
+    command
+}
+
+fn mission(xdg: &common::XdgDirs, args: &[&str]) -> Output {
+    mission_command(xdg)
+        .args(args)
+        .output()
+        .expect("spawn phux")
 }
 
 fn mission_at(xdg: &common::XdgDirs, dir: &std::path::Path, args: &[&str]) -> Output {
-    let mut command = common::phux_cmd(runner::phux_bin());
-    xdg.apply(&mut command);
-    command.env("HOME", &xdg.state);
+    let mut command = mission_command(xdg);
     command.current_dir(dir);
     command.args(args).output().expect("spawn phux")
 }
