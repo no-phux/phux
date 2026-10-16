@@ -90,11 +90,37 @@ require_fixed .github/workflows/website-dispatch.yml 'repositories: website'
 require_fixed .github/workflows/website-dispatch.yml 'release:'
 require_fixed .github/workflows/website-dispatch.yml 'types: [published]'
 
-# Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
-# read the releases/latest redirect before falling back to the release list.
+# Only the CLI stream may be GitHub's "Latest": binaries released before the
+# channel manifest (ADR-0175) resolve their one update through the
+# releases/latest redirect.
 require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=false --latest'
 require_fixed .github/workflows/agent-integration-release.yml '--draft=false --latest=false'
 require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=false'
+
+# --- One release manifest per channel (ADR-0175) ------------------------------
+#
+# Every client discovers releases from channels/{stable,next}.json and nothing
+# else. Listing GitHub releases from a client is what spent the 60-per-hour
+# unauthenticated API budget and showed stale or failed checks.
+for client in crates/phux/src/commands/update/release.rs \
+  clients/desktop/native/src/updates.rs scripts/lib/install-release.sh \
+  scripts/install.sh scripts/install-desktop.sh; do
+  forbid_fixed "$client" 'api.github.com'
+  forbid_fixed "$client" 'releases/latest'
+done
+require_fixed crates/phux/src/commands/update/release.rs 'https://github.com/no-phux/phux/releases/download/channels/stable.json'
+require_fixed crates/phux/src/commands/update/release.rs 'https://github.com/no-phux/phux/releases/download/channels/next.json'
+require_fixed clients/desktop/native/src/updates.rs 'https://github.com/no-phux/phux/releases/download/channels'
+require_fixed scripts/lib/install-release.sh 'https://github.com/no-phux/phux/releases/download/channels/'
+# The manifest is derived from published state on every run, after both
+# product lanes settle, never written by the lane that just published.
+require_fixed .github/workflows/publish.yml 'needs: [plan, phux, desktop]'
+require_fixed .github/workflows/publish.yml 'python3 scripts/ci/release_manifest.py stable --out'
+require_fixed .github/workflows/next-release.yml 'python3 scripts/ci/release_manifest.py next --out'
+# Desktop never replaces its own running bundle: it stages, and a helper swaps
+# after the process exits.
+require_fixed clients/desktop/native/src/updates.rs '"--stage-dir"'
+require_fixed scripts/install-desktop.sh '--stage-dir'
 
 # --- The repository is no-phux/phux -------------------------------------------
 #
@@ -103,7 +129,8 @@ require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=fals
 # decision to revoke. An installed phux resolves its own updates through these
 # constants, so a dropped redirect would strand every existing install.
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
-# The CLI next-channel pointer must be an asset named channel.json.
+# The CLI next-channel publication record, which channels/next.json is built
+# from and pre-manifest binaries still read, must be an asset named channel.json.
 # gh's `file#label` syntax labels the asset;
 # it does not rename it, so the pointer is written under its real basename.
 require_fixed scripts/publish-next-channel.sh 'pointer_name="channel.json"'
@@ -301,6 +328,7 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
+python3 "$ROOT/scripts/ci/release_manifest.py" fixtures --check
 bash "$ROOT/scripts/check-product-skills-export.sh"
 bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-publish-next-channel.sh"

@@ -137,12 +137,21 @@ stopping this monitor changes the server.
 
 ### Updates
 
-**Settings > Updates** checks releases at launch and every six hours without
-blocking terminal input. Turn automatic checks off or use **Check now** at any
-time. **Update & restart** downloads and verifies the desktop bundle, replaces
-this copy of `Phux.app` with rollback on installation failure, and reopens it.
-The titlebar shows the same button when a desktop update is available. Quitting
-the desktop detaches; it does not stop your server-owned terminals.
+**Settings > Updates** checks the channel's release manifest
+([ADR-0175](../../docs/adr/0175-one-release-manifest-per-channel.md)) at launch
+and every six hours without blocking terminal input. Turn automatic checks off
+or use **Check now** at any time. **Download update** downloads the bundle,
+verifies its checksum and signature, and stages it beside `Phux.app` while you
+keep working. **Restart to update** then quits, swaps the staged bundle in
+after the app has exited, and reopens it. If the swap fails, the previous app
+is moved back. Quitting normally also installs a staged update. The helper logs
+to `~/Library/Logs/Phux/update.log`. The titlebar shows the same button.
+Quitting the desktop detaches; it does not stop your server-owned terminals.
+
+When an update changes the wire protocol, the Updates page says so, because
+the phux CLI and server must move too. With **Manage phux updates** on, the
+button becomes **Update phux & restart**. It updates and hands off the server
+first, then restarts into the new desktop.
 
 Choose **Stable** (the latest published desktop release) or **Next** (verified
 main builds). You can switch back to Stable even from a newer Next build.
