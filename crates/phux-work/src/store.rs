@@ -163,7 +163,7 @@ pub struct ListFilter {
 
 /// Open SQLite store. The lock is held until drop.
 ///
-/// The keeper ([`crate::service`]) is the only process that opens a host's
+/// The keeper ([`crate::run_keeper`]) is the only process that opens a host's
 /// store; everything else goes through [`crate::Client`].
 #[derive(Debug)]
 pub struct Store {

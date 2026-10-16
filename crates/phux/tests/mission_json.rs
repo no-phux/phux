@@ -581,8 +581,7 @@ fn assert_valid(schema: &jsonschema::Validator, value: &Value) {
 }
 
 fn schema_validator() -> jsonschema::Validator {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../phux-mission/schema/phux.mission.v1.schema.json");
+    let path = manifest_dir().join("../phux-mission/schema/phux.mission.v1.schema.json");
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     let schema: Value = serde_json::from_str(&text).expect("schema json");
@@ -590,7 +589,7 @@ fn schema_validator() -> jsonschema::Validator {
 }
 
 fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mission_goldens")
+    manifest_dir().join("tests/mission_goldens")
 }
 
 fn normalize(value: &mut Value) {
@@ -625,4 +624,10 @@ fn is_hex32(text: &str) -> bool {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Read at run time: a compiled-in path would tie the test to one checkout
+/// (`scripts/check-cache-portable.sh`).
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
 }
