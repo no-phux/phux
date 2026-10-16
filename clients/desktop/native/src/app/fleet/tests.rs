@@ -312,3 +312,21 @@ fn inventory_constructor_has_no_attach_or_execution_side_effects() {
     assert!(connection.topology.is_none());
     assert!(connection.home_key().is_none());
 }
+
+#[gpui::test]
+fn a_drain_that_changes_no_work_reports_nothing(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (desk, _) = fixture(cx);
+    desk.update(cx, |desk, _| {
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            connection(2, vec![session(7, "main")]),
+        );
+        let host = Some("mini".to_owned());
+        desk.fleet.drain(&host);
+        let revision = desk.fleet.revision;
+        assert!(!desk.fleet.drain(&host));
+        assert_eq!(desk.fleet.revision, revision);
+    });
+}
