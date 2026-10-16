@@ -1156,7 +1156,7 @@ impl Desk {
             "find-next" => self.step_find(1, window, cx),
             "find-prev" => self.step_find(-1, window, cx),
             "find-selection" => self.find_selection(window, cx),
-            "find-close" => self.close_find(),
+            "find-close" => self.close_find(cx),
             "follow" | "scroll-bottom" => self.follow(cx),
             "paste-cwd" => self.paste_cwd(),
             "terminate" => self.ask_terminate(),
@@ -1377,7 +1377,7 @@ impl Desk {
         if !matches!(self.modal, Modal::None) {
             self.close_modal(window, cx);
         } else if self.find.is_some() {
-            self.close_find();
+            self.close_find(cx);
             self.focus_terminal(window, cx);
             cx.notify();
         }
@@ -2792,13 +2792,13 @@ impl Desk {
             .filter(|find| find.placement_id == placement_id)
         {
             let (query, case) = (find.query.clone(), find.case_sensitive);
-            self.run_search(query, case);
+            self.run_search(query, case, cx);
             if self.find_input.is_none() {
                 self.find_input = Some(super::overlays::find_input(self, "", window, cx));
             }
             return;
         }
-        self.close_find();
+        self.close_find(cx);
         self.find = Some(FindState {
             placement_id,
             query: String::new(),
@@ -2836,7 +2836,7 @@ impl Desk {
             .as_ref()
             .is_some_and(|find| find.placement_id != placement.id)
         {
-            self.close_find();
+            self.close_find(cx);
         }
         self.find = Some(FindState {
             placement_id: placement.id,
@@ -2852,10 +2852,10 @@ impl Desk {
             }
             None => self.find_input = Some(super::overlays::find_input(self, &query, window, cx)),
         }
-        self.run_search(query, case);
+        self.run_search(query, case, cx);
     }
 
-    pub fn run_search(&mut self, query: String, case_sensitive: bool) {
+    pub fn run_search(&mut self, query: String, case_sensitive: bool, cx: &mut Context<Self>) {
         let Some(state) = self.find.clone() else {
             return;
         };
@@ -2876,7 +2876,7 @@ impl Desk {
                 .map(|found| (found.start, found.end))
                 .collect()
         };
-        self.show_match(&placement, &matches, 0);
+        self.show_match(&placement, &matches, 0, cx);
         self.find = Some(FindState {
             placement_id: state.placement_id,
             query,
@@ -2896,18 +2896,24 @@ impl Desk {
             return;
         };
         if state.matches.is_empty() {
-            self.run_search(state.query, state.case_sensitive);
+            self.run_search(state.query, state.case_sensitive, cx);
             return;
         }
         let len = state.matches.len() as i32;
         let index = (state.index as i32 + delta).rem_euclid(len) as usize;
         if let Some(placement) = self.placement(&state.placement_id).cloned() {
-            self.show_match(&placement, &state.matches, index);
+            self.show_match(&placement, &state.matches, index, cx);
         }
         self.find = Some(FindState { index, ..state });
     }
 
-    fn show_match(&self, placement: &Placement, matches: &[(u64, u64)], index: usize) {
+    fn show_match(
+        &self,
+        placement: &Placement,
+        matches: &[(u64, u64)],
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let Some(view) = placement.view_id else {
             return;
         };
@@ -2921,9 +2927,10 @@ impl Desk {
         } else {
             let _ = engine.clear_view_selection(view);
         }
+        self.repaint_placement(&placement.id, cx);
     }
 
-    fn close_find(&mut self) {
+    fn close_find(&mut self, cx: &mut Context<Self>) {
         self.find_input = None;
         if let Some(state) = self.find.take()
             && let Some(placement) = self.placement(&state.placement_id).cloned()
@@ -2931,6 +2938,7 @@ impl Desk {
             && let Some(engine) = self.client().and_then(|client| client.engine())
         {
             let _ = engine.clear_view_selection(view);
+            self.repaint_placement(&placement.id, cx);
         }
     }
 
@@ -3176,8 +3184,7 @@ impl Desk {
             .map(|link| link.connection.client.clone())
     }
 
-    /// Change the focused view locally, then repaint it. A local view change
-    /// republishes without a runtime wake, and the terminal is a cached view.
+    /// Change the focused view locally, then repaint it.
     fn with_view(
         &self,
         cx: &mut Context<Self>,
@@ -3188,10 +3195,18 @@ impl Desk {
         };
         let Some(client) = self.client() else { return };
         call(&client, view);
-        if let Some(entity) = self
+        if let Some(id) = self
             .focused_placement()
-            .and_then(|placement| self.panes.get(&placement.id))
+            .map(|placement| placement.id.clone())
         {
+            self.repaint_placement(&id, cx);
+        }
+    }
+
+    /// Repaint one pane's cached terminal after a local view change, which
+    /// republishes without a runtime wake.
+    fn repaint_placement(&self, placement_id: &str, cx: &mut Context<Self>) {
+        if let Some(entity) = self.panes.get(placement_id) {
             entity.update(cx, |_, cx| cx.notify());
         }
     }
