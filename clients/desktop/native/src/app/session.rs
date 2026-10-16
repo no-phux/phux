@@ -381,15 +381,22 @@ impl Desktop {
     }
 
     /// Update reuse metadata without reading the desk while it is leased.
-    pub(crate) fn sync_window_session(&mut self, desk: gpui::EntityId, name: &str) {
+    pub(crate) fn sync_window_session(
+        &mut self,
+        desk: gpui::EntityId,
+        name: &str,
+        remote: Option<&str>,
+        role: WindowRole,
+    ) {
         if let Some(opened) = self
             .windows
             .iter_mut()
             .chain(self.quick.as_mut())
             .find(|opened| opened.desk.entity_id() == desk)
-            && opened.session != name
         {
             name.clone_into(&mut opened.session);
+            opened.remote = remote.map(str::to_owned);
+            opened.role = role;
         }
     }
 

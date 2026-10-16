@@ -27,7 +27,7 @@ mod goto_facts;
 mod goto_filter;
 mod goto_frecency;
 mod goto_search;
-mod launcher;
+pub(crate) mod launcher;
 
 pub(crate) use goto_filter::GotoPalette;
 pub(crate) use goto_frecency::Store as GotoFrecency;
@@ -64,8 +64,12 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             });
         }
         Modal::Settings => {
-            super::settings_panel::prepare(desk, window, cx);
-            window.focus(&desk.focus, cx);
+            desk.settings_page = None;
+            let state = palette_state(desk, window, cx);
+            state.update(cx, |state, cx| {
+                state.set_query("", window, cx);
+                state.focus(window, cx);
+            });
         }
         Modal::Rename { tab_id } => {
             let current = desk
@@ -374,6 +378,19 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Work(destination) => {
+                self.close_modal(window, cx);
+                self.navigate_work(destination, cx);
+                self.after_command(window, cx);
+            }
+            Target::Setting(page) => {
+                self.modal = Modal::Settings;
+                self.settings_page = Some(page);
+                self.mark_prepared();
+                super::settings_panel::prepare(self, window, cx);
+                window.focus(&self.focus, cx);
+                cx.notify();
+            }
             Target::Move(key, name) => {
                 let selected = self.organization.selected.clone();
                 self.move_resources_to(selected, key, name, window, cx);
@@ -416,7 +433,12 @@ impl Desk {
                     goto_frecency::Choice::Tab { id, listed },
                 )
             }
-            Target::Command | Target::Session(_) | Target::Move(_, _) | Target::Path(_) => {
+            Target::Command
+            | Target::Session(_)
+            | Target::Work(_)
+            | Target::Setting(_)
+            | Target::Move(_, _)
+            | Target::Path(_) => {
                 goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
             }
         };
@@ -431,6 +453,8 @@ enum Target {
     Pane(ResourceId),
     Tab(String),
     Session(String),
+    Work(super::fleet::Destination),
+    Setting(super::settings_panel::Page),
     Move(SessionKey, String),
     Path(PathItem),
 }
@@ -481,7 +505,10 @@ pub fn layer(
             launcher::palette(desk, colors, window, cx)
         }
         Modal::Path => path_panel(desk, colors, window, cx),
-        Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
+        Modal::Settings if desk.settings_page.is_some() => {
+            super::settings_panel::panel(desk, colors, window, cx)
+        }
+        Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, cx),
         Modal::NativeLaunch => super::native_launch::panel(desk, colors, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
@@ -537,7 +564,7 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
 
 // Match the launcher's fine rim and lifted material without washing out text
 // over terminal content. The near-opaque tint works in both theme appearances.
-fn card(colors: &Palette, width: f32) -> gpui::Div {
+pub(crate) fn card(colors: &Palette, width: f32) -> gpui::Div {
     let light = colors.theme.appearance == "light";
     div()
         .w(px(width))
@@ -674,6 +701,65 @@ struct Row {
     preview: Option<goto_facts::FactsCard>,
 }
 
+fn simple_row(title: &str, detail: String, category: &'static str, target: Target) -> Row {
+    Row {
+        title: title.to_owned().into(),
+        keywords: detail.clone(),
+        detail: Some(detail.into()),
+        target,
+        command: None,
+        category,
+        chord: None,
+        agent: None,
+        preview: None,
+    }
+}
+
+fn settings_sections() -> Vec<Section> {
+    vec![Section {
+        label: Some("Settings"),
+        rows: super::settings_panel::Page::ALL
+            .into_iter()
+            .map(|page| {
+                let mut row = simple_row(
+                    page.title(),
+                    page.description().to_owned(),
+                    "Settings",
+                    Target::Setting(page),
+                );
+                row.keywords = page.keywords().to_owned();
+                row
+            })
+            .collect(),
+    }]
+}
+
+fn work_rows(desk: &Desk) -> Vec<Row> {
+    desk.work_catalog()
+        .into_iter()
+        .map(|work| {
+            let destination = work.destination;
+            let status = if work.online { "" } else { " · offline" };
+            let intake = if work.intake { " · Intake" } else { "" };
+            let detail = format!(
+                "{} · {} terminals{intake}{status}",
+                destination.host_label(),
+                work.terminals
+            );
+            let mut row = simple_row(
+                &destination.name.clone(),
+                detail,
+                "Work",
+                Target::Work(destination),
+            );
+            if let Some((id, name)) = work.project {
+                row.keywords.push_str(&format!(" {id} {name}"));
+            }
+            row
+        })
+        .collect()
+}
+
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
     const ESSENTIALS: &[&str] = &["new", "split-right", "folder", "settings"];
     let organizing = desk
@@ -741,7 +827,10 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
 
 fn goto_sections(desk: &Desk) -> Vec<Section> {
     let Some(link) = desk.link.as_ref() else {
-        return Vec::new();
+        return vec![Section {
+            label: Some("Work"),
+            rows: work_rows(desk),
+        }];
     };
     let mut agents = Vec::new();
     let mut terminals = Vec::new();
@@ -826,14 +915,19 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             })
         })
         .collect::<Vec<_>>();
-    [("Agents", agents), ("Terminals", terminals), ("Tabs", tabs)]
-        .into_iter()
-        .filter(|(_, rows)| !rows.is_empty())
-        .map(|(label, rows)| Section {
-            label: Some(label),
-            rows,
-        })
-        .collect()
+    [
+        ("Work", work_rows(desk)),
+        ("Agents", agents),
+        ("Terminals", terminals),
+        ("Tabs", tabs),
+    ]
+    .into_iter()
+    .filter(|(_, rows)| !rows.is_empty())
+    .map(|(label, rows)| Section {
+        label: Some(label),
+        rows,
+    })
+    .collect()
 }
 
 fn session_sections(desk: &Desk) -> Vec<Section> {
@@ -1006,6 +1100,9 @@ fn filter_sections(mut sections: Vec<Section>, filter: goto_filter::GotoFilter) 
 
 fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
     match &row.target {
+        Target::Work(destination) => Some(goto_filter::GotoId::Work(destination.clone())),
+        Target::Command => row.command.map(goto_filter::GotoId::Command),
+        Target::Setting(page) => Some(goto_filter::GotoId::Setting(*page)),
         Target::Pane(id) => Some(goto_filter::GotoId::Pane(id.clone())),
         Target::Tab(id) => Some(goto_filter::GotoId::Tab(id.clone())),
         _ => None,
@@ -1081,12 +1178,15 @@ fn goto_boost(
 fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
     let Some(link) = desk.link.as_ref() else {
         return goto_search::SearchRevision {
-            connection: 0,
+            connection: desk.fleet.revision.rotate_left(32),
             workspace: 0,
         };
     };
     goto_search::SearchRevision {
-        connection: link.connection.revision(),
+        connection: link
+            .connection
+            .revision()
+            .wrapping_add(desk.fleet.revision.rotate_left(32)),
         workspace: workspace_stamp(&link.workspace.tabs),
     }
 }
@@ -1615,6 +1715,39 @@ mod tests {
 
     fn session(byte: u8, name: &str) -> SessionRecord {
         SessionRecord::new(SessionKey::new([byte; 16]).unwrap(), name, Revision::new(1))
+    }
+
+    #[test]
+    fn work_and_settings_rows_preserve_actual_indices_during_filter_realignment() {
+        let work = crate::app::fleet::Destination {
+            host: Some("mini".into()),
+            authority: None,
+            key: Some(SessionKey::new([3; 16]).unwrap()),
+            name: "repo".into(),
+        };
+        let target = phux_protocol::ResourceId::local(7);
+        let rows = vec![
+            super::simple_row("repo", String::new(), "Work", Target::Work(work)),
+            super::simple_row(
+                "Appearance",
+                String::new(),
+                "Settings",
+                Target::Setting(crate::app::settings_panel::Page::Appearance),
+            ),
+            super::simple_row(
+                "agent",
+                String::new(),
+                "Agents",
+                Target::Pane(target.clone()),
+            ),
+        ];
+        let sections = vec![Section { label: None, rows }];
+        let ids = section_ids(&sections);
+        assert_eq!(ids[0].len(), 3);
+        assert_eq!(
+            selection_path(&ids, Some(&GotoId::Pane(target))),
+            Some((0, 2))
+        );
     }
 
     #[test]

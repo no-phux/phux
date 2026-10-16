@@ -153,6 +153,14 @@ name, recovery refuses rather than attaching a recycled number or creating
 a session. An attach refusal ends the attempt instead of leaving it waiting
 for `ATTACH_READY`.
 
+A consumer that validates persistent authority/session keys itself sets
+`ControlOptions::session_recovery` to `SessionRecovery::CallerValidated`. Every new connection then forgets
+its prior session selection and geometry-preserving terminal subscriptions,
+reads inventory without attaching, and waits for explicit selection. The
+desktop uses this for keyed work navigation: it validates the fresh authority
+and SessionKey before selecting the current live handle and rebuilding views.
+The default remains automatic recovery for existing consumers.
+
 ## Thread model
 
 Three kinds of thread touch a session; callers need no thread affinity.

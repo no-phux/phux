@@ -24,8 +24,10 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status};
-use phux_protocol::ids::{ResourceKey, SessionKey};
+use phux_client_runtime::control::{PaneDescriptor, Status};
+use phux_protocol::ids::ResourceKey;
+#[cfg(test)]
+use phux_protocol::ids::SessionKey;
 use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use phux_protocol::{ResourceId, ResourceKind};
 
@@ -33,12 +35,10 @@ use crate::connection::{AgentInfo, AgentState, state_rank};
 use crate::settings::TabPosition;
 use crate::settings::theme::Palette;
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
-use crate::workspace::place::{self, SessionLine};
 
 use super::actions::{OpenPathDirectory, Run};
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal, Tone};
-use super::host;
 use super::keys::gpui_stroke;
 use super::motion;
 use super::notifications::{Kind, Notification};
@@ -766,127 +766,6 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
             )
         })
         .children(sessions)
-        .child(hosts_section(desk, colors, cx))
-}
-
-/// Registered machines from `phux host ls`: switch this window to one, add one
-/// over ssh, or forget one. Always shown, so adding a host is never hidden. A
-/// plain click points this window at the host; its context menu still opens a
-/// separate window. The filled dot marks the host this window is on.
-fn hosts_section(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
-    let header = section_label("Hosts", colors).child(
-        Button::new("host-add")
-            .icon(IconName::Plus)
-            .ghost()
-            .xsmall()
-            .tooltip("Add a host over ssh")
-            .disabled(desk.host_adding.is_some())
-            .on_click(
-                cx.listener(|desk, _, window, cx| desk.open_modal(Modal::AddHost, window, cx)),
-            ),
-    );
-    let mut section = div().flex().flex_col().gap(px(1.)).pt(px(8.)).child(header);
-    for entry in &desk.hosts {
-        let here = desk.remote.as_deref() == Some(entry.name.as_str());
-
-        section = section.child(host_row(entry, here, colors, cx));
-    }
-    if let Some(target) = desk.host_adding.as_deref() {
-        section = section.child(
-            div()
-                .px(px(10.))
-                .py(px(6.))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child(format!("Adding {target}…")),
-        );
-    }
-    section.into_any_element()
-}
-
-fn host_row(
-    entry: &host::RemoteHost,
-    here: bool,
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let name = entry.name.clone();
-    let handle = cx.weak_entity();
-    let menu = {
-        let name = name.clone();
-        move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            let (open, remove) = (handle.clone(), handle.clone());
-            let (open_name, remove_name) = (name.clone(), name.clone());
-            menu.item(PopupMenuItem::new("Open Window").on_click(move |_, _, cx| {
-                let name = open_name.clone();
-                let _ = open.update(cx, |desk, cx| desk.open_host(name, cx));
-            }))
-            .item(
-                PopupMenuItem::new("Remove Host…").on_click(move |_, window, cx| {
-                    let name = remove_name.clone();
-                    let _ = remove.update(cx, |desk, cx| {
-                        desk.open_modal(Modal::RemoveHost { name }, window, cx)
-                    });
-                }),
-            )
-        }
-    };
-    let click = name.clone();
-    div()
-        .id(SharedString::from(format!("host-{name}")))
-        .min_h(px(SIDEBAR_ROW))
-        .px(px(8.))
-        .py(px(4.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .rounded(px(6.))
-        .cursor_pointer()
-        .bg(if here {
-            from_hex(&colors.active)
-        } else {
-            gpui::transparent_black()
-        })
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
-            div()
-                .w(px(SIDEBAR_ICON))
-                .flex()
-                .justify_center()
-                .flex_shrink_0()
-                .child(
-                    div()
-                        .size(px(8.))
-                        .rounded_full()
-                        .when(here, |dot| dot.bg(from_hex(&colors.theme.accent)))
-                        .when(!here, |dot| {
-                            dot.border_1().border_color(from_hex(&colors.faint))
-                        }),
-                ),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_sm()
-                .truncate()
-                .child(name.clone()),
-        )
-        .child(
-            Button::new(SharedString::from(format!("host-menu-{name}")))
-                .icon(IconName::Ellipsis)
-                .ghost()
-                .xsmall()
-                .tooltip("Host actions")
-                .dropdown_menu(menu.clone()),
-        )
-        .on_click(cx.listener(move |desk, _, _, cx| desk.switch_host(Some(click.clone()), cx)))
-        .tooltip({
-            let endpoint = entry.endpoint.clone();
-            move |window, cx| Tooltip::new(endpoint.clone()).build(window, cx)
-        })
-        .context_menu(menu)
-        .into_any_element()
 }
 
 fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
@@ -898,7 +777,7 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
 
 /// A stable entry point; the material and interaction live in their own window.
 pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
-    let label = desk.remote.clone().unwrap_or_else(|| "Local".to_owned());
+    let label = "Phux";
     let colors = chrome_palette(desk);
     let menu_ink = from_hex(&colors.theme.foreground);
     div()
@@ -910,8 +789,7 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
         .child(
             Button::new("main-menu")
                 .label(label)
-                .icon(IconName::Network)
-                .dropdown_caret(true)
+                .icon(IconName::Search)
                 .ghost()
                 .small()
                 .rounded_full()
@@ -923,7 +801,7 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .bg(menu_ink.opacity(0.045))
                 .text_color(menu_ink)
                 .on_click(cx.listener(|desk, _, window, cx| {
-                    super::glass_menu::toggle(desk, window, cx);
+                    desk.open_modal(Modal::Goto, window, cx);
                 })),
         )
         .into_any_element()
@@ -1051,102 +929,105 @@ fn recent_folder_row(
         .into_any_element()
 }
 
-/// Sessions, home first, grouped by typed project identity and remote host.
+/// One work catalog across authorities. A host is context, never a navigation root.
 fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<AnyElement> {
-    let Some(link) = desk.link.as_ref() else {
-        return Vec::new();
-    };
-    let Some(topology) = link.connection.topology.as_ref() else {
-        return Vec::new();
-    };
-    let mut sessions: Vec<_> = topology.sessions.iter().collect();
-    let mut intake: Vec<_> = sessions
-        .iter()
-        .copied()
-        .filter(|session| {
-            is_intake_session(session.key, session.awaiting_organization, topology.inbox)
-        })
-        .collect();
-    intake.sort_by_key(|session| session.key != topology.inbox);
-    sessions.retain(|session| {
-        !is_intake_session(session.key, session.awaiting_organization, topology.inbox)
-    });
-    let home = desk.session.as_str();
-    sessions.sort_by(|left, right| {
-        (left.name != home)
-            .cmp(&(right.name != home))
-            .then_with(|| left.name.cmp(&right.name))
-    });
     let mut rows = Vec::new();
-    if !intake.is_empty() {
-        rows.push(section_label("Intake sessions", colors).into_any_element());
-        for session in intake {
-            rows.push(session_block(desk, session.id, &session.name, colors, cx));
+    let mut project = None;
+    for work in desk.work_catalog() {
+        let group = work
+            .project
+            .clone()
+            .unwrap_or_else(|| (String::new(), "Work".into()));
+        if project.as_ref() != Some(&group.0) {
+            rows.push(section_label(&group.1, colors).into_any_element());
+            project = Some(group.0);
+        }
+        if desk.work_is_active(&work.destination) {
+            rows.push(session_block(
+                desk,
+                work.id,
+                &work.destination.name,
+                colors,
+                cx,
+            ));
+        } else {
+            rows.push(work_row(work, colors, cx));
         }
     }
-    rows.extend(named_session_rows(desk, &sessions, colors, cx));
-    rows
-}
-
-fn named_session_rows(
-    desk: &Desk,
-    sessions: &[&SessionDescriptor],
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> Vec<AnyElement> {
-    let Some(link) = desk.link.as_ref() else {
-        return Vec::new();
-    };
-    let panes = link.connection.panes();
-    let lines: Vec<SessionLine> = sessions
-        .iter()
-        .map(|session| SessionLine {
-            name: session.name.clone(),
-            host: session_host(panes, session.id),
-            project: link.connection.projects.get(&session.id).cloned(),
-        })
-        .collect();
-    let grouped =
-        !link.connection.projects.is_empty() || lines.iter().any(|line| line.host.is_some());
-    let mut rows = Vec::new();
-    if !grouped && !sessions.is_empty() {
-        rows.push(section_label("Sessions", colors).into_any_element());
-    }
-    for group in place::group_by_project(&lines) {
-        if grouped {
-            // Ungrouped sessions sort last; "Sessions" keeps them out of the group above.
-            let title = session_group_title(group.project.as_deref(), group.host.as_deref());
-            rows.push(section_label(&title, colors).into_any_element());
-        }
-        for line in group.sessions {
-            if let Some(session) = sessions.iter().find(|session| session.name == line.name) {
-                rows.push(session_block(desk, session.id, &session.name, colors, cx));
-            }
-        }
+    for (host, error) in desk.fleet.failures() {
+        let name = host.as_deref().unwrap_or("Local");
+        rows.push(
+            div()
+                .id(SharedString::from(format!("unavailable-{name}")))
+                .px(px(10.))
+                .py(px(6.))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(format!("{name} · unavailable"))
+                .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx))
+                .into_any_element(),
+        );
     }
     rows
 }
 
-fn session_group_title(project: Option<&str>, host: Option<&str>) -> String {
-    match (project, host) {
-        (Some(project), Some(host)) => format!("{project} · {host}"),
-        (Some(project), None) => project.to_owned(),
-        (None, Some(host)) => host.to_owned(),
-        (None, None) => "Sessions".to_owned(),
-    }
+fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let target = work.destination.clone();
+    let badge = if work.online {
+        target.host_label().to_owned()
+    } else {
+        format!("{} · offline", target.host_label())
+    };
+    let selector = format!("work-{}-{}", target.host_label(), work.id);
+    div()
+        .id(SharedString::from(selector.clone()))
+        .debug_selector(move || selector.clone())
+        .min_h(px(SIDEBAR_ROW))
+        .px(px(8.))
+        .py(px(4.))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .cursor_pointer()
+        .hover(|style| style.bg(from_hex(&colors.hover)))
+        .child(
+            div()
+                .w(px(SIDEBAR_ICON))
+                .text_xs()
+                .text_color(from_hex(&colors.faint))
+                .child("›"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .child(target.name.clone()),
+        )
+        .when(work.needs_you > 0, |row| {
+            row.child(pill(
+                &work.needs_you.to_string(),
+                &colors.accent_wash,
+                &colors.theme.accent,
+            ))
+        })
+        .child(
+            div()
+                .max_w(px(76.))
+                .min_w_0()
+                .truncate()
+                .text_size(px(10.))
+                .text_color(from_hex(&colors.muted))
+                .child(badge),
+        )
+        .opacity(if work.online { 1. } else { 0.55 })
+        .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(target.clone(), cx)))
+        .into_any_element()
 }
 
-fn session_host(panes: &[PaneDescriptor], session: u32) -> Option<String> {
-    let mut hosts: Vec<String> = panes
-        .iter()
-        .filter(|pane| pane.session_id == session)
-        .filter_map(|pane| place::terminal_host(Some(&pane.terminal_id.to_string())))
-        .collect();
-    hosts.dedup();
-    // A session spread over several hosts belongs to none of them.
-    if hosts.len() == 1 { hosts.pop() } else { None }
-}
-
+#[cfg(test)]
 fn is_intake_session(
     key: Option<SessionKey>,
     awaiting_organization: bool,
@@ -1314,9 +1195,19 @@ fn session_block(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(name.to_owned()),
         )
-        .when(awaiting && !designated, |row| {
-            row.child(pill("imported", &colors.accent_wash, &colors.theme.accent))
-        })
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(from_hex(&colors.muted))
+                .max_w(px(76.))
+                .min_w_0()
+                .truncate()
+                .child(desk.remote.clone().unwrap_or_else(|| "Local".into())),
+        )
+        .when(
+            intake_badge(designated, awaiting) == Some("imported"),
+            |row| row.child(pill("imported", &colors.accent_wash, &colors.theme.accent)),
+        )
         .when_some(project_path, |header, path| {
             header.child(
                 Button::new(SharedString::from(format!("project-open-{id}")))

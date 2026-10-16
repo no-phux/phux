@@ -17,7 +17,7 @@ pub use path::{
 
 pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
-use phux_client_runtime::control::ControlOptions;
+use phux_client_runtime::control::{ControlOptions, SessionRecovery};
 use phux_client_runtime::control::{
     DeliveryOutcome, Event, FileUploadReceipt, PaneDescriptor, PathAnswer, ServerInfo,
     SpawnRequest, Status, Topology, mint_operation,
@@ -164,6 +164,7 @@ pub struct Connection {
     home_key: Option<SessionKey>,
     key_bootstrap_pending: bool,
     pinned_home: bool,
+    expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pinned_verified_epoch: Option<u64>,
     /// Arrangements asked for on this connection, so each is read once.
     fetched: HashSet<ArrangementKey>,
@@ -177,6 +178,8 @@ pub struct Connection {
     admitted: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,
+    /// Inventory-only connections never attach terminal streams or fetch layouts.
+    browsing: bool,
     path_answers: Vec<PathAnswer>,
     file_uploads: Vec<FileUploadReceipt>,
     wake_rx: async_channel::Receiver<()>,
@@ -231,6 +234,28 @@ fn open_client(target: Target, control: ControlOptions) -> anyhow::Result<Client
     )?)
 }
 
+fn remote_target(host: &str) -> anyhow::Result<Target> {
+    #[cfg(test)]
+    if deterministic_dial::armed() {
+        return Ok(Target::uds(PathBuf::from(
+            "/deterministic-desktop-remote.sock",
+        )));
+    }
+    Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))
+}
+
+fn browsing_options() -> ControlOptions {
+    ControlOptions {
+        client_name: "phux-desktop-catalog".to_owned(),
+        viewport: (0, 0),
+        attach: None,
+        attach_role: None,
+        auto_attach_foreign_spawns: false,
+        subscribe_agent_sessions: false,
+        ..ControlOptions::default()
+    }
+}
+
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
@@ -258,7 +283,7 @@ impl Connection {
         session: String,
         key: Option<SessionKey>,
     ) -> anyhow::Result<Self> {
-        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
+        let target = remote_target(host)?;
         Self::connect_target(target, session, key)
     }
 
@@ -276,6 +301,11 @@ impl Connection {
                 client_name: "phux-desktop".to_owned(),
                 viewport: (0, 0),
                 attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
+                session_recovery: if key.is_some() {
+                    SessionRecovery::CallerValidated
+                } else {
+                    SessionRecovery::Automatic
+                },
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
                 subscribe_agent_sessions: true,
@@ -286,6 +316,18 @@ impl Connection {
         connection.home_key = key;
         connection.key_bootstrap_pending = key.is_some();
         connection.pinned_home = key.is_some();
+        Ok(connection)
+    }
+
+    /// Observe inventory without selecting a session, acquiring a view, or spawning work.
+    pub(crate) fn browse(socket: &std::path::Path, remote: Option<&str>) -> anyhow::Result<Self> {
+        let target = match remote {
+            Some(host) => remote_target(host)?,
+            None => Target::uds(socket.to_path_buf()),
+        };
+        let client = open_client(target, browsing_options())?;
+        let mut connection = Self::from_client(client, String::new());
+        connection.browsing = true;
         Ok(connection)
     }
 
@@ -309,6 +351,7 @@ impl Connection {
             home_key: None,
             key_bootstrap_pending: false,
             pinned_home: false,
+            expected_authority: None,
             pinned_verified_epoch: None,
             fetched: HashSet::new(),
             closed: false,
@@ -316,6 +359,7 @@ impl Connection {
             admitted: HashSet::new(),
             identity: None,
             project_tag: None,
+            browsing: false,
             path_answers: Vec::new(),
             file_uploads: Vec::new(),
             wake_rx,
@@ -353,6 +397,7 @@ impl Connection {
             .extend(self.client.take_file_upload_receipts());
         let changed = observation.events.iter().any(structural);
         let was = self.status;
+        self.observe_epoch(&observation.events);
         if changed {
             self.apply_snapshot(
                 observation.status,
@@ -371,12 +416,23 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
-        if changed {
+        self.attach_pinned_home();
+        if changed && !self.browsing {
             self.follow_arrangements(&observation.events);
         }
         self.invalidate_paint(&observation.events);
         self.revision = self.revision.saturating_add(1);
         observation.events
+    }
+
+    fn observe_epoch(&mut self, events: &[Event]) {
+        if !self.pinned_home {
+            return;
+        }
+        if events.iter().any(starts_connection) {
+            self.key_bootstrap_pending = true;
+            self.pinned_verified_epoch = None;
+        }
     }
 
     /// Path answers stashed by [`Self::drain`] since the last take.
@@ -686,8 +742,16 @@ impl Connection {
         self.attach_pinned_home();
     }
 
+    pub(crate) fn session_validated(&self) -> bool {
+        !self.pinned_home || self.pinned_verified_epoch == Some(self.connection_epoch())
+    }
+
     /// Resolve the pinned key before asking the runtime to attach, and verify
     /// it again after the runtime's redial before admitting the workspace.
+    pub(crate) fn expect_authority(&mut self, authority: Option<phux_protocol::ids::AuthorityId>) {
+        self.expected_authority = authority;
+    }
+
     fn attach_pinned_home(&mut self) {
         if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
             return;
@@ -696,6 +760,14 @@ impl Connection {
             if self.status == Status::Attached {
                 self.status = Status::Negotiated;
             }
+            return;
+        }
+        if self.expected_authority.is_some()
+            && self.client.organization().authority() != self.expected_authority
+        {
+            self.error = Some("The host now reports a different authority. Refresh Work and select the session again.".into());
+            self.status = Status::Failed;
+            self.client.close();
             return;
         }
         if self.key_bootstrap_pending {
@@ -1282,6 +1354,9 @@ mod deterministic_dial {
         ARMED.with(Cell::get)
     }
 }
+
+#[cfg(test)]
+mod authority_tests;
 
 #[cfg(test)]
 mod paint_wake_tests {

@@ -114,6 +114,10 @@ pub struct ControlOptions {
     /// request-ID allocation and metadata orchestration; autonomous roster
     /// reads would collide with their externally allocated correlations.
     pub automatic_lifecycle: bool,
+    /// Recover session selection and terminal subscriptions after transport loss.
+    /// Disable when the consumer revalidates authority and persistent keys from
+    /// fresh inventory before explicitly selecting work and rebuilding views.
+    pub session_recovery: SessionRecovery,
     /// The viewport `ATTACH` and spawns declare, in cells. `(0, 0)` casts no
     /// vote: the server ignores it in window-size policy, a session attach
     /// resizes nothing, and every terminal's size is set explicitly (a GUI
@@ -146,6 +150,17 @@ pub struct ControlOptions {
     pub deliver_inbound: InboundDelivery,
 }
 
+/// Who re-establishes session and terminal admission after transport loss.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionRecovery {
+    /// Follow the confirmed session and replay preserved terminal subscriptions.
+    #[default]
+    Automatic,
+    /// Read inventory only. The caller validates authority and persistent keys,
+    /// then explicitly selects work and re-establishes its views.
+    CallerValidated,
+}
+
 /// What a connected driver does with a frame it read off the socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InboundDelivery {
@@ -176,6 +191,7 @@ impl Default for ControlOptions {
         Self {
             client_name: "phux-client-runtime".to_owned(),
             automatic_lifecycle: true,
+            session_recovery: SessionRecovery::Automatic,
             viewport: (80, 24),
             scrollback_lines: 1000,
             attach: None,
@@ -840,6 +856,10 @@ impl ControlPlane {
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
         self.park_agent_delivery();
+        if self.options.session_recovery == SessionRecovery::CallerValidated {
+            self.attach_target = None;
+            self.preserve_terminal_geometry.clear();
+        }
         self.roster = roster::RosterRecovery::default();
         self.geometry_bootstrapped.clear();
         self.connection_epoch = self.connection_epoch.saturating_add(1);

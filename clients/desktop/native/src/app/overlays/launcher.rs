@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, BoxShadow, Context, FontWeight, HighlightStyle, IntoElement, MouseButton,
-    SharedString, Styled, StyledText, WeakEntity, Window, div, point, px,
+    AnyElement, Context, FontWeight, HighlightStyle, IntoElement, MouseButton, SharedString,
+    Styled, StyledText, WeakEntity, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem};
@@ -21,8 +21,8 @@ use crate::settings::theme::Palette;
 use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
 use super::{
-    Row, Target, command_sections, move_sections, prepare_goto, query_terms, rank_sections,
-    session_sections,
+    Row, Section, Target, command_sections, move_sections, prepare_goto, query_terms,
+    rank_sections, session_sections, settings_sections,
 };
 
 /// Narrowest window, less its margins, that fits the list and the facts card.
@@ -41,31 +41,7 @@ pub(super) fn palette(
         return div().into_any_element();
     };
     let query = state.read(cx).query(cx).to_string();
-    let (placeholder, verb, sections) = match desk.modal {
-        Modal::Goto => {
-            prepare_goto(desk, &query);
-            (
-                "Search terminals, agents and tabs…",
-                "Go to",
-                desk.goto_search.cloned_sections(),
-            )
-        }
-        Modal::WindowSession => (
-            "Find a session to open in a window…",
-            "Open window",
-            rank_sections(session_sections(desk), &query),
-        ),
-        Modal::MoveResources => (
-            "Find a destination for selected work…",
-            "Move work",
-            rank_sections(move_sections(desk), &query),
-        ),
-        _ => (
-            "What would you like to do?",
-            "Run command",
-            rank_sections(command_sections(desk, cx), &query),
-        ),
-    };
+    let (placeholder, verb, sections) = sections_for(desk, &query, cx);
     desk.align_goto_highlight(&sections, &state, window, cx);
     let count: usize = sections.iter().map(|section| section.rows.len()).sum();
     let targets: Vec<Vec<Target>> = sections
@@ -81,13 +57,7 @@ pub(super) fn palette(
     let footer_colors = colors.clone();
     let empty_colors = colors.clone();
     let modal = desk.modal.clone();
-    let remote = desk.remote.is_some();
-    let host = desk.remote.as_deref().unwrap_or("Local");
-    let context = SharedString::from(if desk.session.is_empty() {
-        host.to_owned()
-    } else {
-        format!("{host} / {}", desk.session)
-    });
+
     let empty_query = query.trim().is_empty();
     let filter = desk.goto.filter;
     let narrowed = desk.modal == Modal::Goto && filter != GotoFilter::All;
@@ -98,7 +68,17 @@ pub(super) fn palette(
     };
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
-    let height = (viewport.height.as_f32() - top - 24.).clamp(180., 536.);
+    let headings = sections
+        .iter()
+        .filter(|section| section.label.is_some())
+        .count()
+        .min(4) as f32
+        * 32.;
+    let rows_height = (count.min(8) as f32 * 54. + headings + 16.).max(152.);
+    let wanted = chrome + rows_height;
+    let height = (viewport.height.as_f32() - top - 24.)
+        .min(wanted)
+        .clamp(180., 536.);
     let room = (viewport.width.as_f32() - 32.).max(0.);
     let list_width = room.min(720.);
     let selected = state
@@ -107,16 +87,7 @@ pub(super) fn palette(
         .or_else(|| (count > 0).then_some(IndexPath::new(0).section(0)));
     // The card is the highlighted row's metadata. Selection only refreshes
     // this presentation; confirm is what opens the session.
-    let preview = if desk.modal == Modal::Goto {
-        selected.and_then(|index| {
-            sections
-                .get(index.section)
-                .and_then(|section| section.rows.get(index.row))
-                .and_then(|row| row.preview.clone())
-        })
-    } else {
-        None
-    };
+    let preview = selected_preview(&desk.modal, selected, &sections);
     let show_facts = preview.is_some() && room >= FACTS_MIN_ROOM;
     let width = if show_facts {
         room.min(list_width + FACTS_COLUMN)
@@ -132,100 +103,9 @@ pub(super) fn palette(
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
         .max_h(px((height - chrome).max(56.)))
-        .header(move |_, _, _| {
-            header(
-                &modal,
-                &context,
-                remote,
-                filter,
-                &header_colors,
-                &header_handle,
-            )
-        })
-        .empty(move |_, _, _| {
-            div()
-                .w_full()
-                .h_full()
-                .min_h(px(112.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.))
-                .text_color(from_hex(&empty_colors.muted))
-                .child(Icon::new(IconName::Search).size(px(22.)))
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(from_hex(&empty_colors.theme.foreground))
-                        .child(if empty_query && narrowed {
-                            "No agents in this state"
-                        } else if empty_query {
-                            "Nothing to navigate to yet"
-                        } else {
-                            "No matching results"
-                        }),
-                )
-                .child(div().text_xs().child(if empty_query {
-                    "Open a terminal to make it available here."
-                } else {
-                    "Try a command name, an action, or a shorter search."
-                }))
-        })
-        .footer(move |_, _, _| {
-            div()
-                .h(px(44.))
-                .flex_shrink_0()
-                .px(px(14.))
-                .border_t_1()
-                .border_color(from_hex(&footer_colors.border))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(12.))
-                .text_size(px(11.))
-                .text_color(from_hex(&footer_colors.theme.foreground).opacity(0.9))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(format!("{count:02}"))
-                        .when(!compact, |this| {
-                            this.child(if count == 1 { "result" } else { "results" })
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .child(key("↑", &footer_colors))
-                        .child(key("↓", &footer_colors))
-                        .when(!compact, |this| this.child("Navigate")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .opacity(if count == 0 { 0.4 } else { 1. })
-                                .child(key("↩", &footer_colors))
-                                .child(verb),
-                        )
-                        .child(div().w(px(8.)))
-                        .child(key("esc", &footer_colors))
-                        .when(!compact, |this| {
-                            this.child(if empty_query { "Close" } else { "Clear" })
-                        }),
-                )
-        })
+        .header(move |_, _, _| mode_header(&modal, filter, &header_colors, &header_handle))
+        .empty(move |_, _, _| empty_results(empty_query, narrowed, &empty_colors))
+        .footer(move |_, _, _| palette_footer(count, empty_query, compact, verb, &footer_colors))
         .on_query(move |query, window, cx| {
             let _ = query_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
         })
@@ -243,43 +123,12 @@ pub(super) fn palette(
                 let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
             }
         });
-    let terms = query_terms(&query);
-    let tokens: Vec<&str> = terms.iter().map(String::as_str).collect();
-    for (section_index, section) in sections.into_iter().enumerate() {
-        let mut group = CommandGroup::new();
-        if let Some(label) = section.label {
-            group = group.label(label);
-        }
-        command = command.group(group.items(section.rows.into_iter().enumerate().map(
-            |(row_index, row)| {
-                let show_category = section.label != Some(row.category);
-                let active = selected == Some(IndexPath::new(row_index).section(section_index));
-                item(row, &tokens, colors.clone(), active, show_category)
-            },
-        )));
-    }
-    let panel = div()
+    command = with_sections(command, sections, &query, selected, &colors);
+    let panel = super::card(&colors, width)
         .id("palette-panel")
-        .w(px(width))
         .mt(px(top))
-        .rounded(px(14.))
         .text_left()
-        .border_1()
-        .border_color(from_hex(&colors.theme.foreground).opacity(0.14))
-        .bg(from_hex(&colors.raised))
-        .shadow(vec![BoxShadow {
-            color: gpui::black().opacity(if colors.theme.appearance == "light" {
-                0.16
-            } else {
-                0.45
-            }),
-            offset: point(px(0.), px(20.)),
-            blur_radius: px(64.),
-            spread_radius: px(-8.),
-            inset: false,
-        }])
         .overflow_hidden()
-        .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     let panel = if let Some(card) = preview.filter(|_| show_facts) {
         panel.child(
@@ -301,6 +150,149 @@ pub(super) fn palette(
         panel.child(command)
     };
     panel.into_any_element()
+}
+
+fn sections_for(
+    desk: &mut Desk,
+    query: &str,
+    cx: &Context<Desk>,
+) -> (&'static str, &'static str, Vec<Section>) {
+    match desk.modal {
+        Modal::Goto => {
+            prepare_goto(desk, query);
+            let mut sections = desk.goto_search.cloned_sections();
+            if !query.trim().is_empty() && desk.goto.filter == GotoFilter::All {
+                sections.extend(rank_sections(command_sections(desk, cx), query));
+                sections.extend(rank_sections(settings_sections(), query));
+            }
+            ("Search work, actions and settings…", "Open", sections)
+        }
+        Modal::Settings => (
+            "Find a setting…",
+            "Open",
+            rank_sections(settings_sections(), query),
+        ),
+        Modal::WindowSession => (
+            "Find work for a new window…",
+            "Open window",
+            rank_sections(session_sections(desk), query),
+        ),
+        Modal::MoveResources => (
+            "Move selected work to…",
+            "Move work",
+            rank_sections(move_sections(desk), query),
+        ),
+        _ => {
+            let mut sections = command_sections(desk, cx);
+            if query.trim().is_empty() {
+                sections.retain(|section| section.label == Some("Essentials"));
+            } else {
+                sections.extend(settings_sections());
+            }
+            ("Search all actions…", "Run", rank_sections(sections, query))
+        }
+    }
+}
+
+fn with_sections(
+    mut command: Command,
+    sections: Vec<Section>,
+    query: &str,
+    selected: Option<IndexPath>,
+    colors: &Rc<Palette>,
+) -> Command {
+    let terms = query_terms(query);
+    let tokens: Vec<&str> = terms.iter().map(String::as_str).collect();
+    for (section_index, section) in sections.into_iter().enumerate() {
+        let mut group = CommandGroup::new();
+        if let Some(label) = section.label {
+            group = group.label(label);
+        }
+        command = command.group(group.items(section.rows.into_iter().enumerate().map(
+            |(row_index, row)| {
+                let show_category = section.label != Some(row.category);
+                let active = selected == Some(IndexPath::new(row_index).section(section_index));
+                item(row, &tokens, colors.clone(), active, show_category)
+            },
+        )));
+    }
+    command
+}
+
+fn selected_preview(
+    modal: &Modal,
+    selected: Option<IndexPath>,
+    sections: &[Section],
+) -> Option<FactsCard> {
+    if *modal != Modal::Goto {
+        return None;
+    }
+    let index = selected?;
+    sections
+        .get(index.section)?
+        .rows
+        .get(index.row)?
+        .preview
+        .clone()
+}
+
+fn empty_results(empty: bool, narrowed: bool, colors: &Palette) -> AnyElement {
+    let title = match (empty, narrowed) {
+        (true, true) => "No agents in this state",
+        (true, false) => "Nothing here yet",
+        _ => "No matching results",
+    };
+    div()
+        .w_full()
+        .min_h(px(112.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .text_color(from_hex(&colors.muted))
+        .child(Icon::new(IconName::Search).size(px(22.)))
+        .child(div().text_sm().child(title))
+        .child(div().text_xs().child("Try a name, action or setting."))
+        .into_any_element()
+}
+
+fn palette_footer(
+    count: usize,
+    empty: bool,
+    compact: bool,
+    verb: &str,
+    colors: &Palette,
+) -> AnyElement {
+    div()
+        .id("hub-footer")
+        .debug_selector(|| "hub-footer".into())
+        .h(px(40.))
+        .flex_shrink_0()
+        .px(px(14.))
+        .border_t_1()
+        .border_color(from_hex(&colors.border))
+        .flex()
+        .items_center()
+        .justify_between()
+        .text_size(px(11.))
+        .text_color(from_hex(&colors.muted))
+        .child(format!("{count} results"))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(key("↑ ↓", colors))
+                .when(!compact, |row| row.child("Navigate"))
+                .child(key("↩", colors))
+                .child(verb.to_owned())
+                .child(key("esc", colors))
+                .when(!compact, |row| {
+                    row.child(if empty { "Close" } else { "Clear" })
+                }),
+        )
+        .into_any_element()
 }
 
 fn facts_column(card: FactsCard, colors: &Palette) -> impl IntoElement {
@@ -356,82 +348,46 @@ fn facts_column(card: FactsCard, colors: &Palette) -> impl IntoElement {
         )
 }
 
-fn header(
+pub(crate) fn hub_header(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    mode_header(&desk.modal, desk.goto.filter, colors, &cx.weak_entity())
+}
+
+fn mode_header(
     modal: &Modal,
-    context: &SharedString,
-    remote: bool,
     filter: GotoFilter,
     colors: &Palette,
     desk: &WeakEntity<Desk>,
 ) -> AnyElement {
-    let navigation = *modal == Modal::Goto;
-    let commands = desk.clone();
-    let goto = desk.clone();
-    let modes = div()
-        .flex_shrink_0()
+    let modes = [
+        (Modal::Goto, "Work", "palette-mode-goto"),
+        (Modal::Commands, "Actions", "palette-mode-commands"),
+        (Modal::Settings, "Settings", "palette-mode-settings"),
+    ];
+    let navigation = matches!(modal, Modal::Goto | Modal::Commands | Modal::Settings);
+    let tabs = div()
         .flex()
         .items_center()
-        .gap(px(2.))
-        .when(matches!(modal, Modal::Commands | Modal::Goto), |this| {
-            this.child(
-                div()
-                    .debug_selector(|| "palette-mode-commands".into())
-                    .child(
-                        Button::new("palette-mode-commands")
-                            .label("Commands")
-                            .small()
-                            .ghost()
-                            .toggled(!navigation)
-                            .when(!navigation, |this| this.bg(from_hex(&colors.active)))
-                            .on_click(move |_, window, cx| {
-                                let _ = commands.update(cx, |desk, cx| {
-                                    if desk.modal != Modal::Commands {
-                                        desk.execute("palette", window, cx);
-                                    }
-                                });
-                            }),
-                    ),
+        .gap(px(4.))
+        .children(modes.into_iter().map(|(mode, label, id)| {
+            let handle = desk.clone();
+            let active = *modal == mode;
+            div().debug_selector(move || id.into()).child(
+                Button::new(id)
+                    .label(label)
+                    .small()
+                    .ghost()
+                    .toggled(active)
+                    .when(active, |button| button.bg(from_hex(&colors.active)))
+                    .on_click(move |_, window, cx| {
+                        let _ = handle.update(cx, |desk, cx| {
+                            if desk.modal != mode {
+                                desk.open_modal(mode.clone(), window, cx);
+                            }
+                        });
+                    }),
             )
-            .child(
-                div().debug_selector(|| "palette-mode-goto".into()).child(
-                    Button::new("palette-mode-goto")
-                        .label("Go To")
-                        .small()
-                        .ghost()
-                        .toggled(navigation)
-                        .when(navigation, |this| this.bg(from_hex(&colors.active)))
-                        .on_click(move |_, window, cx| {
-                            let _ = goto.update(cx, |desk, cx| {
-                                if desk.modal != Modal::Goto {
-                                    desk.execute("goto", window, cx);
-                                }
-                            });
-                        }),
-                ),
-            )
-        })
-        .when(*modal == Modal::WindowSession, |this| {
-            this.child("Open Session")
-        })
-        .when(*modal == Modal::MoveResources, |this| {
-            this.child("Move Selected Work")
-        });
-    let context = div()
-        .min_w_0()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .text_size(px(11.))
-        .text_color(from_hex(&colors.theme.foreground).opacity(0.9))
-        .child(
-            Icon::new(if remote {
-                IconName::Globe
-            } else {
-                IconName::HardDrive
-            })
-            .xsmall(),
-        )
-        .child(div().truncate().child(context.clone()));
+        }));
+    let close = desk.clone();
     div()
         .flex_shrink_0()
         .flex()
@@ -443,11 +399,26 @@ fn header(
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(px(16.))
-                .child(modes)
-                .child(context),
+                .child(if navigation {
+                    tabs.into_any_element()
+                } else {
+                    div()
+                        .text_sm()
+                        .child("Choose a destination")
+                        .into_any_element()
+                })
+                .child(
+                    Button::new("hub-close")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .small()
+                        .tooltip("Close (esc)")
+                        .on_click(move |_, window, cx| {
+                            let _ = close.update(cx, |desk, cx| desk.close_modal(window, cx));
+                        }),
+                ),
         )
-        .when(navigation, |this| {
+        .when(*modal == Modal::Goto, |this| {
             this.child(state_filters(filter, colors, desk))
         })
         .into_any_element()
@@ -455,6 +426,8 @@ fn header(
 
 fn state_filters(filter: GotoFilter, colors: &Palette, desk: &WeakEntity<Desk>) -> AnyElement {
     div()
+        .id("hub-state-filters")
+        .overflow_x_scroll()
         .h(px(36.))
         .flex_shrink_0()
         .px(px(10.))
@@ -616,6 +589,9 @@ fn item(
 }
 
 fn row_icon(row: &Row) -> IconName {
+    if let Target::Setting(page) = row.target {
+        return page.icon();
+    }
     match row.command {
         Some("new" | "new-home" | "new-session" | "new-window") => IconName::Plus,
         Some("settings" | "reload-config" | "import-ghostty") => IconName::Settings2,
@@ -629,7 +605,7 @@ fn row_icon(row: &Row) -> IconName {
             "Panes" => IconName::LayoutDashboard,
             "Tabs" => IconName::GalleryVerticalEnd,
             "View" => IconName::Frame,
-            "Sessions" | "Organization" => IconName::Folder,
+            "Work" | "Sessions" | "Organization" => IconName::Folder,
             "Connection" => IconName::Network,
             _ => IconName::SquareTerminal,
         },

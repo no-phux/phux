@@ -360,7 +360,7 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
 }
 
 #[gpui::test]
-fn native_glass_menu_changes_tab_placement_without_changing_the_workspace(cx: &mut TestAppContext) {
+fn unified_settings_changes_tab_placement_without_changing_work(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
@@ -372,22 +372,23 @@ fn native_glass_menu_changes_tab_placement_without_changing_the_workspace(cx: &m
         cx.notify();
     });
     for (selector, position) in [
-        ("glass-menu-tabs-side", TabPosition::Side),
-        ("glass-menu-tabs-top", TabPosition::Top),
+        ("tab-position-side", TabPosition::Side),
+        ("tab-position-top", TabPosition::Top),
     ] {
+        cx.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("settings", window, cx)));
         draw(cx);
-        let trigger = cx.debug_bounds("main-menu-rail").unwrap();
-        cx.simulate_click(trigger.center(), Modifiers::none());
-        let menu = desk.read_with(cx, |desk, _| desk.main_menu.unwrap());
-        {
-            let menu_cx = &mut VisualTestContext::from_window(menu.into(), cx);
-            draw(menu_cx);
-            let placement = menu_cx.debug_bounds("glass-menu-tabs").unwrap();
-            menu_cx.simulate_click(placement.center(), Modifiers::none());
-            draw(menu_cx);
-            let choice = menu_cx.debug_bounds(selector).unwrap();
-            menu_cx.simulate_click(choice.center(), Modifiers::none());
-        }
+        cx.simulate_input("layout");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.settings_page),
+            Some(crate::app::settings_panel::Page::Layout)
+        );
+        let choice = cx
+            .debug_bounds(selector)
+            .expect("tab placement in focused settings page");
+        cx.simulate_click(choice.center(), Modifiers::none());
         draw(cx);
         desk.read_with(cx, |desk, _| {
             assert_eq!(desk.prefs.tab_position, position);
@@ -395,5 +396,7 @@ fn native_glass_menu_changes_tab_placement_without_changing_the_workspace(cx: &m
             assert_eq!(workspace.tabs, original);
             assert_eq!(workspace.active_id, "fixture-b");
         });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
     }
 }

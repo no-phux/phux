@@ -27,6 +27,78 @@ use super::keys::gpui_stroke;
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
+/// Search destinations; detail pages reuse the existing preference controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Page {
+    Appearance,
+    Layout,
+    Keyboard,
+    Spacing,
+    Ghostty,
+    Updates,
+    Connections,
+}
+
+impl Page {
+    pub const ALL: [Self; 7] = [
+        Self::Appearance,
+        Self::Layout,
+        Self::Keyboard,
+        Self::Spacing,
+        Self::Ghostty,
+        Self::Updates,
+        Self::Connections,
+    ];
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Layout => "Layout & notifications",
+            Self::Keyboard => "Keyboard & shortcuts",
+            Self::Spacing => "Terminal spacing",
+            Self::Ghostty => "Ghostty integration",
+            Self::Updates => "Updates",
+            Self::Connections => "Hosts & connections",
+        }
+    }
+    pub fn icon(self) -> IconName {
+        match self {
+            Self::Appearance => IconName::Palette,
+            Self::Layout => IconName::PanelLeft,
+            Self::Keyboard => IconName::ALargeSmall,
+            Self::Spacing => IconName::Frame,
+            Self::Ghostty => IconName::SquareTerminal,
+            Self::Updates => IconName::ArrowDown,
+            Self::Connections => IconName::Network,
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Appearance => "Theme, font and a live preview",
+            Self::Layout => "Tabs, sidebar, glass and agent alerts",
+            Self::Keyboard => "Input behavior and every shortcut",
+            Self::Spacing => "Line height, cell width, padding and dimming",
+            Self::Ghostty => "Import or reload your Ghostty preferences",
+            Self::Updates => "Version, downloads and updates",
+            Self::Connections => "Your machines, connection status and recovery",
+        }
+    }
+
+    pub fn keywords(self) -> &'static str {
+        match self {
+            Self::Appearance => "theme colors dark light font family size typeface preview",
+            Self::Layout => "sidebar tabs top side background opacity glass notifications alerts",
+            Self::Keyboard => "option alt keys keybind shortcuts chord input",
+            Self::Spacing => "line height cell width padding horizontal vertical unfocused dimming",
+            Self::Ghostty => "import reload config ghostty look integration",
+            Self::Updates => "version release install update download channel",
+            Self::Connections => {
+                "hosts machines remote ssh local add remove retry reconnect status endpoint"
+            }
+        }
+    }
+}
+
 /// Keep Kit's search, keyboard cursor and committed checkmark while previewing
 /// each installed family in its own face.
 #[derive(Clone)]
@@ -315,86 +387,49 @@ pub(crate) fn panel(
     sync_font(desk, window, cx);
     sync_sliders(desk, window, cx);
     let handle = cx.weak_entity();
+    let page = desk.settings_page.unwrap_or(Page::Appearance);
+    let content = match page {
+        Page::Appearance => appearance_page(desk, &handle, cx),
+        Page::Layout => window_page(desk, &handle),
+        Page::Keyboard => keyboard_page(desk, &handle),
+        Page::Spacing => advanced_page(desk, &handle),
+        Page::Ghostty => ghostty_page(desk, &handle),
+        Page::Updates => super::updates::page(&desk.updates, colors, cx),
+        Page::Connections => connection_page(desk, &handle),
+    };
+    let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
+        .sidebar_width(px(0.))
+        .sidebar_size_range(px(0.)..px(0.))
+        .sidebar_style(&gpui::StyleRefinement {
+            display: Some(gpui::Display::None),
+            ..Default::default()
+        })
+        .with_group_variant(GroupBoxVariant::Normal)
+        .page(content.title(page.title()));
     let viewport = window.viewport_size();
-    let height = (viewport.height - px(112.)).max(px(240.));
-    let width = (viewport.width - px(48.)).min(px(880.)).max(px(280.));
-    let light = colors.theme.appearance == "light";
-    let ink = from_hex(&colors.theme.foreground);
-    let settings = Settings::new("phux-settings")
-        .sidebar_width(px(190.))
-        .with_group_variant(GroupBoxVariant::Outline)
-        .page(appearance_page(desk, &handle, cx))
-        .page(window_page(desk, &handle))
-        .page(keyboard_page(desk, &handle))
-        .page(advanced_page(desk, &handle))
-        .page(ghostty_page(desk, &handle))
-        .page(super::updates::page(&desk.updates, colors, cx))
-        .page(connection_page(desk, &handle));
-    div()
-        .mt(px(56.))
-        .w(width)
-        .h(height)
-        .rounded(px(14.))
-        .bg(from_hex(&colors.raised).opacity(0.97))
-        .border_1()
-        .border_color(ink.opacity(if light { 0.12 } else { 0.14 }))
-        .shadow(vec![
-            gpui::BoxShadow {
-                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
-                offset: gpui::point(px(0.), px(20.)),
-                blur_radius: px(64.),
-                spread_radius: px(-8.),
-                inset: false,
-            },
-            gpui::BoxShadow {
-                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
-                offset: gpui::point(px(0.), px(2.)),
-                blur_radius: px(8.),
-                spread_radius: px(0.),
-                inset: false,
-            },
-        ])
+    let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
+    let height = (viewport.height.as_f32() - top - 24.).clamp(180., 600.);
+    super::overlays::card(colors, (viewport.width.as_f32() - 32.).clamp(0., 720.))
+        .id("settings-panel")
+        .debug_selector(|| "settings-panel".into())
+        .mt(px(top))
+        .h(px(height))
         .overflow_hidden()
-        .occlude()
         .flex()
         .flex_col()
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(super::overlays::launcher::hub_header(desk, colors, cx))
         .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(px(20.))
-                .h(px(64.))
-                .flex_shrink_0()
-                .bg(ink.opacity(0.025))
-                .border_b_1()
-                .border_color(ink.opacity(0.08))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.))
-                        .child(
-                            div()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(ink)
-                                .child("Settings"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(from_hex(&colors.muted))
-                                .child("Appearance, layout & keyboard"),
-                        ),
-                )
-                .child(
-                    Button::new("settings-close")
-                        .icon(IconName::Close)
-                        .ghost()
-                        .small()
-                        .tooltip("Close (esc)")
-                        .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
-                ),
+            div().h(px(40.)).px(px(14.)).flex().items_center().child(
+                Button::new("settings-back")
+                    .label("All settings")
+                    .icon(IconName::ChevronLeft)
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|desk, _, window, cx| {
+                        desk.open_modal(super::desk::Modal::Settings, window, cx)
+                    })),
+            ),
         )
         .child(div().flex_1().min_h_0().child(settings))
         .into_any_element()
@@ -716,21 +751,25 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                 .map(|(value, label, icon)| {
                     let writer = tabs.clone();
                     let selected = position == value;
-                    Button::new(SharedString::from(format!(
-                        "tab-position-{}",
-                        value.as_str()
-                    )))
-                    .label(label)
-                    .icon(icon)
-                    .small()
-                    .ghost()
-                    .toggled(selected)
-                    .rounded(px(7.))
-                    .bg(ink.opacity(if selected { 0.10 } else { 0. }))
-                    .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
-                    .on_click(move |_, _, cx| {
-                        set_prefs(&writer, cx, |prefs| prefs.tab_position = value);
-                    })
+                    div()
+                        .debug_selector(move || format!("tab-position-{}", value.as_str()))
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "tab-position-{}",
+                                value.as_str()
+                            )))
+                            .label(label)
+                            .icon(icon)
+                            .small()
+                            .ghost()
+                            .toggled(selected)
+                            .rounded(px(7.))
+                            .bg(ink.opacity(if selected { 0.10 } else { 0. }))
+                            .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                            .on_click(move |_, _, cx| {
+                                set_prefs(&writer, cx, |prefs| prefs.tab_position = value);
+                            }),
+                        )
                 }),
             )
     })
@@ -746,7 +785,7 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .title("Layout")
         .item(
             SettingItem::new("Tab placement", tab_position)
-                .description("Top keeps tabs in the titlebar. Side gives them a scrollable rail, independent of the sidebar. Quick windows stay compact."),
+                .description("Keep tabs above your work, or in a compact side rail."),
         )
         .item(
             SettingItem::new(
@@ -767,10 +806,17 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             "Terminal background over the blurred desktop.",
         ));
     let notifications = SettingGroup::new().title("Notifications").item(
-        SettingItem::new("Agent notifications", switch(handle, |prefs| prefs.notifications, |prefs, value| prefs.notifications = value))
-            .description("Notify when an agent finishes, blocks, or needs attention in another pane. Also shown in Notification Center while Phux is in the background."),
+        SettingItem::new(
+            "Agent notifications",
+            switch(
+                handle,
+                |prefs| prefs.notifications,
+                |prefs, value| prefs.notifications = value,
+            ),
+        )
+        .description("Alert when an agent needs you. Also appears in Notification Center."),
     );
-    SettingPage::new("Window")
+    SettingPage::new("Layout & notifications")
         .icon(IconName::PanelLeft)
         .group(layout)
         .group(notifications)
@@ -818,7 +864,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             )
             .description("Points above and below the text."),
         );
-    SettingPage::new("Advanced")
+    SettingPage::new("Terminal spacing")
         .icon(IconName::Frame)
         .group(spacing)
         .group(SettingGroup::new().title("Pane dimming").items(slider_item(
@@ -963,6 +1009,79 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     )
 }
 
+fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
+    let add = handle.clone();
+    let retry = handle.clone();
+    let controls = SettingItem::new(
+        "Machines",
+        SettingField::render(move |_, _, _| {
+            let add = add.clone();
+            let retry = retry.clone();
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Button::new("settings-add-host")
+                        .label("Add host…")
+                        .small()
+                        .ghost()
+                        .on_click(move |_, window, cx| {
+                            let _ = add.update(cx, |desk, cx| {
+                                desk.open_modal(super::desk::Modal::AddHost, window, cx)
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("settings-refresh-hosts")
+                        .label("Refresh all")
+                        .small()
+                        .ghost()
+                        .on_click(move |_, _, cx| {
+                            let _ = retry.update(cx, |desk, cx| desk.retry_fleet(cx));
+                        }),
+                )
+        }),
+    )
+    .description("Sessions from every registered machine appear together in Work.");
+    let mut group = SettingGroup::new().title("Hosts").item(controls);
+    for host in &desk.hosts {
+        let remove = handle.clone();
+        let name = host.name.clone();
+        let endpoint = host.endpoint.clone();
+        group = group.item(
+            SettingItem::new(
+                name.clone(),
+                SettingField::render(move |_, _, _| {
+                    let remove = remove.clone();
+                    let name = name.clone();
+                    Button::new(SharedString::from(format!("settings-remove-host-{name}")))
+                        .label("Forget…")
+                        .small()
+                        .ghost()
+                        .on_click(move |_, window, cx| {
+                            let _ = remove.update(cx, |desk, cx| {
+                                desk.open_modal(
+                                    super::desk::Modal::RemoveHost { name: name.clone() },
+                                    window,
+                                    cx,
+                                )
+                            });
+                        })
+                }),
+            )
+            .description(endpoint),
+        );
+    }
+    for (host, error) in desk.fleet.failures() {
+        let label = format!("{} unavailable", host.as_deref().unwrap_or("Local"));
+        group = group.item(SettingItem::new(
+            label,
+            SettingField::render(move |_, _, _| div().text_sm().child(error.clone())),
+        ));
+    }
+    group
+}
+
 fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let (status, _) = desk.connection_label();
     let fact = |title: &str, value: String| {
@@ -990,8 +1109,9 @@ fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         }),
     )
     .description("Reconnect and restore this window.");
-    SettingPage::new("Connection")
+    SettingPage::new("Hosts & connections")
         .icon(IconName::Network)
+        .group(hosts_group(desk, handle))
         .group(
             SettingGroup::new()
                 .item(fact("Status", status))
