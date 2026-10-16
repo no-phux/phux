@@ -31,6 +31,8 @@ pub struct Observation {
     pub error: Option<String>,
     pub prepare_micros: u128,
     pub paint_micros: u128,
+    /// The sub-row scroll shift the grid was painted with.
+    pub shift: Pixels,
 }
 
 #[derive(Clone, Copy)]
@@ -272,11 +274,19 @@ pub(super) struct Prepared {
     /// One per translucent glyph ink, in ink order. They wrap per-draw GPUI
     /// elements, so they are rebuilt even for a reused scene.
     layers: Vec<OpacityLayer>,
+    /// How far the grid paints above its whole-row position, in device
+    /// pixels: zero, or minus a sub-row scroll fraction of a cell.
+    shift: Pixels,
 }
 
+/// `fraction` is the part of a row above the viewport that a smooth scroll
+/// has moved past, in `[0, 1)`. The scene is kept at whole-row positions,
+/// so changing only the fraction reuses it and shifts it at paint time; the
+/// frame's fringe row fills the space the shift opens at the bottom.
 pub(super) fn prepare(
     frame: Result<Arc<GridFrame>, String>,
     settings: Settings,
+    fraction: f32,
     bounds: Bounds<Pixels>,
     cache: &SceneCache,
     window: &mut gpui::Window,
@@ -292,11 +302,15 @@ pub(super) fn prepare(
             .then(|| settings.background.unwrap_or_else(gpui::black)),
         scene: None,
         layers: Vec::new(),
+        shift: px(0.),
     };
     match frame {
         Ok(frame) => {
             let scene = scene(frame, settings, bounds, cache, window);
-            prepared.layers = opacity_layers(&scene, window, cx);
+            if has_fringe(&scene.frame) {
+                prepared.shift = row_shift(scene.geometry, fraction);
+            }
+            prepared.layers = opacity_layers(&scene, prepared.shift, window, cx);
             prepared.scene = Some(scene);
         }
         Err(error) => {
@@ -304,7 +318,7 @@ pub(super) fn prepare(
             // its bounds still match, so a reconnect does not flash the pane.
             prepared.report.error = Some(error);
             if let Some(scene) = scene_at(cache, bounds) {
-                prepared.layers = opacity_layers(&scene, window, cx);
+                prepared.layers = opacity_layers(&scene, prepared.shift, window, cx);
                 prepared.scene = Some(scene);
             }
         }
@@ -380,6 +394,7 @@ fn patch(
     if !can_patch(&previous, &frame, bounds, scale, &settings) {
         return None;
     }
+    drop_fringe(&mut previous);
     let rebuilt = rows_to_rebuild(&previous.frame, &frame, &settings);
     // Hashing both grids costs a full read. Do it only when the in-place
     // diff would reshape most of the screen, which is what a line of output
@@ -397,13 +412,60 @@ fn patch(
         );
         if scrolled.len() < rebuilt.len() {
             shift_scene(&mut previous, scroll);
+            let scrolled = with_fringe_row(scrolled, &frame);
             return finish_patch(previous, frame, settings, &scrolled, window);
         }
     }
     if rebuilt.len() == usize::from(frame.rows) {
         return None;
     }
+    let rebuilt = with_fringe_row(rebuilt, &frame);
     finish_patch(previous, frame, settings, &rebuilt, window)
+}
+
+/// Whether `frame` carries the row below its viewport, which the painter
+/// builds as row `frame.rows`.
+fn has_fringe(frame: &GridFrame) -> bool {
+    frame.buffer.fringe.len() == usize::from(frame.cols)
+}
+
+/// A viewport cell, or the fringe cell in row `frame.rows`.
+fn painted_cell(frame: &GridFrame, row: u16, col: u16) -> Option<(&Cell, CellMetadata)> {
+    if row == frame.rows && col < frame.cols {
+        let col = usize::from(col);
+        let cell = frame.buffer.fringe.get(col)?;
+        let metadata = frame.buffer.fringe_metadata.get(col).copied();
+        return Some((cell, metadata.unwrap_or_default()));
+    }
+    let cell = frame.cell(row, col)?;
+    let index = usize::from(row) * usize::from(frame.cols) + usize::from(col);
+    let metadata = frame.buffer.metadata.get(index).copied();
+    Some((cell, metadata.unwrap_or_default()))
+}
+
+fn painted_text(frame: &GridFrame, row: u16, col: u16) -> &[u8] {
+    if row == frame.rows {
+        frame.buffer.fringe_text(usize::from(col))
+    } else {
+        frame.cell_text(row, col)
+    }
+}
+
+/// `rows` plus the fringe row when `frame` has one. Rows stay sorted.
+fn with_fringe_row(mut rows: Vec<u16>, frame: &GridFrame) -> Vec<u16> {
+    if has_fringe(frame) {
+        rows.push(frame.rows);
+    }
+    rows
+}
+
+/// Remove the previous fringe row; a patch rebuilds it from the new frame.
+fn drop_fringe(scene: &mut Scene) {
+    let rows = scene.frame.rows;
+    scene.backgrounds.retain(|quad| quad.row < rows);
+    scene.inks.retain(|ink| ink.row < rows);
+    scene.decorations.retain(|quad| quad.row < rows);
+    scene.glyphs.retain(|glyph| glyph.row < rows);
 }
 
 /// True when so many rows changed that a scroll shift can beat reshaping them.
@@ -900,8 +962,16 @@ fn merge_rows<T>(
     merged
 }
 
+/// Minus `fraction` of a row, rounded to device pixels so glyph masks and
+/// cell edges stay on the pixel grid while the grid moves.
+fn row_shift(geometry: Geometry, fraction: f32) -> Pixels {
+    let scale = geometry.scale.max(1.);
+    -px((f32::from(geometry.cell_height) * fraction.clamp(0., 1.) * scale).round() / scale)
+}
+
 fn opacity_layers(
     scene: &Scene,
+    shift: Pixels,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> Vec<OpacityLayer> {
@@ -910,7 +980,7 @@ fn opacity_layers(
         .iter()
         .filter_map(|ink| match &ink.ink {
             Ink::Glyph(glyph) if glyph.opacity < 1. => {
-                Some(glyph.opacity_layer(scene.geometry, window, cx))
+                Some(glyph.opacity_layer(scene.geometry, shift, window, cx))
             }
             _ => None,
         })
@@ -987,6 +1057,9 @@ impl Builder {
         for row in 0..frame.rows {
             self.paint_row(&frame, row, window);
         }
+        if has_fringe(&frame) {
+            self.paint_row(&frame, frame.rows, window);
+        }
         self.finish()
     }
 
@@ -1011,21 +1084,16 @@ impl Builder {
     }
 
     fn prepare_cell(&mut self, frame: &GridFrame, row: u16, col: u16, window: &gpui::Window) {
-        let Some(cell) = frame.cell(row, col) else {
+        let Some((cell, metadata)) = painted_cell(frame, row, col) else {
             return;
         };
         let geometry = self.scene.geometry;
         let bounds = geometry.cell_bounds(row, col, 1);
-        if !bounds.intersects(&geometry.bounds) {
+        // The fringe row starts at the grid's bottom edge; a sub-row scroll
+        // brings it into view.
+        if row < frame.rows && !bounds.intersects(&geometry.bounds) {
             return;
         }
-        let index = usize::from(row) * usize::from(frame.cols) + usize::from(col);
-        let metadata = frame
-            .buffer
-            .metadata
-            .get(index)
-            .copied()
-            .unwrap_or_default();
         let colors = cell_colors(cell, metadata, frame, &self.scene.settings, self.defaults);
         self.background_cell(row, col, colors.background);
         if hidden(cell, &self.scene.settings) {
@@ -1050,7 +1118,7 @@ impl Builder {
         if matches!(cell.wide, 2 | 3) {
             return;
         }
-        let text = frame.cell_text(row, col);
+        let text = painted_text(frame, row, col);
         let foreground = self.glyph_foreground(row, col, colors);
         if text.is_empty() || text == b" " {
             if !text.is_empty() {
@@ -1516,6 +1584,22 @@ impl Prepared {
             return self.finish(started);
         };
         let mut layers = std::mem::take(&mut self.layers).into_iter();
+        let shift = self.shift;
+        let moved = |bounds: Bounds<Pixels>| shifted(bounds, shift);
+        // Rows below the viewport are the fringe, visible only while shifted.
+        // The shifted grid is clipped to the rows, not the padding under them.
+        let rows = scene.frame.rows;
+        let shown = |row: u16| row < rows || shift != px(0.);
+        let grid = if shift == px(0.) {
+            bounds
+        } else {
+            let bottom = scene
+                .geometry
+                .cell_bounds(rows, 0, 1)
+                .top()
+                .min(bounds.bottom());
+            Bounds::from_corners(bounds.origin, point(bounds.right(), bottom))
+        };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_layer(bounds, |window| {
                 let hosted = scene.settings.host_fills_background
@@ -1523,36 +1607,47 @@ impl Prepared {
                 if !hosted {
                     window.paint_quad(fill(bounds, scene.background));
                 }
-                for quad in &scene.backgrounds {
-                    window.paint_quad(fill(quad.bounds, quad.color));
-                }
-                for (bounds, color) in &scene.cursor_blocks {
-                    window.paint_quad(fill(*bounds, *color));
-                }
-                let geometry = scene.geometry;
-                for ink in &scene.inks {
-                    let result = match &ink.ink {
-                        Ink::Glyph(glyph) if glyph.opacity < 1. => layers
-                            .next()
-                            .ok_or_else(|| "opacity layer missing".to_owned())
-                            .and_then(|layer| layer.paint(window, cx)),
-                        Ink::Glyph(glyph) => glyph.paint(glyph.color, geometry, window),
-                        Ink::Run(run) => run.paint(geometry, window),
-                    };
-                    if let Err(error) = result {
-                        self.report.error = Some(error);
+                window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
+                    for quad in scene.backgrounds.iter().filter(|quad| shown(quad.row)) {
+                        window.paint_quad(fill(moved(quad.bounds), quad.color));
                     }
-                }
+                    for (bounds, color) in &scene.cursor_blocks {
+                        window.paint_quad(fill(moved(*bounds), *color));
+                    }
+                    let geometry = scene.geometry;
+                    for ink in &scene.inks {
+                        let result = match &ink.ink {
+                            Ink::Glyph(glyph) if glyph.opacity < 1. => {
+                                let layer = layers
+                                    .next()
+                                    .ok_or_else(|| "opacity layer missing".to_owned());
+                                if !shown(ink.row) {
+                                    continue;
+                                }
+                                layer.and_then(|layer| layer.paint(window, cx))
+                            }
+                            _ if !shown(ink.row) => continue,
+                            Ink::Glyph(glyph) => glyph.paint(glyph.color, geometry, shift, window),
+                            Ink::Run(run) => run.paint(geometry, shift, window),
+                        };
+                        if let Err(error) = result {
+                            self.report.error = Some(error);
+                        }
+                    }
+                });
             });
             window.paint_layer(bounds, |window| {
-                for quad in &scene.decorations {
-                    window.paint_quad(fill(quad.bounds, quad.color));
-                }
-                for (bounds, color) in &scene.cursor_overlays {
-                    window.paint_quad(fill(*bounds, *color));
-                }
+                window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
+                    for quad in scene.decorations.iter().filter(|quad| shown(quad.row)) {
+                        window.paint_quad(fill(moved(quad.bounds), quad.color));
+                    }
+                    for (bounds, color) in &scene.cursor_overlays {
+                        window.paint_quad(fill(moved(*bounds), *color));
+                    }
+                });
             });
         });
+        self.report.shift = shift;
         self.report.geometry = scene.geometry;
         self.report.frame = Some(Arc::clone(&scene.frame));
         if cfg!(feature = "terminal-fixtures") {
@@ -1571,8 +1666,13 @@ impl Prepared {
 impl GlyphRun {
     /// `force_width` already put each glyph on its column, so the run is one
     /// pass over its glyphs, clipped to its cells.
-    fn paint(&self, geometry: Geometry, window: &mut gpui::Window) -> Result<(), String> {
-        let bounds = self.bounds;
+    fn paint(
+        &self,
+        geometry: Geometry,
+        shift: Pixels,
+        window: &mut gpui::Window,
+    ) -> Result<(), String> {
+        let bounds = shifted(self.bounds, shift);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_glyphs(&self.line, bounds, &self.colors, geometry, true, window)
         })
@@ -1585,9 +1685,10 @@ impl Glyph {
         &self,
         color: Hsla,
         geometry: Geometry,
+        shift: Pixels,
         window: &mut gpui::Window,
     ) -> Result<(), String> {
-        let bounds = self.bounds;
+        let bounds = shifted(self.bounds, shift);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_glyphs(
                 &self.line,
@@ -1603,11 +1704,12 @@ impl Glyph {
     fn opacity_layer(
         &self,
         geometry: Geometry,
+        shift: Pixels,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) -> OpacityLayer {
         let glyph = self.clone();
-        let bounds = self.bounds;
+        let bounds = shifted(self.bounds, shift);
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
         // ShapedLine's color emoji path ignores TextRun.color. Div::opacity is
@@ -1621,7 +1723,8 @@ impl Glyph {
                 gpui::canvas(
                     |_, _, _| (),
                     move |_, (), window, _| {
-                        *output.borrow_mut() = Some(glyph.paint(glyph.color, geometry, window));
+                        *output.borrow_mut() =
+                            Some(glyph.paint(glyph.color, geometry, shift, window));
                     },
                 )
                 .size_full(),
@@ -1635,6 +1738,11 @@ impl Glyph {
         );
         OpacityLayer { element, result }
     }
+}
+
+/// `bounds` moved down by `shift` (up when negative).
+pub(super) fn shifted(bounds: Bounds<Pixels>, shift: Pixels) -> Bounds<Pixels> {
+    Bounds::new(point(bounds.left(), bounds.top() + shift), bounds.size)
 }
 
 /// True when each character of `text` became one non-emoji glyph from one

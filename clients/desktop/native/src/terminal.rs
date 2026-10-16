@@ -265,6 +265,9 @@ impl Render for Terminal {
         self.was_focused = self.settings.focused;
 
         let (frame, recovery) = self.painted_frame(window);
+        let fraction = frame
+            .as_ref()
+            .map_or(0., |frame| self.input.read(cx).fraction_of(frame));
         let epoch = recovery.as_ref().map(Ticket::connection_epoch);
         let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
@@ -369,7 +372,7 @@ impl Render for Terminal {
             })
             .child(
                 canvas(
-                    move |bounds, window, cx| paint::prepare(frame, settings, bounds, &scene, window, cx),
+                    move |bounds, window, cx| paint::prepare(frame, settings, fraction, bounds, &scene, window, cx),
                     move |bounds, prepared, window, cx| {
                         let mut report = prepared.paint(bounds, window, cx);
                         report.view_id = Some(view);

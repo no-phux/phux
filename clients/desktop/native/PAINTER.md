@@ -61,6 +61,20 @@ once. A rejected reacquire keeps the last scene while the bounds still
 match, so a reconnect does not blank the pane. A missing scene, or bounds
 that no longer match, clears the canvas.
 
+## Smooth scroll
+
+A scrolled-back frame carries the screen row below its viewport
+(`GridBuffer::fringe`), which the scene builds as row `rows`. The input
+entity holds the part of a row the wheel has moved past above the viewport
+(`TerminalInput::fraction_of`). `prepare` turns it into a device-pixel
+`shift` and paints the whole-row scene that far up, clipped to the grid's
+rows, so the fringe row fills the opened space and nothing reaches the
+padding below the grid. Changing only the fraction keeps the frame and its
+scene: a sub-row move is a paint, not a reshape or a runtime turn. The
+fringe is hidden while the shift is zero, and the live tail never has a
+fraction. Input hit-testing and the IME rectangle undo the same shift
+(`InputMetrics::shift`).
+
 A row's contiguous single-width cells are one shaped line on the cell grid,
 not one shape per cell or word. Spaces and blank cells between glyphs stay in
 the line, and a colour, face or faint change is another `TextRun` of it. The

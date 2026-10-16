@@ -74,11 +74,17 @@ Local selection and copy need current identity and focus but not input
 ownership. Shift at press selects locally instead of reporting the mouse; a
 gesture keeps its routing until release. The wheel scrolls the view under the
 pointer in its own window, focused or not, with current identity. Shift-wheel
-uses `ControlPlane::scroll_view`. Fractional wheel deltas accumulate locally
-and reach the runtime only when they cross a whole line; a gesture's first
-event (`TouchPhase::Started`) discards the previous gesture's remainder. A
-local scroll notifies the input entity, so the observing terminal repaints in
-the next frame. Application reports are capped at 100 ticks per event.
+uses `ControlPlane::scroll_view`. A local scroll keeps a continuous position
+inside the scrollback: whole rows move the view through one control turn, and
+the remaining fraction of a row stays on the input entity for the painter
+([PAINTER.md](PAINTER.md#smooth-scroll)). A move within the current row takes
+no runtime turn. Every local scroll notifies the input entity, so the
+observing terminal repaints in the next frame. Whether the program reports the
+wheel is asked once per replica sequence, since only output changes mouse
+modes. A reporting program gets whole-line presses: fractional deltas
+accumulate across events, a gesture's first event (`TouchPhase::Started`)
+discards the previous remainder, and reports are capped at 100 ticks per
+event.
 
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
 copies a truncated string. The editable text model holds only pending IME text
