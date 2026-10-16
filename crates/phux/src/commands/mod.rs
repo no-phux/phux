@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use mission::MissionAction;
 use pair::PairAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
@@ -268,6 +269,8 @@ pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
+pub(crate) mod mission;
+pub(crate) mod mission_start;
 pub(crate) mod new;
 pub(crate) mod org;
 pub(crate) mod organize;
@@ -409,6 +412,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
+        Command::Mission { action } => match action {
+            Some(MissionAction::Keeper { .. }) => Some("mission keeper"),
+            Some(MissionAction::Start { .. } | MissionAction::Add { start: true, .. }) => None,
+            _ => Some("mission"),
+        },
         _ => None,
     }
 }
@@ -1332,6 +1340,25 @@ pub(crate) enum Command {
         /// `resume`, the reversible brake, never ask.
         #[usage(long)]
         yes: bool,
+    },
+
+    /// Track tasks in the local work store
+    ///
+    /// `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
+    /// work store's keeper, which `phux mission` starts on demand, and do
+    /// not contact a phux server. `start` and `add --start` also dial the
+    /// phux server to create the worktree session and launch the agent.
+    /// With no subcommand, prints this help.
+    ///
+    /// `--json` prints a document whose `schema` is `phux.mission/v1`.
+    /// Exit status: 0 success; 1 the task is missing, the revision is stale,
+    /// the operation id was reused for a different write, the task cannot be
+    /// started, or the store failed; 2 the command line was refused, or a
+    /// failed start left its worktree because stdin is not a terminal.
+    #[usage(help_heading = "Agents", display_order = 36)]
+    Mission {
+        #[usage(subcommand)]
+        action: Option<MissionAction>,
     },
 
     /// List actions held for approval

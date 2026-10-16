@@ -1,0 +1,17 @@
+[package]
+name = "phux-mission"
+description = "Mission control vocabulary over the work store: the phux.mission/v1 documents, and later the board, Lead, and start."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+phux-work.workspace = true
+serde.workspace = true

@@ -103,6 +103,80 @@ fn launch_list_enumerates_the_first_party_integrations() {
 }
 
 #[test]
+fn launch_print_passes_the_brief_file_for_each_harness() {
+    let brief = "/mission/tasks/phux/3/brief.md";
+    let line = "Start the task in the brief.";
+    // `--print` still checks `required_executables`. Stub them so the argv
+    // assertion does not depend on the harness binaries being installed.
+    let stubs = stub_executables(&["grok", "pi", "omp", "opencode", "claude"]);
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "claude-code",
+            &[
+                "--append-system-prompt-file",
+                brief,
+                "--model",
+                "opus",
+                line,
+            ],
+        ),
+        ("grok", &["--prompt-file", brief]),
+        ("pi", &["--append-system-prompt", brief, line]),
+        ("omp", &["--append-system-prompt", brief, line]),
+        ("opencode", &["run", "--file", brief, line]),
+    ];
+    for (id, expect) in cases {
+        let mut args = vec!["launch", id, "--print", "--json", "--"];
+        args.extend_from_slice(expect);
+        let (code, stdout, stderr) = run_with_path(&args, &stubs);
+        assert_eq!(code, 0, "{id} launch --print failed; stderr={stderr}");
+        let output: serde_json::Value = serde_json::from_str(&stdout).expect("launch print JSON");
+        let launched: Vec<&str> = output["argv"]
+            .as_array()
+            .expect("argv")
+            .iter()
+            .map(|value| value.as_str().expect("argv string"))
+            .collect();
+        let found = launched
+            .windows(expect.len())
+            .any(|window| window == *expect);
+        assert!(found, "{id} argv {launched:?} missing {expect:?}");
+    }
+}
+
+fn stub_executables(names: &[&str]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("phux-launch-stubs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("stub dir");
+    for name in names {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+    dir
+}
+
+fn run_with_path(args: &[&str], front: &std::path::Path) -> (i32, String, String) {
+    let mut path = front.as_os_str().to_owned();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
+        .env("XDG_CONFIG_HOME", demo_xdg())
+        .env("PATH", path)
+        .args(args)
+        .output()
+        .expect("run phux binary");
+    (
+        out.status.code().expect("phux exited via code"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
 fn launch_unknown_integration_fails_with_available_hint() {
     let (code, stdout, stderr) = run(&["launch", "nonesuch", "--print"]);
     assert_ne!(code, 0, "unknown integration should fail; stdout={stdout}");

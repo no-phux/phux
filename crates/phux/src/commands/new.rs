@@ -280,6 +280,7 @@ fn run_new_attached(
             false,
             None,
             lifetime,
+            &[],
         )) {
             return code;
         }
@@ -398,6 +399,7 @@ pub(crate) fn run_new_json(
         true,
         idempotency_key,
         lifetime,
+        &[],
     )) {
         Ok(terminal_id) => crate::output::json(&new_session_json(name, terminal_id)),
         Err(code) => code,
@@ -555,6 +557,7 @@ pub(crate) async fn create_session_via_metadata(
     json: bool,
     idempotency_key: Option<IdempotencyKey>,
     lifetime: SessionLifetime,
+    extra_attrs: &[(String, String)],
 ) -> Result<u64, ExitCode> {
     let mut conn = server
         .connect()
@@ -571,7 +574,7 @@ pub(crate) async fn create_session_via_metadata(
 
     // ADR-0168: a session made in a checkout on this machine carries the
     // checkout's project identity from its first record.
-    let attrs = match (cwd.as_deref(), server.is_remote()) {
+    let mut attrs = match (cwd.as_deref(), server.is_remote()) {
         (Some(dir), false) => phux_client::project_identity::creation_attrs(
             std::path::Path::new(dir),
             &super::ls::local_hostname(),
@@ -579,6 +582,7 @@ pub(crate) async fn create_session_via_metadata(
         ),
         _ => Vec::new(),
     };
+    attrs.extend(extra_attrs.iter().cloned());
     let request = CreateSessionRequest {
         name,
         command: command.as_deref(),

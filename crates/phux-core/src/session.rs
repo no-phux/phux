@@ -29,6 +29,9 @@ pub struct Attrs {
     /// The repository the session was created in (ADR-0168).
     #[serde(default)]
     pub repository: Option<Box<crate::project_identity::SessionProject>>,
+    /// Opaque mission task id, lowercase hex. Set by `phux mission start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_task: Option<String>,
 }
 
 /// A session record.

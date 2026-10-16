@@ -291,6 +291,29 @@ pub(crate) mod codes {
     /// The server closed a `phux watch` stream before any `--until` event
     /// arrived.
     pub(crate) const STREAM_ENDED: &str = "stream_ended";
+    /// No task has the alias `phux mission` was given. Exit 1.
+    pub(crate) const MISSION_NOT_FOUND: &str = "mission_not_found";
+    /// A mission write named a revision the task no longer has. Exit 1.
+    pub(crate) const MISSION_REVISION_CONFLICT: &str = "mission_revision_conflict";
+    /// A mission operation id was already used for a different write. Exit 1.
+    pub(crate) const MISSION_OPERATION_CONFLICT: &str = "mission_operation_conflict";
+    /// The mission database `user_version` is newer than this binary reads.
+    /// Exit 1.
+    pub(crate) const MISSION_UNSUPPORTED_SCHEMA: &str = "mission_unsupported_schema";
+    /// Another writer holds the mission store lock. Exit 1.
+    pub(crate) const MISSION_BUSY: &str = "mission_busy";
+    /// The mission database could not be read or written. Exit 1.
+    pub(crate) const MISSION_STORE: &str = "mission_store";
+    /// The task already has a live run. Exit 1.
+    pub(crate) const MISSION_ALREADY_STARTED: &str = "mission_already_started";
+    /// Another live task binds this worktree or branch. Exit 1.
+    pub(crate) const MISSION_WORKTREE_BOUND: &str = "mission_worktree_bound";
+    /// The task is archived, so it cannot be started. Exit 1.
+    pub(crate) const MISSION_NOT_STARTABLE: &str = "mission_not_startable";
+    /// A destructive cleanup had no terminal to ask. Exit 2. The worktree stays.
+    pub(crate) const MISSION_CONFIRMATION_REQUIRED: &str = "mission_confirmation_required";
+    /// Creating the worktree, session, or agent failed. Exit 1.
+    pub(crate) const MISSION_START_FAILED: &str = "mission_start_failed";
 }
 
 /// One CLI failure, carrying everything both output channels need: a stable

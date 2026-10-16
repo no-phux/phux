@@ -130,20 +130,13 @@ fn spawn_resolved(
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
-    let frame = FrameKind::SpawnResource {
+    let frame = spawn_resource_frame(
         request_id,
-        // v0.1 servers expose the single default group (SPEC §3.1).
-        group: GroupId::new(1),
-        command: Some(argv.clone()),
-        cwd: Some(resolved.cwd.display().to_string()),
+        argv.clone(),
+        resolved.cwd.display().to_string(),
         env,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
         agent_session,
-        initial_size: None,
-        resource: None,
-    };
+    );
     let result = match target {
         Some(target) => dispatch_spawn_placed(
             &socket_path,
@@ -278,24 +271,177 @@ const fn working_directory_slug(dir: LaunchWorkingDirectory) -> &'static str {
     }
 }
 
-fn report_launch_error(err: &LaunchError) -> ExitCode {
-    match err {
-        LaunchError::NotFound { name, available } if available.is_empty() => {
-            error!(
-                "no launchable integration named {name:?} in any enabled plugin \
-                 (install one, then `phux plugin enable`)"
-            );
+/// Resolved launch placed into an existing session.
+pub(crate) struct SessionLaunch {
+    /// Agent kind. Template ids are tried from [`phux_mission::integration_ids`].
+    pub kind: String,
+    /// Brief argv, appended to the template.
+    pub extra: Vec<String>,
+    /// Worktree the agent runs in.
+    pub cwd: PathBuf,
+    /// Owner socket.
+    pub socket: PathBuf,
+    /// Session name to split into.
+    pub session: String,
+    /// Build environment (`CARGO_TARGET_DIR`, optional `RUSTC_WRAPPER`).
+    pub env: Vec<(String, String)>,
+    /// Delegated credential socket. Prefixed as `env PHUX_SOCKET=...` so the
+    /// agent inherits it after the server stamps the direct child.
+    pub credential_socket: Option<String>,
+}
+
+/// The pane `launch_in_session` started.
+pub(crate) struct LaunchedPane {
+    /// Worker pane id.
+    pub terminal_id: u64,
+}
+
+/// Spawn `plan` into `plan.session` and return the new pane id. Prints nothing:
+/// the caller owns the mission document, including a failure.
+pub(crate) fn launch_in_session(plan: &SessionLaunch) -> Result<LaunchedPane, String> {
+    let config_path = config_loader::config_path();
+    let mut resolved = None;
+    let mut last_err = None;
+    for id in phux_mission::integration_ids(&plan.kind) {
+        match phux_plugin::resolve_launch(
+            &config_path,
+            id,
+            &plan.extra,
+            &plan.cwd,
+            LaunchMode::Terminal,
+        ) {
+            Ok(found) => {
+                resolved = Some(found);
+                break;
+            }
+            Err(err) => last_err = Some(err),
         }
+    }
+    let Some(resolved) = resolved else {
+        return Err(last_err.as_ref().map_or_else(
+            || format!("no launch template for agent {}", plan.kind),
+            launch_error_text,
+        ));
+    };
+    let prepared = match prepare_for_launch(&resolved) {
+        Ok(prepared) => prepared,
+        Err(err) => return Err(format!("could not prepare agent session: {err}")),
+    };
+    let mut argv = match prepared.as_ref() {
+        Some(session) => session.argv.clone(),
+        None => resolved.argv,
+    };
+    if let Some(socket) = &plan.credential_socket {
+        argv.insert(0, format!("PHUX_SOCKET={socket}"));
+        argv.insert(0, "/usr/bin/env".to_owned());
+    }
+    let mut env: Vec<(String, String)> = prepared
+        .as_ref()
+        .map(|session| {
+            session
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (key, value) in &plan.env {
+        if let Some(slot) = env.iter_mut().find(|(name, _)| name == key) {
+            slot.1.clone_from(value);
+        } else {
+            env.push((key.clone(), value.clone()));
+        }
+    }
+    let agent_session = match prepared
+        .as_ref()
+        .map(|session| session.record.encode())
+        .transpose()
+    {
+        Ok(record) => record,
+        Err(err) => {
+            return Err(format!("could not encode agent session provenance: {err}"));
+        }
+    };
+    let frame = spawn_resource_frame(
+        1,
+        argv,
+        plan.cwd.display().to_string(),
+        Some(env),
+        agent_session,
+    );
+    let result = dispatch_spawn_placed(
+        &plan.socket,
+        frame,
+        1,
+        "launch",
+        &plan.session,
+        SpawnSplit::Horizontal,
+        0.5,
+        None,
+        prepared.as_ref().map(|session| &session.record),
+        false,
+    );
+    match result {
+        Ok(SpawnResult::Ok(terminal_id)) => {
+            let id = match terminal_id {
+                phux_protocol::ids::ResourceId::Local { id }
+                | phux_protocol::ids::ResourceId::Satellite { id, .. } => u64::from(id),
+            };
+            Ok(LaunchedPane { terminal_id: id })
+        }
+        Ok(SpawnResult::Err(err)) => Err(phux_client::spawn::spawn_error_message(&err)),
+        Ok(_) => Err(phux_client::explain::unexpected_reply("SPAWN_RESOURCE")),
+        // Placement already wrote its own diagnostic. Keep a short reason for
+        // the mission document that follows.
+        Err(_) => Err("could not place the agent pane".to_owned()),
+    }
+}
+
+/// One `SPAWN_RESOURCE` for the default group. The file keeps a single
+/// `FrameKind::` so the raw-connection gate's cap stays at one.
+const fn spawn_resource_frame(
+    request_id: u32,
+    command: Vec<String>,
+    cwd: String,
+    env: Option<Vec<(String, String)>>,
+    agent_session: Option<Vec<u8>>,
+) -> FrameKind {
+    FrameKind::SpawnResource {
+        request_id,
+        // v0.1 servers expose the single default group (SPEC §3.1).
+        group: GroupId::new(1),
+        command: Some(command),
+        cwd: Some(cwd),
+        env,
+        term: None,
+        satellite: None,
+        owner_terminal: None,
+        agent_session,
+        initial_size: None,
+        resource: None,
+    }
+}
+
+fn launch_error_text(err: &LaunchError) -> String {
+    match err {
+        LaunchError::NotFound { name, available } if available.is_empty() => format!(
+            "no launchable integration named {name:?} in any enabled plugin \
+             (install one, then `phux plugin enable`)"
+        ),
         LaunchError::NotFound { name, available } => {
-            error!(
+            format!(
                 "no launchable integration named {name:?}; available: {}",
                 available.join(", ")
-            );
+            )
         }
         LaunchError::NoLaunchCommand { name } => {
-            error!("integration {name:?} declares no `[launch]` command");
+            format!("integration {name:?} declares no `[launch]` command")
         }
-        other => error!("launch failed: {other}"),
+        other => format!("launch failed: {other}"),
     }
+}
+
+fn report_launch_error(err: &LaunchError) -> ExitCode {
+    error!("{}", launch_error_text(err));
     ExitCode::FAILURE
 }

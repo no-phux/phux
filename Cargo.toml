@@ -12,7 +12,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.82.1"
+version = "0.83.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -65,6 +65,8 @@ phux-client-core = { path = "crates/phux-client-core" }
 phux-client-ffi = { path = "crates/phux-client-ffi" }
 phux-client-runtime = { path = "crates/phux-client-runtime" }
 phux-config = { path = "crates/phux-config" }
+phux-mission = { path = "crates/phux-mission" }
+phux-work = { path = "crates/phux-work" }
 phux-dial = { path = "crates/phux-dial" }
 phux-perf = { path = "crates/phux-perf" }
 phux-relay = { path = "crates/phux-relay" }

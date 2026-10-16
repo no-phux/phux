@@ -62,6 +62,10 @@ phux-tui.workspace = true
 # In-process performance telemetry: `phux perf` renders a `PerfReport`.
 phux-perf.workspace = true
 phux-config.workspace = true
+# `phux mission`: the mission documents, and the work store's keeper and
+# client. A client composition; no server or protocol type is involved.
+phux-mission.workspace = true
+phux-work.workspace = true
 phux-plugin.workspace = true
 # `phux doctor` dials its own routable listener to prove packets actually
 # reach the server, rather than only that a socket is bound. Reusing the
@@ -160,6 +164,11 @@ libc = "0.2"
 # exercised on material it did not mint. Same version and features phux-dial
 # and phux-server already declare; no new row enters Cargo.lock.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Validates `phux mission --json` documents against the committed JSON
+# Schema. Dev-only, so the binary does not link it. The workspace had no
+# JSON Schema validator. Default features pull an HTTP resolver this
+# schema does not use.
+jsonschema = { version = "0.33", default-features = false }
 
 [features]
 default = ["webtransport"]
