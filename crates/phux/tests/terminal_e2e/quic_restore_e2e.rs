@@ -295,3 +295,87 @@ fn assert_attach_up(client: &mut common::PtyAttach) {
         "the QUIC attach did not survive restoring the layout (running: {running}):\n{painted}"
     );
 }
+
+/// Creating tabs must save their arrangement before detach; a fresh client
+/// must restore the same tabs with the original terminal resource identities.
+#[test]
+#[ignore = "spawns a real server with a QUIC listener and attached PTY clients; run in the e2e lane"]
+fn quic_tui_created_tabs_survive_detach_and_reattach() {
+    let server = QuicServer::start();
+    let mut client = server.attach_over_quic();
+    let deadline = Instant::now() + DEADLINE;
+    while server.pane_size(&server.seed_pane()) != Some(full_content_rect()) {
+        assert_attach_up(&mut client);
+        assert!(Instant::now() < deadline, "initial client did not settle");
+        std::thread::sleep(POLL);
+    }
+    for (count, name) in [(2, "first-job"), (3, "second-job")] {
+        client.send(b"\x01c");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            assert_attach_up(&mut client);
+            let layout = server
+                .read_layout()
+                .expect("read arrangement after new tab");
+            if layout.groups.len() == count {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "new tab was not persisted: {layout:?}\n{}",
+                client.painted()
+            );
+            std::thread::sleep(POLL);
+        }
+        client.send(format!("\x01,{name}\r").as_bytes());
+        let deadline = Instant::now() + DEADLINE;
+        while !server
+            .read_layout()
+            .expect("read renamed tab")
+            .groups
+            .iter()
+            .any(|group| group.name.ends_with(name))
+        {
+            assert_attach_up(&mut client);
+            assert!(
+                Instant::now() < deadline,
+                "tab rename was not persisted\n{}",
+                client.painted()
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    let before = server.read_layout().expect("saved tabs before detach");
+    let members = server.json(&["ls", "--json"])["terminals"].clone();
+    client.send(b"\x01d");
+    let deadline = Instant::now() + DEADLINE;
+    while client.is_running() {
+        assert!(Instant::now() < deadline, "detach did not finish");
+        std::thread::sleep(POLL);
+    }
+    drop(client);
+    let mut restored = server.attach_over_quic();
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        assert_attach_up(&mut restored);
+        let painted = restored.painted();
+        if painted.contains("first-job") && painted.contains("second-job") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reattach did not restore tabs:\n{painted}"
+        );
+        std::thread::sleep(POLL);
+    }
+    let after = server.read_layout().expect("restored arrangement");
+    assert_eq!(
+        before.groups, after.groups,
+        "tab identities, names and trees changed"
+    );
+    assert_eq!(
+        members,
+        server.json(&["ls", "--json"])["terminals"],
+        "reattach changed terminal records"
+    );
+}

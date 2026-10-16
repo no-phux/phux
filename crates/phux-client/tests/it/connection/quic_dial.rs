@@ -601,6 +601,130 @@ async fn queued_old_generation_is_discarded_after_rebind() {
     assert_eq!(got, current, "queued old generation never reaches dispatch");
 }
 
+async fn receive_with_mode(conn: &mut Connection, poll: bool) -> FrameKind {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        if poll {
+            loop {
+                if let Some(frame) = conn.try_recv().unwrap() {
+                    break frame;
+                }
+                tokio::task::yield_now().await;
+            }
+        } else {
+            conn.recv().await.unwrap()
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// A lifecycle close on control must retire its Terminal stream before a
+/// later history reply can reach a session kernel that already closed it.
+async fn resource_close_retires_terminal_stream(poll: bool) {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut send,
+            &mut recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+        let bind = read_stream_bind(&mut terminal_recv).await;
+        let mut bytes = BytesMut::new();
+        FrameKind::HistoryTombstone {
+            terminal_id: bind.terminal_id.clone(),
+            stream_id: bind.stream_id,
+            bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
+            cursor: b"released-history".to_vec().into(),
+            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+        }
+        .encode(&mut bytes);
+        // This frame began before close, but independent QUIC streams let
+        // control deliver the lifecycle barrier before the body completes.
+        terminal_send.write_all(&bytes[..1]).await.unwrap();
+        write_frame(
+            &mut send,
+            &FrameKind::ResourceClosed {
+                terminal_id: bind.terminal_id.clone(),
+                exit_status: Some(0),
+                signal: None,
+                reason: phux_protocol::wire::frame::CloseReason::Exited,
+            },
+        )
+        .await;
+        // The client has observed the lifecycle barrier before this queued
+        // Terminal reply becomes visible. A retired stream may refuse it.
+        let _ = closed_rx.await;
+        let mut remaining = [0_u8; 1];
+        let ended = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            terminal_recv.read(&mut remaining),
+        )
+        .await
+        .expect("RESOURCE_CLOSED left its QUIC binding live")
+        .unwrap();
+        assert_eq!(
+            ended, None,
+            "closed Terminal stream must finish its send half"
+        );
+        let _ = terminal_send.write_all(&bytes[1..]).await;
+        write_frame(&mut send, &FrameKind::Pong { nonce: 91 }).await;
+        let _ = done_rx.await;
+    };
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+            identity: None,
+            inner: None,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.unwrap();
+        conn.bind_terminal(&terminal_id).await.unwrap();
+        let closed = receive_with_mode(&mut conn, poll).await;
+        assert!(matches!(closed, FrameKind::ResourceClosed { .. }));
+        conn.send(&FrameKind::HistoryRequest {
+            terminal_id,
+            stream_id: phux_protocol::StreamId::new(1).unwrap(),
+            bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
+            cursor: b"released-history".to_vec().into(),
+            max_bytes: 1024,
+            max_rows: 1,
+        })
+        .await
+        .expect("late history requests for a closed stream must be dropped");
+        closed_tx.send(()).unwrap();
+        let next = receive_with_mode(&mut conn, poll).await;
+        assert_eq!(
+            next,
+            FrameKind::Pong { nonce: 91 },
+            "late history escaped the lifecycle barrier"
+        );
+        drop(conn);
+        done_tx.send(()).unwrap();
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test]
+async fn resource_close_retires_stream_before_next_recv() {
+    resource_close_retires_terminal_stream(false).await;
+}
+
+#[tokio::test]
+async fn resource_close_retires_stream_before_next_try_recv() {
+    resource_close_retires_terminal_stream(true).await;
+}
+
 #[tokio::test]
 async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
     let (_dir, cert, key) = cert_pair();
