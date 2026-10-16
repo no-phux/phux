@@ -72,13 +72,13 @@ pub enum Error {
     #[error("edit needs a title or a description")]
     EmptyEdit,
     /// The task is archived, so it cannot be started.
-    #[error("task {alias} is archived")]
+    #[error("{alias} is archived; restore it to start it")]
     NotStartable {
         /// Display alias.
         alias: String,
     },
     /// The task already has a live run.
-    #[error("task {alias} is already started")]
+    #[error("{alias} is already running")]
     AlreadyStarted {
         /// Display alias.
         alias: String,
@@ -92,8 +92,13 @@ pub enum Error {
         alias: String,
     },
     /// A running start found the agent cap full.
-    #[error("the mission agent cap is full")]
-    AtCapacity,
+    #[error("no agent slot free ({running} of {limit} running)")]
+    AtCapacity {
+        /// Agents with a running, unfinished run.
+        running: u64,
+        /// The cap the start named.
+        limit: u64,
+    },
     /// The operating system could not mint an id.
     #[error("could not mint an id: {0}")]
     Random(String),

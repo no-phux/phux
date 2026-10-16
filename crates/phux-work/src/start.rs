@@ -174,8 +174,9 @@ impl Store {
         refuse_unstartable(&tx, &current, &request.worktree_path, &request.branch)?;
         let running = count_runs(&tx, "running")?;
         let launching = request.launch.is_some();
-        if launching && running >= u64::from(request.max_agents) {
-            return Err(Error::AtCapacity);
+        let limit = u64::from(request.max_agents);
+        if launching && running >= limit {
+            return Err(Error::AtCapacity { running, limit });
         }
         let now = timestamp();
         let ordinal = next_ordinal(&tx, current.id)?;
@@ -624,10 +625,12 @@ mod tests {
         );
         let mut again = start_req(alias.clone(), OperationId::generate().expect("id"), true);
         again.expected_revision = 2;
-        assert!(matches!(
-            store.commit_start(again),
-            Err(Error::AlreadyStarted { .. })
-        ));
+        let again = store.commit_start(again).expect_err("second run");
+        assert!(matches!(again, Error::AlreadyStarted { .. }));
+        assert_eq!(
+            again.to_string(),
+            format!("{} is already running", alias.display())
+        );
 
         let other = store.add(add("phux", "Taken")).expect("add");
         let mut clash = start_req(
@@ -657,12 +660,14 @@ mod tests {
                 actor: "tester".to_owned(),
             })
             .expect("archive");
-        let mut archived = start_req(alias, OperationId::generate().expect("id"), false);
+        let mut archived = start_req(alias.clone(), OperationId::generate().expect("id"), false);
         archived.expected_revision = 2;
-        assert!(matches!(
-            store.plan_start(&archived),
-            Err(Error::NotStartable { .. })
-        ));
+        let archived = store.plan_start(&archived).expect_err("archived");
+        assert!(matches!(archived, Error::NotStartable { .. }));
+        assert_eq!(
+            archived.to_string(),
+            format!("{} is archived; restore it to start it", alias.display())
+        );
 
         let live = store.add(add("phux", "Live")).expect("add");
         admit(
@@ -683,7 +688,15 @@ mod tests {
             binding.worktree_path.clone_from(&over.worktree_path);
             binding.branch.clone_from(&over.branch);
         }
-        assert!(matches!(store.commit_start(over), Err(Error::AtCapacity)));
+        let over = store.commit_start(over).expect_err("cap");
+        assert!(matches!(
+            over,
+            Error::AtCapacity {
+                running: 1,
+                limit: 1
+            }
+        ));
+        assert_eq!(over.to_string(), "no agent slot free (1 of 1 running)");
     }
 
     #[test]

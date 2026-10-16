@@ -13,7 +13,8 @@ pub const START_LINE: &str = "Start the task in the brief.";
 pub const DEFAULT_RULES: &str = "\
 Work only in this worktree.
 Read this brief and do the task.
-When you are blocked or finished, stop and say so in the pane.
+If you are blocked, ask one question and stop.
+When you are finished, say done and stop.
 Do not open a pull request and do not merge.
 ";
 
@@ -257,6 +258,8 @@ mod tests {
         assert!(text.contains("Alias: phux/3"));
         assert!(text.contains("Fix it"));
         assert!(text.contains("## Rules\n\nBe brief."));
+        assert!(DEFAULT_RULES.contains("If you are blocked, ask one question and stop.\n"));
+        assert!(DEFAULT_RULES.contains("When you are finished, say done and stop.\n"));
     }
 
     #[test]

@@ -100,7 +100,10 @@ pub(crate) enum Fault {
         path: String,
         alias: String,
     },
-    AtCapacity,
+    AtCapacity {
+        running: u64,
+        max_agents: u64,
+    },
     Busy,
     Stale {
         keeper: String,
@@ -138,7 +141,10 @@ impl From<Error> for Fault {
             Error::NotStartable { alias } => Self::NotStartable { alias },
             Error::AlreadyStarted { alias } => Self::AlreadyStarted { alias },
             Error::WorktreeBound { path, alias } => Self::WorktreeBound { path, alias },
-            Error::AtCapacity => Self::AtCapacity,
+            Error::AtCapacity { running, limit } => Self::AtCapacity {
+                running,
+                max_agents: limit,
+            },
             Error::Busy => Self::Busy,
             other @ (Error::Io(_)
             | Error::Sqlite(_)
@@ -178,7 +184,13 @@ impl From<Fault> for Error {
             Fault::NotStartable { alias } => Self::NotStartable { alias },
             Fault::AlreadyStarted { alias } => Self::AlreadyStarted { alias },
             Fault::WorktreeBound { path, alias } => Self::WorktreeBound { path, alias },
-            Fault::AtCapacity => Self::AtCapacity,
+            Fault::AtCapacity {
+                running,
+                max_agents,
+            } => Self::AtCapacity {
+                running,
+                limit: max_agents,
+            },
             Fault::Busy => Self::Busy,
             Fault::Stale { keeper } => Self::Keeper(format!("keeper is from build {keeper}")),
             Fault::BadRequest { message } => Self::Keeper(message),

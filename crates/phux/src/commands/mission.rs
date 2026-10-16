@@ -40,7 +40,7 @@ pub(crate) enum MissionAction {
         #[usage(long)]
         start: bool,
         /// Agent for `--start`, as KIND or KIND/MODEL.
-        #[usage(long, value_name = "KIND")]
+        #[usage(long, value_name = "KIND[/MODEL]")]
         agent: Option<String>,
         #[usage(flatten)]
         op: OpOpt,
@@ -53,7 +53,7 @@ pub(crate) enum MissionAction {
         #[usage(value_name = "ALIAS")]
         alias: String,
         /// Agent as KIND or KIND/MODEL. Defaults to `[mission] agent`.
-        #[usage(long, value_name = "KIND")]
+        #[usage(long, value_name = "KIND[/MODEL]")]
         agent: Option<String>,
         #[usage(flatten)]
         rev: RevOpt,
@@ -702,7 +702,7 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
             1,
             "leave that worktree to the task that holds it",
         ),
-        phux_work::Error::AtCapacity => (
+        phux_work::Error::AtCapacity { .. } => (
             codes::MISSION_START_FAILED,
             1,
             "wait for a running agent to finish",

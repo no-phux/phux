@@ -1997,7 +1997,7 @@ Flags:
                                   there is no remote.
       --start                     Start the new task in its own worktree
                                   session.
-      --agent <KIND>              Agent for `--start`, as KIND or KIND/MODEL.
+      --agent <KIND[/MODEL]>      Agent for `--start`, as KIND or KIND/MODEL.
       --operation-id <HEX32>      Repeat a write safely: 32 hex digits. The same
                                   id returns the first result.
       --json                      Emit stable, versioned JSON on stdout instead
@@ -2133,7 +2133,7 @@ Arguments:
   <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
 
 Flags:
-      --agent <KIND>           Agent as KIND or KIND/MODEL. Defaults to
+      --agent <KIND[/MODEL]>   Agent as KIND or KIND/MODEL. Defaults to
                                `[mission] agent`.
       --expected-revision <N>  Required. The task's current revision; the write
                                is refused when it differs.

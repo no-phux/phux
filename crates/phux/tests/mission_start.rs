@@ -153,6 +153,18 @@ fn start_creates_a_worktree_session_and_queues_past_the_cap() {
     assert_eq!(queued["task"]["state"], "queued");
     assert!(queued["binding"].is_null());
     assert_eq!(queued["run"]["state"], "queued");
+
+    let (code, stdout, stderr) = mission(
+        &guard,
+        &repo,
+        &["mission", "add", "--start", "--repo", "demo", "Third page"],
+    );
+    assert_eq!(
+        code, 0,
+        "human queue failed\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert_eq!(stdout, "queued demo/3 (rev 2), position 2\n");
+
     let logs = std::fs::read_dir(&log_dir).unwrap().count();
     assert_eq!(logs, 1, "a queued task must not launch another agent");
 }
@@ -187,11 +199,12 @@ fn a_failed_start_on_a_non_tty_leaves_the_worktree() {
     assert_eq!(err["error"]["code"], "mission_confirmation_required");
     assert_eq!(err["exit_code"], 2);
     let message = err["error"]["message"].as_str().unwrap_or("");
-    let left = message
-        .split_once("left the worktree at ")
+    let kept = message
+        .split_once("; worktree kept at ")
         .is_some_and(|(_, path)| Path::new(path).is_dir());
-    assert!(left, "non-tty start must leave the worktree: {stderr}");
-    assert!(stderr.contains("left the worktree"), "{stderr}");
+    assert!(kept, "non-tty start must leave the worktree: {stderr}");
+    assert!(stderr.contains("worktree kept at "), "{stderr}");
+    assert!(!stderr.contains("left the worktree"), "{stderr}");
     assert!(!stderr.contains("--yes"), "{stderr}");
 }
 

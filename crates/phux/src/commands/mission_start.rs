@@ -301,9 +301,9 @@ fn emit(json: bool, applied: &StartApplied) -> ExitCode {
     let alias = applied.objective.alias.display();
     let rev = applied.objective.revision;
     if applied.disposition == "queued" {
-        outln!("queued {alias} (rev {rev})");
-        if let Some(position) = applied.queue_position {
-            outln!("queue position {position}");
+        match applied.queue_position {
+            Some(position) => outln!("queued {alias} (rev {rev}), position {position}"),
+            None => outln!("queued {alias} (rev {rev})"),
         }
     } else {
         outln!("started {alias} (rev {rev})");
@@ -339,7 +339,7 @@ fn cleanup(
         return mission::report_code(
             json,
             codes::MISSION_CONFIRMATION_REQUIRED,
-            &format!("{message}. left the worktree at {}", worktree.display()),
+            &format!("{message}; worktree kept at {}", worktree.display()),
             "remove the worktree from a terminal if it should go",
             2,
         );
