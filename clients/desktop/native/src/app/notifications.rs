@@ -170,6 +170,11 @@ impl Feed {
         self.peek.and_then(|id| self.get(id))
     }
 
+    /// When the peek card expires.
+    pub fn peek_expires(&self) -> Option<Instant> {
+        self.peek().map(|entry| entry.at + entry.kind.lifetime())
+    }
+
     /// Unread interrupting entries; the bell's count.
     pub fn unread(&self) -> impl Iterator<Item = &Notification> {
         self.items.iter().filter(|entry| !entry.read)

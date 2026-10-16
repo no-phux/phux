@@ -1589,9 +1589,20 @@ pub(super) fn ago(then: u64, now: u64) -> String {
     }
 }
 
-/// Whether the sidebar label for `then` changes between `earlier` and `now`.
-pub(super) fn ago_changed(then: u64, earlier: u64, now: u64) -> bool {
-    ago(then, earlier) != ago(then, now)
+/// Milliseconds from `now` until [`ago`]'s label for `then` next changes.
+pub(super) fn ago_wait(then: u64, now: u64) -> u64 {
+    let elapsed = now.saturating_sub(then);
+    let seconds = elapsed / 1000;
+    // Each bucket rounds to its nearest unit, so its label turns at the half unit.
+    let turn = |unit: u64| ((seconds + unit / 2) / unit + 1) * unit - unit / 2;
+    let next = match seconds {
+        0..5 => 5,
+        5..60 => seconds + 1,
+        60..3600 => turn(60).min(3600),
+        3600..86400 => turn(3600).min(86400),
+        _ => turn(86400),
+    };
+    next * 1000 - elapsed
 }
 
 fn sidebar_resize(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -2717,13 +2728,25 @@ mod intake_tests {
 
 #[cfg(test)]
 mod age_tests {
-    use super::ago_changed;
+    use super::{ago, ago_wait};
 
     #[test]
-    fn ages_move_on_the_bucket_the_sidebar_shows() {
-        assert!(!ago_changed(0, 3_000, 4_000));
-        assert!(ago_changed(0, 4_000, 5_000));
-        assert!(ago_changed(0, 10_000, 11_000));
-        assert!(!ago_changed(0, 120_000, 121_000));
+    fn the_wait_ends_exactly_when_the_label_changes() {
+        let mut now = 0;
+        while now < 4 * 86_400_000 {
+            let wait = ago_wait(0, now);
+            assert!(wait > 0);
+            assert_eq!(ago(0, now), ago(0, now + wait - 1), "at {now}");
+            assert_ne!(ago(0, now), ago(0, now + wait), "at {now}");
+            now += wait;
+        }
+    }
+
+    #[test]
+    fn minutes_and_hours_sleep_past_seconds() {
+        assert_eq!(ago_wait(0, 3_000), 2_000);
+        assert_eq!(ago_wait(0, 10_500), 500);
+        assert_eq!(ago_wait(0, 120_000), 30_000);
+        assert_eq!(ago_wait(0, 2 * 3_600_000), 1_800_000);
     }
 }
