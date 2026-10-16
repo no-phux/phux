@@ -1055,6 +1055,8 @@ struct App {
     /// The grid the canvas shows, so a cursor blink redraws one row
     /// without reading the whole grid back from the engine.
     painted: RefCell<Option<Grid>>,
+    /// Pane-local cursor rows from the last full paint, without rereading grids.
+    painted_cursor_rows: RefCell<Vec<(phux_protocol::ids::ResourceId, u16)>>,
     /// The program title last published to the page.
     title: RefCell<String>,
     /// The search matches the canvas shows, so a cursor blink keeps them.
@@ -1318,9 +1320,12 @@ impl App {
         self.ctx
             .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         let focused = self.session.focused_pane();
+        let mut cursor_rows = Vec::with_capacity(panes.len());
         for (id, rect) in &panes {
             let active = focused.as_ref() == Some(id);
-            self.paint_pane(id, rect, active, &grid, &marks);
+            if let Some(row) = self.paint_pane(id, rect, active, &grid, &marks) {
+                cursor_rows.push((id.clone(), row));
+            }
             if panes.len() > 1 {
                 self.paint_pane_border(rect, active);
             }
@@ -1331,6 +1336,7 @@ impl App {
                 .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
         self.painted.replace(Some(grid));
+        self.painted_cursor_rows.replace(cursor_rows);
         self.painted_marks.replace(marks);
         self.publish_title();
         self.place_input_surface();
@@ -1344,7 +1350,7 @@ impl App {
         active: bool,
         grid: &phux_vt_web::Grid,
         marks: &[Mark],
-    ) {
+    ) -> Option<u16> {
         self.ctx.save();
         let _ = self.ctx.translate(
             f64::from(rect.x) * self.metrics.cell_w,
@@ -1358,7 +1364,7 @@ impl App {
             f64::from(rect.rows) * self.metrics.cell_h,
         );
         self.ctx.clip();
-        if active {
+        let cursor_row = if active {
             let overlay = Overlay {
                 selected: self.selected_cells(grid.cols),
                 marks,
@@ -1370,16 +1376,16 @@ impl App {
                 self.cursor_on.get() && !self.session.viewport_scrolled(),
                 &overlay,
             );
+            Some(grid.cursor_row)
         } else if let Some(terminal) = self.session.pane_terminal(id) {
-            render_selected(
-                &self.ctx,
-                &terminal.grid(),
-                &self.metrics,
-                false,
-                &Overlay::default(),
-            );
-        }
+            let grid = terminal.grid();
+            render_selected(&self.ctx, &grid, &self.metrics, false, &Overlay::default());
+            Some(grid.cursor_row)
+        } else {
+            None
+        };
         self.ctx.restore();
+        cursor_row
     }
 
     fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
@@ -1618,6 +1624,18 @@ impl App {
                 let _ =
                     js_sys::Reflect::set(&pane, &key.into(), &JsValue::from_f64(f64::from(value)));
             }
+            if let Some((_, row)) = self
+                .painted_cursor_rows
+                .borrow()
+                .iter()
+                .find(|(painted, _)| painted == &id)
+            {
+                let _ = js_sys::Reflect::set(
+                    &pane,
+                    &"cursorRow".into(),
+                    &JsValue::from_f64(f64::from(*row)),
+                );
+            }
             descriptors.push(&pane);
         }
         let _ = js_sys::Reflect::set(&detail, &"panes".into(), &descriptors);
@@ -1751,6 +1769,7 @@ fn build_app(
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
+        painted_cursor_rows: RefCell::new(Vec::with_capacity(4)),
         title: RefCell::new(String::new()),
         painted_marks: RefCell::new(Vec::new()),
         selection: Cell::new(None),

@@ -127,6 +127,23 @@ async fn presentation_metadata_matches_real_pane_rectangles_and_painted_pixels()
     assert_eq!(number(&panes.get(0), "cols"), 39.0);
     assert_eq!(number(&panes.get(1), "x"), 40.0);
     assert_eq!(number(&panes.get(1), "cols"), 40.0);
+    assert_eq!(number(&panes.get(0), "cursorRow"), 0.0);
+    assert_eq!(number(&panes.get(1), "cursorRow"), 0.0);
+    {
+        let mut app = client.app.borrow_mut();
+        app.session.on_frame(FrameKind::ResourceOutput {
+            terminal_id: ResourceId::new(2),
+            stream_id: StreamId::new(2).unwrap(),
+            bootstrap_id: BootstrapId::new(2).unwrap(),
+            seq: 1,
+            bytes: bytes::Bytes::from_static(b"\r\nnext\r\nrow"),
+        });
+    }
+    paint_and_publish(&client.app);
+    let latest = renders.borrow().last().unwrap().clone();
+    let latest_panes = js_sys::Array::from(&field(&latest, "panes"));
+    assert_eq!(number(&latest_panes.get(0), "cursorRow"), 0.0);
+    assert_eq!(number(&latest_panes.get(1), "cursorRow"), 2.0);
     let pixel = client
         .app
         .borrow()

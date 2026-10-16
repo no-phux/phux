@@ -145,7 +145,10 @@ The canvas emits bubbling `CustomEvent`s with generated TypeScript types:
 - `phux-render`: `PaneRenderDetail`, emitted after a full real canvas paint.
   It carries the same canonical pane rectangles plus backing-store
   `pixelWidth`/`pixelHeight`. Each rectangle has `id`, `x`, `y`, `cols`, `rows`
-  in cells and excludes separators. The event is dispatched without an App
+  in cells and excludes separators. Optional `cursorRow` is the pane-local
+  engine cursor row from the last full paint, reusing grids already read by the
+  renderer. Clamp it to the visible rectangle during a pending resize.
+  `phux-panes` may omit it before the first paint. The event is dispatched without an App
   borrow, so a listener can call the client. Cursor-only blink redraws do not
   emit this presentation event; no perpetual preview-copy timer is needed.
 

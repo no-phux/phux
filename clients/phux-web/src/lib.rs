@@ -51,7 +51,7 @@ pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> R
 #[wasm_bindgen(typescript_custom_section)]
 const PRESENTATION_TYPES: &str = r#"
 /** Visible terminal rectangle in canonical canvas cells; separators excluded. */
-export interface PaneDescriptor { id: string; x: number; y: number; cols: number; rows: number; }
+export interface PaneDescriptor { id: string; x: number; y: number; cols: number; rows: number; cursorRow?: number; }
 /** Canonical geometry shared by pane-state and full-paint events. */
 export interface PanePresentation { panes: PaneDescriptor[]; cols: number; rows: number; }
 /** Detail of the bubbling phux-panes CustomEvent. */
