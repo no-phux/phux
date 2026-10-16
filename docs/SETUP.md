@@ -82,18 +82,31 @@ binary is on `PATH`. Darwin's util-linux build is keg-only and has no
 verifies shared storage and preserved target metadata rather than accepting
 an unchanged copy.
 
-## Binary cache
+## libghostty-vt
 
-CI pushes the dev shell's build outputs to `https://phux.cachix.org`, and
-`flake.nix` asks Nix to use it. The Nix daemon honours a flake's substituter
-only for a trusted user or a cache in its own `trusted-substituters`, so on a
-default multi-user install every `nix develop` prints `ignoring untrusted
-substituter` and builds those outputs locally instead. `just doctor` reports
-this and prints the one-time fix: append the cache and its public key to the
-daemon's config (`/etc/nix/nix.custom.conf` on a Determinate install, else
-`/etc/nix/nix.conf`) as `extra-trusted-substituters` and
-`extra-trusted-public-keys`, then restart the daemon. That trusts this one
-cache, which is narrower than adding yourself to `trusted-users`.
+The terminal engine is Ghostty's C library, `libghostty-vt`. Its build script
+(`libghostty-vt-sys`, from the libghostty-rs rev in `Cargo.toml`) downloads a
+prebuilt `libghostty-vt.a` of its pinned Ghostty commit from that fork's
+GitHub Releases, checks it against the SHA-256 the crate embeds, and links it.
+It needs `curl` and `tar` and no Nix trust configuration, sudo, or Zig. The
+archives cover `x86_64`/`aarch64` Linux GNU and macOS for the flavor phux
+builds: static, `ReleaseFast` (`.cargo/config.toml` sets it for every
+profile), and Zig's `baseline` CPU.
+
+Anything else builds from source with Zig, about 200 s cold, once per input
+set (see the cache bullet under [Build cache](#build-cache-mbx)): another
+target (iOS slices, WASM), `LIBGHOSTTY_VT_SYS_CPU` or
+`LIBGHOSTTY_VT_SYS_OPTIMIZE` set to another flavor,
+`LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, `CARGO_NET_OFFLINE=true`, or a failed
+download (the build prints a warning). A checksum mismatch fails the build.
+`GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout and
+`LIBGHOSTTY_VT_SYS_LIB_DIR` links a directory you built. `just
+ghostty-pin-check` fails when the pinned libghostty-rs rev publishes no
+archive for one of the four targets.
+
+CI caches its Nix dev shell in Cachix for its own runners; developer machines
+do not need that cache. Everything else in the shell substitutes from
+`cache.nixos.org` or is a fixed-output download.
 
 ## Build cache (mbx)
 
@@ -161,22 +174,13 @@ Two things keep a crate reusable across worktrees, and both are enforced:
   cache-portable-check`): read `CARGO_MANIFEST_DIR` and the test binary paths
   from the test runner at run time (`crates/phux/tests/common/runner.rs`), and
   pass a binary's own checkout path in from its `main.rs`.
-- The Zig engine builds once per input set, outside any target directory:
+- A Zig engine build runs once per input set, outside any target directory:
   `libghostty-vt-sys` keeps it under `$XDG_CACHE_HOME/libghostty-vt-sys` when
   that is set, else `~/Library/Caches` (macOS) or `~/.cache`, and copies the
   install tree into `OUT_DIR`.
   `LIBGHOSTTY_VT_SYS_CACHE_DIR` moves it; set it empty to build in `OUT_DIR`.
-- The Nix devshell skips that build: it sets `LIBGHOSTTY_VT_SYS_LIB_DIR` to
-  the flake's `libghostty-vt` package, which Cachix serves, and the build
-  script links that archive without running Zig. The package is the default
-  flavor (`baseline` CPU, the optimize mode in `.cargo/config.toml`, and on
-  macOS Ghostty's own deployment floor), so a shell that sets another
-  `LIBGHOSTTY_VT_SYS_CPU` or `LIBGHOSTTY_VT_SYS_OPTIMIZE` builds from source.
-  `just ghostty-pin-check` keeps its Ghostty input on the commit the pinned
-  libghostty-rs builds. On macOS the package builds against nixpkgs' Apple SDK
-  with no host Xcode, and the Apple cross-compile scripts
-  (`scripts/lib/apple-toolchain-env.sh`) drop the variable so iOS and
-  Xcode-SDK slices still build their own.
+- The prebuilt download ([libghostty-vt](#libghostty-vt)) skips that build
+  entirely, and its archive is the same bytes on every machine.
 
 On Linux, keep mbx's cache directory on a filesystem with reflinks (ext4 falls
 back to read-only hard links). Rust build output compresses well, so a

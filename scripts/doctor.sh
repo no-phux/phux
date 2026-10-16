@@ -28,29 +28,23 @@ env_remedy() {
         printf 'mise install\n  or: nix develop\n  native fallback: %s' "$fallback"
     fi
 }
-# Advisory: flake.nix asks for the phux binary cache, but the Nix daemon only
-# honours a flake's substituter when the user is trusted or the cache is in
-# the daemon's trusted-substituters. Otherwise every `nix develop` warns
-# "ignoring untrusted substituter" and builds from source what CI already
-# pushed to Cachix.
-nix_cache_check() {
-    command -v nix >/dev/null 2>&1 || return 0
-    [[ -z "${CI:-}" ]] || return 0
-    local cache='https://phux.cachix.org' key trusted
-    if nix store info 2>/dev/null | grep -q '^Trusted: 1'; then
-        ok 'Nix daemon trusts this user (flake binary caches apply)'
-        return 0
+# Advisory: libghostty-vt-sys downloads a prebuilt libghostty-vt with curl and
+# tar (docs/SETUP.md#libghostty-vt). Without them, or with a flavor override,
+# every fresh target directory runs the ~200 s Zig build instead. Nothing
+# here needs Nix trust configuration.
+ghostty_engine() {
+    if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        ok 'curl and tar (prebuilt libghostty-vt download)'
+    else
+        phux_warn 'curl or tar missing; libghostty-vt builds from source with Zig'
+        phux_hint 'install curl and tar; see docs/SETUP.md#libghostty-vt'
     fi
-    trusted="$(nix config show trusted-substituters 2>/dev/null || true)"
-    if [[ " $trusted " == *" $cache "* ]]; then
-        ok "Nix daemon trusts $cache"
-        return 0
-    fi
-    key="$(sed -n 's/.*"\(phux\.cachix\.org-1:[^"]*\)".*/\1/p' "$DEV_ROOT/flake.nix" | head -1)"
-    phux_warn "the Nix daemon ignores $cache, so nix develop builds what CI already cached"
-    phux_hint "once, as admin; see docs/SETUP.md#binary-cache:"
-    phux_hint "sudo sh -c 'printf \"extra-trusted-substituters = $cache\\nextra-trusted-public-keys = $key\\n\" >> /etc/nix/nix.custom.conf'"
-    phux_hint "then restart the daemon (macOS Determinate: sudo launchctl kickstart -k system/systems.determinate.nix-daemon)"
+    local name
+    for name in LIBGHOSTTY_VT_SYS_FROM_SOURCE LIBGHOSTTY_VT_SYS_CPU LIBGHOSTTY_VT_SYS_LIB_DIR GHOSTTY_SOURCE_DIR CARGO_NET_OFFLINE; do
+        if [[ -n "${!name:-}" ]]; then
+            phux_warn "$name is set; libghostty-vt skips the prebuilt download"
+        fi
+    done
 }
 
 rust_tools() {
@@ -68,7 +62,6 @@ rust_tools() {
         phux_warn 'mbx not on PATH; Cargo runs without the shared build cache'
         phux_hint 'mise install, or nix develop (docs/SETUP.md#build-cache-mbx)'
     fi
-    nix_cache_check
     need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
     rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then
@@ -115,6 +108,7 @@ mac_sdk() {
 native_tools() {
     rust_tools native
     zig_tool
+    ghostty_engine
     need pkg-config 'brew install pkgconf; or sudo apt-get install -y pkg-config'
     mac_sdk
 }
