@@ -550,6 +550,15 @@ pub enum WireEvent {
     /// latest `AgentAsked` describes it, but after a gap or reconnect that
     /// description may be older than the question.
     AgentAskedState { terminal_id: String, asked: bool },
+    /// An exact SDK intent's outcome. Queued is submission, not provider
+    /// consumption; Unknown requires reconciliation and must not be replayed.
+    NativeAgentResult {
+        agent_session_id: String,
+        operation_id: u64,
+        /// `admitted`, `queued`, `completed`, `refused`, or `unknown`.
+        disposition: String,
+        detail: Option<String>,
+    },
     /// The pane's `phux.agent/v1` L3 record changed, or its current value
     /// arrived on (re)attach (phux-cck / ADR-0046: the server-side detector
     /// derives `state` from the live screen and publishes edge-filtered

@@ -15,7 +15,6 @@ keeps every gate.
 ### Bug Fixes
 
 * **ci:** keep browser-gate scratch sockets under the macOS path limit ([#1448](https://github.com/no-phux/phux/issues/1448)) ([6707de1](https://github.com/no-phux/phux/commit/6707de182593a853ddba47ba96f17a97f94428c0))
-
 ## [0.79.2](https://github.com/no-phux/phux/compare/v0.79.1...v0.79.2) (2026-10-15)
 
 

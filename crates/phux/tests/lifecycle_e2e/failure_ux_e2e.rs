@@ -83,6 +83,7 @@ impl Isolation {
             ("XDG_RUNTIME_DIR", home),
             ("PHUX_PROFILE", "default".into()),
             ("PHUX_NO_AUTO_LISTEN", "1".into()),
+            ("PHUX_NO_UPDATE_CHECK", "1".into()),
             (
                 "PHUX_TAILSCALE",
                 self.home.path().join("no-such-tailscale").into_os_string(),

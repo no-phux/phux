@@ -12,13 +12,19 @@ use super::model::{
     WorkspacePane, WorkspaceSession, WorkspaceSplitDir, WorkspaceWindow,
 };
 
+#[derive(Clone, Copy)]
+pub(super) struct AgentRecords<'a> {
+    pub(super) attached: &'a HashMap<ResourceId, AgentSessionRecord>,
+    pub(super) native: &'a HashMap<ResourceId, phux_protocol::native_agent::SpawnNativeAgent>,
+}
+
 /// Build the archive from a `GET_STATE` snapshot, each session's decoded L3
 /// layout (`layouts`; `GET_STATE` itself never carries one), and the resolved
 /// agent records. A session without a layout falls back to the
 /// one-window-per-registry-window projection.
 pub(super) fn archive_from_snapshot(
     snapshot: &SessionSnapshot,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
     layouts: &HashMap<SessionId, ArrangementDoc>,
     projects: &HashMap<String, String>,
     hosts: &HashMap<String, String>,
@@ -115,7 +121,7 @@ fn archive_windows_for_session(
     windows_by_session: &BTreeMap<SessionId, Vec<&WindowInfo>>,
     panes_by_window: &BTreeMap<WindowId, Vec<&ResourceInfo>>,
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
     warnings: &mut Vec<String>,
 ) -> Vec<WorkspaceWindow> {
     let session_windows = windows_by_session.get(&session.id).into_iter().flatten();
@@ -217,7 +223,7 @@ fn reconcile_layout(
 fn unplaced_window(
     ids: &[ResourceId],
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
 ) -> WorkspaceWindow {
     let pane_index: BTreeMap<ResourceId, usize> = ids
         .iter()
@@ -241,7 +247,7 @@ fn archive_window_from_layout(
     window: &Group,
     active: bool,
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
 ) -> WorkspaceWindow {
     let ordered_panes: Vec<ResourceId> = window.state.tree.as_ref().map(leaves).unwrap_or_default();
     let pane_index: BTreeMap<ResourceId, usize> = ordered_panes
@@ -276,7 +282,7 @@ fn archive_panes(
     ids: &[ResourceId],
     focus: Option<&ResourceId>,
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
 ) -> Vec<WorkspacePane> {
     ids.iter()
         .map(|id| {
@@ -286,12 +292,20 @@ fn archive_panes(
                 title: info.and_then(|resource| resource.title.clone()),
                 cwd: info.and_then(|resource| resource.cwd.clone()),
                 command: None,
+                native_launch: agent_sessions.native.get(id).cloned(),
                 env: BTreeMap::new(),
-                agent_session: agent_sessions.get(id).map(|record| WorkspaceAgentSession {
-                    plugin_id: record.plugin_id.clone(),
-                    integration_id: record.integration_id.clone(),
-                    native_id: record.native_id.clone(),
-                }),
+                agent_session: if agent_sessions.native.contains_key(id) {
+                    None
+                } else {
+                    agent_sessions
+                        .attached
+                        .get(id)
+                        .map(|record| WorkspaceAgentSession {
+                            plugin_id: record.plugin_id.clone(),
+                            integration_id: record.integration_id.clone(),
+                            native_id: record.native_id.clone(),
+                        })
+                },
                 cols: info.map_or(0, |resource| resource.cols),
                 rows: info.map_or(0, |resource| resource.rows),
             }
@@ -303,7 +317,7 @@ fn archive_window(
     window: &WindowInfo,
     active_window: Option<WindowId>,
     panes_by_window: &BTreeMap<WindowId, Vec<&ResourceInfo>>,
-    agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
+    agent_sessions: AgentRecords<'_>,
 ) -> WorkspaceWindow {
     let panes = panes_by_window.get(&window.id).cloned().unwrap_or_default();
     WorkspaceWindow {
@@ -318,14 +332,20 @@ fn archive_window(
                 title: pane.title.clone(),
                 cwd: pane.cwd.clone(),
                 command: None,
+                native_launch: agent_sessions.native.get(&pane.id).cloned(),
                 env: BTreeMap::new(),
-                agent_session: agent_sessions
-                    .get(&pane.id)
-                    .map(|record| WorkspaceAgentSession {
-                        plugin_id: record.plugin_id.clone(),
-                        integration_id: record.integration_id.clone(),
-                        native_id: record.native_id.clone(),
-                    }),
+                agent_session: if agent_sessions.native.contains_key(&pane.id) {
+                    None
+                } else {
+                    agent_sessions
+                        .attached
+                        .get(&pane.id)
+                        .map(|record| WorkspaceAgentSession {
+                            plugin_id: record.plugin_id.clone(),
+                            integration_id: record.integration_id.clone(),
+                            native_id: record.native_id.clone(),
+                        })
+                },
                 cols: pane.cols,
                 rows: pane.rows,
             })
@@ -413,7 +433,10 @@ mod tests {
 
         let (archive, warnings) = archive_from_snapshot(
             &snapshot,
-            &agent_sessions,
+            AgentRecords {
+                attached: &agent_sessions,
+                native: &HashMap::new(),
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -466,7 +489,10 @@ mod tests {
 
         let (archive, warnings) = archive_from_snapshot(
             &snapshot,
-            &HashMap::new(),
+            AgentRecords {
+                attached: &HashMap::new(),
+                native: &HashMap::new(),
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -501,7 +527,10 @@ mod tests {
 
         let (archive, warnings) = archive_from_snapshot(
             &snapshot,
-            &HashMap::new(),
+            AgentRecords {
+                attached: &HashMap::new(),
+                native: &HashMap::new(),
+            },
             &HashMap::new(),
             &projects,
             &HashMap::new(),
@@ -535,7 +564,10 @@ mod tests {
 
         let (archive, warnings) = archive_from_snapshot(
             &snapshot,
-            &HashMap::new(),
+            AgentRecords {
+                attached: &HashMap::new(),
+                native: &HashMap::new(),
+            },
             &HashMap::new(),
             &projects,
             &hosts,
@@ -567,7 +599,10 @@ mod tests {
 
         let (archive, warnings) = archive_from_snapshot(
             &snapshot,
-            &HashMap::new(),
+            AgentRecords {
+                attached: &HashMap::new(),
+                native: &HashMap::new(),
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),

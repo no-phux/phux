@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add an explicit configured ACP-agent launch picker through the titlebar,
+  File menu, workspace glass menu and command palette, server-owned conversation
+  commands and native permission dialogs. Keep terminal-attached conversations
+  explicitly labeled, with independent draft/scroll preservation.
+- Surface executing-host prerequisites and queued/completed/refused/unknown
+  outcomes without silent installs, automatic approvals or terminal-key fallback.
+
+### Bug Fixes
+
+- Preserve an ACP conversation's editor, pending receipts and question drafts
+  when a graceful server handoff recreates desktop layout placements. Rebind
+  only to the same endpoint, parent, AgentSession and ACP activation; a
+  replacement owner never inherits the old draft.
+- Keep native draft editing and Stop available while a provider question blocks
+  another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+- Keep New ACP Agent clicks out of the titlebar's window-drag region.
+- Reveal a newly launched ACP guardian from its authoritative catalog identity
+  before waiting for the resulting agent subscription. Native controls still
+  require the exact returned AgentSession and activation.
+- Restore the focused ACP guardian after a daemon handoff even when it is not
+  the session's home terminal, retaining the original editor and draft.
+- Reject raw terminal input and file drops for pending or retained ACP owners
+  before filesystem access or remote upload, including during reconnects.
+
 ## [0.17.0](https://github.com/no-phux/phux/compare/desktop-v0.16.0...desktop-v0.17.0) (2026-10-15)
 
 
@@ -14,6 +42,7 @@
 ### Features
 
 * **desktop:** show metadata facts for the highlighted Go To row ([#1444](https://github.com/no-phux/phux/issues/1444)) ([01ddef3](https://github.com/no-phux/phux/commit/01ddef32d530acf6fa552ad53d75709859164540))
+
 
 ## [0.15.0](https://github.com/no-phux/phux/compare/desktop-v0.14.2...desktop-v0.15.0) (2026-10-15)
 

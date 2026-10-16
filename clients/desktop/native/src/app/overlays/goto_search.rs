@@ -359,6 +359,7 @@ mod tests {
             category: "",
             chord: None,
             agent: None,
+            preview: None,
         }
     }
 

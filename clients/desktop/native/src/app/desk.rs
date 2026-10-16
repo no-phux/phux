@@ -88,6 +88,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    NativeLaunch,
     Path,
     MoveResources,
     Rename {
@@ -182,6 +183,7 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -358,6 +360,7 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
@@ -420,6 +423,8 @@ impl Desk {
     }
 
     fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
+        // Native launch completions belong to the client that initiated them.
+        self.native_launch = Default::default();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
             self.connect_error = Some("No session to open".into());
@@ -528,11 +533,15 @@ impl Desk {
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
         self.note_activity(events, epoch);
+        // A reexec resets layout placements, not the ACP owner or its editor.
+        // Reopen its guardian before waiting for the exact fresh activation.
+        self.remember_native_focus();
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
         self.settle_project_terminal();
+        self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -925,6 +934,7 @@ impl Desk {
             "rename-session" => self.open_rename_session(),
             "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
+            "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
                 self.workspace_call(|link| link.workspace.split(&link.connection, Axis::Row, false))
@@ -2107,10 +2117,16 @@ impl Desk {
         let Some(terminal) = self.focused_terminal() else {
             return;
         };
+        if self.refuse_native_input(&terminal) {
+            return;
+        }
         let events = typed_keys(text);
         let client = self.client();
         let Some(client) = client else { return };
         let sent = client.with_control(|control| {
+            if crate::input::native_owned(control, &terminal) {
+                return false;
+            }
             events
                 .into_iter()
                 .all(|event| control.send_key(&terminal, event))
@@ -2227,6 +2243,9 @@ impl Desk {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         match crate::attach::attach_paths(&self.terminal_host(terminal), paths) {
             Some(crate::attach::PathAttach::Paste(text)) => {
                 self.paste_text_to(terminal, &text);
@@ -2245,6 +2264,37 @@ impl Desk {
         crate::attach::terminal_host(self.remote.as_deref(), terminal)
     }
 
+    /// A pending or retained native owner never turns back into a raw PTY.
+    pub(super) fn native_owned_terminal(&self, terminal: &ResourceId) -> bool {
+        let Some(link) = self.link.as_ref() else {
+            return false;
+        };
+        self.native_launch
+            .owns_terminal(&link.connection.client, terminal)
+            || link.connection.conversations.values().any(|conversation| {
+                conversation.parent == *terminal && conversation.native.is_some()
+            })
+            || link
+                .connection
+                .client
+                .with_control(|control| crate::input::native_owned(control, terminal))
+    }
+
+    fn refuse_native_input(&mut self, terminal: &ResourceId) -> bool {
+        if !self.native_owned_terminal(terminal) {
+            return false;
+        }
+        self.post(
+            Kind::Refusal,
+            crate::attach::PASTE_REFUSED,
+            Some(
+                "Native ACP agents do not accept raw terminal input or file drops. Use the structured conversation. Nothing was sent."
+                    .into(),
+            ),
+        );
+        true
+    }
+
     fn paste_text(&mut self, text: &str) -> bool {
         let Some(terminal) = self.focused_terminal() else {
             return false;
@@ -2254,11 +2304,14 @@ impl Desk {
 
     /// Queue a bracketed paste. False, with a notification, when the terminal is not ready.
     fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
+        if self.refuse_native_input(terminal) {
+            return false;
+        }
         let Some(client) = self.client() else {
             return false;
         };
         let queued = client.with_control(|control| {
-            if !control.input_ready(terminal) {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
             let _ = control.apply_paste(terminal, text);
@@ -2283,6 +2336,9 @@ impl Desk {
         batch: crate::attach::UploadBatch,
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         let Some(client) = self.client() else {
             self.post(
                 Kind::Refusal,
@@ -2338,6 +2394,9 @@ impl Desk {
                 crate::attach::PASTE_REFUSED,
                 Some("The terminal changed before the upload started. Nothing was pasted.".into()),
             );
+            return;
+        }
+        if self.refuse_native_input(&started.terminal) {
             return;
         }
         let current = self.destination_of(&started.terminal);
@@ -2405,6 +2464,9 @@ impl Desk {
     /// Paste a server path. `input_ready` here means the terminal can take
     /// keystrokes, not that its files are on this machine.
     fn paste_uploaded(&mut self, terminal: &ResourceId, text: &str) {
+        if self.refuse_native_input(terminal) {
+            return;
+        }
         let Some(client) = self.client() else {
             self.post(
                 Kind::Refusal,
@@ -2416,7 +2478,7 @@ impl Desk {
             return;
         };
         let queued = client.with_control(|control| {
-            if !control.input_ready(terminal) {
+            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
             let _ = control.apply_paste(terminal, text);
@@ -2436,8 +2498,11 @@ impl Desk {
     }
 
     /// The placed terminal and the host [`crate::attach::terminal_host`] names.
-    /// Absent when that terminal is no longer on screen.
+    /// Absent when that terminal is no longer on screen or belongs to native ACP.
     fn destination_of(&self, terminal: &ResourceId) -> Option<crate::attach::UploadDestination> {
+        if self.native_owned_terminal(terminal) {
+            return None;
+        }
         let link = self.link.as_ref()?;
         let placed = link.workspace.tabs.iter().any(|tab| {
             crate::workspace::layout::placements(&tab.root)
@@ -3183,8 +3248,10 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
-        self.conversation_faces
-            .retain(|placement, _| live.contains(placement));
+        let connection = self.link.as_ref().map(|link| &link.connection);
+        self.conversation_faces.retain(|placement, face| {
+            face.retain_for_placement(live.contains(placement), connection)
+        });
     }
 
     pub fn panes(&self) -> &Panes {
@@ -3600,6 +3667,10 @@ impl Desk {
                     );
                     return;
                 };
+                if self.refuse_native_input(&terminal) {
+                    cx.notify();
+                    return;
+                }
                 self.start_upload(&terminal, batch.clone(), cx);
             }
         }

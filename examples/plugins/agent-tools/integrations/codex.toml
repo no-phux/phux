@@ -45,3 +45,11 @@ kind = "codex"
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "codex", "--kind", "codex", "--", "codex"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "codex"
+command = ["codex-acp"]
+required_executables = ["codex-acp"]
+working_directory = "workspace"

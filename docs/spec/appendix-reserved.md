@@ -112,6 +112,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x35` | `DELEGATE_AGENT`            | [L1.md §5.7.5](./L1.md) | shipped |
 | `0x36` | `REVOKE_DELEGATION`         | [L1.md §5.7.5](./L1.md) | shipped |
 | `0x37` | `SESSION_KILL`              | [L1.md §5.7](./L1.md) | shipped |
+| `0x38` | `NATIVE_AGENT`              | [L1.md §5.5.1](./L1.md) | shipped |
 
 The organization commands are contiguous from `0x1e`, and `0x2f..=0x34` are
 reserved for the six workspace commands of the workspace stage
@@ -119,11 +120,12 @@ reserved for the six workspace commands of the workspace stage
 A decoder refuses a reserved tag as an unknown command until it is
 allocated. The delegated-agent commands of
 [ADR-0163](../adr/0163-actors-and-delegated-agent-grants.md) follow the
-reserved block at `0x35..=0x36`, and `SESSION_KILL` takes `0x37`. `0x38` is
-the next open tag.
+reserved block at `0x35..=0x36`, `SESSION_KILL` takes `0x37`, and
+`NATIVE_AGENT` takes `0x38`. `0x39` is the next open tag.
 
 `AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially:
 `0x10..=0x1b` are the organization events of [L1.md §5.7.4](./L1.md).
+`0x1c native_agent_result` carries a dedicated later SDK operation receipt.
 `CommandResult` allocates `0x03 REFUSED` and `0x04 ACCEPTED`, sent only in
 reply to an organization command; `CommandValue` allocates
 `0x06 ORGANIZATION_PAGE`, `0x07 ARRANGEMENT`, `0x08 COMMITTED`, and
@@ -184,9 +186,9 @@ and a decoder maps an unallocated tag to `Unknown { tag }` ([L1.md §1.1](./L1.m
 with the native v2 version byte that follows tag `1` in a dump.
 
 `AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially from `0x00`:
-`0x00..=0x1b` are taken. `0x0b journal_gap` and `0x0c source_gap` are
+`0x00..=0x1c` are taken. `0x0b journal_gap` and `0x0c source_gap` are
 ADR-0123, `0x0d approval_requested` and `0x0e approval_decided` are ADR-0128,
-`0x0f input_activity` is the unjournaled input-origin notice, and `0x10..=0x1b` are the organization events. A decoder
+`0x0f input_activity` is the unjournaled input-origin notice, `0x10..=0x1b` are the organization events, and `0x1c native_agent_result` is the native SDK receipt. A decoder
 skips an unknown tag by its length prefix, so a new tag is additive. `ControlAction` (the `terminal_control` action byte) allocates
 sequentially from `0`: `0..=9` are taken, `9 EXPIRED` by ADR-0123, which also
 fixes the rule under which a server may send a value an older decoder cannot

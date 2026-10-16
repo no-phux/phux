@@ -23,7 +23,7 @@ const RADIUS: f32 = 26.;
 const INSET: f32 = 8.;
 const ROW: f32 = 40.;
 const HEADER: f32 = 68.;
-const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 9. + 16.;
+const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 10. + 16.;
 const ENTER: Duration = Duration::from_millis(150);
 const EXIT: Duration = Duration::from_millis(100);
 const SPRING: SpringConfig = SpringConfig::new(950., 48., 1.);
@@ -313,24 +313,28 @@ impl GlassMenu {
     fn entries_for(&self, page: Page) -> Vec<Entry> {
         match page {
             Page::Commands => {
-                let mut entries = vec![
+                vec![
                     self.command("new", IconName::SquareTerminal),
+                    self.command("native-agent", IconName::Bot),
                     self.command("new-session", IconName::Folder),
                     self.command("folder", IconName::FolderOpen),
                     self.command("new-window", IconName::AppWindow),
-                    Entry::new(
-                        "Pane layout",
-                        IconName::PanelsTopLeft,
-                        Choice::Page(Page::Panes),
-                    ),
+                    Entry {
+                        gap: true,
+                        ..Entry::new(
+                            "Pane layout",
+                            IconName::PanelsTopLeft,
+                            Choice::Page(Page::Panes),
+                        )
+                    },
                     self.command("goto", IconName::ArrowRight),
                     self.command("palette", IconName::Search),
                     self.command("settings", IconName::Settings),
-                    self.command("reconnect", IconName::RefreshCw),
-                ];
-                entries[4].gap = true;
-                entries[8].gap = true;
-                entries
+                    Entry {
+                        gap: true,
+                        ..self.command("reconnect", IconName::RefreshCw)
+                    },
+                ]
             }
             Page::Panes => vec![
                 self.command("split-right", IconName::PanelRight),
@@ -701,6 +705,12 @@ impl Render for GlassMenu {
             .enumerate()
             .map(|(index, entry)| {
                 let choice = entry.choice.clone();
+                let selector = match &entry.choice {
+                    Choice::Command(id) => Some(*id),
+                    Choice::Page(Page::Panes) => Some("panes"),
+                    Choice::Host(None) => Some("local"),
+                    _ => None,
+                };
                 div()
                     .id(("glass-menu-row", index))
                     .role(gpui::Role::MenuItem)
@@ -709,7 +719,10 @@ impl Render for GlassMenu {
                     .when(self.selected == Some(index), |el| {
                         el.aria_active_descendant()
                     })
-                    .debug_selector(move || format!("glass-menu-row-{index}"))
+                    .debug_selector(move || match selector {
+                        Some(id) => format!("glass-menu-{id}"),
+                        None => format!("glass-menu-row-{index}"),
+                    })
                     .relative()
                     .flex_shrink_0()
                     .h(px(Self::row_height(entry)))

@@ -361,8 +361,8 @@ pub fn quote_paths(paths: &[PathBuf]) -> String {
 /// quoted path. `None` when there is nothing to paste or the image could not
 /// be written.
 ///
-/// Remote terminals go through [`clipboard_for_host`], which refuses file and
-/// image paths instead of quoting them.
+/// Remote terminals go through [`clipboard_for_host`], which uploads file and
+/// image bytes instead of pasting paths from this machine.
 pub fn clipboard_paste(item: &ClipboardItem) -> Option<String> {
     match clipboard_for_host(item, &TerminalHost::Local)? {
         PathAttach::Paste(text) => Some(text),

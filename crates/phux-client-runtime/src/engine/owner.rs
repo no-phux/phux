@@ -265,6 +265,12 @@ impl Owner {
             Query::AgentStreamInfo(id, reply) => {
                 let _ = reply.send(self.kernel.agent_stream_info(&id));
             }
+            Query::HasNativeAgentView(id, reply) => {
+                let _ = reply.send(self.kernel.has_native_agent_view(&id));
+            }
+            Query::NativeAgentView(id, reply) => {
+                let _ = reply.send(self.kernel.native_agent_view(&id));
+            }
             Query::InputEligibility(id, reply) => {
                 let _ = reply.send(self.kernel.input_eligibility(&id));
             }

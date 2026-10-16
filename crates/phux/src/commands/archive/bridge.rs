@@ -41,11 +41,16 @@ struct LiveSession<'a> {
 pub(super) fn bridge_live_agent_sessions(
     snapshot: &SessionSnapshot,
     mut recorded: HashMap<ResourceId, AgentSessionRecord>,
+    sdk_owned: &HashMap<ResourceId, phux_protocol::native_agent::SpawnNativeAgent>,
     mut resolve: impl FnMut(&str) -> Result<ResumeOwner, String>,
 ) -> (HashMap<ResourceId, AgentSessionRecord>, Vec<String>) {
     let mut owners: HashMap<String, Result<ResumeOwner, String>> = HashMap::new();
     let mut warnings = Vec::new();
     for pane in phux_client::resource::terminals(snapshot) {
+        if sdk_owned.contains_key(&pane.id) {
+            recorded.remove(&pane.id);
+            continue;
+        }
         if !matches!(pane.id, ResourceId::Local { .. }) {
             continue;
         }
@@ -119,6 +124,7 @@ pub(super) fn resolve_resume_owner(provider: &str) -> Result<ResumeOwner, String
         provider,
         &[],
         std::path::Path::new("/"),
+        phux_plugin::LaunchMode::Terminal,
     )
     .map_err(|err| err.to_string())?;
     let resumable = resolved
@@ -183,7 +189,8 @@ mod tests {
             agent(2, 1, "claude", Some("sess-1")),
             pane(3),
         ]);
-        let (records, warnings) = bridge_live_agent_sessions(&snap, HashMap::new(), claude_owner);
+        let (records, warnings) =
+            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), claude_owner);
         assert_eq!(
             records.get(&ResourceId::local(1)),
             Some(&record("claude-code", "sess-1"))
@@ -195,7 +202,8 @@ mod tests {
     #[test]
     fn an_unresumable_provider_warns_and_archives_nothing() {
         let snap = snapshot(vec![pane(1), agent(2, 1, "mystery", Some("abc"))]);
-        let (records, warnings) = bridge_live_agent_sessions(&snap, HashMap::new(), claude_owner);
+        let (records, warnings) =
+            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), claude_owner);
         assert!(records.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(
@@ -213,7 +221,8 @@ mod tests {
             agent(4, 3, "claude", Some("a")),
             agent(5, 3, "claude", Some("b")),
         ]);
-        let (records, warnings) = bridge_live_agent_sessions(&snap, HashMap::new(), claude_owner);
+        let (records, warnings) =
+            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), claude_owner);
         assert!(records.is_empty(), "{records:?}");
         assert!(warnings.is_empty(), "{warnings:?}");
     }
@@ -230,7 +239,8 @@ mod tests {
             (ResourceId::local(1), record("claude-code", "launched")),
             (ResourceId::local(3), record("codex", "thread-9")),
         ]);
-        let (records, warnings) = bridge_live_agent_sessions(&snap, recorded, claude_owner);
+        let (records, warnings) =
+            bridge_live_agent_sessions(&snap, recorded, &HashMap::new(), claude_owner);
         assert_eq!(
             records.get(&ResourceId::local(1)),
             Some(&record("claude-code", "after-clear")),
@@ -247,7 +257,8 @@ mod tests {
     #[test]
     fn an_option_shaped_native_id_is_refused_not_archived() {
         let snap = snapshot(vec![pane(1), agent(2, 1, "claude", Some("--evil"))]);
-        let (records, warnings) = bridge_live_agent_sessions(&snap, HashMap::new(), claude_owner);
+        let (records, warnings) =
+            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), claude_owner);
         assert!(records.is_empty());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
@@ -261,10 +272,11 @@ mod tests {
             agent(4, 3, "claude", Some("b")),
         ]);
         let mut calls = 0;
-        let (records, _) = bridge_live_agent_sessions(&snap, HashMap::new(), |provider| {
-            calls += 1;
-            claude_owner(provider)
-        });
+        let (records, _) =
+            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), |provider| {
+                calls += 1;
+                claude_owner(provider)
+            });
         assert_eq!(records.len(), 2);
         assert_eq!(calls, 1);
     }

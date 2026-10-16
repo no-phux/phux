@@ -158,7 +158,6 @@ pub enum InputEvent {
     /// Upload these local bytes, then paste only the server path.
     Upload(crate::attach::UploadBatch),
 }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
     StaleHandle,
@@ -805,6 +804,21 @@ fn queued(success: bool) -> Result<(), InputError> {
     success.then_some(()).ok_or(InputError::NotReady)
 }
 
+/// Native guardians never accept terminal-input fallback, including when the
+/// retained controller view is disconnected. The server owns the final gate
+/// before a publication reaches this client.
+pub(crate) fn native_owned(control: &ControlPlane, terminal: &ResourceId) -> bool {
+    let Some(topology) = control.topology() else {
+        return false;
+    };
+    let Some(engine) = control.engine() else {
+        return false;
+    };
+    topology.agent_sessions.iter().any(|agent| {
+        agent.parent.as_ref() == Some(terminal) && engine.has_native_agent_view(&agent.id)
+    })
+}
+
 fn input_ready(control: &ControlPlane, terminal: &ResourceId) -> bool {
     if control
         .options()
@@ -813,7 +827,7 @@ fn input_ready(control: &ControlPlane, terminal: &ResourceId) -> bool {
     {
         return false;
     }
-    control.input_ready(terminal)
+    !native_owned(control, terminal) && control.input_ready(terminal)
 }
 
 fn engine_error(error: phux_client_runtime::engine::EngineError) -> InputError {
@@ -952,7 +966,17 @@ impl EntityInputHandler for TerminalInput {
                 self.record(result);
             }
             Some(crate::attach::PathAttach::Upload(batch)) => {
-                cx.emit(InputEvent::Upload(batch));
+                let result = self.ready(window, cx);
+                if result.is_ok() {
+                    cx.emit(InputEvent::Upload(batch));
+                } else {
+                    cx.emit(InputEvent::Notice(InputNotice {
+                        title: crate::attach::PASTE_REFUSED,
+                        body: "The terminal is not ready for a file paste. Nothing was uploaded."
+                            .into(),
+                    }));
+                }
+                self.record(result);
             }
             Some(crate::attach::PathAttach::Refuse { title, body }) => {
                 cx.emit(InputEvent::Notice(InputNotice { title, body }));
@@ -979,8 +1003,17 @@ impl TerminalInput {
                 None
             }
             Some(crate::attach::PathAttach::Upload(batch)) => {
-                cx.emit(InputEvent::Upload(batch));
-                None
+                let result = self.with_current(true, |_| Ok(()));
+                let notice = result.as_ref().err().map(|_| InputNotice {
+                    title: crate::attach::PASTE_REFUSED,
+                    body: "The terminal is not ready for a file paste. Nothing was uploaded."
+                        .into(),
+                });
+                if result.is_ok() {
+                    cx.emit(InputEvent::Upload(batch));
+                }
+                self.record(result);
+                notice
             }
             Some(crate::attach::PathAttach::Refuse { title, body }) => {
                 Some(InputNotice { title, body })
@@ -1557,6 +1590,59 @@ mod delivery {
             arm(&fresh, true, 800., 408., window, cx);
             settle(&fresh, cx);
             assert_eq!(resizes(&client), vec![(100, 24)]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_file_paste_refuses_unpainted_and_reconnected_inputs(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("unpainted input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(
+                    state.last_error(),
+                    Some(&super::InputError::StalePresentation)
+                );
+            });
+            arm(&input, false, 160., 68., window, cx);
+            open_session(&client, 2);
+            input.update(cx, |state, cx| {
+                let notice = state.paste_command(cx).expect("reconnected input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert!(state.last_error().is_some());
+            });
+            assert!(client.take_outbound().is_empty(), "no raw paste or upload");
+        });
+    }
+
+    #[gpui::test]
+    fn a_viewer_cannot_start_a_clipboard_file_upload(cx: &mut TestAppContext) {
+        let client = session(Some(RolePolicy::VIEWER));
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("viewer refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(state.last_error(), Some(&super::InputError::NotReady));
+            });
+            assert!(client.take_outbound().is_empty(), "no raw paste or upload");
         });
     }
 
