@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.84.0](https://github.com/no-phux/phux/compare/v0.83.0...v0.84.0) (2026-10-16)
+
+
+### Features
+
+* **mission:** start a task in its own worktree session with an agent ([#1458](https://github.com/no-phux/phux/issues/1458)) ([44a6e8f](https://github.com/no-phux/phux/commit/44a6e8fc1d94ff10b6cce29337c434ca13363267))
+
 ## [0.83.0](https://github.com/no-phux/phux/compare/v0.82.1...v0.83.0) (2026-10-16)
 
 
