@@ -28,6 +28,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.20.1](https://github.com/no-phux/phux/compare/desktop-v0.20.0...desktop-v0.20.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **desktop:** restore native held-key repetition ([#1465](https://github.com/no-phux/phux/issues/1465)) ([b20ca0f](https://github.com/no-phux/phux/commit/b20ca0f4af4dcf44dbfed02e536f08b10a572b53))
+
 ## [0.20.0](https://github.com/no-phux/phux/compare/desktop-v0.19.0...desktop-v0.20.0) (2026-10-16)
 
 
