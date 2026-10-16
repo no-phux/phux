@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.80.1](https://github.com/no-phux/phux/compare/v0.80.0...v0.80.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ffi:** expose created session key in organization receipts ([c38edeb](https://github.com/no-phux/phux/commit/c38edebb1d29659b59625cf770890bf3d0d72867))
+
 ## [0.80.0](https://github.com/no-phux/phux/compare/v0.79.4...v0.80.0) (2026-10-16)
 
 
