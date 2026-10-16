@@ -320,17 +320,20 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
 /// while a pane is still growing in or folding away.
 fn observe_motion(desk: &mut Desk, window: &mut Window) {
     let now = Instant::now();
-    let (tab, placements) = desk
-        .active_tab()
+    let tab = desk
+        .link
+        .as_ref()
+        .and_then(|link| link.workspace.active_tab());
+    let placements = tab
         .map(|tab| {
-            let ids = layout::placements(&tab.root)
+            layout::placements(&tab.root)
                 .into_iter()
-                .map(|placement| placement.id.clone())
-                .collect::<Vec<_>>();
-            (Some(tab.id.clone()), ids)
+                .map(|placement| placement.id.as_str())
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    desk.motion.observe(tab.as_deref(), &placements, now);
+    desk.motion
+        .observe(tab.map(|tab| tab.id.as_str()), &placements, now);
     if desk.motion.active(now) {
         window.request_animation_frame();
     }
@@ -688,26 +691,14 @@ fn sidebar_column(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl
 
 fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let link = desk.link.as_ref();
-    let agents = link
-        .map(|link| link.connection.agents.clone())
-        .unwrap_or_default();
-    let panes = link
-        .map(|link| link.connection.panes().to_vec())
-        .unwrap_or_default();
+    let agent = |id: &ResourceId| link.and_then(|link| link.connection.agents.get(id));
+    let panes = link.map_or(&[][..], |link| link.connection.panes());
     let mut agent_panes: Vec<_> = panes
         .iter()
-        .filter(|pane| {
-            agents
-                .get(&pane.terminal_id)
-                .is_some_and(AgentInfo::needs_you)
-        })
-        .cloned()
+        .filter(|pane| agent(&pane.terminal_id).is_some_and(AgentInfo::needs_you))
         .collect();
     agent_panes.sort_by(|left, right| {
-        let (left, right) = (
-            agents.get(&left.terminal_id),
-            agents.get(&right.terminal_id),
-        );
+        let (left, right) = (agent(&left.terminal_id), agent(&right.terminal_id));
         agent_rank(left).cmp(&agent_rank(right)).then_with(|| {
             right
                 .map(|info| info.changed_at_ms)
@@ -737,9 +728,8 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .child(organization_bar(desk, colors, cx))
         .when(!agent_panes.is_empty(), |list| {
             list.child(section_label("Needs you", colors))
-                .children(agent_panes.iter().map(|pane| {
-                    agent_row(desk, pane, agents.get(&pane.terminal_id), colors, cx)
-                        .into_any_element()
+                .children(agent_panes.into_iter().map(|pane| {
+                    agent_row(desk, pane, agent(&pane.terminal_id), colors, cx).into_any_element()
                 }))
                 .child(div().h(px(8.)))
         })

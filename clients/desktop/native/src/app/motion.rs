@@ -21,16 +21,25 @@ pub struct Motion {
 impl Motion {
     /// Record this frame's tab and placements. A placement new to the tab the
     /// previous frame also painted enters; switching tabs animates nothing.
-    pub fn observe(&mut self, tab: Option<&str>, placements: &[String], now: Instant) {
-        if tab.is_some() && self.tab.as_deref() == tab {
+    pub fn observe(&mut self, tab: Option<&str>, placements: &[&str], now: Instant) {
+        let same_tab = tab.is_some() && self.tab.as_deref() == tab;
+        if same_tab
+            && placements.len() == self.seen.len()
+            && placements.iter().all(|id| self.seen.contains(*id))
+        {
+            self.entering
+                .retain(|_, at| now.duration_since(*at) < ENTER);
+            return;
+        }
+        if same_tab {
             for id in placements {
-                if !self.seen.contains(id) {
-                    self.entering.insert(id.clone(), now);
+                if !self.seen.contains(*id) {
+                    self.entering.insert((*id).to_owned(), now);
                 }
             }
         }
         self.tab = tab.map(str::to_owned);
-        self.seen = placements.iter().cloned().collect();
+        self.seen = placements.iter().map(|id| (*id).to_owned()).collect();
         self.entering
             .retain(|id, at| self.seen.contains(id) && now.duration_since(*at) < ENTER);
         self.leaving.retain(|id, _| self.seen.contains(id));
@@ -105,8 +114,8 @@ fn ease_in(t: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn ids(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| (*name).to_owned()).collect()
+    fn ids<'a>(names: &[&'a str]) -> Vec<&'a str> {
+        names.to_vec()
     }
 
     #[test]
@@ -121,6 +130,21 @@ mod tests {
         let later = start + ENTER;
         motion.observe(Some("t"), &ids(&["a", "b"]), later);
         assert_eq!(motion.presence("b", later), 1.);
+        assert!(!motion.active(later));
+    }
+
+    #[test]
+    fn an_unchanged_frame_keeps_entering_placements_moving() {
+        let start = Instant::now();
+        let mut motion = Motion::default();
+        motion.observe(Some("t"), &ids(&["a"]), start);
+        motion.observe(Some("t"), &ids(&["a", "b"]), start);
+        let mid = start + ENTER / 2;
+        motion.observe(Some("t"), &ids(&["b", "a"]), mid);
+        assert!(motion.presence("b", mid) < 1.);
+        assert!(motion.active(mid));
+        let later = start + ENTER;
+        motion.observe(Some("t"), &ids(&["a", "b"]), later);
         assert!(!motion.active(later));
     }
 
