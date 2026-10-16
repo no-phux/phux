@@ -32,6 +32,7 @@ pub(super) struct ServerConfig {
     /// The UDS path, injected into panes as `PHUX_SOCKET`; `None` in
     /// state-only tests.
     pub(super) server_socket_path: Option<std::path::PathBuf>,
+    pub(super) native_host_executable: Option<std::path::PathBuf>,
     /// How a Terminal shared by differently sized clients picks its PTY size
     /// (`defaults.window-size`).
     pub(super) window_size: phux_config::WindowSize,
@@ -67,6 +68,7 @@ impl Default for ServerConfig {
             shell: crate::terminal_actor::resolve_shell(None),
             login_shell: false,
             server_socket_path: None,
+            native_host_executable: None,
             window_size: phux_config::WindowSize::default(),
             policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),
             policy_posture: crate::policy::PolicyPosture::Transitional {

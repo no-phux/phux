@@ -47,11 +47,10 @@ surface.
 ### Intake organization
 
 Untargeted startup opens the owner's Intake: a real designated persistent
-Session for work created without a destination. The sidebar puts that Session
-and separate imported Sessions awaiting organization under **Intake sessions**,
-preserving their existing grouping. **Mark session organized** in an imported
-Session's menu clears only its import mark, removing it from that section
-without moving, renaming, or restarting its work. The attention **Inbox**
+Session for work created without a destination. The work-first sidebar includes
+that Session and imported Sessions alongside other work, preserving membership.
+**Mark session organized** in an imported Session's menu clears only its import
+mark without moving, renaming, or restarting its work. The attention **Inbox**
 lists agent attention alerts; it is not a Session or a move destination.
 The titlebar bell opens **Inbox & notifications**, separating agent alerts
 from errors and command results. Its badge counts unread alerts, not resources.
@@ -86,7 +85,7 @@ These are desktop organization terms, not new server resource kinds:
 
 | Term | Meaning |
 |---|---|
-| Project | A named, user-owned grouping of folder references and terminal placements; it can contain more than one folder or host. |
+| Project | A client-side group of Sessions sharing repository identity, including checkouts on different hosts. It does not own resources. |
 | Folder | A directory qualified by its host/endpoint. It supplies a default working directory for new terminals. A path on one host never resolves on another. |
 | Repository | Git identity discovered for a folder when available; a plain folder is equally usable. |
 | Worktree | A Git checkout associated with a repository and its own folder path; it is a place to work, not an execution session. |
@@ -100,9 +99,9 @@ These are desktop organization terms, not new server resource kinds:
 thread. One persistent Session is bound to each canonical checkout path;
 untrusted [project recipes](../CONFIG.md#project-recipes) are refused until
 approved, and a same-name checkout cannot take over another Session. The
-sidebar groups Sessions by their recorded project label (shared across Git
-worktrees), with **Open** focusing an existing project window or restoring its
-per-session layout. A new terminal in that Session starts at its recorded
+sidebar groups Sessions by remote-keyed repository identity, falling back to
+legacy project labels. Selecting work restores its per-session layout in the
+current window; **Open Folder** uses the same window. A new terminal in that Session starts at its recorded
 directory; reopening after the last shell exits starts a shell there without
 rerunning the recipe. **Recent folders** keeps the last eight successfully
 opened local checkout paths in socket-scoped desktop state across app restarts.
@@ -201,12 +200,15 @@ and organization actions remain available.
 
 ## Connections, settings, and native behavior
 
-The host-labelled **main menu** stays in the titlebar's left rail, above the
-sidebar when it is open. Hiding the sidebar keeps the menu visible and eases
-the tabs into the reclaimed space (without motion when reduced motion is on).
-It brings together new terminals, sessions and windows, Open Folder, splits,
-Mirror Pane, navigation, Settings, reconnect, and host switching. The tab strip
-keeps New Terminal and the notification bell; shortcuts remain unchanged.
+The titlebar **Phux** button stays in the left rail with or without the sidebar.
+It opens the same panel as Command-P, Command-Shift-P, and Command-comma:
+**Work**, **Actions**, and **Settings** share search, selection, keyboard
+behavior, and one surface. Work lists host-qualified sessions across the
+registered machines; typed search also discovers actions and preference pages.
+Settings opens focused live controls, with **All settings** to return, rather
+than a separate category sidebar. Host enrollment and recovery live under
+**Hosts & connections**. Hosts appear as session context, not sidebar roots.
+The tab strip keeps New Terminal and the notification bell.
 
 Local and registered remote hosts open concurrently with host-qualified
 identity, through the shared registry and dialer; auth refusal, expiry,
@@ -224,22 +226,22 @@ missing font's Paper Mono substitution. Nerd symbols fall back automatically;
 the main font does not need to change. Font assets and patch attribution are
 shipped under their [Open Font License](../../clients/desktop/native/assets/fonts/JetBrainsMono-OFL.txt).
 
-Advanced holds line height, cell width, padding, and unfocused-pane dimming.
+**Terminal spacing** holds line height, cell width, padding, and unfocused-pane dimming.
 Display edits apply live and persist with the window's layout; font selection
 follows resets and Ghostty imports while Settings stays open.
 
 ## Status
 
 The host is a GPUI application. Tracking IDs below name remaining product work,
-not delivered features. Projects/worktree grouping, remote hosts, approvals,
-notarization, accessibility journeys, and Linux are not shipped.
+not delivered features. Cross-server Workspace records, approvals, notarization,
+accessibility journeys, and Linux remain separate gaps.
 
 | Target | Current evidence and gap | Tracked work |
 |---|---|---|
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
-| Terminal-first projects and workspace | Tabs, split trees, restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
+| Terminal-first projects and workspace | Tabs, split trees, identity-scoped restore, Open Folder, and repository grouping across the all-host catalog. Cross-server Workspace records are not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Intake (else the most recent session) and never creates `default`; display settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts, approvals, the inspector, and catalogue-backed settings (effective value, default, source) are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import, and active-session attention feed. Mixed-authority tab trees, approvals, the inspector, and catalogue-backed settings provenance are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |

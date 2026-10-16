@@ -1,6 +1,7 @@
 //! Correlated requests: send one request frame, then read until the peer
 //! answers its `request_id`, keeping every other frame for the caller.
 
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, MoveResult, Scope, SpawnResult,
 };
@@ -30,12 +31,25 @@ impl Session {
     /// # Errors
     ///
     /// Transport and decode failures; a server that closes without replying
-    /// is [`SessionError::Disconnected`].
+    /// is [`SessionError::Disconnected`]. A native SDK command without
+    /// negotiated `NATIVE_AGENT` support is refused before writing any bytes.
     pub async fn request(
         &mut self,
         request_id: u32,
         command: Command,
     ) -> Result<Reply, SessionError> {
+        if matches!(&command, Command::NativeAgent { .. })
+            && !self.negotiated_bootstrap().is_some_and(|negotiated| {
+                negotiated
+                    .server_features_ext
+                    .contains(ServerFeatureExt::NativeAgent)
+            })
+        {
+            return Err(SessionError::Protocol(
+                "Native SDK sessions require NATIVE_AGENT support; upgrade the executing host."
+                    .into(),
+            ));
+        }
         let frame = FrameKind::Command {
             request_id,
             command,

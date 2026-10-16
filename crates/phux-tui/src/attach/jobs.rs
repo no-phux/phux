@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 pub(in crate::attach) enum JobKind {
     /// A plugin manifest action (ADR-0017); any number run at once.
     PluginAction,
-    /// An organize run or undo (ADR-0170); two at once would race on the
+    /// An organize run or undo (ADR-0174); two at once would race on the
     /// shared undo record, so one at a time.
     Organize,
 }

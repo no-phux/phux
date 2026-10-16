@@ -1,5 +1,5 @@
 //! The organize planner: which session each terminal belongs in
-//! (ADR-0170).
+//! (ADR-0174).
 //!
 //! Pure data in, a [`Plan`] out. The caller gathers [`SessionFacts`] and
 //! [`PaneFacts`] from the organization records and the snapshot

@@ -526,7 +526,7 @@ fn terminal_in(selector: &Selector, terminal: &TerminalPoint) -> bool {
 // --- Subject extraction, per row ---
 
 /// The Terminal a "named Terminal" row names.
-pub(super) const fn named_terminal(request: Request<'_>) -> Option<&WireResourceId> {
+pub(super) fn named_terminal(request: Request<'_>) -> Option<&WireResourceId> {
     match request {
         Request::Frame(frame) => frame_terminal(frame),
         Request::Command(command) => command_terminal(command),
@@ -549,8 +549,29 @@ const fn frame_terminal(frame: &FrameKind) -> Option<&WireResourceId> {
     }
 }
 
-const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
+fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     match command {
+        Command::NativeAgent { request } => match request.request() {
+            phux_protocol::native_agent::NativeRequest::Spawn { .. } => None,
+            phux_protocol::native_agent::NativeRequest::Command {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Register {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Receive {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Complete {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Publish {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Close {
+                agent_session_id, ..
+            } => Some(agent_session_id),
+        },
         Command::AttachResource { terminal_id, .. }
         | Command::DetachResource { terminal_id }
         | Command::KillResource { terminal_id, .. }
@@ -596,6 +617,12 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
         return None;
     };
     match command {
+        Command::NativeAgent { request } => match request.request() {
+            phux_protocol::native_agent::NativeRequest::Spawn { spec } => s
+                .find_session_by_name(&spec.session)
+                .map(|session| session_point(s, Some(session))),
+            _ => None,
+        },
         Command::SessionRename { session, .. }
         | Command::SessionSetLifetime { session, .. }
         | Command::SessionDelete { session, .. }

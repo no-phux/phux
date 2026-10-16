@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 pub use launch::{
-    KindClaim, KindLaunchError, LaunchError, LaunchableIntegration, ResolvedLaunch,
-    integration_for_kind, kind_matches, list_launchable, resolve_launch, resolve_launch_for_kind,
+    KindClaim, KindLaunchError, LaunchError, LaunchMode, LaunchableIntegration, NativeExecution,
+    ResolvedLaunch, executable_path, integration_for_kind, kind_matches, list_launchable,
+    resolve_launch, resolve_launch_for_kind,
 };
 
 /// One child-process execution request, shared by plugin actions, hooks,

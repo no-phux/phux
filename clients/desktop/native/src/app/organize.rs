@@ -1,4 +1,4 @@
-//! Organize Everything: the desktop's one-step organize (ADR-0170).
+//! Organize Everything: the desktop's one-step organize (ADR-0174).
 //!
 //! The judge runs off the UI thread; the runtime's
 //! [`Sequencer`](phux_client_runtime::organize::Sequencer) then carries the

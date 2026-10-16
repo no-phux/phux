@@ -177,6 +177,11 @@ const SCROLL_VIEWPORT_VALUE_OFFSET: u32 = 8;
 const SCROLL_VIEWPORT_BOTTOM: u32 = 1;
 const SCROLL_VIEWPORT_DELTA: u32 = 2;
 // RenderStateRowCellsData (per-cell reads via ghostty_render_state_row_cells_get)
+const ROW_CELLS_DATA_STYLE: f64 = 2.0;
+// Pinned libghostty GhosttyStyle wasm32 C ABI: size_t then three 16-byte
+// aligned colors, eight bool flags, then underline. inverse is flag byte 60.
+const CELL_STYLE_SIZE: u32 = 72;
+const CELL_STYLE_INVERSE_OFFSET: u32 = 60;
 const ROW_CELLS_DATA_GRAPHEMES_LEN: f64 = 3.0;
 const ROW_CELLS_DATA_GRAPHEMES_BUF: f64 = 4.0;
 const ROW_CELLS_DATA_BG_COLOR: f64 = 5.0;
@@ -203,6 +208,8 @@ pub struct GridCell {
     pub fg: Option<Rgb>,
     /// Explicit background color, if any.
     pub bg: Option<Rgb>,
+    /// SGR inverse (7), before the renderer applies terminal defaults.
+    pub inverse: bool,
 }
 
 /// A full styled snapshot of the visible grid, ready for a renderer. `cells` is
@@ -586,6 +593,7 @@ impl Vt {
             iter_slot,
             cells_slot,
             scratch: self.wasm_alloc(8),
+            style_buf: self.wasm_alloc(CELL_STYLE_SIZE),
             grapheme_buf: self.wasm_alloc(256),
         }
     }
@@ -1012,6 +1020,7 @@ pub struct Terminal {
     iter_slot: u32,
     cells_slot: u32,
     scratch: u32,
+    style_buf: u32,
     grapheme_buf: u32,
 }
 
@@ -1521,6 +1530,7 @@ impl Terminal {
                     ch: self.cell_base_char(cell_iter),
                     fg: self.cell_color(cell_iter, ROW_CELLS_DATA_FG_COLOR),
                     bg: self.cell_color(cell_iter, ROW_CELLS_DATA_BG_COLOR),
+                    inverse: self.cell_inverse(cell_iter),
                 });
                 n += 1;
             }
@@ -1530,6 +1540,7 @@ impl Terminal {
                     ch: ' ',
                     fg: None,
                     bg: None,
+                    inverse: false,
                 });
                 n += 1;
             }
@@ -1582,6 +1593,19 @@ impl Terminal {
         (r == GHOSTTY_SUCCESS).then(|| self.read_rgb(self.scratch))
     }
 
+    fn cell_inverse(&self, cells: u32) -> bool {
+        self.vt.w_u32(self.style_buf, CELL_STYLE_SIZE);
+        let status = self.vt.call(
+            &self.vt.cells_get,
+            &[
+                f64::from(cells),
+                ROW_CELLS_DATA_STYLE,
+                f64::from(self.style_buf),
+            ],
+        ) as i32;
+        status == GHOSTTY_SUCCESS && self.vt.r_u8(self.style_buf + CELL_STYLE_INVERSE_OFFSET) != 0
+    }
+
     fn cell_color(&self, cells: u32, tag: f64) -> Option<Rgb> {
         let vt = &*self.vt;
         let r = vt.call(
@@ -1618,6 +1642,7 @@ impl Drop for Terminal {
         self.vt.wasm_free(self.iter_slot, 4);
         self.vt.wasm_free(self.cells_slot, 4);
         self.vt.wasm_free(self.scratch, 8);
+        self.vt.wasm_free(self.style_buf, CELL_STYLE_SIZE);
         self.vt.wasm_free(self.grapheme_buf, 256);
     }
 }

@@ -16,6 +16,9 @@ test("packed plugin loads outside the checkout with only its declared dependency
     await mkdir(dependencies, { recursive: true });
     await symlink(join(packageRoot, "node_modules", "@opencode", "plugin"), join(dependencies, "plugin"), "dir");
     await symlink(join(packageRoot, "node_modules", "solid-js"), join(directory, "node_modules", "solid-js"), "dir");
+    await mkdir(join(directory, "node_modules", "@opentui"), { recursive: true });
+    await symlink(join(packageRoot, "node_modules", "@opentui", "solid"), join(directory, "node_modules", "@opentui", "solid"), "dir");
+    await symlink(join(packageRoot, "node_modules", "@opentui", "core"), join(directory, "node_modules", "@opentui", "core"), "dir");
     const executable = join(directory, "phux-fixture");
     await writeFile(executable, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"running\":false}'\nexit 1\n", { mode: 0o700 });
     const output = command([process.execPath, "--eval", `

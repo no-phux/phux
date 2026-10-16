@@ -112,7 +112,7 @@ pub(super) struct Multistream {
     items_tx: mpsc::Sender<MuxItem>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: Arc<Semaphore>,
-    /// Terminals whose stream the server ended.
+    /// Terminals whose stream ended or whose resource closed on control.
     ended: HashSet<ResourceId>,
     /// Maximum time from a Terminal frame's first byte to its complete body.
     terminal_frame_deadline: Duration,
@@ -223,6 +223,12 @@ impl Multistream {
         if let Some(mut binding) = self.bindings.remove(terminal_id) {
             binding.retire();
         }
+    }
+
+    /// Forget a closed resource's binding and drop any subsequent input.
+    pub(super) fn close_terminal(&mut self, terminal_id: &ResourceId) {
+        self.unbind(terminal_id);
+        self.ended.insert(terminal_id.clone());
     }
 
     /// Finish every client-opened Terminal stream.

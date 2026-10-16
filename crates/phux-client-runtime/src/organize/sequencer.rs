@@ -1,5 +1,5 @@
 //! The one implementation of applying an organize plan, and of undoing one
-//! (ADR-0170, ADR-0171): submissions now, outcomes later.
+//! (ADR-0174, ADR-0171): submissions now, outcomes later.
 //!
 //! [`Sequencer`] is sans-IO. A client hands it a [`Submitter`] and the
 //! [`Records`] it checks steps against, and feeds it every submission's

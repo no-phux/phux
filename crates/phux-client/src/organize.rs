@@ -1,5 +1,5 @@
 //! Organize: put every terminal in the session it belongs in, in one step
-//! (ADR-0170).
+//! (ADR-0174).
 //!
 //! [`gather`] reads the organization records, the snapshot, and the agent
 //! records into planner facts; [`plan_or_fallback`] asks the judge

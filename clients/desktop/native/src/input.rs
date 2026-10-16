@@ -6,10 +6,12 @@ mod keys;
 mod link;
 mod pointer;
 
+pub(crate) use link::{LinkAdmit, admit_path, admit_url};
+
 use composition::Composition;
 use gpui::{
-    self, App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, KeyDownEvent,
-    KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
+    self, App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle,
+    KeyDownEvent, KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
 };
 use phux_client_runtime::control::{ControlPlane, TerminalResizeOutcome};
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
@@ -139,6 +141,23 @@ fn upgrade_client(client: &Weak<Client>) -> Result<Arc<Client>, InputError> {
     client.upgrade().ok_or(InputError::StaleHandle)
 }
 
+/// A paste or open the terminal refused, for the shell to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputNotice {
+    /// Notification title.
+    pub title: &'static str,
+    /// Notification body.
+    pub body: String,
+}
+
+/// A clipboard result the shell has to finish. File bytes are not pasted here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputEvent {
+    /// Show a notice. Nothing was pasted.
+    Notice(InputNotice),
+    /// Upload these local bytes, then paste only the server path.
+    Upload(crate::attach::UploadBatch),
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
     StaleHandle,
@@ -155,6 +174,8 @@ pub enum KeyDisposition {
     Platform,
     Consumed,
 }
+
+impl EventEmitter<InputEvent> for TerminalInput {}
 
 pub struct TerminalInput {
     client: Weak<Client>,
@@ -178,6 +199,9 @@ pub struct TerminalInput {
     last_motion_cell: Option<(u16, u16)>,
     scroll_remainder: f32,
     option_as_alt: bool,
+    /// Registry host this window attaches to. Absent is the local server.
+    /// A satellite terminal is remote even when this is absent.
+    window_remote: Option<String>,
     last_error: Option<InputError>,
     /// The size and cell pitch this view last proposed.
     fitted: Option<FitProposal>,
@@ -217,6 +241,7 @@ impl TerminalInput {
             last_motion_cell: None,
             scroll_remainder: 0.0,
             option_as_alt: false,
+            window_remote: None,
             last_error: None,
             fitted: None,
             settling: None,
@@ -233,6 +258,16 @@ impl TerminalInput {
     pub fn set_option_as_alt(&mut self, enabled: bool) {
         self.option_as_alt = enabled;
     }
+
+    /// The registry host this window attaches to. Absent is the local server.
+    pub fn set_window_remote(&mut self, remote: Option<String>) {
+        self.window_remote = remote;
+    }
+
+    fn host(&self) -> crate::attach::TerminalHost {
+        crate::attach::terminal_host(self.window_remote.as_deref(), &self.terminal)
+    }
+
     pub fn last_error(&self) -> Option<&InputError> {
         self.last_error.as_ref()
     }
@@ -769,6 +804,21 @@ fn queued(success: bool) -> Result<(), InputError> {
     success.then_some(()).ok_or(InputError::NotReady)
 }
 
+/// Native guardians never accept terminal-input fallback, including when the
+/// retained controller view is disconnected. The server owns the final gate
+/// before a publication reaches this client.
+pub(crate) fn native_owned(control: &ControlPlane, terminal: &ResourceId) -> bool {
+    let Some(topology) = control.topology() else {
+        return false;
+    };
+    let Some(engine) = control.engine() else {
+        return false;
+    };
+    topology.agent_sessions.iter().any(|agent| {
+        agent.parent.as_ref() == Some(terminal) && engine.has_native_agent_view(&agent.id)
+    })
+}
+
 fn input_ready(control: &ControlPlane, terminal: &ResourceId) -> bool {
     if control
         .options()
@@ -777,7 +827,7 @@ fn input_ready(control: &ControlPlane, terminal: &ResourceId) -> bool {
     {
         return false;
     }
-    control.input_ready(terminal)
+    !native_owned(control, terminal) && control.input_ready(terminal)
 }
 
 fn engine_error(error: phux_client_runtime::engine::EngineError) -> InputError {
@@ -910,11 +960,66 @@ impl EntityInputHandler for TerminalInput {
     }
 
     fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = crate::attach::clipboard_paste(&item) {
-            let result = self.paste_text(&text, window, cx).map(|_| ());
-            self.record(result);
+        match self.clipboard_attach(&item) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                let result = self.paste_text(&text, window, cx).map(|_| ());
+                self.record(result);
+            }
+            Some(crate::attach::PathAttach::Upload(batch)) => {
+                let result = self.ready(window, cx);
+                if result.is_ok() {
+                    cx.emit(InputEvent::Upload(batch));
+                } else {
+                    cx.emit(InputEvent::Notice(InputNotice {
+                        title: crate::attach::PASTE_REFUSED,
+                        body: "The terminal is not ready for a file paste. Nothing was uploaded."
+                            .into(),
+                    }));
+                }
+                self.record(result);
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                cx.emit(InputEvent::Notice(InputNotice { title, body }));
+            }
+            None => {}
         }
         cx.notify();
+    }
+}
+
+impl TerminalInput {
+    fn clipboard_attach(&self, item: &ClipboardItem) -> Option<crate::attach::PathAttach> {
+        crate::attach::clipboard_for_host(item, &self.host())
+    }
+
+    /// Paste addressed by the shell, not by keyboard focus. A refusal is
+    /// returned so the shell can show it without a nested event.
+    pub fn paste_command(&mut self, cx: &mut Context<Self>) -> Option<InputNotice> {
+        let item = cx.read_from_clipboard()?;
+        match self.clipboard_attach(&item) {
+            Some(crate::attach::PathAttach::Paste(text)) => {
+                let result = self.paste_requested(&text);
+                self.record(result.map(|_| ()));
+                None
+            }
+            Some(crate::attach::PathAttach::Upload(batch)) => {
+                let result = self.with_current(true, |_| Ok(()));
+                let notice = result.as_ref().err().map(|_| InputNotice {
+                    title: crate::attach::PASTE_REFUSED,
+                    body: "The terminal is not ready for a file paste. Nothing was uploaded."
+                        .into(),
+                });
+                if result.is_ok() {
+                    cx.emit(InputEvent::Upload(batch));
+                }
+                self.record(result);
+                notice
+            }
+            Some(crate::attach::PathAttach::Refuse { title, body }) => {
+                Some(InputNotice { title, body })
+            }
+            None => None,
+        }
     }
 }
 
@@ -1197,14 +1302,18 @@ mod tests {
     }
 }
 
-/// Drives [`TerminalInput::fit`] and [`TerminalInput::flush_fit`] against an
-/// embedded runtime. Press, tab switch, and zoom are one handoff: the newly
-/// focused writable view claims ownership while the previous timer is still
-/// running, and hiding does not call `fit(false)`.
+/// Drives terminal input, [`TerminalInput::fit`] and [`TerminalInput::flush_fit`]
+/// against an embedded runtime. Press, tab switch, and zoom are one handoff: the
+/// newly focused writable view claims ownership while the previous timer is
+/// still running, and hiding does not call `fit(false)`.
 #[cfg(test)]
 mod delivery {
-    use super::{FIT_SETTLE, InputMetrics, TerminalInput};
-    use gpui::{AppContext, Bounds, Entity, TestAppContext, Window, point, px, size};
+    use super::{FIT_SETTLE, InputMetrics, KeyDisposition, TerminalInput};
+    use gpui::{
+        AppContext, Bounds, ElementInputHandler, Entity, EntityInputHandler, InputHandler,
+        KeyDownEvent, KeyUpEvent, Keystroke, PlatformWindow, TestAppContext, Window, point, px,
+        size,
+    };
     use phux_client_runtime::control::{ControlOptions, ControlPlane};
     use phux_client_runtime::{Client, Runtime, ViewId};
     use phux_protocol::{
@@ -1214,6 +1323,7 @@ mod delivery {
             ServerFeature, ServerFeatureSet,
         },
         ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+        input::key::{KeyAction, KeyEvent},
         wire::{
             frame::{AttachTarget, Command, CommandResult, ErrorCode, FrameKind, RolePolicy},
             info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
@@ -1395,6 +1505,193 @@ mod delivery {
         });
     }
 
+    fn keys(client: &Client) -> Vec<KeyEvent> {
+        client
+            .take_outbound()
+            .iter()
+            .map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                FrameKind::InputKey { terminal_id, event } => {
+                    assert_eq!(terminal_id, terminal());
+                    event
+                }
+                frame => panic!("unexpected input frame: {frame:?}"),
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn only_the_terminal_surface_disables_apple_press_and_hold(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let handle = cx.add_window(|window, cx| {
+            crate::terminal::Terminal::new(
+                client.clone(),
+                view,
+                terminal(),
+                crate::terminal::Settings::default(),
+                window,
+                cx,
+            )
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let input = bind(&client, view, window, cx);
+            let mut default_handler = ElementInputHandler::new(Bounds::default(), input);
+            assert!(default_handler.apple_press_and_hold_enabled());
+        })
+        .unwrap();
+        let mut installed = cx
+            .test_window(handle.into())
+            .take_input_handler()
+            .expect("the painted terminal installed its text handler");
+        assert!(
+            !installed.apple_press_and_hold_enabled(),
+            "held printable keys must bypass the macOS accent picker"
+        );
+    }
+
+    #[gpui::test]
+    fn printable_key_commits_preserve_repeat_and_release(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| state.focus.focus(window, cx));
+            for (stroke, text) in [("a->a", "a"), ("shift-a->A", "A"), ("space-> ", " ")] {
+                let stroke = Keystroke::parse(stroke).expect("stroke");
+                for (is_held, action) in [
+                    (false, KeyAction::Press),
+                    (true, KeyAction::Repeat),
+                    (true, KeyAction::Repeat),
+                ] {
+                    input.update(cx, |state, cx| {
+                        let down = KeyDownEvent {
+                            keystroke: stroke.clone(),
+                            is_held,
+                            prefer_character_input: false,
+                        };
+                        assert_eq!(
+                            state.key_down(&down, window, cx),
+                            Ok(KeyDisposition::Platform)
+                        );
+                        assert!(client.take_outbound().is_empty(), "wait for platform text");
+                        state.replace_text_in_range(None, text, window, cx);
+                    });
+                    let events = keys(&client);
+                    assert_eq!(events.len(), 1, "one commit per down, no duplicate input");
+                    assert_eq!(events[0].action, action);
+                    assert_eq!(events[0].text.as_deref(), Some(text));
+                }
+                input.update(cx, |state, cx| {
+                    let up = KeyUpEvent { keystroke: stroke };
+                    assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
+                    assert!(state.pressed.is_empty());
+                });
+                let events = keys(&client);
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].action, KeyAction::Release);
+                assert_eq!(events[0].text, None);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn named_and_control_keys_repeat_without_platform_text(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| {
+                state.focus.focus(window, cx);
+                for stroke in ["left", "backspace", "enter", "ctrl-a"] {
+                    let stroke = Keystroke::parse(stroke).expect("stroke");
+                    for is_held in [false, true] {
+                        let down = KeyDownEvent {
+                            keystroke: stroke.clone(),
+                            is_held,
+                            prefer_character_input: false,
+                        };
+                        assert_eq!(
+                            state.key_down(&down, window, cx),
+                            Ok(KeyDisposition::Consumed)
+                        );
+                    }
+                    let up = KeyUpEvent { keystroke: stroke };
+                    assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
+                    let events = keys(&client);
+                    assert_eq!(
+                        events.iter().map(|key| key.action).collect::<Vec<_>>(),
+                        vec![KeyAction::Press, KeyAction::Repeat, KeyAction::Release]
+                    );
+                    assert!(events.iter().all(|key| key.text.is_none()));
+                    assert!(events.iter().all(|key| key.key == events[0].key));
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn composing_held_keys_stay_local_until_ime_commit(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| {
+                state.focus.focus(window, cx);
+                let mut down = KeyDownEvent {
+                    keystroke: Keystroke::parse("e->e").expect("stroke"),
+                    is_held: false,
+                    prefer_character_input: false,
+                };
+                assert_eq!(
+                    state.key_down(&down, window, cx),
+                    Ok(KeyDisposition::Platform)
+                );
+                state.replace_and_mark_text_in_range(None, "か", Some(1..1), window, cx);
+                assert!(state.pending_key.is_none(), "preedit cancels the raw key");
+                down.is_held = true;
+                assert_eq!(
+                    state.key_down(&down, window, cx),
+                    Ok(KeyDisposition::Platform)
+                );
+                assert_eq!(state.marked_text_range(window, cx), Some(0..1));
+                assert!(
+                    client.take_outbound().is_empty(),
+                    "preedit must not reach the PTY"
+                );
+                state.replace_text_in_range(None, "漢", window, cx);
+                let events = keys(&client);
+                assert_eq!(events.len(), 1);
+                assert_eq!(
+                    events[0].action,
+                    KeyAction::Press,
+                    "IME commit is not a raw repeat"
+                );
+                assert_eq!(events[0].text.as_deref(), Some("漢"));
+                assert_eq!(state.preedit().0, "");
+                state.replace_and_mark_text_in_range(None, "´", Some(1..1), window, cx);
+                state.unmark_text(window, cx);
+                assert!(
+                    client.take_outbound().is_empty(),
+                    "canceled dead key stays local"
+                );
+                assert_eq!(state.preedit().0, "");
+            });
+        });
+    }
+
     #[gpui::test]
     fn a_hidden_owners_delayed_fit_does_not_override_the_focused_view(cx: &mut TestAppContext) {
         let client = session(None);
@@ -1485,6 +1782,59 @@ mod delivery {
             arm(&fresh, true, 800., 408., window, cx);
             settle(&fresh, cx);
             assert_eq!(resizes(&client), vec![(100, 24)]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_file_paste_refuses_unpainted_and_reconnected_inputs(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("unpainted input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(
+                    state.last_error(),
+                    Some(&super::InputError::StalePresentation)
+                );
+            });
+            arm(&input, false, 160., 68., window, cx);
+            open_session(&client, 2);
+            input.update(cx, |state, cx| {
+                let notice = state.paste_command(cx).expect("reconnected input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert!(state.last_error().is_some());
+            });
+            assert!(client.take_outbound().is_empty(), "no raw paste or upload");
+        });
+    }
+
+    #[gpui::test]
+    fn a_viewer_cannot_start_a_clipboard_file_upload(cx: &mut TestAppContext) {
+        let client = session(Some(RolePolicy::VIEWER));
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("viewer refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(state.last_error(), Some(&super::InputError::NotReady));
+            });
+            assert!(client.take_outbound().is_empty(), "no raw paste or upload");
         });
     }
 

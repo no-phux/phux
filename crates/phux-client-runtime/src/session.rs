@@ -429,10 +429,23 @@ impl Session {
     /// and decode failures otherwise.
     pub async fn recv(&mut self) -> Result<FrameKind, SessionError> {
         let result = self.recv_frame().await;
+        if let Ok(frame) = &result {
+            self.retire_closed_terminal(frame);
+        }
         if let Err(SessionError::Framing(violation)) = &result {
             self.answer_framing_violation(*violation).await;
         }
         result
+    }
+
+    /// A lifecycle close on control retires the independent Terminal stream
+    /// before queued output can reach the caller's closed session resource.
+    fn retire_closed_terminal(&mut self, frame: &FrameKind) {
+        if let FrameKind::ResourceClosed { terminal_id, .. } = frame
+            && let Some(mux) = self.multistream.as_mut()
+        {
+            mux.close_terminal(terminal_id);
+        }
     }
 
     async fn recv_frame(&mut self) -> Result<FrameKind, SessionError> {
@@ -461,6 +474,9 @@ impl Session {
     /// As [`Self::recv`]; a clean close is reported by the next `recv`.
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, SessionError> {
         let result = self.try_recv_frame();
+        if let Ok(Some(frame)) = &result {
+            self.retire_closed_terminal(frame);
+        }
         if let Err(SessionError::Framing(violation)) = &result {
             let _ = self.answer_framing_violation(*violation).now_or_never();
         }

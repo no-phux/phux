@@ -9,6 +9,7 @@
 set -u
 
 [ "$#" -eq 1 ] || exit 2
+[ "${PHUX_AGENT_REPORTING:-1}" != 0 ] || exit 0
 [ -n "${PHUX_TERMINAL_ID:-}" ] || exit 0
 
 phux=${PHUX_AGENT_PHUX_BIN:-phux}

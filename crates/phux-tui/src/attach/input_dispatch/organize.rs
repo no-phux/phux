@@ -1,5 +1,5 @@
 //! `organize`, `organize-session`, and `organize-undo`: the magic button
-//! (ADR-0170). The same [`phux_client::organize`] path `phux organize` runs,
+//! (ADR-0174). The same [`phux_client::organize`] path `phux organize` runs,
 //! on the attached server's dedicated control dial, never on the
 //! output-bearing attach connection. The run is a background job
 //! (ADR-0172): a passthrough notice now, the result as a toast when it

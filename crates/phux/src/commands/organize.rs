@@ -1,5 +1,5 @@
 //! `phux organize [SESSION]`: put every pane in the session it belongs in
-//! (ADR-0170), over [`phux_client::organize`].
+//! (ADR-0174), over [`phux_client::organize`].
 
 use std::path::PathBuf;
 use std::process::ExitCode;

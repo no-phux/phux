@@ -20,6 +20,7 @@ client is a demo and developer integration. The Zig Cockpit is archived outside 
 | Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |
+| Run tasks through mission control | [Mission control](./mission.md) (decided, not built) |
 | Try the browser demo or build your own browser client | [Web client](./web.md) |
 
 ### Host integrations

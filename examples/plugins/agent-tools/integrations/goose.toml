@@ -1,0 +1,40 @@
+schema_version = 1
+id = "goose"
+display_name = "Goose"
+kind = "terminal-agent"
+description = "Goose coding agent with an interactive terminal or explicit ACP session."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "goose"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-goose"
+
+# Terminal launches have only a phux identity, not a provider resume claim.
+[session_identity]
+mode = "phux"
+native_env = "PHUX_GOOSE_SESSION_ID"
+restore = "phux-session"
+
+[agent_identity]
+name = "goose"
+kind = "goose"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "goose", "--kind", "goose", "--", "goose", "session"]
+required_executables = ["goose"]
+working_directory = "workspace"
+
+# Official ACP registry: agentclientprotocol/registry, goose/agent.json.
+[acp]
+provider = "goose"
+command = ["goose", "acp"]
+required_executables = ["goose"]
+working_directory = "workspace"

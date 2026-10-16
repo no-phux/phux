@@ -43,6 +43,8 @@ pub mod glance;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` (`phux kill`).
 pub mod kill;
 pub mod layout_ops;
+/// Dedicated SDK-owned agent controller and publication transport.
+pub mod native_agent;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
 // `mv`, bulk move, undo, Intake resolve).
 pub mod org;

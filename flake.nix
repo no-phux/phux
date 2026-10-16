@@ -15,6 +15,13 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The Ghostty source libghostty-vt is built from. It must be the commit
+    # GHOSTTY_COMMIT names in the pinned libghostty-rs's build.rs (the rev in
+    # Cargo.toml); `just ghostty-pin-check` fails when the two differ.
+    ghostty = {
+      url = "github:phall1/ghostty/11e797c05f162911fb64804d37337e7224ab501f";
+      flake = false;
+    };
   };
 
   outputs =
@@ -23,6 +30,7 @@
       nixpkgs,
       flake-utils,
       rust-overlay,
+      ghostty,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -214,6 +222,81 @@
           else
             pkgs.zig_0_16;
 
+        # libghostty-vt's C library, built once per flake.lock and served from
+        # Cachix, so Cargo links it instead of running the ~200 s cold Zig
+        # build in every fresh target directory. The devshell exports its lib
+        # directory as LIBGHOSTTY_VT_SYS_LIB_DIR (see the shellHook).
+        #
+        # It is the archive libghostty-vt-sys's own build would make: the same
+        # `zig build` flags, Zig, and Ghostty source, with the optimize mode
+        # read from .cargo/config.toml and Zig's `baseline` CPU, the build
+        # script's default. Zig's packages come from Ghostty's own zon2nix
+        # manifest, so the build never touches the network. On Linux it names
+        # the glibc target instead of letting Zig probe the sandbox, where it
+        # cannot find the host's dynamic linker.
+        #
+        # On Darwin the target stays native, as in a Cargo build, so Ghostty
+        # applies its own macOS deployment floor. Ghostty finds the SDK and
+        # the archive tools through `xcrun`; here that is xcbuild's, which
+        # resolves the SDK from the stdenv's apple-sdk (DEVELOPER_DIR) and
+        # tools such as `nmedit` from cctools on PATH, so no host Xcode or
+        # Command Line Tools take part.
+        libghosttyVtPrebuilt = true;
+        libghosttyVtOptimize =
+          (builtins.fromTOML (builtins.readFile ./.cargo/config.toml)).env.LIBGHOSTTY_VT_SYS_OPTIMIZE;
+        libghosttyVtCpu = "baseline";
+        libghosttyVt = pkgs.stdenv.mkDerivation {
+          pname = "libghostty-vt";
+          version = "0-unstable-${builtins.substring 0 12 ghostty.rev}";
+          src = ghostty;
+          deps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" { zig_0_16 = zigPinned; };
+          nativeBuildInputs = [
+            zigPinned
+            pkgs.removeReferencesTo
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+            pkgs.xcbuild
+            pkgs.cctools
+          ];
+          dontConfigure = true;
+          dontBuild = true;
+          # Keep the archive as Zig wrote it, as a Cargo build would: no strip
+          # and no ELF patching.
+          dontFixup = true;
+          installPhase = ''
+            runHook preInstall
+            zig build \
+              -Demit-lib-vt=true \
+              -Doptimize=${libghosttyVtOptimize} \
+              -Dcpu=${libghosttyVtCpu} \
+              -Demit-xcframework=false \
+              -Dapp-runtime=none \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "-Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"} \
+              --prefix "$out" \
+              --cache-dir "$TMPDIR/zig-cache" \
+              --system "$deps" \
+              --global-cache-dir "$TMPDIR/zig-global-cache"
+            test -f "$out/lib/libghostty-vt.a"
+            test -f "$out/include/ghostty/vt.h"
+            # Debug info names the Zig, source, package, and (on Darwin) SDK
+            # paths it was built from. Left in, they would make every
+            # substitution of this library download them with it.
+            find "$out/lib" -type f -exec remove-references-to \
+              -t ${zigPinned} -t "$src" -t "$deps" \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "-t ${pkgs.apple-sdk}"} {} +
+            runHook postInstall
+          '';
+          passthru = {
+            optimize = libghosttyVtOptimize;
+            cpu = libghosttyVtCpu;
+          };
+          meta = {
+            homepage = "https://ghostty.org";
+            description = "Ghostty's terminal emulation library, as libghostty-vt-sys links it";
+            license = pkgs.lib.licenses.mit;
+          };
+        };
+
         # mbx (jdx/mr-boxington): the Cargo wrapper behind the shared build
         # cache. mise.toml is the source of truth for the release, same
         # contract as bun and usage. The shellHook puts libexec/mbx (a `cargo`
@@ -284,6 +367,8 @@
             };
       in
       {
+        packages = pkgs.lib.optionalAttrs libghosttyVtPrebuilt { libghostty-vt = libghosttyVt; };
+
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
@@ -400,6 +485,16 @@
               IFS=$phux_ifs
               export PATH="$phux_store_path:''${CARGO_HOME:-$HOME/.cargo}/bin:$phux_rest_path"
               unset phux_store_path phux_rest_path phux_ifs phux_entry RUSTUP_TOOLCHAIN
+            ''
+            # Link the prebuilt libghostty-vt instead of building it, unless the
+            # caller already chose a library or asked for a flavor other than
+            # the one it was built as; those builds still run Zig.
+            + pkgs.lib.optionalString libghosttyVtPrebuilt ''
+              if [ -z "''${LIBGHOSTTY_VT_SYS_LIB_DIR:-}" ] &&
+                 [ "''${LIBGHOSTTY_VT_SYS_OPTIMIZE:-${libghosttyVt.optimize}}" = "${libghosttyVt.optimize}" ] &&
+                 [ "''${LIBGHOSTTY_VT_SYS_CPU:-${libghosttyVt.cpu}}" = "${libghosttyVt.cpu}" ]; then
+                export LIBGHOSTTY_VT_SYS_LIB_DIR="${libghosttyVt}/lib"
+              fi
             ''
             # First on PATH; the wrapper delegates to the next `cargo`, the
             # pinned toolchain's. CI keeps plain Cargo unless the job opts in

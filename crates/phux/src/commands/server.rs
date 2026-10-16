@@ -245,6 +245,7 @@ fn build_server_config(
 
     ServerConfig {
         socket_path: socket_path.to_path_buf(),
+        native_host_executable: None,
         // `None` under `--no-seed` (ADR-0105).
         pre_seeded_session: session.map(str::to_owned),
         seed_with_pty: true,

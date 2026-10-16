@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-15
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -443,6 +443,7 @@ ServerFeatureExt = bitset (u32) {
                                      //   teardown (L1 §5.2)
     // 0x00000008 AGENT_STREAM_RESUME and 0x00000010 ORGANIZATION: below.
     SESSION_KILL   = 0x00000020, // SESSION_KILL, one-step session kill (L1 §5.7)
+    NATIVE_AGENT   = 0x00000040, // dedicated SDK broker (L1 §5.5.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -551,6 +552,11 @@ not see it treats organization as read-only.
 `features_ext.SESSION_KILL = 0x00000020` ([L1.md](./L1.md) §5.7) says the
 server accepts `SESSION_KILL`; it is advertised only beside `ORGANIZATION`. A
 client that does not see it kills a session's panes with `KILL_RESOURCES`.
+`features_ext.NATIVE_AGENT = 0x00000040` ([L1.md](./L1.md) §5.5.1) says the
+server accepts SDK-owned agent creation and the dedicated native controller
+commands. Clients MUST see the bit before sending any `NATIVE_AGENT` request.
+Without it, native SDK control is unavailable; a client MUST NOT substitute
+terminal input or probe the unnegotiated command tag.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,

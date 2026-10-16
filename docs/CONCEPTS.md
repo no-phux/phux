@@ -247,7 +247,7 @@ The rows below are what remains.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Delegated agent credentials and human lease precedence (stage 5) | The `ORGANIZE` and `TERMINATE` verbs and the actor principal fields exist; agents still act with their connection's grant, are attributed by client name, and a deliberate takeover by any principal wins the lease. | [ADR-0163](adr/0163-actors-and-delegated-agent-grants.md) | phux-3q58 |
+| Mission control | Decided, not built ([ADR-0173](adr/0173-mission-control-is-a-client-composition.md)). A client composition may own a task's worktree, brief, and agent start; the server learns nothing new. Tasks wait in an interim store until the coordinator ships. The guide is [mission control](consumers/mission.md). | [ADR-0173](adr/0173-mission-control-is-a-client-composition.md) | phux-w7z2 |
 | Workspaces across machines (stage 6) | Designed, not built. Sessions link only within one server's view; the Intake combines owners only as far as each client connects to them. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-lxov |
 | Browser resource kind (stage 7) | Designed, not built. Terminal and AgentSession are the only kinds. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-3q58 |
 | On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). Server death ends live processes and loses their terminal history; session and resource records survive and `phux restore` starts fresh PTYs, not the lost processes. The `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
@@ -257,7 +257,12 @@ Scopes, attach roles, and approval gates are shipped: scope enforcement at
 dispatch ([ADR-0116](adr/0116-workload-auth-is-mtls.md)), `VIEWER`/`PRIMARY`
 attach intent on the lease ([ADR-0127](adr/0127-attach-roles-are-lease-intent.md)),
 and server-held approvals for dangerous actions
-([ADR-0128](adr/0128-approvals-are-held-actions.md)). The remaining authentication
+([ADR-0128](adr/0128-approvals-are-held-actions.md)). Delegated agent
+credentials are built
+([ADR-0163](adr/0163-actors-and-delegated-agent-grants.md) Decision §5,
+amended 2026-10-13): `phux agent start` mints and revokes `INVENTORY`,
+`OBSERVE`, `INPUT`, and `BIND` on the agent's own session, and a cold
+restart clears the in-memory ledger. The remaining authentication
 gap is the transitional posture above.
 
 ## Where to go next

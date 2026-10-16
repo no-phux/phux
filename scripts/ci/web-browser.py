@@ -4,6 +4,11 @@
 Run inside `nix develop .#browser` (or with docs/SETUP.md's browser/native tools).
 CHROMEDRIVER and CHROME select a matching local browser/driver pair. The
 standalone client's cwd, Cargo.lock, and .cargo/config.toml remain authoritative.
+
+The private scratch exported as TMPDIR is placed so the Unix sockets created
+under it fit in sockaddr_un. Darwin's sun_path is 104 bytes including NUL;
+the macOS default /var/folders TMPDIR is already long enough that nesting
+phux-browser-* plus mbx's cache-agent.sock overflows it.
 """
 
 import hashlib
@@ -16,6 +21,7 @@ import signal
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -354,19 +360,125 @@ def harness_build_env(env):
     return build_env
 
 
+# Usable Unix socket path length: sun_path minus its trailing NUL.
+# Darwin's sun_path is 104 bytes; Linux's is 108. Same split as
+# phux-server's MAX_SOCKET_PATH_LEN (103 on Darwin, 107 on Linux).
+DARWIN_SOCKET_PATH_MAX = 103
+LINUX_SOCKET_PATH_MAX = 107
+
+# CPython's tempfile random component is eight characters.
+TEMP_NAME_RANDOM = 8
+SCRATCH_PREFIX = "phux-browser-"
+
+# Relative to the private scratch once it is exported as TMPDIR.
+# mbx is external and binds cache-agent.sock inside mbx-session-*;
+# the session token in this representative is eight characters.
+# pid_t is 32-bit, so a decimal pid is at most ten digits.
+# The webdriver entry is the scratch directory this runner creates
+# beside those sockets, not a socket name of its own.
+MBX_SOCKET_SUFFIX = "mbx-session-XXXXXXXX/cache-agent.sock"
+E2E_SOCKET_SUFFIX = "phux-e2e-" + "0" * 10 + ".sock"
+WEBDRIVER_SCRATCH_SUFFIX = "phux-webdriver-" + "x" * TEMP_NAME_RANDOM
+NESTED_SOCKET_SUFFIXES = (
+    MBX_SOCKET_SUFFIX,
+    E2E_SOCKET_SUFFIX,
+    WEBDRIVER_SCRATCH_SUFFIX,
+)
+
+# Portable short directories, none of them user-specific. The first that
+# exists, is writable, and still leaves socket headroom is the parent of
+# the private scratch. /tmp stays under the Darwin limit even after
+# phux-browser-* and mbx's nested socket; /private/tmp is its macOS target.
+SHORT_SCRATCH_BASES = ("/tmp", "/private/tmp", "/var/tmp")
+
+
+def socket_path_max(platform):
+    """Usable sockaddr_un path bytes on `platform`, excluding the trailing NUL."""
+    if platform == "linux":
+        return LINUX_SOCKET_PATH_MAX
+    return DARWIN_SOCKET_PATH_MAX
+
+
+def _worst_scratch(base):
+    return Path(base) / (SCRATCH_PREFIX + ("x" * TEMP_NAME_RANDOM))
+
+
+def nested_socket_paths(scratch):
+    root = Path(scratch)
+    return tuple(root / suffix for suffix in NESTED_SOCKET_SUFFIXES)
+
+
+def _longest_socket(base):
+    return max(nested_socket_paths(_worst_scratch(base)), key=lambda path: len(os.fsencode(path)))
+
+
+def scratch_socket_overflow(base, limit):
+    """True when a private scratch under `base` cannot hold every nested socket."""
+    return len(os.fsencode(_longest_socket(base))) > limit
+
+
+def _writable_dir(path):
+    return os.path.isdir(path) and os.access(path, os.W_OK | os.X_OK)
+
+
+def _scratch_limit_message(preferred, limit, platform, candidates):
+    example = _longest_socket(preferred)
+    length = len(os.fsencode(example))
+    host = {"darwin": "Darwin", "linux": "Linux"}.get(platform, platform)
+    checked = ", ".join(candidates)
+    return (
+        f"browser gate TMPDIR {preferred} would make {example} {length} bytes, "
+        f"past the {limit}-byte {host} Unix socket path limit. "
+        f"None of {checked} is a writable directory short enough. "
+        "Set TMPDIR to a short writable directory such as /tmp and retry."
+    )
+
+
+def browser_scratch_base(environ, *, platform=None, candidates=SHORT_SCRATCH_BASES):
+    """Parent for the private per-run scratch that child processes see as TMPDIR.
+
+    A caller-supplied TMPDIR that already leaves room for the nested sockets
+    is used unchanged. A long default (macOS /var/folders/...) is not: mbx
+    then creates <scratch>/mbx-session-*/cache-agent.sock and Darwin rejects
+    the bind. When no short writable base exists, fail here so the limit is
+    named instead of surfacing later as an opaque compile error.
+    """
+    platform = sys.platform if platform is None else platform
+    limit = socket_path_max(platform)
+    explicit = environ.get("TMPDIR")
+    if explicit and not scratch_socket_overflow(explicit, limit):
+        return explicit
+    preferred = explicit or tempfile.gettempdir()
+    if not explicit and not scratch_socket_overflow(preferred, limit):
+        return preferred
+    for candidate in candidates:
+        if not scratch_socket_overflow(candidate, limit) and _writable_dir(candidate):
+            return candidate
+    raise RuntimeError(_scratch_limit_message(preferred, limit, platform, candidates))
+
+
+def browser_scratch_dir(base):
+    """Private scratch under `base`, removed when the context manager exits."""
+    return tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX, dir=base)
+
+
 def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
-    logs = ROOT / "target/web-browser-logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    for name in ("build.log", "chrome.log", "browser.log", "server.log", "auth-server.log"):
-        (logs / name).unlink(missing_ok=True)
     env = isolated_environment(os.environ)
     for variable, binary in (("CHROME", "chromium"), ("CHROMEDRIVER", "chromedriver")):
         executable = shutil.which(binary)
         if executable:
             env.setdefault(variable, executable)
     env["CARGO_TARGET_DIR"] = str(Path(env.get("CARGO_TARGET_DIR", ROOT / "target/web-native")).resolve())
+    # Choose the scratch parent before touching logs or compiling. The native
+    # build keeps the caller's TMPDIR; the private scratch is exported only
+    # for the browser run, which is where mbx nests cache-agent.sock under it.
+    scratch_parent = browser_scratch_base(env)
+    logs = ROOT / "target/web-browser-logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for name in ("build.log", "chrome.log", "browser.log", "server.log", "auth-server.log"):
+        (logs / name).unlink(missing_ok=True)
     # One Cargo schedule for the demo server and the phux binary. Split
     # invocations on 2 jobs were 5m 55s then 3m 41s (run 38451988979).
     # One schedule at the runner's 4 cores was 7m 00s (run 38457853567).
@@ -377,7 +489,7 @@ def main():
                  "-p", "phux-server", "--example", "ws_demo_server",
                  "-p", "phux", "--bin", "phux"],
                 cwd=ROOT, env=harness_build_env(env), timeout=1200, log=log)
-        with tempfile.TemporaryDirectory(prefix="phux-browser-") as scratch:
+        with browser_scratch_dir(scratch_parent) as scratch:
             env["TMPDIR"] = scratch
             if env.get("PHUX_BROWSER_AUTH_ONLY") != "1":
                 browser_tests(env, logs)

@@ -19,7 +19,7 @@ Date: 2026-10-15
 
 ## Context
 
-Adding `organize` (ADR-0170) to the TUI touched six places for one action:
+Adding `organize` (ADR-0174) to the TUI touched six places for one action:
 the name in `phux_config::vocab::ACTION_NAMES`, a palette row in
 `REGISTRY` (or a reason in `NON_PALETTE_ACTIONS`), a `run_action` match
 arm, an `ActionEffects` field and its apply call, and the generated

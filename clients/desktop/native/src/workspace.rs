@@ -73,6 +73,8 @@ pub struct Workspace {
     pub active_id: String,
     session: String,
     options: WorkspaceOptions,
+    preserve_empty: bool,
+    views_epoch: Option<u64>,
     spawns: HashMap<u32, Destination>,
     awaiting: HashMap<String, Destination>,
     owners: HashMap<String, String>,
@@ -101,6 +103,8 @@ impl Workspace {
             active_id: String::new(),
             session,
             options,
+            preserve_empty: false,
+            views_epoch: None,
             spawns: HashMap::new(),
             awaiting: HashMap::new(),
             owners: HashMap::new(),
@@ -113,6 +117,11 @@ impl Workspace {
             notices: Vec::new(),
             noticed_create: HashSet::new(),
         }
+    }
+
+    /// Browsing existing work must not create a terminal in an empty session.
+    pub(crate) fn preserve_empty(&mut self) {
+        self.preserve_empty = true;
     }
 
     /// The active tab, or the first tab.
@@ -220,9 +229,10 @@ impl Workspace {
     /// Place ready terminals and finish a pending restore. Call after [`Self::handle`].
     pub fn settle(&mut self, connection: &Connection) {
         self.sync_server(connection);
-        if connection.status != Status::Attached {
+        if connection.status != Status::Attached || !connection.session_validated() {
             return;
         }
+        self.rearm_views(connection);
         let ready: Vec<(String, Destination)> = self
             .awaiting
             .iter()
@@ -240,6 +250,28 @@ impl Workspace {
             self.finish_restore(connection);
         }
         self.resolve_restored(connection);
+    }
+
+    /// A validated new connection must restore visible foreign-session streams too.
+    /// Existing views keep their last frame while admission/bootstrap is renewed.
+    fn rearm_views(&mut self, connection: &Connection) {
+        let epoch = connection.connection_epoch();
+        if self.views_epoch == Some(epoch) {
+            return;
+        }
+        self.views_epoch = Some(epoch);
+        for terminal in self
+            .tabs
+            .iter()
+            .flat_map(|tab| placements(&tab.root))
+            .filter_map(|placement| placement.terminal_id.as_ref())
+        {
+            if connection.pane(terminal).is_some() {
+                let _ = connection
+                    .client
+                    .attach_terminal_preserving_geometry(terminal);
+            }
+        }
     }
 
     /// Select a tab that exists.
@@ -851,7 +883,9 @@ impl Workspace {
             }
             return;
         }
-        self.request(connection, Destination::Tab, None, None);
+        if !self.preserve_empty {
+            self.request(connection, Destination::Tab, None, None);
+        }
     }
 
     fn rebuild(&mut self, connection: &Connection, node: &StoredNode) -> Option<Node> {

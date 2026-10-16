@@ -1,4 +1,4 @@
-//! The organize judge and its undo journal (ADR-0170), shared by every
+//! The organize judge and its undo journal (ADR-0174), shared by every
 //! client: the CLI and MCP through `phux_client::organize`, the TUI, and
 //! the desktop.
 //!

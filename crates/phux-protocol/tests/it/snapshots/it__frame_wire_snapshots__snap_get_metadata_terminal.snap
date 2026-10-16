@@ -1,0 +1,8 @@
+---
+source: crates/phux-protocol/tests/it/frame_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 2e 50 01 04 04  00 00 00 42 02 04 06 00 |....P......B....
+00000010 | 00 00 00 00 09 03 04 1a  70 68 75 78 2e 74 75 69 |........phux.tui
+00000020 | 2e 74 69 74 6c 65 2d 6f  76 65 72 72 69 64 65 2f |.title-override/
+00000030 | 76 31                                            |v1

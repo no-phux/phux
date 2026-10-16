@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
-    Styled, Subscription, Window, div, px,
+    Styled, Subscription, Window, div, point, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -16,16 +16,32 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
+use crate::connection::AgentInfo;
 use crate::connection::path::{self as paths};
 use crate::settings::theme::Palette;
 
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 
-mod launcher;
+mod goto_facts;
+mod goto_filter;
+mod goto_frecency;
+mod goto_search;
+pub(crate) mod launcher;
+
+pub(crate) use goto_filter::GotoPalette;
+pub(crate) use goto_frecency::Store as GotoFrecency;
+pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
 mod palette_tests;
+
+/// Transient disclosure state, reset whenever a palette opens.
+#[derive(Default)]
+pub(super) struct PaletteView {
+    all_commands: bool,
+    details: bool,
+}
 
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +63,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::WindowSession
         | Modal::MoveResources
         | Modal::Path => {
+            desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_loading(false, window, cx);
@@ -55,8 +72,12 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             });
         }
         Modal::Settings => {
-            super::settings_panel::prepare(desk, window, cx);
-            window.focus(&desk.focus, cx);
+            desk.settings_page = None;
+            let state = palette_state(desk, window, cx);
+            state.update(cx, |state, cx| {
+                state.set_query("", window, cx);
+                state.focus(window, cx);
+            });
         }
         Modal::Rename { tab_id } => {
             let current = desk
@@ -119,6 +140,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             target.update(cx, |input, cx| input.focus(window, cx));
         }
         Modal::KillSession { .. }
+        | Modal::NativeLaunch
         | Modal::Terminate { .. }
         | Modal::RemoveHost { .. }
         | Modal::Notifications => window.focus(&desk.focus, cx),
@@ -276,8 +298,81 @@ impl Desk {
         cx.notify();
     }
 
+    /// Narrow Go To by agent state. The typed query stays, and the highlight
+    /// follows the same entry when it is still listed. This does not open,
+    /// resize, focus, acknowledge a terminal, or record a visit.
+    pub(crate) fn set_goto_filter(
+        &mut self,
+        filter: goto_filter::GotoFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal != Modal::Goto || self.goto.filter == filter {
+            return;
+        }
+        let Some(state) = self.palette_state.clone() else {
+            return;
+        };
+        let query = state.read(cx).query(cx).to_string();
+        prepare_goto(self, &query);
+        let index = state.read(cx).selected_index();
+        let selected = index.and_then(|index| {
+            self.goto_search
+                .ranked()
+                .get(index.section)
+                .and_then(|section| section.rows.get(index.row))
+                .and_then(goto_id)
+        });
+        let entries = self.goto_search.candidates();
+        self.goto.selected = selected;
+        let mut cursor = goto_filter::GotoCursor {
+            query,
+            selected: self.goto.selected.clone(),
+        };
+        goto_filter::apply_filter(&mut cursor, &entries, filter);
+        self.goto.filter = filter;
+        self.goto.selected = cursor.selected;
+        self.goto.align = true;
+        state.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Move the Go To highlight onto the entry a filter change kept.
+    fn align_goto_highlight(
+        &mut self,
+        sections: &[Section],
+        state: &Entity<CommandState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal != Modal::Goto || !self.goto.align {
+            return;
+        }
+        let ids = section_ids(sections);
+        let path = goto_filter::selection_path(&ids, self.goto.selected.as_ref());
+        self.goto.selected = path.and_then(|(section, row)| ids.get(section)?.get(row).cloned());
+        let desired = path.map(|(section, row)| IndexPath::new(row).section(section));
+        if state.read(cx).selected_index() == desired {
+            self.goto.align = false;
+            return;
+        }
+        let state = state.clone();
+        let desk = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let applied = state.update(cx, |state, cx| {
+                state.set_selected_index(desired, window, cx);
+                state.selected_index() == desired
+            });
+            if applied {
+                let _ = desk.update(cx, |desk, _| desk.goto.align = false);
+            }
+        });
+    }
+
     /// Run a confirmed palette row. Commands already ran through their [`Run`] action.
+    /// A Go To pane or tab is remembered only when that destination is still listed.
     fn pick(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_goto(&target);
         match target {
             Target::Command => {}
             Target::Pane(terminal) => {
@@ -291,6 +386,19 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Work(destination) => {
+                self.close_modal(window, cx);
+                self.navigate_work(destination, cx);
+                self.after_command(window, cx);
+            }
+            Target::Setting(page) => {
+                self.modal = Modal::Settings;
+                self.settings_page = Some(page);
+                self.mark_prepared();
+                super::settings_panel::prepare(self, window, cx);
+                window.focus(&self.focus, cx);
+                cx.notify();
+            }
             Target::Move(key, name) => {
                 let selected = self.organization.selected.clone();
                 self.move_resources_to(selected, key, name, window, cx);
@@ -301,6 +409,49 @@ impl Desk {
             },
         }
     }
+
+    /// Record a Go To open. A missing pane or tab, and every other row, is ignored.
+    fn note_goto(&mut self, target: &Target) {
+        let now = goto_frecency::now();
+        let Some(link) = self.link.as_ref() else {
+            return;
+        };
+        let boot = link.connection.server_id();
+        let key = match target {
+            Target::Pane(id) => {
+                let listed = link.connection.pane(id).is_some()
+                    || link.workspace.tabs.iter().any(|tab| {
+                        crate::workspace::layout::placements(&tab.root)
+                            .iter()
+                            .any(|placement| placement.terminal_id.as_ref() == Some(id))
+                    });
+                let spelling = id.to_string();
+                goto_frecency::validated_key(
+                    boot.as_deref(),
+                    goto_frecency::Choice::Pane {
+                        id: &spelling,
+                        listed,
+                    },
+                )
+            }
+            Target::Tab(id) => {
+                let listed = link.workspace.tabs.iter().any(|tab| tab.id == *id);
+                goto_frecency::validated_key(
+                    boot.as_deref(),
+                    goto_frecency::Choice::Tab { id, listed },
+                )
+            }
+            Target::Command
+            | Target::Session(_)
+            | Target::Work(_)
+            | Target::Setting(_)
+            | Target::Move(_, _)
+            | Target::Path(_) => {
+                goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
+            }
+        };
+        self.goto_frecency.note(key, now);
+    }
 }
 
 /// What a palette row does when confirmed.
@@ -310,6 +461,8 @@ enum Target {
     Pane(ResourceId),
     Tab(String),
     Session(String),
+    Work(super::fleet::Destination),
+    Setting(super::settings_panel::Page),
     Move(SessionKey, String),
     Path(PathItem),
 }
@@ -360,8 +513,12 @@ pub fn layer(
             launcher::palette(desk, colors, window, cx)
         }
         Modal::Path => path_panel(desk, colors, window, cx),
-        Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
+        Modal::Settings if desk.settings_page.is_some() => {
+            super::settings_panel::panel(desk, colors, window, cx)
+        }
+        Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, colors, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
         Modal::KillSession { name, .. } => confirm(
@@ -413,14 +570,33 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .into_any_element()
 }
 
-fn card(colors: &Palette, width: f32) -> gpui::Div {
+// Match the launcher's fine rim and lifted material without washing out text
+// over terminal content. The near-opaque tint works in both theme appearances.
+pub(crate) fn card(colors: &Palette, width: f32) -> gpui::Div {
+    let light = colors.theme.appearance == "light";
     div()
         .w(px(width))
-        .rounded(px(12.))
-        .bg(from_hex(&colors.raised))
+        .rounded(px(14.))
+        .bg(from_hex(&colors.raised).opacity(0.97))
+        .text_color(from_hex(&colors.theme.foreground))
         .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_lg()
+        .border_color(from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }))
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
+                offset: point(px(0.), px(20.)),
+                blur_radius: px(64.),
+                spread_radius: px(-8.),
+                inset: false,
+            },
+            gpui::BoxShadow {
+                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
+                offset: point(px(0.), px(2.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ])
         .occlude()
 }
 
@@ -433,21 +609,14 @@ pub fn find_bar(
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
-    div()
+    card(colors, 420.)
         .absolute()
-        .top(px(8.))
-        .right(px(8.))
-        .w(px(380.))
-        .p(px(6.))
-        .rounded(px(8.))
-        .bg(from_hex(&colors.raised))
-        .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow_md()
-        .occlude()
+        .top(px(12.))
+        .right(px(12.))
+        .p(px(8.))
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(px(6.))
         .child(
             div().flex_grow(1.).child(
                 Input::new(input)
@@ -457,6 +626,10 @@ pub fn find_bar(
         )
         .child(
             div()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.045))
                 .text_xs()
                 .text_color(from_hex(&colors.muted))
                 .child(desk.find_status()),
@@ -513,11 +686,13 @@ pub fn find_bar(
 }
 
 /// One palette section: an optional heading and its rows.
+#[derive(Clone)]
 struct Section {
     label: Option<&'static str>,
     rows: Vec<Row>,
 }
 
+#[derive(Clone)]
 struct Row {
     title: SharedString,
     detail: Option<SharedString>,
@@ -527,10 +702,74 @@ struct Row {
     command: Option<&'static str>,
     category: &'static str,
     chord: Option<String>,
+    /// Agent badge, when this row is one. State chips read its predicates.
+    agent: Option<AgentInfo>,
+    /// Passive metadata card. Absent for commands and for a row with nothing
+    /// to show. Highlighting reads this; it does not open the terminal.
+    preview: Option<goto_facts::FactsCard>,
+}
+
+fn simple_row(title: &str, detail: String, category: &'static str, target: Target) -> Row {
+    Row {
+        title: title.to_owned().into(),
+        keywords: detail.clone(),
+        detail: Some(detail.into()),
+        target,
+        command: None,
+        category,
+        chord: None,
+        agent: None,
+        preview: None,
+    }
+}
+
+fn settings_sections() -> Vec<Section> {
+    vec![Section {
+        label: Some("Settings"),
+        rows: super::settings_panel::Page::ALL
+            .into_iter()
+            .map(|page| {
+                let mut row = simple_row(
+                    page.title(),
+                    page.description().to_owned(),
+                    "Settings",
+                    Target::Setting(page),
+                );
+                row.keywords = page.keywords().to_owned();
+                row
+            })
+            .collect(),
+    }]
+}
+
+fn work_rows(desk: &Desk) -> Vec<Row> {
+    desk.work_catalog()
+        .into_iter()
+        .map(|work| {
+            let destination = work.destination;
+            let status = if work.online { "" } else { " · offline" };
+            let intake = if work.intake { " · Intake" } else { "" };
+            let detail = format!(
+                "{} · {} terminals{intake}{status}",
+                destination.host_label(),
+                work.terminals
+            );
+            let mut row = simple_row(
+                &destination.name.clone(),
+                detail,
+                "Work",
+                Target::Work(destination),
+            );
+            if let Some((id, name)) = work.project {
+                row.keywords.push_str(&format!(" {id} {name}"));
+            }
+            row
+        })
+        .collect()
 }
 
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
-    const ESSENTIALS: &[&str] = &["new", "split-right", "folder", "settings"];
+    const ESSENTIALS: &[&str] = &["new", "native-agent", "split-right", "folder", "find"];
     let organizing = desk
         .link
         .as_ref()
@@ -563,6 +802,8 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
                 .iter()
                 .find(|(id, _)| id == command.id)
                 .map(|(_, chord)| crate::settings::display_chord(chord)),
+            agent: None,
+            preview: None,
         };
         let label = if ESSENTIALS.contains(&command.id) {
             "Essentials"
@@ -592,20 +833,53 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
     sections
 }
 
+/// A small launch list on open; typing always searches the complete catalogue.
+fn command_results(desk: &Desk, cx: &App, query: &str) -> Vec<Section> {
+    let mut sections = command_sections(desk, cx);
+    if !query.trim().is_empty() {
+        sections.extend(settings_sections());
+        return rank_sections(sections, query);
+    }
+    if !desk.palette_view.all_commands {
+        sections.retain(|section| section.label == Some("Essentials"));
+    }
+    for section in &mut sections {
+        section.label = None;
+    }
+    vec![Section {
+        label: None,
+        rows: sections
+            .into_iter()
+            .flat_map(|section| section.rows)
+            .collect(),
+    }]
+}
+
 fn goto_sections(desk: &Desk) -> Vec<Section> {
     let Some(link) = desk.link.as_ref() else {
-        return Vec::new();
+        return vec![Section {
+            label: Some("Work"),
+            rows: work_rows(desk),
+        }];
     };
     let mut agents = Vec::new();
     let mut terminals = Vec::new();
     for pane in link.connection.panes() {
         let agent = link.connection.agents.get(&pane.terminal_id);
         let title = desk.pane_title(Some(&pane.terminal_id));
-        let detail = format!(
-            "{} · {}",
-            pane.session_name,
-            desk::short_path(pane.cwd.clone())
-        );
+        let directory = desk::short_path(pane.cwd.clone());
+        let detail = format!("{} · {directory}", pane.session_name);
+        let card_title = agent
+            .map(|info| info.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| title.clone());
+        let preview = goto_facts::facts_card(Some(&goto_facts::GotoSubject::Pane {
+            title: card_title,
+            agent: agent.cloned(),
+            session: pane.session_name.clone(),
+            directory,
+            tab: tab_label(desk, &pane.terminal_id),
+        }));
         let row = Row {
             title: agent
                 .map(|info| format!("{} — {title}", info.name))
@@ -629,6 +903,8 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 "Terminals"
             },
             chord: None,
+            agent: agent.cloned(),
+            preview,
         };
         if agent.is_some() {
             agents.push(row)
@@ -643,30 +919,45 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
         .iter()
         .enumerate()
         .filter_map(|(index, tab)| {
-            let panes = crate::workspace::layout::placements(&tab.root).len();
-            if panes < 2 {
+            let placed = crate::workspace::layout::placements(&tab.root);
+            if placed.len() < 2 {
                 return None;
             }
-            let detail = format!("Tab {} · {panes} panes", index + 1);
+            let detail = format!("Tab {} · {} panes", index + 1, placed.len());
+            let title = desk::tab_title(desk, tab);
+            let panes = placed
+                .into_iter()
+                .filter_map(|placement| tab_pane(desk, placement))
+                .collect();
             Some(Row {
-                title: desk::tab_title(desk, tab).into(),
+                title: title.clone().into(),
                 keywords: detail.clone(),
                 detail: Some(detail.into()),
                 target: Target::Tab(tab.id.clone()),
                 command: None,
                 category: "Tabs",
                 chord: None,
+                agent: None,
+                preview: goto_facts::facts_card(Some(&goto_facts::GotoSubject::Tab {
+                    title,
+                    panes,
+                })),
             })
         })
         .collect::<Vec<_>>();
-    [("Agents", agents), ("Terminals", terminals), ("Tabs", tabs)]
-        .into_iter()
-        .filter(|(_, rows)| !rows.is_empty())
-        .map(|(label, rows)| Section {
-            label: Some(label),
-            rows,
-        })
-        .collect()
+    [
+        ("Work", work_rows(desk)),
+        ("Agents", agents),
+        ("Terminals", terminals),
+        ("Tabs", tabs),
+    ]
+    .into_iter()
+    .filter(|(_, rows)| !rows.is_empty())
+    .map(|(label, rows)| Section {
+        label: Some(label),
+        rows,
+    })
+    .collect()
 }
 
 fn session_sections(desk: &Desk) -> Vec<Section> {
@@ -705,6 +996,8 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 command: None,
                 category: "Sessions",
                 chord: None,
+                agent: None,
+                preview: None,
             }
         })
         .collect();
@@ -771,85 +1064,202 @@ fn move_destination_row(
         (session.name.clone(), session.name.clone())
     };
     let imported = if !designated && session.awaiting_organization {
-        " · imported session still awaiting organization"
+        " · imported"
     } else {
         ""
     };
     Row {
         title: title.into(),
-        detail: Some(format!("Move {count} selected · execution unchanged{imported}").into()),
+        detail: Some(format!("{count} selected{imported}").into()),
         keywords: session.name.clone(),
         target: Target::Move(session.key, name),
         command: None,
         category: "Organization",
         chord: None,
+        agent: None,
+        preview: None,
     }
+}
+
+/// The tab that shows `terminal`, by the same title the tab row uses.
+fn tab_label(desk: &Desk, terminal: &ResourceId) -> Option<String> {
+    let link = desk.link.as_ref()?;
+    let tab = link.workspace.tabs.iter().find(|tab| {
+        crate::workspace::layout::placements(&tab.root)
+            .iter()
+            .any(|placement| placement.terminal_id.as_ref() == Some(terminal))
+    })?;
+    Some(desk::tab_title(desk, tab))
+}
+
+/// One pane on a tab card: the agent name and its state word, or the terminal
+/// title and its directory. Layout metadata only.
+fn tab_pane(
+    desk: &Desk,
+    placement: &crate::workspace::layout::Placement,
+) -> Option<goto_facts::Fact> {
+    let id = placement.terminal_id.as_ref()?;
+    let link = desk.link.as_ref()?;
+    let pane = link.connection.pane(id)?;
+    let agent = link.connection.agents.get(id);
+    let name = agent
+        .map(|info| info.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| desk.pane_title(Some(id)));
+    let detail = agent
+        .and_then(|info| {
+            let word = info.word();
+            (!word.is_empty()).then(|| word.to_owned())
+        })
+        .unwrap_or_else(|| desk::short_path(pane.cwd.clone()));
+    Some(goto_facts::Fact::new(name, detail))
+}
+
+fn filter_sections(mut sections: Vec<Section>, filter: goto_filter::GotoFilter) -> Vec<Section> {
+    if filter == goto_filter::GotoFilter::All {
+        return sections;
+    }
+    for section in &mut sections {
+        section
+            .rows
+            .retain(|row| filter.matches(row.agent.as_ref()));
+    }
+    sections.retain(|section| !section.rows.is_empty());
+    sections
+}
+
+fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
+    match &row.target {
+        Target::Work(destination) => Some(goto_filter::GotoId::Work(destination.clone())),
+        Target::Command => row.command.map(goto_filter::GotoId::Command),
+        Target::Setting(page) => Some(goto_filter::GotoId::Setting(*page)),
+        Target::Pane(id) => Some(goto_filter::GotoId::Pane(id.clone())),
+        Target::Tab(id) => Some(goto_filter::GotoId::Tab(id.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+fn goto_candidates(sections: &[Section]) -> Vec<goto_filter::GotoCandidate> {
+    sections
+        .iter()
+        .flat_map(|section| section.rows.iter())
+        .filter_map(|row| {
+            Some(goto_filter::GotoCandidate {
+                id: goto_id(row)?,
+                agent: row.agent.clone(),
+            })
+        })
+        .collect()
+}
+
+fn section_ids(sections: &[Section]) -> Vec<Vec<goto_filter::GotoId>> {
+    sections
+        .iter()
+        .map(|section| section.rows.iter().filter_map(goto_id).collect())
+        .collect()
 }
 
 /// Rank every row against `query` as one flat list; an empty query keeps the sections.
 fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section> {
-    let query = query.trim();
-    if query.is_empty() {
-        return sections;
-    }
-    let folded = query.to_lowercase();
-    let tokens: Vec<&str> = folded.split_whitespace().collect();
-    let mut ranked: Vec<(i64, Row)> = sections
-        .into_iter()
-        .flat_map(|section| section.rows)
-        .filter_map(|row| {
-            let title = row.title.to_lowercase();
-            let metadata = format!(
-                "{} {} {}",
-                row.category,
-                row.detail.as_deref().unwrap_or_default(),
-                row.keywords,
-            )
-            .to_lowercase();
-            let score = tokens.iter().try_fold(0, |total, token| {
-                let title_score = literal_score(&title, token)
-                    .map(|score| score * 4)
-                    .or_else(|| subsequence_score(&title, token));
-                // Long descriptions are useful search terms, not a fuzzy-match canvas.
-                let metadata_score = literal_score(&metadata, token);
-                title_score
-                    .into_iter()
-                    .chain(metadata_score)
-                    .max()
-                    .map(|score| total + score)
-            })?;
-            let priority = if title == folded {
-                10_000
-            } else if title.starts_with(&folded) {
-                2_000
-            } else {
-                0
-            };
-            Some((score + priority, row))
-        })
-        .collect();
-    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    vec![Section {
-        label: None,
-        rows: ranked.into_iter().map(|(_, row)| row).collect(),
-    }]
+    goto_search::rank_sections(sections, query)
 }
 
-fn literal_score(haystack: &str, token: &str) -> Option<i64> {
-    let index = haystack.find(token)?;
-    let before = haystack[..index].chars().next_back();
-    let word_start = before.is_none_or(|ch| ch.is_whitespace() || "/:._-".contains(ch));
-    let offset = haystack[..index].chars().count().min(60) as i64;
-    Some(if word_start { 200 } else { 120 } - offset)
+/// Fold Go To rows when their metadata revision changes, then rank the query.
+fn prepare_goto(desk: &mut Desk, query: &str) {
+    let revision = search_revision(desk);
+    let filter = desk.goto.filter;
+    if desk.goto_search.needs_rebuild(revision) {
+        let sections = goto_sections(desk);
+        desk.goto_search.rebuild(revision, sections);
+    }
+    let generation = desk.goto_frecency.generation();
+    if desk.goto_search.rank_current(query, filter, generation) {
+        return;
+    }
+    let boosts = desk.goto_frecency.boosts(goto_frecency::now());
+    let boot = desk
+        .link
+        .as_ref()
+        .and_then(|link| link.connection.server_id());
+    desk.goto_search
+        .ensure_ranked(query, filter, generation, |row| {
+            goto_boost(&boosts, boot.as_deref(), row)
+        });
 }
 
-fn subsequence_score(haystack: &str, token: &str) -> Option<i64> {
-    let mut chars = haystack.chars();
-    let mut gaps = 0;
-    for wanted in token.chars() {
-        gaps += chars.position(|ch| ch == wanted)? as i64;
+fn goto_boost(
+    boosts: &std::collections::HashMap<goto_frecency::Key, i64>,
+    boot: Option<&str>,
+    row: &Row,
+) -> i64 {
+    let Some(boot) = boot else {
+        return 0;
+    };
+    let key = match &row.target {
+        Target::Pane(id) => goto_frecency::Key::pane(boot, &id.to_string()),
+        Target::Tab(id) => goto_frecency::Key::tab(boot, id),
+        _ => None,
+    };
+    key.and_then(|key| boosts.get(&key).copied()).unwrap_or(0)
+}
+
+/// Connection drains cover panes and agents. Tabs are local, so they mix in too.
+fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
+    let Some(link) = desk.link.as_ref() else {
+        return goto_search::SearchRevision {
+            connection: desk.fleet.revision.rotate_left(32),
+            workspace: 0,
+        };
+    };
+    goto_search::SearchRevision {
+        connection: link
+            .connection
+            .revision()
+            .wrapping_add(desk.fleet.revision.rotate_left(32)),
+        workspace: workspace_stamp(&link.workspace.tabs),
     }
-    Some((60 - gaps).max(1))
+}
+
+fn workspace_stamp(tabs: &[crate::workspace::layout::DeskTab]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for tab in tabs {
+        hash = mix_bytes(hash, tab.id.as_bytes());
+        hash = mix_bytes(hash, tab.focused_id.as_bytes());
+        hash = mix_bytes(hash, tab.title.as_deref().unwrap_or("").as_bytes());
+        hash = mix_node(hash, &tab.root);
+    }
+    hash
+}
+
+fn mix_node(mut hash: u64, node: &crate::workspace::layout::LayoutNode) -> u64 {
+    match node {
+        crate::workspace::layout::LayoutNode::Leaf { placement } => {
+            hash = mix_bytes(hash, placement.id.as_bytes());
+            mix_bytes(hash, placement.terminal_label.as_bytes())
+        }
+        crate::workspace::layout::LayoutNode::Split {
+            id, first, second, ..
+        } => {
+            hash = mix_bytes(hash, id.as_bytes());
+            hash = mix_node(hash, first);
+            mix_node(hash, second)
+        }
+    }
+}
+
+fn mix_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    hash ^= bytes.len() as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    goto_search::PreparedQuery::parse(query).into_terms()
 }
 
 fn path_panel(
@@ -894,6 +1304,7 @@ fn path_panel(
         CommandItem::new().label(search).child(move |_, cx| {
             let terminal_handle = terminal_handle.clone();
             div()
+                .group("path-row")
                 .flex()
                 .flex_1()
                 .min_w_0()
@@ -911,7 +1322,9 @@ fn path_panel(
                         .filter(|_| !matches!(icon, IconName::ArrowUp))
                         .map(|directory| {
                             Button::new(format!("open-{directory}"))
-                                .label("New terminal here")
+                                .invisible()
+                                .group_hover("path-row", |style| style.visible())
+                                .label("Open terminal")
                                 .ghost()
                                 .xsmall()
                                 .on_click(move |_, window, cx| {
@@ -934,28 +1347,30 @@ fn path_panel(
         .items(rows)
         .empty(move |_, _, cx| {
             div()
-                .py(px(24.))
+                .py(px(36.))
+                .px(px(24.))
                 .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
                 .text_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
                 .child(if pending { "Searching…" } else { "No paths." })
         })
         .footer(move |_, _, _| {
             div()
                 .px(px(12.))
-                .py(px(6.))
+                .py(px(10.))
                 .flex()
                 .justify_between()
                 .gap(px(12.))
                 .text_xs()
                 .text_color(muted)
                 .child(div().min_w_0().truncate().child(message.clone()))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .child("↩ insert · ⇥ open folder · esc close"),
-                )
+                .child(div().flex_shrink_0().child("Tab: open terminal"))
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
@@ -990,9 +1405,16 @@ fn notification_rows(
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(8.))
+                .px(px(12.))
+                .py(px(12.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.055))
+                .bg(from_hex(&colors.theme.foreground).opacity(if entry.read {
+                    0.015
+                } else {
+                    0.04
+                }))
                 .flex()
                 .items_start()
                 .gap(px(10.))
@@ -1049,7 +1471,8 @@ fn notification_rows(
 fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
     div()
         .px(px(10.))
-        .py(px(6.))
+        .pt(px(14.))
+        .pb(px(8.))
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(from_hex(&colors.muted))
@@ -1075,8 +1498,10 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     if agent_rows.is_empty() {
         rows.push(
             div()
-                .px(px(10.))
-                .py(px(8.))
+                .px(px(12.))
+                .py(px(16.))
+                .rounded(px(10.))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
                 .child("No agent attention alerts.")
@@ -1094,14 +1519,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
     }
     card(colors, 460.)
         .mt(px(60.))
-        .p(px(8.))
+        .p(px(12.))
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(8.))
         .child(
             div()
                 .px(px(8.))
-                .py(px(4.))
+                .py(px(8.))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -1110,7 +1535,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                         .text_base()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Inbox & notifications"),
+                        .child("Notifications"),
                 )
                 .when(!empty, |header| {
                     header.child(
@@ -1124,21 +1549,17 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                     )
                 }),
         )
-        .child(
-            div()
-                .px(px(10.))
-                .py(px(4.))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child("Inbox holds agent attention alerts; notifications hold errors and command results. Click an agent alert to open its terminal."),
-        )
         .child(if empty {
             div()
-                .px(px(10.))
-                .py(px(16.))
+                .px(px(20.))
+                .py(px(28.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
+                .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("No alerts or notifications yet. Unorganized work lives in Intake.")
+                .child("No notifications")
                 .into_any_element()
         } else {
             div()
@@ -1147,6 +1568,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
+                .gap(px(6.))
                 .children(rows)
                 .into_any_element()
         })
@@ -1156,13 +1578,14 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
 fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
     card(colors, 440.)
         .mt(px(120.))
-        .p(px(16.))
+        .p(px(24.))
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(14.))
         .child(
             div()
-                .text_base()
+                .pb(px(4.))
+                .text_size(px(18.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(from_hex(&colors.theme.foreground))
                 .child(title.to_owned()),
@@ -1171,6 +1594,7 @@ fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
 
 fn dialog_buttons(confirm: Button, cx: &mut Context<Desk>) -> impl IntoElement {
     div()
+        .pt(px(8.))
         .flex()
         .justify_end()
         .gap(px(8.))
@@ -1283,7 +1707,7 @@ fn confirm(
     run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> AnyElement {
     dialog_card(&title, colors)
-        .border_color(from_hex(&colors.theme.danger))
+        .border_color(from_hex(&colors.theme.danger).opacity(0.55))
         .child(
             div()
                 .text_sm()
@@ -1302,12 +1726,49 @@ fn confirm(
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, Section, Target, move_destination_sections, rank_sections};
+    use super::goto_filter::{GotoCursor, GotoFilter, GotoId, apply_filter, selection_path};
+    use super::{
+        AgentInfo, Row, Section, Target, filter_sections, goto_candidates,
+        move_destination_sections, rank_sections, section_ids,
+    };
     use phux_protocol::ids::{Revision, SessionKey};
     use phux_protocol::wire::frame::SessionRecord;
 
     fn session(byte: u8, name: &str) -> SessionRecord {
         SessionRecord::new(SessionKey::new([byte; 16]).unwrap(), name, Revision::new(1))
+    }
+
+    #[test]
+    fn work_and_settings_rows_preserve_actual_indices_during_filter_realignment() {
+        let work = crate::app::fleet::Destination {
+            host: Some("mini".into()),
+            authority: None,
+            key: Some(SessionKey::new([3; 16]).unwrap()),
+            name: "repo".into(),
+        };
+        let target = phux_protocol::ResourceId::local(7);
+        let rows = vec![
+            super::simple_row("repo", String::new(), "Work", Target::Work(work)),
+            super::simple_row(
+                "Appearance",
+                String::new(),
+                "Settings",
+                Target::Setting(crate::app::settings_panel::Page::Appearance),
+            ),
+            super::simple_row(
+                "agent",
+                String::new(),
+                "Agents",
+                Target::Pane(target.clone()),
+            ),
+        ];
+        let sections = vec![Section { label: None, rows }];
+        let ids = section_ids(&sections);
+        assert_eq!(ids[0].len(), 3);
+        assert_eq!(
+            selection_path(&ids, Some(&GotoId::Pane(target))),
+            Some((0, 2))
+        );
     }
 
     #[test]
@@ -1346,6 +1807,8 @@ mod tests {
                 command: None,
                 category: "",
                 chord: None,
+                agent: None,
+                preview: None,
             })
             .collect();
         rank_sections(vec![Section { label: None, rows }], query)
@@ -1374,5 +1837,158 @@ mod tests {
             vec!["Split Right"]
         );
         assert!(ranked(&["Zoom"], "qq").is_empty());
+    }
+
+    fn agent(state: crate::connection::AgentState) -> AgentInfo {
+        use crate::connection::AgentAttention;
+        let attention = match state {
+            crate::connection::AgentState::Blocked => AgentAttention::High,
+            crate::connection::AgentState::Working => AgentAttention::Normal,
+            crate::connection::AgentState::Idle => AgentAttention::None,
+            crate::connection::AgentState::Done | crate::connection::AgentState::Unknown => {
+                AgentAttention::Low
+            }
+        };
+        AgentInfo {
+            name: "agent".into(),
+            kind: None,
+            state,
+            attention,
+            changed_at_ms: 0,
+        }
+    }
+
+    fn goto_row(title: &str, state: Option<crate::connection::AgentState>, id: u32) -> Row {
+        Row {
+            title: title.into(),
+            detail: None,
+            keywords: String::new(),
+            target: Target::Pane(phux_protocol::ResourceId::local(id)),
+            command: None,
+            category: "Agents",
+            chord: None,
+            agent: state.map(agent),
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn state_filter_then_rank_keeps_the_query_and_identity() {
+        use crate::connection::AgentState;
+
+        let sections = vec![Section {
+            label: Some("Agents"),
+            rows: vec![
+                goto_row("Blocked", Some(AgentState::Blocked), 1),
+                goto_row("Worker", Some(AgentState::Working), 2),
+                goto_row("Other worker", Some(AgentState::Working), 5),
+                goto_row("Idle", Some(AgentState::Idle), 3),
+            ],
+        }];
+        let entries = goto_candidates(&sections);
+        let worker = GotoId::Pane(phux_protocol::ResourceId::local(5));
+        let mut cursor = GotoCursor {
+            query: "other".into(),
+            selected: Some(worker.clone()),
+        };
+        apply_filter(&mut cursor, &entries, GotoFilter::Working);
+        assert_eq!(cursor.query, "other");
+        assert_eq!(cursor.selected.as_ref(), Some(&worker));
+        let ranked = rank_sections(
+            filter_sections(sections, GotoFilter::Working),
+            &cursor.query,
+        );
+        let ids = section_ids(&ranked);
+        assert_eq!(ids, vec![vec![worker.clone()]]);
+        assert_eq!(selection_path(&ids, cursor.selected.as_ref()), Some((0, 0)));
+
+        let idle_row = || goto_row("Idle", Some(AgentState::Idle), 3);
+        let idle_only = || {
+            vec![Section {
+                label: Some("Agents"),
+                rows: vec![idle_row()],
+            }]
+        };
+        let mut dropped = GotoCursor {
+            query: "other".into(),
+            selected: Some(worker),
+        };
+        apply_filter(
+            &mut dropped,
+            &goto_candidates(&idle_only()),
+            GotoFilter::Idle,
+        );
+        assert_eq!(dropped.query, "other");
+        assert!(dropped.selected.is_none());
+        let hidden = rank_sections(
+            filter_sections(idle_only(), GotoFilter::Idle),
+            &dropped.query,
+        );
+        assert_eq!(
+            selection_path(&section_ids(&hidden), dropped.selected.as_ref()),
+            None,
+            "a query that matches nothing leaves no row to highlight"
+        );
+        let shown = rank_sections(filter_sections(idle_only(), GotoFilter::Idle), "");
+        assert_eq!(
+            selection_path(&section_ids(&shown), dropped.selected.as_ref()),
+            Some((0, 0))
+        );
+        assert!(matches!(
+            &shown[0].rows[0].target,
+            Target::Pane(id) if *id == phux_protocol::ResourceId::local(3)
+        ));
+    }
+
+    #[test]
+    fn a_filter_keeps_the_highlighted_rows_facts_and_drops_a_hidden_card() {
+        use super::goto_facts::{GotoSubject, facts_card};
+        use crate::connection::AgentState;
+
+        let card = facts_card(Some(&GotoSubject::Pane {
+            title: "Worker".into(),
+            agent: Some(agent(AgentState::Working)),
+            session: "work".into(),
+            directory: "~/repo".into(),
+            tab: None,
+        }))
+        .expect("highlighted worker has a card");
+        let mut worker = goto_row("Worker", Some(AgentState::Working), 2);
+        worker.preview = Some(card.clone());
+        let sections = vec![Section {
+            label: Some("Agents"),
+            rows: vec![worker, goto_row("Idle", Some(AgentState::Idle), 3)],
+        }];
+        let ranked = rank_sections(filter_sections(sections, GotoFilter::Working), "work");
+        let shown = ranked[0].rows[0]
+            .preview
+            .as_ref()
+            .expect("card follows the row");
+        assert_eq!(shown, &card);
+        assert_eq!(
+            shown
+                .facts
+                .iter()
+                .map(|fact| (fact.name.as_str(), fact.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Status", "working"),
+                ("Directory", "~/repo"),
+                ("Session", "work"),
+            ]
+        );
+
+        let hidden = rank_sections(
+            filter_sections(
+                vec![Section {
+                    label: Some("Agents"),
+                    rows: vec![goto_row("Idle", Some(AgentState::Idle), 3)],
+                }],
+                GotoFilter::Working,
+            ),
+            "",
+        );
+        assert!(hidden.is_empty(), "a hidden row takes its card with it");
+        assert!(facts_card(None).is_none());
     }
 }

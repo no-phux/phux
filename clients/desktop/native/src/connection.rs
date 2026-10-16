@@ -1,4 +1,4 @@
-//! One runtime client, one event and path-answer drain.
+//! One runtime client, one event, path-answer, and file-upload drain.
 //!
 //! The runtime owns dial, reconnect, and input delivery. This module installs
 //! the sole [`Listener`] and wakes a bounded channel; it does not poll and it
@@ -17,10 +17,10 @@ pub use path::{
 
 pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
-use phux_client_runtime::control::ControlOptions;
+use phux_client_runtime::control::{ControlOptions, SessionRecovery};
 use phux_client_runtime::control::{
-    DeliveryOutcome, Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
-    mint_operation,
+    DeliveryOutcome, Event, FileUploadReceipt, PaneDescriptor, PathAnswer, ServerInfo,
+    SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -64,6 +64,24 @@ impl AgentInfo {
     #[must_use]
     pub fn word(&self) -> &'static str {
         state_word(self.state)
+    }
+
+    /// Declared working.
+    #[must_use]
+    pub fn working(&self) -> bool {
+        self.state == AgentState::Working
+    }
+
+    /// Declared idle.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.state == AgentState::Idle
+    }
+
+    /// Declared finished (`done`).
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.state == AgentState::Done
     }
 }
 
@@ -146,6 +164,7 @@ pub struct Connection {
     home_key: Option<SessionKey>,
     key_bootstrap_pending: bool,
     pinned_home: bool,
+    expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pinned_verified_epoch: Option<u64>,
     /// Arrangements asked for on this connection, so each is read once.
     fetched: HashSet<ArrangementKey>,
@@ -159,7 +178,10 @@ pub struct Connection {
     admitted: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,
+    /// Inventory-only connections never attach terminal streams or fetch layouts.
+    browsing: bool,
     path_answers: Vec<PathAnswer>,
+    file_uploads: Vec<FileUploadReceipt>,
     wake_rx: async_channel::Receiver<()>,
     revision: u64,
     paint_clock: u64,
@@ -212,6 +234,28 @@ fn open_client(target: Target, control: ControlOptions) -> anyhow::Result<Client
     )?)
 }
 
+fn remote_target(host: &str) -> anyhow::Result<Target> {
+    #[cfg(test)]
+    if deterministic_dial::armed() {
+        return Ok(Target::uds(PathBuf::from(
+            "/deterministic-desktop-remote.sock",
+        )));
+    }
+    Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))
+}
+
+fn browsing_options() -> ControlOptions {
+    ControlOptions {
+        client_name: "phux-desktop-catalog".to_owned(),
+        viewport: (0, 0),
+        attach: None,
+        attach_role: None,
+        auto_attach_foreign_spawns: false,
+        subscribe_agent_sessions: false,
+        ..ControlOptions::default()
+    }
+}
+
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
@@ -239,7 +283,7 @@ impl Connection {
         session: String,
         key: Option<SessionKey>,
     ) -> anyhow::Result<Self> {
-        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
+        let target = remote_target(host)?;
         Self::connect_target(target, session, key)
     }
 
@@ -257,6 +301,11 @@ impl Connection {
                 client_name: "phux-desktop".to_owned(),
                 viewport: (0, 0),
                 attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
+                session_recovery: if key.is_some() {
+                    SessionRecovery::CallerValidated
+                } else {
+                    SessionRecovery::Automatic
+                },
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
                 subscribe_agent_sessions: true,
@@ -267,6 +316,18 @@ impl Connection {
         connection.home_key = key;
         connection.key_bootstrap_pending = key.is_some();
         connection.pinned_home = key.is_some();
+        Ok(connection)
+    }
+
+    /// Observe inventory without selecting a session, acquiring a view, or spawning work.
+    pub(crate) fn browse(socket: &std::path::Path, remote: Option<&str>) -> anyhow::Result<Self> {
+        let target = match remote {
+            Some(host) => remote_target(host)?,
+            None => Target::uds(socket.to_path_buf()),
+        };
+        let client = open_client(target, browsing_options())?;
+        let mut connection = Self::from_client(client, String::new());
+        connection.browsing = true;
         Ok(connection)
     }
 
@@ -290,6 +351,7 @@ impl Connection {
             home_key: None,
             key_bootstrap_pending: false,
             pinned_home: false,
+            expected_authority: None,
             pinned_verified_epoch: None,
             fetched: HashSet::new(),
             closed: false,
@@ -297,7 +359,9 @@ impl Connection {
             admitted: HashSet::new(),
             identity: None,
             project_tag: None,
+            browsing: false,
             path_answers: Vec::new(),
+            file_uploads: Vec::new(),
             wake_rx,
             revision: 0,
             paint_clock: 0,
@@ -312,7 +376,7 @@ impl Connection {
         self.wake_rx.clone()
     }
 
-    /// Take events and path answers, and refresh snapshots the batch can change.
+    /// Take events, path answers, and file-upload receipts, and refresh snapshots the batch can change.
     pub fn drain(&mut self) -> Vec<Event> {
         let observation = self.client.take_activity();
         if observation.status != self.status {
@@ -329,8 +393,11 @@ impl Connection {
             log::trace!("event {event:?}");
         }
         self.path_answers.extend(self.client.take_path_answers());
+        self.file_uploads
+            .extend(self.client.take_file_upload_receipts());
         let changed = observation.events.iter().any(structural);
         let was = self.status;
+        self.observe_epoch(&observation.events);
         if changed {
             self.apply_snapshot(
                 observation.status,
@@ -349,7 +416,8 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
-        if changed {
+        self.attach_pinned_home();
+        if changed && !self.browsing {
             self.follow_arrangements(&observation.events);
         }
         self.invalidate_paint(&observation.events);
@@ -357,9 +425,26 @@ impl Connection {
         observation.events
     }
 
+    fn observe_epoch(&mut self, events: &[Event]) {
+        if !self.pinned_home {
+            return;
+        }
+        if events.iter().any(starts_connection) {
+            self.key_bootstrap_pending = true;
+            self.pinned_verified_epoch = None;
+        }
+    }
+
     /// Path answers stashed by [`Self::drain`] since the last take.
     pub fn take_path_answers(&mut self) -> Vec<PathAnswer> {
         std::mem::take(&mut self.path_answers)
+    }
+
+    /// File-upload receipts stashed by [`Self::drain`] since the last take.
+    ///
+    /// The queue is lossless. A caller that ignores a receipt must not paste.
+    pub fn take_file_upload_receipts(&mut self) -> Vec<FileUploadReceipt> {
+        std::mem::take(&mut self.file_uploads)
     }
 
     /// The terminal is in the latest topology and the runtime will accept input.
@@ -657,8 +742,16 @@ impl Connection {
         self.attach_pinned_home();
     }
 
+    pub(crate) fn session_validated(&self) -> bool {
+        !self.pinned_home || self.pinned_verified_epoch == Some(self.connection_epoch())
+    }
+
     /// Resolve the pinned key before asking the runtime to attach, and verify
     /// it again after the runtime's redial before admitting the workspace.
+    pub(crate) fn expect_authority(&mut self, authority: Option<phux_protocol::ids::AuthorityId>) {
+        self.expected_authority = authority;
+    }
+
     fn attach_pinned_home(&mut self) {
         if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
             return;
@@ -667,6 +760,14 @@ impl Connection {
             if self.status == Status::Attached {
                 self.status = Status::Negotiated;
             }
+            return;
+        }
+        if self.expected_authority.is_some()
+            && self.client.organization().authority() != self.expected_authority
+        {
+            self.error = Some("The host now reports a different authority. Refresh Work and select the session again.".into());
+            self.status = Status::Failed;
+            self.client.close();
             return;
         }
         if self.key_bootstrap_pending {
@@ -749,6 +850,11 @@ impl Connection {
                             && self.known.contains(parent)
                         {
                             let resource = &publication.resource_id;
+                            let native = self.client.with_control(|control| {
+                                control
+                                    .engine()
+                                    .and_then(|engine| engine.native_agent_view(resource))
+                            });
                             if !self.conversations.contains_key(resource)
                                 && let Some(conversation) =
                                     transcript::Conversation::new(publication, session, epoch)
@@ -760,6 +866,13 @@ impl Connection {
                                 && &conversation.parent == parent
                             {
                                 conversation.apply(publication, session, epoch);
+                                // Losing a projection is not a cutover to PTY input,
+                                // nor permission to keep old ACP controls interactive.
+                                if let Some(native) = native {
+                                    conversation.native = Some(native);
+                                } else if let Some(native) = conversation.native.as_mut() {
+                                    native.connected = false;
+                                }
                             }
                             if let Some(conversation) = self.conversations.get(resource)
                                 && !conversation.closed
@@ -1243,6 +1356,9 @@ mod deterministic_dial {
 }
 
 #[cfg(test)]
+mod authority_tests;
+
+#[cfg(test)]
 mod paint_wake_tests {
     use super::{own_spawn, paint_wake, session_attached, structural};
     use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
@@ -1302,5 +1418,68 @@ mod paint_wake_tests {
             None
         );
         assert_eq!(own_spawn(&Event::TopologyChanged), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_predicates {
+    use super::{AgentAttention, AgentInfo, AgentState};
+
+    fn info(state: AgentState, attention: AgentAttention) -> AgentInfo {
+        AgentInfo {
+            name: "agent".into(),
+            kind: None,
+            state,
+            attention,
+            changed_at_ms: 0,
+        }
+    }
+
+    fn flags(info: &AgentInfo) -> (bool, bool, bool, bool) {
+        (
+            info.needs_you(),
+            info.working(),
+            info.idle(),
+            info.finished(),
+        )
+    }
+
+    #[test]
+    fn state_predicates_share_one_classifier() {
+        // needs you, working, idle, finished
+        assert_eq!(
+            flags(&info(AgentState::Blocked, AgentAttention::High)),
+            (true, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Done, AgentAttention::Low)),
+            (true, false, false, true),
+            "finished still needs you; it is not a second classifier"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::Normal)),
+            (false, true, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Working, AgentAttention::High)),
+            (true, true, false, false),
+            "asking loudly does not stop the agent being working"
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::None)),
+            (false, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Idle, AgentAttention::High)),
+            (true, false, true, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::Low)),
+            (false, false, false, false)
+        );
+        assert_eq!(
+            flags(&info(AgentState::Unknown, AgentAttention::High)),
+            (true, false, false, false)
+        );
     }
 }

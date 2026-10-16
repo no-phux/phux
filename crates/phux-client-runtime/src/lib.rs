@@ -14,7 +14,7 @@
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`project_identity`]: a checkout's repository identity, from git files.
 //! - [`organize`]: the organize judge, its Jev transport, and the undo
-//!   journal (ADR-0170).
+//!   journal (ADR-0174).
 //! - [`session`]: one-shot sessions: a verb's negotiated connection, with
 //!   correlated requests and QUIC per-Terminal streams (ADR-0171).
 //! - [`runtime`]: [`runtime::Runtime::connect`] and the thread-safe

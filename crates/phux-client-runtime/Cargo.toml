@@ -23,6 +23,9 @@ engine = ["dep:libghostty-vt", "phux-client-core/native-engine"]
 # Test-only hooks a consumer's tests need to drive tunnel state without a
 # network, the way phux-dial's `testing` feature exposes its fixtures.
 testing = []
+# Builds the `publish_pacing` measurement test target (`#[ignore]`d tests
+# only), so the default test build skips it.
+measure = []
 
 [dependencies]
 # Every dependency below was already carried by phux-client-ffi or the
@@ -94,3 +97,7 @@ phux-server.workspace = true
 # The seed command type the testkit's PTY-seeded server takes (already in
 # the lockfile through the testkit and phux-client-ffi's tests).
 portable-pty.workspace = true
+
+[[test]]
+name = "publish_pacing"
+required-features = ["measure"]

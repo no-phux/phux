@@ -245,6 +245,51 @@ fn attach_ids_are_non_zero_and_wrap_past_zero() {
 // ----- correlated requests -----------------------------------------------
 
 #[test]
+fn native_commands_without_negotiated_support_never_write() {
+    block_on(async {
+        let (mut client, server) = pair();
+        let mut server = Session::from_stream(server);
+        let peer = tokio::task::spawn_local(async move {
+            let FrameKind::Hello { client_caps, .. } = server.recv().await.expect("HELLO") else {
+                panic!("the first frame is HELLO");
+            };
+            server
+                .send(&hello_ok(
+                    &client_caps,
+                    phux_protocol::caps::ServerCapabilities::new(),
+                ))
+                .await
+                .expect("answer");
+            server
+        });
+        client
+            .negotiate("probe".to_owned(), control_caps())
+            .await
+            .expect("negotiate");
+        let mut server = peer.await.expect("peer");
+        let request = phux_protocol::native_agent::NativeRequestPayload::new(
+            phux_protocol::native_agent::NativeRequest::Register {
+                agent_session_id: ResourceId::local(1),
+                activation: "activation".into(),
+                binding_proof: "proof".into(),
+            },
+        )
+        .expect("payload");
+        let error = tokio::time::timeout(
+            WEDGE_TIMEOUT,
+            client.request(7, Command::NativeAgent { request }),
+        )
+        .await
+        .expect("local refusal")
+        .expect_err("unsupported native command");
+        assert!(
+            matches!(error, SessionError::Protocol(message) if message.contains("NATIVE_AGENT"))
+        );
+        assert!(server.try_recv().expect("nothing written").is_none());
+    });
+}
+
+#[test]
 fn pre_ack_bootstrap_is_returned_instead_of_discarded() {
     let mut script = bootstrap();
     script.push(ack(7));

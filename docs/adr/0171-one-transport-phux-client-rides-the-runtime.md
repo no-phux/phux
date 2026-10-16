@@ -24,7 +24,7 @@ Date: 2026-10-15
 desktop and FFI ride it. The CLI, MCP, and TUI do not: `phux-client` keeps
 a second transport (`attach/connection.rs`: dial wrappers, HELLO, SPEC §5
 framing, correlated requests, QUIC terminal-stream binding, corking).
-`phux organize` (ADR-0170) paid for that split three ways: apply and undo
+`phux organize` (ADR-0174) paid for that split three ways: apply and undo
 written twice (async over `Connection`, and a sans-IO sequencer over the
 runtime lane), repository discovery moved down a layer so the desktop
 could reach it, and a new dependency edge.

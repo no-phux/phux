@@ -773,7 +773,7 @@ phux report new "note"   # logs-and-version only, when the TUI itself is down
 
 `organize` (`C-a O`, also a palette row and a session-menu row) is
 `phux organize` from inside the attach
-([ADR-0170](../adr/0170-organize-asks-a-judge-and-code-decides.md)): panes
+([ADR-0174](../adr/0174-organize-asks-a-judge-and-code-decides.md)): panes
 join the session for their repository, a repository with no session gets
 one, and a numbered session holding one repository takes its name. It runs
 on its own control connection, so typing continues; a passthrough notice

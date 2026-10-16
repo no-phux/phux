@@ -692,7 +692,7 @@ pub enum PolicyMode {
 }
 
 /// `[organize]` table: who judges where panes belong for `phux organize`
-/// (ADR-0170). Read by the client that runs it, never by the server.
+/// (ADR-0174). Read by the client that runs it, never by the server.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct OrganizeCfg {

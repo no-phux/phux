@@ -92,6 +92,9 @@ pub struct StateBlob {
     /// reader ignores the field and leaves the sockets unserved.
     #[serde(default)]
     pub delegations: Vec<DelegationBlob>,
+    /// Exclusive native controllers, operation ledger and publication receipts.
+    #[serde(default)]
+    pub native_agents: Vec<crate::state::native_agent::NativeBinding>,
 }
 
 /// One carried delegated agent credential.
@@ -345,6 +348,12 @@ pub struct AgentSessionBlob {
     /// re-prunes to its own ceiling.
     #[serde(default)]
     pub records: Vec<String>,
+    /// Atomic native append receipts independent of record retention.
+    #[serde(default)]
+    pub native_publications: Vec<crate::resource::agent_session::NativeAppendAccepted>,
+    /// Monotonic native publication cursor, including evicted receipts.
+    #[serde(default)]
+    pub native_publication_high_water: u64,
     /// The resource record's key in [`StateBlob::org`]. Additive.
     #[serde(default)]
     pub key: Option<phux_core::ResourceKey>,
@@ -485,6 +494,8 @@ mod tests {
                     "{\"seq\":9,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned(),
                 ],
                 key: None,
+                native_publications: Vec::new(),
+                native_publication_high_water: 0,
             }],
             metadata: vec![MetadataBlob {
                 group: Some(1),
@@ -493,6 +504,7 @@ mod tests {
             }],
             org: None,
             delegations: Vec::new(),
+            native_agents: Vec::new(),
         }
     }
 
