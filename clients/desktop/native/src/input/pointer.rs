@@ -1,8 +1,8 @@
 use super::{InputError, TerminalInput, engine_error, input_ready, keys, queued};
 use crate::terminal::geometry::{self, Geometry, SurfacePoint};
 use gpui::{
-    App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollWheelEvent, Window, px,
+    App, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollWheelEvent, TouchPhase, Window, px,
 };
 use phux_client_runtime::{
     control::ControlPlane,
@@ -303,16 +303,26 @@ impl TerminalInput {
         Ok(())
     }
 
+    /// Scroll the view under the pointer. Like every macOS scroll view, the
+    /// wheel follows the pointer, not keyboard focus, so it needs only this
+    /// window. A sub-line delta accumulates without touching the runtime; a
+    /// whole line takes one control turn and notifies this entity, which
+    /// repaints the observing terminal.
     pub fn scroll(
         &mut self,
         event: &ScrollWheelEvent,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
-        self.current(window, cx)?;
+        if window.window_handle().window_id() != self.window {
+            return Err(InputError::WrongFocus);
+        }
         let metrics = self.metrics.ok_or(InputError::StalePresentation)?;
         if !self.hit(event.position) {
             return Ok(false);
+        }
+        if event.touch_phase == TouchPhase::Started {
+            self.scroll_remainder = 0.0;
         }
         let delta = event.delta.pixel_delta(metrics.line_height);
         self.scroll_remainder += f32::from(delta.y) / f32::from(metrics.line_height).max(1.0);
@@ -321,16 +331,21 @@ impl TerminalInput {
         if lines == 0 {
             return Ok(true);
         }
-        self.with_current(false, |control| {
+        let local = self.with_current(false, |control| {
             if reporting(control, &self.terminal, event.modifiers)? {
                 self.report_scroll(control, lines, event)?;
+                Ok(false)
             } else {
                 control
                     .scroll_view(self.view, Scroll::Delta(-lines))
                     .map_err(engine_error)?;
+                Ok(true)
             }
-            Ok(true)
-        })
+        })?;
+        if local {
+            cx.notify();
+        }
+        Ok(true)
     }
 
     fn report_scroll(

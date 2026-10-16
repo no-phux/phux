@@ -1329,6 +1329,8 @@ mod delivery {
             info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
         },
     };
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -1348,16 +1350,24 @@ mod delivery {
     }
 
     fn session(role: Option<RolePolicy>) -> Arc<Client> {
+        session_with(role, b"ready")
+    }
+
+    fn session_with(role: Option<RolePolicy>, output: &[u8]) -> Arc<Client> {
         let client = Arc::new(Runtime::embedded(ControlOptions {
             attach: Some(AttachTarget::ByName("fit".into())),
             attach_role: role,
             ..ControlOptions::default()
         }));
-        open_session(&client, 1);
+        open_session_with(&client, 1, output);
         client
     }
 
     fn open_session(client: &Client, generation: u64) {
+        open_session_with(client, generation, b"ready");
+    }
+
+    fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
         client.with_control(ControlPlane::connection_opened);
         let _ = client.take_outbound();
         client
@@ -1410,7 +1420,7 @@ mod delivery {
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 0,
-                payload: b"ready".to_vec().into(),
+                payload: output.to_vec().into(),
             },
             FrameKind::BootstrapReady {
                 terminal_id: terminal(),
@@ -1517,6 +1527,53 @@ mod delivery {
                 frame => panic!("unexpected input frame: {frame:?}"),
             })
             .collect()
+    }
+
+    #[gpui::test]
+    fn wheel_scrolls_the_pane_under_the_pointer_and_repaints(cx: &mut TestAppContext) {
+        let lines: String = (0..12).map(|line| format!("line {line}\r\n")).collect();
+        let client = session_with(None, lines.as_bytes());
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.run_until_parked();
+        let offset = |client: &Client| client.acquire_view(view).expect("frame").scrollbar.offset;
+        let at_tail = offset(&client);
+        let wheel = |pixels: f32| gpui::ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(pixels))),
+            ..Default::default()
+        };
+        let input = cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input
+        });
+        let notified = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let notified = notified.clone();
+            cx.observe(&input, move |_, _| notified.set(notified.get() + 1))
+                .detach();
+        });
+
+        // Unfocused, and less than a line: nothing reaches the runtime.
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                assert_eq!(state.scroll(&wheel(8.), window, cx), Ok(true));
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(offset(&client), at_tail);
+        assert_eq!(notified.get(), 0);
+
+        // The remainder plus this delta crosses two lines.
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                assert_eq!(state.scroll(&wheel(30.), window, cx), Ok(true));
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(offset(&client), at_tail - 2);
+        assert_eq!(notified.get(), 1, "the observing terminal repaints");
     }
 
     #[gpui::test]
