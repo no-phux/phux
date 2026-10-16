@@ -82,7 +82,8 @@ The native panel has **Commands** and **Go To** controls, host/session context,
 action descriptions, and your effective keyboard shortcuts. Essentials come
 first; search prioritizes command names and also matches descriptions and
 keywords. In Go To, a leading `>` switches to commands and keeps the rest of
-your search.
+your search. Terminals and tabs you open often and recently rise among the
+matches for a typed query; an empty query keeps the list in its sections.
 
 Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
 search, then closes the panel; clicking outside also closes it. Commands that

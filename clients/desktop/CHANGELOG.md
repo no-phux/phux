@@ -28,6 +28,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.18.0](https://github.com/no-phux/phux/compare/desktop-v0.17.0...desktop-v0.18.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** rank Go To matches by bounded frecency ([#1451](https://github.com/no-phux/phux/issues/1451)) ([caaa2e3](https://github.com/no-phux/phux/commit/caaa2e3689971c6c2c1ee9f09e59937ed2f7eaf6))
+
 ## [0.17.0](https://github.com/no-phux/phux/compare/desktop-v0.16.0...desktop-v0.17.0) (2026-10-15)
 
 

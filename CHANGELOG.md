@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.79.4](https://github.com/no-phux/phux/compare/v0.79.3...v0.79.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ci:** share mbx target copies when Darwin hardlink does not ([#1452](https://github.com/no-phux/phux/issues/1452)) ([3958833](https://github.com/no-phux/phux/commit/3958833d939487a29537279ab08fb648c5a74542))
+
+
+### Build System
+
+* **nix:** bump libghostty-vt to upstream main and prebuild it on macOS ([#1454](https://github.com/no-phux/phux/issues/1454)) ([12dff37](https://github.com/no-phux/phux/commit/12dff37d8810fcb9f2c1d92d777e35b3306e694c))
+
 ## [0.79.3](https://github.com/no-phux/phux/compare/v0.79.2...v0.79.3) (2026-10-15)
 
 

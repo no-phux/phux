@@ -3819,7 +3819,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=1862eb01c8ab191e429a574c5a6ffdbc54a57581#1862eb01c8ab191e429a574c5a6ffdbc54a57581"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=0e7831e5faca86c4c593ca7d754cc7a402423c8b#0e7831e5faca86c4c593ca7d754cc7a402423c8b"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
@@ -3830,7 +3830,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=1862eb01c8ab191e429a574c5a6ffdbc54a57581#1862eb01c8ab191e429a574c5a6ffdbc54a57581"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=0e7831e5faca86c4c593ca7d754cc7a402423c8b#0e7831e5faca86c4c593ca7d754cc7a402423c8b"
 
 [[package]]
 name = "libloading"
@@ -5136,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -5152,7 +5152,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "libghostty-vt",
  "phux-client-core",
@@ -5163,7 +5163,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "bytes",
  "futures-util",
@@ -5188,7 +5188,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "chrono",
  "nix",
@@ -5229,7 +5229,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "futures-util",
  "hex",
@@ -5245,7 +5245,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "libc",
  "nix",
@@ -5255,7 +5255,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.79.3"
+version = "0.79.4"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",

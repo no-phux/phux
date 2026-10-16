@@ -144,6 +144,8 @@ pub(crate) struct GotoSearch {
     /// long paste is not retained as the cache key.
     ranked_folded: String,
     ranked_filter: Option<GotoFilter>,
+    /// [`super::goto_frecency::Store::generation`] the `ranked` rows used.
+    ranked_generation: u64,
     ranked: Vec<Section>,
 }
 
@@ -172,14 +174,29 @@ impl GotoSearch {
         self.ranked_filter = None;
     }
 
-    pub(super) fn ensure_ranked(&mut self, query: &str, filter: GotoFilter) {
+    /// Whether `ranked` already reflects `query`, `filter`, and the frecency
+    /// generation. A chip or a keystroke reuses it; a visit does not.
+    pub(super) fn rank_current(&self, query: &str, filter: GotoFilter, generation: u64) -> bool {
+        self.ranked_filter == Some(filter)
+            && self.ranked_generation == generation
+            && self.ranked_folded == PreparedQuery::parse(query).folded
+    }
+
+    pub(super) fn ensure_ranked(
+        &mut self,
+        query: &str,
+        filter: GotoFilter,
+        generation: u64,
+        boost: impl Fn(&Row) -> i64,
+    ) {
         let parsed = PreparedQuery::parse(query);
-        if self.ranked_filter == Some(filter) && self.ranked_folded == parsed.folded {
+        if self.rank_current(query, filter, generation) {
             return;
         }
-        self.ranked = rank_prepared(&self.prepared, &parsed, filter);
+        self.ranked = rank_prepared(&self.prepared, &parsed, filter, &boost);
         self.ranked_folded = parsed.folded;
         self.ranked_filter = Some(filter);
+        self.ranked_generation = generation;
     }
 
     pub(super) fn ranked(&self) -> &[Section] {
@@ -210,6 +227,7 @@ fn rank_prepared(
     sections: &[PreparedSection],
     parsed: &PreparedQuery,
     filter: GotoFilter,
+    boost: &impl Fn(&Row) -> i64,
 ) -> Vec<Section> {
     if parsed.is_empty() {
         let sections = sections
@@ -228,6 +246,8 @@ fn rank_prepared(
                 continue;
             }
             if let Some(score) = hit.fields.score(parsed) {
+                // A familiar row rises among matches. A miss stays a miss.
+                let score = score.saturating_add(boost(&hit.row));
                 ranked.push((score, hit.row.clone()));
             }
         }
@@ -382,6 +402,10 @@ mod tests {
             .collect()
     }
 
+    fn rank(search: &mut GotoSearch, query: &str, filter: GotoFilter) {
+        search.ensure_ranked(query, filter, 0, |_| 0);
+    }
+
     #[test]
     fn folded_query_matches_unicode_title_metadata_and_agent_fields() {
         let mut cafe = row("CAFÉ ΑΒ");
@@ -466,16 +490,16 @@ mod tests {
             ],
         }];
         search.rebuild(rev, sections);
-        search.ensure_ranked("café", GotoFilter::All);
+        rank(&mut search, "café", GotoFilter::All);
         assert_eq!(titles(&search), vec!["Café worker"]);
         assert!(!search.needs_rebuild(rev));
 
         // A new query reuses the prepared row. It does not see a different source.
-        search.ensure_ranked("missing", GotoFilter::All);
+        rank(&mut search, "missing", GotoFilter::All);
         assert!(titles(&search).is_empty());
-        search.ensure_ranked("claude", GotoFilter::Working);
+        rank(&mut search, "claude", GotoFilter::Working);
         assert_eq!(titles(&search), vec!["Café worker"]);
-        search.ensure_ranked("", GotoFilter::Idle);
+        rank(&mut search, "", GotoFilter::Idle);
         assert_eq!(titles(&search), vec!["Idle pane"]);
         assert!(!search.needs_rebuild(rev));
 
@@ -491,13 +515,62 @@ mod tests {
                 rows: vec![row("Other")],
             }],
         );
-        search.ensure_ranked("café", GotoFilter::All);
+        rank(&mut search, "café", GotoFilter::All);
         assert!(titles(&search).is_empty());
-        search.ensure_ranked("other", GotoFilter::All);
+        rank(&mut search, "other", GotoFilter::All);
         assert_eq!(titles(&search), vec!["Other"]);
         assert!(search.needs_rebuild(SearchRevision {
             connection: 2,
             workspace: 5,
         }));
+    }
+
+    #[test]
+    fn frecency_lifts_a_match_and_does_not_invent_one_or_reorder_an_empty_query() {
+        let mut search = GotoSearch::default();
+        let rev = SearchRevision {
+            connection: 1,
+            workspace: 1,
+        };
+        let row_for = |title: &str, id: u32| {
+            let mut row = row(title);
+            row.target = Target::Pane(phux_protocol::ResourceId::local(id));
+            row
+        };
+        search.rebuild(
+            rev,
+            vec![Section {
+                label: Some("Terminals"),
+                rows: vec![
+                    row_for("worker pane", 1),
+                    row_for("helper pane", 2),
+                    row_for("unrelated", 3),
+                ],
+            }],
+        );
+        let boost = |row: &Row| match &row.target {
+            Target::Pane(id) if *id == phux_protocol::ResourceId::local(2) => 32,
+            Target::Pane(id) if *id == phux_protocol::ResourceId::local(3) => 64,
+            _ => 0,
+        };
+        search.ensure_ranked("pane", GotoFilter::All, 0, |_| 0);
+        assert_eq!(titles(&search), vec!["worker pane", "helper pane"]);
+        search.ensure_ranked("pane", GotoFilter::All, 1, &boost);
+        assert_eq!(titles(&search), vec!["helper pane", "worker pane"]);
+        search.ensure_ranked("", GotoFilter::All, 1, &boost);
+        assert_eq!(
+            titles(&search),
+            vec!["worker pane", "helper pane", "unrelated"]
+        );
+
+        search.rebuild(
+            rev,
+            vec![Section {
+                label: None,
+                rows: vec![row_for("pane", 1), row_for("helper pane", 2)],
+            }],
+        );
+        search.ensure_ranked("pane", GotoFilter::All, 2, &boost);
+        assert_eq!(titles(&search), vec!["pane", "helper pane"]);
     }
 }

@@ -25,10 +25,12 @@ use super::desk::{self, Desk, Modal};
 
 mod goto_facts;
 mod goto_filter;
+mod goto_frecency;
 mod goto_search;
 mod launcher;
 
 pub(crate) use goto_filter::GotoPalette;
+pub(crate) use goto_frecency::Store as GotoFrecency;
 pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
@@ -286,7 +288,7 @@ impl Desk {
 
     /// Narrow Go To by agent state. The typed query stays, and the highlight
     /// follows the same entry when it is still listed. This does not open,
-    /// resize, focus, or acknowledge a terminal.
+    /// resize, focus, acknowledge a terminal, or record a visit.
     pub(crate) fn set_goto_filter(
         &mut self,
         filter: goto_filter::GotoFilter,
@@ -356,7 +358,9 @@ impl Desk {
     }
 
     /// Run a confirmed palette row. Commands already ran through their [`Run`] action.
+    /// A Go To pane or tab is remembered only when that destination is still listed.
     fn pick(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_goto(&target);
         match target {
             Target::Command => {}
             Target::Pane(terminal) => {
@@ -379,6 +383,44 @@ impl Desk {
                 PathItem::Row { path, .. } => self.insert_path(path, window, cx),
             },
         }
+    }
+
+    /// Record a Go To open. A missing pane or tab, and every other row, is ignored.
+    fn note_goto(&mut self, target: &Target) {
+        let now = goto_frecency::now();
+        let Some(link) = self.link.as_ref() else {
+            return;
+        };
+        let boot = link.connection.server_id();
+        let key = match target {
+            Target::Pane(id) => {
+                let listed = link.connection.pane(id).is_some()
+                    || link.workspace.tabs.iter().any(|tab| {
+                        crate::workspace::layout::placements(&tab.root)
+                            .iter()
+                            .any(|placement| placement.terminal_id.as_ref() == Some(id))
+                    });
+                let spelling = id.to_string();
+                goto_frecency::validated_key(
+                    boot.as_deref(),
+                    goto_frecency::Choice::Pane {
+                        id: &spelling,
+                        listed,
+                    },
+                )
+            }
+            Target::Tab(id) => {
+                let listed = link.workspace.tabs.iter().any(|tab| tab.id == *id);
+                goto_frecency::validated_key(
+                    boot.as_deref(),
+                    goto_frecency::Choice::Tab { id, listed },
+                )
+            }
+            Target::Command | Target::Session(_) | Target::Move(_, _) | Target::Path(_) => {
+                goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
+            }
+        };
+        self.goto_frecency.note(key, now);
     }
 }
 
@@ -988,7 +1030,35 @@ fn prepare_goto(desk: &mut Desk, query: &str) {
         let sections = goto_sections(desk);
         desk.goto_search.rebuild(revision, sections);
     }
-    desk.goto_search.ensure_ranked(query, filter);
+    let generation = desk.goto_frecency.generation();
+    if desk.goto_search.rank_current(query, filter, generation) {
+        return;
+    }
+    let boosts = desk.goto_frecency.boosts(goto_frecency::now());
+    let boot = desk
+        .link
+        .as_ref()
+        .and_then(|link| link.connection.server_id());
+    desk.goto_search
+        .ensure_ranked(query, filter, generation, |row| {
+            goto_boost(&boosts, boot.as_deref(), row)
+        });
+}
+
+fn goto_boost(
+    boosts: &std::collections::HashMap<goto_frecency::Key, i64>,
+    boot: Option<&str>,
+    row: &Row,
+) -> i64 {
+    let Some(boot) = boot else {
+        return 0;
+    };
+    let key = match &row.target {
+        Target::Pane(id) => goto_frecency::Key::pane(boot, &id.to_string()),
+        Target::Tab(id) => goto_frecency::Key::tab(boot, id),
+        _ => None,
+    };
+    key.and_then(|key| boosts.get(&key).copied()).unwrap_or(0)
 }
 
 /// Connection drains cover panes and agents. Tabs are local, so they mix in too.
