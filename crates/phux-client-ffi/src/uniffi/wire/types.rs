@@ -427,6 +427,9 @@ pub enum WireEvent {
     /// `not_sent`; `unknown` means reconcile before acting again.
     /// `refusal` is the refusal code (`0` unless refused). `undoable` says
     /// the committed receipt is retained for `undo`.
+    /// `created_session_key` is the full base32 key from the committed
+    /// receipt, absent unless this operation created a session. Correlate
+    /// it by `operation`, not by a session name or a topology change.
     OrganizationOperation {
         operation: String,
         status: String,
@@ -436,6 +439,7 @@ pub enum WireEvent {
         revision: Option<u64>,
         message: String,
         undoable: bool,
+        created_session_key: Option<String>,
     },
     /// A `kill_session` resolved. `workflow` is the id `kill_session`
     /// returned. `status` is `committed` when the session went away, else
