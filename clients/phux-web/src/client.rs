@@ -203,6 +203,11 @@ pub const TITLE_EVENT: &str = "phux-title";
 /// reduced motion.
 pub const BELL_EVENT: &str = "phux-bell";
 
+/// Bubbling event after a full real canvas paint. `detail` has canonical
+/// `panes`, total cell `cols`/`rows`, and backing `pixelWidth`/`pixelHeight`.
+/// Cursor-only blink redraws do not emit it. Listeners may call the client.
+pub const RENDER_EVENT: &str = "phux-render";
+
 /// How long the visual bell shows, and the least time between two flashes.
 const BELL_FLASH_MS: u32 = 150;
 
@@ -524,6 +529,44 @@ impl Client {
     /// Fails if no terminal is ready.
     pub fn focus_next_pane(&self) -> Result<(), JsValue> {
         pane_action(&self.app, PaneAction::Next)
+    }
+
+    /// Focus one canonical id from the visible pane descriptors, without
+    /// creating another view or connection.
+    ///
+    /// # Errors
+    /// Refuses missing, hidden, unready, or failed terminals.
+    pub fn focus_pane(&self, selector: &str) -> Result<(), JsValue> {
+        let id = self
+            .app
+            .borrow()
+            .session
+            .pane_rects()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| id.to_string() == selector)
+            .ok_or_else(|| JsValue::from_str("That pane is not visible."))?;
+        pane_action(&self.app, PaneAction::Focus(&id))
+    }
+
+    /// Send bounded text through the same structured paste path as the
+    /// clipboard. This does not append Enter or create a terminal.
+    ///
+    /// # Errors
+    /// Refuses more than 4096 UTF-8 bytes or unavailable terminal input.
+    pub fn send_text(&self, text: &str) -> Result<(), JsValue> {
+        if text.len() > 4096 {
+            return Err(JsValue::from_str(
+                "Text exceeds the 4096-byte hosted input limit.",
+            ));
+        }
+        let Some(paste) = crate::input::paste_event(text) else {
+            return Ok(());
+        };
+        if !send_input(&self.app, [InputEvent::Paste(paste)]) {
+            return Err(JsValue::from_str("Terminal input is unavailable."));
+        }
+        Ok(())
     }
 
     /// Close the focused pane's view; its terminal keeps running.
@@ -1254,22 +1297,13 @@ impl App {
         }
     }
 
-    fn paint(&self) {
+    fn paint(&self) -> bool {
         if !self.session.render_visible() {
-            return;
+            return false;
         }
         let grid = self.session.grid();
         let marks = self.search_marks(grid.cols, grid.rows);
-        let mut panes = self.session.pane_rects();
-        let (cols, rows) = if panes.len() <= 1 {
-            (grid.cols, grid.rows)
-        } else {
-            self.session.canvas_dims()
-        };
-        if panes.len() == 1 {
-            panes[0].1.cols = cols;
-            panes[0].1.rows = rows;
-        }
+        let (cols, rows, panes) = self.pane_geometry();
         let geometry = crate::canvas::CanvasGeometry::new(
             &self.metrics,
             cols,
@@ -1277,7 +1311,7 @@ impl App {
             crate::canvas::device_pixel_ratio(),
         );
         if geometry.prepare(&self.canvas, &self.ctx).is_err() {
-            return;
+            return false;
         }
         self.canvas_geometry.set(geometry);
         self.ctx.set_fill_style_str("#0b0b0d");
@@ -1300,6 +1334,7 @@ impl App {
         self.painted_marks.replace(marks);
         self.publish_title();
         self.place_input_surface();
+        true
     }
 
     fn paint_pane(
@@ -1545,6 +1580,52 @@ impl App {
         self.request_paint();
     }
 
+    /// The exact rectangles the renderer uses, including the published
+    /// single-pane size while a server resize is in flight.
+    fn pane_geometry(
+        &self,
+    ) -> (
+        u16,
+        u16,
+        Vec<(phux_protocol::ids::ResourceId, crate::PaneRect)>,
+    ) {
+        let mut panes = self.session.pane_rects();
+        let (cols, rows) = if panes.len() <= 1 {
+            self.session.dims()
+        } else {
+            self.session.canvas_dims()
+        };
+        if panes.len() == 1 {
+            panes[0].1.cols = cols;
+            panes[0].1.rows = rows;
+        }
+        (cols, rows, panes)
+    }
+
+    fn presentation_detail(&self) -> js_sys::Object {
+        let (cols, rows, panes) = self.pane_geometry();
+        let detail = js_sys::Object::new();
+        let descriptors = js_sys::Array::new();
+        for (id, rect) in panes {
+            let pane = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&pane, &"id".into(), &JsValue::from_str(&id.to_string()));
+            for (key, value) in [
+                ("x", rect.x),
+                ("y", rect.y),
+                ("cols", rect.cols),
+                ("rows", rect.rows),
+            ] {
+                let _ =
+                    js_sys::Reflect::set(&pane, &key.into(), &JsValue::from_f64(f64::from(value)));
+            }
+            descriptors.push(&pane);
+        }
+        let _ = js_sys::Reflect::set(&detail, &"panes".into(), &descriptors);
+        let _ = js_sys::Reflect::set(&detail, &"cols".into(), &JsValue::from_f64(f64::from(cols)));
+        let _ = js_sys::Reflect::set(&detail, &"rows".into(), &JsValue::from_f64(f64::from(rows)));
+        detail
+    }
+
     fn publish_panes(&self) {
         let count = self.session.pane_rects().len();
         let focused = self
@@ -1558,7 +1639,7 @@ impl App {
         let _ = self
             .canvas
             .set_attribute("data-phux-focused-pane", &focused);
-        let detail = js_sys::Object::new();
+        let detail = self.presentation_detail();
         let _ = js_sys::Reflect::set(&detail, &"count".into(), &JsValue::from_f64(count as f64));
         let _ = js_sys::Reflect::set(&detail, &"focused".into(), &JsValue::from_str(&focused));
         let _ = js_sys::Reflect::set(
@@ -3067,6 +3148,7 @@ fn forward_wheel(app: &Rc<RefCell<App>>, at: &web_sys::MouseEvent, delta_y: f64,
 enum PaneAction<'a> {
     Split(&'a str),
     Next,
+    Focus(&'a phux_protocol::ids::ResourceId),
     CloseView,
     Kill,
 }
@@ -3079,6 +3161,7 @@ fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Result<(), JsV
         PaneAction::CloseView => app.session.close_view(),
         PaneAction::Kill => app.session.kill_pane_frame().map(|frame| vec![frame]),
         PaneAction::Next => app.session.focus_next_pane().map(|()| Vec::new()),
+        PaneAction::Focus(id) => app.session.focus_pane(id).map(|()| Vec::new()),
     };
     let result = result.and_then(|frames| {
         if let Err(message) = app.send(frames) {
@@ -3382,6 +3465,35 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Release the App borrow before dispatch: a presentation listener may focus
+/// a pane or resize this same client. No event is emitted without real pixels.
+fn paint_and_publish(app: &Rc<RefCell<App>>) {
+    let (canvas, detail) = {
+        let app = app.borrow();
+        if !app.paint() {
+            return;
+        }
+        let detail = app.presentation_detail();
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"pixelWidth".into(),
+            &JsValue::from_f64(f64::from(app.canvas.width())),
+        );
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"pixelHeight".into(),
+            &JsValue::from_f64(f64::from(app.canvas.height())),
+        );
+        (app.canvas.clone(), detail)
+    };
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&detail);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(RENDER_EVENT, &init) {
+        let _ = canvas.dispatch_event(&event);
+    }
+}
+
 /// The animation-frame callback every paint request shares.
 fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
@@ -3390,11 +3502,10 @@ fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let app = app.borrow();
-        if let Some(frame) = app.bindings.borrow().frame.as_ref() {
+        if let Some(frame) = app.borrow().bindings.borrow().frame.as_ref() {
             frame.pending.set(None);
         }
-        app.paint();
+        paint_and_publish(&app);
     });
     app.borrow()
         .bindings
@@ -4157,3 +4268,7 @@ mod tests {
         assert!(batch.bell, "a flood of bells rings once per drained batch");
     }
 }
+
+#[cfg(test)]
+#[path = "presentation_tests.rs"]
+mod presentation_tests;

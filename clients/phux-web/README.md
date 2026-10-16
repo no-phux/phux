@@ -131,3 +131,37 @@ cursor rendering. Pane controls, shortcuts, and events are documented in
 ## License
 
 Apache-2.0.
+
+## Hosted pane presentation
+
+`HostedClient` owns one connection and its validated terminal replicas. Keep
+that client and its canvas alive when promoting a preview into a workspace;
+calling `start_hosted` again opens another connection.
+
+The canvas emits bubbling `CustomEvent`s with generated TypeScript types:
+
+- `phux-panes`: `PaneState`, retaining `count`, `focused`, `pending` and optional
+  `error`, with `panes: PaneDescriptor[]` and total cell `cols`/`rows`.
+- `phux-render`: `PaneRenderDetail`, emitted after a full real canvas paint.
+  It carries the same canonical pane rectangles plus backing-store
+  `pixelWidth`/`pixelHeight`. Each rectangle has `id`, `x`, `y`, `cols`, `rows`
+  in cells and excludes separators. The event is dispatched without an App
+  borrow, so a listener can call the client. Cursor-only blink redraws do not
+  emit this presentation event; no perpetual preview-copy timer is needed.
+
+A preview can crop the painted source canvas using these actual rectangles.
+This shares the existing terminal replicas; it does not create shells, expose
+raw transport bytes, or add another subscription.
+
+`focus_pane(id)` accepts an exact canonical id from a visible descriptor,
+including satellite selectors, and rejects hidden or unready terminals.
+`send_text(text)` sends one structured, trusted paste to the focused terminal:
+at most 4096 UTF-8 bytes, empty text is a no-op, and no Enter key is appended.
+Use `send_key("Enter")` separately when intended. Backend command support and
+session admission remain the server's responsibility.
+
+Focused browser regressions are named `presentation_*`. Four run without a
+server fixture. The ignored structured-paste wire test additionally needs an
+owned loopback WebSocket echo fixture set at build time with
+`PHUX_PRESENTATION_ECHO_URL`, then `--include-ignored`; it decodes the actual
+sent PHUX frame and does not use a remote shell.

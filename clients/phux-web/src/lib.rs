@@ -47,6 +47,19 @@ pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> R
     Ok(())
 }
 
+/// Browser presentation events emitted by the real client's canvas.
+#[wasm_bindgen(typescript_custom_section)]
+const PRESENTATION_TYPES: &str = r#"
+/** Visible terminal rectangle in canonical canvas cells; separators excluded. */
+export interface PaneDescriptor { id: string; x: number; y: number; cols: number; rows: number; }
+/** Canonical geometry shared by pane-state and full-paint events. */
+export interface PanePresentation { panes: PaneDescriptor[]; cols: number; rows: number; }
+/** Detail of the bubbling phux-panes CustomEvent. */
+export interface PaneState extends PanePresentation { count: number; focused: string; pending: boolean; error?: string; }
+/** Detail of phux-render, emitted after a full paint, with actual backing pixels. */
+export interface PaneRenderDetail extends PanePresentation { pixelWidth: number; pixelHeight: number; }
+"#;
+
 /// A hosted session controller returned to JavaScript.
 #[wasm_bindgen]
 pub struct HostedClient {
@@ -81,6 +94,24 @@ impl HostedClient {
     /// Fails when the connection has no usable terminal.
     pub fn focus_next_pane(&self) -> Result<(), JsValue> {
         self.client.focus_next_pane()
+    }
+
+    /// Focus the visible, published terminal whose canonical id was announced
+    /// by `phux-panes` (for example `@1` or `host/@1`). Does not open a view.
+    ///
+    /// # Errors
+    /// Refuses a missing, hidden, bootstrapping, or failed terminal.
+    pub fn focus_pane(&self, id: &str) -> Result<(), JsValue> {
+        self.client.focus_pane(id)
+    }
+
+    /// Send at most 4096 UTF-8 bytes as one structured, trusted paste to the
+    /// focused terminal. Empty text is a no-op; no Enter key is appended.
+    ///
+    /// # Errors
+    /// Refuses larger payloads or a terminal/transport unavailable for input.
+    pub fn send_text(&self, text: &str) -> Result<(), JsValue> {
+        self.client.send_text(text)
     }
 
     /// Close the focused pane's view. Presentation only: the terminal keeps
