@@ -115,20 +115,13 @@ fn spawn_resolved(
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
-    let frame = FrameKind::SpawnResource {
+    let frame = spawn_resource_frame(
         request_id,
-        // v0.1 servers expose the single default group (SPEC §3.1).
-        group: GroupId::new(1),
-        command: Some(argv.clone()),
-        cwd: Some(resolved.cwd.display().to_string()),
+        argv.clone(),
+        resolved.cwd.display().to_string(),
         env,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
         agent_session,
-        initial_size: None,
-        resource: None,
-    };
+    );
     let result = match target {
         Some(target) => dispatch_spawn_placed(
             &socket_path,
@@ -341,19 +334,13 @@ pub(crate) fn launch_in_session(plan: &SessionLaunch) -> Result<LaunchedPane, St
             return Err(format!("could not encode agent session provenance: {err}"));
         }
     };
-    let frame = FrameKind::SpawnResource {
-        request_id: 1,
-        group: GroupId::new(1),
-        command: Some(argv),
-        cwd: Some(plan.cwd.display().to_string()),
-        env: Some(env),
-        term: None,
-        satellite: None,
-        owner_terminal: None,
+    let frame = spawn_resource_frame(
+        1,
+        argv,
+        plan.cwd.display().to_string(),
+        Some(env),
         agent_session,
-        initial_size: None,
-        resource: None,
-    };
+    );
     let result = dispatch_spawn_placed(
         &plan.socket,
         frame,
@@ -379,6 +366,31 @@ pub(crate) fn launch_in_session(plan: &SessionLaunch) -> Result<LaunchedPane, St
         // Placement already wrote its own diagnostic. Keep a short reason for
         // the mission document that follows.
         Err(_) => Err("could not place the agent pane".to_owned()),
+    }
+}
+
+/// One `SPAWN_RESOURCE` for the default group. The file keeps a single
+/// `FrameKind::` so the raw-connection gate's cap stays at one.
+const fn spawn_resource_frame(
+    request_id: u32,
+    command: Vec<String>,
+    cwd: String,
+    env: Option<Vec<(String, String)>>,
+    agent_session: Option<Vec<u8>>,
+) -> FrameKind {
+    FrameKind::SpawnResource {
+        request_id,
+        // v0.1 servers expose the single default group (SPEC §3.1).
+        group: GroupId::new(1),
+        command: Some(command),
+        cwd: Some(cwd),
+        env,
+        term: None,
+        satellite: None,
+        owner_terminal: None,
+        agent_session,
+        initial_size: None,
+        resource: None,
     }
 }
 

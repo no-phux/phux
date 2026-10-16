@@ -317,8 +317,7 @@ fn wait_for_launch(log_dir: &Path) -> String {
 }
 
 fn assert_valid(value: &Value) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../phux-mission/schema/phux.mission.v1.schema.json");
+    let path = runner::manifest_dir().join("../phux-mission/schema/phux.mission.v1.schema.json");
     let schema: Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).expect("schema");
     let validator = jsonschema::validator_for(&schema).expect("schema");
