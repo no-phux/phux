@@ -28,6 +28,30 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.24.0](https://github.com/no-phux/phux/compare/desktop-v0.23.0...desktop-v0.24.0) (2026-10-16)
+
+
+### Features
+
+* **desktop:** scroll scrollback smoothly by pixels ([31e4a52](https://github.com/no-phux/phux/commit/31e4a52b0df75895042d1f56b0512a7bdafae5d5))
+
+
+### Bug Fixes
+
+* **desktop:** repaint on wheel scroll and follow the pointer ([f4bffbf](https://github.com/no-phux/phux/commit/f4bffbf0fa65404c376949182100c3b24fc3baa8))
+
+
+### Performance
+
+* **desktop:** await global hotkey presses instead of polling ([f83d849](https://github.com/no-phux/phux/commit/f83d8499f5e713ca5b03a6d24e2f6e330239eec1))
+* **desktop:** build the desk's palette and terminal settings once ([a8d09bd](https://github.com/no-phux/phux/commit/a8d09bd58f765e644591f0ea5e4adeca108654e4))
+* **desktop:** keep repeated agent metadata off the chrome rebuild ([d63fefb](https://github.com/no-phux/phux/commit/d63fefbd1cbf65a20eb1dea315c9160ca19bae29))
+* **desktop:** notify fleet observers only when work changes ([6433f52](https://github.com/no-phux/phux/commit/6433f522fcc4d65ed21a6cb215d0444b5798b4c8))
+* **desktop:** read the organization replica in place ([ea38555](https://github.com/no-phux/phux/commit/ea38555241151d83872cb8308a7bae3a9667da60))
+* **desktop:** shape terminal rows as one line and paint glyphs in one layer ([8e3dde0](https://github.com/no-phux/phux/commit/8e3dde0e5e6dc456f9c8cd1d8367d7c4dec09d03))
+* **desktop:** skip unchanged motion frames and borrow sidebar rows ([ab08915](https://github.com/no-phux/phux/commit/ab089157037855ea10f6954477a38a702dae1156))
+* **desktop:** wake the agent-age clock when a label changes ([5236c56](https://github.com/no-phux/phux/commit/5236c569addeadb7b6660990e67dea4fdc022ce6))
+
 ## [0.23.0](https://github.com/no-phux/phux/compare/desktop-v0.22.0...desktop-v0.23.0) (2026-10-16)
 
 
