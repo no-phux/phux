@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.85.1](https://github.com/no-phux/phux/compare/v0.85.0...v0.85.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **client:** propagate OSC 52 writes to focused mobile clients ([#1483](https://github.com/no-phux/phux/issues/1483)) ([06f1885](https://github.com/no-phux/phux/commit/06f1885a2567608a3cb33cf3ef58eb01fed910c7))
+
 ## [0.85.0](https://github.com/no-phux/phux/compare/v0.84.0...v0.85.0) (2026-10-16)
 
 
