@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.86.0](https://github.com/no-phux/phux/compare/v0.85.1...v0.86.0) (2026-10-16)
+
+
+### Features
+
+* **client:** carry the row below a scrolled-back viewport ([25d4995](https://github.com/no-phux/phux/commit/25d49957c011fcc26ce1a9d3c76a1722a939a561))
+
 ## [0.85.1](https://github.com/no-phux/phux/compare/v0.85.0...v0.85.1) (2026-10-16)
 
 
