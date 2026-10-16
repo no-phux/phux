@@ -71,6 +71,29 @@ pub enum Error {
     /// `edit` named neither a title nor a description.
     #[error("edit needs a title or a description")]
     EmptyEdit,
+    /// The task is archived, so it cannot be started.
+    #[error("task {alias} is archived")]
+    NotStartable {
+        /// Display alias.
+        alias: String,
+    },
+    /// The task already has a live run.
+    #[error("task {alias} is already started")]
+    AlreadyStarted {
+        /// Display alias.
+        alias: String,
+    },
+    /// Another live task already binds this worktree or branch.
+    #[error("worktree {path} is bound by live task {alias}")]
+    WorktreeBound {
+        /// The path or branch that is taken.
+        path: String,
+        /// The task that holds it.
+        alias: String,
+    },
+    /// A running start found the agent cap full.
+    #[error("the mission agent cap is full")]
+    AtCapacity,
     /// The operating system could not mint an id.
     #[error("could not mint an id: {0}")]
     Random(String),

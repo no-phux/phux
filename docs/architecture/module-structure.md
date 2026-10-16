@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # Module structure
@@ -303,8 +303,9 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 - **`phux-mission`** — mission control over `phux-work`: the
   `phux.mission/v1` documents
   (`crates/phux-mission/schema/phux.mission.v1.schema.json`). It renders
-  what the work client returns and never opens the store. `phux mission`
-  contacts no phux server.
+  what the work client returns and never opens the store. `list`, `show`,
+  `edit`, `archive`, `restore`, and `keeper` contact no phux server.
+  `start` and `add --start` dial one to create the worktree session.
 - **`phux-perf`** — lock-free telemetry primitives and the `PerfReport`
   behind `GET_PERF` (ADR-0096); no workspace dependencies.
 - **`phux-server-testkit`** — shared scaffolding for the server's wire

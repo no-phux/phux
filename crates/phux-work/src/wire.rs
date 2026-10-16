@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::id::Alias;
+use crate::start::{StartApplied, StartPlan, StartRequest};
 use crate::store::{
     AddObjective, Applied, EditObjective, ListFilter, Objective, RaiseSignal, RevisionEdit, Signal,
     StateEdit,
@@ -37,6 +38,9 @@ pub(crate) enum Request {
     RecordState(StateEdit),
     RaiseSignal(RaiseSignal),
     Signals { alias: Alias },
+    PlanStart(StartRequest),
+    ReplayStart(StartRequest),
+    CommitStart(StartRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +50,9 @@ pub(crate) enum Response {
     Objective(Objective),
     Objectives(Vec<Objective>),
     Signals(Vec<Signal>),
+    StartPlan(StartPlan),
+    StartReplay(Option<StartApplied>),
+    StartApplied(StartApplied),
     Fault(Fault),
 }
 
@@ -83,6 +90,17 @@ pub(crate) enum Fault {
         reason: String,
     },
     EmptyEdit,
+    NotStartable {
+        alias: String,
+    },
+    AlreadyStarted {
+        alias: String,
+    },
+    WorktreeBound {
+        path: String,
+        alias: String,
+    },
+    AtCapacity,
     Busy,
     Stale {
         keeper: String,
@@ -117,6 +135,10 @@ impl From<Error> for Fault {
             Error::InvalidRepo(text) => Self::InvalidRepo { text },
             Error::InvalidText { field, reason } => Self::InvalidText { field, reason },
             Error::EmptyEdit => Self::EmptyEdit,
+            Error::NotStartable { alias } => Self::NotStartable { alias },
+            Error::AlreadyStarted { alias } => Self::AlreadyStarted { alias },
+            Error::WorktreeBound { path, alias } => Self::WorktreeBound { path, alias },
+            Error::AtCapacity => Self::AtCapacity,
             Error::Busy => Self::Busy,
             other @ (Error::Io(_)
             | Error::Sqlite(_)
@@ -153,6 +175,10 @@ impl From<Fault> for Error {
             Fault::InvalidRepo { text } => Self::InvalidRepo(text),
             Fault::InvalidText { field, reason } => Self::InvalidText { field, reason },
             Fault::EmptyEdit => Self::EmptyEdit,
+            Fault::NotStartable { alias } => Self::NotStartable { alias },
+            Fault::AlreadyStarted { alias } => Self::AlreadyStarted { alias },
+            Fault::WorktreeBound { path, alias } => Self::WorktreeBound { path, alias },
+            Fault::AtCapacity => Self::AtCapacity,
             Fault::Busy => Self::Busy,
             Fault::Stale { keeper } => Self::Keeper(format!("keeper is from build {keeper}")),
             Fault::BadRequest { message } => Self::Keeper(message),

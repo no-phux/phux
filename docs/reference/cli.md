@@ -1951,13 +1951,16 @@ Global flags:
 ```text
 Track tasks in the local work store
 
-Every verb is a call to the work store's keeper, which `phux mission` starts on
-demand; no phux server is contacted. With no subcommand, prints this help.
+`list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the work store's
+keeper, which `phux mission` starts on demand, and do not contact a phux server.
+`start` and `add --start` also dial the phux server to create the worktree
+session and launch the agent. With no subcommand, prints this help.
 
 `--json` prints a document whose `schema` is `phux.mission/v1`. Exit status: 0
 success; 1 the task is missing, the revision is stale, the operation id was
-reused for a different write, or the store failed; 2 the command line was
-refused.
+reused for a different write, the task cannot be started, or the store failed; 2
+the command line was refused, or a failed start left its worktree because stdin
+is not a terminal.
 
 Usage: phux mission [SUBCOMMAND]
 
@@ -1969,6 +1972,7 @@ Commands:
   list     List tasks
   restore  Restore an archived task
   show     Show one task
+  start    Start a task in its own worktree session with an agent
   help     Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1991,6 +1995,9 @@ Flags:
                                   `phux` for `phux/3`. Defaults to the origin
                                   remote, or the current directory's name when
                                   there is no remote.
+      --start                     Start the new task in its own worktree
+                                  session.
+      --agent <KIND>              Agent for `--start`, as KIND or KIND/MODEL.
       --operation-id <HEX32>      Repeat a write safely: 32 hex digits. The same
                                   id returns the first result.
       --json                      Emit stable, versioned JSON on stdout instead
@@ -2113,6 +2120,29 @@ Flags:
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
   -h, --help           Print help
+```
+
+## `phux mission start`
+
+```text
+Start a task in its own worktree session with an agent
+
+Usage: phux mission start [FLAGS] <ALIAS>
+
+Arguments:
+  <ALIAS>  Task alias in `repo/n` form, such as `phux/3`.
+
+Flags:
+      --agent <KIND>           Agent as KIND or KIND/MODEL. Defaults to
+                               `[mission] agent`.
+      --expected-revision <N>  Required. The task's current revision; the write
+                               is refused when it differs.
+      --operation-id <HEX32>   Repeat a write safely: 32 hex digits. The same id
+                               returns the first result.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
 ```
 
 ## `phux mv`

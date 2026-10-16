@@ -270,6 +270,7 @@ pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
 pub(crate) mod mission;
+pub(crate) mod mission_start;
 pub(crate) mod new;
 pub(crate) mod org;
 pub(crate) mod pair;
@@ -410,7 +411,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
-        Command::Mission { .. } => Some("mission"),
+        Command::Mission { action } => match action {
+            Some(MissionAction::Keeper { .. }) => Some("mission keeper"),
+            Some(MissionAction::Start { .. } | MissionAction::Add { start: true, .. }) => None,
+            _ => Some("mission"),
+        },
         _ => None,
     }
 }
@@ -1330,14 +1335,17 @@ pub(crate) enum Command {
 
     /// Track tasks in the local work store
     ///
-    /// Every verb is a call to the work store's keeper, which `phux mission`
-    /// starts on demand; no phux server is contacted. With no subcommand,
-    /// prints this help.
+    /// `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
+    /// work store's keeper, which `phux mission` starts on demand, and do
+    /// not contact a phux server. `start` and `add --start` also dial the
+    /// phux server to create the worktree session and launch the agent.
+    /// With no subcommand, prints this help.
     ///
     /// `--json` prints a document whose `schema` is `phux.mission/v1`.
     /// Exit status: 0 success; 1 the task is missing, the revision is stale,
-    /// the operation id was reused for a different write, or the store failed;
-    /// 2 the command line was refused.
+    /// the operation id was reused for a different write, the task cannot be
+    /// started, or the store failed; 2 the command line was refused, or a
+    /// failed start left its worktree because stdin is not a terminal.
     #[usage(help_heading = "Agents", display_order = 36)]
     Mission {
         #[usage(subcommand)]

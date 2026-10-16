@@ -1,6 +1,8 @@
-//! `phux mission`: tasks in the local work store. Every verb is a call to
-//! the store's keeper (`phux mission keeper`), started on demand. No phux
-//! server is contacted.
+//! `phux mission`: tasks in the local work store.
+//!
+//! `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
+//! store's keeper and do not contact a phux server. `start` and
+//! `add --start` also dial the phux server to create the worktree session.
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -34,6 +36,27 @@ pub(crate) enum MissionAction {
         /// there is no remote.
         #[usage(long, value_name = "ID")]
         repo: Option<String>,
+        /// Start the new task in its own worktree session.
+        #[usage(long)]
+        start: bool,
+        /// Agent for `--start`, as KIND or KIND/MODEL.
+        #[usage(long, value_name = "KIND")]
+        agent: Option<String>,
+        #[usage(flatten)]
+        op: OpOpt,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+    /// Start a task in its own worktree session with an agent
+    Start {
+        /// Task alias in `repo/n` form, such as `phux/3`.
+        #[usage(value_name = "ALIAS")]
+        alias: String,
+        /// Agent as KIND or KIND/MODEL. Defaults to `[mission] agent`.
+        #[usage(long, value_name = "KIND")]
+        agent: Option<String>,
+        #[usage(flatten)]
+        rev: RevOpt,
         #[usage(flatten)]
         op: OpOpt,
         #[usage(flatten)]
@@ -126,8 +149,8 @@ pub(crate) struct RevOpt {
     expected_revision: Option<u64>,
 }
 
-pub(crate) fn run(action: Option<MissionAction>) -> ExitCode {
-    action.map_or_else(print_help, run_action)
+pub(crate) fn run(action: Option<MissionAction>, socket: Option<std::path::PathBuf>) -> ExitCode {
+    action.map_or_else(print_help, |action| run_action(action, socket))
 }
 
 fn print_help() -> ExitCode {
@@ -147,7 +170,7 @@ fn print_help() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_action(action: MissionAction) -> ExitCode {
+fn run_action(action: MissionAction, socket: Option<std::path::PathBuf>) -> ExitCode {
     if let MissionAction::Keeper { idle_exit } = action {
         return keeper(idle_exit);
     }
@@ -161,6 +184,8 @@ fn run_action(action: MissionAction) -> ExitCode {
             title,
             description,
             repo,
+            start,
+            agent,
             op,
             ..
         } => add(
@@ -169,8 +194,36 @@ fn run_action(action: MissionAction) -> ExitCode {
             &title,
             description.as_deref(),
             repo.as_deref(),
+            start,
+            agent.as_deref(),
             &op,
+            socket,
         ),
+        MissionAction::Start {
+            alias,
+            agent,
+            rev,
+            op,
+            ..
+        } => {
+            let alias = match parse_alias(json, &alias) {
+                Ok(alias) => alias,
+                Err(code) => return code,
+            };
+            let expected = match require_expected(&store, json, &alias, rev.expected_revision) {
+                Ok(expected) => expected,
+                Err(code) => return code,
+            };
+            super::mission_start::start_existing(
+                &store,
+                json,
+                &alias,
+                agent.as_deref(),
+                expected,
+                &op,
+                socket,
+            )
+        }
         MissionAction::List { repo, archived, .. } => list(&store, json, repo.as_deref(), archived),
         MissionAction::Show { alias, .. } => show(&store, json, &alias),
         MissionAction::Edit {
@@ -202,6 +255,7 @@ fn run_action(action: MissionAction) -> ExitCode {
 const fn wants_json(action: &MissionAction) -> bool {
     match action {
         MissionAction::Add { json, .. }
+        | MissionAction::Start { json, .. }
         | MissionAction::List { json, .. }
         | MissionAction::Show { json, .. }
         | MissionAction::Edit { json, .. }
@@ -249,14 +303,28 @@ fn keeper(idle_exit: Option<u64>) -> ExitCode {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per `mission add` input, including the optional start"
+)]
 fn add(
     store: &Client,
     json: bool,
     title: &str,
     description: Option<&str>,
     repo: Option<&str>,
+    start: bool,
+    agent: Option<&str>,
     op: &OpOpt,
+    socket: Option<std::path::PathBuf>,
 ) -> ExitCode {
+    if agent.is_some() && !start {
+        return usage(
+            json,
+            "--agent requires --start",
+            "pass --start, or drop --agent",
+        );
+    }
     let repo = match repo.map_or_else(|| default_repo(json), |repo| Ok(repo.to_owned())) {
         Ok(repo) => repo,
         Err(code) => return code,
@@ -272,6 +340,14 @@ fn add(
         operation_id,
         actor: actor(),
     }) {
+        Ok(applied) if start => super::mission_start::start_new(
+            store,
+            json,
+            &applied.objective,
+            agent,
+            super::mission_start::start_operation(applied.operation_id),
+            socket,
+        ),
         Ok(applied) => emit_mutation(json, Verb::Add, &applied, "added", false),
         Err(err) => fail(json, &err),
     }
@@ -493,7 +569,7 @@ fn format_show(
     text
 }
 
-fn operation_id(json: bool, op: &OpOpt) -> Result<OperationId, ExitCode> {
+pub(crate) fn operation_id(json: bool, op: &OpOpt) -> Result<OperationId, ExitCode> {
     op.operation_id
         .as_deref()
         .map_or_else(OperationId::generate, OperationId::parse)
@@ -536,11 +612,31 @@ fn origin_repo(dir: &std::path::Path) -> Option<String> {
     Some(project.id)
 }
 
-fn actor() -> String {
+pub(crate) fn actor() -> String {
     std::env::var("USER")
         .ok()
         .filter(|user| !user.is_empty() && user.len() <= 128 && !user.contains('\0'))
         .unwrap_or_else(|| "cli".to_owned())
+}
+
+pub(crate) fn report(json: bool, err: &phux_work::Error) -> ExitCode {
+    fail(json, err)
+}
+
+pub(crate) fn report_code(
+    json: bool,
+    code: &str,
+    message: &str,
+    remedy: &str,
+    exit: u8,
+) -> ExitCode {
+    if json {
+        emit_json_error(code, message, remedy, exit)
+    } else {
+        error!("{message}");
+        hint!("{remedy}");
+        ExitCode::from(exit)
+    }
 }
 
 fn fail(json: bool, err: &phux_work::Error) -> ExitCode {
@@ -590,6 +686,26 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
             codes::MISSION_BUSY,
             1,
             "retry; if it persists, check `keeper.log` beside the work store",
+        ),
+        phux_work::Error::NotStartable { .. } => (
+            codes::MISSION_NOT_STARTABLE,
+            1,
+            "restore the task before starting it",
+        ),
+        phux_work::Error::AlreadyStarted { .. } => (
+            codes::MISSION_ALREADY_STARTED,
+            1,
+            "the task already has a live run",
+        ),
+        phux_work::Error::WorktreeBound { .. } => (
+            codes::MISSION_WORKTREE_BOUND,
+            1,
+            "leave that worktree to the task that holds it",
+        ),
+        phux_work::Error::AtCapacity => (
+            codes::MISSION_START_FAILED,
+            1,
+            "wait for a running agent to finish",
         ),
         phux_work::Error::Keeper(_) => (
             codes::MISSION_STORE,
