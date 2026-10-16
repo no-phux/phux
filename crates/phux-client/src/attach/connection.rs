@@ -99,9 +99,9 @@ struct Multistream {
     frames_tx: tokio::sync::mpsc::Sender<MuxItem>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
-    /// Terminals whose stream the server ended. The end races
-    /// `RESOURCE_CLOSED` on control (L1 §4.9), so frames still addressed to
-    /// one are dropped rather than failed.
+    /// Terminals whose stream ended or whose resource closed on control
+    /// (L1 §4.9), so frames still addressed to one are dropped rather than
+    /// failed.
     ended: std::collections::HashSet<ResourceId>,
     #[cfg(feature = "testkit")]
     /// Maximum time from a Terminal frame's first byte to its complete body.
@@ -1134,10 +1134,29 @@ impl Connection {
     /// (best-effort) before [`AttachError::Framing`] is returned.
     pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         let result = self.recv_frame().await;
+        if let Ok(frame) = &result {
+            self.retire_closed_terminal(frame);
+        }
         if let Err(err) = &result {
             self.emit_frame_too_large(err).await;
         }
         result
+    }
+
+    /// Control and Terminal streams are independently ordered. Once a
+    /// lifecycle close reaches the caller, queued or in-flight Terminal
+    /// frames must no longer reach its closed session-kernel resource.
+    fn retire_closed_terminal(&mut self, frame: &FrameKind) {
+        let FrameKind::ResourceClosed { terminal_id, .. } = frame else {
+            return;
+        };
+        let Some(mux) = self.multistream.as_mut() else {
+            return;
+        };
+        if let Some(mut binding) = mux.bindings.remove(terminal_id) {
+            binding.retire();
+        }
+        mux.ended.insert(terminal_id.clone());
     }
 
     async fn recv_frame(&mut self) -> Result<FrameKind, AttachError> {
@@ -1211,6 +1230,9 @@ impl Connection {
     /// are answered as in [`Self::recv`], without blocking.
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         let result = self.try_recv_frame();
+        if let Ok(Some(frame)) = &result {
+            self.retire_closed_terminal(frame);
+        }
         if let Err(err) = &result {
             let _ = futures_util::FutureExt::now_or_never(self.emit_frame_too_large(err));
         }
