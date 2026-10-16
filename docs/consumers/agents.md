@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-16
 ---
 
 # The phux agent CLI
@@ -337,8 +337,105 @@ nothing: `not_producer`, `record_invalid`, `overflow`,
 `wrong_resource_kind`. `log` reads the retained ring; `--follow` is a
 stream with no `--timeout` (run it under a child-process deadline).
 
-Producers control record privacy. The [Claude shim](./claude.md#what-the-hook-shim-emits)
-omits prompt text and tool input/output; raw hook JSON requires explicit opt-in.
+Producers control record privacy. Lifecycle records omit prompt and tool
+bodies. Structured transcripts include prompts, replies, visible thinking,
+and tool name/summary/status by default, without tool output or raw write/edit
+bodies. `PHUX_AGENT_TRANSCRIPT=full` opts tool output in;
+`PHUX_AGENT_TRANSCRIPT=0` disables transcripts without disabling lifecycle.
+Raw provider payloads remain separate and explicitly opt-in.
+
+### ACP-owned native sessions
+
+The executing daemon must advertise `features_ext.NATIVE_AGENT`. A newer CLI
+cannot upgrade an older daemon: requests are refused locally before transmission
+when that bit is absent. Terminal keystrokes are never a fallback.
+
+`phux launch --list --acp --json` lists configured ACP integrations and missing
+executing-host prerequisites. `phux launch --acp omp --session main --json`
+starts one durable host-owned guardian, one ACP provider process, and one
+AgentSession. The existing organization session must already exist. The launch
+document reports `native: true` and `ready: false`; the stream's
+`phux.native-agent/v1` view supplies actual connectivity, capabilities, questions,
+and the provider's stable session identity. Desktop **New ACP Agent** uses this
+same path; closing the window detaches rather than stopping the provider.
+
+Plugins can declare an arbitrary ACP agent independently of `[launch]`:
+
+```toml
+id = "team-agent"
+[acp]
+provider = "team-agent"
+command = ["team-agent-acp", "--team", "literal argument"]
+required_executables = ["team-agent-acp"]
+working_directory = "workspace"
+```
+
+Argv is bounded and passed directly, never shell-evaluated. A bare command's
+executable is also a prerequisite even when omitted from `required_executables`.
+Use `--print --acp` for a server-free dry run. Legacy `[native]` SDK backends are
+rejected. Ordinary `[launch]` integrations remain **Attached TUI**, unchanged.
+
+Operators install and authenticate agents/adapters themselves. phux neither
+ships a private Node runtime or provider SDK bridge nor downloads packages on
+launch. Provider and adapter licenses, compatibility, and authentication remain
+operator responsibilities. These exact commands passed isolated ACP v1
+`initialize` probes, without provider credentials or model traffic:
+
+| Profile | Executable argv | Version checked |
+|---|---|---|
+| Claude Code | `claude-agent-acp` | 0.90.0 (`@agentclientprotocol/claude-agent-acp`) |
+| Codex | `codex-acp` | 2.2.2 (`@agentclientprotocol/codex-acp`) |
+| OpenCode | `opencode acp` | 2.0.29 |
+| OMP | `omp acp` | 18.10.3 |
+| Pi | `pi-acp` | 0.0.34 |
+| Amp | `amp-acp` | 0.10.0 |
+| Gemini CLI | `gemini --experimental-acp` | 0.64.0 |
+| Cursor | `cursor-agent acp` | installed Cursor Agent |
+| Goose | `goose acp` | 1.53.0 |
+| Grok | `grok agent --no-leader stdio` | installed Grok Build |
+
+Initialize-only probes establish protocol compatibility, not successful model
+turns or feature parity. Pi adapter compatibility depends on its supported Pi
+release; the published adapter and maintained forks have different version
+ranges. Install a compatible adapter explicitly. Aider remains terminal-only.
+All checked peers advertised `loadSession`; every launch still checks it before
+loading a saved ID. New sessions use the provider's returned ID, never a phux
+archive ID. Graceful daemon upgrade retains the same live worker and activation;
+process restart uses `session/load` only when advertised, never silent fresh-start.
+
+The pinned official Rust ACP client is the sole provider seam. Client filesystem
+and terminal capabilities are unadvertised, and unsolicited callbacks return
+`method_not_found`. Agents own their own filesystem and execution tools. External
+authentication is required; phux does not auto-authorize it. Unsupported rich
+content gets a notice rather than invented text parity. Optional mode/model/config
+controls are not advertised as phux controls. ACP v1 has no standard structured
+elicitation callback; supported Cursor extension dialogs use explicit human
+answers. Unknown extension methods fail explicitly.
+
+The host enables only the pinned SDK's
+[`unstable_session_usage`](https://docs.rs/crate/agent-client-protocol/0.10.4/features#unstable_session_usage)
+feature to decode informational `usage_update` notifications, including those
+emitted by OMP 18.10.3. Usage does not mutate the native projection, finish a turn,
+or acknowledge prompt consumption. Other experimental SDK features remain disabled.
+
+`phux agent native-command @AGENT --activation ACTIVATION --operation-id ID
+--intent '{"type":"prompt","text":"hello"}' --json` targets the exact
+AgentSession and activation. Interrupts require the observed `turn_id`; answers
+require the current `question_id` and an explicit provider option ID (including
+allow or deny), or `{"cancelled":true}`. No default selects approval. Answers are
+human-only, lease-controlled, and first-responder reserved across desktop and
+UniFFI consumers. Raw PTY input to an ACP-owned guardian is refused.
+
+Each activation retains at most 1024 operation identities. Exhaustion is an
+explicit refusal, never eviction or an assumption that random IDs are ordered.
+Operation IDs are exact unsigned 64-bit integers. `queued` means submitted, never
+provider-consumed. ACP has no prompt admission receipt; completion includes the
+actual stop reason, including cancellation, not a claim of model success. Sending
+`session/cancel` is queued until the provider ends the turn and pending permission
+callbacks return cancelled. Provider RPC errors or transport loss produce
+`unknown`; retain the operation identity and never automatically replay prompts.
+`refused` and `unknown` exit 2 while printing the receipt document on stdout.
+Pre-submission errors use structured stderr and leave stdout empty.
 
 ## 7. JSON index
 
@@ -855,12 +952,16 @@ declared record state outranks the ask.
 is `null` when the OS provides none or phux kills the child on timeout.
 
 Workspace inspect is repo-local git porcelain. Detached worktrees have
-`branch: null` and `detached: true`. Archive schema 2 copies
-`agent_session` as inert provenance — restore re-resolves the current
-integration, requires the same `plugin_id`, and never replays archived
-argv. `command` is nullable. Restore starts fresh PTYs; existing session
-names are skipped (`restored` / `skipped_existing`). Schema-1 archives
-remain readable.
+`branch: null` and `detached: true`. Current archive schema 3 keeps terminal
+`agent_session` provenance inert: restore re-resolves the current integration,
+requires the same `plugin_id`, and never replays that archived argv. A separate
+`native_launch` recipe resumes the exact known provider session when available,
+with a fresh local guardian binding; it excludes source resource identities,
+controller proofs and provider credential environment.
+Raw commands are never inferred to be native integrations. Restore starts fresh
+resources, skips existing session names, and explicitly refuses unsupported
+satellite SDK restoration. Schema-1 and schema-2 archives remain readable;
+the restore summary independently retains `schema_version: 2`.
 
 `host ls`: `enabled` is `null` for `role: "remote"`; `session` is `null`
 for satellites; `tls_server_name` is `null` unless a remote is reached

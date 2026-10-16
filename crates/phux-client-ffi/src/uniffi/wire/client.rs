@@ -705,6 +705,26 @@ impl RemoteClient {
         self.send_paste_with(terminal_id, text, PasteTrust::Trusted);
     }
 
+    /// Submit a dedicated SDK intent to an exact resource and activation.
+    /// Parse and validate before scheduling; `None` means nothing was sent.
+    /// The outcome arrives as `NativeAgentResult`, never an input receipt.
+    pub fn native_agent_command(
+        &self,
+        agent_session_id: String,
+        activation: String,
+        intent_json: String,
+    ) -> Option<u64> {
+        if intent_json.len() > phux_protocol::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
+            return None;
+        }
+        let intent: phux_protocol::native_agent::NativeIntent =
+            serde_json::from_str(&intent_json).ok()?;
+        intent.validate().ok()?;
+        let id = id::parse(&agent_session_id)?;
+        self.runtime_client()?
+            .native_agent_command(&id, &activation, intent)
+    }
+
     pub fn apply_line(&self, terminal_id: String, text: String) -> u64 {
         self.apply_acknowledged(&terminal_id, |client, id| client.apply_line(id, &text))
     }
@@ -1033,6 +1053,9 @@ impl RemoteClient {
             Ok(lifecycle) => return projected.extend(Option::<WireEvent>::from(lifecycle)),
             Err(event) => event,
         };
+        let Some(event) = project_agent_control(event, projected) else {
+            return;
+        };
         match event {
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
@@ -1042,25 +1065,6 @@ impl RemoteClient {
                     .lock()
                     .unwrap()
                     .insert(terminal_id);
-            }
-            Event::AgentAsked {
-                terminal_id,
-                question_id,
-                text,
-                suggestions,
-                waiting_seconds,
-            } => projected.push(WireEvent::AgentAsked {
-                terminal_id: id::encode(&terminal_id),
-                question_id,
-                text,
-                suggestions,
-                waiting_seconds,
-            }),
-            Event::AgentAskedState { terminal_id, asked } => {
-                projected.push(WireEvent::AgentAskedState {
-                    terminal_id: id::encode(&terminal_id),
-                    asked,
-                });
             }
             Event::InputDelivery {
                 delivery_id,
@@ -1125,6 +1129,50 @@ impl RemoteClient {
     }
 }
 
+/// Project human-facing agent controls, returning any unhandled event unchanged.
+fn project_agent_control(event: Event, projected: &mut Vec<WireEvent>) -> Option<Event> {
+    let event = match event {
+        Event::AgentAsked {
+            terminal_id,
+            question_id,
+            text,
+            suggestions,
+            waiting_seconds,
+        } => WireEvent::AgentAsked {
+            terminal_id: id::encode(&terminal_id),
+            question_id,
+            text,
+            suggestions,
+            waiting_seconds,
+        },
+        Event::AgentAskedState { terminal_id, asked } => WireEvent::AgentAskedState {
+            terminal_id: id::encode(&terminal_id),
+            asked,
+        },
+        Event::NativeAgentResult {
+            agent_session_id,
+            operation_id,
+            disposition,
+            detail,
+        } => WireEvent::NativeAgentResult {
+            agent_session_id: id::encode(&agent_session_id),
+            operation_id,
+            disposition: match disposition {
+                phux_protocol::native_agent::NativeDisposition::Admitted => "admitted",
+                phux_protocol::native_agent::NativeDisposition::Queued => "queued",
+                phux_protocol::native_agent::NativeDisposition::Completed => "completed",
+                phux_protocol::native_agent::NativeDisposition::Refused => "refused",
+                phux_protocol::native_agent::NativeDisposition::Unknown => "unknown",
+            }
+            .into(),
+            detail,
+        },
+        event => return Some(event),
+    };
+    projected.push(event);
+    None
+}
+
 /// Lower one agent session's records, or its end, to the foreign event.
 fn agent_records(
     terminal_id: &ResourceId,
@@ -1156,6 +1204,57 @@ impl Drop for RemoteClient {
 mod tests {
     use super::*;
     use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, RolePolicy, Scope};
+
+    #[test]
+    fn native_json_is_validated_before_scheduling() {
+        use phux_protocol::caps::{
+            BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
+            ServerFeatureExtSet,
+        };
+        let mut remote = RemoteClient::new("unused".into(), 0, 0, None, None);
+        let runtime =
+            phux_client_runtime::Runtime::embedded(phux_client_runtime::control::ControlOptions {
+                automatic_lifecycle: false,
+                ..phux_client_runtime::control::ControlOptions::default()
+            });
+        *Arc::get_mut(&mut remote).unwrap().client.get_mut().unwrap() = Some(runtime.clone());
+        runtime.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
+        drop(runtime.take_outbound());
+        runtime
+            .feed(FrameKind::HelloOk {
+                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new()
+                    .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent])),
+                server_id: vec![0xAB; 16],
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            })
+            .unwrap();
+        drop(runtime.take_outbound());
+        for json in [
+            r#"{"type":"prompt","text":" "}"#.to_owned(),
+            r#"{"type":"interrupt","turn_id":""}"#.to_owned(),
+            r#"{"type":"answer","question_id":"","response":{"confirmed":true}}"#.to_owned(),
+            r#"{"type":"prompt","text":"ok","unexpected":true}"#.to_owned(),
+            "x".repeat(phux_protocol::native_agent::MAX_NATIVE_PAYLOAD_BYTES + 1),
+        ] {
+            assert_eq!(
+                remote.native_agent_command("local:22".into(), "activation-A".into(), json),
+                None
+            );
+        }
+        assert_eq!(
+            remote.native_agent_command(
+                "not-an-id".into(),
+                "activation-A".into(),
+                r#"{"type":"prompt","text":"ok"}"#.into()
+            ),
+            None
+        );
+        assert!(runtime.take_outbound().is_empty());
+    }
 
     /// A zero constructor viewport reaches the runtime as zero, the no-vote
     /// contract, while an explicit `resize_viewport` still votes at least 1x1.

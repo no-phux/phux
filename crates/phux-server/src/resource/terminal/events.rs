@@ -525,6 +525,7 @@ impl TerminalActor {
                 .try_send(crate::resource::agent_session::AppendRequest {
                     bytes: bytes::Bytes::from(record),
                     reply,
+                    publication: None,
                 })
                 .is_ok()
         });

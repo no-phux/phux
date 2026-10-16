@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use phux_config::integration::LaunchWorkingDirectory;
 use phux_config::loader as config_loader;
-use phux_plugin::{LaunchError, ResolvedLaunch};
+use phux_plugin::{LaunchError, LaunchMode, ResolvedLaunch};
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 use phux_server::runtime::default_socket_path;
@@ -11,6 +11,8 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::SpawnSplit;
 use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
 use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};
+
+mod native;
 
 /// `phux launch` (phux-ark7, ADR-0042) — resolve a named agent integration
 /// template from an enabled plugin and spawn a pane running its `[launch]`
@@ -30,6 +32,8 @@ pub(crate) fn run_launch(
     integration: Option<String>,
     list: bool,
     print: bool,
+    mode: LaunchMode,
+    session: Option<&str>,
     json: bool,
     target: Option<String>,
     split: SpawnSplit,
@@ -41,7 +45,7 @@ pub(crate) fn run_launch(
 ) -> ExitCode {
     let config_path = config_loader::config_path();
     if list {
-        return run_list(&config_path, json);
+        return run_list(&config_path, mode, json);
     }
     let Some(integration) = integration else {
         error!("launch requires an INTEGRATION name (or --list)");
@@ -57,11 +61,22 @@ pub(crate) fn run_launch(
             }
         },
     };
-    let resolved =
-        match phux_plugin::resolve_launch(&config_path, &integration, extra, &workspace_cwd) {
-            Ok(resolved) => resolved,
-            Err(err) => return report_launch_error(&err),
-        };
+    let resolved = match phux_plugin::resolve_launch(
+        &config_path,
+        &integration,
+        extra,
+        &workspace_cwd,
+        mode,
+    ) {
+        Ok(resolved) => resolved,
+        Err(err) => return report_launch_error(&err),
+    };
+    if mode == LaunchMode::Native {
+        if print {
+            return print_resolved(&resolved, &resolved.argv, json);
+        }
+        return native::spawn(&resolved, session, socket.as_deref(), json);
+    }
     let prepared = match prepare_for_launch(&resolved) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -166,8 +181,8 @@ fn spawn_resolved(
     }
 }
 
-fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
-    let integrations = match phux_plugin::list_launchable(config_path) {
+fn run_list(config_path: &std::path::Path, mode: LaunchMode, json: bool) -> ExitCode {
+    let integrations = match phux_plugin::list_launchable(config_path, mode) {
         Ok(integrations) => integrations,
         Err(err) => return report_launch_error(&err),
     };
@@ -175,6 +190,7 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
         let items: Vec<_> = integrations
             .iter()
             .map(|item| {
+                let native_detail = native::availability(item);
                 serde_json::json!({
                     "integration": item.integration_id,
                     "plugin": item.plugin_id,
@@ -185,6 +201,9 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
                     // distinct from the category `kind` above. Additive.
                     "agent_kind": item.agent_identity.as_ref()
                         .and_then(|identity| identity.kind.clone()),
+                    "native": item.native.is_some(),
+                    "native_available": item.native.is_some() && native_detail.is_none(),
+                    "native_detail": native_detail,
                 })
             })
             .collect();
@@ -213,6 +232,9 @@ fn print_resolved(resolved: &ResolvedLaunch, argv: &[String], json: bool) -> Exi
             "cwd": resolved.cwd.display().to_string(),
             "working_directory": working_directory_slug(resolved.working_directory),
             "argv": argv,
+            "native": resolved.native.as_ref().map(|native| serde_json::json!({
+                "backend": native.backend.as_str(), "provider": native.provider,
+            })),
         });
         return crate::output::json(&payload);
     }

@@ -138,16 +138,18 @@ export function registerPhuxExtension(
     },
   });
 
-  registerPhuxLifecycle(pi, store, {
-    cli,
-    transcript: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) !== "off",
-    transcriptToolOutput: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) === "full",
-    ...(environment.PHUX_TERMINAL_ID === undefined ? {} : { hostTerminal: environment.PHUX_TERMINAL_ID }),
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[phux] lifecycle: ${message}`);
-    },
-  });
+  if (environment.PHUX_AGENT_REPORTING !== "0") {
+    registerPhuxLifecycle(pi, store, {
+      cli,
+      transcript: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) !== "off",
+      transcriptToolOutput: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) === "full",
+      ...(environment.PHUX_TERMINAL_ID === undefined ? {} : { hostTerminal: environment.PHUX_TERMINAL_ID }),
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[phux] lifecycle: ${message}`);
+      },
+    });
+  }
 
   return store;
 }

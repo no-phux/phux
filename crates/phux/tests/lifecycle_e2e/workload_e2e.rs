@@ -766,6 +766,7 @@ fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
     cmd.env("TERM", "xterm-256color");
     cmd.env("PHUX_SOCKET", dir.join("client.sock"));
     cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+    cmd.env("PHUX_NO_UPDATE_CHECK", "1");
     cmd.cwd(dir);
     let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
     drop(pty.slave);

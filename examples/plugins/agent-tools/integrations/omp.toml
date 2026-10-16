@@ -37,3 +37,11 @@ kind = "omp"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "omp", "--kind", "omp", "--", "omp"]
 required_executables = ["omp"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "omp"
+command = ["omp","acp"]
+required_executables = ["omp"]
+working_directory = "workspace"

@@ -45,6 +45,7 @@ mod legacy_snapshot;
 mod lifecycle;
 mod lifecycle_state;
 mod metadata;
+pub(crate) mod native_agent;
 mod org;
 mod policy;
 mod reap;
@@ -221,6 +222,8 @@ pub struct ServerState {
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
     /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
+    /// Dedicated controller state and exclusive SDK stream authority.
+    native_agents: native_agent::NativeAgents,
 }
 
 impl Default for ServerState {

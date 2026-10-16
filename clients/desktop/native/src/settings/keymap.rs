@@ -146,6 +146,14 @@ fn catalog() -> Vec<CommandSpec> {
             &["shell"],
         ),
         spec(
+            "native-agent",
+            "New ACP Agent…",
+            "Terminal",
+            None,
+            "Launch a host-owned ACP agent.",
+            &["agent", "acp"],
+        ),
+        spec(
             "new-session",
             "New Session…",
             "Terminal",

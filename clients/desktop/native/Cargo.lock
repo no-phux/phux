@@ -5221,6 +5221,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-perf",
  "phux-protocol",
+ "serde",
  "serde_json",
  "smol",
  "unicode-segmentation",

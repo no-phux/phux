@@ -63,6 +63,7 @@ mod geometry;
 mod input;
 mod kernel;
 pub mod keys;
+mod native_agent;
 mod org_plane;
 pub mod organization;
 mod responses;
@@ -367,6 +368,10 @@ enum Pending {
     },
     Kill(ResourceId),
     Close,
+    NativeAgent {
+        agent_session_id: ResourceId,
+        operation_id: u64,
+    },
     RefreshTopology,
     /// A binding's own command; the reply is surfaced raw.
     Extension,
@@ -879,6 +884,7 @@ impl ControlPlane {
         self.input_replay.connection_lost();
         self.org_connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
+        self.fail_native_pending("the connection ended before the server answered");
         if let Some(message) = &message {
             self.error = Some(message.clone());
         }

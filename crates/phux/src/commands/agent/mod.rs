@@ -4,12 +4,14 @@ mod detect;
 mod hook_payload;
 mod hook_transcript;
 mod model;
+mod native_host;
 mod offline;
 mod prompt;
 mod record;
 mod report_state;
 // AgentSession resource verbs (ADR-0103); unrelated to `session.rs`, the
 // provider-native resume record in L3 metadata.
+mod native_control;
 mod resource_session;
 mod send_keys;
 mod session;
@@ -36,6 +38,29 @@ pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {
+    /// Internal durable SDK guardian, bootstrapped by the native spawn transaction.
+    #[usage(hide)]
+    Host,
+    /// Send a typed SDK intent to the exact `AgentSession` and activation.
+    ///
+    /// This never pastes, sends keys, takes another viewer's lease, or
+    /// assumes that a queued dialog response was consumed.
+    NativeCommand {
+        /// `AgentSession` resource @N, not its parent Terminal.
+        target: String,
+        /// Exact native activation from the session's structured view.
+        #[usage(long)]
+        activation: String,
+        /// Nonzero command identity; retain it when querying an uncertain result.
+        #[usage(long)]
+        operation_id: u64,
+        /// `NativeIntent` JSON: prompt, interrupt or answer with exact IDs.
+        #[usage(long)]
+        intent: String,
+        /// Emit the actual command receipt as JSON.
+        #[usage(long)]
+        json: bool,
+    },
     /// List every pane's detected or declared agent and current state.
     ///
     /// The third column is the pane's `%name` address, `-` when it has no
@@ -459,6 +484,14 @@ pub(crate) enum AgentAction {
 )]
 pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
+        AgentAction::Host => native_host::run(),
+        AgentAction::NativeCommand {
+            target,
+            activation,
+            operation_id,
+            intent,
+            json,
+        } => native_control::run(target, activation, *operation_id, intent, *json, socket),
         AgentAction::List { json } => run_agent_list(*json, socket),
         // `--file` is the offline manifest debugger: no server needed.
         AgentAction::Explain {
