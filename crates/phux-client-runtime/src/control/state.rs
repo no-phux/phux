@@ -1,7 +1,8 @@
 //! Shared bookkeeping and event queue maintenance.
 
 use super::{
-    CommandResult, ControlPlane, EVENT_QUEUE_CAP, ErrorCode, Event, Pending, ServerFeature, Status,
+    CLIPBOARD_QUEUE_BYTES, CommandResult, ControlPlane, EVENT_QUEUE_CAP, ErrorCode, Event, Pending,
+    ServerFeature, Status,
 };
 
 impl ControlPlane {
@@ -144,6 +145,16 @@ impl ControlPlane {
     }
 
     pub(super) fn set_status(&mut self, status: Status) {
+        if status.is_terminal() {
+            self.clipboard_focus = None;
+        }
+        if status != Status::Attached {
+            // Clipboard requests expire with the connection, unlike durable
+            // replies. Never deliver an undrained write after reconnect/close.
+            self.events
+                .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
+            self.clipboard_event_bytes = 0;
+        }
         if self.status == status {
             return;
         }
@@ -169,9 +180,22 @@ impl ControlPlane {
     }
 
     pub(super) fn push_event(&mut self, event: Event) {
-        if self.events.len() >= EVENT_QUEUE_CAP {
+        let clipboard_bytes = match &event {
+            Event::ClipboardWrite { text, .. } => text.0.capacity(),
+            _ => 0,
+        };
+        // The engine admits at most 1 MiB, but typed embedders can supply
+        // their own effects. Never retain an allocation over the queue cap.
+        if clipboard_bytes > CLIPBOARD_QUEUE_BYTES {
+            self.events_dropped = self.events_dropped.saturating_add(1);
+            return;
+        }
+        if self.events.len() >= EVENT_QUEUE_CAP
+            || self.clipboard_event_bytes + clipboard_bytes > CLIPBOARD_QUEUE_BYTES
+        {
             let queued = self.events.len();
             self.events.retain(Event::is_lossless);
+            self.clipboard_event_bytes = 0;
             // Every droppable event before the newest connection boundary is
             // gone, and what remains is correlated by id, not by position, so
             // older boundaries separate nothing and would grow without bound
@@ -195,6 +219,62 @@ impl ControlPlane {
                 self.recover_roster();
             }
         }
+        self.clipboard_event_bytes += clipboard_bytes;
         self.events.push(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_client_core::engine::ClipboardText;
+    use phux_protocol::ResourceId;
+
+    use super::*;
+    use crate::control::ControlOptions;
+
+    #[test]
+    fn undrained_clipboard_payloads_are_byte_bounded_and_drain_resets_the_budget() {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        for _ in 0..6 {
+            plane.push_event(Event::ClipboardWrite {
+                terminal_id: ResourceId::local(7),
+                text: ClipboardText("x".repeat(1024 * 1024)),
+            });
+        }
+        let flooded = plane.take_observation();
+        assert!(
+            flooded.events_dropped,
+            "byte cap trips before the event-count cap"
+        );
+        let payload_bytes: usize = flooded
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ClipboardWrite { text, .. } => Some(text.0.capacity()),
+                _ => None,
+            })
+            .sum();
+        assert!(payload_bytes > 0 && payload_bytes <= CLIPBOARD_QUEUE_BYTES);
+        plane.push_event(Event::ClipboardWrite {
+            terminal_id: ResourceId::local(7),
+            text: ClipboardText("next".into()),
+        });
+        let after_drain = plane.take_observation();
+        assert!(!after_drain.events_dropped);
+        assert_eq!(after_drain.events.len(), 1);
+    }
+
+    #[test]
+    fn clipboard_budget_counts_allocation_capacity_not_just_text_length() {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut text = String::with_capacity(CLIPBOARD_QUEUE_BYTES + 1);
+        text.push('x');
+        plane.push_event(Event::ClipboardWrite {
+            terminal_id: ResourceId::local(7),
+            text: ClipboardText(text),
+        });
+        let dropped = plane.take_observation();
+        assert!(dropped.events_dropped);
+        assert!(dropped.events.is_empty());
     }
 }

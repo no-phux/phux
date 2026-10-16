@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use phux_client_core::engine::ClipboardText;
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::session::AgentStreamInfo;
@@ -196,6 +197,15 @@ pub enum Event {
     Bell {
         /// The terminal.
         terminal_id: ResourceId,
+    },
+    /// A program requested a clipboard write from live output (OSC 52).
+    /// The host must discard it unless this terminal is focused in the
+    /// foreground, and must never retain it for later delivery.
+    ClipboardWrite {
+        /// The source terminal.
+        terminal_id: ResourceId,
+        /// Bounded UTF-8 text, redacted by `Debug`.
+        text: ClipboardText,
     },
     /// The terminal's title changed; the topology entry is updated too.
     TitleChanged {
@@ -486,6 +496,7 @@ impl Event {
         !matches!(
             self,
             Self::TerminalChanged { .. }
+                | Self::ClipboardWrite { .. }
                 | Self::InputDelivery { .. }
                 | Self::NativeAgentResult { .. }
                 | Self::AgentMetadata { .. }

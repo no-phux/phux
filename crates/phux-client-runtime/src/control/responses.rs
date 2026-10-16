@@ -611,6 +611,12 @@ impl ControlPlane {
         accepted: bool,
     ) {
         if accepted {
+            if self.clipboard_focus.as_ref() == Some(terminal_id) {
+                self.clipboard_focus = None;
+                self.events
+                    .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
+                self.clipboard_event_bytes = 0;
+            }
             self.attach_terminals.remove(terminal_id);
             self.terminal_attached.remove(terminal_id);
             self.agent_streams.remove(terminal_id);

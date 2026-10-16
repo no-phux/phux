@@ -411,7 +411,7 @@ impl From<outcome::PathResult> for WirePathAnswer {
 /// on the poll cadence. Wire-faithful naming: `OutputStarted`/`OutputSettled`
 /// mirror the server's coalesced `Dirty`/`Idle` burst events — Swift maps
 /// them onto its own status vocabulary.
-#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+#[derive(uniffi::Enum, Clone, PartialEq, Eq)]
 pub enum WireEvent {
     /// The session graph changed (a fresh ATTACHED arrived) — re-read
     /// `topology()`.
@@ -504,6 +504,9 @@ pub enum WireEvent {
     },
     /// The pane received a BEL.
     Bell { terminal_id: String },
+    /// Live OSC 52 text. Apply only to the foreground focused terminal;
+    /// discard otherwise, never defer or replay. Clipboard reads are unsupported.
+    ClipboardWrite { terminal_id: String, text: String },
     /// The pane's title changed (OSC 0/2). The topology's pane entry is
     /// updated in place as well.
     TitleChanged { terminal_id: String, title: String },
@@ -631,6 +634,66 @@ pub enum WireEvent {
     ConnectionOpened { connection_epoch: u64 },
 }
 
+impl core::fmt::Debug for WireEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Keep ordinary event diagnostics while never formatting clipboard
+        // contents, including through a WirePublication's derived Debug.
+        macro_rules! debug_events {
+            ($($variant:ident $({ $($field:ident),* })?),* $(,)?) => {
+                match self {
+                    Self::TopologyChanged => f.write_str("TopologyChanged"),
+                    Self::OrganizationChanged => f.write_str("OrganizationChanged"),
+                    Self::ClipboardWrite { terminal_id, text } => f
+                        .debug_struct("ClipboardWrite")
+                        .field("terminal_id", terminal_id)
+                        .field("bytes", &text.len())
+                        .finish(),
+                    $(Self::$variant $({ $($field),* })? => {
+                        let mut value = f.debug_struct(stringify!($variant));
+                        $($(value.field(stringify!($field), $field);)*)?
+                        value.finish()
+                    },)*
+                }
+            };
+        }
+        debug_events! {
+            OrganizationUnavailable { message },
+            OrganizationOperation {
+                operation, status, refusal, refusal_word, conflict_revision,
+                revision, message, undoable, created_session_key
+            },
+            KillFinished { workflow, status, message, targets },
+            PaneSpawned { terminal_id },
+            TerminalSpawned { request_id, terminal_id, error },
+            TerminalAttached { request_id, terminal_id, error },
+            TerminalDetached { request_id, terminal_id, error },
+            TerminalsClosed { request_id, error },
+            PaneClosed { terminal_id, exit_status },
+            Bell { terminal_id },
+            TitleChanged { terminal_id, title },
+            OutputStarted { terminal_id },
+            OutputSettled { terminal_id },
+            CommandStarted { terminal_id },
+            CommandFinished { terminal_id, exit_code },
+            CwdChanged { terminal_id, cwd },
+            InputHolderChanged { terminal_id, holder, mine },
+            AgentAsked { terminal_id, question_id, text, suggestions, waiting_seconds },
+            AgentAskedState { terminal_id, asked },
+            NativeAgentResult { agent_session_id, operation_id, disposition, detail },
+            AgentStateChanged {
+                terminal_id, name, kind, session, state, attention,
+                state_reading, attention_reading
+            },
+            AgentRecords {
+                agent_session_id, parent_terminal_id, provider, native_id, kind, seq, jsonl
+            },
+            ServerError { message },
+            ConnectionLost { message },
+            ConnectionOpened { connection_epoch },
+        }
+    }
+}
+
 /// What a `WireEvent::AgentRecords` carries.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentRecordsKind {
@@ -691,6 +754,12 @@ impl From<event::TerminalSignal> for Option<WireEvent> {
             event::TerminalSignal::Bell { terminal_id } => WireEvent::Bell {
                 terminal_id: id::encode(&terminal_id),
             },
+            event::TerminalSignal::ClipboardWrite { terminal_id, text } => {
+                WireEvent::ClipboardWrite {
+                    terminal_id: id::encode(&terminal_id),
+                    text: text.0,
+                }
+            }
             event::TerminalSignal::TitleChanged { terminal_id, title } => WireEvent::TitleChanged {
                 terminal_id: id::encode(&terminal_id),
                 title,

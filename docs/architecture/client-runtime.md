@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-16
 ---
 
 # The client runtime
@@ -46,6 +46,25 @@ read issued before a live change is fenced by that change. `AgentAsked`
 announces a question. `AgentAskedState { asked: false }` is the level that
 retracts it, so a question cleared while a client was not listening is not
 shown again.
+
+Live OSC 52 writes follow the engine's `ClipboardWrite(ClipboardText)` through
+`Event::ClipboardWrite { terminal_id, text }` and the shared FFI terminal-signal
+projection to UniFFI's `WireEvent::ClipboardWrite { terminal_id, text }`.
+The engine admits UTF-8 text up to 1 MiB, only from live output after bootstrap:
+history, bootstrap, reconnect replay, and clipboard reads never produce writes.
+Runtime and UniFFI `Debug` redact the clipboard text.
+
+The runtime records desired host focus through `send_focus`, even before the
+terminal is input-ready; only ready terminals send the wire `INPUT_FOCUS`.
+It emits clipboard requests only while attached and for that focused terminal.
+Focus loss/change, terminal retirement, or connection loss discards undrained
+requests. Desired host focus survives reconnect, not the old requests.
+The foreground host must still check its native app/window focus at delivery
+and discard ineligible requests immediately, never defer them until foreground.
+The undrained queue budgets clipboard allocation capacity separately (4 MiB)
+alongside the event-count cap; overflow drops requests, never replays them.
+The C ABI has no clipboard effect or host-focus contract, so its projection
+explicitly discards this signal; desktop OSC 52 delivery remains unsupported.
 
 With `ControlOptions::subscribe_agent_sessions` (phux-mobile's lane), the
 plane streams every `AgentSession` resource (ADR-0103) whose parent Terminal

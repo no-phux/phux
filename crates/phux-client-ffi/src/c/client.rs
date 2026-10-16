@@ -828,14 +828,19 @@ impl Client {
     ///
     /// The burst pair has no C vocabulary and never had one: Cockpit reads
     /// activity from the damage effects, so `OutputStarted`/`OutputSettled`
-    /// encode to nothing. Every other signal keeps its historical
-    /// `(kind, detail)` pair and its status code, which
+    /// encode to nothing. Clipboard writes remain unsupported in this lane.
+    /// Every supported signal keeps its historical `(kind, detail)` pair and
+    /// status code, which
     /// `include/phux/client.h` pins.
     fn signal_effect(&self, signal: TerminalSignal) -> Option<OwnedEffect> {
         Some(match signal {
             TerminalSignal::OutputStarted { .. } | TerminalSignal::OutputSettled { .. } => {
                 return None;
             }
+            // The C ABI has no clipboard effect or foreground/focus policy
+            // contract. Do not turn a remote write into an unguarded desktop
+            // clipboard action; only the UniFFI lane exposes it for now.
+            TerminalSignal::ClipboardWrite { .. } => return None,
             TerminalSignal::Bell { terminal_id } => self.stamped(2, 1, &terminal_id),
             TerminalSignal::TitleChanged { terminal_id, title } => {
                 let mut effect = self.stamped(2, 2, &terminal_id);
