@@ -1302,14 +1302,18 @@ mod tests {
     }
 }
 
-/// Drives [`TerminalInput::fit`] and [`TerminalInput::flush_fit`] against an
-/// embedded runtime. Press, tab switch, and zoom are one handoff: the newly
-/// focused writable view claims ownership while the previous timer is still
-/// running, and hiding does not call `fit(false)`.
+/// Drives terminal input, [`TerminalInput::fit`] and [`TerminalInput::flush_fit`]
+/// against an embedded runtime. Press, tab switch, and zoom are one handoff: the
+/// newly focused writable view claims ownership while the previous timer is
+/// still running, and hiding does not call `fit(false)`.
 #[cfg(test)]
 mod delivery {
-    use super::{FIT_SETTLE, InputMetrics, TerminalInput};
-    use gpui::{AppContext, Bounds, Entity, TestAppContext, Window, point, px, size};
+    use super::{FIT_SETTLE, InputMetrics, KeyDisposition, TerminalInput};
+    use gpui::{
+        AppContext, Bounds, ElementInputHandler, Entity, EntityInputHandler, InputHandler,
+        KeyDownEvent, KeyUpEvent, Keystroke, PlatformWindow, TestAppContext, Window, point, px,
+        size,
+    };
     use phux_client_runtime::control::{ControlOptions, ControlPlane};
     use phux_client_runtime::{Client, Runtime, ViewId};
     use phux_protocol::{
@@ -1319,6 +1323,7 @@ mod delivery {
             ServerFeature, ServerFeatureSet,
         },
         ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+        input::key::{KeyAction, KeyEvent},
         wire::{
             frame::{AttachTarget, Command, CommandResult, ErrorCode, FrameKind, RolePolicy},
             info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
@@ -1497,6 +1502,193 @@ mod delivery {
                 pending.since = Instant::now() - FIT_SETTLE;
             }
             state.flush_fit();
+        });
+    }
+
+    fn keys(client: &Client) -> Vec<KeyEvent> {
+        client
+            .take_outbound()
+            .iter()
+            .map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                FrameKind::InputKey { terminal_id, event } => {
+                    assert_eq!(terminal_id, terminal());
+                    event
+                }
+                frame => panic!("unexpected input frame: {frame:?}"),
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn only_the_terminal_surface_disables_apple_press_and_hold(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let handle = cx.add_window(|window, cx| {
+            crate::terminal::Terminal::new(
+                client.clone(),
+                view,
+                terminal(),
+                crate::terminal::Settings::default(),
+                window,
+                cx,
+            )
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let input = bind(&client, view, window, cx);
+            let mut default_handler = ElementInputHandler::new(Bounds::default(), input);
+            assert!(default_handler.apple_press_and_hold_enabled());
+        })
+        .unwrap();
+        let mut installed = cx
+            .test_window(handle.into())
+            .take_input_handler()
+            .expect("the painted terminal installed its text handler");
+        assert!(
+            !installed.apple_press_and_hold_enabled(),
+            "held printable keys must bypass the macOS accent picker"
+        );
+    }
+
+    #[gpui::test]
+    fn printable_key_commits_preserve_repeat_and_release(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| state.focus.focus(window, cx));
+            for (stroke, text) in [("a->a", "a"), ("shift-a->A", "A"), ("space-> ", " ")] {
+                let stroke = Keystroke::parse(stroke).expect("stroke");
+                for (is_held, action) in [
+                    (false, KeyAction::Press),
+                    (true, KeyAction::Repeat),
+                    (true, KeyAction::Repeat),
+                ] {
+                    input.update(cx, |state, cx| {
+                        let down = KeyDownEvent {
+                            keystroke: stroke.clone(),
+                            is_held,
+                            prefer_character_input: false,
+                        };
+                        assert_eq!(
+                            state.key_down(&down, window, cx),
+                            Ok(KeyDisposition::Platform)
+                        );
+                        assert!(client.take_outbound().is_empty(), "wait for platform text");
+                        state.replace_text_in_range(None, text, window, cx);
+                    });
+                    let events = keys(&client);
+                    assert_eq!(events.len(), 1, "one commit per down, no duplicate input");
+                    assert_eq!(events[0].action, action);
+                    assert_eq!(events[0].text.as_deref(), Some(text));
+                }
+                input.update(cx, |state, cx| {
+                    let up = KeyUpEvent { keystroke: stroke };
+                    assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
+                    assert!(state.pressed.is_empty());
+                });
+                let events = keys(&client);
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].action, KeyAction::Release);
+                assert_eq!(events[0].text, None);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn named_and_control_keys_repeat_without_platform_text(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| {
+                state.focus.focus(window, cx);
+                for stroke in ["left", "backspace", "enter", "ctrl-a"] {
+                    let stroke = Keystroke::parse(stroke).expect("stroke");
+                    for is_held in [false, true] {
+                        let down = KeyDownEvent {
+                            keystroke: stroke.clone(),
+                            is_held,
+                            prefer_character_input: false,
+                        };
+                        assert_eq!(
+                            state.key_down(&down, window, cx),
+                            Ok(KeyDisposition::Consumed)
+                        );
+                    }
+                    let up = KeyUpEvent { keystroke: stroke };
+                    assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
+                    let events = keys(&client);
+                    assert_eq!(
+                        events.iter().map(|key| key.action).collect::<Vec<_>>(),
+                        vec![KeyAction::Press, KeyAction::Repeat, KeyAction::Release]
+                    );
+                    assert!(events.iter().all(|key| key.text.is_none()));
+                    assert!(events.iter().all(|key| key.key == events[0].key));
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn composing_held_keys_stay_local_until_ime_commit(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| {
+                state.focus.focus(window, cx);
+                let mut down = KeyDownEvent {
+                    keystroke: Keystroke::parse("e->e").expect("stroke"),
+                    is_held: false,
+                    prefer_character_input: false,
+                };
+                assert_eq!(
+                    state.key_down(&down, window, cx),
+                    Ok(KeyDisposition::Platform)
+                );
+                state.replace_and_mark_text_in_range(None, "か", Some(1..1), window, cx);
+                assert!(state.pending_key.is_none(), "preedit cancels the raw key");
+                down.is_held = true;
+                assert_eq!(
+                    state.key_down(&down, window, cx),
+                    Ok(KeyDisposition::Platform)
+                );
+                assert_eq!(state.marked_text_range(window, cx), Some(0..1));
+                assert!(
+                    client.take_outbound().is_empty(),
+                    "preedit must not reach the PTY"
+                );
+                state.replace_text_in_range(None, "漢", window, cx);
+                let events = keys(&client);
+                assert_eq!(events.len(), 1);
+                assert_eq!(
+                    events[0].action,
+                    KeyAction::Press,
+                    "IME commit is not a raw repeat"
+                );
+                assert_eq!(events[0].text.as_deref(), Some("漢"));
+                assert_eq!(state.preedit().0, "");
+                state.replace_and_mark_text_in_range(None, "´", Some(1..1), window, cx);
+                state.unmark_text(window, cx);
+                assert!(
+                    client.take_outbound().is_empty(),
+                    "canceled dead key stays local"
+                );
+                assert_eq!(state.preedit().0, "");
+            });
         });
     }
 
