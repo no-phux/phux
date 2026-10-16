@@ -31,6 +31,25 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
 [INPUT.md](INPUT.md), [PRESENTATION.md](PRESENTATION.md).
 
+## ACP and attached conversations
+
+**New ACP Agent** lists configured ACP profiles and executing-host prerequisites.
+Explicit launch delegates to `phux launch --acp INTEGRATION --json --session SESSION`;
+the GUI never owns a provider worker. That server-owned ACP session is also the
+session mobile controls. Prompt/interrupt/answer use the shared typed control
+broker and dedicated operation receipts, never terminal keys. ACP permissions and
+supported provider extension questions use Kit controls with exact callback
+identities and no automatic approval or recommendation selection.
+
+Existing extension/hook streams remain **Attached TUI**: their composer and Stop
+still operate the terminal, and approvals stay there. Passive stream discovery
+never takes focus. Missing harness/adapter prerequisites are actionable UI;
+installation and authentication remain operator responsibilities. See
+[architecture](../../../docs/architecture/desktop.md#native-agent-conversation) and
+[verification](../../../docs/architecture/desktop-verification.md#native-conversation-gates)
+for the distinct attached-mode, scene-fixture and genuine ACP acceptance gates.
+
+
 ## Command line
 
 ```text

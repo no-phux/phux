@@ -32,7 +32,11 @@ const STATUS_UNKNOWN: u8 = 2;
 
 pub(crate) fn run_project(action: &ProjectAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        ProjectAction::Open { target, json } => run_open(target.as_deref(), *json, socket),
+        ProjectAction::Open {
+            target,
+            json,
+            prefer_native,
+        } => run_open(target.as_deref(), *json, *prefer_native, socket),
         ProjectAction::List { json } => run_list(*json, socket.as_deref()),
         ProjectAction::Init { target } => run_init(target.as_deref()),
         ProjectAction::Trust { target } => run_trust(target.as_deref()),
@@ -220,6 +224,7 @@ fn load(project: &Project) -> Result<Option<Loaded>, String> {
         &project.root,
         &project.session(),
         &project.label(),
+        recipe::LaunchPreference::Validate,
     )
     .map_err(|err| format!("{}: {err}", project.recipe.display()))?;
     Ok(Some(Loaded {
@@ -289,7 +294,12 @@ fn open_lock(socket: &Path, session: &str) -> Result<std::fs::File, String> {
     }
 }
 
-fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
+fn run_open(
+    target: Option<&str>,
+    json: bool,
+    prefer_native: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     if !json && let Err(code) = super::attach::interactive_tty_preflight() {
         return code;
     }
@@ -323,7 +333,7 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
     let disposition = if live {
         OpenDisposition::Existing
     } else {
-        match create(&project, &session, &socket_path, json) {
+        match create(&project, &session, &socket_path, json, prefer_native) {
             Ok(disposition) => disposition,
             Err(code) => return code,
         }
@@ -392,6 +402,7 @@ fn create(
     session: &str,
     socket_path: &Path,
     json: bool,
+    prefer_native: bool,
 ) -> Result<OpenDisposition, ExitCode> {
     let loaded = load(project).map_err(|err| {
         refuse(
@@ -409,6 +420,11 @@ fn create(
         &project.root,
         session,
         &project.label(),
+        if prefer_native {
+            recipe::LaunchPreference::Native
+        } else {
+            recipe::LaunchPreference::Terminal
+        },
     )
     .map_err(|err| {
         refuse(

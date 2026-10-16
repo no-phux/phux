@@ -529,6 +529,11 @@ enum Query {
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),
+    HasNativeAgentView(ResourceId, Sender<bool>),
+    NativeAgentView(
+        ResourceId,
+        Sender<Option<phux_protocol::native_agent::NativeView>>,
+    ),
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
@@ -720,6 +725,30 @@ impl EngineHandle {
         self.request(|reply| Command::Query(Query::AgentStreamInfo(terminal_id.clone(), reply)))
             .ok()
             .flatten()
+    }
+
+    /// The exact committed SDK controller view, never inferred from a provider.
+    /// Closed sources remain readable but cannot expose connected controls.
+    #[must_use]
+    pub fn native_agent_view(
+        &self,
+        agent_session_id: &ResourceId,
+    ) -> Option<phux_protocol::native_agent::NativeView> {
+        self.request(|reply| {
+            Command::Query(Query::NativeAgentView(agent_session_id.clone(), reply))
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Whether the exact session retains native ownership, without copying its view.
+    /// A retained view need not be connected or ready to accept commands.
+    #[must_use]
+    pub fn has_native_agent_view(&self, agent_session_id: &ResourceId) -> bool {
+        self.request(|reply| {
+            Command::Query(Query::HasNativeAgentView(agent_session_id.clone(), reply))
+        })
+        .unwrap_or(false)
     }
 
     /// The kernel's current input eligibility for one terminal.

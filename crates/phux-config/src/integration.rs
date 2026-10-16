@@ -1,8 +1,8 @@
 //! Agent integration templates (`integrations/<id>.toml`, ADR-0042): the
 //! launchable agents a plugin ships.
 //!
-//! Only what the launcher needs is modeled (`id`, `display_name`, `kind`,
-//! `[launch]`, `[session_identity]`, `[agent_identity]`); other keys are
+//! What the launcher needs is modeled (`id`, `display_name`, `kind`,
+//! `[launch]`, `[acp]`, `[session_identity]`, `[agent_identity]`); other keys are
 //! ignored, not rejected, so the package format can grow.
 
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ pub struct IntegrationTemplate {
     pub kind: Option<String>,
     /// The `[launch]` command; without one the template is not launchable.
     pub launch: Option<IntegrationLaunch>,
+    /// Explicit SDK/API execution, never inferred from terminal argv or kind.
+    pub native: Option<IntegrationNativeLaunch>,
     /// Canonical path the template was loaded from.
     pub template_path: PathBuf,
     /// Provider-native session identity and restore policy, when declared.
@@ -69,6 +71,37 @@ pub struct IntegrationLaunch {
     pub required_executables: Vec<String>,
     /// Directory the launched program runs in.
     pub working_directory: LaunchWorkingDirectory,
+}
+
+/// Provider transport used by a declared native launch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeBackend {
+    /// Official Agent Client Protocol Rust SDK.
+    #[default]
+    Acp,
+}
+
+impl NativeBackend {
+    /// Stable transport name used by the native host.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Acp => "acp",
+        }
+    }
+}
+
+/// A template's `[acp]` declaration. It selects actual API execution;
+/// terminal launch settings do not establish native control capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationNativeLaunch {
+    /// SDK transport, selected explicitly by the template.
+    pub backend: NativeBackend,
+    /// Harness slug carried by the structured `AgentSession`.
+    pub provider: String,
+    /// Native executable argv, prerequisites, and working-directory policy.
+    pub launch: IntegrationLaunch,
 }
 
 /// A template's `[session_identity]` policy; natively restorable only with
@@ -252,6 +285,11 @@ struct RawTemplate {
     #[serde(default)]
     launch: Option<RawLaunch>,
     #[serde(default)]
+    #[serde(rename = "acp")]
+    native: Option<RawNativeLaunch>,
+    #[serde(default, rename = "native")]
+    legacy_native: Option<toml::Value>,
+    #[serde(default)]
     session_identity: Option<RawSessionIdentity>,
     #[serde(default)]
     agent_identity: Option<RawAgentIdentity>,
@@ -273,6 +311,15 @@ struct RawLaunch {
     required_executables: Vec<String>,
     #[serde(default)]
     working_directory: LaunchWorkingDirectory,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawNativeLaunch {
+    #[serde(default)]
+    backend: NativeBackend,
+    provider: String,
+    #[serde(flatten)]
+    launch: RawLaunch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +357,13 @@ pub fn parse_integration_template(
         message: err.message().to_owned(),
     })?;
 
+    if raw.legacy_native.is_some() {
+        return Err(IntegrationError::Invalid(
+            "legacy [native] backends are unsupported; declare [acp] with an explicit ACP argv"
+                .into(),
+        ));
+    }
+
     let id = raw
         .id
         .map(|id| id.trim().to_owned())
@@ -325,6 +379,29 @@ pub fn parse_integration_template(
         .launch
         .map(|raw_launch| build_launch(&id, path, raw_launch))
         .transpose()?;
+    let native = raw
+        .native
+        .map(|native| {
+            let provider = native.provider.trim().to_owned();
+            if provider.is_empty()
+                || provider.len() > 32
+                || !provider
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(invalid(
+                    path,
+                    &id,
+                    "`[acp] provider` must be a harness slug",
+                ));
+            }
+            Ok(IntegrationNativeLaunch {
+                backend: native.backend,
+                provider,
+                launch: build_acp_launch(&id, path, native.launch)?,
+            })
+        })
+        .transpose()?;
     let session_identity = raw
         .session_identity
         .map(|raw_session| build_session_identity(&id, path, raw_session))
@@ -338,6 +415,7 @@ pub fn parse_integration_template(
         display_name: raw.display_name.as_deref().and_then(trim_optional),
         kind: raw.kind.as_deref().and_then(trim_optional),
         launch,
+        native,
         session_identity,
         template_path: path.to_path_buf(),
         agent_identity: raw
@@ -380,6 +458,32 @@ fn build_launch(
     })
 }
 
+fn build_acp_launch(
+    id: &str,
+    path: &Path,
+    raw: RawLaunch,
+) -> Result<IntegrationLaunch, IntegrationError> {
+    if raw.command.len() > 128
+        || raw
+            .command
+            .iter()
+            .any(|arg| arg.len() > 4096 || arg.contains('\0'))
+        || raw.command.iter().map(String::len).sum::<usize>() > 16 * 1024
+    {
+        return Err(invalid(
+            path,
+            id,
+            "[acp] command exceeds bounded executable argv",
+        ));
+    }
+    let mut launch = build_launch(id, path, raw)?;
+    let program = &launch.command[0];
+    if !program.contains(['/', '\\']) && !launch.required_executables.contains(program) {
+        launch.required_executables.push(program.clone());
+        validate_required_executables(id, path, &launch.required_executables)?;
+    }
+    Ok(launch)
+}
 fn validate_required_executables(
     id: &str,
     path: &Path,
@@ -672,6 +776,33 @@ working_directory = "workspace"
 
     fn parse(text: &str) -> Result<IntegrationTemplate, IntegrationError> {
         parse_integration_template(text, Path::new("claude-code.toml"))
+    }
+
+    #[test]
+    fn acp_is_explicit_bounded_and_independent_of_terminal_launch() {
+        let template = parse("id = 'custom'\n[acp]\nprovider = 'custom'\ncommand = ['custom-acp', 'literal; argument']\n").unwrap();
+        assert!(template.launch.is_none());
+        let acp = template.native.unwrap();
+        assert_eq!(acp.backend, NativeBackend::Acp);
+        assert_eq!(acp.launch.required_executables, ["custom-acp"]);
+        assert_eq!(acp.launch.command[1], "literal; argument");
+        for section in [
+            "[native]\nbackend = 'node'",
+            "[acp]\nbackend = 'node'",
+            "[acp]\nbackend = 'omp-rpc'",
+        ] {
+            assert!(
+                parse(&format!(
+                    "id = 'bad'\n{section}\nprovider = 'custom'\ncommand = ['custom-acp']\n"
+                ))
+                .is_err()
+            );
+        }
+        let huge = format!(
+            "id = 'bad'\n[acp]\nprovider = 'custom'\ncommand = ['custom-acp', '{}']\n",
+            "x".repeat(4097)
+        );
+        assert!(parse(&huge).is_err());
     }
 
     #[test]

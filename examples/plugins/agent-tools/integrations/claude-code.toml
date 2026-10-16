@@ -43,3 +43,11 @@ kind = "claude"
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "claude", "--kind", "claude", "--", "claude"]
 working_directory = "workspace"
+
+
+# ACP executable is installed and authenticated by the operator.
+[acp]
+provider = "claude"
+command = ["claude-agent-acp"]
+required_executables = ["claude-agent-acp"]
+working_directory = "workspace"

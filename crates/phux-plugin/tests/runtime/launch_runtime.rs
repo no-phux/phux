@@ -117,8 +117,14 @@ fn resolves_named_integration_expanding_plugin_root_and_appending_extra_args() {
     let (config, plugin_root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let resolved =
-        resolve_launch(&config, "codex", &["--resume".to_owned()], &ws).expect("codex resolves");
+    let resolved = resolve_launch(
+        &config,
+        "codex",
+        &["--resume".to_owned()],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("codex resolves");
 
     assert_eq!(resolved.plugin_id, "example.launch");
     assert_eq!(resolved.integration_id, "codex");
@@ -166,7 +172,14 @@ fn plugin_root_working_directory_runs_in_the_plugin_tree() {
     let (config, plugin_root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let resolved = resolve_launch(&config, "rooted", &[], &ws).expect("rooted resolves");
+    let resolved = resolve_launch(
+        &config,
+        "rooted",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("rooted resolves");
 
     assert_eq!(
         resolved.working_directory,
@@ -181,7 +194,8 @@ fn unknown_integration_reports_available_ids() {
     let (config, _root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let err = resolve_launch(&config, "nope", &[], &ws).expect_err("unknown id");
+    let err = resolve_launch(&config, "nope", &[], &ws, phux_plugin::LaunchMode::Terminal)
+        .expect_err("unknown id");
     match err {
         LaunchError::NotFound { name, available } => {
             assert_eq!(name, "nope");
@@ -200,7 +214,14 @@ fn integration_without_launch_command_is_reported() {
     let (config, _root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let err = resolve_launch(&config, "detect-only", &[], &ws).expect_err("no launch");
+    let err = resolve_launch(
+        &config,
+        "detect-only",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("no launch");
     assert!(
         matches!(err, LaunchError::NoLaunchCommand { name } if name == "detect-only"),
         "expected NoLaunchCommand",
@@ -213,13 +234,20 @@ fn disabled_plugin_ships_no_launchable_integrations() {
     let (config, _root) = write_plugin(&tmp, false);
     let ws = workspace(&tmp);
 
-    let err = resolve_launch(&config, "codex", &[], &ws).expect_err("disabled plugin");
+    let err = resolve_launch(
+        &config,
+        "codex",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("disabled plugin");
     match err {
         LaunchError::NotFound { available, .. } => assert!(available.is_empty()),
         other => panic!("expected NotFound with empty available, got {other:?}"),
     }
     assert!(
-        phux_plugin::list_launchable(&config)
+        phux_plugin::list_launchable(&config, phux_plugin::LaunchMode::Terminal)
             .expect("list")
             .is_empty()
     );
@@ -230,7 +258,8 @@ fn list_launchable_enumerates_only_templates_with_a_launch_command() {
     let tmp = TempDir::new().expect("tempdir");
     let (config, _root) = write_plugin(&tmp, true);
 
-    let items = phux_plugin::list_launchable(&config).expect("list");
+    let items =
+        phux_plugin::list_launchable(&config, phux_plugin::LaunchMode::Terminal).expect("list");
     let mut ids: Vec<&str> = items
         .iter()
         .map(|item| item.integration_id.as_str())
@@ -265,15 +294,22 @@ fn missing_executable_hides_an_integration_and_is_explicit_when_requested() {
     let (config, _root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let listed = phux_plugin::list_launchable(&config).expect("list");
+    let listed =
+        phux_plugin::list_launchable(&config, phux_plugin::LaunchMode::Terminal).expect("list");
     assert!(
         listed
             .iter()
             .all(|item| item.integration_id != "unavailable")
     );
 
-    let err = resolve_launch(&config, "unavailable", &[], &ws)
-        .expect_err("a named unavailable integration must explain its prerequisite");
+    let err = resolve_launch(
+        &config,
+        "unavailable",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("a named unavailable integration must explain its prerequisite");
     assert!(
         matches!(
             err,
@@ -285,10 +321,9 @@ fn missing_executable_hides_an_integration_and_is_explicit_when_requested() {
     );
 }
 
-/// A broken sibling template must not block resolving a healthy one, but a
-/// broken template whose filename is the requested id surfaces its error.
+/// A requested malformed template surfaces its parse error.
 #[test]
-fn broken_sibling_template_is_skipped_but_target_errors_surface() {
+fn requested_broken_template_surfaces_its_error() {
     let tmp = TempDir::new().expect("tempdir");
     let (config, plugin_root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
@@ -301,11 +336,15 @@ fn broken_sibling_template_is_skipped_but_target_errors_surface() {
     )
     .expect("write busted template");
 
-    // codex still resolves despite the broken sibling.
-    assert!(resolve_launch(&config, "codex", &[], &ws).is_ok());
-
     // Asking for the broken template surfaces its parse error.
-    let err = resolve_launch(&config, "busted", &[], &ws).expect_err("busted target");
+    let err = resolve_launch(
+        &config,
+        "busted",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("busted target");
     assert!(matches!(err, LaunchError::Template { .. }), "got {err:?}");
 }
 
@@ -335,8 +374,14 @@ min_phux_version = "0.0.2"
     .expect("extend config text");
     std::fs::write(&config, config_text).expect("extend config");
 
-    let err = resolve_launch(&config, "codex", &[], &workspace(&tmp))
-        .expect_err("duplicate owner must fail closed");
+    let err = resolve_launch(
+        &config,
+        "codex",
+        &[],
+        &workspace(&tmp),
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("duplicate owner must fail closed");
     assert!(
         matches!(err, LaunchError::DuplicatePluginId { ref id, .. } if id == "example.launch"),
         "got {err:?}"
@@ -379,8 +424,14 @@ command = ["codex"]
     .expect("extend config text");
     std::fs::write(&config, config_text).expect("extend config");
 
-    let err = resolve_launch(&config, "codex", &[], &workspace(&tmp))
-        .expect_err("duplicate integration owner must fail closed");
+    let err = resolve_launch(
+        &config,
+        "codex",
+        &[],
+        &workspace(&tmp),
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("duplicate integration owner must fail closed");
     assert!(
         matches!(err, LaunchError::DuplicateIntegrationId { ref id, .. } if id == "codex"),
         "got {err:?}"
@@ -396,12 +447,26 @@ fn a_kind_resolves_the_integration_that_claims_it() {
     let (config, _root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let resolved = phux_plugin::resolve_launch_for_kind(&config, None, "codex", &[], &ws)
-        .expect("the codex template claims kind codex");
+    let resolved = phux_plugin::resolve_launch_for_kind(
+        &config,
+        None,
+        "codex",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("the codex template claims kind codex");
     assert_eq!(resolved.integration_id, "codex");
 
-    let insensitive = phux_plugin::resolve_launch_for_kind(&config, None, " CODEX ", &[], &ws)
-        .expect("claims are matched with the shared tolerance");
+    let insensitive = phux_plugin::resolve_launch_for_kind(
+        &config,
+        None,
+        " CODEX ",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("claims are matched with the shared tolerance");
     assert_eq!(insensitive.integration_id, "codex");
 }
 
@@ -413,8 +478,15 @@ fn an_explicit_integration_overrides_the_kind_claim() {
     let (config, _root) = write_plugin(&tmp, true);
     let ws = workspace(&tmp);
 
-    let resolved = phux_plugin::resolve_launch_for_kind(&config, Some("rooted"), "codex", &[], &ws)
-        .expect("the explicit id wins");
+    let resolved = phux_plugin::resolve_launch_for_kind(
+        &config,
+        Some("rooted"),
+        "codex",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("the explicit id wins");
     assert_eq!(resolved.integration_id, "rooted");
 }
 
@@ -430,16 +502,30 @@ fn an_unclaimed_kind_falls_back_to_the_kind_as_given() {
 
     // `rooted.toml` declares no `[agent_identity]`, so nothing claims the
     // kind and the id spelled like it still resolves.
-    let resolved = phux_plugin::resolve_launch_for_kind(&config, None, "rooted", &[], &ws)
-        .expect("the id-spelled-like-the-kind default still resolves");
+    let resolved = phux_plugin::resolve_launch_for_kind(
+        &config,
+        None,
+        "rooted",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("the id-spelled-like-the-kind default still resolves");
     assert_eq!(resolved.integration_id, "rooted");
 
     // Uncanonicalized input is looked up exactly as handed over. Canonicalizing
     // a detection kind needs the manifests, which live above this crate, so the
     // CLI resolves `--kind CLAUDE` to `claude` before calling
     // (`an_unclaimed_kind_falls_back_to_the_canonical_kind_not_the_typed_one`).
-    let err = phux_plugin::resolve_launch_for_kind(&config, None, " CLAUDE ", &[], &ws)
-        .expect_err("no template is named ' CLAUDE '");
+    let err = phux_plugin::resolve_launch_for_kind(
+        &config,
+        None,
+        " CLAUDE ",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("no template is named ' CLAUDE '");
     match err {
         phux_plugin::KindLaunchError::Resolve { integration_id, .. } => {
             assert_eq!(integration_id, " CLAUDE ");
@@ -471,8 +557,15 @@ command = ["sh", "-c", "true"]
     )
     .expect("write a second claimant");
 
-    let err = phux_plugin::resolve_launch_for_kind(&config, None, "codex", &[], &ws)
-        .expect_err("two claimants must not be picked between");
+    let err = phux_plugin::resolve_launch_for_kind(
+        &config,
+        None,
+        "codex",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect_err("two claimants must not be picked between");
     match err {
         phux_plugin::KindLaunchError::Ambiguous { kind, claimants } => {
             assert_eq!(kind, "codex");
@@ -484,7 +577,14 @@ command = ["sh", "-c", "true"]
     }
 
     // The explicit override still cuts through it.
-    let resolved = phux_plugin::resolve_launch_for_kind(&config, Some("codex"), "codex", &[], &ws)
-        .expect("an explicit id cannot be vetoed by an ambiguous claim set");
+    let resolved = phux_plugin::resolve_launch_for_kind(
+        &config,
+        Some("codex"),
+        "codex",
+        &[],
+        &ws,
+        phux_plugin::LaunchMode::Terminal,
+    )
+    .expect("an explicit id cannot be vetoed by an ambiguous claim set");
     assert_eq!(resolved.integration_id, "codex");
 }

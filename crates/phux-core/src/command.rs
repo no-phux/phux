@@ -201,6 +201,11 @@ pub enum Op {
         resource: ResourceKey,
         /// Observed revision.
         expected: Revision,
+        /// Explicit replacement launch for a proven-inactive record; `None`
+        /// reuses the recorded launch unchanged. Kind, revision, execution
+        /// status, lifetime, membership and arrangement checks still apply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch: Option<LaunchSpec>,
     },
     /// Replace an owner's arrangement document.
     ArrangementReplace {
@@ -239,6 +244,17 @@ pub enum Op {
         /// The activation.
         activation: ActivationId,
     },
+    /// Executor report of a factual future restore recipe for the exact
+    /// current activation. Never launches or changes execution/lifetime.
+    /// System only; the server authenticates the native producer first.
+    ResourceLaunchReported {
+        /// The resource whose future recipe changes.
+        resource: ResourceKey,
+        /// Exact current activation, fencing stale producers.
+        activation: ActivationId,
+        /// Updated future launch; must retain the resource's kind.
+        launch: LaunchSpec,
+    },
 }
 
 impl Op {
@@ -256,6 +272,7 @@ impl Op {
             Self::ActivationStarted { .. }
                 | Self::ActivationEnded { .. }
                 | Self::ActivationLost { .. }
+                | Self::ResourceLaunchReported { .. }
         )
     }
 }

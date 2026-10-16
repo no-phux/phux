@@ -131,3 +131,55 @@ cursor rendering. Pane controls, shortcuts, and events are documented in
 ## License
 
 Apache-2.0.
+
+## Hosted pane presentation
+
+`HostedClient` owns one connection and its validated terminal replicas. Keep
+that client and its canvas alive when promoting a preview into a workspace;
+calling `start_hosted` again opens another connection.
+
+The canvas emits bubbling `CustomEvent`s with generated TypeScript types:
+
+- `phux-panes`: `PaneState`, retaining `count`, `focused`, `pending` and optional
+  `error`, with `panes: PaneDescriptor[]` and total cell `cols`/`rows`.
+- `phux-render`: `PaneRenderDetail`, emitted after a full real canvas paint.
+  It carries the same canonical pane rectangles plus backing-store
+  `pixelWidth`/`pixelHeight`. Each rectangle has `id`, `x`, `y`, `cols`, `rows`
+  in cells and excludes separators. Optional `cursorRow` is the pane-local
+  engine cursor row from the last full paint, reusing grids already read by the
+  renderer. Clamp it to the visible rectangle during a pending resize.
+  `phux-panes` may omit it before the first paint. The event is dispatched without an App
+  borrow, so a listener can call the client. Cursor-only blink redraws do not
+  emit this presentation event; no perpetual preview-copy timer is needed.
+
+A preview can crop the painted source canvas using these actual rectangles.
+This shares the existing terminal replicas; it does not create shells, expose
+raw transport bytes, or add another subscription.
+
+`focus_pane(id)` accepts an exact canonical id from a visible descriptor,
+including satellite selectors, and rejects hidden or unready terminals.
+`send_text(text)` sends one structured, trusted paste to the focused terminal:
+at most 4096 UTF-8 bytes, empty text is a no-op, and no Enter key is appended.
+Use `send_key("Enter")` separately when intended. Backend command support and
+session admission remain the server's responsibility.
+
+Focused browser regressions are named `presentation_*`. Four run without a
+server fixture. The ignored structured-paste wire test additionally needs an
+owned loopback WebSocket echo fixture set at build time with
+`PHUX_PRESENTATION_ECHO_URL`, then `--include-ignored`; it decodes the actual
+sent PHUX frame and does not use a remote shell.
+
+### Transparent glass appearance
+
+`HostedClient.set_glass_mode(true)` opts one existing client into a transparent
+canvas backdrop, no native pane borders, and transparent cells where the
+terminal has no explicit background. Opaque rendering remains the default;
+`set_glass_mode(false)` restores it. The public `render`, `render_selected`,
+and `render_cursor_row` functions keep their signatures and opaque defaults.
+
+Explicit ANSI backgrounds stay opaque even when black or identical to the
+terminal's default RGB. Inverse cells, selection/search overlays and cursor
+colors remain visible. The VT adapter reads the real cell inverse flag from
+the pinned `GhosttyStyle` C ABI. Glass redraws clear the previous row before
+painting glyphs or a blinking cursor, so erased text and wide glyphs leave no
+trails. No CSS blend mode or color-keying is used.

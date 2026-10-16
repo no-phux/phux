@@ -109,6 +109,9 @@ fn integration_template_actions_are_local_and_validated() {
     assert!(listed.contains("pi\tPi\tterminal-agent\t0.1.0\topt-in\tpi"));
     assert!(listed.contains("omp\tOh My Pi\tterminal-agent\t0.1.0\topt-in\tomp"));
     assert!(listed.contains("opencode\tOpenCode\tterminal-agent\t0.1.0\topt-in\topencode"));
+    assert!(listed.contains("amp\tAmp\tterminal-agent\t0.1.0\topt-in\tamp"));
+    assert!(listed.contains("cursor-agent\tCursor Agent\tterminal-agent\t0.1.0\topt-in\tagent"));
+    assert!(listed.contains("goose\tGoose\tterminal-agent\t0.1.0\topt-in\tgoose"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, VALIDATE_ACTION, "--json"]);
     assert_eq!(
@@ -116,7 +119,7 @@ fn integration_template_actions_are_local_and_validated() {
         "validate integrations should succeed; stderr={stderr}"
     );
     let output: serde_json::Value = serde_json::from_str(&stdout).expect("validate stdout is JSON");
-    assert!(stdout_from_json(&output).contains("validated 8 integration templates"));
+    assert!(stdout_from_json(&output).contains("validated 11 integration templates"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, DETECT_ACTION, "--json"]);
     assert_eq!(

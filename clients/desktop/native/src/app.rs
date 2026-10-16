@@ -8,10 +8,17 @@ mod actions;
 mod color;
 mod conversation;
 mod desk;
+mod fleet;
+#[cfg(feature = "ui-fixtures")]
+#[allow(
+    dead_code,
+    reason = "standalone material fixture, not shipping desktop navigation"
+)]
 mod glass_menu;
 mod host;
 mod keys;
 mod motion;
+mod native_launch;
 mod notifications;
 mod organization;
 mod overlays;

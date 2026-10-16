@@ -239,6 +239,7 @@ impl Client {
         let options = ControlOptions {
             client_name: String::new(),
             automatic_lifecycle: false,
+            session_recovery: phux_client_runtime::control::SessionRecovery::Automatic,
             viewport: (80, 24),
             scrollback_lines: u32::try_from(limits.history_materialized_rows).unwrap_or(u32::MAX),
             attach: None,

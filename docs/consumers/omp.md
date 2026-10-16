@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-15
 ---
 
 # Native Oh My Pi integration
@@ -242,6 +242,8 @@ inspect ownership rather than assuming rollback.
 
 ## Native conversation clients
 
+### Attached interactive OMP
+
 Install or upgrade `@phux/omp`, then start ordinary interactive `omp` inside a
 phux terminal. Its own process remains the session; native clients read its
 AgentSession through the same authenticated phux connection used for the pane.
@@ -258,25 +260,25 @@ entries. This is a bounded live/replayed window, not the full session archive.
 Transcript text reaches the CLI on stdin, never argv. Turning transcripts off
 leaves the lifecycle timeline and the terminal available.
 
-### Contract research and reuse
+### ACP-owned OMP
 
-OMP's official [RPC contract](https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md)
-is a custom JSONL protocol over the stdio of `omp --mode rpc`, not JSON-RPC 2.0.
-The official [Rust client](https://github.com/can1357/oh-my-pi/tree/main/sdk/rust/omp-rpc)
-supports protocol negotiation, bounded chunk reassembly, command correlation and
-process teardown, but spawning it creates another worker rather than attaching
-to the already running TUI. It is appropriate for a client-owned agent, not for
-this terminal-first path.
+Use desktop **New ACP Agent**, or launch explicitly:
 
-The upstream [SDK catalog](https://github.com/can1357/oh-my-pi/tree/main/sdk)
-contains Rust, Python and Go clients, not a Swift client. A persistent local
-multi-client host/attach protocol is tracked as an open
-[upstream proposal](https://github.com/can1357/oh-my-pi/issues/5405), rather than a
-contract this integration can assume. GPUI therefore reuses the existing Rust
-AgentSession reader, and iOS reuses its Swift conversation kit over the existing
-UniFFI-backed phux client. Neither frontend reimplements omp RPC or scrapes VT
-output. Research sources were checked on 2026-10-14; the integration remains
-qualified against its pinned SDK.
+```sh
+phux launch --acp omp --session main --json
+```
+
+OMP 18.10.3 supplies native `omp acp` over stdio. phux uses the pinned official
+Rust ACP client, not OMP RPC, a custom provider bridge, or a second interactive
+TUI. The daemon owns the guardian and provider lifetime; desktop and UniFFI
+consumers control the same AgentSession through typed commands. Viewer detach
+and graceful daemon upgrade retain the same worker and provider session.
+
+ACP workers set `PHUX_AGENT_REPORTING=0` so the ordinary extension cannot create
+a competing lifecycle writer. Ordinary interactive `omp` remains **Attached
+TUI** with its existing extension, tools, and transcript behavior. Neither path
+impersonates the other. See [ACP-owned sessions](./agents.md#acp-owned-native-sessions)
+for configuration, prerequisites, receipt semantics, and capability limits.
 
 ## Native loader smoke check
 

@@ -367,6 +367,7 @@ fn a_deferred_create_is_dormant_until_relaunched() {
         .run(Op::ResourceRelaunch {
             resource: r,
             expected: record.revision,
+            launch: None,
         })
         .expect("relaunch a dormant record");
     assert!(matches!(
@@ -541,6 +542,7 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
         Op::ResourceRelaunch {
             resource: r,
             expected: rev,
+            launch: None,
         },
     ] {
         assert!(matches!(
@@ -566,6 +568,7 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
         h.run(Op::ResourceRelaunch {
             resource: r,
             expected: rev,
+            launch: None,
         })
         .err(),
         Some(Refusal::ExecutionUncertain)
@@ -593,6 +596,7 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
         .run(Op::ResourceRelaunch {
             resource: r,
             expected: rev,
+            launch: None,
         })
         .expect("relaunch");
     assert!(matches!(
@@ -1095,4 +1099,97 @@ fn retries_replay_the_receipt_and_reject_a_changed_payload() {
         h.run_cmd(&owner, &changed).err(),
         Some(Refusal::DuplicateOperation)
     );
+}
+
+#[test]
+fn explicit_dormant_relaunch_replaces_only_launch_and_preserves_arrangement_and_lifetime() {
+    let mut h = Harness::new();
+    let session = h.create_session("native", SessionLifetime::Persistent);
+    let resource = h.create_resource(
+        session,
+        NewResource {
+            launch_mode: LaunchMode::Deferred,
+            ..job()
+        },
+    );
+    let before = h.resource(resource);
+    let arrangement = h
+        .reg
+        .org()
+        .arrangement(&h.session(session).arrangement.unwrap())
+        .unwrap()
+        .clone();
+    let launch = phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
+        argv: vec!["/private/dev/phux".into(), "agent".into(), "host".into()],
+        ..Default::default()
+    });
+    let applied = h
+        .run(Op::ResourceRelaunch {
+            resource,
+            expected: before.revision,
+            launch: Some(launch.clone()),
+        })
+        .unwrap();
+    let after = h.resource(resource);
+    assert_eq!(after.key, before.key);
+    assert_eq!(after.session, before.session);
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.on_exit, before.on_exit);
+    assert_eq!(after.launch, Some(launch.clone()));
+    assert_eq!(
+        h.reg.org().arrangement(&arrangement.key),
+        Some(&arrangement)
+    );
+    assert!(matches!(applied.effects.as_slice(), [Effect::Launch { spec, .. }] if spec == &launch));
+    assert!(matches!(
+        h.run(Op::ResourceRelaunch {
+            resource,
+            expected: after.revision,
+            launch: Some(launch)
+        }),
+        Err(Refusal::InvalidArgument {
+            field: "resource",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn launch_reports_are_system_only_exact_activation_and_never_execute_or_change_lifetime() {
+    let mut h = Harness::new();
+    let resource = h.create_resource(h.inbox(), job());
+    let before = h.resource(resource);
+    let launch = phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
+        argv: vec!["phux".into(), "agent".into(), "host".into()],
+        env: vec![(
+            "PHUX_NATIVE_HOST_SPEC".into(),
+            "{\"native_id\":\"actual-sdk-session\"}".into(),
+        )],
+        ..Default::default()
+    });
+    let report = Op::ResourceLaunchReported {
+        resource,
+        activation: A1,
+        launch: launch.clone(),
+    };
+    assert_eq!(
+        h.run(report.clone()).err(),
+        Some(Refusal::Unauthorized { verb: Verb::Create })
+    );
+    let applied = h.report(report).unwrap();
+    let after = h.resource(resource);
+    assert_eq!(after.activation, before.activation);
+    assert_eq!(after.session, before.session);
+    assert_eq!(after.on_exit, before.on_exit);
+    assert_eq!(after.launch, Some(launch));
+    assert!(applied.effects.is_empty());
+    assert!(applied.transition.events.is_empty());
+    assert!(matches!(
+        h.report(Op::ResourceLaunchReported {
+            resource,
+            activation: A1.next(),
+            launch: before.launch.unwrap(),
+        }),
+        Err(Refusal::Stale { .. })
+    ));
 }

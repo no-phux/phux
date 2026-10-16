@@ -42,6 +42,7 @@ mod ephemeral_listener;
 pub mod idempotent_create;
 pub mod input_lane;
 pub mod keyed_ops;
+mod native_agent;
 pub mod operation_dedupe;
 mod organization;
 mod path_search;
@@ -166,6 +167,9 @@ pub struct ServerConfig {
     /// [`crate::OrgStoreLocation::for_socket`]; in-process servers default
     /// to memory so no test opens a shared store.
     pub org_store: crate::OrgStoreLocation,
+    /// Direct guardian executable override for isolated fixtures; otherwise
+    /// the running server executable, never a PATH-resolved installed phux.
+    pub native_host_executable: Option<PathBuf>,
 }
 
 /// The opt-in flags the running server applied.
@@ -228,6 +232,7 @@ impl ServerConfig {
             exit_after_idle: None,
             env: ServerEnv::default(),
             org_store: crate::OrgStoreLocation::Memory,
+            native_host_executable: None,
         }
     }
 }
@@ -734,6 +739,7 @@ impl ServerRuntime {
                 open_org_store(&state, &org_store)?;
                 if let Some(blob) = &resume_blob {
                     resume_session_tree(&state, blob, &root_token)?;
+                    native_agent::retry_pending_closures(&state);
                     delegation::resume_delegations(
                         &state,
                         &blob.delegations,
@@ -947,6 +953,7 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
         s.set_server_socket_path(socket_path.to_path_buf());
         s.set_scrollback_limits(cfg.scrollback);
         s.set_agent_log_bytes(cfg.agent_log_bytes);
+        s.set_native_host_executable(cfg.native_host_executable.clone());
         s.set_event_journal_bounds(
             usize::try_from(cfg.event_journal_entries).unwrap_or(usize::MAX),
             usize::try_from(cfg.event_journal_bytes).unwrap_or(usize::MAX),
@@ -2164,6 +2171,7 @@ mod tests {
             metadata: Vec::new(),
             org: None,
             delegations: Vec::new(),
+            native_agents: Vec::new(),
         }
     }
 

@@ -427,6 +427,9 @@ pub enum WireEvent {
     /// `not_sent`; `unknown` means reconcile before acting again.
     /// `refusal` is the refusal code (`0` unless refused). `undoable` says
     /// the committed receipt is retained for `undo`.
+    /// `created_session_key` is the full base32 key from the committed
+    /// receipt, absent unless this operation created a session. Correlate
+    /// it by `operation`, not by a session name or a topology change.
     OrganizationOperation {
         operation: String,
         status: String,
@@ -436,6 +439,7 @@ pub enum WireEvent {
         revision: Option<u64>,
         message: String,
         undoable: bool,
+        created_session_key: Option<String>,
     },
     /// A `kill_session` resolved. `workflow` is the id `kill_session`
     /// returned. `status` is `committed` when the session went away, else
@@ -550,6 +554,15 @@ pub enum WireEvent {
     /// latest `AgentAsked` describes it, but after a gap or reconnect that
     /// description may be older than the question.
     AgentAskedState { terminal_id: String, asked: bool },
+    /// An exact SDK intent's outcome. Queued is submission, not provider
+    /// consumption; Unknown requires reconciliation and must not be replayed.
+    NativeAgentResult {
+        agent_session_id: String,
+        operation_id: u64,
+        /// `admitted`, `queued`, `completed`, `refused`, or `unknown`.
+        disposition: String,
+        detail: Option<String>,
+    },
     /// The pane's `phux.agent/v1` L3 record changed, or its current value
     /// arrived on (re)attach (phux-cck / ADR-0046: the server-side detector
     /// derives `state` from the live screen and publishes edge-filtered

@@ -123,7 +123,7 @@ fn catalog() -> Vec<CommandSpec> {
         ),
         spec(
             "goto",
-            "Go to Terminal",
+            "Go To…",
             "General",
             Some("cmd+p"),
             "Find and focus a terminal, agent or tab.",
@@ -139,11 +139,19 @@ fn catalog() -> Vec<CommandSpec> {
         ),
         spec(
             "new",
-            "New Terminal Tab",
+            "New Terminal",
             "Terminal",
             Some("cmd+t"),
             "Open a new terminal in its own tab.",
             &["shell"],
+        ),
+        spec(
+            "native-agent",
+            "New Agent…",
+            "Terminal",
+            None,
+            "Launch a host-owned ACP agent.",
+            &["agent", "acp"],
         ),
         spec(
             "new-session",
@@ -464,6 +472,22 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+b"),
             "Show or hide the navigation sidebar.",
             &[],
+        ),
+        spec(
+            "tabs-top",
+            "Tabs on Top",
+            "View",
+            None,
+            "Place workspace tabs in the titlebar.",
+            &["layout", "horizontal", "placement"],
+        ),
+        spec(
+            "tabs-side",
+            "Tabs on Side",
+            "View",
+            None,
+            "Place workspace tabs in a scrollable left rail.",
+            &["layout", "vertical", "placement"],
         ),
         CommandSpec {
             aliases: &["cmd+shift+="],
