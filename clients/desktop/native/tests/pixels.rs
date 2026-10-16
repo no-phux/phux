@@ -947,6 +947,109 @@ fn headless_perf() {
     );
     drop(cx);
     drop(client);
+    headless_perf_wide();
+}
+
+/// A 200x60 terminal of mixed styling: faint and bold prose, colour runs,
+/// spaces between words, and box drawing. Phases redraw it cached, rewrite
+/// every row (each stamped with the frame, so no scroll matches), and scroll it.
+fn headless_perf_wide() {
+    const FRAMES: usize = 64;
+    const COLS: u16 = 200;
+    const ROWS: u16 = 60;
+    let screen = |frame: usize| {
+        (0..ROWS)
+            .map(|row| {
+                format!(
+                    "\x1b[{};1H{frame:05} {}",
+                    row + 1,
+                    wide_line(usize::from(row) + frame, COLS - 6)
+                )
+            })
+            .collect::<String>()
+    };
+    let (client, view) = publish_at(screen(0).as_bytes(), COLS, ROWS);
+    let mut cx = gpu();
+    let in_view = Arc::clone(&client);
+    let window = cx
+        .open_window(size(px(2100.), px(1300.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+        })
+        .expect("offscreen benchmark window");
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .expect("first draw");
+    let before = cx
+        .capture_screenshot(window.into())
+        .expect("initial pixels");
+    let mut draw = || {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+    };
+    let mut seq = 0_u64;
+    let mut feed = |bytes: Vec<u8>| {
+        seq += 1;
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq,
+                bytes: bytes.into(),
+            })
+            .expect("wide output");
+    };
+    bench_phase("wide_cached", FRAMES, |_| draw());
+    bench_phase("wide_redraw", FRAMES, |index| {
+        feed(screen(index + 1).into_bytes());
+        draw();
+    });
+    bench_phase("wide_scroll", FRAMES, |index| {
+        feed(format!("\x1b[{ROWS};1H{}\r\n", wide_line(index * 7, COLS)).into_bytes());
+        draw();
+    });
+    drop(draw);
+    let after = cx.capture_screenshot(window.into()).expect("final pixels");
+    assert_ne!(
+        before.as_raw(),
+        after.as_raw(),
+        "output must change visible pixels"
+    );
+    drop(cx);
+    drop(client);
+}
+
+/// One row of exactly `cols` single-width cells, varied by `seed`.
+fn wide_line(seed: usize, cols: u16) -> String {
+    const SEGMENTS: &[(&str, &str)] = &[
+        ("2", "12:04:31.118 "),
+        ("0", "\u{2502} "),
+        ("1;34", "build"),
+        ("0", " compiled the crate in several passes, "),
+        ("32", "ok"),
+        ("0", " \u{250c}\u{2500}\u{2500}\u{2500}\u{2510} "),
+        ("2;3", "faint italic commentary about the step "),
+        ("33", "warning: unused variable "),
+        ("0", "\u{2514}\u{2500}\u{2500}\u{2500}\u{2518} "),
+        ("2", "(dimmed trailer text) "),
+        ("7", " selected "),
+        ("0", " plain words between \u{2550}\u{2550}\u{2550} rules "),
+    ];
+    let mut line = String::new();
+    let mut width = 0_usize;
+    let cols = usize::from(cols);
+    for index in 0.. {
+        let (sgr, text) = SEGMENTS[(seed + index) % SEGMENTS.len()];
+        line.push_str(&format!("\x1b[0;{sgr}m"));
+        for ch in text.chars() {
+            if width == cols {
+                line.push_str("\x1b[0m");
+                return line;
+            }
+            line.push(ch);
+            width += 1;
+        }
+    }
+    unreachable!("the loop returns once the row is full")
 }
 
 fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
