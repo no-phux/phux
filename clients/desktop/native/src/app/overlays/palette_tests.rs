@@ -124,23 +124,18 @@ fn assert_desk_focus(desk: &Entity<Desk>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
-fn empty_actions_show_only_essentials_and_the_last_row_clears_the_footer(cx: &mut TestAppContext) {
+fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext) {
     let (handle, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-shift-p");
+    assert!(cx.debug_bounds("palette-result-settings").is_none());
     let last = cx
-        .debug_bounds("palette-result-settings")
+        .debug_bounds("palette-result-find")
         .expect("last essential action");
-    let footer = cx
-        .debug_bounds("hub-footer")
-        .expect("shared keyboard footer");
+    let panel = cx.debug_bounds("palette-panel").unwrap();
     assert!(
-        last.bottom() <= footer.top(),
-        "the compact action surface must not clip its last row: {last:?} vs {footer:?}"
-    );
-    assert!(
-        cx.debug_bounds("palette-result-new-session").is_none(),
-        "other actions remain searchable instead of crowding the default list"
+        last.bottom() <= panel.bottom(),
+        "last action stays inside the panel"
     );
 }
 
@@ -514,4 +509,106 @@ fn pending_path_search_does_not_leave_command_mode_loading(cx: &mut TestAppConte
     );
     type_text(cx, "zqxjv-no-command-987654321");
     assert_eq!(palette.read_with(cx, |state, _| state.matched_count()), 0);
+}
+
+#[gpui::test]
+fn command_palette_starts_small_but_search_and_expansion_keep_every_command(
+    cx: &mut TestAppContext,
+) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-shift-p");
+    let count = |desk: &Entity<Desk>, cx: &VisualTestContext| {
+        desk.read_with(cx, |desk, cx| {
+            super::command_results(desk, cx, "")
+                .iter()
+                .map(|section| section.rows.len())
+                .sum::<usize>()
+        })
+    };
+    assert_eq!(count(&desk, cx), 5);
+    assert!(cx.debug_bounds("palette-result-settings").is_none());
+    let all = cx.debug_bounds("palette-all-commands").unwrap();
+    cx.simulate_click(all.center(), gpui::Modifiers::none());
+    render(cx);
+    assert!(count(&desk, cx) > 20);
+    type_text(cx, "settings");
+    assert_eq!(selected_command(&desk, cx), Some("settings"));
+    keys(cx, "escape escape cmd-shift-p");
+    assert_eq!(count(&desk, cx), 5, "disclosure resets on reopen");
+    type_text(cx, "performance-monitor");
+    assert_eq!(selected_command(&desk, cx), Some("performance-monitor"));
+}
+
+#[gpui::test]
+fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppContext) {
+    use super::{Row, Section, Target};
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(280.)));
+    keys(cx, "cmd-p");
+    desk.update(cx, |desk, cx| {
+        let revision = super::search_revision(desk);
+        desk.goto_search.rebuild(
+            revision,
+            vec![Section {
+                label: None,
+                rows: vec![Row {
+                    title: "Worker".into(),
+                    detail: Some("~/project".into()),
+                    keywords: "project".into(),
+                    target: Target::Pane(phux_protocol::ResourceId::local(1)),
+                    command: None,
+                    category: "Terminals",
+                    chord: None,
+                    agent: None,
+                    preview: Some(super::goto_facts::FactsCard {
+                        title: "Worker".into(),
+                        facts: vec![super::goto_facts::Fact::new("Directory", "~/project")],
+                    }),
+                }],
+            }],
+        );
+        cx.notify();
+    });
+    render(cx);
+    assert!(cx.debug_bounds("palette-facts").is_none());
+    let panel = cx.debug_bounds("palette-panel").unwrap();
+    let modes = cx.debug_bounds("palette-mode-settings").unwrap();
+    let filter = cx.debug_bounds("palette-filter").unwrap();
+    let details_bounds = cx.debug_bounds("palette-details").unwrap();
+    for bounds in [modes, filter, details_bounds] {
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "header controls stay inside the panel"
+        );
+    }
+    assert!(
+        modes.bottom() <= filter.top(),
+        "compact controls occupy their own row"
+    );
+    assert!(
+        filter.right() <= details_bounds.left(),
+        "filter and details do not overlap"
+    );
+    let details = cx
+        .debug_bounds("palette-details")
+        .expect("optional details control");
+    cx.simulate_click(details.center(), gpui::Modifiers::none());
+    render(cx);
+    assert!(cx.debug_bounds("palette-facts").is_some());
+    let panel = cx.debug_bounds("palette-panel").unwrap();
+    assert!(panel.origin.x >= gpui::px(0.) && panel.right() <= gpui::px(320.));
+    assert!(
+        panel.bottom() <= gpui::px(280.),
+        "details stay on a small screen"
+    );
+    type_text(cx, "project");
+    assert_eq!(
+        query(&desk, cx),
+        "project",
+        "details keep the search keyboard"
+    );
+    keys(cx, "escape escape cmd-p");
+    assert!(!desk.read_with(cx, |desk, _| desk.palette_view.details));
 }

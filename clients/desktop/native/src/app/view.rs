@@ -439,10 +439,11 @@ fn titlebar(
                 .child(
                     div().occlude().child(
                         Button::new("launch-native-agent")
-                            .label("New Agent")
+                            .icon(IconName::Bot)
+                            .accessibility_label("New agent")
                             .ghost()
                             .small()
-                            .tooltip("Launch a server-owned ACP conversation")
+                            .tooltip("New agent")
                             .on_click(cx.listener(|desk, _, window, cx| {
                                 desk.execute("native-agent", window, cx)
                             })),
@@ -796,9 +797,6 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .h(px(30.))
                 .px(px(10.))
                 .w_full()
-                .border_1()
-                .border_color(menu_ink.opacity(0.10))
-                .bg(menu_ink.opacity(0.045))
                 .text_color(menu_ink)
                 .on_click(cx.listener(|desk, _, window, cx| {
                     desk.open_modal(Modal::Goto, window, cx);
@@ -1120,7 +1118,7 @@ fn session_block(
                 let organized = handle.clone();
                 let intake_name = name.clone();
                 menu.item(
-                    PopupMenuItem::new("Mark session organized").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("Mark organized").on_click(move |_, _, cx| {
                         let name = intake_name.clone();
                         let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
                     }),
@@ -1240,6 +1238,7 @@ fn session_block(
         .child(
             Button::new(SharedString::from(format!("session-menu-{id}")))
                 .icon(IconName::Ellipsis)
+                .accessibility_label("Session actions")
                 .ghost()
                 .xsmall()
                 .tooltip("Session actions")
@@ -2024,7 +2023,8 @@ fn pane_view(
         && !leaving
         && desk.dragging_split().is_none()
         && (desk.chrome_hover.as_deref() == Some(id.as_str())
-            || desk.controls_hover.as_deref() == Some(id.as_str()));
+            || desk.controls_hover.as_deref() == Some(id.as_str())
+            || desk.pane_menu_open.as_deref() == Some(id.as_str()));
     let accent = from_hex(&colors.theme.accent);
     let edge = if dropping {
         accent
@@ -2165,11 +2165,6 @@ fn pane_controls(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let title = desk.pane_title(placement.terminal_id.as_ref());
-    let pane = placement
-        .terminal_id
-        .as_ref()
-        .and_then(|id| desk.link.as_ref().and_then(|link| link.connection.pane(id)));
-    let cwd = desk::short_path(pane.and_then(|pane| pane.cwd.clone()));
     let agent = placement
         .terminal_id
         .as_ref()
@@ -2229,15 +2224,6 @@ fn pane_controls(
                     None => title,
                 }),
         )
-        .when(!cwd.is_empty(), |row| {
-            row.child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(from_hex(&colors.faint))
-                    .child(cwd),
-            )
-        })
         .child(div().w(px(2.)))
         .when(desk.conversation_eligible(&id), |row| {
             let conversation_id = id.clone();
@@ -2258,22 +2244,6 @@ fn pane_controls(
         })
         .child(header_button(
             &id,
-            "split-right",
-            IconName::PanelRight,
-            "Split Right",
-            on_pane(id.clone(), "split-right"),
-            cx,
-        ))
-        .child(header_button(
-            &id,
-            "split-down",
-            IconName::PanelBottom,
-            "Split Down",
-            on_pane(id.clone(), "split-down"),
-            cx,
-        ))
-        .child(header_button(
-            &id,
             "zoom",
             if zoomed {
                 IconName::Minimize
@@ -2284,14 +2254,50 @@ fn pane_controls(
             on_pane(id.clone(), "zoom"),
             cx,
         ))
-        .child(header_button(
-            &id,
-            "close",
-            IconName::Close,
-            "Close Pane",
-            on_pane(id.clone(), "close"),
-            cx,
-        ))
+        .child({
+            let handle = cx.weak_entity();
+            let placement = id.clone();
+            let open_handle = handle.clone();
+            let open_placement = placement.clone();
+            let selector = id.clone();
+            div()
+                .debug_selector(move || format!("pane-actions-{selector}"))
+                .child(
+                    Button::new(SharedString::from(format!("pane-more-{id}")))
+                        .icon(IconName::Ellipsis)
+                        .accessibility_label("Pane actions")
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Pane actions")
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for (command, label) in [
+                                ("split-right", "Split right"),
+                                ("split-down", "Split down"),
+                                ("close", "Close pane"),
+                            ] {
+                                let handle = handle.clone();
+                                let placement = placement.clone();
+                                if command == "close" {
+                                    menu = menu.separator();
+                                }
+                                menu = menu.item(PopupMenuItem::new(label).on_click(
+                                    move |_, window, cx| {
+                                        let _ = handle.update(cx, |desk, cx| {
+                                            on_pane(placement.clone(), command)(desk, window, cx)
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        })
+                        .on_open_change(move |open, _, cx| {
+                            let _ = open_handle.update(cx, |desk, cx| {
+                                desk.pane_menu_open = open.then(|| open_placement.clone());
+                                cx.notify();
+                            });
+                        }),
+                )
+        })
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
             if let Some(tab) = desk.active_tab_id() {
                 desk.focus_placement(&tab, &focus_id, window, cx);
@@ -2377,6 +2383,7 @@ fn header_button(
         .icon(icon)
         .ghost()
         .xsmall()
+        .accessibility_label(tooltip.to_owned())
         .tooltip(tooltip.to_owned())
         .on_click(cx.listener(move |desk, _, window, cx| {
             cx.stop_propagation();
@@ -2664,6 +2671,7 @@ fn icon_button(
     div().occlude().child(
         Button::new(id.to_owned())
             .icon(icon)
+            .accessibility_label(label.to_owned())
             .ghost()
             .small()
             .tooltip(tooltip)

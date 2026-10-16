@@ -88,7 +88,10 @@ fn tabs(count: usize) -> Vec<DeskTab> {
 fn draw(cx: &mut VisualTestContext) {
     for _ in 0..3 {
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| {
+            window.bounds_changed(cx);
+            window.draw(cx).clear(cx);
+        });
     }
 }
 
@@ -399,4 +402,38 @@ fn unified_settings_changes_tab_placement_without_changing_work(cx: &mut TestApp
         cx.simulate_keystrokes("escape");
         draw(cx);
     }
+}
+
+#[gpui::test]
+fn pane_actions_stay_open_after_the_pointer_leaves_the_capsule(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(1);
+        workspace.active_id = "fixture-a".into();
+        desk.chrome_hover = Some("fixture-a".into());
+        cx.notify();
+    });
+    draw(cx);
+    let actions = cx
+        .debug_bounds("pane-actions-fixture-a")
+        .expect("pane actions");
+    cx.simulate_click(actions.center(), Modifiers::none());
+    draw(cx);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.pane_menu_open.clone())
+            .as_deref(),
+        Some("fixture-a")
+    );
+    cx.simulate_mouse_move(point(px(12.), px(300.)), None, Modifiers::none());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("pane-actions-fixture-a").is_some(),
+        "the trigger stays mounted while its menu is open"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(desk.read_with(cx, |desk, _| desk.pane_menu_open.is_none()));
 }

@@ -780,7 +780,7 @@ impl Desktop {
             ]),
             Menu::new("File").items([
                 MenuItem::action("New Terminal", Run::new("new")),
-                MenuItem::action("New ACP Agent…", Run::new("native-agent")),
+                MenuItem::action("New Agent…", Run::new("native-agent")),
                 MenuItem::action("New Session…", Run::new("new-session")),
                 MenuItem::action("New Window", Run::new("new-window")),
                 MenuItem::action("Open Folder…", Run::new("folder")),

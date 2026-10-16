@@ -177,6 +177,7 @@ pub struct Desk {
     _subs: Vec<Subscription>,
     /// The list palette shared by commands, goto, sessions, and the path picker.
     pub(crate) palette_state: Option<Entity<CommandState>>,
+    pub(super) palette_view: super::overlays::PaletteView,
     /// Go To state chips. A change keeps the query and realigns by entry.
     pub(crate) goto: GotoPalette,
     /// Folded Go To rows. Rebuilt when pane, agent, or tab metadata changes.
@@ -223,6 +224,7 @@ pub struct Desk {
     /// The placement whose top edge, or whose pane controls, the pointer is over.
     pub(crate) chrome_hover: Option<String>,
     pub(crate) controls_hover: Option<String>,
+    pub(crate) pane_menu_open: Option<String>,
     /// The placement a file drag from the OS is over.
     pub(crate) drop_target: Option<String>,
     /// Uploads waiting for a receipt before any path is pasted.
@@ -405,6 +407,7 @@ impl Desk {
             _clock: None,
             _subs: Vec::new(),
             palette_state: None,
+            palette_view: Default::default(),
             goto: GotoPalette::default(),
             goto_search: GotoSearch::default(),
             goto_frecency: GotoFrecency::default(),
@@ -435,6 +438,7 @@ impl Desk {
             motion: Motion::default(),
             chrome_hover: None,
             controls_hover: None,
+            pane_menu_open: None,
             drop_target: None,
             uploads: Vec::new(),
             upload_epoch: 0,

@@ -36,6 +36,13 @@ pub(crate) use goto_search::GotoSearch;
 #[cfg(test)]
 mod palette_tests;
 
+/// Transient disclosure state, reset whenever a palette opens.
+#[derive(Default)]
+pub(super) struct PaletteView {
+    all_commands: bool,
+    details: bool,
+}
+
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputSlot {
@@ -56,6 +63,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::WindowSession
         | Modal::MoveResources
         | Modal::Path => {
+            desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_loading(false, window, cx);
@@ -761,7 +769,7 @@ fn work_rows(desk: &Desk) -> Vec<Row> {
 }
 
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
-    const ESSENTIALS: &[&str] = &["new", "split-right", "folder", "settings"];
+    const ESSENTIALS: &[&str] = &["new", "native-agent", "split-right", "folder", "find"];
     let organizing = desk
         .link
         .as_ref()
@@ -823,6 +831,28 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
             .sort_by_key(|row| ESSENTIALS.iter().position(|id| Some(*id) == row.command));
     }
     sections
+}
+
+/// A small launch list on open; typing always searches the complete catalogue.
+fn command_results(desk: &Desk, cx: &App, query: &str) -> Vec<Section> {
+    let mut sections = command_sections(desk, cx);
+    if !query.trim().is_empty() {
+        sections.extend(settings_sections());
+        return rank_sections(sections, query);
+    }
+    if !desk.palette_view.all_commands {
+        sections.retain(|section| section.label == Some("Essentials"));
+    }
+    for section in &mut sections {
+        section.label = None;
+    }
+    vec![Section {
+        label: None,
+        rows: sections
+            .into_iter()
+            .flat_map(|section| section.rows)
+            .collect(),
+    }]
 }
 
 fn goto_sections(desk: &Desk) -> Vec<Section> {
@@ -1034,13 +1064,13 @@ fn move_destination_row(
         (session.name.clone(), session.name.clone())
     };
     let imported = if !designated && session.awaiting_organization {
-        " · imported session still awaiting organization"
+        " · imported"
     } else {
         ""
     };
     Row {
         title: title.into(),
-        detail: Some(format!("Move {count} selected · execution unchanged{imported}").into()),
+        detail: Some(format!("{count} selected{imported}").into()),
         keywords: session.name.clone(),
         target: Target::Move(session.key, name),
         command: None,
@@ -1274,6 +1304,7 @@ fn path_panel(
         CommandItem::new().label(search).child(move |_, cx| {
             let terminal_handle = terminal_handle.clone();
             div()
+                .group("path-row")
                 .flex()
                 .flex_1()
                 .min_w_0()
@@ -1291,7 +1322,9 @@ fn path_panel(
                         .filter(|_| !matches!(icon, IconName::ArrowUp))
                         .map(|directory| {
                             Button::new(format!("open-{directory}"))
-                                .label("New terminal here")
+                                .invisible()
+                                .group_hover("path-row", |style| style.visible())
+                                .label("Open terminal")
                                 .ghost()
                                 .xsmall()
                                 .on_click(move |_, window, cx| {
@@ -1337,11 +1370,7 @@ fn path_panel(
                 .text_xs()
                 .text_color(muted)
                 .child(div().min_w_0().truncate().child(message.clone()))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .child("↩ insert · ⇥ open folder · esc close"),
-                )
+                .child(div().flex_shrink_0().child("Tab: open terminal"))
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
@@ -1506,7 +1535,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                         .text_base()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
-                        .child("Inbox & notifications"),
+                        .child("Notifications"),
                 )
                 .when(!empty, |header| {
                     header.child(
@@ -1520,14 +1549,6 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                     )
                 }),
         )
-        .child(
-            div()
-                .px(px(10.))
-                .py(px(4.))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child("Inbox holds agent attention alerts; notifications hold errors and command results. Click an agent alert to open its terminal."),
-        )
         .child(if empty {
             div()
                 .px(px(20.))
@@ -1538,7 +1559,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("No alerts or notifications yet. Unorganized work lives in Intake.")
+                .child("No notifications")
                 .into_any_element()
         } else {
             div()
