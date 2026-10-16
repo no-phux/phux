@@ -96,7 +96,8 @@ pub(crate) mod codes {
     /// This OS/architecture has no published release artifact, so there is
     /// nothing for `phux update` to install.
     pub(crate) const UPDATE_UNSUPPORTED_PLATFORM: &str = "update_unsupported_platform";
-    /// The release index or a release artifact could not be downloaded.
+    /// The release manifest was unreachable or invalid, or a release artifact
+    /// could not be downloaded.
     pub(crate) const UPDATE_FETCH_FAILED: &str = "update_fetch_failed";
     /// The published `.sha256` sidecar was unreadable or malformed, or the
     /// download could not be hashed — distinct from a mismatch, where the two

@@ -60,6 +60,8 @@ checksum/signature checks.
   --channel <stable|latest|next> Stable by default; latest is a stable alias.
   --version <tag|X.Y.Z>         Pin stable, or next.<40-character SHA> with --channel next.
   --revision <SHA>             Pin immutable next artifact (requires --channel next).
+  --sha256 <hex>               Expected digest of a pinned artifact (instead of its sidecar).
+  --stage-dir <absolute dir>   Verify and stage Phux.app there; install nothing else.
   --applications-dir <dir>      Default: /Applications if writable, else ~/Applications.
   --bin-dir <dir>               phux-desktop launcher (default: ~/.local/bin).
   --dry-run                    Print release URLs and destination without installing.
@@ -123,6 +125,9 @@ version=""
 revision=""
 channel="${PHUX_CHANNEL:-stable}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
+applications_dir_flag=""
+expected_sha256=""
+stage_dir=""
 bin_dir="${PHUX_DESKTOP_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
 dry_run=0
 
@@ -149,6 +154,24 @@ while [ "$#" -gt 0 ]; do
     --applications-dir)
       [ "$#" -ge 2 ] || die "--applications-dir requires a value"
       applications_dir="$2"
+      applications_dir_flag=1
+      shift 2
+      ;;
+    --sha256)
+      [ "$#" -ge 2 ] || die "--sha256 requires a value"
+      expected_sha256="$2"
+      printf '%s\n' "$expected_sha256" | LC_ALL=C grep -Eq '^[0-9a-f]{64}$' \
+        || die "--sha256 must be 64 lowercase hex characters"
+      shift 2
+      ;;
+    --stage-dir)
+      [ "$#" -ge 2 ] || die "--stage-dir requires a value"
+      stage_dir="$2"
+      case "$stage_dir" in
+        /?*) ;;
+        *) die "--stage-dir must be an absolute path" ;;
+      esac
+      stage_dir="${stage_dir%/}"
       shift 2
       ;;
     --bin-dir)
@@ -174,270 +197,145 @@ done
 #!/bin/sh
 # Embedded verbatim in standalone installers by sync-install-resolver.sh.
 # Runtime dependencies are POSIX sh/awk/utilities and curl or wget, never jq or
-# Python. Parse JSON structurally: release bodies and nested assets are not tags.
+# Python. Release discovery reads one manifest per channel (ADR-0175); nothing
+# here lists GitHub releases or calls the rate-limited GitHub REST API.
 
 valid_release_tag() {
   case "$1" in *[!A-Za-z0-9.-]*) return 1 ;; esac
-  suffix=""
-  [ "${3:-stable}" != alpha ] || suffix='-alpha\.(0|[1-9][0-9]*)'
-  printf '%s\n' "$1" | LC_ALL=C grep -Eq "^${2}(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)${suffix}$"
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq "^${2}(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 }
 
-release_page() {
-  LC_ALL=C awk -v prefix="$1" -v channel="${3:-stable}" -v selected="${4:-}" '
-    function fail() { invalid = 1; exit 1 }
-    # Keep unread input in 1 KiB chunks. Matching/removing a small token must
-    # not copy the entire page; only a token spanning chunks grows the buffer.
-    function append_record(line,    i, size) {
-      line = tail line "\n"
-      size = length(line)
-      for (i = 1; i + 1023 <= size; i += 1024) chunks[++chunk_count] = substr(line, i, 1024)
-      tail = substr(line, i)
+# Read the rendered manifest form release_manifest.py writes: two-space
+# indentation, one member per line, no arrays, SAFE string values, integer
+# literals. Any other line fails closed. WANT empty validates only; `*` prints
+# every `dotted.path=value`; otherwise the one value is printed or the read
+# fails. Nothing prints unless the whole document parsed.
+manifest_read() {
+  LC_ALL=C awk -v want="${2:-}" '
+    function fail(why) { print "release manifest line " NR ": " why > "/dev/stderr"; bad = 1; exit 1 }
+    function prefix(    i, p) { p = ""; for (i = 1; i < depth; i++) p = p path[i] "."; return p }
+    function member(key, scalar, value,    full) {
+      if (need != "member") fail("missing comma before member")
+      full = prefix() key
+      if (full in seen) fail("duplicate member " full)
+      seen[full] = 1
+      if (scalar) { values[full] = value; order[++count] = full }
     }
-    function more_input() {
-      if (chunk_read == chunk_count) return 0
-      buffer = buffer chunks[++chunk_read]
-      delete chunks[chunk_read]
-      return 1
+    function after(comma) { need = comma ? "member" : "close" }
+    {
+      if (done) fail("content after the closing brace")
+      match($0, /^ */); indent = RLENGTH; body = substr($0, RLENGTH + 1)
+      comma = sub(/,$/, "", body)
     }
-    function advance(    c) {
-      while (1) {
-        if (buffer == "" && !more_input()) { kind = ""; text = ""; return }
-        match(buffer, /^[ \t\r\n]*/)
-        if (RLENGTH == 0) break
-        buffer = substr(buffer, RLENGTH + 1)
-      }
-      c = substr(buffer, 1, 1)
-      kind = c; text = c
-      if (c == "\"") { string_token(); return }
-      if (index("{}[],:", c)) { buffer = substr(buffer, 2); return }
-      literal_token()
+    NR == 1 {
+      if ($0 != "{") fail("expected an object")
+      depth = 1; need = "member"; next
     }
-    function literal_token() {
-      # Do not accept a partial number/keyword at a chunk boundary. A complete
-      # release array always supplies a delimiter after every scalar value.
-      while (!match(buffer, /[ \t\r\n{}\[\],:"]/)) {
-        if (!more_input()) fail()
-      }
-      text = substr(buffer, 1, RSTART - 1)
-      buffer = substr(buffer, RSTART)
-      if (text !~ /^(-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?|true|false|null)$/) fail()
-      kind = "literal"
+    indent != 2 * depth && body !~ /^}$/ { fail("unexpected indentation") }
+    body ~ /^"[A-Za-z0-9_-]+": \{$/ {
+      if (comma) fail("comma after an opening brace")
+      key = substr(body, 2, length(body) - 5)
+      member(key, 0, "")
+      path[depth++] = key; need = "member"; next
     }
-    function string_token(    c) {
-      # Most strings fit in the current chunk. One complete-token match keeps
-      # dense arrays fast; failure switches to the incremental path below.
-      if (match(buffer, /^"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/)) {
-        text = substr(buffer, 2, RLENGTH - 2)
-        buffer = substr(buffer, RLENGTH + 1)
-        kind = "string"; return
-      }
-      buffer = substr(buffer, 2)
-      text = ""; kind = "string"
-      while (1) {
-        if (buffer == "" && !more_input()) fail()
-        # Match only the unread fragment, never the accumulated string. The
-        # escape helpers consume exact bytes even across a chunk boundary.
-        match(buffer, /^[^"\\[:cntrl:]]+/)
-        if (RLENGTH > 0) {
-          text = text substr(buffer, 1, RLENGTH)
-          buffer = substr(buffer, RLENGTH + 1)
-          continue
-        }
-        c = string_byte()
-        if (c == "\"") return
-        if (c != "\\") fail()
-        text = text "\\" string_escape()
-      }
+    body ~ /^"[A-Za-z0-9_-]+": "[A-Za-z0-9._:\/+-]*"$/ || body ~ /^"[A-Za-z0-9_-]+": (0|[1-9][0-9]*)$/ {
+      split_at = index(body, "\": ")
+      key = substr(body, 2, split_at - 2)
+      value = substr(body, split_at + 3)
+      if (value ~ /^"/) value = substr(value, 2, length(value) - 2)
+      member(key, 1, value)
+      after(comma); next
     }
-    function string_byte(    c) {
-      if (buffer == "" && !more_input()) fail()
-      c = substr(buffer, 1, 1)
-      buffer = substr(buffer, 2)
-      return c
+    body == "}" {
+      if (need != "close") fail("trailing comma or empty object")
+      depth--
+      if (indent != 2 * depth) fail("unexpected indentation")
+      if (depth == 0) { if (comma) fail("comma after the document"); done = 1; next }
+      after(comma); next
     }
-    function string_escape(    c) {
-      c = string_byte()
-      if (c == "u") return c unicode_escape()
-      if (!index("\"\\/bfnrt", c)) fail()
-      return c
-    }
-    function unicode_escape(    i, c, hex) {
-      for (i = 0; i < 4; i++) {
-        c = string_byte()
-        if (c !~ /^[0-9a-fA-F]$/) fail()
-        hex = hex c
-      }
-      return hex
-    }
-    function consume(expected) {
-      if (kind != expected) fail()
-      advance()
-    }
-    # Only keys and tag names need decoding. Their vocabulary is ASCII. Other
-    # Unicode remains lexically validated but cannot turn into an ASCII key/tag.
-    function ascii_string(raw,    result, i, c) {
-      if (!index(raw, "\\")) return raw
-      result = ""
-      for (i = 1; i <= length(raw); i++) {
-        c = substr(raw, i, 1)
-        if (c == "\\") {
-          i++; c = substr(raw, i, 1)
-          if (c == "u") { c = unicode_ascii(substr(raw, i + 1, 4)); i += 4 }
-          else if (index("bfnrt", c)) c = "?"
-        }
-        result = result c
-      }
-      return result
-    }
-    function unicode_ascii(hex,    n, i) {
-      n = 0
-      for (i = 1; i <= 4; i++) n = n * 16 + index("0123456789abcdef", tolower(substr(hex, i, 1))) - 1
-      if (n < 32 || n > 126) return "?"
-      return sprintf("%c", n)
-    }
-    function value(depth) {
-      if (depth > 128) fail()
-      if (kind == "{") { object(depth, 0); return }
-      if (kind == "[") { array(depth); return }
-      if (kind != "string" && kind != "literal") fail()
-      advance()
-    }
-    function array(depth) {
-      consume("[")
-      if (kind == "]") { advance(); return }
-      while (1) {
-        value(depth + 1)
-        if (kind == "]") { advance(); return }
-        consume(",")
-      }
-    }
-    function object(depth, capture,    key) {
-      consume("{")
-      if (kind == "}") { advance(); return }
-      while (1) {
-        if (kind != "string") fail()
-        key = ascii_string(text)
-        advance(); consume(":")
-        if (capture) field(key)
-        value(depth + 1)
-        if (kind == "}") { advance(); return }
-        consume(",")
-      }
-    }
-    function field(key) {
-      if (key != "tag_name" && key != "draft" && key != "prerelease") return
-      if (key in types) fail()
-      types[key] = kind
-      fields[key] = text
-    }
-    function boolean_field(key) {
-      return types[key] == "literal" && (fields[key] == "true" || fields[key] == "false")
-    }
-    function stable_metadata() {
-      if (types["tag_name"] != "string") fail()
-      if (!boolean_field("draft") || !boolean_field("prerelease")) fail()
-      return fields["draft"] == "false" && fields["prerelease"] == (channel == "alpha" ? "true" : "false")
-    }
-    function newer(tag, previous,    version, old_version, parts, old_parts, n, i) {
-      if (previous == "") return 1
-      version = substr(tag, length(prefix) + 1)
-      old_version = substr(previous, length(prefix) + 1)
-      gsub(/-alpha\./, ".", version)
-      gsub(/-alpha\./, ".", old_version)
-      n = split(version, parts, /[.]/)
-      split(old_version, old_parts, /[.]/)
-      for (i = 1; i <= n; i++) {
-        # Valid components have no leading zeroes. Compare decimal strings
-        # exactly, including components beyond awk numeric precision.
-        if (length(parts[i]) != length(old_parts[i])) return length(parts[i]) > length(old_parts[i])
-        if (("x" parts[i]) != ("x" old_parts[i])) return ("x" parts[i]) > ("x" old_parts[i])
-      }
-      return 0
-    }
-    function release(    key, tag, version_pattern) {
-      for (key in fields) delete fields[key]
-      for (key in types) delete types[key]
-      object(2, 1)
-      if (!stable_metadata()) return
-      tag = ascii_string(fields["tag_name"])
-      version_pattern = "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
-      if (channel == "alpha") version_pattern = version_pattern "-alpha\\.(0|[1-9][0-9]*)"
-      if (tag ~ ("^" prefix version_pattern "$") && newer(tag, selected)) selected = tag
-    }
-    function page() {
-      advance(); consume("[")
-      if (kind != "]") {
-        while (1) {
-          release(); count++
-          if (kind == "]") break
-          consume(",")
-        }
-      }
-      consume("]")
-      if (kind != "") fail()
-      if (count == 0) print "empty"
-      else if (selected != "") print selected
-      else print "more"
-    }
-    { append_record($0) }
+    { fail("unrecognized line") }
     END {
-      if (tail != "") chunks[++chunk_count] = tail
-      if (!invalid) page()
+      if (bad) exit 1
+      if (!done) { print "release manifest is truncated" > "/dev/stderr"; exit 1 }
+      if (want == "*") { for (i = 1; i <= count; i++) print order[i] "=" values[order[i]]; exit 0 }
+      if (want == "") exit 0
+      if (!(want in values)) exit 1
+      print values[want]
     }
-  ' "$2"
+  ' "$1"
 }
 
-fetch_release_page() (
-  # A file-size limit also bounds wget and curl versions that only enforce
-  # --max-filesize when Content-Length is present. sh implementations use 512
-  # or 1024 byte blocks; this ceiling is at most 2 MiB. Check the exact 1 MiB
-  # limit after download, before awk reads a potentially huge single line.
+manifest_get() {
+  manifest_read "$1" "$2" 2>/dev/null
+}
+
+# The manifest URL is a constant; CHANNEL is the closed set stable|next.
+fetch_manifest() (
+  manifest_channel="$1"
+  case "$manifest_channel" in stable|next) ;; *) die "unknown release channel: $manifest_channel" ;; esac
+  manifest_url="https://github.com/no-phux/phux/releases/download/channels/${manifest_channel}.json"
+  # A file-size limit also bounds downloaders that only enforce a maximum when
+  # Content-Length is present (512 or 1024 byte blocks, so at most 2 MiB);
+  # the exact 1 MiB limit is checked before awk reads it.
   ulimit -f 2048
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 10 --max-time 30 "$1" -o "$2"
+    curl -fsSL --connect-timeout 10 --max-time 30 "$manifest_url" -o "$2" \
+      || die "could not download the ${manifest_channel} release manifest (${manifest_url}); retry, or pass --version to pin a release"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=30 --tries=1 -O "$2" "$1"
+    wget -q --timeout=30 --tries=1 -O "$2" "$manifest_url" \
+      || die "could not download the ${manifest_channel} release manifest (${manifest_url}); retry, or pass --version to pin a release"
   else
     die "curl or wget is required to resolve a release; install one or pass --version"
   fi
+  [ "$(wc -c < "$2")" -le 1048576 ] || die "the ${manifest_channel} release manifest exceeds 1048576 bytes"
+  manifest_read "$2" || die "the ${manifest_channel} release manifest is malformed"
+  [ "$(manifest_get "$2" schema_version)" = 1 ] \
+    || die "the ${manifest_channel} release manifest has an unsupported schema_version; update this installer"
+  [ "$(manifest_get "$2" channel)" = "$manifest_channel" ] \
+    || die "the ${manifest_channel} release manifest names another channel"
 )
 
-resolve_latest_version() (
-  # Release publication order is not version order. Select the highest version
-  # across the bounded recent window, keeping network/temp state in this subshell.
-  prefix="$1"
-  release_channel="${2:-stable}"
-  index_dir="$(mktemp -d)"
-  trap 'rm -rf "$index_dir"' 0
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  page=1
-  selected=""
-  while [ "$page" -le 10 ]; do
-    url="https://api.github.com/repos/no-phux/phux/releases?per_page=30&page=${page}"
-    fetch_release_page "$url" "$index_dir/page.json" \
-      || die "could not fetch release page $page (limit 1048576 bytes); check GitHub access/rate limits or pass --version"
-    [ "$(wc -c < "$index_dir/page.json")" -le 1048576 ] \
-      || die "release page exceeds 1048576 bytes; pass --version to select a known release"
-    result="$(release_page "$prefix" "$index_dir/page.json" "$release_channel" "$selected")" \
-      || die "invalid release list on page $page; retry or pass --version to select a known release"
-    case "$result" in
-      empty) break ;;
-      more) ;;
-      *) selected="$result" ;;
-    esac
-    page=$((page + 1))
-  done
-  if [ -n "$selected" ]; then
-    printf '%s\n' "$selected"
-    exit 0
+# Set mf_version, mf_release, mf_sha, mf_name, mf_url, mf_sha256 from one
+# product's artifact for TARGET, each checked for shape. Callers still derive
+# the expected name, release, and URL themselves and refuse a mismatch.
+# shellcheck disable=SC2034 # the mf_* values are read by the embedding installer
+manifest_product() {
+  mf_key="products.$2"
+  mf_version="$(manifest_get "$1" "${mf_key}.version")" \
+    || die "the release manifest does not publish $2 on this channel"
+  mf_release="$(manifest_get "$1" "${mf_key}.release")" || die "the release manifest names no $2 release"
+  mf_sha="$(manifest_get "$1" "${mf_key}.sha")" || die "the release manifest names no $2 commit"
+  mf_name="$(manifest_get "$1" "${mf_key}.artifacts.$3.name")" \
+    || die "the release manifest publishes no $2 artifact for $3"
+  mf_url="$(manifest_get "$1" "${mf_key}.artifacts.$3.url")" || die "the release manifest names no $2 URL for $3"
+  mf_sha256="$(manifest_get "$1" "${mf_key}.artifacts.$3.sha256")" || die "the release manifest names no $2 digest for $3"
+  printf '%s\n' "$mf_version" | LC_ALL=C grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "the release manifest names an invalid $2 version"
+  printf '%s\n' "$mf_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$' || die "the release manifest names an invalid $2 commit"
+  printf '%s\n' "$mf_sha256" | LC_ALL=C grep -Eq '^[0-9a-f]{64}$' || die "the release manifest names an invalid $2 digest"
+}
+
+# Refuse a manifest field that disagrees with what this installer derived.
+manifest_expect() {
+  [ "$2" = "$3" ] || die "the release manifest's $1 ($3) does not match the expected $2"
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    die "sha256sum or shasum is required to verify release artifacts"
   fi
-  [ "$result" != empty ] \
-    || die "no ${release_channel} ${prefix} release found; pass --version to select a known release"
-  die "no ${release_channel} ${prefix} release found within 10 pages; pass --version to select a known release"
-)
+}
+
+# The trust gate: nothing is unpacked unless FILE hashes to EXPECTED.
+verify_sha256() {
+  actual_sha256="$(sha256_of "$1")"
+  [ "$actual_sha256" = "$2" ] \
+    || die "checksum mismatch for $(basename "$1"): expected $2, downloaded $actual_sha256; nothing was installed"
+}
 # END shared release resolver
 
 [ "$(uname -s)" = Darwin ] || die "Phux desktop is macOS-only"
@@ -458,47 +356,51 @@ esac
   [ -z "$version" ] || die "--revision and --version cannot be combined"
   version="next.$revision"
 }
+[ -z "$expected_sha256" ] || [ -n "$version" ] \
+  || die "--sha256 requires --version or --revision"
+
+# A pin is verified against its own published sidecar, or against --sha256
+# when the caller (Phux Desktop) already holds the manifest digest. Everything
+# else comes from the channel manifest (ADR-0175): this script derives the
+# artifact name and URL itself and refuses a manifest that disagrees.
 next_sha=""
 semver=""
-if [ "$channel" = next ]; then
-  if [ -z "$version" ]; then
-    # Native macOS JSON parsing rejects malformed/nested spoofed fields. Bound
-    # the download just like release discovery; never evaluate pointer content.
-    pointer_dir="$(mktemp -d)"
-    trap 'rm -rf "$pointer_dir"' 0
-    pointer="$pointer_dir/desktop-channel.json"
-    fetch_release_page "https://github.com/no-phux/phux/releases/download/next/desktop-channel.json" "$pointer" \
-      || die "could not download the Desktop next channel pointer"
-    [ "$(wc -c < "$pointer")" -le 1048576 ] || die "desktop channel pointer exceeds 1048576 bytes"
-    [ "$(/usr/bin/plutil -extract schema_version raw -o - "$pointer")" = 1 ] \
-      && [ "$(/usr/bin/plutil -extract product raw -o - "$pointer")" = desktop ] \
-      && [ "$(/usr/bin/plutil -extract channel raw -o - "$pointer")" = next ] \
-      || die "invalid Desktop next channel pointer"
-    next_sha="$(/usr/bin/plutil -extract sha raw -o - "$pointer")" || die "desktop pointer named no SHA"
-    semver="$(/usr/bin/plutil -extract version raw -o - "$pointer")" || die "desktop pointer named no version"
-    valid_release_tag "desktop-v$semver" desktop-v stable || die "invalid desktop pointer version"
+from_manifest=0
+manifest_dir="$(mktemp -d)"
+trap 'rm -rf "$manifest_dir"' EXIT
+if [ -z "$version" ]; then
+  manifest_path="${manifest_dir}/${channel}.json"
+  fetch_manifest "$channel" "$manifest_path"
+  manifest_product "$manifest_path" desktop aarch64-apple-darwin
+  semver="$mf_version"
+  if [ "$channel" = next ]; then
+    next_sha="$mf_sha"
     version="next.$next_sha"
-    rm -rf "$pointer_dir"
-    trap - 0
   else
-    next_sha="${version#next.}"
+    version="desktop-v$semver"
   fi
+  expected_sha256="$mf_sha256"
+  from_manifest=1
+fi
+if [ "$channel" = next ]; then
+  next_sha="${version#next.}"
   printf '%s\n' "$next_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$' \
     && [ "$version" = "next.$next_sha" ] \
     || die "--version for next must be next.<40-character lowercase SHA>"
 else
-  if [ -z "$version" ]; then
-    version="$(resolve_latest_version desktop-v stable)"
-  fi
   case "$version" in
     desktop-v*) semver="${version#desktop-v}" ;;
     *) semver="$version"; version="desktop-v$semver" ;;
   esac
-  valid_release_tag "$version" desktop-v stable \
+  valid_release_tag "$version" desktop-v \
     || die "--version must be desktop-vX.Y.Z (got ${version})"
 fi
 
-if [ -z "$applications_dir" ]; then
+if [ -n "$stage_dir" ]; then
+  # Staging locks and renames on the Applications volume the app swaps into.
+  [ -z "$applications_dir_flag" ] || die "--stage-dir and --applications-dir cannot be combined"
+  applications_dir="$(dirname "$stage_dir")"
+elif [ -z "$applications_dir" ]; then
   if [ -d "/Applications" ] && [ -w "/Applications" ]; then
     applications_dir="/Applications"
   else
@@ -521,13 +423,22 @@ if [ "$channel" = next ]; then
   zip_url="${base_url}/${zip_name}"
   sums_url="${zip_url}.sha256"
 fi
+if [ "$from_manifest" -eq 1 ]; then
+  manifest_release="$version"
+  [ "$channel" != next ] || manifest_release=next
+  manifest_expect release "$manifest_release" "$mf_release"
+  manifest_expect "artifact name" "$zip_name" "$mf_name"
+  manifest_expect "artifact URL" "$zip_url" "$mf_url"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
   echo "tag: ${version}"
   echo "channel: ${channel}"
   echo "zip_url: ${zip_url}"
   echo "sha256_url: ${sums_url}"
+  [ -z "$expected_sha256" ] || echo "sha256: ${expected_sha256}"
   echo "applications_dir: ${applications_dir}"
+  [ -z "$stage_dir" ] || echo "stage_dir: ${stage_dir}"
   echo "bin_dir: ${bin_dir}"
   exit 0
 fi
@@ -536,13 +447,14 @@ for tool in unzip ditto xattr codesign lockf; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required to install Phux"
 done
 
+# Abort a stalled transfer instead of hanging: under 1 KiB/s for a minute.
 if command -v curl >/dev/null 2>&1; then
   download() {
-    curl -fsSL --connect-timeout 10 --max-time 300 "$1" -o "$2"
+    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
   }
 elif command -v wget >/dev/null 2>&1; then
   download() {
-    wget -q --timeout=30 --tries=2 -O "$2" "$1"
+    wget -q --timeout=60 --tries=2 -O "$2" "$1"
   }
 else
   die "curl or wget is required to download release artifacts"
@@ -555,7 +467,7 @@ find_cli() {
   done
   return 1
 }
-if ! find_cli; then
+if [ -z "$stage_dir" ] && ! find_cli; then
   # The app needs a CLI it can find from the Dock: install the standard one
   # into ~/.local/bin rather than refusing.
   phux_info "phux CLI not found; installing it first"
@@ -571,6 +483,7 @@ fi
 
 tmp_dir="$(mktemp -d)"
 publish_dir=""
+stage_tmp=""
 lock_dir=""
 publish_started=0
 publish_complete=0
@@ -596,7 +509,10 @@ cleanup() {
   if [ -n "$publish_dir" ]; then
     rm -rf "$publish_dir"
   fi
-  rm -rf "$tmp_dir"
+  if [ -n "$stage_tmp" ]; then
+    rm -rf "$stage_tmp"
+  fi
+  rm -rf "$tmp_dir" "$manifest_dir"
 }
 trap_install_signals() {
   trap 'exit 129' HUP
@@ -611,22 +527,14 @@ sums_path="${tmp_dir}/SHA256SUMS"
 extract_dir="${tmp_dir}/extract"
 
 download "$zip_url" "$zip_path"
-download "$sums_url" "$sums_path"
-
-# Verify only this asset; never accept a checksum for a different archive.
-awk -v name="$zip_name" '$2 == name' "$sums_path" > "${tmp_dir}/desktop.sha256" \
-  || die "SHA256SUMS did not cover ${zip_name}"
-[ -s "${tmp_dir}/desktop.sha256" ] || die "SHA256SUMS did not cover ${zip_name}"
-(
-  cd "$tmp_dir"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "desktop.sha256"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c "desktop.sha256"
-  else
-    die "sha256sum or shasum is required to verify release artifacts"
-  fi
-)
+if [ -z "$expected_sha256" ]; then
+  download "$sums_url" "$sums_path"
+  # Verify only this asset; never accept a checksum for a different archive.
+  expected_sha256="$(awk -v name="$zip_name" '$2 == name { print $1; exit }' "$sums_path")"
+  printf '%s\n' "$expected_sha256" | LC_ALL=C grep -Eq '^[0-9a-f]{64}$' \
+    || die "SHA256SUMS did not cover ${zip_name}"
+fi
+verify_sha256 "$zip_path" "$expected_sha256"
 
 validate_zip() {
   members_path="${tmp_dir}/zip.members"
@@ -667,7 +575,7 @@ bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopVersion' "${extr
 if [ -n "$semver" ]; then
   [ "$bundle_version" = "$semver" ] || die "desktop bundle version does not match ${version}"
 else
-  valid_release_tag "desktop-v$bundle_version" desktop-v stable || die "invalid desktop bundle version"
+  valid_release_tag "desktop-v$bundle_version" desktop-v || die "invalid desktop bundle version"
 fi
 if [ "$channel" = next ]; then
   bundle_sha="$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "${extract_dir}/Phux.app/Contents/Info.plist")"
@@ -689,6 +597,21 @@ lock_dir="${applications_dir}/.phux-desktop-install.lock"
 # A killed process releases the lock automatically; no stale PID recovery.
 exec 9>"$lock_dir"
 lockf -s -t 0 9 || die "another Desktop install is already publishing to ${applications_dir}"
+
+if [ -n "$stage_dir" ]; then
+  # Stage beside the installed app and touch nothing else; Phux Desktop swaps
+  # the staged bundle in only after it has exited (ADR-0175).
+  mkdir -p "$stage_dir"
+  stage_tmp="$(mktemp -d "${stage_dir}/.staging.XXXXXX")"
+  ditto "${extract_dir}/Phux.app" "${stage_tmp}/Phux.app"
+  xattr -d com.apple.quarantine "${stage_tmp}/Phux.app" 2>/dev/null || true
+  if [ -e "${stage_dir}/Phux.app" ] || [ -L "${stage_dir}/Phux.app" ]; then
+    mv "${stage_dir}/Phux.app" "${stage_tmp}/previous.app"
+  fi
+  mv "${stage_tmp}/Phux.app" "${stage_dir}/Phux.app"
+  echo "staged: ${stage_dir}/Phux.app"
+  exit 0
+fi
 
 publish_dir="$(mktemp -d "${applications_dir}/.phux-desktop-install.XXXXXX")"
 mkdir "${publish_dir}/backup"

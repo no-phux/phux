@@ -25,110 +25,124 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
 
 
-class StableResolver(unittest.TestCase):
-    def test_stable_is_default_and_drafts_and_prereleases_never_install(self):
-        releases = [
-            {"tag_name": "desktop-v9.0.0", "draft": True, "prerelease": False},
-            {"tag_name": "desktop-v0.1.0", "draft": False, "prerelease": False},
-            {"tag_name": "desktop-v0.2.0", "draft": False, "prerelease": True},
-            {"tag_name": "desktop-v0.1.0-alpha.2", "draft": False, "prerelease": True},
-            {"tag_name": "v8.0.0", "draft": False, "prerelease": False},
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = Path(directory) / "releases.json"
-            fixture.write_text(json.dumps(releases))
-            script = '. "$1"; release_page "$2" "$3" "$4"'
-            lib = str(ROOT / "scripts/lib/install-release.sh")
-            desktop = run(SHELL, "-c", script, "sh", lib, "desktop-v", str(fixture), "stable")
-            core = run(SHELL, "-c", script, "sh", lib, "v", str(fixture), "stable")
-            self.assertEqual(desktop.stdout.strip(), "desktop-v0.1.0")
-            self.assertEqual(core.stdout.strip(), "v8.0.0")
+GOLDEN = ROOT / "scripts/fixtures/release-manifest"
+
+
+def manifest_for(channel, version, sha, digest):
+    """The golden manifest with this test's desktop artifact, in the generator's form."""
+    manifest = json.loads((GOLDEN / f"{channel}.json").read_text())
+    desktop = manifest["products"]["desktop"]
+    release = "next" if channel == "next" else f"desktop-v{version}"
+    name = (f"phux-desktop-next.{sha}-macos-arm64.zip" if channel == "next"
+            else f"phux-desktop-{version}-macos-arm64.zip")
+    desktop.update(version=version, release=release, sha=sha)
+    desktop["artifacts"]["aarch64-apple-darwin"] = {
+        "name": name,
+        "url": f"https://github.com/no-phux/phux/releases/download/{release}/{name}",
+        "sha256": digest,
+    }
+    return json.dumps(manifest, indent=2) + "\n"
+
+
+class ManifestResolver(unittest.TestCase):
+    def test_reader_returns_the_desktop_artifact(self):
+        script = ('die() { echo "$*" >&2; exit 1; }; . "$1"; manifest_product "$2" desktop aarch64-apple-darwin; '
+                  'printf "%s\\n" "$mf_version" "$mf_release" "$mf_sha" "$mf_name" "$mf_url" "$mf_sha256"')
+        lib = str(ROOT / "scripts/lib/install-release.sh")
+        stable = run(SHELL, "-c", script, "sh", lib, str(GOLDEN / "stable.json")).stdout.split()
+        self.assertEqual(stable[:2], ["1.2.3", "desktop-v1.2.3"])
+        self.assertEqual(stable[3], "phux-desktop-1.2.3-macos-arm64.zip")
+        self.assertEqual(stable[5], "d" * 64)
+        nxt = run(SHELL, "-c", script, "sh", lib, str(GOLDEN / "next.json")).stdout.split()
+        self.assertEqual(nxt[1:3], ["next", "b" * 40])
+        self.assertTrue(nxt[4].endswith(f"/next/phux-desktop-next.{'b' * 40}-macos-arm64.zip"))
 
     @unittest.skipUnless(
         platform.system() == "Darwin" and platform.machine() == "arm64",
         "standalone desktop resolver requires macOS arm64",
     )
-    def test_standalone_selects_highest_stable_across_pages(self):
+    def test_standalone_resolves_one_manifest_and_refuses_disagreement(self):
         if int(run("/usr/bin/sw_vers", "-productVersion").stdout.split(".")[0]) < 27:
             self.skipTest("desktop requires macOS 27 or later")
-
-        def release(version, **metadata):
-            return {"tag_name": f"desktop-v{version}", "draft": False, "prerelease": False, **metadata}
-
-        cases = [
-            ([[
-                release("0.10.0"),
-                release("0.11.0"),
-                release("0.9.0"),
-            ]], "0.11.0"),
-            ([
-                [release("0.9.0")],
-                [
-                    release("0.8.0"),
-                    release("0.10.0"),
-                    release("99.0.0", draft=True),
-                    release("99.0.0", prerelease=True),
-                    release("99.0.0", tag_name="v99.0.0"),
-                    release("99.0.0", tag_name="cockpit-v99.0.0"),
-                ],
-                [release("0.7.0")],
-            ], "0.10.0"),
-            ([[
-                release("0.999.0"),
-                release("1.0.0"),
-                release("0.1000.0"),
-            ]], "1.0.0"),
-            ([[
-                release("0.9007199254740992.0"),
-                release("0.9007199254740993.0"),
-            ]], "0.9007199254740993.0"),
-        ]
-        for pages, expected in cases:
-            with self.subTest(expected=expected, pages=len(pages)), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                for number, releases in enumerate(pages, 1):
-                    (root / f"{number}.json").write_text(json.dumps(releases))
-                (root / "empty.json").write_text("[]")
-                index_temp = root / "index-temp"
-                index_temp.mkdir()
-                curl = root / "curl"
-                curl.write_text('''#!/bin/sh
+        base = "https://github.com/no-phux/phux/releases/download"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            index_temp = root / "index-temp"
+            index_temp.mkdir()
+            curl = root / "curl"
+            curl.write_text('''#!/bin/sh
 set -eu
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift ;;
-    https://api.github.com/repos/no-phux/phux/releases?*) url="$1" ;;
+    https://*) url="$1" ;;
   esac
   shift
 done
-page="${url##*&page=}"
-printf '%s\\n' "$page" >> "$FIXTURE/calls"
-fixture="$FIXTURE/$page.json"
-[ -f "$fixture" ] || fixture="$FIXTURE/empty.json"
-cp "$fixture" "$out"
+printf '%s\\n' "$url" >> "$FIXTURE/calls"
+case "$url" in
+  https://github.com/no-phux/phux/releases/download/channels/*.json) cp "$FIXTURE/${url##*/}" "$out" ;;
+  *) exit 22 ;;
+esac
 ''')
-                curl.chmod(0o755)
-                env = {
-                    **os.environ, "FIXTURE": str(root), "TMPDIR": str(index_temp),
-                    "PATH": f"{root}:{os.environ['PATH']}",
-                    # The Next qualification job exports PHUX_CHANNEL=next;
-                    # this fixture specifically exercises the stable default.
-                    "PHUX_CHANNEL": "",
-                }
-                result = run(
-                    SHELL, str(INSTALLER), "--dry-run",
-                    "--applications-dir", str(root / "Applications"),
-                    "--bin-dir", str(root / "launchers"), env=env,
-                )
-                self.assertIn(f"tag: desktop-v{expected}\n", result.stdout)
-                self.assertIn(f"/desktop-v{expected}/phux-desktop-{expected}-macos-arm64.zip", result.stdout)
-                self.assertEqual(
-                    (root / "calls").read_text().splitlines(),
-                    [str(number) for number in range(1, len(pages) + 2)],
-                )
-                self.assertEqual(list(index_temp.iterdir()), [])
-                self.assertFalse((root / "Applications").exists())
-                self.assertFalse((root / "launchers").exists())
+            curl.chmod(0o755)
+            env = {**os.environ, "FIXTURE": str(root), "TMPDIR": str(index_temp),
+                   "PATH": f"{root}:{os.environ['PATH']}", "PHUX_CHANNEL": ""}
+
+            def resolve(*args):
+                return subprocess.run(
+                    [SHELL, str(INSTALLER), "--dry-run", "--applications-dir", str(root / "Applications"),
+                     "--bin-dir", str(root / "launchers"), *args],
+                    env=env, capture_output=True, text=True)
+
+            for channel in ("stable", "next"):
+                shutil.copy(GOLDEN / f"{channel}.json", root / f"{channel}.json")
+            (root / "calls").write_text("")
+            result = resolve()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("tag: desktop-v1.2.3\n", result.stdout)
+            self.assertIn(f"zip_url: {base}/desktop-v1.2.3/phux-desktop-1.2.3-macos-arm64.zip\n", result.stdout)
+            self.assertIn(f"sha256: {'d' * 64}\n", result.stdout)
+            self.assertEqual((root / "calls").read_text().splitlines(), [f"{base}/channels/stable.json"])
+            result = resolve("--channel", "next")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"tag: next.{'b' * 40}\n", result.stdout)
+            self.assertIn(f"/next/phux-desktop-next.{'b' * 40}-macos-arm64.zip\n", result.stdout)
+
+            # A pin with --sha256 never reads the manifest.
+            (root / "calls").write_text("")
+            result = resolve("--version", "1.2.3", "--sha256", "e" * 64)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"sha256: {'e' * 64}\n", result.stdout)
+            self.assertEqual((root / "calls").read_text(), "")
+
+            golden = json.loads((GOLDEN / "stable.json").read_text())
+            artifact = ("products", "desktop", "artifacts", "aarch64-apple-darwin")
+            for path, value, message in (
+                (artifact + ("url",), "https://evil.example/Phux.zip", "artifact URL"),
+                (artifact + ("name",), "phux-desktop-9.9.9-macos-arm64.zip", "artifact name"),
+                (("products", "desktop", "release"), "desktop-v9.9.9", "release"),
+                (("channel",), "next", "names another channel"),
+                (("products", "desktop", "sha"), "../evil", "invalid desktop commit"),
+            ):
+                with self.subTest(path=path):
+                    mutated = json.loads(json.dumps(golden))
+                    node = mutated
+                    for key in path[:-1]:
+                        node = node[key]
+                    node[path[-1]] = value
+                    (root / "stable.json").write_text(json.dumps(mutated, indent=2) + "\n")
+                    result = resolve()
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(message, result.stderr)
+            del golden["products"]["desktop"]
+            (root / "stable.json").write_text(json.dumps(golden, indent=2) + "\n")
+            result = resolve()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not publish desktop", result.stderr)
+            self.assertEqual(list(index_temp.iterdir()), [])
+            self.assertFalse((root / "Applications").exists())
+            self.assertFalse((root / "launchers").exists())
 
 
 class DesktopPublication(unittest.TestCase):
@@ -185,7 +199,13 @@ elif args[:2] == ['release', 'create']:
             workflow = (ROOT / ".github/workflows/next-release.yml").read_text()
             section = workflow.split("      - name: Publish Phux Desktop onto the next prerelease\n", 1)[1]
             script = section.split("        run: |\n", 1)[1]
-            script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+            # The block scalar ends at the first line indented less than its body.
+            body = []
+            for line in script.splitlines():
+                if line and not line.startswith(" " * 10):
+                    break
+                body.append(line[10:])
+            script = "\n".join(body) + "\n"
             result = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True, text=True,
                                     env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                                          "SHA": sha, "GH_REPO": "test/phux", "MOCK_ROOT": str(root),
@@ -311,9 +331,12 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+printf '%s\\n' "$url" >> "$FIXTURE/calls"
 case "$url" in
   *SHA256SUMS|*.sha256) cp "$FIXTURE/SHA256SUMS" "$out" ;;
-  *desktop-channel.json) cp "$FIXTURE/desktop-channel.json" "$out" ;;
+  https://github.com/no-phux/phux/releases/download/channels/*.json)
+    [ -f "$FIXTURE/manifest.json" ] || exit 22
+    cp "$FIXTURE/manifest.json" "$out" ;;
   *.zip) cp "$FIXTURE/asset.zip" "$out" ;;
   https://phux.sh/install) cp "$FIXTURE/cli-installer.sh" "$out" ;;
   *) echo "unexpected URL: $url" >&2; exit 1 ;;
@@ -364,34 +387,60 @@ esac
     def installed(self):
         return self.apps / "Phux.app"
 
+    @property
+    def digest(self):
+        return hashlib.sha256((self.fixture / "asset.zip").read_bytes()).hexdigest()
+
+    def manifest(self, channel, sha="c" * 40):
+        (self.fixture / "manifest.json").write_text(manifest_for(channel, VERSION, sha, self.digest))
+
+    @property
+    def calls(self):
+        path = self.fixture / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
     def next_fixture(self):
         sha = "a" * 40
         self.asset = f"phux-desktop-next.{sha}-macos-arm64.zip"
         self.plist["PhuxBuildSHA"] = sha
         self.plist["PhuxDesktopChannel"] = "next"
         self.pack()
-        (self.fixture / "desktop-channel.json").write_text(json.dumps({
-            "schema_version": 1, "channel": "next", "product": "desktop",
-            "sha": sha, "version": VERSION,
-        }))
+        self.manifest("next", sha)
         return sha
 
-    def test_next_pointer_selects_desktop_sha_and_checks_bundle_revision(self):
+    def test_next_manifest_selects_desktop_sha_and_checks_bundle_revision(self):
         sha = self.next_fixture()
         result = self.install(args=["--channel", "next"])
         self.assertIn(f"phux: ok: installed Phux next.{sha}", result.stderr)
         self.assertNotIn("installed Phux", result.stdout)
         self.plist["PhuxBuildSHA"] = "b" * 40
         self.pack()
+        self.manifest("next", sha)
         result = self.install(success=False, args=["--channel", "next"])
         self.assertIn("revision does not match", result.stderr)
         installed = plistlib.loads((self.installed / "Contents/Info.plist").read_bytes())
         self.assertEqual(installed["PhuxBuildSHA"], sha)
 
-    def test_revision_pin_never_fetches_moving_pointer(self):
+    def test_revision_pin_never_fetches_the_manifest(self):
         sha = self.next_fixture()
-        (self.fixture / "desktop-channel.json").unlink()
+        (self.fixture / "manifest.json").unlink()
         self.install(args=["--channel", "next", "--revision", sha])
+        self.assertFalse(any("/channels/" in url for url in self.calls))
+
+    def test_unpinned_stable_verifies_the_manifest_digest_not_a_sidecar(self):
+        self.manifest("stable")
+        (self.fixture / "SHA256SUMS").unlink()
+        result = self.install(args=[])
+        self.assertIn(f"installed Phux desktop-v{VERSION}", result.stderr)
+        self.assertFalse(any("SHA256SUMS" in url for url in self.calls))
+        (self.fixture / "manifest.json").write_text(
+            manifest_for("stable", VERSION, "c" * 40, "0" * 64))
+        self.plist["TestBuild"] = "must-not-install"
+        self.pack()
+        before = (self.installed / "Contents/Info.plist").read_bytes()
+        result = self.install(success=False, args=[])
+        self.assertIn("checksum mismatch", result.stderr)
+        self.assertEqual((self.installed / "Contents/Info.plist").read_bytes(), before)
 
     def test_next_rejects_bundle_packaged_as_stable(self):
         sha = self.next_fixture()
@@ -428,19 +477,84 @@ esac
                 self.install(success=False, args=args)
                 self.assertFalse(self.apps.exists())
 
-    def test_invalid_next_pointer_never_installs(self):
+    def test_invalid_next_manifest_never_installs(self):
         self.next_fixture()
-        pointer = self.fixture / "desktop-channel.json"
+        pointer = self.fixture / "manifest.json"
         valid = json.loads(pointer.read_text())
-        cases = ['not json', json.dumps({"nested": valid})]
-        for key, value in (("product", "phux"), ("channel", "stable"),
-                           ("sha", "../evil"), ("version", "bad"), ("schema_version", 2)):
-            cases.append(json.dumps({**valid, key: value}))
+        cases = ["not json", json.dumps(valid), json.dumps({"nested": valid}, indent=2) + "\n"]
+        for key, value in (("channel", "stable"), ("schema_version", 2)):
+            cases.append(json.dumps({**valid, key: value}, indent=2) + "\n")
+        for key, value in (("sha", "../evil"), ("version", "bad"), ("release", "desktop-v0.1.0")):
+            mutated = json.loads(json.dumps(valid))
+            mutated["products"]["desktop"][key] = value
+            cases.append(json.dumps(mutated, indent=2) + "\n")
         for body in cases:
             with self.subTest(body=body):
                 pointer.write_text(body)
                 self.install(success=False, args=["--channel", "next"])
                 self.assertFalse(self.apps.exists())
+
+    def stage(self, *args, success=True):
+        result = subprocess.run([SHELL, str(INSTALLER), *args], env=self.env, capture_output=True, text=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def test_stage_dir_stages_beside_the_app_and_touches_nothing_else(self):
+        self.install()
+        before = (self.installed / "Contents/Info.plist").read_bytes()
+        launcher = self.root / "launchers/phux-desktop"
+        launcher_before = launcher.read_bytes()
+        self.cli.unlink()
+        (self.fixture / "SHA256SUMS").unlink()
+        stage = self.apps / ".phux-desktop-update"
+        (self.fixture / "calls").unlink()
+        for build in ("first", "second"):
+            with self.subTest(build=build):
+                self.plist["TestBuild"] = build
+                self.pack()
+                (self.fixture / "SHA256SUMS").unlink()
+                result = self.stage("--stage-dir", f"{stage}/", "--channel", "stable",
+                                    "--version", VERSION, "--sha256", self.digest)
+                self.assertEqual(result.stdout.splitlines()[-1], f"staged: {stage}/Phux.app")
+                staged = plistlib.loads((stage / "Phux.app/Contents/Info.plist").read_bytes())
+                self.assertEqual(staged["TestBuild"], build)
+                run("codesign", "--verify", "--deep", "--strict", str(stage / "Phux.app"))
+        self.assertEqual(sorted(path.name for path in stage.iterdir()), ["Phux.app"])
+        self.assertEqual((self.installed / "Contents/Info.plist").read_bytes(), before)
+        self.assertEqual(launcher.read_bytes(), launcher_before)
+        self.assertFalse(self.cli.exists() or self.cli.is_symlink())
+        self.assertFalse(any("SHA256SUMS" in url or "phux.sh" in url for url in self.calls))
+
+    def test_stage_dir_next_revision_and_refusals(self):
+        sha = self.next_fixture()
+        stage = self.apps / ".phux-desktop-update"
+        result = self.stage("--stage-dir", str(stage), "--channel", "next", "--revision", sha,
+                            "--sha256", self.digest)
+        self.assertIn(f"staged: {stage}/Phux.app", result.stdout)
+        self.assertFalse(self.installed.exists())
+        for args, message in (
+            (["--stage-dir", "relative/dir", "--version", VERSION], "absolute path"),
+            (["--stage-dir", str(stage), "--sha256", self.digest], "--sha256 requires"),
+            (["--stage-dir", str(stage), "--version", VERSION, "--sha256", "bad"], "64 lowercase hex"),
+            (["--stage-dir", str(stage), "--applications-dir", str(self.apps), "--version", VERSION],
+             "cannot be combined"),
+        ):
+            with self.subTest(args=args):
+                self.assertIn(message, self.stage(*args, success=False).stderr)
+        staged_before = (stage / "Phux.app/Contents/Info.plist").read_bytes()
+        result = self.stage("--stage-dir", str(stage), "--channel", "next", "--revision", sha,
+                            "--sha256", "0" * 64, success=False)
+        self.assertIn("checksum mismatch", result.stderr)
+        self.assertEqual((stage / "Phux.app/Contents/Info.plist").read_bytes(), staged_before)
+        with (self.apps / ".phux-desktop-install.lock").open("w") as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            result = self.stage("--stage-dir", str(stage), "--channel", "next", "--revision", sha,
+                                "--sha256", self.digest, success=False)
+        self.assertIn("already publishing", result.stderr)
+        self.assertEqual(sorted(path.name for path in stage.iterdir()), ["Phux.app"])
 
     def test_install_and_update_preserve_cli_and_state(self):
         state = self.root / "state/layout.json"

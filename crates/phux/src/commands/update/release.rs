@@ -1,29 +1,32 @@
 //! The release artifact contract `phux update` consumes (mirroring
-//! `.github/workflows/release.yml` and `docs/RELEASING.md`), and
-//! [`ReleaseSource`], the one network seam, so everything else is tested
-//! against a local fake.
+//! `.github/workflows/release.yml`, `docs/RELEASING.md`, and the channel
+//! manifest of ADR-0175), and [`ReleaseSource`], the one network seam, so
+//! everything else is tested against a local fake.
 
 use std::path::Path;
 use std::process::Command;
 
 use super::UpdateError;
+use super::channel::Channel;
 
 /// The repository releases are published from.
 pub(crate) const REPO: &str = "no-phux/phux";
 
-/// The redirect that names the current stable release (as
-/// `scripts/install.sh` resolves it: not rate-limited, and a URL rather than a
-/// JSON document).
-const LATEST_REDIRECT: &str = "https://github.com/no-phux/phux/releases/latest";
-
-/// Pointer file for the moving `next` prerelease (ADR-0113).
+/// The manifest naming each channel's current release (ADR-0175).
 ///
-/// Hardcoded: a network-supplied tag is never interpolated into a URL.
-pub(crate) const NEXT_CHANNEL_URL: &str =
-    "https://github.com/no-phux/phux/releases/download/next/channel.json";
+/// Hardcoded per channel: nothing from the network is interpolated into it.
+pub(crate) const fn manifest_url(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Stable => "https://github.com/no-phux/phux/releases/download/channels/stable.json",
+        Channel::Next => "https://github.com/no-phux/phux/releases/download/channels/next.json",
+    }
+}
 
 /// GitHub release tag the next channel publishes onto.
 pub(crate) const NEXT_RELEASE_TAG: &str = "next";
+
+/// A manifest is a few kilobytes; anything near this is not one.
+const MANIFEST_LIMIT_BYTES: &str = "1048576";
 
 /// A parsed `MAJOR.MINOR.PATCH`. Pre-release and build suffixes are refused,
 /// not dropped, so two different releases never compare equal.
@@ -117,7 +120,7 @@ impl Artifact {
     }
 
     /// Next-channel artifact. The GitHub tag is always `next`; the SHA
-    /// lives only in the filename, after [`validate_next_sha`] has accepted it.
+    /// lives only in the filename, after [`parse_manifest`] has accepted it.
     pub(crate) fn next(sha: &str, target: &str) -> Self {
         Self::published(NEXT_RELEASE_TAG, format!("phux-next.{sha}-{target}"))
     }
@@ -136,76 +139,201 @@ impl Artifact {
     }
 }
 
-/// Head of the `next` channel, parsed from `channel.json`.
+/// The phux release a channel manifest names for this host, after every
+/// field the manifest states has been checked against what this client
+/// derives itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NextHead {
-    /// Full git SHA the artifacts were built from.
+pub(crate) struct Published {
+    /// The release's version.
+    pub(crate) version: Version,
+    /// `vX.Y.Z` on stable, `next.<sha>` on next.
+    pub(crate) tag: String,
+    /// The git commit the release was built from.
     pub(crate) sha: String,
-    /// Cargo version baked into that build, informational.
-    pub(crate) version: Option<String>,
+    /// The protocol `major.minor` the release speaks (ADR-0061).
+    pub(crate) protocol: String,
+    /// This host's artifact.
+    pub(crate) artifact: Artifact,
+    /// The digest the manifest publishes for that artifact.
+    pub(crate) sha256: String,
 }
 
-/// A SHA interpolated into an artifact filename must be exactly 40 hex.
-pub(crate) fn validate_next_sha(sha: &str) -> Result<(), UpdateError> {
-    if sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+/// Exactly `len` lowercase hex digits.
+fn is_lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A decimal field with no leading zeroes.
+fn is_canonical_number(field: &str) -> bool {
+    field
+        .parse::<u64>()
+        .is_ok_and(|number| number.to_string() == field)
+}
+
+/// `major.minor`, decimal, no leading zeroes.
+fn is_protocol(text: &str) -> bool {
+    text.split_once('.')
+        .is_some_and(|(major, minor)| is_canonical_number(major) && is_canonical_number(minor))
+}
+
+fn invalid(channel: Channel, detail: &str) -> UpdateError {
+    UpdateError::Fetch(format!(
+        "the {} release manifest is invalid: {detail}",
+        channel.as_str()
+    ))
+}
+
+/// A string member of `value`, or a manifest error naming it.
+fn text<'a>(
+    value: &'a serde_json::Value,
+    key: &str,
+    channel: Channel,
+) -> Result<&'a str, UpdateError> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid(channel, &format!("`{key}` is missing")))
+}
+
+/// Refuse a stated value that differs from the one this client derived.
+fn expect_derived(
+    stated: &str,
+    derived: &str,
+    what: &str,
+    channel: Channel,
+) -> Result<(), UpdateError> {
+    if stated == derived {
         Ok(())
     } else {
-        Err(UpdateError::Fetch(
-            "the next channel pointer named a SHA that is not 40 hex characters".to_owned(),
-        ))
+        Err(invalid(channel, &format!("{what} is not `{derived}`")))
     }
 }
 
-/// Parse `channel.json`. Archive names in the document are ignored: URLs
-/// are derived from the SHA so a poisoned pointer cannot steer the
-/// download at an arbitrary path.
-pub(crate) fn parse_next_channel(body: &str) -> Result<NextHead, UpdateError> {
-    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| {
-        UpdateError::Fetch(format!("the next channel pointer was not JSON: {err}"))
-    })?;
-    let schema = value
+/// The manifest's `products.phux`, after the document-level checks.
+fn phux_entry(
+    value: &serde_json::Value,
+    channel: Channel,
+) -> Result<&serde_json::Value, UpdateError> {
+    if value
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64);
-    if schema != Some(1) {
-        return Err(UpdateError::Fetch(
-            "the next channel pointer has an unsupported schema_version".to_owned(),
-        ));
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err(invalid(channel, "unsupported schema_version"));
     }
-    let channel = value.get("channel").and_then(serde_json::Value::as_str);
-    if channel != Some("next") {
-        return Err(UpdateError::Fetch(
-            "the next channel pointer did not name channel `next`".to_owned(),
-        ));
+    expect_derived(
+        text(value, "channel", channel)?,
+        channel.as_str(),
+        "`channel`",
+        channel,
+    )?;
+    value
+        .get("products")
+        .and_then(|products| products.get("phux"))
+        .ok_or_else(|| {
+            UpdateError::Fetch(format!(
+                "no phux release is published on the {} channel yet",
+                channel.as_str()
+            ))
+        })
+}
+
+/// Parse a channel manifest (ADR-0175) into this host's phux release.
+///
+/// The manifest's `release`, artifact `name`, and `url` must equal what this
+/// client derives from the version or SHA and `target`; a manifest that
+/// disagrees is refused, so no network string ever steers a download.
+pub(crate) fn parse_manifest(
+    body: &str,
+    channel: Channel,
+    target: &str,
+) -> Result<Published, UpdateError> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|err| invalid(channel, &format!("not JSON: {err}")))?;
+    let phux = phux_entry(&value, channel)?;
+
+    let version_text = text(phux, "version", channel)?;
+    let version = Version::parse(version_text)
+        .filter(|version| version.to_string() == version_text)
+        .ok_or_else(|| invalid(channel, "`version` is not MAJOR.MINOR.PATCH"))?;
+    let sha = text(phux, "sha", channel)?;
+    if !is_lower_hex(sha, 40) {
+        return Err(invalid(channel, "`sha` is not 40 lowercase hex"));
     }
-    let sha = value
-        .get("sha")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| UpdateError::Fetch("the next channel pointer named no sha".to_owned()))?
-        .to_owned();
-    validate_next_sha(&sha)?;
-    let version = value
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        .and_then(Version::parse)
-        .map(|version| version.to_string());
-    Ok(NextHead { sha, version })
+    let protocol = text(phux, "protocol", channel)?;
+    if !is_protocol(protocol) {
+        return Err(invalid(channel, "`protocol` is not MAJOR.MINOR"));
+    }
+    let (release, tag, artifact) = match channel {
+        Channel::Stable => {
+            let tag = format!("v{version}");
+            let artifact = Artifact::new(&tag, target);
+            (tag.clone(), tag, artifact)
+        }
+        Channel::Next => (
+            NEXT_RELEASE_TAG.to_owned(),
+            format!("next.{sha}"),
+            Artifact::next(sha, target),
+        ),
+    };
+    expect_derived(
+        text(phux, "release", channel)?,
+        &release,
+        "`release`",
+        channel,
+    )?;
+
+    let entry = phux
+        .get("artifacts")
+        .and_then(|artifacts| artifacts.get(target))
+        .ok_or_else(|| {
+            UpdateError::UnsupportedPlatform(format!(
+                "the {} release names no artifact for {target}",
+                channel.as_str()
+            ))
+        })?;
+    let what = format!("the {target} artifact");
+    expect_derived(
+        text(entry, "name", channel)?,
+        &artifact.archive,
+        &format!("{what} name"),
+        channel,
+    )?;
+    expect_derived(
+        text(entry, "url", channel)?,
+        &artifact.archive_url,
+        &format!("{what} url"),
+        channel,
+    )?;
+    let sha256 = text(entry, "sha256", channel)?;
+    if !is_lower_hex(sha256, 64) {
+        return Err(invalid(channel, "`sha256` is not 64 lowercase hex"));
+    }
+    Ok(Published {
+        version,
+        tag,
+        sha: sha.to_owned(),
+        protocol: protocol.to_owned(),
+        artifact,
+        sha256: sha256.to_owned(),
+    })
 }
 
 /// The one boundary that talks to the network. Deliberately dumb: every
 /// decision happens on the near side, so a fake exercises the real code.
 pub(crate) trait ReleaseSource: std::fmt::Debug {
-    /// The tag of the current stable release (`vX.Y.Z`).
-    fn latest_tag(&self) -> Result<String, UpdateError>;
-
-    /// Head of the moving `next` prerelease.
-    fn next_head(&self) -> Result<NextHead, UpdateError>;
+    /// The body of `channel`'s release manifest.
+    fn manifest(&self, channel: Channel) -> Result<String, UpdateError>;
 
     /// Download `url` into `dest`, replacing whatever is there.
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
 }
 
 /// The real [`ReleaseSource`]: `curl`, falling back to `wget`, which the
-/// documented install already requires. The trust anchor is the checksum
+/// documented install already requires. The trust anchor is the digest
 /// verified afterwards, not the fetcher.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NetworkReleaseSource;
@@ -239,55 +367,64 @@ impl Downloader {
 }
 
 impl ReleaseSource for NetworkReleaseSource {
-    fn latest_tag(&self) -> Result<String, UpdateError> {
-        let downloader = Downloader::detect()?;
-        if matches!(downloader, Downloader::Curl) {
-            // The redirect's final path segment is the tag, but only when it
-            // names the core stream; another stream falls through to the list.
-            let out = run(
+    fn manifest(&self, channel: Channel) -> Result<String, UpdateError> {
+        let url = manifest_url(channel);
+        let fetched = match Downloader::detect()? {
+            Downloader::Curl => run(
                 "curl",
                 &[
-                    "-fsSLI",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{url_effective}",
-                    LATEST_REDIRECT,
+                    "-fsSL",
+                    "--proto",
+                    "=https",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    "30",
+                    "--max-filesize",
+                    MANIFEST_LIMIT_BYTES,
+                    url,
                 ],
-            )?;
-            let tag = out.rsplit('/').next().unwrap_or_default().trim().to_owned();
-            if tag.starts_with('v') && Version::parse(&tag).is_some() {
-                return Ok(tag);
-            }
-        }
-        // wget cannot print the effective URL, and the redirect may name
-        // another stream anyway: list and take the newest core tag.
-        let list_url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-        let body = match downloader {
-            Downloader::Curl => run("curl", &["-fsSL", &list_url])?,
-            Downloader::Wget => run("wget", &["-q", "-O", "-", &list_url])?,
+            ),
+            Downloader::Wget => run("wget", &["-q", "--timeout=30", "--tries=2", "-O", "-", url]),
         };
-        latest_core_tag_from_list(&body).ok_or_else(|| {
-            UpdateError::Fetch("the GitHub releases list named no core phux release".to_owned())
+        fetched.map_err(|err| match err {
+            UpdateError::Fetch(detail) if detail.contains("404") => UpdateError::Fetch(format!(
+                "the {} release manifest is not available ({url}); it is replaced \
+                 in place when a release publishes, so retry in a minute",
+                channel.as_str()
+            )),
+            other => other,
         })
     }
 
-    fn next_head(&self) -> Result<NextHead, UpdateError> {
-        let downloader = Downloader::detect()?;
-        let body = match downloader {
-            Downloader::Curl => run("curl", &["-fsSL", NEXT_CHANNEL_URL])?,
-            Downloader::Wget => run("wget", &["-q", "-O", "-", NEXT_CHANNEL_URL])?,
-        };
-        parse_next_channel(&body)
-    }
-
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
-        let downloader = Downloader::detect()?;
         let dest_arg = dest.to_string_lossy().into_owned();
-        match downloader {
-            Downloader::Curl => run("curl", &["-fsSL", url, "-o", &dest_arg]).map(|_| ()),
-            Downloader::Wget => run("wget", &["-q", "-O", &dest_arg, url]).map(|_| ()),
-        }
+        // A stalled transfer aborts after a minute under 1 KiB/s instead of
+        // hanging; a slow transfer that keeps moving may finish.
+        let fetched = match Downloader::detect()? {
+            Downloader::Curl => run(
+                "curl",
+                &[
+                    "-fsSL",
+                    "--proto",
+                    "=https",
+                    "--connect-timeout",
+                    "10",
+                    "--speed-limit",
+                    "1024",
+                    "--speed-time",
+                    "60",
+                    url,
+                    "-o",
+                    &dest_arg,
+                ],
+            ),
+            Downloader::Wget => run(
+                "wget",
+                &["-q", "--timeout=60", "--tries=2", "-O", &dest_arg, url],
+            ),
+        };
+        fetched.map(|_| ())
     }
 }
 
@@ -313,35 +450,16 @@ fn run(program: &str, args: &[&str]) -> Result<String, UpdateError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Name the newest core release (`vX.Y.Z`, not a draft or prerelease) in a
-/// newest-first GitHub releases list; other streams are skipped.
-fn latest_core_tag_from_list(body: &str) -> Option<String> {
-    let releases: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
-    releases.into_iter().find_map(|release| {
-        if release.get("draft").and_then(serde_json::Value::as_bool) == Some(true) {
-            return None;
-        }
-        if release
-            .get("prerelease")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        {
-            return None;
-        }
-        let tag = release.get("tag_name")?.as_str()?;
-        if !tag.starts_with('v') || Version::parse(tag).is_none() {
-            return None;
-        }
-        Some(tag.to_owned())
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        Artifact, Version, latest_core_tag_from_list, parse_next_channel, validate_next_sha,
-        validate_tag,
-    };
+    use super::{Artifact, Channel, Version, parse_manifest, validate_tag};
+
+    /// The golden manifests every client parses (ADR-0175), rendered by
+    /// `scripts/ci/release_manifest.py fixtures`.
+    const STABLE: &str =
+        include_str!("../../../../../scripts/fixtures/release-manifest/stable.json");
+    const NEXT: &str = include_str!("../../../../../scripts/fixtures/release-manifest/next.json");
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
 
     #[test]
     fn versions_parse_order_and_refuse_unpublished_shapes() {
@@ -407,43 +525,75 @@ mod tests {
                  phux-next.{sha}-aarch64-apple-darwin.tar.gz"
             )
         );
-        assert_eq!(
-            artifact.checksum_url,
-            format!("{}.sha256", artifact.archive_url)
-        );
     }
 
     #[test]
-    fn next_channel_pointer_is_accepted_only_when_the_sha_is_40_hex() {
-        let sha = "0123456789abcdef0123456789abcdef01234567";
-        let body =
-            format!(r#"{{"schema_version":1,"channel":"next","sha":"{sha}","version":"0.32.0"}}"#);
-        let head = parse_next_channel(&body).expect("valid pointer");
-        assert_eq!(head.sha, sha);
-        assert_eq!(head.version.as_deref(), Some("0.32.0"));
-        assert!(validate_next_sha(sha).is_ok());
-        assert!(validate_next_sha("abc").is_err());
-        assert!(parse_next_channel(r#"{"schema_version":2,"channel":"next","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
-        assert!(parse_next_channel(r#"{"schema_version":1,"channel":"stable","sha":"0123456789abcdef0123456789abcdef01234567"}"#).is_err());
+    fn the_golden_manifests_parse_for_every_published_target() {
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+        ] {
+            let stable = parse_manifest(STABLE, Channel::Stable, target).expect("stable");
+            assert_eq!(stable.tag, "v9.8.7");
+            assert_eq!(stable.version.to_string(), "9.8.7");
+            assert_eq!(stable.protocol, "0.9");
+            assert_eq!(stable.artifact, Artifact::new("v9.8.7", target));
+            assert_eq!(stable.sha256.len(), 64);
+
+            let next = parse_manifest(NEXT, Channel::Next, target).expect("next");
+            assert_eq!(next.tag, format!("next.{}", "a".repeat(40)));
+            assert_eq!(next.artifact, Artifact::next(&"a".repeat(40), target));
+        }
+    }
+
+    /// Each field a client derives itself is refused when the manifest
+    /// states anything else, and each malformed field is refused.
+    #[test]
+    fn a_manifest_that_disagrees_with_the_derived_artifact_is_refused() {
+        let url = "https://github.com/no-phux/phux/releases/download/v9.8.7/\
+                   phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz";
+        let cases = [
+            ("\"schema_version\": 1", "\"schema_version\": 2"),
+            ("\"channel\": \"stable\"", "\"channel\": \"next\""),
+            ("\"version\": \"9.8.7\"", "\"version\": \"9.8.07\""),
+            ("\"release\": \"v9.8.7\"", "\"release\": \"v9.8.6\""),
+            (
+                "\"protocol\": \"0.9\",\n      \"artifacts\"",
+                "\"protocol\": \"0.09\",\n      \"artifacts\"",
+            ),
+            (
+                url,
+                "https://evil.example/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz",
+            ),
+            (
+                "\"name\": \"phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz\"",
+                "\"name\": \"phux-v9.8.7-x86_64-unknown-linux-gnu.tgz\"",
+            ),
+            (&"2".repeat(64), &"2".repeat(63)),
+            (&"a".repeat(40), &"A".repeat(40)),
+        ];
+        for (from, to) in cases {
+            assert!(STABLE.contains(from), "fixture lacks {from}");
+            let tampered = STABLE.replacen(from, to, 1);
+            let err = parse_manifest(&tampered, Channel::Stable, TARGET)
+                .expect_err(&format!("{from} -> {to} must be refused"));
+            assert!(err.to_string().contains("manifest"), "{err}");
+        }
+        assert!(parse_manifest("not json", Channel::Stable, TARGET).is_err());
+    }
+
+    #[test]
+    fn a_channel_without_phux_or_this_target_says_so() {
+        let empty = r#"{"schema_version": 1, "channel": "next", "products": {}}"#;
+        let err = parse_manifest(empty, Channel::Next, TARGET).unwrap_err();
         assert!(
-            parse_next_channel(r#"{"schema_version":1,"channel":"next","sha":"../evil"}"#).is_err()
+            err.to_string().contains("no phux release is published"),
+            "{err}"
         );
-    }
 
-    /// Only a published core tag wins, even when another stream shipped newer.
-    #[test]
-    fn release_list_names_the_newest_core_release() {
-        let body = r#"[
-            {"tag_name":"desktop-v0.20.0","draft":false,"prerelease":false},
-            {"tag_name":"v0.32.0","draft":true,"prerelease":false},
-            {"tag_name":"v0.33.0-rc.1","draft":false,"prerelease":true},
-            {"tag_name":"opencode-plugin-v0.2.2","draft":false,"prerelease":false},
-            {"tag_name":"v0.31.0","draft":false,"prerelease":false},
-            {"tag_name":"v0.30.0","draft":false,"prerelease":false}
-        ]"#;
-        assert_eq!(latest_core_tag_from_list(body).as_deref(), Some("v0.31.0"));
-        assert!(latest_core_tag_from_list("not json").is_none());
-        assert!(latest_core_tag_from_list(r#"[{"name":"x"}]"#).is_none());
-        assert!(latest_core_tag_from_list("[]").is_none());
+        let err =
+            parse_manifest(STABLE, Channel::Stable, "riscv64gc-unknown-linux-gnu").unwrap_err();
+        assert!(err.to_string().contains("no artifact for"), "{err}");
     }
 }
