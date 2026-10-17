@@ -557,6 +557,30 @@ fn ensure_live(client: &Client) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// Whether a typed command submitted now would ever reach an `ORGANIZATION`
+/// server. The runtime's journal holds it until a seed names the authority
+/// and then sends it, so a seed in flight (or an authority already known,
+/// even while a journal gap reseeds) is enough. Only a connection whose seed
+/// was refused or never sent, with no authority, would hold it forever: that
+/// is refused until `phux_client_organization_refresh`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the control guard lives exactly as long as the replica borrow it lends"
+)]
+pub(crate) fn ensure_deliverable(client: &Client) -> Result<(), BridgeError> {
+    let control = client.control();
+    if !control.organization_supported() {
+        return Ok(());
+    }
+    let replica = control.organization();
+    if replica.authority().is_none() && !replica.seeding() {
+        return Err(BridgeError::state(
+            "the organization records could not be read; call phux_client_organization_refresh",
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_capacity(client: &Client, request_id: u32) -> Result<(), BridgeError> {
     client.operations.check_request_id(request_id)?;
     if client.org.len() >= crate::c::operations::MAX_OPERATIONS {
