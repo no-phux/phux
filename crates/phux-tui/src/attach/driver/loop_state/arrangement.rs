@@ -14,9 +14,6 @@ use super::{
 use crate::attach::arrangement_link::ArrangementLink;
 use crate::layout::ArrangementDoc;
 
-/// How long a failed peer arrangement read waits before the next attempt.
-const PEER_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
-
 impl super::SessionLoop {
     /// Open the arrangement link for `session` when the server advertises
     /// `ORGANIZATION` and a control dial exists. `true` when the link is up
@@ -100,26 +97,17 @@ impl super::SessionLoop {
     }
 
     /// Hand the peer arrangement reads a sweep or an `ARRANGEMENT_CHANGED`
-    /// owes to the peer reader. Held back while a failed read's retry delay
-    /// runs; nothing to do without a reader.
+    /// owes to the peer reader, which retries a failed read itself; nothing
+    /// to do without a reader.
     pub(super) fn request_peer_arrangement_reads(&mut self) {
         let Some(reader) = self.peer_reader.as_ref() else {
             return;
         };
-        if self
-            .peer_read_retry_at
-            .is_some_and(|at| tokio::time::Instant::now() < at)
-        {
-            return;
-        }
-        self.peer_read_retry_at = None;
         reader.request(std::mem::take(&mut self.peers.arrangement_reads_owed));
     }
 
     /// A peer read finished: fold it into the peer caches and re-sync the
-    /// peer agent watches, then repaint what they feed. A failed read keeps
-    /// the caches, owes its reads again, and waits [`PEER_READ_RETRY`]
-    /// before the next attempt.
+    /// peer agent watches, then repaint what they feed.
     pub(super) async fn on_peer_reads_done<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
@@ -128,17 +116,8 @@ impl super::SessionLoop {
         done: crate::attach::peer_arrangements::PeerReadDone,
     ) -> Result<Step, AttachError> {
         use crate::attach::peer_arrangements::PeerReads;
-        let reads = match done.reads {
-            Ok(reads) => reads,
-            Err(err) => {
-                tracing::warn!(error = %err, "peer arrangement read failed; retrying later");
-                self.peers.arrangement_reads_owed.merge(done.asked);
-                self.peer_read_retry_at = Some(tokio::time::Instant::now() + PEER_READ_RETRY);
-                return Ok(Step::Continue);
-            }
-        };
         self.peers
-            .apply_arrangement_reads(reads, done.asked == PeerReads::All);
+            .apply_arrangement_reads(done.reads, done.asked == PeerReads::All);
         self.reconcile_peer_agents(conn).await?;
         self.peers.chrome_dirty = true;
         let mut repaint = RepaintAccumulator::default();

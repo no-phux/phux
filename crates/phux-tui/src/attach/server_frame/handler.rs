@@ -1816,8 +1816,9 @@ fn fold_org_event<W: crate::attach::RenderSink>(
                 ..FrameOutcome::default()
             };
         }
-        // A gap may have swallowed renames and arrangement changes.
-        AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. } => {
+        // A journal gap may have swallowed renames and arrangement changes.
+        // A `SOURCE_GAP` is one pane's dropped events, not organization's.
+        AgentEvent::JournalGap { .. } => {
             return FrameOutcome {
                 organization_resync: true,
                 ..FrameOutcome::default()

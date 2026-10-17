@@ -1898,32 +1898,6 @@ async fn settle_peer_reads(state: &mut SessionLoop, client: &mut Connection, out
         .unwrap();
 }
 
-/// A failed peer read keeps the caches, owes its reads again, and holds the
-/// next attempt back instead of retrying every burst.
-#[tokio::test(flavor = "current_thread")]
-async fn a_failed_peer_read_is_owed_again_after_a_delay() {
-    use crate::attach::peer_arrangements::{PeerReader, PeerReads};
-    let dir = tempfile::tempdir().unwrap();
-    let (mut state, mut client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    state.peer_reader = Some(PeerReader::spawn(
-        crate::attach::Dial::uds(&dir.path().join("absent.sock")),
-        SessionId::new(1),
-    ));
-    state.peers.foreign_layouts.insert(
-        SessionId::new(2),
-        ArrangementDoc::single(ResourceId::local(9)),
-    );
-    state.peers.arrangement_reads_owed = PeerReads::All;
-    settle_peer_reads(&mut state, &mut client, &mut out).await;
-    assert_eq!(state.peers.arrangement_reads_owed, PeerReads::All);
-    assert!(state.peer_read_retry_at.is_some());
-    assert!(state.peers.foreign_layouts.contains_key(&SessionId::new(2)));
-    // Held back during the delay: nothing is handed to the reader.
-    state.request_peer_arrangement_reads();
-    assert_eq!(state.peers.arrangement_reads_owed, PeerReads::All);
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn refused_rename_barrier_keeps_the_current_status_name() {
     let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
