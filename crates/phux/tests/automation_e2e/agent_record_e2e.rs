@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 /// The pre-seeded session name the test drives against.
 const SESSION: &str = "work";
 
@@ -37,35 +39,19 @@ const DETECT_DEADLINE: Duration = Duration::from_secs(20);
 /// ticks at the identified cadence plus slack for a loaded pool.
 const HOLD_WINDOW: Duration = Duration::from_secs(3);
 
-/// A running `phux server`, killed when the guard drops.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+/// A server with extra environment on its child (the detector's tuning
+/// seams are read once, inside the server).
+fn start_with_env(envs: &[(&str, &str)]) -> ServerGuard {
+    ServerGuard::builder("agent")
+        .envs(envs.iter().copied())
+        .start()
 }
 
 impl ServerGuard {
-    fn start() -> Self {
-        Self::start_with_env(&[])
-    }
-
-    /// As [`Self::start`], with extra environment on the server child (the
-    /// detector's tuning seams are read once, inside the server).
-    fn start_with_env(envs: &[(&str, &str)]) -> Self {
-        Self(
-            common::ServerGuard::builder("agent")
-                .envs(envs.iter().copied())
-                .start(),
-        )
-    }
-
     /// Run `phux <args...> --socket <sock>` with `envs` capturing stdout.
     /// The verbs used here all take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe.
-    fn run(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> String {
+    fn run_with_env(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> String {
         let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.args(args).arg("--socket").arg(&self.socket);
         for (key, value) in envs {
@@ -181,7 +167,7 @@ impl ServerGuard {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn agent_record_set_show_clear_roundtrip() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("agent");
 
     // Declare identity on the session's (single) pane.
     let confirmed = server.agent(&[
@@ -251,7 +237,7 @@ fn agent_record_set_show_clear_roundtrip() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn config_agents_projection_tracks_live_record() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("agent");
 
     // A configured plugin manifest declaring a static "codex" agent.
     let dir = tempfile::tempdir().expect("create temp config dir");
@@ -292,7 +278,7 @@ fn config_agents_projection_tracks_live_record() {
     server.agent(&[
         "set", SESSION, "--name", "codex", "--kind", "codex", "--state", "blocked",
     ]);
-    let live = server.run(&["config", "agents", "--json"], envs);
+    let live = server.run_with_env(&["config", "agents", "--json"], envs);
     let json: serde_json::Value = serde_json::from_str(&live).expect("config agents JSON");
     assert_eq!(json["schema_version"], 2);
     assert_eq!(json["live"], true, "server answered: {live}");
@@ -308,7 +294,7 @@ fn config_agents_projection_tracks_live_record() {
     // Clear the record: the projection falls back to the declared values
     // even though the server is still live.
     server.agent(&["clear", SESSION]);
-    let fallback = server.run(&["config", "agents", "--json"], envs);
+    let fallback = server.run_with_env(&["config", "agents", "--json"], envs);
     let json: serde_json::Value = serde_json::from_str(&fallback).expect("config agents JSON");
     assert_eq!(json["live"], true);
     let agent = &json["agents"][0];
@@ -420,8 +406,7 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
         "the installed wrapper must carry its behavior stamp:\n{installed}"
     );
 
-    let server =
-        ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
+    let server = start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
     let terminal_id = server.spawn_pane(&fake_claude);
     let target = format!("@{terminal_id}");
 
@@ -521,7 +506,7 @@ impl ServerGuard {
     /// Whether this server advertises `resource_kinds` — the same probe the
     /// generated wrapper runs, through the same verb.
     fn serves_resource_kinds(&self) -> bool {
-        let status = self.run(&["status", "--json"], &[]);
+        let status = self.run_with_env(&["status", "--json"], &[]);
         let json: serde_json::Value = serde_json::from_str(&status).expect("status JSON");
         json["features"]
             .as_array()
@@ -646,8 +631,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
     let shim = data.join("phux").join("shims").join("claude");
 
-    let server =
-        ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
+    let server = start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
     // The wrapper takes its stream path only when the server serves
     // `AgentSession`; without it the test would prove nothing.
     assert!(
@@ -880,7 +864,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let end = Instant::now() + DETECT_DEADLINE;
     loop {
         let shown = server.agent_show(&target);
-        let listed = server.run(&["ls", "--json"], &[]);
+        let listed = server.run_with_env(&["ls", "--json"], &[]);
         let inventory: serde_json::Value =
             serde_json::from_str(&listed).unwrap_or_else(|err| panic!("ls JSON ({err}): {listed}"));
         let gone_from_report = shown["agents"][0]["agent_session"].is_null();
@@ -941,8 +925,7 @@ fn a_title_only_rule_is_explained_with_the_title_the_detector_read() {
 
     let home = tempfile::tempdir().expect("create temp dir");
     let fake_omp = write_titled_agent(home.path(), "omp", TITLE);
-    let server =
-        ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
+    let server = start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
     let terminal_id = server.spawn_pane(&fake_omp);
     let target = format!("@{terminal_id}");
 
@@ -1000,7 +983,7 @@ fn agent_answer_and_config_agents_read_the_live_ask_title() {
     let home = tempfile::tempdir().expect("create temp dir");
     let answer_file = home.path().join("answer.txt");
     let asker = write_asker(home.path(), &answer_file);
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("agent");
     let terminal_id = server.spawn_pane(&asker);
     let target = format!("@{terminal_id}");
 
@@ -1008,7 +991,7 @@ fn agent_answer_and_config_agents_read_the_live_ask_title() {
     // source: the asker has set it once `snapshot` reports it.
     let end = Instant::now() + DETECT_DEADLINE;
     loop {
-        let shot = server.run(&["snapshot", &target, "--json"], &[]);
+        let shot = server.run_with_env(&["snapshot", &target, "--json"], &[]);
         let screen: serde_json::Value = serde_json::from_str(&shot).expect("snapshot JSON");
         if screen["title"]
             .as_str()
@@ -1050,7 +1033,7 @@ fn agent_answer_and_config_agents_read_the_live_ask_title() {
     )
     .expect("write config");
     server.agent(&["set", &target, "--name", "asker", "--kind", "asker"]);
-    let live = server.run(
+    let live = server.run_with_env(
         &["config", "agents", "--json"],
         &[("XDG_CONFIG_HOME", xdg.as_path())],
     );
@@ -1086,7 +1069,7 @@ fn agent_answer_and_config_agents_read_the_live_ask_title() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn agent_start_refuses_a_withdrawn_name() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("agent");
     // `set` without `--state` leaves `unknown`: with a kind, the withdrawn shape.
     server.agent(&["set", SESSION, "--name", "build", "--kind", "codex"]);
     // The repo's example plugin config supplies a `codex` integration, so the
@@ -1166,7 +1149,7 @@ fn write_script_integration(root: &std::path::Path, script: &str) -> PathBuf {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn agent_start_runs_the_agent_on_a_delegated_credential() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("agent");
     let root = tempfile::tempdir().expect("create temp dir");
     let phux = crate::runner::phux_bin();
     let xdg = write_script_integration(
@@ -1216,7 +1199,7 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
         "the agent never reported: {}",
         String::from_utf8_lossy(&wait.stderr)
     );
-    let screen = server.run(&["snapshot", "@1"], &[]);
+    let screen = server.run_with_env(&["snapshot", "@1"], &[]);
     let sock = screen
         .lines()
         .find_map(|line| line.split_once("SOCK=").map(|(_, rest)| rest))

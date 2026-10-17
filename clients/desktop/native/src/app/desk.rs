@@ -107,6 +107,8 @@ pub enum Modal {
         session: u32,
     },
     WindowSession,
+    /// Every open native window, its session, host and tabs.
+    Windows,
     Terminate {
         terminal: ResourceId,
         title: String,
@@ -441,8 +443,8 @@ impl Desk {
         let loaded = persist::load_layout(&store.read());
         let blocked = loaded.blocked;
         let saved = loaded.initial;
-        let text = settings::read_ghostty_config();
-        let ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        let text = settings::read_ghostty_sources();
+        let ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         let mut prefs = saved
             .as_ref()
             .map(|layout| layout.display.clone())
@@ -806,8 +808,12 @@ impl Desk {
         self.note_terminal_event(event);
         self.note_operation_event(event);
         self.note_input_event(event);
-        if let Event::Detached { message, .. } = event {
-            self.post(Kind::Error, "Detached", Some(message.clone()));
+        if let Event::Detached { reason, message } = event {
+            self.post(
+                Kind::Error,
+                "Detached",
+                Some(detach_detail(*reason, message)),
+            );
         }
     }
 
@@ -1064,6 +1070,7 @@ impl Desk {
                 (&open, id),
                 (Modal::Commands, "palette")
                     | (Modal::Goto, "goto")
+                    | (Modal::Windows, "windows")
                     | (Modal::Settings, "settings")
                     | (Modal::Notifications, "notifications")
             );
@@ -1166,6 +1173,7 @@ impl Desk {
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),
             "window" => self.move_to_window(cx),
+            "window-next" => self.move_to_next_window(cx),
             "find" => self.open_find(window, cx),
             "find-next" => self.step_find(1, window, cx),
             "find-prev" => self.step_find(-1, window, cx),
@@ -1199,11 +1207,14 @@ impl Desk {
             "prompt-next" => self.jump_prompt(1, cx),
             "quick-terminal" => self.toggle_quick(cx),
             "new-window" => self.new_window(window, cx),
+            "windows" => self.modal = Modal::Windows,
+            "minimize" => window.minimize_window(),
             "fullscreen" => window.toggle_fullscreen(),
             "maximize" => window.zoom_window(),
             "reload-config" => self.reload_ghostty(cx),
             "import-ghostty" => self.import_ghostty(cx),
             "reconnect" => self.reconnect(cx),
+            "copy-diagnostics" => self.copy_diagnostics(cx),
             "performance-monitor" | "performance-monitor-stop" => {
                 // Opening/closing windows must wait until this desk's window lease ends.
                 let desktop = self.desktop.clone();
@@ -1774,13 +1785,28 @@ impl Desk {
     }
 
     pub(crate) fn reload_ghostty(&mut self, cx: &mut Context<Self>) {
-        let text = settings::read_ghostty_config();
-        self.ghostty_found = text.is_some();
-        self.ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        let sources = settings::read_ghostty_sources();
+        self.apply_ghostty_sources(sources.as_deref(), cx);
+    }
+
+    /// Adopt freshly read Ghostty files (`None` when there are none): rebind,
+    /// drop the cached paint so the Ghostty theme follows, and post a notice
+    /// for a missing config or skipped lines. Reload config runs this on what
+    /// it reads from disk.
+    pub fn apply_ghostty_sources(
+        &mut self,
+        sources: Option<&[settings::GhosttySource]>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ghostty_found = sources.is_some();
+        self.ghostty = settings::parse_ghostty_sources(sources.unwrap_or_default());
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
-        if text.is_none() {
+        if sources.is_none() {
             self.post(Kind::Refusal, "No Ghostty config found", None);
+        }
+        if let Some((title, body)) = settings::skipped_lines_notice(&self.ghostty) {
+            self.post(Kind::Refusal, &title, Some(body));
         }
         cx.notify();
     }
@@ -1812,6 +1838,51 @@ impl Desk {
         let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
             desktop.open_moved(session, terminal, remote, cx);
+        });
+    }
+
+    /// Move the focused placement into the next open window on the same
+    /// server. Only this window's view is released; the terminal (same
+    /// `ResourceId`, same process) is shown by the target's own client.
+    fn move_to_next_window(&mut self, cx: &mut Context<Self>) {
+        let Some(terminal) = self
+            .focused_placement()
+            .and_then(|placement| placement.terminal_id.clone())
+        else {
+            return;
+        };
+        let target = self
+            .desktop
+            .read(cx)
+            .next_window(cx.entity_id(), self.remote.as_deref(), cx);
+        let Some((handle, desk)) = target else {
+            // Refuse before releasing anything: a target that is not attached
+            // could never reveal the terminal, which would then have no view
+            // in either window.
+            self.post(
+                Kind::Refusal,
+                "No other connected window",
+                Some(
+                    "Open or reconnect another window on this server, or use Move Pane to New Window."
+                        .into(),
+                ),
+            );
+            cx.notify();
+            return;
+        };
+        let placement = self
+            .focused_placement()
+            .map(|placement| placement.id.clone());
+        self.workspace_call(|link| {
+            link.workspace
+                .close_pane(&link.connection, placement.as_deref())
+        });
+        cx.notify();
+        // Deferred: the target is another window, updated outside this one.
+        cx.defer(move |cx| {
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            desk.update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
         });
     }
 
@@ -1898,6 +1969,17 @@ impl Desk {
             );
         }
         cx.notify();
+    }
+
+    /// Whether a terminal moved here from another window would be revealed:
+    /// attached, and not already waiting to reveal another one (which a new
+    /// move would silently replace).
+    pub(crate) fn accepts_moved_terminal(&self) -> bool {
+        self.pending_project_terminal.is_none()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
     pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {
@@ -3831,13 +3913,16 @@ impl Desk {
 
     /// `{tab} — phux`, or `phux` with no tab, plus the host on a remote window.
     /// Written only when it changes.
+    /// The native title names the shown tab and its session, so the Window
+    /// menu and Mission Control tell apart windows whose terminals look alike.
     pub(crate) fn sync_title(&mut self, window: &mut Window) {
-        let title = self
-            .active_tab()
-            .map(|tab| format!("{} — phux", tab_title(self, tab)))
-            .unwrap_or_else(|| "phux".into());
+        let title = match (self.active_tab(), self.session.as_str()) {
+            (Some(tab), "") => format!("{} — phux", tab_title(self, tab)),
+            (Some(tab), session) => format!("{} — {session}", tab_title(self, tab)),
+            (None, _) => "phux".into(),
+        };
         let title = match self.remote.as_deref() {
-            Some(host) => format!("{title} · {host}"),
+            Some(host) => format!("{title} · {}", display_title(host)),
             None => title,
         };
         if title != self.window_title {
@@ -4097,7 +4182,7 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{TabGeometry, pane_label, tab_drop_index};
+    use super::{TabGeometry, display_title, pane_label, tab_drop_index};
     use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
@@ -4134,6 +4219,40 @@ mod tests {
         assert_eq!(pane_label(Some(&pane(None, None, None)), group), "logs");
         assert_eq!(pane_label(Some(&pane(None, None, None)), None), "shell");
         assert_eq!(pane_label(None, group), "shell");
+    }
+
+    #[test]
+    fn a_revoked_attach_says_why_without_a_server_message() {
+        use phux_protocol::wire::frame::DetachReason;
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationRevoked), ""),
+            "this connection's authorization was revoked"
+        );
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationExpired), "token aged out"),
+            "this connection's authorization expired: token aged out"
+        );
+        assert!(!super::detach_detail(None, "").is_empty());
+    }
+
+    #[test]
+    fn a_hostile_title_loses_controls_and_bidi_overrides() {
+        // OSC 2 text that tries to forge a filename, smuggle an escape and a
+        // newline, and run on forever.
+        let hostile = format!(
+            "\u{1b}]0;x\u{7}inv\u{202e}fdp.exe\u{2066}\nrm -rf ~\u{7f}{}",
+            "a".repeat(4096)
+        );
+        let clean = display_title(&hostile);
+        assert!(clean.starts_with("]0;xinvfdp.exerm -rf ~a"), "{clean:?}");
+        assert!(clean.chars().all(|ch| !ch.is_control()));
+        assert!(!clean.contains(['\u{202e}', '\u{2066}']));
+        assert_eq!(clean.chars().count(), super::TITLE_CAP);
+        let titled = pane(None, Some(&hostile), Some("/src/phux"));
+        assert_eq!(pane_label(Some(&titled), None), clean);
+        let blank = pane(Some("\u{1b}\u{202e}"), Some("\u{7}"), Some("/src/\u{200f}"));
+        assert_eq!(pane_label(Some(&blank), Some("logs")), "logs");
+        assert_eq!(display_title("مرحبا vim"), "مرحبا vim", "RTL text stays");
     }
 
     #[test]
@@ -4238,26 +4357,67 @@ pub(crate) fn pane_label(
     let Some(pane) = pane else {
         return "shell".into();
     };
-    let named = |text: Option<&str>| {
-        text.map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
+    let named = |text: Option<&str>| text.map(display_title).filter(|text| !text.is_empty());
     named(pane.name.as_deref())
         .or_else(|| named(pane.title.as_deref()))
         .or_else(|| {
-            pane.cwd
-                .as_deref()
-                .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()))
-                .map(str::to_owned)
+            named(
+                pane.cwd
+                    .as_deref()
+                    .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty())),
+            )
         })
         .or_else(|| named(group))
         .unwrap_or_else(|| "shell".into())
 }
 
+/// Why the server ended the attach, in words: a revoked or expired
+/// authorization says so even when the server sent no message.
+fn detach_detail(
+    reason: Option<phux_protocol::wire::frame::DetachReason>,
+    message: &str,
+) -> String {
+    match (reason, message.trim()) {
+        (Some(reason), "") => reason.describe().to_owned(),
+        (Some(reason), extra) => format!("{}: {extra}", reason.describe()),
+        (None, "") => "The server ended the attach without saying why.".to_owned(),
+        (None, extra) => extra.to_owned(),
+    }
+}
+
+/// Longest title, in characters, any chrome surface or the window shows.
+const TITLE_CAP: usize = 256;
+
+/// Program-set text made safe to show: no control characters (an OSC title
+/// cannot smuggle a newline, escape or `DEL` into the window title or a tab)
+/// and no bidi overrides or isolates that would reorder what follows, so a
+/// title cannot pose as another file or host. Trimmed and bounded.
+pub(crate) fn display_title(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|&ch| !ch.is_control() && !is_bidi_control(ch))
+        .take(TITLE_CAP)
+        .collect();
+    clean.trim().to_owned()
+}
+
+/// Explicit direction marks, embeddings, overrides and isolates (the same
+/// set `phux ls` and the TUI drop).
+const fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 pub fn tab_title(desk: &Desk, tab: &crate::workspace::layout::DeskTab) -> String {
-    if let Some(title) = tab.title.as_deref().filter(|title| !title.is_empty()) {
-        return title.to_owned();
+    if let Some(title) = tab
+        .title
+        .as_deref()
+        .map(display_title)
+        .filter(|title| !title.is_empty())
+    {
+        return title;
     }
     let focus = crate::workspace::layout::placements(&tab.root)
         .into_iter()

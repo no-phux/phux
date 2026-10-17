@@ -120,13 +120,27 @@ nothing; assigning an existing terminal to a project never restarts it.
 ## Tabs, splits, windows, and independent views
 
 Create, rename, reorder, split, resize, and move placements using keyboard or
-pointer. Dragging a placement between tabs or windows preserves its view and
-process. Minimum-size layouts remain operable; cancellation restores the
+pointer. **Move Pane to New Window** and **Move Pane to Next Window** (the next
+connected window on the same server) move the focused placement without
+restarting its terminal: the source releases its view and the target shows the
+same terminal. When no other window on that server is connected, Move Pane to
+Next Window refuses and the placement stays where it was. Dragging a placement
+with the pointer between tabs or windows is not yet supported
+(phux-d4x9.8). Minimum-size layouts remain operable; cancellation restores the
 previous layout and focus. A pending spawn belongs to its original destination:
 closing that destination before the reply cannot insert it into whichever pane
 happens to be focused later.
 
 **Go to Terminal** (⌘P) finds an existing placement and focuses its window.
+**Show All Windows…** (Window menu, the palette's **Windows** mode, or the
+`windows` command) lists every open native window as `Window N` with its
+phux session, host and tab count, each followed by its tabs. The window you
+are in and the tab it shows are marked **Current**; another window's visible
+tab is marked **Shown**. Choosing a row brings that window forward, out of the
+Dock if minimized, and shows the chosen tab; it never opens a window or a
+session. Typing in Go To also finds tabs in other windows. Window titles name
+the shown tab and its session, so AppKit's own window list in the Window menu
+tells look-alike windows apart.
 **Mirror Pane** creates a new view of the same terminal in a chosen
 split, tab, or window. Scrolling,
 selecting, or searching in one view leaves the others unchanged; all show the
@@ -219,8 +233,7 @@ The tab strip keeps New Terminal and the notification bell.
 Local and registered remote hosts open concurrently with host-qualified
 identity, through the shared registry and dialer; auth refusal, expiry,
 version mismatch, and offline inventory are distinct states. Settings show
-effective value, default, source, and when an edit applies, using the shared
-catalogue and comment-preserving writer. Native menus, Dock, dialogs, drops,
+effective value, source, and when an edit applies. Native menus, Dock, dialogs, drops,
 clipboard, notifications, scale, appearance, reduced motion, high contrast,
 and screen-reader navigation are in scope; titles, links, and dropped paths
 never become implicit command execution.
@@ -244,6 +257,20 @@ and only its backdrop, sheet, and pane cards turn opaque.
 Display edits apply live and persist with the window's layout; font selection
 follows resets and Ghostty imports while Settings stays open.
 
+Each setting and shortcut names its source: the default, a saved desktop
+preference, or the Ghostty file and line that sets it. A Ghostty-sourced value
+says when a file edit reaches it: binds and the Ghostty theme on **Reload
+config**, seeded preferences on **Use Ghostty look**. **Keyboard & shortcuts**
+lists any chord the Ghostty config binds to different actions while Ghostty
+keybinds are on, with every line; the last line wins, and an `unbind` resets
+the chord rather than conflicting. **Ghostty integration** lists malformed
+lines by file and line, and separately lists valid Ghostty lines whose values
+this app cannot represent (palette slots above 15, named colours, pixel cell
+adjustments, values outside its range); every other line still applies, and
+only malformed lines post a notice on reload.
+The desktop reads Ghostty's config and does not write it; it does not use the
+`phux-config` catalogue.
+
 ## Status
 
 The host is a GPUI application. Tracking IDs below name remaining product work,
@@ -255,7 +282,7 @@ notarization, accessibility journeys, and Linux remain separate gaps.
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, identity-scoped restore, Open Folder, and repository grouping across the all-host catalog. Cross-server Workspace records are not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import, and an active-session Inbox of agent attention and server-held approvals. Mixed-authority tab trees and catalogue-backed settings provenance are not built; the inspector (bounded agent event and detail view) is not built. | phux-d4x9.10–.12, phux-d4x9.23 (inspector) |
+| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import with per-line provenance and shortcut conflicts, and an active-session Inbox of agent attention and server-held approvals. Mixed-authority tab trees are not built; the inspector (bounded agent event and detail view) is not built. | phux-d4x9.10–.12, phux-d4x9.23 (inspector) |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |

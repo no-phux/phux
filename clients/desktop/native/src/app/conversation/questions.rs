@@ -593,7 +593,7 @@ fn render_question(
             .scrollable(false),
         );
     let Some(draft) = face.questions.get(&question.id) else {
-        return panel.into_any_element();
+        return question_group(panel, question).into_any_element();
     };
     if let Some(details) = &draft.details {
         panel = panel.child(
@@ -617,9 +617,27 @@ fn render_question(
         cx,
     ));
     if let Some(status) = status {
-        panel = panel.child(div().text_xs().child(status.clone()));
+        panel = panel.child(
+            readable("native-question-status", status.clone())
+                .text_xs()
+                .child(status.clone()),
+        );
     }
-    panel.into_any_element()
+    question_group(panel, question).into_any_element()
+}
+
+/// A question panel as a group named by the provider title. The markdown
+/// message renders without accessibility nodes, so it rides along as the
+/// group's description.
+fn question_group(panel: gpui::Div, question: &NativeQuestion) -> gpui::Stateful<gpui::Div> {
+    panel
+        .id(SharedString::from(format!(
+            "native-question-panel-{}",
+            question.id
+        )))
+        .role(gpui::Role::Group)
+        .aria_label(question.title.clone())
+        .aria_description(question.message.clone())
 }
 
 fn render_controls(
@@ -635,7 +653,7 @@ fn render_controls(
         "select" | "permission" => {
             render_permission(panel, question, draft, placement, disabled, cx)
         }
-        "input" | "editor" => render_text(panel, draft, "text", disabled),
+        "input" | "editor" => render_text(panel, draft, "text", &question.title, disabled),
         "ask" => render_ask(panel, question, draft, placement, disabled, cx),
         "form" => render_form(panel, question, draft, placement, disabled, cx),
         _ => panel.child(
@@ -688,9 +706,20 @@ fn render_permission(
     }
     panel
 }
-fn render_text(mut panel: gpui::Div, draft: &Draft, id: &str, disabled: bool) -> gpui::Div {
+fn render_text(
+    mut panel: gpui::Div,
+    draft: &Draft,
+    id: &str,
+    label: &str,
+    disabled: bool,
+) -> gpui::Div {
     if let Some(input) = draft.inputs.get(id) {
-        panel = panel.child(Textarea::new(input).w_full().disabled(disabled));
+        panel = panel.child(
+            Textarea::new(input)
+                .aria_label(label.to_owned())
+                .w_full()
+                .disabled(disabled),
+        );
     }
     panel
 }
@@ -724,6 +753,7 @@ fn render_ask(
                 panel.child(div().text_xs().child("Custom response (optional)")),
                 draft,
                 &item.id,
+                &format!("Custom response to {}", item.question),
                 disabled,
             );
         }
@@ -742,9 +772,10 @@ fn render_form(
         return panel.child("Unsupported provider form schema; no response submitted.");
     };
     for (id, schema) in properties {
+        let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
         panel = panel.child(div().text_sm().child(format!(
             "{}{}",
-            schema.get("title").and_then(Value::as_str).unwrap_or(id),
+            title,
             if field_required(question, id) {
                 " *"
             } else {
@@ -765,7 +796,7 @@ fn render_form(
                 cx,
             ));
         } else {
-            panel = render_text(panel, draft, id, disabled);
+            panel = render_text(panel, draft, id, title, disabled);
         }
     }
     panel
@@ -802,6 +833,26 @@ fn render_submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn question_panels_are_groups_named_and_described_by_the_provider() {
+        let question = NativeQuestion {
+            id: "q".into(),
+            kind: "confirm".into(),
+            title: "Run tests?".into(),
+            message: "The agent wants to run `cargo test`.".into(),
+            options: vec![],
+            questions: vec![],
+            fields: Value::Null,
+        };
+        let (role, node) = super::super::tests::a11y(&question_group(div(), &question));
+        assert_eq!(role, Some(gpui::Role::Group));
+        assert_eq!(node.label(), Some("Run tests?"));
+        assert_eq!(
+            node.description(),
+            Some("The agent wants to run `cargo test`.")
+        );
+    }
+
     #[test]
     fn form_values_preserve_types_and_refuse_coercion() {
         assert_eq!(

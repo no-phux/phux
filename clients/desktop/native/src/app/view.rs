@@ -2559,6 +2559,7 @@ fn pane_controls(
                             for (command, label) in [
                                 ("split-right", "Split right"),
                                 ("split-down", "Split down"),
+                                ("view", "Mirror pane"),
                                 ("close", "Close pane"),
                             ] {
                                 let handle = handle.clone();

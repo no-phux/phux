@@ -9,6 +9,7 @@ mod approvals;
 mod color;
 mod conversation;
 mod desk;
+mod diagnostics;
 mod fleet;
 #[cfg(feature = "ui-fixtures")]
 #[allow(

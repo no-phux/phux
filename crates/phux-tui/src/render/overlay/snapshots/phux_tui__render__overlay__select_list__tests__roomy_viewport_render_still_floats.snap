@@ -1,6 +1,6 @@
 ---
 source: crates/phux-tui/src/render/overlay/select_list.rs
-expression: out
+expression: "render_to_string(&sl, 100, 30)"
 ---
 
 
@@ -23,4 +23,4 @@ expression: out
                          │                                                │
                          │                                                │
                          │                                                │
-                         ╰────────────────────────────────────────────────╯
+                         ╰ 1 of 3 ───────────────── ↑↓ move · ⏎ run · esc ╯

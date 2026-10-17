@@ -1338,7 +1338,10 @@ mod delivery {
         ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
         input::key::{KeyAction, KeyEvent},
         wire::{
-            frame::{AttachTarget, Command, CommandResult, ErrorCode, FrameKind, RolePolicy},
+            frame::{
+                AttachTarget, Command, CommandResult, DetachReason, ErrorCode, FrameKind,
+                RolePolicy,
+            },
             info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
         },
     };
@@ -1960,6 +1963,76 @@ mod delivery {
         });
     }
 
+    /// Revoked scope: once the server says the connection's authorization
+    /// was revoked, a paste is refused and nothing reaches the wire, even
+    /// before the transport closes.
+    #[gpui::test]
+    fn a_revoked_authorization_refuses_input_and_sends_nothing(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            let _ = client.take_outbound();
+            client
+                .feed(FrameKind::Detached {
+                    reason: Some(DetachReason::AuthorizationRevoked),
+                    message: String::new(),
+                })
+                .expect("detached");
+            let _ = client.take_outbound();
+            input.update(cx, |state, _| {
+                let receipt = state.paste_requested("rm -rf ~\n");
+                assert!(
+                    matches!(receipt, Ok(Some(_))),
+                    "the refusal is a typed receipt: {receipt:?}"
+                );
+                assert_eq!(
+                    state.with_current(true, |_| Ok(())),
+                    Err(super::InputError::NotReady),
+                    "the ended attach admits no input"
+                );
+            });
+            let sent = client.take_outbound();
+            assert!(sent.is_empty(), "revoked input reached the wire: {sent:?}");
+        });
+    }
+
+    /// Teardown race: the window's input outlives its connection (the link
+    /// closed while a paste was on its way). The paste is refused as a stale
+    /// handle; nothing panics and nothing is queued anywhere.
+    #[gpui::test]
+    fn input_that_outlives_its_connection_refuses_without_panicking(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(move |window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            let weak = Arc::downgrade(&client);
+            drop(client);
+            assert!(weak.upgrade().is_none(), "the connection is gone");
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.paste_requested("late"),
+                    Err(super::InputError::StaleHandle)
+                );
+                // Local: the dropped path pastes as text, refused as stale.
+                assert_eq!(state.paste_command(cx), None);
+                assert_eq!(state.last_error(), Some(&super::InputError::StaleHandle));
+                // Remote: the upload is refused before any bytes are read.
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("stale input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(state.last_error(), Some(&super::InputError::StaleHandle));
+            });
+        });
+    }
+
     #[gpui::test]
     fn a_viewer_cannot_start_a_clipboard_file_upload(cx: &mut TestAppContext) {
         let client = session(Some(RolePolicy::VIEWER));
@@ -2007,5 +2080,196 @@ mod delivery {
             let current = client.with_control(|control| control.projection_fence(&terminal()));
             assert_eq!(current, Some(armed));
         });
+    }
+
+    fn selected_cells(client: &Client, view: ViewId) -> usize {
+        let frame = client.acquire_view(view).expect("frame");
+        frame
+            .buffer
+            .cells
+            .iter()
+            .filter(|cell| cell.flags & phux_client_core::grid::CELL_SELECTED != 0)
+            .count()
+    }
+
+    /// Press, drag, and release across the first row of the pane.
+    fn drag(
+        input: &Entity<TerminalInput>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Result<bool, super::InputError> {
+        let at = |x: f32| point(px(x), px(8.));
+        input.update(cx, |state, cx| {
+            state.mouse_down(
+                &gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(2.),
+                    click_count: 1,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )?;
+            state.mouse_move(
+                &gpui::MouseMoveEvent {
+                    position: at(30.),
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )?;
+            state.mouse_up(
+                &gpui::MouseUpEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(30.),
+                    click_count: 1,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        })
+    }
+
+    fn left_arrow() -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: Keystroke::parse("left").expect("stroke"),
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
+    /// Two windows, each showing its own view of one terminal. Selection
+    /// and its clearing stay in the view that made them, and keys and
+    /// pointer gestures reach the terminal only through the focused view in
+    /// the active window.
+    #[gpui::test]
+    fn two_windows_keep_selection_and_input_in_their_own_view(cx: &mut TestAppContext) {
+        let client = session(None);
+        let left = client.create_view(&terminal()).expect("left view");
+        let right = client.create_view(&terminal()).expect("right view");
+        let first = cx.add_window(|_, _| gpui::Empty);
+        let second = cx.add_window(|_, _| gpui::Empty);
+        let open = |cx: &mut TestAppContext, handle: gpui::WindowHandle<gpui::Empty>, view| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.activate_window();
+                let input = bind(&client, view, window, cx);
+                arm(&input, false, 160., 68., window, cx);
+                input.update(cx, |state, cx| state.focus.focus(window, cx));
+                input
+            })
+            .expect("window")
+        };
+        let right_input = open(cx, second, right);
+        let left_input = open(cx, first, left);
+        cx.run_until_parked();
+        let _ = client.take_outbound();
+        let right_generation = client.view_generation(right).expect("right frame");
+
+        // The inactive window's view refuses keys and pointer gestures, even
+        // though it holds focus inside its own window.
+        cx.update_window(second.into(), |_, window, cx| {
+            assert!(!window.is_window_active());
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+            assert_eq!(
+                drag(&right_input, window, cx),
+                Err(super::InputError::WrongFocus)
+            );
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty(), "no wrong-view input");
+
+        // A view bound to one window never accepts that window's sibling's
+        // events as its own.
+        cx.update_window(first.into(), |_, window, cx| {
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty());
+
+        // The active window's view selects locally and sends its key.
+        cx.update_window(first.into(), |_, window, cx| {
+            assert_eq!(drag(&left_input, window, cx), Ok(true));
+            left_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Ok(KeyDisposition::Consumed)
+                );
+            });
+        })
+        .unwrap();
+        let sent = keys(&client);
+        assert_eq!(sent.len(), 1, "one key from the focused view");
+        assert_eq!(sent[0].action, KeyAction::Press);
+        let engine = client.engine().expect("engine");
+        assert!(selected_cells(&client, left) > 0, "the left view selected");
+        assert!(
+            !engine
+                .view_selection_text(left)
+                .expect("left text")
+                .is_empty()
+        );
+        assert_eq!(selected_cells(&client, right), 0);
+        assert!(
+            engine
+                .view_selection_text(right)
+                .map_or(true, |text| text.is_empty()),
+            "the right view has no selection"
+        );
+        assert_eq!(
+            client.view_generation(right),
+            Some(right_generation),
+            "selecting in one view never republishes the other"
+        );
+
+        engine.clear_view_selection(left).expect("clear");
+        assert_eq!(selected_cells(&client, left), 0, "the left view cleared");
+        assert_eq!(
+            client.view_generation(right),
+            Some(right_generation),
+            "clearing one view's selection never republishes the other"
+        );
+
+        // Activating the second window moves input there and only there.
+        let _ = cx.update_window(second.into(), |_, window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update_window(first.into(), |_, window, cx| {
+            assert!(!window.is_window_active());
+            left_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty());
+        cx.update_window(second.into(), |_, window, cx| {
+            assert_eq!(drag(&right_input, window, cx), Ok(true));
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Ok(KeyDisposition::Consumed)
+                );
+            });
+        })
+        .unwrap();
+        assert_eq!(keys(&client).len(), 1);
+        assert!(
+            selected_cells(&client, right) > 0,
+            "the right view selected"
+        );
+        assert_eq!(selected_cells(&client, left), 0, "the left view did not");
     }
 }

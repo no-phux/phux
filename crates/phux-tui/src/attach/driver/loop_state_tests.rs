@@ -3079,6 +3079,71 @@ async fn focusing_another_pane_never_clears_the_screen() {
     drop(server);
 }
 
+/// A wheel notch over a pane with history scrolls its viewport locally; no
+/// tile moved, so the classifier's chrome-only level would leave the pane
+/// showing the live tail. The batch must paint the history rows, without
+/// clearing the screen and without a forced whole-pane repaint.
+#[tokio::test(flavor = "current_thread")]
+async fn a_wheel_scroll_paints_the_history_rows_without_clearing() {
+    use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
+
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
+        .expect("shipped defaults parse");
+    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    state.viewport_dims = (80, 24);
+
+    let a = ResourceId::local(1);
+    let history: Vec<u8> = (0..60)
+        .flat_map(|n| format!("history-{n:02}\r\n").into_bytes())
+        .collect();
+    let (kernel, _effects, panes) =
+        crate::attach::pane_state::published_test_state(&[(&a, 80, 22, &history)]);
+    state.mirror.engine_kernel = kernel;
+    state.mirror.panes = panes;
+    state.mirror.workspace = ArrangementDoc::single(a.clone());
+    state.mirror.focused_resource = Some(a.clone());
+    state.layout_read_complete = true;
+    drop(frames_sent(&mut client, &mut server).await);
+
+    // Paint the live tail once so the renderer has a front to diff against.
+    let sidebar = state.sidebar();
+    state.repaint_view(&mut out, sidebar, RepaintLevel::Full);
+    let tail = String::from_utf8_lossy(&out).into_owned();
+    assert!(tail.contains("history-59"), "{tail:?}");
+    assert!(!tail.contains("history-10"), "{tail:?}");
+
+    out.clear();
+    let wheel_up = InputEvent::Mouse(MouseEvent {
+        action: MouseAction::Press,
+        button: MouseButton::Four,
+        mods: ModSet::empty(),
+        x: 40.0,
+        y: 8.0,
+    });
+    state
+        .dispatch_batch(&mut client, &mut out, sidebar, vec![wheel_up; 10])
+        .await
+        .expect("dispatch");
+
+    let painted = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        painted.contains("history-10"),
+        "ten notches back must show the scrolled-in rows: {painted:?}"
+    );
+    assert!(
+        !out.windows(4).any(|s| s == b"\x1b[2J"),
+        "a local scroll must not clear the screen: {painted:?}"
+    );
+    assert!(
+        frames_sent(&mut client, &mut server).await.is_empty(),
+        "a scroll the client claims sends the pane nothing"
+    );
+    drop(client);
+    drop(server);
+}
+
 /// ADR-0172: the one job arm toasts a result and, for a job that changed
 /// the session graph, asks for a fresh host inventory; a quiet finish shows
 /// and sends nothing.

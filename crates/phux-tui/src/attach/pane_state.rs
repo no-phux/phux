@@ -254,6 +254,7 @@ impl PaneSlot {
 /// The chrome label for one pane: its OSC title (no invented name) and its
 /// ADR-0035 attention. Agent records are not read here.
 pub(super) fn pane_label<'a>(
+    kernel: &AttachKernel,
     panes: &'a HashMap<ResourceId, PaneSlot>,
     id: &ResourceId,
 ) -> Option<crate::render::chrome::dividers::PaneLabel<'a>> {
@@ -268,7 +269,71 @@ pub(super) fn pane_label<'a>(
         host: key.host().map(phux_protocol::ids::SatelliteHost::as_str),
         unreachable: slot.satellite_down,
         origin: origin_badge(slot, Instant::now()),
+        scrolled_back: published_terminal(kernel, id).and_then(rows_scrolled_back),
     })
+}
+
+/// Rows between the viewport's bottom and the live tail, `None` while the
+/// viewport follows the tail (or at it).
+fn rows_scrolled_back(terminal: &GhosttyTerminal<'_, '_>) -> Option<u64> {
+    if terminal.viewport_active().unwrap_or(true) {
+        return None;
+    }
+    let bar = terminal.scrollbar().ok()?;
+    let rows = bar.total.saturating_sub(bar.offset.saturating_add(bar.len));
+    (rows > 0).then_some(rows)
+}
+
+/// A name [`crate::layout::ArrangementDoc::default_group_name`] handed out
+/// (a bare integer): it would read as a second, disagreeing index, so the
+/// tab prefers context.
+pub(in crate::attach) fn auto_named(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The last path component of `cwd`, `~` for the home directory, `None`
+/// for an empty path.
+pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
+    let trimmed = cwd.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if std::env::var_os("HOME").is_some_and(|home| home == trimmed) {
+        return Some("~".to_owned());
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .filter(|base| !base.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// What a window is called wherever the chrome names it (the tab bar, the
+/// tab picker): a user-given name as is; an auto-numbered one prefers
+/// context, from the focused pane's agent, its title, then its cwd.
+pub(in crate::attach) fn display_window_name(
+    name: &str,
+    focus: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    agent_meta: &HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
+) -> String {
+    if !auto_named(name) {
+        return name.to_owned();
+    }
+    let slot = focus.and_then(|fid| panes.get(fid));
+    focus
+        .and_then(|fid| agent_meta.get(fid))
+        .map(|record| record.name.clone())
+        .or_else(|| {
+            slot.map(|slot| slot.last_title.trim())
+                .filter(|title| !title.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            slot.and_then(|slot| slot.cwd.as_deref())
+                .and_then(cwd_basename)
+        })
+        .unwrap_or_else(|| name.to_owned())
 }
 
 /// The origin badge still inside its lifetime, dim after the bright interval.
@@ -670,7 +735,8 @@ mod tests {
         let started = Instant::now();
         slot.note_input_origin("ada".to_owned(), started);
         let mut panes = HashMap::from([(id.clone(), slot)]);
-        let label = pane_label(&panes, &id).expect("label");
+        let (kernel, _effects, _panes) = published_test_state(&[]);
+        let label = pane_label(&kernel, &panes, &id).expect("label");
         let origin = label.origin.expect("badge");
         assert_eq!(origin.text, "ada");
         assert!(!origin.dim);
@@ -680,7 +746,12 @@ mod tests {
                 .checked_sub(INPUT_ORIGIN_LIFE)
                 .expect("test clock"),
         });
-        assert!(pane_label(&panes, &id).expect("label").origin.is_none());
+        assert!(
+            pane_label(&kernel, &panes, &id)
+                .expect("label")
+                .origin
+                .is_none()
+        );
     }
 
     /// A republish at unchanged geometry must serve fresh rows through an
