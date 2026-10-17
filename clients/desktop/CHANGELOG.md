@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.26.0](https://github.com/no-phux/phux/compare/desktop-v0.25.1...desktop-v0.26.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** stage updates while running and swap after exit ([f81cd3d](https://github.com/no-phux/phux/commit/f81cd3dc9dc3fce430a4840fcc6445e0731b5e00))
+
 ## [0.25.1](https://github.com/no-phux/phux/compare/desktop-v0.25.0...desktop-v0.25.1) (2026-10-17)
 
 
