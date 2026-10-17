@@ -164,11 +164,7 @@ runs:
         # this stays in front of it.
         mbx gc --max-size 40GiB
 
-    # Dependency-only cache for the test build and uniffi lanes. The mbx
-    # objects entry for the test profile grew to 6.1 GB compressed / 27.8 GiB
-    # restored, and a pull request spent 6m 28s unpacking it (run
-    # 38503810705) to save about 2.5 minutes of compile: every code PR
-    # recompiles the workspace crates anyway. rust-cache keeps only
+    # Dependency-only cache for the uniffi lane and stress. rust-cache keeps only
     # third-party artifacts and build-script outputs, drops workspace crates
     # and incremental state before saving, and keys on rustc, Cargo.lock,
     # flake.lock, and every CARGO_* variable set here.

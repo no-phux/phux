@@ -33,9 +33,16 @@ unrelated crates. A `tests/`-only diff builds just that test. Pushes to
 (`scripts/ci/release_metadata.py`) skip compile lanes.
 `bash scripts/ci/check-classify-changes.sh` tests the routes.
 
-The required `ci` aggregate rejects failed or cancelled lanes. `test`,
-`test (integration)`, `e2e`, and `uniffi` are the test profile's lanes. Each
-keeps `--workspace`, so feature unification matches the whole pool.
+The required `ci` aggregate rejects failed or cancelled lanes. The test
+profile compiles once per run: `test build` runs `just test-archive`, which
+compiles the union of the unit halves and the e2e set into one nextest archive
+(about 410 MB, a one-day artifact). `test`, `test (integration)`, and `e2e`
+restore no build cache (`build-cache: none`); they download the archive and run
+`just test` with `PHUX_UNIT_PART=lib` or `integration`, or `just e2e`, with
+`PHUX_TEST_ARCHIVE` set. A `tests/`-only diff archives that test plus the e2e
+binaries when e2e runs. `uniffi` builds its own feature set. Every lane keeps
+`--workspace` and `TEST_FEATURES`, so feature unification and the rdeps
+filterset match the whole pool.
 
 ## Caches
 
@@ -43,19 +50,26 @@ The Actions cache is 10 GB per repository with LRU eviction, and a cache
 saved on `refs/pull/N/merge` restores only on that PR. So every cache saves on
 `main` pushes only, and pull requests restore without writing:
 
-- The check and icount lanes keep one mbx `objects` entry each
+- The check, test build, and icount lanes keep one mbx `objects` entry each
   (`.github/actions/setup-rust-lane`). The key is lane, `flake.lock`,
   `Cargo.lock`, and the UTC day. A new day restores the previous entry by
-  prefix and saves once. The store is collected before compiling, under a
-  40 GiB cap above the largest working set.
-- The test lanes keep a dependency-only `rust-cache` (`build-cache: deps`)
-  with `cache-on-failure`, and build with `CARGO_INCREMENTAL=0` and
-  `CARGO_PROFILE_DEV_DEBUG=0`. libghostty-vt-sys downloads a prebuilt engine
+  prefix and saves once; a failed main lane still exports when the exact key
+  was not restored. The store is collected before compiling, under a 40 GiB
+  cap above the largest working set.
+- `test build` sets `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`,
+  which keeps its store near 0.7 GB compressed (line tables pushed it to
+  6.1 GB and a 6m 28s unpack, run 38503810705). With the store a phux-tui
+  change compiles in about 3 minutes; a phux-protocol change still recompiles
+  every workspace crate.
+- `uniffi` keeps a dependency-only `rust-cache` (`build-cache: deps`) with
+  `cache-on-failure`. libghostty-vt-sys downloads a prebuilt engine
   ([SETUP](./SETUP.md)), so no lane compiles Zig for it.
 - Release builds cache the crate registry only, never `target/`.
 
 `prune-build-cache` keeps the newest entry per lane and per maintained
-prefix, deletes every `sccache/` object, and deletes retired prefixes.
+prefix, deletes every `sccache/` object, and deletes retired prefixes,
+including the old per-lane `v0-rust-phux-test-`,
+`v0-rust-phux-test-integration-`, and `v0-rust-phux-e2e-` dependency entries.
 `pr-janitor` deletes a closed PR's merge-ref caches.
 
 ## Validation reuse

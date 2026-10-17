@@ -116,7 +116,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | generated glyph table | `just font-check` | same recipe |
 | e2e lane coverage | `just e2e-lane-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
-| unit tests | `NEXTEST_PROFILE=ci just test`, split across the `test` and `test (integration)` jobs by `PHUX_UNIT_PART=lib`/`integration` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test` (both halves); `just test-cargo` if nextest is unavailable |
+| unit tests | `just test-archive` in the `test build` job compiles once; the `test` and `test (integration)` jobs run `NEXTEST_PROFILE=ci just test` from that archive (`PHUX_TEST_ARCHIVE`), split by `PHUX_UNIT_PART=lib`/`integration` (default features plus the empty `phux-server/measure`; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test` (both halves); `just test-cargo` if nextest is unavailable |
 | workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
@@ -124,7 +124,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |
-| fast e2e + perf gates | `just e2e` (`e2e` job) | `just e2e`, via `just ci-full` |
+| fast e2e + perf gates | `just e2e` (`e2e` job, from the `test build` archive) | `just e2e`, via `just ci-full` |
 | UniFFI binding | `just binding-uniffi-test` (`uniffi` job) | same, via `just ci` |
 | instruction counts | `perf-icount` job in `ci.yml` (`just perf-icount`) | `just perf-icount` inside `nix develop` on x86_64; see [Performance CI](./docs/performance-ci.md) |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |

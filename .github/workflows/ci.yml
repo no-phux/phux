@@ -1,8 +1,8 @@
 # Root validation: compile-free guards, independently routed Node integrations,
 # and the Rust lanes. check shares Clippy/rustdoc artifacts in its own target
 # directory; test build compiles the unit and e2e binaries once for the test
-# run jobs. check and perf-icount restore native compilations, build scripts,
-# and links from setup-rust-lane's mbx cache.
+# run jobs. check, test build, and perf-icount restore native compilations,
+# build scripts, and links from setup-rust-lane's mbx cache.
 # The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
@@ -193,12 +193,18 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
 
   # One compile of the test profile serves the unit pool and e2e. Each lane
-  # compiling its own targets on top of the dependency-only cache cost three
-  # runners about 11 minutes of workspace compile per code PR (run
-  # 38982580303: 4m 52s lib, 3m 38s integration, 2m 21s e2e, much of it the
-  # same crates). This job compiles the union once into a nextest archive; the
-  # run jobs download it and only execute. TEST_FEATURES keeps one feature set
-  # for every lane, so the classifier's rdeps filterset selects the same tests.
+  # compiling its own targets cost three runners about 11 minutes of
+  # workspace compile per code PR (run 38982580303: 4m 52s lib, 3m 38s
+  # integration, 2m 21s e2e, much of it the same crates). This job compiles
+  # the union once into a nextest archive; the run jobs download it and only
+  # execute. TEST_FEATURES keeps one feature set for every lane, so the
+  # classifier's rdeps filterset selects the same tests.
+  #
+  # The mbx objects store lets a PR recompile only the crates its diff
+  # reaches: a phux-tui change compiled in 2m 52s against 6m 40s from
+  # third-party artifacts alone (runs 38994317107, 38989373525). A
+  # phux-protocol change still recompiles every workspace crate. Without
+  # debuginfo or incremental state the store exports at about 0.7 GB.
   # Pushes build the full pool even when the classifier says skip; a
   # tests/-only diff (unit_mode=narrow) builds only the targets it touched,
   # plus the e2e set when e2e runs.
@@ -208,6 +214,13 @@ jobs:
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode != 'skip')
+    # Line tables serve only symbolized backtraces: panic locations come from
+    # #[track_caller], and symbol names stay in the unstripped test binaries.
+    # Incremental state is never reused by a fresh checkout. Both multiply the
+    # bytes compiled, linked, and cached.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust-lane
@@ -215,7 +228,6 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: test
-          build-cache: deps
       - name: build the test archive
         env:
           PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
@@ -229,19 +241,50 @@ jobs:
           ls -l "$PHUX_TEST_ARCHIVE"
           EOF
       # The archive is already zstd; zip compression would only cost time.
+      # One retry: run 38994951903 lost a finished build to a single
+      # CreateArtifact ECONNRESET.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload
+        continue-on-error: true
         with:
           name: phux-tests
           path: ${{ runner.temp }}/phux-tests.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.upload.outcome == 'failure'
+        with:
+          name: phux-tests
+          path: ${{ runner.temp }}/phux-tests.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+      - name: mbx stats
+        if: always()
+        run: mbx stats || true
       - name: lane signal
         if: always()
         env:
           PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
+      - name: leave disk for the mbx objects export
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: bash scripts/ci/mbx-export-headroom.sh
+      - name: export objects when the lane fails
+        id: mbx-fail-export
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true'
+        env:
+          PHUX_MBX_EXPORT_DIR: ${{ runner.temp }}/phux-mbx-objects
+        run: bash scripts/ci/mbx-export-failed-lane.sh "$PHUX_MBX_EXPORT_DIR"
+      - name: save objects when the lane fails
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' && steps.mbx-fail-export.outputs.exported == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phux-mbx-objects
+          key: ${{ steps.setup.outputs.cache-key }}
 
   test:
     name: test
@@ -532,10 +575,9 @@ jobs:
             done
           }
           keep_newest check linux-arm64-mbx-phux-check-
-          # The test build keeps one dependency-only rust-cache entry; the run
-          # jobs restore none.
-          drop_all test-mbx linux-arm64-mbx-phux-test-
-          keep_newest test-deps v0-rust-phux-test-Linux-
+          # The test build keeps one mbx entry; the run jobs restore none.
+          keep_newest test linux-arm64-mbx-phux-test-
+          drop_all test-deps v0-rust-phux-test-Linux-
           drop_all test-integration-deps v0-rust-phux-test-integration-Linux-
           drop_all e2e-deps v0-rust-phux-e2e-Linux-
           keep_newest uniffi-deps v0-rust-phux-uniffi-Linux-
