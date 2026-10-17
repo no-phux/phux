@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.94.1](https://github.com/no-phux/phux/compare/v0.94.0...v0.94.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **tui:** tee the sidebar rule into dividers and clear overlays on dismissal ([#1548](https://github.com/no-phux/phux/issues/1548)) ([8526377](https://github.com/no-phux/phux/commit/85263774de52777d33eebf15e40753691712d70b))
+
 ## [0.94.0](https://github.com/no-phux/phux/compare/v0.93.0...v0.94.0) (2026-10-17)
 
 
