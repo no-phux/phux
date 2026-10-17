@@ -742,6 +742,8 @@ impl super::SessionLoop {
             self.session_picker_dirty = true;
         }
         if let Some(toast) = done.toast {
+            // The result stands in for the job's running notice.
+            self.overlays.dismiss_passthrough_notice();
             self.overlays.push(Box::new(ToastOverlay::new(
                 toast.title,
                 toast.lines,

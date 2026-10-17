@@ -3238,12 +3238,29 @@ async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
     assert!(!state.overlays.is_active(), "a quiet finish shows nothing");
     assert!(frames_sent(&mut client, &mut server).await.is_empty());
 
+    // The job's running notice is up; the result takes its place.
+    state
+        .overlays
+        .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
+            "Organize",
+            vec!["Organizing… the result will appear here.".to_owned()],
+            &state.settings.theme,
+        )));
     let done = JobDone::toast(Toast::new("Organize", "2 panes moved")).refreshing_inventory();
     state
         .on_job_done(&mut client, &mut out, None, done)
         .await
         .unwrap();
     assert!(state.overlays.is_active(), "the result toasts");
+    assert_eq!(
+        state.overlays.depth(),
+        1,
+        "the result replaced the running notice instead of stacking on it"
+    );
+    assert!(
+        !state.overlays.top_is_passthrough(),
+        "the result holds the keyboard like any toast"
+    );
     assert!(state.session_picker_dirty && state.peers.chrome_dirty);
     let sent = frames_sent(&mut client, &mut server).await;
     assert!(
