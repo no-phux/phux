@@ -1068,6 +1068,100 @@ fn smooth_scroll_paints_the_row_below_the_viewport() {
     drop(client);
 }
 
+/// Scrolling history row by row moves the fringe with the viewport instead
+/// of shaping it again. Those moved rows must paint exactly what one long
+/// scroll, which shapes its fringe fresh, paints at the same position.
+fn stepped_history_scroll_paints_like_one_long_scroll() {
+    let mut payload = Vec::new();
+    for line in 0..10 {
+        payload
+            .extend_from_slice(format!("\x1b[3{}mline {line}\x1b[m\r\n", line % 7 + 1).as_bytes());
+    }
+    let (client, stepped_view) = publish(&payload);
+    let long_view = client.create_view(&terminal()).expect("second view");
+    let mut cx = gpu();
+    let open = |cx: &mut HeadlessAppContext, view| {
+        let in_view = Arc::clone(&client);
+        let window = cx
+            .open_window(size(px(480.), px(200.)), move |window, cx| {
+                cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+            })
+            .expect("offscreen window");
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("first draw");
+        window
+    };
+    let stepped = open(&mut cx, stepped_view);
+    let long = open(&mut cx, long_view);
+    let geometry = |cx: &mut HeadlessAppContext, window: gpui::WindowHandle<Terminal>| {
+        window
+            .update(cx, |terminal, _, _| terminal.painted())
+            .expect("painted")
+            .geometry
+    };
+    let at = geometry(&mut cx, stepped);
+    let reused = phux_desktop::perf::PREPARE_PATCHED.get();
+    for rows in [1., 1., 1.5] {
+        wheel_step(&mut cx, stepped, at, rows);
+    }
+    assert!(
+        phux_desktop::perf::PREPARE_PATCHED.get() >= reused + 3,
+        "each step patches the previous scene"
+    );
+    let at = geometry(&mut cx, long);
+    wheel_step(&mut cx, long, at, 3.5);
+    let painted = |cx: &mut HeadlessAppContext, window: gpui::WindowHandle<Terminal>| {
+        let painted = window
+            .update(cx, |terminal, _, _| terminal.painted())
+            .expect("painted");
+        let image = cx.capture_screenshot(window.into()).expect("pixels");
+        (painted, image)
+    };
+    let (stepped_paint, stepped_image) = painted(&mut cx, stepped);
+    let (long_paint, long_image) = painted(&mut cx, long);
+    let offset = |paint: &phux_desktop::terminal::PaintedFrame| {
+        paint.frame.as_ref().expect("frame").scrollbar.offset
+    };
+    assert_eq!(offset(&stepped_paint), offset(&long_paint));
+    assert_eq!(stepped_paint.shift, long_paint.shift);
+    assert_ne!(stepped_paint.shift, px(0.), "the fringe is in view");
+    assert!(
+        stepped_image.as_raw() == long_image.as_raw(),
+        "a moved fringe must paint like a freshly shaped one"
+    );
+    drop(cx);
+    drop(client);
+}
+
+/// One trackpad-sized wheel step over the pane's first cell, `rows` rows
+/// toward history, through the window's real event dispatch. The step's
+/// notify leaves the window dirty, and GPUI's test mode draws a dirty window
+/// when the update's effects flush, so the step includes its draw.
+fn wheel_step(
+    cx: &mut HeadlessAppContext,
+    window: gpui::WindowHandle<Terminal>,
+    geometry: phux_desktop::terminal::geometry::Geometry,
+    rows: f32,
+) {
+    let event = gpui::ScrollWheelEvent {
+        position: gpui::point(
+            geometry.bounds.origin.x + geometry.cell_width / 2.,
+            geometry.bounds.origin.y + geometry.cell_height / 2.,
+        ),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), geometry.cell_height * rows)),
+        ..Default::default()
+    };
+    cx.update_window(window.into(), |_, window, cx| {
+        window.dispatch_event(gpui::PlatformInput::ScrollWheel(event), cx);
+    })
+    .expect("wheel");
+}
+
+/// A trackpad gesture moves a fraction of a row per event, so most steps stay
+/// inside a row and some cross one. Three eighths is exact in binary, so the
+/// crossings, and the budgeted work, are the same on every platform.
+const WHEEL_ROWS: f32 = 0.375;
+
 /// An opt-in, in-process render benchmark. It reuses the pixel fixture's
 /// embedded runtime and main-thread GPUI renderer; screenshots are outside
 /// the timed path but prove that draws reach a real offscreen surface.
@@ -1128,6 +1222,13 @@ fn headless_perf() {
         draw();
     });
     drop(draw);
+    let geometry = window
+        .update(&mut cx, |terminal, _, _| terminal.painted())
+        .expect("painted")
+        .geometry;
+    bench_phase("wheel", FRAMES, |_| {
+        wheel_step(&mut cx, window, geometry, WHEEL_ROWS)
+    });
     let after = cx.capture_screenshot(window.into()).expect("final pixels");
     assert_ne!(
         before.as_raw(),
@@ -1197,6 +1298,14 @@ fn headless_perf_wide() {
         draw();
     });
     drop(draw);
+    drop(feed);
+    let geometry = window
+        .update(&mut cx, |terminal, _, _| terminal.painted())
+        .expect("painted")
+        .geometry;
+    bench_phase("wide_wheel", FRAMES, |_| {
+        wheel_step(&mut cx, window, geometry, WHEEL_ROWS)
+    });
     let after = cx.capture_screenshot(window.into()).expect("final pixels");
     assert_ne!(
         before.as_raw(),
@@ -1325,6 +1434,7 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
                 "project_grid": histogram("runtime.project_grid"),
                 "published": counter("runtime.publish"),
                 "buffer_fresh": counter("runtime.buffer_fresh"),
+                "owner_turns": histogram("runtime.request_wall")["count"],
             },
             "process": delta.process,
         })
@@ -1399,6 +1509,11 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::smooth_scroll_paints_the_row_below_the_viewport",
         smooth_scroll_paints_the_row_below_the_viewport,
+        false,
+    ),
+    (
+        "terminal::pixels::stepped_history_scroll_paints_like_one_long_scroll",
+        stepped_history_scroll_paints_like_one_long_scroll,
         false,
     ),
 ];

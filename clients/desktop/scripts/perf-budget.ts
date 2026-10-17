@@ -46,6 +46,18 @@ export const BUDGETS: Record<string, PhaseBudget> = {
   wide_cached: { counters: counters(64, 64, 0, 0, 0, 0), tickMeanMaxUs: 60_000 },
   wide_redraw: { counters: counters(64, 0, 0, 3840, 64, 1), tickMeanMaxUs: 600_000 },
   wide_scroll: { counters: counters(64, 0, 64, 64, 64, 0), tickMeanMaxUs: 200_000 },
+  // Three-eighths-row wheel steps through history: a step within a row reuses
+  // the scene, and a row crossing shapes only the row that entered (the row
+  // leaving becomes the fringe). A crossing takes three engine owner turns:
+  // admission, the scroll, and the painter's reacquire.
+  wheel: {
+    counters: { ...counters(128, 80, 48, 48, 48, 0), "runtime.owner_turns": 145 },
+    tickMeanMaxUs: 60_000,
+  },
+  wide_wheel: {
+    counters: { ...counters(64, 40, 24, 24, 24, 0), "runtime.owner_turns": 73 },
+    tickMeanMaxUs: 200_000,
+  },
 };
 
 function lookup(value: unknown, path: string): unknown {

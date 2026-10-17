@@ -162,6 +162,7 @@ function perfLine(phase: string, overrides: Record<string, unknown> = {}): strin
       project_grid: { count: 0 },
       published: value("runtime.published"),
       buffer_fresh: value("runtime.buffer_fresh"),
+      owner_turns: value("runtime.owner_turns"),
     },
     process: { max_rss_bytes: 80_000_000 },
     ...overrides,

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-16
+last-reviewed: 2026-10-17
 ---
 
 # Native terminal painter
@@ -73,7 +73,10 @@ padding below the grid. Changing only the fraction keeps the frame and its
 scene: a sub-row move is a paint, not a reshape or a runtime turn. The
 fringe is hidden while the shift is zero, and the live tail never has a
 fraction. Input hit-testing and the IME rectangle undo the same shift
-(`InputMetrics::shift`).
+(`InputMetrics::shift`). When both frames of a whole-row scroll carry a
+fringe, the fringe moves with the viewport: the row leaving the bottom
+becomes the new fringe and the old fringe can enter, each checked cell by
+cell like any kept row. A one-row move through history then shapes one row.
 
 A row's contiguous single-width cells are one shaped line on the cell grid,
 not one shape per cell or word. Spaces and blank cells between glyphs stay in
@@ -135,8 +138,9 @@ from GPUI's headless renderer (`HeadlessAppContext` and
 `current_headless_renderer`, behind GPUI `test-support`). They check glyph
 columns, faint ink and box drawing sharing a line with gaps, a wide
 character, the block cursor, selection, theme-palette remap against true
-color, and a sparse live-output repaint that leaves a neighboring row
-untouched. Linux needs a Vulkan adapter, hardware or
+color, a sparse live-output repaint that leaves a neighboring row
+untouched, and history scrolled row by row painting exactly like one long
+scroll to the same position. Linux needs a Vulkan adapter, hardware or
 lavapipe; macOS uses Metal. The on-screen smoke is still the packaged
 qualification run.
 
@@ -145,10 +149,12 @@ qualification run.
 `just desktop-perf-headless` runs the same main-thread GPUI pixel binary in
 benchmark mode. No CLI, server, socket, visible window, or production profile:
 an embedded runtime feeds an 80×24 terminal, and GPUI draws it offscreen.
-Three JSON lines report 128 cached redraws, one-row updates, and sustained
-full-width scrolling. Three more (`wide_*`) repeat cached redraws, whole-screen
-rewrites and scrolling on a 200×60 grid of faint, bold and coloured prose with
-box drawing. `tick_us` covers the in-process VT feed (for changed
+Four JSON lines report 128 cached redraws, one-row updates, sustained
+full-width scrolling, and wheel steps of three eighths of a row back through
+that history, dispatched as real wheel events. Four more (`wide_*`) repeat
+them on a 200×60 grid of faint, bold and coloured prose with box drawing,
+with whole-screen rewrites in place of one-row updates. `runtime.owner_turns`
+counts blocking engine owner requests. `tick_us` covers the in-process VT feed (for changed
 frames) plus the draw; `stages` separate acquisition, scene preparation,
 painting and presentation handoff. `scene` counts reused/patched scenes and
 shaped lines, and `process` carries CPU and peak RSS. A render count check and
