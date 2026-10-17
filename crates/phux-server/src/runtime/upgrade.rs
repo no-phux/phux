@@ -50,6 +50,11 @@ pub(super) enum UpgradeError {
     /// aborted before anything irreversible happens.
     #[error("new binary failed validation: {0}")]
     Validation(String),
+    /// The resumed image would start with `--hub` and fail to validate the
+    /// on-disk satellite registry after the irreversible exec, so the
+    /// upgrade is refused while the panes are still ours.
+    #[error("satellite registry would fail hub startup after upgrade: {0}")]
+    HubRegistry(String),
     /// A live pane actor did not return the handoff required to preserve it.
     #[error("pane {pane:?} did not provide an upgrade handoff: {reason}")]
     PaneHandoff {
@@ -268,6 +273,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         pane_senders,
         agent_session_senders,
     } = capture_upgrade_context(state)?;
+    refuse_invalid_hub_registry(state, &flags)?;
 
     let listener = dup_listener(listener_fd)?;
     let (panes, (agent_sessions, mut agent_seal)) = tokio::join!(
@@ -372,6 +378,24 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
 const fn served_flags(mut flags: RuntimeFlags, promoted_hub: bool) -> RuntimeFlags {
     flags.hub |= promoted_hub;
     flags
+}
+
+/// A `--hub` resume validates `[[satellites]]` at startup and exits on a
+/// malformed or duplicate entry, after exec has already consumed the running
+/// image. The live doorbell only warns and keeps its table, so check here,
+/// before anything irreversible. No source (an embedder supplied none) means
+/// nothing to re-read.
+fn refuse_invalid_hub_registry(
+    state: &SharedState,
+    flags: &RuntimeFlags,
+) -> Result<(), UpgradeError> {
+    if !flags.hub {
+        return Ok(());
+    }
+    let Some(source) = state.with(crate::state::ServerState::hub_satellite_source) else {
+        return Ok(());
+    };
+    source.validate().map_err(UpgradeError::HubRegistry)
 }
 
 /// Own the listener identity before awaiting actors. The duplicate, not a
@@ -948,8 +972,19 @@ mod tests {
         assert_eq!(args_as_strings(sub_second)[5..], ["--exit-after-idle", "1"]);
     }
 
-    /// A server the doorbell promoted into a hub re-execs with `--hub`; one
-    /// that never grew links keeps its builder flags.
+    fn satellite(name: &str, endpoint: &str) -> phux_config::SatelliteConfigEntry {
+        phux_config::SatelliteConfigEntry {
+            name: name.to_owned(),
+            endpoint: endpoint.to_owned(),
+            enabled: true,
+            token_file: None,
+            cert_fingerprint: None,
+        }
+    }
+
+    /// A server the doorbell promoted into a hub re-execs with `--hub`, even
+    /// after the registry is emptied again (an empty `--hub` registry starts
+    /// cleanly); one that never grew links keeps its builder flags.
     #[tokio::test(flavor = "current_thread")]
     async fn a_promoted_hub_resumes_with_hub() {
         let local = tokio::task::LocalSet::new();
@@ -965,10 +1000,68 @@ mod tests {
                     );
                     s.arm_hub_reload(None, cancel.clone());
                 });
-                let hub = |state: &SharedState| capture_upgrade_context(state).unwrap().flags.hub;
-                assert!(!hub(&state));
+                let served = |state: &SharedState| {
+                    args_as_strings(capture_upgrade_context(state).unwrap().flags)
+                };
+                assert!(!served(&state).contains(&"--hub".to_owned()));
                 assert!(state.with_mut(|s| s.hub_ensure_links(std::ffi::OsString::from("ssh"))));
-                assert!(hub(&state));
+                assert!(served(&state).contains(&"--hub".to_owned()));
+
+                let empty = crate::hub::HubTable::from_registry(&[]).unwrap();
+                state.with_mut(|s| s.hub_replace_table(empty, &state));
+                assert!(served(&state).contains(&"--hub".to_owned()));
+                assert!(crate::hub::resolve_hub_table(true, &[]).is_ok());
+                cancel.cancel();
+            })
+            .await;
+    }
+
+    /// A promoted hub whose on-disk registry no longer validates refuses the
+    /// upgrade before exec, instead of resuming into a `--hub` startup that
+    /// exits and takes the panes with it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let registry =
+                    std::sync::Arc::new(std::sync::Mutex::new(vec![satellite("box", "ssh://box")]));
+                let read = std::sync::Arc::clone(&registry);
+                let source =
+                    crate::hub::SatelliteSource::new(move || Ok(read.lock().unwrap().clone()));
+                let state = SharedState::new();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let listener = tempfile::tempfile().unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                state.with_mut(|s| {
+                    s.set_upgrade_context(
+                        listener.as_raw_fd(),
+                        dir.path().join("phux.sock"),
+                        RuntimeFlags {
+                            upgrade_source_exe: Some(dir.path().join("missing-replacement")),
+                            ..RuntimeFlags::default()
+                        },
+                    );
+                    s.arm_hub_reload(Some(source), cancel.clone());
+                });
+                crate::hub::reload_satellites(&state);
+                assert!(state.with(crate::state::ServerState::hub_has_links));
+
+                registry.lock().unwrap().extend([
+                    satellite("gopher", "gopher://box"),
+                    satellite("box", "ssh://b"),
+                ]);
+                let Err(UpgradeError::HubRegistry(reason)) = prepare_upgrade(&state).await else {
+                    panic!("an invalid registry must refuse the upgrade");
+                };
+                assert!(!reason.is_empty());
+
+                // A valid registry gets past the check to the next stage.
+                registry.lock().unwrap().truncate(1);
+                assert!(matches!(
+                    prepare_upgrade(&state).await,
+                    Err(UpgradeError::Io(_))
+                ));
                 cancel.cancel();
             })
             .await;
