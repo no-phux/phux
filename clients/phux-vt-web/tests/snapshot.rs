@@ -3,7 +3,8 @@
 //! `fixtures/server-snapshot-v1.bin` is captured by phux-server's production
 //! prefix and leased-history paths (`native_state` test
 //! `browser_snapshot_fixture_is_the_current_server_capture`, which fails when
-//! the committed bytes drift from the server's output).
+//! the committed transcript no longer decodes to the terminal the server
+//! captures now; its bytes and page splits vary with the encoding host).
 
 use phux_vt_web::{NativeCodecError, NativeDecoder, Terminal, Vt};
 use wasm_bindgen_test::wasm_bindgen_test;
