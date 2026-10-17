@@ -31,6 +31,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.27.3](https://github.com/no-phux/phux/compare/desktop-v0.27.2...desktop-v0.27.3) (2026-10-17)
+
+
+### Bug Fixes
+
+* **desktop:** repaint the pane after find selects or clears a match ([caff54a](https://github.com/no-phux/phux/commit/caff54a737a6eb4dfe48bbfafc6e5d9ed46ffb62))
+* **desktop:** repaint the terminal after a local scroll or selection ([818c54c](https://github.com/no-phux/phux/commit/818c54c13420355b3ad4aa18a9fdc28ca48c6f04))
+
 ## [0.27.2](https://github.com/no-phux/phux/compare/desktop-v0.27.1...desktop-v0.27.2) (2026-10-17)
 
 
