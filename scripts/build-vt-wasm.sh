@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# build-vt-wasm.sh — build the checkpoint-capable standalone libghostty-vt WASM
-# module and vendor it into the browser engine adapter.
+# build-vt-wasm.sh — build the standalone libghostty-vt WASM module and vendor
+# it into the browser engine adapter.
 #
-# The browser instantiates the immutable protocol-0.7 checkpoint-v2 engine as a
-# second WASM module. It imports env.log plus ghostty.host_entropy_fill; the
-# Rust adapter supplies secure browser entropy and probes codec identity,
-# version, features, and limits before advertising NativeState.
+# The browser instantiates the engine as a second WASM module with no imports.
+# The source is the official libghostty-vt C API (the GHOSTSNP snapshot codec
+# the server speaks) plus one fork commit that makes terminal identity
+# wasm32-safe; the browser does not bind the snapshot decoder yet, so it
+# advertises synthesized VT only.
 #
 # Requires Node, plus the official Zig release binary, which this script
 # installs itself with scripts/install-zig.sh (digest-verified against
@@ -29,8 +30,8 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 source "$repo/scripts/lib/dev-toolchain.sh"
-revision=392baed9cbf0f572d551c4b3e0c4f5c40bcca054
-archive_sha256=64198f7469a0d3d79455c0f8434ae1fbb50482dac69f82f1d8e08f4d6b5e6ea5
+revision=790017b92360bf076ce6d5a62e6c7984b922f96b
+archive_sha256=9968e344c3910aa6fbaa72398c40dc4f3a6d4eaa4e9b8eb5f8109f7cc106c21b
 mode="${1:-build}"
 [[ $# -le 1 && ( "$mode" = build || "$mode" = --check ) ]] || {
   echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;
@@ -54,7 +55,7 @@ fi
 [[ -f "$GHOSTTY_SRC/build.zig" ]] || { echo "ghostty source missing: $GHOSTTY_SRC" >&2; exit 1; }
 GHOSTTY_SRC="$(cd "$GHOSTTY_SRC" && pwd)"
 
-# Build, normalize, and ABI-test one engine from fresh caches into
+# Build, normalize, ABI-test, and smoke one engine from fresh caches into
 # $scratch/out-N/bin/ghostty-vt.wasm. Only fetched packages carry over.
 rebuild() {
   local out="$scratch/out-$1" global="$scratch/zig-global-$1"
@@ -70,7 +71,8 @@ rebuild() {
       --cache-dir "$scratch/zig-cache-$1" --global-cache-dir "$global" \
       --prefix "$out" )
   node "$repo/scripts/prepare-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
-  ( cd "$GHOSTTY_SRC" && node test/lib_vt_snapshot_incremental_wasm.mjs "$out/bin/ghostty-vt.wasm" )
+  node "$GHOSTTY_SRC/test/wasm-alloc.mjs" "$out/bin/ghostty-vt.wasm"
+  node "$repo/scripts/smoke-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
 }
 
 dest="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
