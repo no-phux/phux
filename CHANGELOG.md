@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.100.0](https://github.com/no-phux/phux/compare/v0.99.0...v0.100.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** render on gpui-fast 0.1.9 with GPUI Kit 0.7.3 ([#1589](https://github.com/no-phux/phux/issues/1589)) ([3f22f89](https://github.com/no-phux/phux/commit/3f22f8913f964d1f9015955767680090d3405ecd))
+
 ## [0.99.0](https://github.com/no-phux/phux/compare/v0.98.1...v0.99.0) (2026-10-17)
 
 
