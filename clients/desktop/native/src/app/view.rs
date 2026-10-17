@@ -59,6 +59,8 @@ const SLIM_BAR: f32 = 30.;
 const FULL_BAR: f32 = 42.;
 /// The narrowest grab area a split keeps when its painted gap is thinner.
 const SPLIT_GRAB: f32 = 8.;
+/// The pane actions menu, by catalog id; a divider sets `close` apart.
+const PANE_MENU: [&str; 4] = ["split-right", "split-down", "view", "close"];
 
 /// How much of the full titlebar's controls fit a bar `titlebar` points
 /// tall: 0 in a slim strip, 1 in the full bar.
@@ -1002,6 +1004,21 @@ mod menu_tests {
         assert_eq!(titlebar_lead(false, false, 248.), MENU_RAIL);
         assert!(titlebar_lead(false, true, 248.) > TRAFFIC_LIGHTS);
     }
+
+    #[test]
+    fn pane_and_session_menus_use_palette_titles() {
+        let titles: Vec<_> = PANE_MENU
+            .into_iter()
+            .map(super::super::actions::title)
+            .collect();
+        assert_eq!(
+            titles,
+            ["Split Right", "Split Down", "Mirror Pane", "Close Pane"]
+        );
+        for id in ["select-session-work", "rename-session", "kill-session"] {
+            assert!(!super::super::actions::title(id).is_empty());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1267,31 +1284,37 @@ fn session_block(
         let (rename_name, kill_name) = (session_name.clone(), session_name.clone());
         let rename_target = rename_target.clone();
         menu.when(organizing, |menu| {
-            menu.item(PopupMenuItem::new("Select All").on_click(move |_, _, cx| {
-                let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
-            }))
+            menu.item(
+                PopupMenuItem::new(super::actions::title("select-session-work")).on_click(
+                    move |_, _, cx| {
+                        let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
+                    },
+                ),
+            )
         })
         .item(
-            PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
-                let current = rename_name.clone();
-                let _ = rename.update(cx, |desk, cx| {
-                    desk.open_modal(
-                        Modal::Session {
-                            create: false,
-                            current,
-                            target: rename_target.clone(),
-                        },
-                        window,
-                        cx,
-                    )
-                });
-            }),
+            PopupMenuItem::new(super::actions::title("rename-session")).on_click(
+                move |_, window, cx| {
+                    let current = rename_name.clone();
+                    let _ = rename.update(cx, |desk, cx| {
+                        desk.open_modal(
+                            Modal::Session {
+                                create: false,
+                                current,
+                                target: rename_target.clone(),
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                },
+            ),
         )
         .when_some(intake, |menu, key| {
             let organized = handle.clone();
             let intake_name = session_name.clone();
             menu.item(
-                PopupMenuItem::new("Mark organized").on_click(move |_, _, cx| {
+                PopupMenuItem::new("Mark Organized").on_click(move |_, _, cx| {
                     let name = intake_name.clone();
                     let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
                 }),
@@ -1299,12 +1322,14 @@ fn session_block(
         })
         .when(!designated, |menu| {
             menu.item(
-                PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
-                    let name = kill_name.clone();
-                    let _ = kill.update(cx, |desk, cx| {
-                        desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
-                    });
-                }),
+                PopupMenuItem::new(super::actions::title("kill-session")).on_click(
+                    move |_, window, cx| {
+                        let name = kill_name.clone();
+                        let _ = kill.update(cx, |desk, cx| {
+                            desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
+                        });
+                    },
+                ),
             )
         })
     };
@@ -2315,24 +2340,21 @@ fn pane_controls(
                         "Pane actions",
                     )
                     .dropdown_menu(move |mut menu, _, _| {
-                        for (command, label) in [
-                            ("split-right", "Split right"),
-                            ("split-down", "Split down"),
-                            ("view", "Mirror pane"),
-                            ("close", "Close pane"),
-                        ] {
+                        for command in PANE_MENU {
                             let handle = handle.clone();
                             let placement = placement.clone();
                             if command == "close" {
                                 menu = menu.separator();
                             }
-                            menu = menu.item(PopupMenuItem::new(label).on_click(
-                                move |_, window, cx| {
-                                    let _ = handle.update(cx, |desk, cx| {
-                                        on_pane(placement.clone(), command)(desk, window, cx)
-                                    });
-                                },
-                            ));
+                            menu = menu.item(
+                                PopupMenuItem::new(super::actions::title(command)).on_click(
+                                    move |_, window, cx| {
+                                        let _ = handle.update(cx, |desk, cx| {
+                                            on_pane(placement.clone(), command)(desk, window, cx)
+                                        });
+                                    },
+                                ),
+                            );
                         }
                         menu
                     })

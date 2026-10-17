@@ -17,3 +17,24 @@ impl Run {
         Self { id: id.into() }
     }
 }
+
+/// The catalogued command `id`, if any.
+#[must_use]
+pub fn builtin(id: &str) -> Option<&'static crate::settings::CommandSpec> {
+    crate::settings::builtin_commands()
+        .iter()
+        .find(|command| command.id == id)
+}
+
+/// The catalog title for command `id`, so every menu names a command the way
+/// the palette does.
+///
+/// # Panics
+///
+/// When `id` is not catalogued; the menu tests resolve every id menus name.
+#[must_use]
+pub fn title(id: &str) -> &'static str {
+    builtin(id)
+        .map(|command| command.title)
+        .unwrap_or_else(|| panic!("{id} is not a catalogued command"))
+}
