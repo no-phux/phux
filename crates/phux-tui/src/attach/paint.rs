@@ -369,6 +369,75 @@ pub(super) fn paint_panes_in_place<W: super::RenderSink>(
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
+/// Repaint each visible pane's dirty rows in place, then the chrome: what
+/// `RepaintLevel::Rows` drains to.
+///
+/// No `ED2`, no forced pane paint, and no front invalidation, so a pane whose
+/// rows are clean emits nothing. For a batch that moved a pane's content
+/// under the client's own hand (a wheel or copy-mode scroll of its viewport)
+/// at unchanged tiles: libghostty dirties the viewport's rows, and nothing
+/// else paints them, since no pane output follows a local scroll. The focused
+/// pane (the floating overlay's pane, when one is open) paints last so the
+/// chrome tail restores its cursor.
+pub(super) fn paint_pane_rows_in_place<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let viewport_dims = chrome.viewport;
+    let _paint = tracing::debug_span!(
+        "paint_pane_rows_in_place",
+        cols = viewport_dims.0,
+        rows = viewport_dims.1,
+    )
+    .entered();
+    let ContentLayout { rect: content, .. } = chrome.content_layout();
+    let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
+    let mut paint =
+        |id: &ResourceId, rect: crate::layout::Rect, panes: &mut HashMap<ResourceId, PaneSlot>| {
+            if let (Some(slot), Some(walk)) = (panes.get_mut(id), published_replica(kernel, id)) {
+                let mirror = mirror_dims(walk.terminal, rect);
+                let _ = slot.renderer.render_at_letterboxed(
+                    walk,
+                    &mut block,
+                    (rect.x, rect.y),
+                    (rect.w, rect.h),
+                    mirror,
+                    false,
+                );
+            }
+        };
+    for (id, rect) in &multi.rects {
+        if Some(id) != focused_resource {
+            paint(id, *rect, panes);
+        }
+    }
+    if let Some(fid) = focused_resource {
+        let rect = multi
+            .rects
+            .get(fid)
+            .copied()
+            .unwrap_or_else(|| super::floating::untiled_rect(panes, fid, content));
+        paint(fid, rect, panes);
+    }
+    let (painted, composed) =
+        paint_chrome_in_place_into(&mut block, layout_state, panes, focused_resource, chrome);
+    if composed && block.end().is_ok() {
+        return painted;
+    }
+    // The panes recorded cells the terminal may never have received, and
+    // their dirty bits are already cleared.
+    super::pane_state::invalidate_all_fronts(panes);
+    if let Some(painter) = chrome.status_bar.as_deref_mut() {
+        painter.invalidate();
+    }
+    StatusBarPaint::NotPublished
+}
+
 /// The empty state's title line.
 pub(super) const EMPTY_SESSION_TITLE: &str = "Empty session";
 /// The empty state's explanation line.

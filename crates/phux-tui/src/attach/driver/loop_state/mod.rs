@@ -46,7 +46,7 @@ pub(super) use crate::attach::onboarding::{AttachClaim, AttachMoment};
 pub(super) use crate::attach::outcome::{AttachEnd, AttachError};
 pub(super) use crate::attach::paint::{
     SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place, paint_full_frame,
-    paint_panes_in_place, sidebar_reservation,
+    paint_pane_rows_in_place, paint_panes_in_place, sidebar_reservation,
 };
 pub(super) use crate::attach::pane_state::{
     AttentionNavigation, VcsIndex, reanchor_predict_to_pane,

@@ -18,6 +18,12 @@ pub(super) enum RepaintLevel {
     /// In-place chrome only (sidebar strip + status bar): no `ED2`, no pane
     /// interior, and unchanged painters emit nothing.
     Chrome,
+    /// Each visible pane's dirty rows in place, then chrome: no `ED2`, no
+    /// forced pane paint, so a pane whose rows are clean emits nothing. Used
+    /// when the tiles are unchanged but a pane's content moved under the
+    /// client's own hand (a wheel or copy-mode scroll of its viewport), which
+    /// no pane output will ever paint.
+    Rows,
     /// Every visible pane re-rendered in place, then chrome: no `ED2`, so the
     /// view never flashes blank on a terminal that ignores DEC 2026. Used for
     /// a view swap whose tile rectangles are unchanged (switching between
