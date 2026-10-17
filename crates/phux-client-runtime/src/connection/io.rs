@@ -248,8 +248,11 @@ impl Io {
     pub(crate) fn try_read_frames(&mut self) -> Result<Vec<Bytes>, LinkError> {
         match self {
             Self::Stream {
-                reader, pending, ..
-            } => try_read_stream_frames(reader, pending),
+                reader,
+                pending,
+                quic,
+                ..
+            } => try_read_stream_frames(reader, pending, quic.as_ref()),
             Self::Ws {
                 reader,
                 deferred_error,
@@ -433,7 +436,10 @@ async fn read_stream_frames(
         if !frames.is_empty() {
             return Ok(Some(frames));
         }
-        let read = reader.read_buf(pending).await.map_err(LinkError::Read)?;
+        let read = reader
+            .read_buf(pending)
+            .await
+            .map_err(|error| read_error(error, quic))?;
         if read != 0 {
             continue;
         }
@@ -450,6 +456,7 @@ async fn read_stream_frames(
 fn try_read_stream_frames(
     reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
     pending: &mut BytesMut,
+    quic: Option<&QuicLink>,
 ) -> Result<Vec<Bytes>, LinkError> {
     let frames = take_complete_frames(pending)?;
     if !frames.is_empty() {
@@ -458,7 +465,21 @@ fn try_read_stream_frames(
     match reader.read_buf(pending).now_or_never() {
         None | Some(Ok(0)) => Ok(Vec::new()),
         Some(Ok(_)) => take_complete_frames(pending),
-        Some(Err(error)) => Err(LinkError::Read(error)),
+        Some(Err(error)) => Err(read_error(error, quic)),
+    }
+}
+
+/// A failed read. A QUIC stream reads a connection close as a bare
+/// "connection lost"; when that close was the server refusing the bearer
+/// token, report the refusal, which the driver does not redial and words as
+/// "re-pair", instead.
+fn read_error(error: std::io::Error, quic: Option<&QuicLink>) -> LinkError {
+    match quic
+        .and_then(|link| link.connection.close_reason())
+        .map(|reason| phux_dial::quic::close_error(&reason))
+    {
+        Some(refused @ DialError::AuthRefused(_)) => LinkError::Closed(refused),
+        _ => LinkError::Read(error),
     }
 }
 
