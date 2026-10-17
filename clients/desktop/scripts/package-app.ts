@@ -115,7 +115,10 @@ export function infoPlist(
 `;
 }
 
-/** Fails when any shipped crate declares no license. */
+/**
+ * Fails when any shipped crate declares no license, or ships no license text
+ * and offers no license whose canonical text is in packaging/licenses.
+ */
 function thirdPartyNotices(): string {
   const metadata = run([
     "cargo",
