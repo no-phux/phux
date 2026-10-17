@@ -21,7 +21,7 @@ normative; consumer docs describe user-facing behavior.
 | [resource-atlas.html](./resource-atlas.html) | Standalone interactive concept: generalized substrate, resource-kind slots, and federation; proposed extensions are marked, not shipped capabilities |
 | [phux-and-herdr.md](./phux-and-herdr.md) | Stable system-shape comparison: application projections versus a peer-consumer resource wire |
 | [process-model.md](./process-model.md) | Per-user server, single process, current-thread runtime; supervision (ADR-0003, ADR-0014) |
-| [resource-providers.md](./resource-providers.md) | Non-terminal resources: provider declarations and activations, the `FEED` kind, health, grants, and consumers (ADR-0177, Proposed). Designed, not built |
+| [declared-producers.md](./declared-producers.md) | Non-terminal resources: declared producers and their activations, the `FEED` kind, health, the producers session, grants, and consumers (ADR-0177, Proposed). Designed, not built |
 | [usage-collector.md](./usage-collector.md) | Optional usage collector: supervision, Claude Code source, delivery, budgets (ADR-0166). Designed, not built |
 | [threading.md](./threading.md) | `!Send`/`!Sync` constraints, one LocalSet task per resource engine, the std mutex discipline |
 | [client-runtime.md](./client-runtime.md) | The one layer below every client binding (ADR-0133): sans-IO control plane, engine owner thread, published grid frames, reconnecting driver |
