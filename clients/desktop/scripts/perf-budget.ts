@@ -58,6 +58,14 @@ export const BUDGETS: Record<string, PhaseBudget> = {
     counters: { ...counters(64, 40, 24, 24, 24, 0), "runtime.owner_turns": 73 },
     tickMeanMaxUs: 200_000,
   },
+  // Whole-window phases draw the real desk (titlebar, sidebar, tab strip,
+  // status bar, one terminal pane). Chrome work has no exact counter, so the
+  // three chrome-only phases budget their frame count and a time ceiling;
+  // the stream phase keeps the terminal's exact scroll work.
+  window_idle: { counters: { frames: 128 }, tickMeanMaxUs: 200_000 },
+  window_agents: { counters: { frames: 128 }, tickMeanMaxUs: 300_000 },
+  window_hover: { counters: { frames: 128 }, tickMeanMaxUs: 200_000 },
+  window_stream: { counters: counters(128, 0, 128, 128, 128, 1), tickMeanMaxUs: 200_000 },
 };
 
 function lookup(value: unknown, path: string): unknown {

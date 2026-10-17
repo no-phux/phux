@@ -39,6 +39,8 @@ use phux_protocol::{
 
 #[path = "support/hub.rs"]
 mod hub;
+#[path = "support/window_perf.rs"]
+mod window_perf;
 
 const BACKGROUND: [u8; 3] = [0x10, 0x14, 0x18];
 const FOREGROUND: [u8; 3] = [0xf4, 0xf4, 0xf4];
@@ -1238,6 +1240,9 @@ fn headless_perf() {
     drop(cx);
     drop(client);
     headless_perf_wide();
+    window_perf::headless_perf_window(|name, frames, paints, tick| {
+        bench_phase_with(name, frames, paints, tick);
+    });
 }
 
 /// A 200x60 terminal of mixed styling: faint and bold prose, colour runs,
@@ -1351,6 +1356,13 @@ fn wide_line(seed: usize, cols: u16) -> String {
 }
 
 fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
+    bench_phase_with(name, frames, true, &mut tick);
+}
+
+/// Time `frames` ticks and print one JSON line. `paints` asserts every tick
+/// painted the terminal; whole-window phases whose terminal is idle report
+/// the paint count instead.
+fn bench_phase_with(name: &str, frames: usize, paints: bool, tick: &mut dyn FnMut(usize)) {
     let before = phux_perf::snapshot(
         "desktop",
         phux_desktop::perf::TABLE,
@@ -1381,11 +1393,13 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
     )
     .delta(&before);
     let renders = delta.metric("desktop.render").expect("render counter");
-    assert_eq!(
-        renders.value,
-        phux_perf::MetricValue::Counter(frames as u64),
-        "{name}: every measured tick must paint"
-    );
+    if paints {
+        assert_eq!(
+            renders.value,
+            phux_perf::MetricValue::Counter(frames as u64),
+            "{name}: every measured tick must paint"
+        );
+    }
     let histogram = |name: &str| match &delta
         .metric(name)
         .or_else(|| runtime.metric(name))
@@ -1426,6 +1440,7 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
                 "present": histogram("desktop.present"),
             },
             "scene": {
+                "terminal_renders": counter("desktop.render"),
                 "reused": counter("desktop.prepare_reused"),
                 "patched": counter("desktop.prepare_patched"),
                 "shaped_lines": counter("desktop.shaped"),

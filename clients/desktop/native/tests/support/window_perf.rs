@@ -1,0 +1,340 @@
+//! Whole-window headless benchmark: the real `Desk` root (titlebar, sidebar
+//! with sessions and agent rows, tab strip, status bar, and one live terminal
+//! pane) drawn through GPUI's headless renderer.
+//!
+//! No daemon. [`DeterministicDial`] routes the window's own dial to an
+//! embedded runtime, and this file plays the server by feeding that client
+//! the handshake, a multi-session snapshot, and one terminal bootstrap. Each
+//! tick is a full `Window::draw`, so the timing covers layout, prepaint and
+//! paint of every element the window shows, not only the terminal painter.
+
+use std::sync::Arc;
+
+use gpui::{Entity, HeadlessAppContext, Modifiers, MouseMoveEvent, point, px};
+use phux_client_runtime::Client;
+use phux_desktop::app::{AppOptions, Desk};
+use phux_desktop::connection::{AgentAttention, AgentInfo, AgentState, DeterministicDial};
+use phux_protocol::{
+    PROTOCOL_VERSION, ResourceId,
+    caps::{
+        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+        ServerFeature, ServerFeatureSet,
+    },
+    ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+    wire::{
+        frame::FrameKind,
+        info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
+    },
+};
+
+const FRAMES: usize = 128;
+const COLS: u16 = 120;
+const ROWS: u16 = 40;
+/// Sessions in the sidebar, each with this many terminals.
+const SESSIONS: &[&str] = &["bench", "api", "web", "infra", "notes"];
+const TERMINALS_PER_SESSION: u32 = 3;
+const FILL: &str = "window workload window workload window workload window workload window ";
+
+fn resource(session: usize, index: u32) -> ResourceId {
+    ResourceId::local(session as u32 * 16 + index + 1)
+}
+
+/// The streamed terminal: the first terminal of the home session.
+fn live() -> ResourceId {
+    resource(0, 0)
+}
+
+fn snapshot() -> SessionSnapshot {
+    let mut sessions = Vec::new();
+    let mut windows = Vec::new();
+    let mut resources = Vec::new();
+    for (index, name) in SESSIONS.iter().enumerate() {
+        let session = SessionId::new(index as u32 + 1);
+        let window = WindowId::new(index as u32 + 1);
+        sessions.push(SessionInfo::new(session, *name));
+        windows.push(
+            WindowInfo::new(window, session, "shell")
+                .with_active_resource(Some(resource(index, 0))),
+        );
+        for terminal in 0..TERMINALS_PER_SESSION {
+            resources.push(
+                ResourceInfo::new(resource(index, terminal), window, COLS, ROWS)
+                    .with_title(Some(format!("{name} {terminal}: cargo build")))
+                    .with_cwd(Some(format!("/work/{name}"))),
+            );
+        }
+    }
+    SessionSnapshot::new(SessionId::new(1), WindowId::new(1), live())
+        .with_sessions(sessions)
+        .with_windows(windows)
+        .with_resources(resources)
+}
+
+/// Play the server: handshake, attach the home session, bootstrap the live
+/// terminal. Mirrors `publish_at`, but on the window's own client.
+fn serve(client: &Client) {
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+            server_id: vec![2; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .expect("hello");
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .expect("attach request");
+    let payload = (0..ROWS)
+        .map(|row| format!("{row:02} {FILL}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    client
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot: snapshot(),
+            initial_client_id: ClientId::new(1),
+        })
+        .expect("attached");
+    // Attach readiness waits on every terminal of the home session. Each gets
+    // its own stream; the live one is stream 1.
+    for terminal in 0..TERMINALS_PER_SESSION {
+        let terminal_id = resource(0, terminal);
+        let stream_id = StreamId::new(u64::from(terminal) + 1).unwrap();
+        let bootstrap_id = BootstrapId::new(u64::from(terminal) + 1).unwrap();
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: COLS,
+                rows: ROWS,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: payload.clone().into_bytes().into(),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ] {
+            client.feed(frame).expect("scripted bootstrap");
+        }
+    }
+    client
+        .feed(FrameKind::AttachReady { attach_id })
+        .expect("attach ready");
+    // An embedded feed queues events without waking; a transport driver
+    // wakes the listener after each read, and so does this scripted server.
+    client.wake();
+    let _ = client.take_outbound();
+}
+
+fn agent(index: usize, tick: usize) -> AgentInfo {
+    const STATES: [AgentState; 4] = [
+        AgentState::Blocked,
+        AgentState::Working,
+        AgentState::Done,
+        AgentState::Idle,
+    ];
+    AgentInfo {
+        name: format!("agent-{index}"),
+        kind: Some("claude".to_owned()),
+        state: STATES[(index + tick) % STATES.len()],
+        attention: if (index + tick).is_multiple_of(3) {
+            AgentAttention::High
+        } else {
+            AgentAttention::Normal
+        },
+        changed_at_ms: 1_700_000_000_000 + tick as u64,
+    }
+}
+
+/// Every terminal outside the live one carries an agent badge; the blocked
+/// and finished ones list under "Needs you".
+fn set_agents(desk: &mut Desk, tick: usize) {
+    let Some(link) = desk.link.as_mut() else {
+        return;
+    };
+    for session in 0..SESSIONS.len() {
+        for terminal in 0..TERMINALS_PER_SESSION {
+            let id = resource(session, terminal);
+            if id != live() {
+                let index = session * TERMINALS_PER_SESSION as usize + terminal as usize;
+                link.connection.agents.insert(id, agent(index, tick));
+            }
+        }
+    }
+}
+
+fn settle(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .expect("settle draw");
+    }
+}
+
+pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(usize))) {
+    let _dial = DeterministicDial::arm();
+    let platform = gpui_platform::current_platform(true);
+    let mut cx = HeadlessAppContext::with_platform(
+        platform.text_system(),
+        Arc::new(phux_desktop::assets::Assets),
+        gpui_platform::current_headless_renderer,
+    );
+    let root = std::env::temp_dir().join(format!("phux-window-perf-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut prefs = phux_desktop::settings::default_display();
+    prefs.ghostty_keys = false;
+    prefs.sidebar_visible = true;
+    let layout = phux_desktop::workspace::persist::save_layout("", &[], &prefs, None);
+    std::fs::write(
+        root.join("layout.json"),
+        serde_json::to_vec(&phux_desktop::workspace::persist::layout_value(&layout)).unwrap(),
+    )
+    .unwrap();
+    let handle = cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        phux_desktop::app::open(
+            AppOptions {
+                socket: root.join("no-server.sock"),
+                session: SESSIONS[0].to_owned(),
+                phux: root.join("not-installed"),
+                layout_path: root.join("layout.json"),
+                fresh: false,
+                initial_terminal: None,
+                quick: false,
+                dev_telemetry: false,
+                startup_error: None,
+            },
+            cx,
+        )
+        .expect("desk window")
+    });
+    let window: gpui::AnyWindowHandle = handle.into();
+    let desk: Entity<Desk> = handle
+        .update(&mut cx, |root, _, _| {
+            root.view().clone().downcast::<Desk>().unwrap()
+        })
+        .unwrap();
+    let client = desk.read_with(&cx, |desk, _| {
+        Arc::clone(&desk.link.as_ref().expect("embedded link").connection.client)
+    });
+    serve(&client);
+    cx.update(|cx| {
+        desk.update(cx, |desk, cx| {
+            set_agents(desk, 0);
+            cx.notify();
+        })
+    });
+    settle(&mut cx, window);
+    let before = cx
+        .capture_screenshot(window)
+        .expect("initial window pixels");
+
+    let draw = |cx: &mut HeadlessAppContext| {
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+    };
+
+    bench("window_idle", FRAMES, false, &mut |_| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        draw(&mut cx);
+    });
+
+    bench("window_agents", FRAMES, false, &mut |index| {
+        cx.update(|cx| {
+            desk.update(cx, |desk, cx| {
+                set_agents(desk, index + 1);
+                cx.notify();
+            })
+        });
+        draw(&mut cx);
+    });
+
+    let size = cx
+        .update_window(window, |_, window, _| window.viewport_size())
+        .expect("viewport");
+    bench("window_hover", FRAMES, false, &mut |index| {
+        // Sweep the sidebar rows, then the tab strip, a row-height step at a time.
+        let rows = 24;
+        let step = index % (rows * 2);
+        let position = if step < rows {
+            point(px(120.), px(56.) + px(24.) * step as f32)
+        } else {
+            point(
+                px(320.) + (size.width - px(360.)) * ((step - rows) as f32 / rows as f32),
+                px(20.),
+            )
+        };
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        })
+        .expect("hover");
+        draw(&mut cx);
+    });
+
+    let mut seq = 0_u64;
+    bench("window_stream", FRAMES, true, &mut |index| {
+        seq += 1;
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id: live(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq,
+                bytes: format!("\x1b[{ROWS};1H{index:04} {FILL}\r\n")
+                    .into_bytes()
+                    .into(),
+            })
+            .expect("stream output");
+        client.wake();
+        // The window's wake task drains the batch and notifies the pane.
+        cx.run_until_parked();
+        draw(&mut cx);
+    });
+
+    let after = cx.capture_screenshot(window).expect("final window pixels");
+    if let Some(dir) = std::env::var_os("PHUX_DESKTOP_UI_EVIDENCE") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        before.save(dir.join("window-perf-before.png")).unwrap();
+        after.save(dir.join("window-perf-after.png")).unwrap();
+    }
+    assert_ne!(
+        before.as_raw(),
+        after.as_raw(),
+        "agents, hover and output must change visible pixels"
+    );
+    cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
+    drop(cx);
+    drop(client);
+    let _ = std::fs::remove_dir_all(root);
+}
