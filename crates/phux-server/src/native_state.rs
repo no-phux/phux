@@ -1628,4 +1628,105 @@ mod tests {
              not a different or truncated stream: {region:?}"
         );
     }
+
+    /// The browser decoder's committed server-produced GHOSTSNP transcript.
+    const BROWSER_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../clients/phux-vt-web/tests/fixtures/server-snapshot-v1.bin"
+    );
+
+    /// Capture the browser fixture through the production prefix and leased
+    /// history paths. Layout: `PHUXSNP1`, cols u16, rows u16, then units of
+    /// kind u8 (0 READY prefix, 1 history page, 2 FINISH), rows u32, len
+    /// u32, bytes; integers little-endian.
+    fn browser_fixture_transcript() -> Vec<u8> {
+        const COLS: u16 = 120;
+        const ROWS: u16 = 6;
+        let mut terminal = GhosttyTerminal::new(COLS, ROWS).expect("fixture terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100_000))
+            .expect("history rows");
+        terminal
+            .set_scrollback_max_bytes(None)
+            .expect("unlimited history bytes");
+        let limits = BootstrapLimits::default();
+        let mut manager = NativeTerminalManager::new(terminal, 1).expect("native manager");
+        manager.vt_write(b"\x1b]2;phux fixture\x07");
+        for row in 0..1_000 {
+            manager
+                .vt_write(format!("\x1b[3{}mfixture-{row:04}\x1b[0m\r\n", 1 + row % 6).as_bytes());
+        }
+        // End mid-CSI: READY must carry the parser continuation.
+        manager.vt_write(b"live-tail \x1b[3");
+
+        let mut out = b"PHUXSNP1".to_vec();
+        out.extend_from_slice(&COLS.to_le_bytes());
+        out.extend_from_slice(&ROWS.to_le_bytes());
+        let mut unit = |kind: u8, rows: usize, bytes: &[u8]| {
+            out.push(kind);
+            out.extend_from_slice(&u32::try_from(rows).expect("rows").to_le_bytes());
+            out.extend_from_slice(&u32::try_from(bytes.len()).expect("len").to_le_bytes());
+            out.extend_from_slice(bytes);
+        };
+
+        let mut capture = manager
+            .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
+            .expect("generation capture");
+        let mut prefix = Vec::new();
+        loop {
+            let required = match capture.step(&mut []) {
+                Err(NativeStateError::OutOfSpace { required_bytes, .. }) => required_bytes,
+                other => panic!("probe: {other:?}"),
+            };
+            let mut exact = vec![0; required];
+            let chunk = capture.step(&mut exact).expect("record");
+            prefix.extend_from_slice(chunk.bytes);
+            if matches!(chunk.kind, NativeCheckpointChunkKind::Ready) {
+                break;
+            }
+        }
+        unit(0, 0, &prefix);
+        let (cursor, seed) = manager
+            .finish_generation_capture(capture)
+            .expect("detach READY");
+        let bounds = seed.bounds();
+        manager
+            .install_generation(
+                cursor,
+                seed,
+                bounds,
+                bounds.required_reserved_bytes().expect("reservation"),
+            )
+            .expect("install");
+        let mut index = 0;
+        loop {
+            let record = next_record(&mut manager, &cursor, index, limits);
+            if record.finish {
+                unit(2, record.rows, &record.bytes);
+                break;
+            }
+            unit(1, record.rows, &record.bytes);
+            index += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn browser_snapshot_fixture_is_the_current_server_capture() {
+        let captured = browser_fixture_transcript();
+        assert_eq!(
+            captured,
+            browser_fixture_transcript(),
+            "the fixture capture must be deterministic"
+        );
+        if std::env::var_os("PHUX_BLESS_WEB_FIXTURE").is_some() {
+            std::fs::write(BROWSER_FIXTURE, &captured).expect("write browser fixture");
+        }
+        let committed = std::fs::read(BROWSER_FIXTURE).expect("read browser fixture");
+        assert!(
+            committed == captured,
+            "{BROWSER_FIXTURE} is stale; regenerate it with PHUX_BLESS_WEB_FIXTURE=1 \
+             cargo nextest run -p phux-server browser_snapshot_fixture"
+        );
+    }
 }
