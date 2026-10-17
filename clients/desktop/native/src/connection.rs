@@ -17,6 +17,7 @@ pub use path::{
 
 pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
+use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
 use phux_client_runtime::control::{ControlOptions, SessionRecovery};
 use phux_client_runtime::control::{
     DeliveryOutcome, Event, FileUploadReceipt, OrganizationReplica, PaneDescriptor, PathAnswer,
@@ -25,7 +26,7 @@ use phux_client_runtime::control::{
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
 use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
-use phux_protocol::ids::{ArrangementKey, OperationId, SessionKey};
+use phux_protocol::ids::{ApprovalId, ArrangementKey, OperationId, SessionKey};
 use phux_protocol::wire::frame::{AttachTarget, Command, LaunchSpec, RolePolicy, SessionLifetime};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -137,6 +138,17 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
+/// How one decision this window sent ended (ADR-0128). Never retried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalOutcome {
+    /// The approval decided.
+    pub id: ApprovalId,
+    /// What was sent.
+    pub decision: Decision,
+    /// How it ended.
+    pub outcome: DecisionOutcome,
+}
+
 /// One desktop connection. Public snapshots are refreshed by [`Self::drain`].
 pub struct Connection {
     /// The runtime client. Do not replace its listener.
@@ -162,6 +174,9 @@ pub struct Connection {
     pub directories: HashMap<u32, String>,
     /// The arrangement group that shows each terminal, by name.
     pub groups: HashMap<ResourceId, String>,
+    /// Server-held approvals awaiting a decision (ADR-0128), oldest first.
+    pub approvals: Vec<Approval>,
+    approval_outcomes: Vec<ApprovalOutcome>,
     session: String,
     home_key: Option<SessionKey>,
     key_bootstrap_pending: bool,
@@ -314,6 +329,8 @@ impl Connection {
                 ..ControlOptions::default()
             },
         )?;
+        // A working window projects held approvals; a browsing one does not.
+        client.watch_approvals();
         let mut connection = Self::from_client(client, session);
         connection.home_key = key;
         connection.key_bootstrap_pending = key.is_some();
@@ -350,6 +367,8 @@ impl Connection {
             projects: HashMap::new(),
             directories: HashMap::new(),
             groups: HashMap::new(),
+            approvals: Vec::new(),
+            approval_outcomes: Vec::new(),
             session,
             home_key: None,
             key_bootstrap_pending: false,
@@ -448,6 +467,20 @@ impl Connection {
     /// The queue is lossless. A caller that ignores a receipt must not paste.
     pub fn take_file_upload_receipts(&mut self) -> Vec<FileUploadReceipt> {
         std::mem::take(&mut self.file_uploads)
+    }
+
+    /// Decisions resolved since the last take. Lossless; none is retried.
+    pub fn take_approval_outcomes(&mut self) -> Vec<ApprovalOutcome> {
+        std::mem::take(&mut self.approval_outcomes)
+    }
+
+    /// Decide one held action. The outcome arrives through
+    /// [`Self::take_approval_outcomes`]. `false` when nothing was sent: the
+    /// connection is closed, the server holds nothing for approval, or a
+    /// decision on `id` is already in flight.
+    #[must_use]
+    pub fn decide_approval(&self, id: ApprovalId, decision: Decision) -> bool {
+        !self.closed && self.client.decide_approval(id, decision)
     }
 
     /// The terminal is in the latest topology and the runtime will accept input.
@@ -857,6 +890,18 @@ impl Connection {
             if let Event::ServerError { message, .. } = event {
                 self.error = Some(message.clone());
             }
+            if let Event::ApprovalDecision {
+                id,
+                decision,
+                outcome,
+            } = event
+            {
+                self.approval_outcomes.push(ApprovalOutcome {
+                    id: *id,
+                    decision: *decision,
+                    outcome: outcome.clone(),
+                });
+            }
             if let Event::AgentMetadata { terminal_id, value } = event {
                 let after_boundary = boundary.is_none_or(|boundary| index > boundary);
                 if same_identity && after_boundary {
@@ -949,6 +994,12 @@ impl Connection {
         self.conversations.retain(|resource, conversation| {
             self.conversation_heads.get(&conversation.parent) == Some(resource)
         });
+        if events
+            .iter()
+            .any(|event| matches!(event, Event::ApprovalsChanged) || starts_connection(event))
+        {
+            self.approvals = self.client.approvals();
+        }
         if events.iter().any(structural)
             || events
                 .iter()
@@ -997,7 +1048,10 @@ impl Connection {
                 Event::TerminalChanged { terminal_id } => {
                     output.insert(terminal_id.clone());
                 }
-                Event::AgentMetadata { .. } | Event::SessionProject { .. } => {}
+                Event::AgentMetadata { .. }
+                | Event::SessionProject { .. }
+                | Event::ApprovalsChanged
+                | Event::ApprovalDecision { .. } => {}
                 _ => all = true,
             }
         }

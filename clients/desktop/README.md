@@ -41,8 +41,10 @@ Select work and choose
 **Organize Selected Work…** to move it to a named session, or explicitly
 **Leave unorganized (Intake)**. Moving changes membership, never execution.
 Imported sessions can also be marked organized without moving their work.
-The bell opens **Inbox & notifications**: agent attention alerts in Inbox,
-errors and command results in Notifications. Its badge counts unread alerts,
+The bell opens **Inbox & notifications**: agent attention alerts and the
+server's held approvals in Inbox, errors and command results in
+Notifications. An approval entry offers **Approve** and **Deny** and leaves
+the Inbox once the server no longer holds it. Its badge counts unread alerts,
 not sessions or messages; an agent alert opens the agent's terminal.
 **Organize Everything** (`⌘⇧O`, in the command palette) does it for every
 pane at once, the way `phux organize` does: each pane joins its

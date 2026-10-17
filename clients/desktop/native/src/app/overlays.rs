@@ -1546,9 +1546,12 @@ fn notification_rows(
 ) -> Vec<AnyElement> {
     desk.feed
         .items()
-        .filter(|entry| (entry.kind == super::notifications::Kind::Agent) == agents)
+        .filter(|entry| entry.kind.inbox() == agents)
         .map(|entry| {
             let id = entry.id;
+            let decide = entry
+                .approval
+                .map(|approval| approval_buttons(desk, approval, id, cx));
             let edge = from_hex(&super::view::notification_edge(entry, colors));
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
@@ -1599,7 +1602,8 @@ fn notification_rows(
                                 .line_clamp(2)
                                 .text_color(from_hex(&colors.muted))
                                 .child(body)
-                        })),
+                        }))
+                        .children(decide),
                 )
                 .child(
                     div()
@@ -1614,6 +1618,40 @@ fn notification_rows(
                 .into_any_element()
         })
         .collect()
+}
+
+/// Approve and Deny for one held action. Both go quiet while its decision
+/// is in flight; the server's answer takes the entry down or reports why not.
+fn approval_buttons(
+    desk: &Desk,
+    approval: phux_protocol::ids::ApprovalId,
+    entry: u64,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    use gpui_kit::base::Disableable;
+    use phux_client_runtime::approvals::Decision;
+    let busy = desk.approvals.deciding(approval);
+    let button = |decision: Decision, label: &'static str, selector: &'static str| {
+        div().debug_selector(move || selector.into()).child(
+            Button::new((selector, entry as usize))
+                .label(label)
+                .small()
+                .disabled(busy)
+                .when(decision == Decision::Deny, |button| button.ghost())
+                .on_click(cx.listener(move |desk, _, _, cx| {
+                    cx.stop_propagation();
+                    desk.feed.read(entry);
+                    desk.decide_approval(approval, decision, cx);
+                })),
+        )
+    };
+    div()
+        .pt(px(6.))
+        .flex()
+        .gap(px(6.))
+        .child(button(Decision::Approve, "Approve", "approval-approve"))
+        .child(button(Decision::Deny, "Deny", "approval-deny"))
+        .into_any_element()
 }
 
 fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
@@ -1639,12 +1677,12 @@ fn notifications_panel(
     let unread_agents = desk
         .feed
         .unread()
-        .filter(|entry| entry.kind == super::notifications::Kind::Agent)
+        .filter(|entry| entry.kind.inbox())
         .count();
     let unread_general = desk.feed.unread().count() - unread_agents;
     let empty = desk.feed.is_empty();
     let mut rows = vec![notification_heading(
-        "Inbox — agent attention",
+        "Inbox — agents and approvals",
         unread_agents,
         colors,
     )];
@@ -1657,7 +1695,7 @@ fn notifications_panel(
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("No agent attention alerts.")
+                .child("No agent alerts or approvals.")
                 .into_any_element(),
         );
     }

@@ -34,6 +34,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 use crate::embedded::*;
 
 mod agent_sessions;
+mod approvals;
 mod geometry;
 mod native_agent;
 mod observation;

@@ -541,3 +541,186 @@ fn tab_keeps_terminal_input_but_navigates_text_fields(cx: &mut TestAppContext) {
         assert_eq!(fixture.keys, ["tab", "tab", "tab", "tab"]);
     });
 }
+
+/// ADR-0128: a server-held approval is an Inbox entry with Approve and Deny.
+/// Approving sends one decision; the server's confirmation takes the entry
+/// down and reports the decision, and nothing is sent again.
+#[gpui::test]
+fn the_inbox_shows_a_pending_approval_and_clears_it_after_a_decision(cx: &mut TestAppContext) {
+    use phux_protocol::caps::{
+        BootstrapLimits, BootstrapProfile, Layer, LayerSet, ServerCapabilities, ServerFeature,
+        ServerFeatureSet,
+    };
+    use phux_protocol::ids::ApprovalId;
+    use phux_protocol::wire::frame::{FrameKind, Scope};
+
+    use crate::app::notifications::Kind;
+
+    let _dial = crate::connection::DeterministicDial::arm();
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-approval-inbox-{}", std::process::id()));
+    let mut prefs = crate::settings::default_display();
+    prefs.ghostty_keys = false;
+    std::fs::create_dir_all(&path).unwrap();
+    let layout = crate::workspace::persist::save_layout("", &[], &prefs, None);
+    std::fs::write(
+        path.join("layout.json"),
+        serde_json::to_vec(&crate::workspace::persist::layout_value(&layout)).unwrap(),
+    )
+    .unwrap();
+    let handle = desktop.update(cx, |desktop, cx| {
+        desktop
+            .launch(
+                crate::app::AppOptions {
+                    socket: path.join("isolated.sock"),
+                    session: "work".into(),
+                    phux: path.join("not-installed-phux"),
+                    layout_path: path.join("layout.json"),
+                    fresh: false,
+                    initial_terminal: None,
+                    quick: false,
+                    startup_error: None,
+                    dev_telemetry: false,
+                },
+                cx,
+            )
+            .unwrap()
+    });
+    let desk = desktop.read_with(cx, |desktop, _| desktop.windows[0].desk.clone());
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    let client = desk.read_with(cx, |desk, _| {
+        std::sync::Arc::clone(
+            &desk
+                .link
+                .as_ref()
+                .expect("an embedded link")
+                .connection
+                .client,
+        )
+    });
+    let sent = |client: &phux_client_runtime::Client| -> Vec<FrameKind> {
+        client
+            .take_outbound()
+            .iter()
+            .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+            .collect()
+    };
+    let feed = |client: &phux_client_runtime::Client, frame: FrameKind| {
+        client.feed(frame).unwrap();
+        client.wake();
+    };
+
+    client.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
+    let _ = sent(&client);
+    feed(
+        &client,
+        FrameKind::HelloOk {
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_layers(LayerSet::with(&[Layer::L3]))
+                .with_features(ServerFeatureSet::with(&[ServerFeature::Approvals])),
+            server_id: vec![0xAB; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        },
+    );
+    let listing = sent(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::ListMetadata {
+                request_id,
+                scope: Scope::Global,
+            } => Some(request_id),
+            _ => None,
+        })
+        .expect("the desktop watches approvals");
+    let id = ApprovalId::new([0x5a; 16]).unwrap();
+    feed(
+        &client,
+        FrameKind::MetadataKeys {
+            request_id: listing,
+            keys: vec![id.record_key()],
+        },
+    );
+    let read = sent(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::GetMetadata {
+                request_id, key, ..
+            } if key == id.record_key() => Some(request_id),
+            _ => None,
+        })
+        .expect("the listed record is read");
+    let record = format!(
+        r#"{{"schema_version":1,"id":"{id}","requester":{{"client":3,"client_name":"agent"}},"method":"KILL_RESOURCE","subjects":["terminal:4"],"requested_at_ms":1,"expires_at_ms":120001}}"#
+    );
+    feed(
+        &client,
+        FrameKind::MetadataValue {
+            request_id: read,
+            value: Some(record.into_bytes()),
+        },
+    );
+    cx.run_until_parked();
+
+    let pending = desk.read_with(cx, |desk, _| {
+        desk.feed
+            .items()
+            .filter(|entry| entry.kind == Kind::Approval)
+            .map(|entry| (entry.title.clone(), entry.approval))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(pending, vec![("Approve kill?".to_owned(), Some(id))]);
+
+    desk.update_in(cx, |desk, window, cx| {
+        desk.execute("notifications", window, cx)
+    });
+    cx.run_until_parked();
+    let approve = cx
+        .debug_bounds("approval-approve")
+        .expect("the Inbox entry offers Approve");
+    cx.simulate_click(approve.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    let decision = sent(&client);
+    let confirm = match decision.as_slice() {
+        [
+            FrameKind::SetMetadata {
+                scope: Scope::Global,
+                key,
+                value,
+                ..
+            },
+            FrameKind::GetMetadata { request_id, .. },
+        ] if *key == id.decide_key() && value.as_slice() == b"approve" => *request_id,
+        other => panic!("one decision and its confirming read: {other:?}"),
+    };
+    feed(
+        &client,
+        FrameKind::MetadataValue {
+            request_id: confirm,
+            value: None,
+        },
+    );
+    cx.run_until_parked();
+
+    desk.read_with(cx, |desk, _| {
+        assert!(
+            !desk.feed.items().any(|entry| entry.kind == Kind::Approval),
+            "a decided approval leaves the Inbox"
+        );
+        assert!(
+            desk.feed
+                .items()
+                .any(|entry| entry.title == "Approved kill"),
+            "the decision is reported"
+        );
+    });
+    assert!(sent(&client).is_empty(), "nothing is sent again");
+}

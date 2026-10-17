@@ -2847,6 +2847,7 @@ pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> Strin
             .map(agent_swatch)
             .map(str::to_owned)
             .unwrap_or_else(|| colors.theme.warning.clone()),
+        Kind::Approval => colors.theme.warning.clone(),
         Kind::Info | Kind::Refusal => colors.theme.accent.clone(),
     }
 }

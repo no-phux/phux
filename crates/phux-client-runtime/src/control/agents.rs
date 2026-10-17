@@ -36,6 +36,7 @@ impl ControlPlane {
         event: AgentEvent,
     ) -> Result<(), ControlError> {
         self.observe_roster_event(&event);
+        self.observe_approval_event(&event);
         let event = match event {
             AgentEvent::NativeAgentResult {
                 agent_session_id,

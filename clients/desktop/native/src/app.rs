@@ -5,6 +5,7 @@
 //! [`gpui_kit::component::Root`], which re-exports [`gpui_kit::base::Root`].
 
 mod actions;
+mod approvals;
 mod color;
 mod conversation;
 mod desk;

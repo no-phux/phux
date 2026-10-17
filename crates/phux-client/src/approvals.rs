@@ -11,13 +11,15 @@
 
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::ApprovalId;
-use phux_protocol::wire::frame::{
-    APPROVAL_APPROVE, APPROVAL_DENY, APPROVAL_KEY_PREFIX, FrameKind, Scope,
-};
-use serde::{Deserialize, Serialize};
+use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, FrameKind, Scope};
 
 use crate::attach::AttachError;
 use crate::attach::connection::{Connection, Refusal};
+
+use phux_client_runtime::approvals::DecisionOutcome;
+/// The record and the decision are the runtime's one parse, shared with the
+/// control plane's live projection.
+pub use phux_client_runtime::approvals::{Approval, Decision, Requester};
 
 /// The correlation id of a decision's `SET_METADATA`.
 const DECIDE_ID: u32 = 1;
@@ -27,67 +29,6 @@ const CONFIRM_ID: u32 = 2;
 
 /// The correlation id of the key listing.
 const LIST_ID: u32 = 1;
-
-/// One action awaiting a decision: its `phux.approval/v1/<id>` record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Approval {
-    /// The approval id, 32 lowercase hex digits.
-    pub id: String,
-    /// The connection whose command is held.
-    pub requester: Requester,
-    /// The held command's catalog name, e.g. `KILL_RESOURCE`.
-    pub method: String,
-    /// The signal, for a held `SIGNAL_TERMINAL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signal: Option<String>,
-    /// The subjects it names, in the registry selector grammar.
-    #[serde(default)]
-    pub subjects: Vec<String>,
-    /// When it was held, Unix milliseconds.
-    pub requested_at_ms: u64,
-    /// When it expires unless decided, Unix milliseconds.
-    pub expires_at_ms: u64,
-}
-
-/// Who asked: the requester's connection as the journal names an actor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Requester {
-    /// The connection's wire client id.
-    pub client: u32,
-    /// The workload credential it authenticated with, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_id: Option<String>,
-    /// The name it announced in `HELLO`, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_name: Option<String>,
-}
-
-/// A decision on one held action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    /// Release the held command: the server runs it once, as the requester.
-    Approve,
-    /// Refuse it: the requester gets `PERMISSION_DENIED`.
-    Deny,
-}
-
-impl Decision {
-    const fn value(self) -> &'static [u8] {
-        match self {
-            Self::Approve => APPROVAL_APPROVE,
-            Self::Deny => APPROVAL_DENY,
-        }
-    }
-
-    /// The verb that sends it, `approve` or `deny`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Approve => "approve",
-            Self::Deny => "deny",
-        }
-    }
-}
 
 /// Why listing or deciding failed.
 #[derive(Debug, thiserror::Error)]
@@ -149,7 +90,7 @@ async fn read_record(
     let Some(bytes) = answer.map_err(ApprovalError::Refused)? else {
         return Ok(None);
     };
-    serde_json::from_slice(&bytes)
+    Approval::parse(&bytes)
         .map(Some)
         .map_err(|err| ApprovalError::Malformed(format!("approval record: {err}")))
 }
@@ -179,18 +120,24 @@ pub async fn decide(
         .request_metadata(CONFIRM_ID, Scope::Global, id.record_key())
         .await?
         .into_parts();
-    if let Some(refusal) = decision_refusal(&interleaved) {
-        return Err(ApprovalError::Refused(refusal));
-    }
+    let refusal = decision_refusal(&interleaved);
     // A decider without OBSERVE on Global cannot read the record; its
-    // refusal of the read says nothing about the decision, which the server
-    // already handled without refusing it.
-    if matches!(answer, Ok(Some(_))) {
-        return Err(ApprovalError::Malformed(format!(
+    // refusal of the read says nothing about the decision (`None`).
+    let still_pending = answer.ok().map(|record| record.is_some());
+    let outcome = DecisionOutcome::classify(
+        refusal
+            .as_ref()
+            .map(|refusal| (refusal.code, refusal.message.clone())),
+        still_pending,
+    );
+    match (outcome, refusal) {
+        (DecisionOutcome::Decided, _) => Ok(()),
+        // Stale or refused: report the server's own refusal.
+        (_, Some(refusal)) => Err(ApprovalError::Refused(refusal)),
+        (_, None) => Err(ApprovalError::Malformed(format!(
             "approval {id} is still pending after the decision"
-        )));
+        ))),
     }
-    Ok(())
 }
 
 /// The correlated refusal of the decision, if the server sent one.
@@ -223,18 +170,6 @@ mod tests {
     use phux_protocol::wire::frame::ErrorCode;
 
     #[test]
-    fn a_record_parses_with_and_without_its_optional_fields() {
-        let full = br#"{"schema_version":1,"id":"0123456789abcdef0123456789abcdef","requester":{"client":3,"credential_id":"sha256:x","client_name":"agent"},"method":"SIGNAL_TERMINAL","signal":"kill","subjects":["terminal:4"],"requested_at_ms":1,"expires_at_ms":120001}"#;
-        let approval: Approval = serde_json::from_slice(full).unwrap_or_else(|err| panic!("{err}"));
-        assert_eq!(approval.signal.as_deref(), Some("kill"));
-        assert_eq!(approval.requester.client, 3);
-        let bare = br#"{"id":"0123456789abcdef0123456789abcdef","requester":{"client":3},"method":"UPGRADE","requested_at_ms":1,"expires_at_ms":2}"#;
-        let approval: Approval = serde_json::from_slice(bare).unwrap_or_else(|err| panic!("{err}"));
-        assert!(approval.subjects.is_empty());
-        assert_eq!(approval.requester.credential_id, None);
-    }
-
-    #[test]
     fn only_the_decisions_own_correlated_error_refuses_it() {
         let error = |request_id| FrameKind::Error {
             request_id,
@@ -246,7 +181,5 @@ mod tests {
             decision_refusal(&[error(Some(DECIDE_ID))]).map(|refusal| refusal.code),
             Some(ErrorCode::PermissionDenied)
         );
-        assert_eq!(Decision::Approve.value(), APPROVAL_APPROVE);
-        assert_eq!(Decision::Deny.as_str(), "deny");
     }
 }
