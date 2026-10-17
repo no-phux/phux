@@ -128,7 +128,7 @@ impl super::SessionLoop {
         self.subscribe_global_session_keys(conn).await?;
         if subscribe_layout
             && let Some(session) = self.peers.focused_session
-            && self.open_arrangement_link(session).await
+            && self.open_arrangement_link(session)
         {
             // The arrangement record: read once this burst settles, then
             // re-read on each `ARRANGEMENT_CHANGED` for this session.

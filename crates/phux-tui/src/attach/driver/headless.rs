@@ -347,10 +347,10 @@ const LAYOUT_REQUEST_ID: u32 = 1;
 /// Read (never watch) this session's layout. Against an `ORGANIZATION`
 /// server it is the session's arrangement record, read over a second
 /// connection within [`ATTACH_READY_DEADLINE`] and ingested here as the
-/// layout reply; `Ok(None)` then means nothing is left to wait for. When
-/// that read fails, or against an older server, this GETs the layout key
-/// and returns the request id the completion barrier waits on, or `None`
-/// with nothing to ask for.
+/// layout reply (none when that read fails: the legacy key is never used
+/// there); `Ok(None)` then means nothing is left to wait for. Against an
+/// older server this GETs the layout key and returns the request id the
+/// completion barrier waits on, or `None` with nothing to ask for.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -373,15 +373,12 @@ async fn request_layout(
             tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
                 .await
                 .unwrap_or_else(|_| Err("timed out".to_owned()));
-        match read {
-            Ok(document) => {
-                session.ingest_layout(document.as_ref(), session_id)?;
-                return Ok(None);
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "arrangement read failed; using the layout key");
-            }
-        }
+        let document = read.unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "arrangement read failed; no layout");
+            None
+        });
+        session.ingest_layout(document.as_ref(), session_id)?;
+        return Ok(None);
     }
     conn.send(&FrameKind::GetMetadata {
         request_id: LAYOUT_REQUEST_ID,

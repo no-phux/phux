@@ -588,13 +588,27 @@ impl OrgFixture {
                     .unwrap_or_default();
                 let mut committed =
                     Committed::new(*operation, revision).with_session(Some(session));
+                let mut groups = Vec::new();
                 if launch.is_some() {
                     let resource = self.shell(session);
                     let record = self.resource_ref(&resource).expect("made");
                     committed = committed
                         .with_resource(Some(resource))
                         .with_target(phux_client_core::org_ops::live_target(record));
+                    groups.push(phux_protocol::wire::frame::ArrangementGroup {
+                        id: self.fresh(),
+                        name: None,
+                        tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
+                            phux_protocol::wire::frame::EntryRef {
+                                entry: self.fresh(),
+                                target: EntryTarget::Member(resource),
+                            },
+                        ),
+                    });
                 }
+                // Every session has an arrangement (SPEC L2 §2.2): the seed
+                // member's one group, or none.
+                self.arrangement(session, ArrangementDoc { groups });
                 Ok((ok(committed), None))
             }
             Command::SessionRename {
