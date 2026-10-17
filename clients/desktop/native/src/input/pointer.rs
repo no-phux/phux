@@ -61,38 +61,24 @@ impl TerminalInput {
         .ok_or(InputError::StalePresentation)
     }
 
-    /// The link under a Command-click, read from the frame last painted.
-    /// A newer publication stays invisible until it is painted.
-    pub fn link_at(&self, position: Point<Pixels>) -> Option<String> {
-        let (row, col) = self.cell_at(position)?;
-        self.painted_links.link_at(row, col)
-    }
-
     /// Capture the painted link under a Command-press. Opening waits for
     /// [`Self::release_link`].
     pub fn press_link(&mut self, position: Point<Pixels>) -> bool {
-        let Some((row, col)) = self.cell_at(position) else {
-            self.painted_links.cancel();
-            return false;
-        };
-        self.painted_links.press(row, col)
+        self.painted_links.cancel();
+        self.cell_at(position)
+            .is_some_and(|(row, col)| self.painted_links.press(row, col))
     }
 
     /// The URL to open when this release is still on the pressed link.
     /// Releasing the Command key, or missing the grid, cancels the gesture.
     pub fn release_link(&mut self, position: Point<Pixels>, modifier: bool) -> Option<String> {
-        if !self.painted_links.is_held() {
-            return None;
+        match self.cell_at(position).filter(|_| modifier) {
+            Some((row, col)) => self.painted_links.release(row, col),
+            None => {
+                self.painted_links.cancel();
+                None
+            }
         }
-        if !modifier {
-            self.painted_links.cancel();
-            return None;
-        }
-        let Some((row, col)) = self.cell_at(position) else {
-            self.painted_links.cancel();
-            return None;
-        };
-        self.painted_links.release(row, col)
     }
 
     pub fn cancel_link(&mut self) {
@@ -105,7 +91,7 @@ impl TerminalInput {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
-        self.current(window, cx)?;
+        self.admit_focused(window, cx, false)?;
         if !self.hit(event.position) {
             return Ok(false);
         }
@@ -143,7 +129,7 @@ impl TerminalInput {
         if self.painted_links.is_held() {
             return Ok(true);
         }
-        self.current(window, cx)?;
+        self.admit_focused(window, cx, false)?;
         if self.gesture != 0 {
             self.select(1, 1, event.position, event.modifiers)?;
             cx.notify();
@@ -171,7 +157,7 @@ impl TerminalInput {
         cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
         if self.gesture != 0 {
-            self.current(window, cx)?;
+            self.admit_focused(window, cx, false)?;
             let result = self.select(2, 1, event.position, event.modifiers);
             self.gesture = 0;
             result?;
@@ -182,7 +168,7 @@ impl TerminalInput {
         // rejects a temporary frame or geometry gap, and dropping the release
         // first would leave that button down.
         let Some(button) = self.reported_button.take() else {
-            self.current(window, cx)?;
+            self.admit_focused(window, cx, false)?;
             return Ok(false);
         };
         if !self.focused(window, cx) {
@@ -204,10 +190,7 @@ impl TerminalInput {
             if let Some(error) = refuse_captured_release(self.release_facts(control)) {
                 return Err(error);
             }
-            queued(control.send_mouse(
-                &self.terminal,
-                mouse_at(MouseAction::Release, button, modifiers, surface),
-            ))
+            self.send_mouse(control, MouseAction::Release, button, modifiers, surface)
         })
     }
 
@@ -251,8 +234,28 @@ impl TerminalInput {
     ) -> Result<(), InputError> {
         let surface = self.surface(position, true)?;
         self.with_current(true, |control| {
-            queued(control.send_mouse(&self.terminal, mouse_at(action, button, modifiers, surface)))
+            self.send_mouse(control, action, button, modifiers, surface)
         })
+    }
+
+    fn send_mouse(
+        &self,
+        control: &mut ControlPlane,
+        action: MouseAction,
+        button: WireButton,
+        modifiers: Modifiers,
+        surface: SurfacePoint,
+    ) -> Result<(), InputError> {
+        queued(control.send_mouse(
+            &self.terminal,
+            MouseEvent {
+                action,
+                button,
+                mods: keys::modifiers(modifiers),
+                x: surface.x,
+                y: surface.y,
+            },
+        ))
     }
 
     fn report_mouse(
@@ -270,9 +273,7 @@ impl TerminalInput {
             if !input_ready(control, &self.terminal) {
                 return Err(InputError::NotReady);
             }
-            queued(
-                control.send_mouse(&self.terminal, mouse_at(action, button, modifiers, surface)),
-            )?;
+            self.send_mouse(control, action, button, modifiers, surface)?;
             Ok(true)
         })
     }
@@ -432,10 +433,13 @@ impl TerminalInput {
         };
         let surface = self.surface(event.position, false)?;
         for _ in 0..lines.unsigned_abs().min(100) {
-            queued(control.send_mouse(
-                &self.terminal,
-                mouse_at(MouseAction::Press, button, event.modifiers, surface),
-            ))?;
+            self.send_mouse(
+                control,
+                MouseAction::Press,
+                button,
+                event.modifiers,
+                surface,
+            )?;
         }
         Ok(())
     }
@@ -506,21 +510,6 @@ fn refuse_captured_release(facts: ReleaseFacts) -> Option<InputError> {
 /// A motion event the last one already covered. Leaving the grid is not a repeat.
 fn repeats_cell(last: Option<(u16, u16)>, next: Option<(u16, u16)>) -> bool {
     next.is_some() && next == last
-}
-
-fn mouse_at(
-    action: MouseAction,
-    button: WireButton,
-    modifiers: Modifiers,
-    surface: SurfacePoint,
-) -> MouseEvent {
-    MouseEvent {
-        action,
-        button,
-        mods: keys::modifiers(modifiers),
-        x: surface.x,
-        y: surface.y,
-    }
 }
 
 fn button(button: MouseButton) -> WireButton {

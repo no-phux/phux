@@ -4,8 +4,6 @@
 //! Escape closes it, a click inside never does, and its control takes the
 //! keyboard on open.
 
-use std::rc::Rc;
-
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyWindowHandle, App, Context, Entity, EntityId, IntoElement, MouseButton,
@@ -20,11 +18,12 @@ use phux_protocol::ids::SessionKey;
 
 use crate::connection::AgentInfo;
 use crate::connection::path::{self as paths};
-use crate::settings::theme::Palette;
 
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 use super::skin::{Look, Surface, Surfaced};
+use super::view::{dot, ghost_button, ghost_icon, muted};
+use crate::settings::theme::Palette;
 
 mod goto_facts;
 mod goto_filter;
@@ -182,7 +181,6 @@ fn modal_input(
 
 /// The find field, focused, reporting each edit and Enter / Shift-Enter.
 pub(crate) fn find_input(
-    _desk: &mut Desk,
     initial: &str,
     window: &mut Window,
     cx: &mut Context<Desk>,
@@ -225,19 +223,17 @@ fn input_with(
 }
 
 impl Desk {
-    fn input_value(&self, slot: InputSlot, cx: &App) -> String {
-        self.modal_inputs
-            .iter()
-            .find(|(owned, _, _)| *owned == slot)
-            .map(|(_, input, _)| input.read(cx).value().to_string())
-            .unwrap_or_default()
-    }
-
     fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
         self.modal_inputs
             .iter()
             .find(|(owned, _, _)| *owned == slot)
             .map(|(_, input, _)| input.clone())
+    }
+
+    fn input_value(&self, slot: InputSlot, cx: &App) -> String {
+        self.input_entity(slot)
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default()
     }
 
     /// A field edit (`submit` is `None`) or Enter (`Some(shift)`).
@@ -251,11 +247,7 @@ impl Desk {
     ) {
         match (slot, submit) {
             (InputSlot::Find, None) => {
-                let case = self
-                    .find
-                    .as_ref()
-                    .map(|find| find.case_sensitive)
-                    .unwrap_or(false);
+                let case = self.find.as_ref().is_some_and(|find| find.case_sensitive);
                 self.run_search(value, case, cx);
             }
             (InputSlot::Find, Some(shift)) => {
@@ -461,15 +453,7 @@ impl Desk {
                     goto_frecency::Choice::Tab { id, listed },
                 )
             }
-            Target::Command
-            | Target::Session(_)
-            | Target::Window { .. }
-            | Target::Work(_)
-            | Target::Setting(_)
-            | Target::Move(_, _)
-            | Target::Path(_) => {
-                goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
-            }
+            _ => None,
         };
         self.goto_frecency.note(key, now);
     }
@@ -561,13 +545,9 @@ fn path_presentation(picker: &paths::PickerState, has_rows: bool) -> PathPresent
     }
 }
 
-pub fn layer(
-    desk: &mut Desk,
-    colors: &Palette,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
+    let colors = &look.chrome;
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Commands
@@ -577,11 +557,11 @@ pub fn layer(
         | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
         Modal::Path => path_panel(desk, colors, &look, cx),
         Modal::Settings if desk.settings_page.is_some() => {
-            super::settings_panel::panel(desk, colors, window, cx)
+            super::settings_panel::panel(desk, window, cx)
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, &look, cx),
-        Modal::NativeLaunch => super::native_launch::panel(desk, colors, &look, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, &look, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::KillSession { name, .. } => confirm(
@@ -694,12 +674,7 @@ fn inset_radius(look: &Look) -> gpui::Pixels {
     px((look.skin.shape.card_radius - 4.).max(0.))
 }
 
-pub fn find_bar(
-    desk: &Desk,
-    case_sensitive: bool,
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub fn find_bar(desk: &Desk, case_sensitive: bool, cx: &mut Context<Desk>) -> AnyElement {
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
@@ -720,22 +695,16 @@ pub fn find_bar(
             ),
         )
         .child(
-            div()
+            muted(&look, desk.find_status())
                 .px(px(6.))
                 .py(px(3.))
                 .rounded(corner(&look, 5.))
-                .bg(from_hex(&colors.theme.foreground).opacity(0.045))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child(desk.find_status()),
+                .bg(look.ink.opacity(0.045)),
         )
         .child(
-            Button::new("find-case")
-                .icon(IconName::CaseSensitive)
-                .ghost()
+            ghost_icon("find-case", IconName::CaseSensitive, "Match case")
                 .small()
                 .toggled(case_sensitive)
-                .tooltip("Match case")
                 .on_click(cx.listener(|desk, _, window, cx| {
                     let case = !desk
                         .find
@@ -751,31 +720,17 @@ pub fn find_bar(
                     desk.after_command(window, cx);
                 })),
         )
-        .child(
-            Button::new("find-prev")
-                .icon(IconName::ChevronUp)
-                .ghost()
-                .small()
-                .tooltip("Previous match")
-                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-prev", window, cx))),
-        )
-        .child(
-            Button::new("find-next")
-                .icon(IconName::ChevronDown)
-                .ghost()
-                .small()
-                .tooltip("Next match")
-                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-next", window, cx))),
-        )
-        .child(
-            Button::new("find-close")
-                .icon(IconName::Close)
-                .ghost()
-                .small()
-                .tooltip("Close")
-                .on_click(
-                    cx.listener(|desk, _, window, cx| desk.execute("find-close", window, cx)),
-                ),
+        .children(
+            [
+                ("find-prev", IconName::ChevronUp, "Previous match"),
+                ("find-next", IconName::ChevronDown, "Next match"),
+                ("find-close", IconName::Close, "Close"),
+            ]
+            .map(|(id, icon, tooltip)| {
+                ghost_icon(id, icon, tooltip)
+                    .small()
+                    .on_click(cx.listener(move |desk, _, window, cx| desk.execute(id, window, cx)))
+            }),
         )
         .into_any_element()
 }
@@ -1498,7 +1453,7 @@ fn path_panel(
         empty,
         status,
     } = path_presentation(&picker, !items.is_empty());
-    let targets: Rc<Vec<Target>> = Rc::new(items.iter().cloned().map(Target::Path).collect());
+    let targets: Vec<Target> = items.iter().cloned().map(Target::Path).collect();
     let desk_handle = cx.weak_entity();
     let confirm_handle = desk_handle.clone();
     let terminal_handle = desk_handle.clone();
@@ -1517,8 +1472,7 @@ fn path_panel(
                 item.directory(),
             ),
         };
-        let search = label.clone();
-        CommandItem::new().label(search).child(move |_, cx| {
+        CommandItem::new().label(label.clone()).child(move |_, cx| {
             let terminal_handle = terminal_handle.clone();
             div()
                 .group("path-row")
@@ -1533,26 +1487,21 @@ fn path_panel(
                         .text_color(cx.theme().muted_foreground),
                 )
                 .child(div().flex_1().min_w_0().truncate().child(label.clone()))
-                .children(
-                    directory
-                        .clone()
-                        .filter(|_| !matches!(icon, IconName::ArrowUp))
-                        .map(|directory| {
-                            Button::new(format!("open-{directory}"))
-                                .invisible()
-                                .group_hover("path-row", |style| style.visible())
-                                .label("Open terminal")
-                                .ghost()
-                                .xsmall()
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    let directory = directory.clone();
-                                    let _ = terminal_handle.update(cx, |desk, cx| {
-                                        desk.open_path_terminal(directory, window, cx)
-                                    });
-                                })
-                        }),
-                )
+                .children(directory.clone().map(|directory| {
+                    Button::new(format!("open-{directory}"))
+                        .invisible()
+                        .group_hover("path-row", |style| style.visible())
+                        .label("Open terminal")
+                        .ghost()
+                        .xsmall()
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let directory = directory.clone();
+                            let _ = terminal_handle.update(cx, |desk, cx| {
+                                desk.open_path_terminal(directory, window, cx)
+                            });
+                        })
+                }))
         })
     });
     let root = picker.root.clone();
@@ -1641,7 +1590,7 @@ fn notification_rows(
             let decide = entry
                 .approval
                 .map(|approval| approval_buttons(desk, approval, id, cx));
-            let edge = from_hex(&super::view::notification_edge(entry, colors));
+            let edge = super::view::notification_edge(entry, look);
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
@@ -1659,46 +1608,18 @@ fn notification_rows(
                 .items_start()
                 .gap(px(10.))
                 .cursor_pointer()
-                .hover(|style| style.bg(from_hex(&colors.hover)))
-                .child(
-                    div()
-                        .mt(px(5.))
-                        .size(px(7.))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .when(entry.read, |dot| dot.border_1().border_color(edge))
-                        .when(!entry.read, |dot| dot.bg(edge)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .text_sm()
-                                .when(!entry.read, |title| {
-                                    title.font_weight(gpui::FontWeight::MEDIUM)
-                                })
-                                .text_color(from_hex(&colors.theme.foreground))
-                                .child(entry.title.clone()),
-                        )
-                        .children(entry.body.clone().map(|body| {
-                            div()
-                                .text_xs()
-                                .line_clamp(2)
-                                .text_color(from_hex(&colors.muted))
-                                .child(body)
-                        }))
-                        .children(decide),
-                )
+                .hover(|style| style.bg(look.hover))
+                .child(dot(7., edge).mt(px(5.)).when(entry.read, |dot| {
+                    dot.bg(gpui::transparent_black())
+                        .border_1()
+                        .border_color(edge)
+                }))
+                .child(super::view::notification_text(entry, look, !entry.read, 2).children(decide))
                 .child(
                     div()
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(from_hex(&colors.subtext))
+                        .text_color(from_hex(&look.chrome.subtext))
                         .child(age),
                 )
                 .on_click(cx.listener(move |desk, _, window, cx| {
@@ -1743,15 +1664,12 @@ fn approval_buttons(
         .into_any_element()
 }
 
-fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
-    div()
+fn notification_heading(title: &str, unread: usize, look: &Look) -> AnyElement {
+    muted(look, format!("{title} · {unread} unread alerts"))
         .px(px(10.))
         .pt(px(14.))
         .pb(px(8.))
-        .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(from_hex(&colors.muted))
-        .child(format!("{title} · {unread} unread alerts"))
         .into_any_element()
 }
 
@@ -1773,7 +1691,7 @@ fn notifications_panel(
     let mut rows = vec![notification_heading(
         "Inbox — agents and approvals",
         unread_agents,
-        colors,
+        look,
     )];
     if agent_rows.is_empty() {
         rows.push(
@@ -1790,11 +1708,7 @@ fn notifications_panel(
     }
     rows.extend(agent_rows);
     if !general_rows.is_empty() {
-        rows.push(notification_heading(
-            "Notifications",
-            unread_general,
-            colors,
-        ));
+        rows.push(notification_heading("Notifications", unread_general, look));
         rows.extend(general_rows);
     }
     sheet(look, 460.)
@@ -1817,22 +1731,17 @@ fn notifications_panel(
                         .child("Notifications"),
                 )
                 .when(!empty, |header| {
-                    header.child(
-                        Button::new("notifications-clear")
-                            .label("Clear all")
-                            .ghost()
-                            .small()
-                            .on_click(cx.listener(|desk, _, window, cx| {
-                                desk.execute("clear-notifications", window, cx)
-                            })),
-                    )
+                    header.child(ghost_button("notifications-clear", "Clear all").on_click(
+                        cx.listener(|desk, _, window, cx| {
+                            desk.execute("clear-notifications", window, cx)
+                        }),
+                    ))
                 }),
         )
         .child(if empty {
             div()
                 .px(px(20.))
                 .py(px(28.))
-                .rounded(inset_radius(look))
                 .border_1()
                 .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
@@ -2074,8 +1983,8 @@ mod tests {
     #[test]
     fn path_state_reads_in_the_results_and_the_footer_keeps_paging() {
         use super::{PathPresentation, path_presentation};
-        let picker = crate::connection::begin_picker(
-            crate::connection::PathTarget {
+        let picker = crate::connection::path::begin_picker(
+            crate::connection::path::PathTarget {
                 terminal_id: "local:1".into(),
                 placement_id: "place-1".into(),
                 server_id: "a".into(),
@@ -2088,12 +1997,12 @@ mod tests {
             empty: text.to_owned(),
             status: None,
         };
-        let searching = crate::connection::start_query(picker.clone(), 1, "/repo", "");
+        let searching = crate::connection::path::start_query(picker.clone(), 1, "/repo", "");
         assert_eq!(
             path_presentation(&searching, false),
             empty("Searching host paths…")
         );
-        let failed = crate::connection::PickerState {
+        let failed = crate::connection::path::PickerState {
             failure: Some("permission denied".into()),
             ..picker.clone()
         };
@@ -2110,7 +2019,7 @@ mod tests {
             },
             "a failed insertion heads the rows it left listed"
         );
-        let warming = crate::connection::PickerState {
+        let warming = crate::connection::path::PickerState {
             message: "Host index is warming; search again shortly.".into(),
             ..picker.clone()
         };

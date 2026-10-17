@@ -33,7 +33,7 @@ pub use redact::{REDACTED, redact};
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -86,12 +86,9 @@ impl log::Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
         let line = redact(&format!(
-            "{at} {} {} {}\n",
+            "{} {} {} {}\n",
+            unix_millis(),
             record.level(),
             record.target(),
             record.args()
@@ -111,6 +108,13 @@ impl log::Log for Logger {
     }
 
     fn flush(&self) {}
+}
+
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 fn log_path() -> Option<PathBuf> {
@@ -153,12 +157,6 @@ pub fn report() -> phux_perf::PerfReport {
     report
 }
 
-/// Kernel, runtime, painter and window rows as one `PerfReport` JSON.
-#[must_use]
-pub fn report_json() -> String {
-    report().to_json()
-}
-
 // ── Evidence ───────────────────────────────────────────────────────────
 
 /// `--evidence DIR [--smoke]`.
@@ -196,10 +194,8 @@ struct Evidence {
 
 impl Global for Evidence {}
 
-const EXIT_RUNNING: u8 = 0;
-const EXIT_OK: u8 = 1;
-const EXIT_FAILED: u8 = 2;
-static EXIT: AtomicU8 = AtomicU8::new(EXIT_RUNNING);
+/// A smoke run wrote its evidence and quit.
+static PASSED: AtomicBool = AtomicBool::new(false);
 static EVIDENCE_MODE: AtomicBool = AtomicBool::new(false);
 
 /// `PHUX_DESKTOP_BACKGROUND=1`: open windows without taking focus.
@@ -319,7 +315,7 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
                 cx.global_mut::<Evidence>().written = true;
                 log::info!("evidence written to {}", dir.display());
                 if cx.global::<Evidence>().options.exit_after {
-                    EXIT.store(EXIT_OK, Ordering::Relaxed);
+                    PASSED.store(true, Ordering::Relaxed);
                     cx.quit();
                 }
             }
@@ -444,12 +440,8 @@ fn ms(micros: u64) -> f64 {
 
 fn perf_line(uptime: Duration, second: &Sample) -> String {
     let host = report();
-    let at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
     let line = json!({
-        "at": at,
+        "at": unix_millis(),
         "uptimeMs": uptime.as_millis(),
         "frames": {
             "frames": second.frame.count,
@@ -471,10 +463,10 @@ fn perf_line(uptime: Duration, second: &Sample) -> String {
 /// The process status once the event loop returns.
 #[must_use]
 pub fn exit_code() -> std::process::ExitCode {
-    match EXIT.load(Ordering::Relaxed) {
-        EXIT_FAILED => std::process::ExitCode::FAILURE,
-        // A smoke run that quit before writing evidence did not pass.
-        EXIT_RUNNING if EVIDENCE_MODE.load(Ordering::Relaxed) => std::process::ExitCode::FAILURE,
-        _ => std::process::ExitCode::SUCCESS,
+    // An evidence run that quit before writing evidence did not pass.
+    if EVIDENCE_MODE.load(Ordering::Relaxed) && !PASSED.load(Ordering::Relaxed) {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
     }
 }

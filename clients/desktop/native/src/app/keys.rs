@@ -3,34 +3,22 @@
 /// Convert a settings chord into a GPUI binding stroke, or `None` when GPUI cannot name the key.
 /// GPUI names punctuation by the character itself (`cmd-,`, `cmd-]`).
 pub fn gpui_stroke(chord: &str) -> Option<String> {
-    let mut parts = Vec::new();
-    for raw in chord.split('+') {
-        let part = raw.trim();
-        if part.is_empty() {
-            return None;
-        }
-        let known = match part {
-            "cmd" | "ctrl" | "alt" | "shift" => true,
-            "," | "=" | "-" | "[" | "]" | "\\" | ";" | "'" | "." | "/" | "`" => true,
-            "pageup" | "pagedown" | "home" | "end" | "left" | "right" | "up" | "down" | "enter"
-            | "escape" | "tab" | "space" | "backspace" | "delete" => true,
-            other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => true,
-            other => {
-                other.starts_with('f')
-                    && other[1..]
-                        .parse::<u8>()
-                        .ok()
-                        .is_some_and(|n| (1..=24).contains(&n))
-            }
-        };
-        if !known {
-            return None;
-        }
-        parts.push(part);
-    }
-    if parts.is_empty() {
-        return None;
-    }
+    let known = |part: &str| match part {
+        "cmd" | "ctrl" | "alt" | "shift" => true,
+        "," | "=" | "-" | "[" | "]" | "\\" | ";" | "'" | "." | "/" | "`" => true,
+        "pageup" | "pagedown" | "home" | "end" | "left" | "right" | "up" | "down" | "enter"
+        | "escape" | "tab" | "space" | "backspace" | "delete" => true,
+        other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => true,
+        other => other
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=24).contains(&n)),
+    };
+    let parts = chord
+        .split('+')
+        .map(str::trim)
+        .map(|part| known(part).then_some(part))
+        .collect::<Option<Vec<_>>>()?;
     Some(parts.join("-"))
 }
 
@@ -69,19 +57,13 @@ pub fn shell_chord(
     if !platform && !ctrl && !alt && !shift && name.chars().count() == 1 {
         return String::new();
     }
-    let mut parts = Vec::new();
-    if platform {
-        parts.push("cmd");
-    }
-    if ctrl {
-        parts.push("ctrl");
-    }
-    if alt {
-        parts.push("alt");
-    }
-    if shift {
-        parts.push("shift");
-    }
+    let mods = [
+        (platform, "cmd"),
+        (ctrl, "ctrl"),
+        (alt, "alt"),
+        (shift, "shift"),
+    ];
+    let mut parts: Vec<_> = mods.iter().filter(|(on, _)| *on).map(|(_, m)| *m).collect();
     parts.push(name);
     parts.join("+")
 }

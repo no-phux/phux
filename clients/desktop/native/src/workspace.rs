@@ -4,31 +4,20 @@
 
 pub mod layout;
 pub mod persist;
-pub mod place;
-pub mod session;
 
-pub use layout::{
-    Axis, DeskTab, Direction, LayoutNode, Placement, Rect, clamp_ratio, cycle, equalize,
-    find_placement, focus_after_removal, focused_placement, layout_rects, leaf, neighbor, new_id,
-    nudge, placements, refocus, remove_leaf, reorder, set_ratio, split_at, without_terminal,
-};
-pub use persist::{
-    FileLayoutStore, LayoutPaths, LoadedLayout, SavedLayout, SavedNode, SavedTab, StoreValue,
-    layout_paths, layout_value, load_layout, parse_layout, quick_display, save_layout, target_hash,
-    write_if_allowed,
-};
-pub use place::{ProjectGroup, SessionLine, group_by_project, place_for, terminal_host};
-pub use session::{
-    create_session_args, create_session_error, rename_session_args, rename_session_error,
-    window_session,
-};
+pub use persist::{SavedLayout, layout_paths};
 
 use crate::connection::{Connection, parse_terminal, terminal_label};
 use crate::settings::DisplayPrefs;
-use layout::{Axis as SplitAxis, DeskTab as Tab, LayoutNode as Node, Placement as LeafPlacement};
-use persist::SavedNode as StoredNode;
+use layout::{
+    Axis, DeskTab, Direction, LayoutNode, Placement, cycle, equalize, find_placement,
+    focused_placement, leaf, neighbor, new_id, nudge, placements, placements_mut, refocus,
+    remove_leaves, reorder, set_ratio, split_at, step_index, without_terminal,
+};
+use persist::{SavedNode, SavedTab, save_layout};
+use phux_client_core::organization::{self, Place, PlaceSource};
+use phux_client_runtime::ViewId;
 use phux_client_runtime::control::{Event, PaneDescriptor, SpawnRequest, Status};
-use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeature;
 use std::collections::{HashMap, HashSet};
@@ -50,7 +39,7 @@ enum Destination {
     Split {
         tab_id: String,
         target_id: String,
-        axis: SplitAxis,
+        axis: Axis,
         before: bool,
     },
 }
@@ -67,9 +56,10 @@ pub struct Notice {
 }
 
 /// Tabs, focus, and pending spawns for one window.
+#[derive(Default)]
 pub struct Workspace {
     /// Open tabs.
-    pub tabs: Vec<Tab>,
+    pub tabs: Vec<DeskTab>,
     /// Active tab id. Empty when there are no tabs.
     pub active_id: String,
     session: String,
@@ -100,23 +90,9 @@ impl Workspace {
     #[must_use]
     pub fn new(session: String, options: WorkspaceOptions) -> Self {
         Self {
-            tabs: Vec::new(),
-            active_id: String::new(),
             session,
             options,
-            preserve_empty: false,
-            views_epoch: None,
-            spawns: HashMap::new(),
-            awaiting: HashMap::new(),
-            owners: HashMap::new(),
-            restoring: None,
-            restored: false,
-            server_id: None,
-            unresolved: HashSet::new(),
-            attaching: HashSet::new(),
-            closed_terminals: HashSet::new(),
-            notices: Vec::new(),
-            noticed_create: HashSet::new(),
+            ..Self::default()
         }
     }
 
@@ -127,17 +103,38 @@ impl Workspace {
 
     /// The active tab, or the first tab.
     #[must_use]
-    pub fn active_tab(&self) -> Option<&Tab> {
+    pub fn active_tab(&self) -> Option<&DeskTab> {
         self.tabs
             .iter()
             .find(|tab| tab.id == self.active_id)
             .or_else(|| self.tabs.first())
     }
 
+    fn active_tab_mut(&mut self) -> Option<&mut DeskTab> {
+        let index = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == self.active_id)
+            .unwrap_or(0);
+        self.tabs.get_mut(index)
+    }
+
+    fn tab_mut(&mut self, id: &str) -> Option<&mut DeskTab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+
+    fn all_placements(&self) -> impl Iterator<Item = &Placement> {
+        self.tabs.iter().flat_map(|tab| placements(&tab.root))
+    }
+
     /// The focused placement.
     #[must_use]
-    pub fn focused(&self) -> Option<&LeafPlacement> {
+    pub fn focused(&self) -> Option<&Placement> {
         self.active_tab().and_then(focused_placement)
+    }
+
+    fn focused_pane<'a>(&self, connection: &'a Connection) -> Option<&'a PaneDescriptor> {
+        connection.pane(self.focused()?.terminal_id.as_ref()?)
     }
 
     /// Spawns and attaches still waiting for a terminal.
@@ -151,24 +148,15 @@ impl Workspace {
     pub(crate) fn awaiting_output(&self, events: &[Event]) -> bool {
         events.iter().any(|event| match event {
             Event::TerminalChanged { terminal_id } => {
-                let label = terminal_label(terminal_id);
-                self.awaiting.contains_key(&label) || self.awaiting_view(terminal_id)
+                self.awaiting.contains_key(&terminal_label(terminal_id))
+                    || (!self.unresolved.is_empty()
+                        && self.all_placements().any(|placement| {
+                            self.unresolved.contains(&placement.id)
+                                && placement.terminal_id.as_ref() == Some(terminal_id)
+                        }))
             }
             _ => false,
         })
-    }
-
-    fn awaiting_view(&self, terminal: &ResourceId) -> bool {
-        if self.unresolved.is_empty() {
-            return false;
-        }
-        self.tabs
-            .iter()
-            .flat_map(|tab| placements(&tab.root))
-            .any(|placement| {
-                self.unresolved.contains(&placement.id)
-                    && placement.terminal_id.as_ref() == Some(terminal)
-            })
     }
 
     /// Incarnation that owns the current tabs.
@@ -198,31 +186,27 @@ impl Workspace {
     pub fn handle(&mut self, events: &[Event], connection: &Connection) {
         self.sync_server(connection);
         for event in events {
-            if let Event::TerminalSpawned {
-                request_id,
-                terminal_id,
-                error,
-            } = event
-            {
-                self.answered(*request_id, terminal_id.as_ref(), error.as_deref());
-            }
-            if let Event::TerminalAttached {
-                terminal_id,
-                error: Some(error),
-                ..
-            } = event
-            {
-                self.awaiting.remove(&terminal_label(terminal_id));
-                self.notice("error", "Could not open terminal", Some(error.clone()));
-            }
-            if let Event::TerminalClosed { terminal_id, .. } = event {
-                self.closed(&terminal_label(terminal_id));
-            }
-            if let Event::TerminalKilled {
-                error: Some(error), ..
-            } = event
-            {
-                self.notice("error", "Terminate refused", Some(error.clone()));
+            match event {
+                Event::TerminalSpawned {
+                    request_id,
+                    terminal_id,
+                    error,
+                } => self.answered(*request_id, terminal_id.as_ref(), error.as_deref()),
+                Event::TerminalAttached {
+                    terminal_id,
+                    error: Some(error),
+                    ..
+                } => {
+                    self.awaiting.remove(&terminal_label(terminal_id));
+                    self.error("Could not open terminal", error.clone());
+                }
+                Event::TerminalClosed { terminal_id, .. } => {
+                    self.closed(&terminal_label(terminal_id));
+                }
+                Event::TerminalKilled {
+                    error: Some(error), ..
+                } => self.error("Terminate refused", error.clone()),
+                _ => {}
             }
         }
     }
@@ -236,9 +220,7 @@ impl Workspace {
         self.rearm_views(connection);
         let ready: Vec<(String, Destination)> = self
             .awaiting
-            .iter()
-            .filter(|(label, _)| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
-            .map(|(label, destination)| (label.clone(), destination.clone()))
+            .extract_if(|label, _| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
             .collect();
         for (label, destination) in ready {
             self.place_ready(connection, &label, destination);
@@ -269,9 +251,7 @@ impl Workspace {
         }
         self.views_epoch = Some(epoch);
         for terminal in self
-            .tabs
-            .iter()
-            .flat_map(|tab| placements(&tab.root))
+            .all_placements()
             .filter_map(|placement| placement.terminal_id.as_ref())
         {
             if connection.pane(terminal).is_some() {
@@ -291,53 +271,40 @@ impl Workspace {
 
     /// Move the active tab by `step`, wrapping.
     pub fn step_tab(&mut self, step: i8) {
-        let Some(current) = self.active_tab().map(|tab| tab.id.clone()) else {
-            return;
-        };
         let index = self
             .tabs
             .iter()
-            .position(|tab| tab.id == current)
-            .unwrap_or(0) as i32;
-        let len = self.tabs.len() as i32;
-        if len == 0 {
-            return;
-        }
-        let next = (index + i32::from(step)).rem_euclid(len) as usize;
-        if let Some(tab) = self.tabs.get(next) {
-            let id = tab.id.clone();
-            self.select_tab(&id);
+            .position(|tab| tab.id == self.active_id)
+            .unwrap_or(0);
+        if let Some(next) = step_index(index, step, self.tabs.len()) {
+            self.active_id = self.tabs[next].id.clone();
         }
     }
 
     /// Select by index. A negative index selects the last tab.
     pub fn select_index(&mut self, index: isize) {
-        let id = if index < 0 {
-            self.tabs.last().map(|tab| tab.id.clone())
+        let tab = if index < 0 {
+            self.tabs.last()
         } else {
-            self.tabs.get(index as usize).map(|tab| tab.id.clone())
+            self.tabs.get(index as usize)
         };
-        if let Some(id) = id {
-            self.select_tab(&id);
+        if let Some(tab) = tab {
+            self.active_id = tab.id.clone();
         }
     }
 
     /// Reorder tabs.
     pub fn move_tab(&mut self, from: usize, to: usize) {
-        self.tabs = reorder(std::mem::take(&mut self.tabs), from, to);
+        reorder(&mut self.tabs, from, to);
     }
 
     /// Set or clear a tab title. Blank clears it. Titles are at most 80 characters.
     pub fn rename_tab(&mut self, id: &str, title: &str) {
         let title = title.trim();
-        let title = if title.is_empty() {
-            None
-        } else {
-            Some(title.chars().take(80).collect())
-        };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+        let title = (!title.is_empty()).then(|| title.chars().take(80).collect());
+        if let Some(tab) = self.tab_mut(id) {
             tab.title = title;
-            *tab = refocus(tab.clone());
+            refocus(tab);
         }
     }
 
@@ -347,13 +314,7 @@ impl Workspace {
             return;
         };
         let tab = self.tabs.remove(index);
-        self.release(
-            connection,
-            &placements(&tab.root)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
+        self.release(connection, placements(&tab.root));
         if self.active_id == id {
             self.active_id = self
                 .tabs
@@ -376,7 +337,7 @@ impl Workspace {
         if unchanged {
             return;
         }
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+        if let Some(tab) = self.tab_mut(tab_id) {
             tab.focused_id = placement_id.to_owned();
             if tab.zoomed_id.is_some() {
                 tab.zoomed_id = Some(placement_id.to_owned());
@@ -385,83 +346,55 @@ impl Workspace {
         self.active_id = tab_id.to_owned();
     }
 
-    /// Focus the neighbour in `direction`.
-    pub fn focus_direction(&mut self, direction: Direction) {
+    fn focus_from_active(&mut self, target: impl FnOnce(&LayoutNode, &str) -> Option<String>) {
         let Some(tab) = self.active_tab() else {
             return;
         };
-        let tab_id = tab.id.clone();
-        let focused = tab.focused_id.clone();
-        if let Some(target) = neighbor(&tab.root, &focused, direction) {
+        if let Some(target) = target(&tab.root, &tab.focused_id) {
+            let tab_id = tab.id.clone();
             self.focus_placement(&tab_id, &target);
         }
+    }
+
+    /// Focus the neighbour in `direction`.
+    pub fn focus_direction(&mut self, direction: Direction) {
+        self.focus_from_active(|root, from| neighbor(root, from, direction));
     }
 
     /// Cycle panes, wrapping.
     pub fn cycle_pane(&mut self, step: i8) {
-        let Some(tab) = self.active_tab() else {
-            return;
-        };
-        let tab_id = tab.id.clone();
-        let focused = tab.focused_id.clone();
-        if let Some(target) = cycle(&tab.root, &focused, step) {
-            self.focus_placement(&tab_id, &target);
-        }
+        self.focus_from_active(|root, from| cycle(root, from, step));
     }
 
     /// Zoom the focused pane, or clear zoom. A single pane does not zoom.
     pub fn toggle_zoom(&mut self) {
-        let Some(tab_id) = self.active_tab().map(|tab| tab.id.clone()) else {
+        let Some(tab) = self.active_tab_mut() else {
             return;
         };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            if placements(&tab.root).len() < 2 {
-                return;
-            }
-            if tab.zoomed_id.take().is_none() {
-                tab.zoomed_id = Some(tab.focused_id.clone());
-            }
+        if placements(&tab.root).len() > 1 && tab.zoomed_id.take().is_none() {
+            tab.zoomed_id = Some(tab.focused_id.clone());
         }
     }
 
     /// Nudge the nearest divider by Ghostty's step.
     pub fn nudge(&mut self, direction: Direction) {
-        let Some(tab_id) = self.active_tab().map(|tab| tab.id.clone()) else {
-            return;
-        };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            let focused = tab.focused_id.clone();
-            tab.root = nudge(
-                std::mem::replace(&mut tab.root, empty_leaf()),
-                &focused,
-                direction,
-                0.04,
-            );
-            *tab = refocus(tab.clone());
+        if let Some(tab) = self.active_tab_mut() {
+            nudge(&mut tab.root, &tab.focused_id, direction, 0.04);
+            refocus(tab);
         }
     }
 
     /// Equalize the active tab.
     pub fn equalize_tab(&mut self) {
-        let Some(tab_id) = self.active_tab().map(|tab| tab.id.clone()) else {
-            return;
-        };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.root = equalize(std::mem::replace(&mut tab.root, empty_leaf()));
+        if let Some(tab) = self.active_tab_mut() {
+            equalize(&mut tab.root);
         }
     }
 
     /// Set one split ratio in the active tab.
     pub fn resize_split(&mut self, split_id: &str, ratio: f32) {
-        let Some(tab_id) = self.active_tab().map(|tab| tab.id.clone()) else {
-            return;
-        };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.root = set_ratio(
-                std::mem::replace(&mut tab.root, empty_leaf()),
-                split_id,
-                ratio,
-            );
+        if let Some(tab) = self.active_tab_mut() {
+            set_ratio(&mut tab.root, split_id, ratio);
         }
     }
 
@@ -475,52 +408,38 @@ impl Workspace {
         self.request(connection, Destination::Tab, cwd, Some(session_id));
     }
 
+    /// The active tab id and its focused placement.
+    fn active_focus(&self) -> Option<(String, Placement)> {
+        Some((self.active_tab()?.id.clone(), self.focused()?.clone()))
+    }
+
     /// Split the focused pane. Without one, this is a new tab.
-    pub fn split(&mut self, connection: &Connection, axis: SplitAxis, before: bool) {
-        let Some(tab) = self.active_tab() else {
+    pub fn split(&mut self, connection: &Connection, axis: Axis, before: bool) {
+        let Some((tab_id, target)) = self.active_focus() else {
             self.new_terminal(connection, None);
             return;
         };
-        let Some(target) = self.focused().cloned() else {
-            self.new_terminal(connection, None);
-            return;
+        let cwd = self
+            .focused_pane(connection)
+            .and_then(|pane| pane.cwd.clone());
+        let destination = Destination::Split {
+            tab_id,
+            target_id: target.id,
+            axis,
+            before,
         };
-        let cwd = self.focused_cwd(connection);
-        self.request(
-            connection,
-            Destination::Split {
-                tab_id: tab.id.clone(),
-                target_id: target.id,
-                axis,
-                before,
-            },
-            cwd.as_deref(),
-            None,
-        );
+        self.request(connection, destination, cwd.as_deref(), None);
     }
 
     /// Another view of the focused terminal, beside it. Ends zoom.
     pub fn duplicate_view(&mut self, connection: &Connection) {
-        let Some(tab_id) = self.active_tab().map(|tab| tab.id.clone()) else {
-            return;
-        };
-        let Some(target) = self.focused().cloned() else {
+        let Some((tab_id, target)) = self.active_focus() else {
             return;
         };
         let placement = self.place(connection, &target.terminal_label, None);
         self.claim(&placement);
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.zoomed_id = None;
-            let id = placement.id.clone();
-            tab.root = split_at(
-                std::mem::replace(&mut tab.root, empty_leaf()),
-                &target.id,
-                placement,
-                SplitAxis::Row,
-                false,
-            );
-            tab.focused_id = id;
-            *tab = refocus(tab.clone());
+        if let Some(tab) = self.tab_mut(&tab_id) {
+            insert_beside(tab, &target.id, placement, Axis::Row, false);
         }
     }
 
@@ -529,103 +448,88 @@ impl Workspace {
         let Some(tab) = self.active_tab() else {
             return;
         };
-        let id = placement_id
-            .map(str::to_owned)
-            .unwrap_or_else(|| tab.focused_id.clone());
-        let tab_id = tab.id.clone();
+        let id = placement_id.unwrap_or(&tab.focused_id).to_owned();
         let Some(placement) = find_placement(&tab.root, &id).cloned() else {
             return;
         };
-        let order: Vec<String> = placements(&tab.root)
-            .into_iter()
-            .map(|item| item.id.clone())
-            .collect();
-        self.release(connection, &[placement]);
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
-            return;
-        };
-        let Some(root) = remove_leaf(std::mem::replace(&mut tab.root, empty_leaf()), &id) else {
+        let tab_id = tab.id.clone();
+        let Some(next) = remove_leaves(tab.clone(), &HashSet::from([id])) else {
             self.close_tab(connection, &tab_id);
             return;
         };
-        let focused = focus_after_removal(&order, &tab.focused_id, &HashSet::from([id]));
-        tab.root = root;
-        tab.focused_id = focused;
-        *tab = refocus(tab.clone());
+        self.release(connection, [&placement]);
+        if let Some(tab) = self.tab_mut(&tab_id) {
+            *tab = next;
+        }
     }
 
     /// Focus an existing leaf showing `terminal`. Returns whether one was found.
     pub fn reveal(&mut self, terminal: &str) -> bool {
         let found = self.tabs.iter().find_map(|tab| {
-            placements(&tab.root).into_iter().find_map(|placement| {
-                (placement.terminal_label == terminal
-                    || placement
-                        .terminal_id
-                        .as_ref()
-                        .is_some_and(|id| terminal_label(id) == terminal))
-                .then(|| (tab.id.clone(), placement.id.clone()))
-            })
+            placements(&tab.root)
+                .into_iter()
+                .find(|placement| {
+                    placement.terminal_label == terminal
+                        || placement
+                            .terminal_id
+                            .as_ref()
+                            .is_some_and(|id| terminal_label(id) == terminal)
+                })
+                .map(|placement| (tab.id.clone(), placement.id.clone()))
         });
-        if let Some((tab_id, placement_id)) = found {
-            self.focus_placement(&tab_id, &placement_id);
-            true
-        } else {
-            false
-        }
+        let Some((tab_id, placement_id)) = found else {
+            return false;
+        };
+        self.focus_placement(&tab_id, &placement_id);
+        true
     }
 
     /// Open a topology pane, attaching it without a geometry vote when needed.
     pub fn open(&mut self, connection: &Connection, pane: &PaneDescriptor) {
-        let label = terminal_label(&pane.terminal_id);
-        if self.reveal(&label) {
-            return;
+        if !self.reveal(&terminal_label(&pane.terminal_id))
+            && self.tab_when_ready(connection, &pane.terminal_id)
+        {
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(&pane.terminal_id);
         }
-        if connection.ready(&pane.terminal_id) {
+    }
+
+    /// Land a ready terminal in a new tab, or await it. Returns whether it waits.
+    fn tab_when_ready(&mut self, connection: &Connection, terminal: &ResourceId) -> bool {
+        let label = terminal_label(terminal);
+        if connection.ready(terminal) {
             self.land(connection, &label, Destination::Tab);
-            return;
+            return false;
         }
-        let _ = connection
-            .client
-            .attach_terminal_preserving_geometry(&pane.terminal_id);
         self.awaiting.insert(label, Destination::Tab);
+        true
     }
 
     /// The only path that asks the server to end a process. No retry.
     pub fn terminate(&mut self, connection: &Connection, terminal: &ResourceId) {
         let Some(identity) = connection.identity() else {
-            self.notice(
-                "error",
-                "Terminate refused",
-                Some("Not connected.".to_owned()),
-            );
+            self.error("Terminate refused", "Not connected.".to_owned());
             return;
         };
         if let Err(error) = connection.terminate(&identity, terminal) {
-            self.notice("error", error.title, Some(error.body));
+            self.error(error.title, error.body);
         }
-    }
-
-    /// Tabs and the active id, for persistence.
-    #[must_use]
-    pub fn snapshot(&self) -> (Vec<Tab>, String) {
-        (self.tabs.clone(), self.active_id.clone())
     }
 
     /// Release every view and forget pending work. Does not clear a remembered restore.
     pub fn release_all(&mut self, connection: &Connection) {
-        let placements = self
-            .tabs
-            .iter()
-            .flat_map(|tab| placements(&tab.root).into_iter().cloned())
-            .collect::<Vec<_>>();
-        self.release(connection, &placements);
+        let tabs = std::mem::take(&mut self.tabs);
+        self.release(
+            connection,
+            tabs.iter().flat_map(|tab| placements(&tab.root)),
+        );
         self.spawns.clear();
         self.awaiting.clear();
         self.unresolved.clear();
         self.attaching.clear();
         self.closed_terminals.clear();
         self.owners.clear();
-        self.tabs.clear();
         self.active_id.clear();
     }
 
@@ -633,33 +537,24 @@ impl Workspace {
     #[must_use]
     pub fn views_of(&self, terminal: &ResourceId) -> usize {
         let label = terminal_label(terminal);
-        self.tabs
-            .iter()
-            .map(|tab| {
-                placements(&tab.root)
-                    .into_iter()
-                    .filter(|placement| placement.terminal_label == label)
-                    .count()
-            })
-            .sum()
+        self.all_placements()
+            .filter(|placement| placement.terminal_label == label)
+            .count()
     }
 
     /// Whether this visible placement proposes the terminal's PTY size.
     #[must_use]
-    pub fn size_owner(&self, placement: &LeafPlacement) -> bool {
+    pub fn size_owner(&self, placement: &Placement) -> bool {
         let Some(tab) = self.active_tab() else {
             return false;
         };
-        let visible: Vec<&LeafPlacement> = if let Some(zoomed) = &tab.zoomed_id {
-            placements(&tab.root)
-                .into_iter()
-                .filter(|item| &item.id == zoomed)
-                .collect()
-        } else {
-            placements(&tab.root)
-        };
-        let siblings: Vec<&LeafPlacement> = visible
+        let siblings: Vec<&Placement> = placements(&tab.root)
             .into_iter()
+            .filter(|item| {
+                tab.zoomed_id
+                    .as_ref()
+                    .is_none_or(|zoomed| &item.id == zoomed)
+            })
             .filter(|item| item.terminal_label == placement.terminal_label)
             .collect();
         let claimed = self
@@ -678,27 +573,24 @@ impl Workspace {
         cwd: Option<&str>,
         session_id: Option<u32>,
     ) {
-        let mut request = SpawnRequest::default();
-        let focused = self.focused_cwd(connection);
-        let place = place_for(
-            focused
-                .as_deref()
-                .map(|directory| phux_client_core::organization::Place {
-                    host: None,
-                    directory: Some(directory.to_owned()),
-                })
-                .as_ref(),
-            cwd.map(|directory| phux_client_core::organization::Place {
+        let focused = self.focused_pane(connection);
+        let place = organization::place_for(
+            Some(&Place {
                 host: None,
-                directory: Some(directory.to_owned()),
-            })
-            .as_ref(),
+                directory: focused.and_then(|pane| pane.cwd.clone()),
+            }),
+            PlaceSource::Explicit {
+                host: None,
+                directory: cwd.map(str::to_owned),
+            },
         );
-        if let Some(directory) = place.directory {
-            request.cwd = Some(directory);
-        }
-        let inherited = session_id.or_else(|| self.focused_session(connection));
-        request.session_id = inherited.or_else(|| connection.home_session());
+        let mut request = SpawnRequest {
+            cwd: place.directory,
+            session_id: session_id
+                .or_else(|| focused.map(|pane| pane.session_id))
+                .or_else(|| connection.home_session()),
+            ..SpawnRequest::default()
+        };
         if let Some(size) = self.predicted_size(connection, &destination)
             && size.0 >= 2
             && size.1 >= 1
@@ -709,7 +601,7 @@ impl Workspace {
             Ok(id) => {
                 self.spawns.insert(id, destination);
             }
-            Err(error) => self.notice("error", error.title, Some(error.body)),
+            Err(error) => self.error(error.title, error.body),
         }
     }
 
@@ -725,14 +617,14 @@ impl Workspace {
         {
             return None;
         }
-        let view = self.focused()?.view_id?;
-        let (cols, rows) = view_cells(&connection.client, view)?;
+        let frame = connection.client.acquire_view(self.focused()?.view_id?)?;
+        let (cols, rows) = (frame.cols, frame.rows);
         if cols < 4 || rows < 4 {
             return None;
         }
-        if matches!(destination, Destination::Tab) {
+        let Destination::Split { axis, .. } = destination else {
             return Some((cols, rows));
-        }
+        };
         let header = if self
             .active_tab()
             .is_some_and(|tab| placements(&tab.root).len() == 1)
@@ -741,58 +633,41 @@ impl Workspace {
         } else {
             0
         };
-        let axis = match destination {
-            Destination::Split { axis, .. } => *axis,
-            Destination::Tab => return Some((cols, rows)),
-        };
         Some(match axis {
-            SplitAxis::Row => ((cols.saturating_sub(1)) / 2, rows.saturating_sub(header)),
-            SplitAxis::Column => (cols, ((rows.saturating_sub(1)) / 2).saturating_sub(header)),
+            Axis::Row => ((cols.saturating_sub(1)) / 2, rows.saturating_sub(header)),
+            Axis::Column => (cols, ((rows.saturating_sub(1)) / 2).saturating_sub(header)),
         })
-    }
-
-    fn focused_cwd(&self, connection: &Connection) -> Option<String> {
-        let placement = self.focused()?;
-        let id = placement.terminal_id.as_ref()?;
-        connection.pane(id)?.cwd.clone()
-    }
-
-    fn focused_session(&self, connection: &Connection) -> Option<u32> {
-        let placement = self.focused()?;
-        let id = placement.terminal_id.as_ref()?;
-        Some(connection.pane(id)?.session_id)
     }
 
     fn answered(&mut self, request_id: u32, terminal: Option<&ResourceId>, error: Option<&str>) {
         let Some(destination) = self.spawns.remove(&request_id) else {
             return;
         };
-        if error.is_some() || terminal.is_none() {
-            self.notice(
-                "error",
+        match (terminal, error) {
+            (Some(terminal), None) => {
+                self.awaiting.insert(terminal_label(terminal), destination);
+            }
+            _ => self.error(
                 "Could not start a terminal",
-                Some(error.unwrap_or("The server named no terminal.").to_owned()),
-            );
-            return;
-        }
-        if let Some(terminal) = terminal {
-            self.awaiting.insert(terminal_label(terminal), destination);
+                error.unwrap_or("The server named no terminal.").to_owned(),
+            ),
         }
     }
 
     fn closed(&mut self, label: &str) {
         self.closed_terminals.insert(label.to_owned());
         self.awaiting.remove(label);
-        let doomed: Vec<LeafPlacement> = self
-            .tabs
-            .iter()
-            .flat_map(|tab| placements(&tab.root).into_iter().cloned())
+        let doomed: Vec<String> = self
+            .all_placements()
             .filter(|placement| placement.terminal_label == label)
+            .map(|placement| placement.id.clone())
             .collect();
         if doomed.is_empty() {
             return;
         }
-        self.release_placements(&doomed);
+        for id in &doomed {
+            self.unresolved.remove(id);
+        }
         self.tabs = without_terminal(std::mem::take(&mut self.tabs), label);
         if !self.tabs.iter().any(|tab| tab.id == self.active_id) {
             self.active_id = self
@@ -812,34 +687,33 @@ impl Workspace {
             .restoring
             .take()
             .filter(|layout| layout.server_id == server);
-        if let Some(layout) = layout {
-            let tabs = layout
-                .tabs
-                .iter()
-                .flat_map(|tab| self.restore_tab(connection, tab))
-                .collect::<Vec<_>>();
-            let active = tabs
-                .iter()
-                .find(|tab| Some(tab.id.as_str()) == layout.active_tab.as_deref())
-                .or_else(|| tabs.first())
-                .map(|tab| tab.id.clone())
-                .unwrap_or_default();
-            self.tabs = tabs;
-            self.active_id = active;
-            // An explicit project open may have reseeded a shell since this
-            // window last saved its layout. Keep the splits, but show that
-            // shell too (or reveal its existing placement).
-            if let Some(initial) = self.options.initial_terminal.as_ref()
-                && let Some(pane) = connection.pane(initial).cloned()
-            {
-                self.open(connection, &pane);
-            }
+        let Some(layout) = layout else {
+            self.open_initial(connection);
             return;
+        };
+        let tabs: Vec<DeskTab> = layout
+            .tabs
+            .iter()
+            .filter_map(|tab| self.restore_tab(connection, tab))
+            .collect();
+        self.active_id = tabs
+            .iter()
+            .find(|tab| Some(tab.id.as_str()) == layout.active_tab.as_deref())
+            .or_else(|| tabs.first())
+            .map(|tab| tab.id.clone())
+            .unwrap_or_default();
+        self.tabs = tabs;
+        // An explicit project open may have reseeded a shell since this
+        // window last saved its layout. Keep the splits, but show that
+        // shell too (or reveal its existing placement).
+        if let Some(initial) = self.options.initial_terminal.as_ref()
+            && let Some(pane) = connection.pane(initial).cloned()
+        {
+            self.open(connection, &pane);
         }
-        self.open_initial(connection);
     }
 
-    fn restore_tab(&mut self, connection: &Connection, saved: &persist::SavedTab) -> Option<Tab> {
+    fn restore_tab(&mut self, connection: &Connection, saved: &SavedTab) -> Option<DeskTab> {
         let root = self.rebuild(connection, &saved.root)?;
         let items = placements(&root);
         let focus = items
@@ -855,7 +729,7 @@ impl Workspace {
         if let Some(focus) = focus {
             self.claim(focus);
         }
-        Some(Tab {
+        Some(DeskTab {
             id: saved.id.clone(),
             title: saved.title.clone(),
             focused_id: focus
@@ -867,8 +741,8 @@ impl Workspace {
     }
 
     fn open_initial(&mut self, connection: &Connection) {
-        if let Some(initial) = self.options.initial_terminal.clone()
-            && let Some(pane) = connection.pane(&initial).cloned()
+        if let Some(initial) = self.options.initial_terminal.as_ref()
+            && let Some(pane) = connection.pane(initial).cloned()
         {
             self.open(connection, &pane);
             return;
@@ -881,30 +755,23 @@ impl Workspace {
             .panes()
             .iter()
             .find(|pane| pane.session_name == self.session)
-            .cloned();
+            .map(|pane| pane.terminal_id.clone());
         if let Some(home) = home {
-            let label = terminal_label(&home.terminal_id);
-            if connection.ready(&home.terminal_id) {
-                self.land(connection, &label, Destination::Tab);
-            } else {
-                self.awaiting.insert(label, Destination::Tab);
-            }
-            return;
-        }
-        if !self.preserve_empty {
+            self.tab_when_ready(connection, &home);
+        } else if !self.preserve_empty {
             self.request(connection, Destination::Tab, None, None);
         }
     }
 
-    fn rebuild(&mut self, connection: &Connection, node: &StoredNode) -> Option<Node> {
+    fn rebuild(&mut self, connection: &Connection, node: &SavedNode) -> Option<LayoutNode> {
         match node {
-            StoredNode::Leaf { id, terminal_id } => {
+            SavedNode::Leaf { id, terminal_id } => {
                 if self.closed_terminals.contains(terminal_id) {
                     return None;
                 }
                 Some(leaf(self.place(connection, terminal_id, id.clone())))
             }
-            StoredNode::Split {
+            SavedNode::Split {
                 axis,
                 ratio,
                 first,
@@ -914,7 +781,7 @@ impl Workspace {
                 let second = self.rebuild(connection, second);
                 match (first, second) {
                     (None, other) | (other, None) => other,
-                    (Some(first), Some(second)) => Some(Node::Split {
+                    (Some(first), Some(second)) => Some(LayoutNode::Split {
                         id: new_id("split"),
                         axis: *axis,
                         ratio: *ratio,
@@ -935,18 +802,61 @@ impl Workspace {
             .iter()
             .map(|pane| terminal_label(&pane.terminal_id))
             .collect();
-        for tab in &mut self.tabs {
-            let next = resolve_node(
-                &mut self.unresolved,
-                &mut self.attaching,
-                &mut self.noticed_create,
-                &mut self.notices,
-                connection,
-                &live,
-                &tab.root,
-            );
-            if let Some(root) = next {
-                tab.root = root;
+        let mut tabs = std::mem::take(&mut self.tabs);
+        for placement in tabs
+            .iter_mut()
+            .flat_map(|tab| placements_mut(&mut tab.root))
+        {
+            self.resolve(connection, &live, placement);
+        }
+        self.tabs = tabs;
+    }
+
+    /// Give an unresolved placement its view once its terminal is ready.
+    fn resolve(
+        &mut self,
+        connection: &Connection,
+        live: &HashSet<String>,
+        placement: &mut Placement,
+    ) {
+        if !self.unresolved.contains(&placement.id) {
+            return;
+        }
+        let Some(terminal) = placement.terminal_id.clone() else {
+            return;
+        };
+        if !connection.ready(&terminal) {
+            if live.contains(&placement.terminal_label)
+                && self.attaching.insert(placement.terminal_label.clone())
+            {
+                let _ = connection
+                    .client
+                    .attach_terminal_preserving_geometry(&terminal);
+            }
+            return;
+        }
+        if let Some(view) = self.view_for(connection, &terminal, &placement.id) {
+            self.unresolved.remove(&placement.id);
+            placement.view_id = Some(view);
+        }
+    }
+
+    /// A view of a ready terminal. A failure is noticed once per placement.
+    fn view_for(
+        &mut self,
+        connection: &Connection,
+        terminal: &ResourceId,
+        placement_id: &str,
+    ) -> Option<ViewId> {
+        let view = connection.client.create_view(terminal);
+        log::debug!("create view for {terminal:?}: {view:?}");
+        match view {
+            Ok(view) => Some(view),
+            Err(error) => {
+                if self.noticed_create.insert(placement_id.to_owned()) {
+                    self.error("Could not open terminal", error.to_string());
+                }
+                None
             }
         }
     }
@@ -960,68 +870,39 @@ impl Workspace {
             axis,
             before,
         } = &destination
-            && self.destination_alive(tab_id, target_id)
+            && let Some(tab) = self
+                .tabs
+                .iter_mut()
+                .find(|tab| &tab.id == tab_id && find_placement(&tab.root, target_id).is_some())
         {
-            let id = placement.id.clone();
-            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == tab_id) {
-                tab.zoomed_id = None;
-                tab.root = split_at(
-                    std::mem::replace(&mut tab.root, empty_leaf()),
-                    target_id,
-                    placement,
-                    *axis,
-                    *before,
-                );
-                tab.focused_id = id;
-            }
+            insert_beside(tab, target_id, placement, *axis, *before);
             self.active_id.clone_from(tab_id);
             return;
         }
         let id = new_id("tab");
-        let focused = placement.id.clone();
-        self.tabs.push(Tab {
+        self.tabs.push(DeskTab {
             id: id.clone(),
             title: None,
+            focused_id: placement.id.clone(),
             root: leaf(placement),
-            focused_id: focused,
             zoomed_id: None,
         });
         self.active_id = id;
     }
 
-    fn destination_alive(&self, tab_id: &str, target_id: &str) -> bool {
-        self.tabs
-            .iter()
-            .any(|tab| tab.id == tab_id && find_placement(&tab.root, target_id).is_some())
-    }
-
-    fn place(&mut self, connection: &Connection, label: &str, id: Option<String>) -> LeafPlacement {
+    fn place(&mut self, connection: &Connection, label: &str, id: Option<String>) -> Placement {
         let id = id
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| new_id("place"));
         let terminal_id = parse_terminal(label);
-        let view_id = terminal_id.as_ref().and_then(|terminal| {
-            if !connection.ready(terminal) {
-                return None;
-            }
-            match create_view(&connection.client, terminal) {
-                Ok(view) => Some(view),
-                Err(error) => {
-                    if self.noticed_create.insert(id.clone()) {
-                        self.notices.push(Notice {
-                            kind: "error",
-                            title: "Could not open terminal".to_owned(),
-                            body: Some(error),
-                        });
-                    }
-                    None
-                }
-            }
-        });
+        let view_id = terminal_id
+            .as_ref()
+            .filter(|terminal| connection.ready(terminal))
+            .and_then(|terminal| self.view_for(connection, terminal, &id));
         if view_id.is_none() {
             self.unresolved.insert(id.clone());
         }
-        LeafPlacement {
+        Placement {
             id,
             terminal_id,
             terminal_label: label.to_owned(),
@@ -1029,23 +910,22 @@ impl Workspace {
         }
     }
 
-    fn claim(&mut self, placement: &LeafPlacement) {
+    fn claim(&mut self, placement: &Placement) {
         self.owners
             .insert(placement.terminal_label.clone(), placement.id.clone());
     }
 
-    fn release(&mut self, connection: &Connection, placements: &[LeafPlacement]) {
-        self.release_placements(placements);
-        for placement in placements {
-            if let Some(view) = placement.view_id {
-                destroy_view(&connection.client, view);
-            }
-        }
-    }
-
-    fn release_placements(&mut self, placements: &[LeafPlacement]) {
+    fn release<'a>(
+        &mut self,
+        connection: &Connection,
+        placements: impl IntoIterator<Item = &'a Placement>,
+    ) {
         for placement in placements {
             self.unresolved.remove(&placement.id);
+            if let Some(view) = placement.view_id {
+                // A view of a closed client died with it; there is nothing to release.
+                let _ = connection.client.destroy_view(view);
+            }
         }
     }
 
@@ -1057,131 +937,33 @@ impl Workspace {
             return;
         }
         if self.server_id.is_some() {
-            let placements = self
-                .tabs
-                .iter()
-                .flat_map(|tab| placements(&tab.root).into_iter().cloned())
-                .collect::<Vec<_>>();
-            self.release(connection, &placements);
-            self.spawns.clear();
-            self.awaiting.clear();
-            self.unresolved.clear();
-            self.attaching.clear();
-            self.closed_terminals.clear();
-            self.owners.clear();
-            self.tabs.clear();
-            self.active_id.clear();
+            self.release_all(connection);
             self.restoring = None;
             self.restored = false;
         }
         self.server_id = Some(current);
     }
 
-    fn notice(&mut self, kind: &'static str, title: &str, body: Option<String>) {
+    fn error(&mut self, title: &str, body: String) {
         self.notices.push(Notice {
-            kind,
+            kind: "error",
             title: title.to_owned(),
-            body,
+            body: Some(body),
         });
     }
 }
 
-fn empty_leaf() -> Node {
-    leaf(LeafPlacement {
-        id: String::new(),
-        terminal_id: None,
-        terminal_label: String::new(),
-        view_id: None,
-    })
-}
-
-fn resolve_node(
-    unresolved: &mut HashSet<String>,
-    attaching: &mut HashSet<String>,
-    noticed: &mut HashSet<String>,
-    notices: &mut Vec<Notice>,
-    connection: &Connection,
-    live: &HashSet<String>,
-    node: &Node,
-) -> Option<Node> {
-    match node {
-        Node::Leaf { placement } => {
-            if !unresolved.contains(&placement.id) {
-                return None;
-            }
-            let terminal = placement.terminal_id.clone()?;
-            if !connection.ready(&terminal) {
-                if live.contains(&placement.terminal_label)
-                    && attaching.insert(placement.terminal_label.clone())
-                {
-                    let _ = connection
-                        .client
-                        .attach_terminal_preserving_geometry(&terminal);
-                }
-                return None;
-            }
-            match create_view(&connection.client, &terminal) {
-                Ok(view) => {
-                    unresolved.remove(&placement.id);
-                    let mut next = placement.clone();
-                    next.view_id = Some(view);
-                    Some(leaf(next))
-                }
-                Err(error) => {
-                    if noticed.insert(placement.id.clone()) {
-                        notices.push(Notice {
-                            kind: "error",
-                            title: "Could not open terminal".to_owned(),
-                            body: Some(error),
-                        });
-                    }
-                    None
-                }
-            }
-        }
-        Node::Split {
-            id,
-            axis,
-            ratio,
-            first,
-            second,
-        } => {
-            let next_first = resolve_node(
-                unresolved, attaching, noticed, notices, connection, live, first,
-            );
-            let next_second = resolve_node(
-                unresolved, attaching, noticed, notices, connection, live, second,
-            );
-            if next_first.is_none() && next_second.is_none() {
-                return None;
-            }
-            Some(Node::Split {
-                id: id.clone(),
-                axis: *axis,
-                ratio: *ratio,
-                first: Box::new(next_first.unwrap_or_else(|| first.as_ref().clone())),
-                second: Box::new(next_second.unwrap_or_else(|| second.as_ref().clone())),
-            })
-        }
-    }
-}
-
-fn create_view(client: &Client, terminal: &ResourceId) -> Result<ViewId, String> {
-    let view = client
-        .create_view(terminal)
-        .map_err(|error| error.to_string());
-    log::debug!("create view for {terminal:?}: {view:?}");
-    view
-}
-
-fn destroy_view(client: &Client, view: ViewId) {
-    // A view of a closed client died with it; there is nothing to release.
-    let _ = client.destroy_view(view);
-}
-
-fn view_cells(client: &Client, view: ViewId) -> Option<(u16, u16)> {
-    let frame = client.acquire_view(view)?;
-    Some((frame.cols, frame.rows))
+/// Put `placement` beside `target_id` and focus it. Ends zoom.
+fn insert_beside(
+    tab: &mut DeskTab,
+    target_id: &str,
+    placement: Placement,
+    axis: Axis,
+    before: bool,
+) {
+    tab.zoomed_id = None;
+    tab.focused_id = placement.id.clone();
+    split_at(&mut tab.root, target_id, placement, axis, before);
 }
 
 /// Save the current tabs when the incarnation matches. Display-only updates
@@ -1196,8 +978,24 @@ pub fn snapshot_layout(
     if connection.server_id().as_deref() != Some(server) || connection.status != Status::Attached {
         return None;
     }
-    let (tabs, active) = workspace.snapshot();
-    Some(save_layout(server, &tabs, display, Some(active.as_str())))
+    Some(save_layout(
+        server,
+        &workspace.tabs,
+        display,
+        Some(&workspace.active_id),
+    ))
+}
+
+/// Refuse a `phux new` that would fall back to the desktop process directory.
+#[must_use]
+pub fn create_session_error(name: &str, directory: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        return Some("A session needs a name.");
+    }
+    if directory.trim().is_empty() {
+        return Some("A new session needs the focused directory or a chosen folder.");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1220,14 +1018,14 @@ mod home_tests {
             .insert(terminal_label(&ResourceId::local(2)), Destination::Tab);
         assert!(!workspace.awaiting_output(&[event(1)]));
         assert!(workspace.awaiting_output(&[event(2)]));
-        let placement = LeafPlacement {
+        let placement = Placement {
             id: "restored-placement".into(),
             terminal_id: Some(ResourceId::local(3)),
             terminal_label: "@3".into(),
             view_id: None,
         };
         workspace.unresolved.insert(placement.id.clone());
-        workspace.tabs.push(Tab {
+        workspace.tabs.push(DeskTab {
             id: "tab".into(),
             title: None,
             focused_id: placement.id.clone(),
@@ -1248,14 +1046,14 @@ mod home_tests {
         (dial, connection)
     }
 
-    fn one_pane_tab(tab: &str, terminal: u32) -> Tab {
-        let placement = LeafPlacement {
+    fn one_pane_tab(tab: &str, terminal: u32) -> DeskTab {
+        let placement = Placement {
             id: format!("{tab}-place"),
             terminal_id: Some(ResourceId::local(terminal)),
             terminal_label: terminal_label(&ResourceId::local(terminal)),
             view_id: None,
         };
-        Tab {
+        DeskTab {
             id: tab.into(),
             title: None,
             focused_id: placement.id.clone(),
@@ -1268,7 +1066,7 @@ mod home_tests {
         Destination::Split {
             tab_id: tab.into(),
             target_id: format!("{tab}-place"),
-            axis: SplitAxis::Row,
+            axis: Axis::Row,
             before: false,
         }
     }
@@ -1286,7 +1084,7 @@ mod home_tests {
         workspace.place_ready(connection, &label, destination);
     }
 
-    fn leaves(tab: &Tab) -> Vec<String> {
+    fn leaves(tab: &DeskTab) -> Vec<String> {
         placements(&tab.root)
             .into_iter()
             .map(|placement| placement.terminal_label.clone())
@@ -1333,7 +1131,7 @@ mod home_tests {
         let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
         workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
         workspace.active_id = "b".into();
-        let before = workspace.snapshot();
+        let before = (workspace.tabs.clone(), workspace.active_id.clone());
         workspace.spawns.insert(7, split_of("b"));
         workspace.answered(7, None, Some("refused"));
         assert_eq!(workspace.pending(), 0);
@@ -1344,7 +1142,10 @@ mod home_tests {
         // destination left, so it cannot split the focused pane.
         workspace.answered(7, Some(&ResourceId::local(9)), None);
         assert!(workspace.awaiting.is_empty());
-        assert_eq!(workspace.snapshot(), before);
+        assert_eq!(
+            (workspace.tabs.clone(), workspace.active_id.clone()),
+            before
+        );
     }
 
     #[test]

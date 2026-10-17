@@ -20,11 +20,13 @@ use crate::settings::{Backdrop, Skin, TabPosition};
 
 use super::desk::{Desk, Modal};
 use super::host::RemoteHost;
-use super::keys::gpui_stroke;
+use super::view::keystroke;
 
 const WIDTH: f32 = 316.;
 const INSET: f32 = 8.;
 const ROW: f32 = 40.;
+/// Space above a row that starts a group.
+const GAP: f32 = 8.;
 const HEADER: f32 = 68.;
 const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 11. + 16.;
 
@@ -48,9 +50,16 @@ fn span_progress(elapsed: Duration, span: Duration) -> f32 {
     (elapsed.as_secs_f32() / span.as_secs_f32()).clamp(0., 1.)
 }
 
+/// The catalogued command `id`.
+fn builtin(id: &str) -> Option<&'static crate::settings::CommandSpec> {
+    crate::settings::builtin_commands()
+        .iter()
+        .find(|command| command.id == id)
+}
+
 /// Whether the skin wants the compositor material behind the menu.
 fn wants_glass(skin: &Skin) -> bool {
-    matches!(skin.material.backdrop, Backdrop::Glass | Backdrop::Blur)
+    skin.material.backdrop == Backdrop::Glass
 }
 
 /// Foreground washes on the menu, softer than the sheet's because the
@@ -175,6 +184,32 @@ struct MenuSnapshot {
     skin: Skin,
 }
 
+#[cfg(any(test, feature = "ui-fixtures"))]
+impl MenuSnapshot {
+    /// A local menu with the default chords.
+    fn fixture(skin: Skin, hosts: Vec<RemoteHost>) -> Self {
+        let chords = crate::settings::default_chords();
+        Self {
+            current: None,
+            hosts,
+            chords: crate::settings::shown_chords(&chords, &chords),
+            tab_position: TabPosition::Top,
+            skin,
+        }
+    }
+}
+
+/// An ownerless menu in `window`, for previews and tests.
+#[cfg(any(test, feature = "ui-fixtures"))]
+fn fixture(
+    snapshot: MenuSnapshot,
+    max_height: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Entity<GlassMenu> {
+    cx.new(|cx| GlassMenu::new(snapshot, None, max_height, window, cx))
+}
+
 pub(super) struct GlassMenu {
     owner: Option<MenuOwner>,
     focus: FocusHandle,
@@ -274,6 +309,10 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
     );
     match result {
         Ok(handle) => {
+            let close = move |cx: &mut App| {
+                let _ =
+                    AnyWindowHandle::from(handle).update(cx, |_, window, _| window.remove_window());
+            };
             let entity = handle.entity(cx).expect("new menu root");
             entity.update(cx, |menu, cx| {
                 menu._subscriptions.push(cx.observe_window_bounds(
@@ -284,19 +323,16 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
                         if parent.bounds() == bounds {
                             return;
                         }
-                        let _ = AnyWindowHandle::from(handle)
-                            .update(cx, |_, window, _| window.remove_window());
+                        close(cx);
                         menu.closing = Some(Instant::now());
                     },
                 ));
                 menu._subscriptions.push(cx.observe_window_visibility(
                     window,
                     move |_, visibility, _, cx| {
-                        if visibility.is_visible() {
-                            return;
+                        if !visibility.is_visible() {
+                            close(cx);
                         }
-                        let _ = AnyWindowHandle::from(handle)
-                            .update(cx, |_, window, _| window.remove_window());
                     },
                 ));
                 // The desk notifies on every frame of a skin shift; follow it.
@@ -309,10 +345,7 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
                         }
                     }));
                 menu._subscriptions
-                    .push(cx.observe_release(&owner, move |_, _, cx| {
-                        let _ = AnyWindowHandle::from(handle)
-                            .update(cx, |_, window, _| window.remove_window());
-                    }));
+                    .push(cx.observe_release(&owner, move |_, _, cx| close(cx)));
             });
             desk.main_menu = Some(handle);
         }
@@ -376,17 +409,13 @@ impl GlassMenu {
     }
 
     fn command(&self, id: &'static str, icon: IconName) -> Entry {
-        let spec = crate::settings::builtin_commands()
-            .iter()
-            .find(|command| command.id == id)
-            .expect("menu command catalogue");
+        let spec = builtin(id).expect("menu command catalogue");
         let mut entry = Entry::new(spec.title, icon, Choice::Command(id));
         entry.chord = self
             .chords
             .iter()
             .find(|(command, _)| command == id)
-            .and_then(|(_, chord)| gpui_stroke(chord))
-            .and_then(|chord| Keystroke::parse(&chord).ok());
+            .and_then(|(_, chord)| keystroke(chord));
         entry
     }
 
@@ -464,16 +493,23 @@ impl GlassMenu {
         if entry.detail.is_some() { 54. } else { ROW }
     }
 
-    fn row_y(&self, index: usize) -> f32 {
-        self.entries
-            .iter()
-            .take(index)
-            .map(|entry| Self::row_height(entry) + if entry.gap { 8. } else { 0. })
-            .sum::<f32>()
-            + if self.entries[index].gap { 8. } else { 0. }
+    fn gap(entry: &Entry) -> f32 {
+        if entry.gap { GAP } else { 0. }
     }
 
-    fn page(&mut self, page: Page, _window: &mut Window, cx: &mut Context<Self>) {
+    /// Height of rows `..end`, each with its gap.
+    fn rows_height(&self, end: usize) -> f32 {
+        self.entries[..end]
+            .iter()
+            .map(|entry| Self::gap(entry) + Self::row_height(entry))
+            .sum()
+    }
+
+    fn row_y(&self, index: usize) -> f32 {
+        self.rows_height(index) + Self::gap(&self.entries[index])
+    }
+
+    fn page(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.closing.is_some() {
             return;
         }
@@ -482,13 +518,7 @@ impl GlassMenu {
         self.selected = None;
         self.scroll = ScrollHandle::new();
         self.page_generation += 1;
-        let height = HEADER
-            + INSET
-            + self
-                .entries
-                .iter()
-                .map(|entry| Self::row_height(entry) + if entry.gap { 8. } else { 0. })
-                .sum::<f32>();
+        let height = HEADER + INSET + self.rows_height(self.entries.len());
         self.surface.target = height.min(self.max_height);
         cx.notify();
     }
@@ -502,7 +532,7 @@ impl GlassMenu {
         // finish when the user switches Spaces or the app deactivates.
         let handle = window.window_handle();
         let exit = self.skin.motion.menu_exit();
-        if self.reduced(cx) {
+        if cx.reduce_motion() {
             window.remove_window();
         } else {
             cx.spawn(async move |_, cx| {
@@ -528,7 +558,7 @@ impl GlassMenu {
             return;
         }
         if let Choice::Page(page) = choice {
-            self.page(page, window, cx);
+            self.page(page, cx);
             return;
         }
         self.dismiss(true, window, cx);
@@ -544,6 +574,12 @@ impl GlassMenu {
                 Choice::Page(_) => {}
             });
         });
+    }
+
+    /// The header opens the host list from home and goes home from a page.
+    fn header_click(&mut self, cx: &mut Context<Self>) {
+        let home = self.page == Page::Commands;
+        self.page(if home { Page::Hosts } else { Page::Commands }, cx);
     }
 
     fn move_selection(&mut self, up: bool, window: &Window, cx: &mut Context<Self>) {
@@ -581,12 +617,7 @@ impl GlassMenu {
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.selected else {
-            let page = if self.page == Page::Commands {
-                Page::Hosts
-            } else {
-                Page::Commands
-            };
-            self.page(page, window, cx);
+            self.header_click(cx);
             return;
         };
         let choice = self.entries[index].choice.clone();
@@ -599,25 +630,10 @@ impl GlassMenu {
         let command = self
             .chords
             .iter()
-            .find(|(_, chord)| {
-                gpui_stroke(chord)
-                    .and_then(|chord| Keystroke::parse(&chord).ok())
-                    .as_ref()
-                    == Some(stroke)
-            })
-            .and_then(|(id, _)| {
-                crate::settings::builtin_commands()
-                    .iter()
-                    .find(|command| command.id == id)
-            });
+            .find(|(_, chord)| keystroke(chord).as_ref() == Some(stroke))
+            .and_then(|(id, _)| builtin(id));
         if let Some(command) = command {
             self.choose(Choice::Command(command.id), window, cx);
-        }
-    }
-
-    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != Page::Commands {
-            self.page(Page::Commands, window, cx);
         }
     }
 
@@ -645,17 +661,13 @@ impl GlassMenu {
         self.pointer = window.mouse_position();
         match event.keystroke.key.as_str() {
             "escape" => self.dismiss(true, window, cx),
-            "left" => self.back(window, cx),
+            "left" if self.page != Page::Commands => self.page(Page::Commands, cx),
+            "left" => {}
             "up" | "down" => self.move_selection(event.keystroke.key == "up", window, cx),
             "enter" | "space" => self.activate_selection(false, window, cx),
             "right" => self.activate_selection(true, window, cx),
             _ => self.shortcut(&event.keystroke, window, cx),
         }
-    }
-
-    /// Motion is off: the platform asks for less, or the skin has none.
-    fn reduced(&self, cx: &App) -> bool {
-        cx.reduce_motion() || !self.skin.motion.enabled
     }
 
     fn opacity(&self, now: Instant, reduced: bool) -> (f32, bool) {
@@ -674,7 +686,7 @@ impl GlassMenu {
     /// Called only during render, where GPUI permits animation frame requests.
     fn animate_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let reduced = self.reduced(cx);
+        let reduced = cx.reduce_motion();
         let moving = self.surface.advance(now, reduced, spring(&self.skin));
         let height = self.surface.height.position;
         if (window.viewport_size().height.as_f32() - height).abs() > 0.5 {
@@ -691,31 +703,24 @@ impl GlassMenu {
         }
     }
 
-    fn header_icon(&self) -> IconName {
-        match (self.page, self.current.is_some()) {
-            (Page::Commands, true) => IconName::Server,
-            (Page::Commands, false) => IconName::LaptopMinimal,
-            _ => IconName::ChevronLeft,
-        }
-    }
-
     fn header(&self, ink: Hsla, washes: Washes, cx: &mut Context<Self>) -> impl IntoElement {
         let home = self.page == Page::Commands;
-        let title: SharedString = match self.page {
-            Page::Commands => self
-                .current
-                .clone()
-                .unwrap_or_else(|| "Local".into())
-                .into(),
-            Page::Panes => "Pane layout".into(),
-            Page::Tabs => "Tab placement".into(),
-            Page::Hosts => "Switch host".into(),
+        let (title, detail): (SharedString, _) = match self.page {
+            Page::Commands => (
+                self.current
+                    .clone()
+                    .unwrap_or_else(|| "Local".into())
+                    .into(),
+                "Switch host",
+            ),
+            Page::Panes => ("Pane layout".into(), "Split or duplicate this terminal"),
+            Page::Tabs => ("Tab placement".into(), "Choose top or side workspace tabs"),
+            Page::Hosts => ("Switch host".into(), "Local and saved hosts"),
         };
-        let detail = match self.page {
-            Page::Commands => "Switch host",
-            Page::Panes => "Split or duplicate this terminal",
-            Page::Tabs => "Choose top or side workspace tabs",
-            Page::Hosts => "Local and saved hosts",
+        let icon = match (home, self.current.is_some()) {
+            (true, true) => IconName::Server,
+            (true, false) => IconName::LaptopMinimal,
+            (false, _) => IconName::ChevronLeft,
         };
         div()
             .id("glass-menu-header")
@@ -735,9 +740,7 @@ impl GlassMenu {
             .items_center()
             .gap(px(12.))
             .cursor_pointer()
-            .on_click(cx.listener(move |menu, _, window, cx| {
-                menu.page(if home { Page::Hosts } else { Page::Commands }, window, cx)
-            }))
+            .on_click(cx.listener(|menu, _, _, cx| menu.header_click(cx)))
             .child(
                 div()
                     .size(px(34.))
@@ -746,7 +749,7 @@ impl GlassMenu {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(Icon::new(self.header_icon()).size(px(17.))),
+                    .child(Icon::new(icon).size(px(17.))),
             )
             .child(
                 div()
@@ -841,7 +844,7 @@ impl Render for GlassMenu {
                     .relative()
                     .flex_shrink_0()
                     .h(px(Self::row_height(entry)))
-                    .mt(px(if entry.gap { 8. } else { 0. }))
+                    .mt(px(Self::gap(entry)))
                     .px(px(12.))
                     .flex()
                     .items_center()
@@ -919,10 +922,7 @@ impl Render for GlassMenu {
             .on_key_down(cx.listener(Self::key))
             .on_action(
                 cx.listener(|menu, action: &super::actions::Run, window, cx| {
-                    if let Some(command) = crate::settings::builtin_commands()
-                        .iter()
-                        .find(|command| command.id == action.id)
-                    {
+                    if let Some(command) = builtin(&action.id) {
                         menu.choose(Choice::Command(command.id), window, cx);
                     }
                 }),
@@ -965,10 +965,6 @@ pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
     // `PHUX_GLASS_PREVIEW_SKIN=terminal` previews the opaque skin.
     let skin =
         *crate::settings::skin_by_id(&std::env::var("PHUX_GLASS_PREVIEW_SKIN").unwrap_or_default());
-    let chords = crate::settings::shown_chords(
-        &crate::settings::default_chords(),
-        &crate::settings::default_chords(),
-    );
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(WIDTH), px(HOME_HEIGHT)), cx)),
@@ -983,30 +979,17 @@ pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
         },
         |window, cx| {
             window.set_window_title(&format!("{} menu", skin.name));
-            cx.new(|cx| {
-                GlassMenu::new(
-                    MenuSnapshot {
-                        current: None,
-                        hosts: vec![
-                            RemoteHost {
-                                name: "Studio".into(),
-                                endpoint: "ssh://studio.local".into(),
-                            },
-                            RemoteHost {
-                                name: "Build server".into(),
-                                endpoint: "quic://build.local:443".into(),
-                            },
-                        ],
-                        chords,
-                        tab_position: TabPosition::Top,
-                        skin,
-                    },
-                    None,
-                    700.,
-                    window,
-                    cx,
-                )
-            })
+            let hosts = vec![
+                RemoteHost {
+                    name: "Studio".into(),
+                    endpoint: "ssh://studio.local".into(),
+                },
+                RemoteHost {
+                    name: "Build server".into(),
+                    endpoint: "quic://build.local:443".into(),
+                },
+            ];
+            fixture(MenuSnapshot::fixture(skin, hosts), 700., window, cx)
         },
     )?;
     Ok(())
@@ -1033,24 +1016,7 @@ pub(super) fn benchmark(cx: &mut gpui::App) -> anyhow::Result<()> {
     for _ in 0..12 {
         let started = Instant::now();
         let menu = cx.open_window(options(), |window, cx| {
-            cx.new(|cx| {
-                GlassMenu::new(
-                    MenuSnapshot {
-                        current: None,
-                        hosts: Vec::new(),
-                        tab_position: TabPosition::Top,
-                        skin: GLASS,
-                        chords: crate::settings::shown_chords(
-                            &crate::settings::default_chords(),
-                            &crate::settings::default_chords(),
-                        ),
-                    },
-                    None,
-                    700.,
-                    window,
-                    cx,
-                )
-            })
+            fixture(MenuSnapshot::fixture(GLASS, Vec::new()), 700., window, cx)
         })?;
         samples.push(started.elapsed().as_micros());
         menu.update(cx, |_, window, _| window.remove_window())?;
@@ -1140,21 +1106,7 @@ mod tests {
         let handle = cx.update(|cx| {
             gpui_kit::init(cx);
             cx.open_window(WindowOptions::default(), |window, cx| {
-                cx.new(|cx| {
-                    GlassMenu::new(
-                        MenuSnapshot {
-                            current: None,
-                            hosts: Vec::new(),
-                            chords: Vec::new(),
-                            tab_position: TabPosition::Top,
-                            skin: GLASS,
-                        },
-                        None,
-                        700.,
-                        window,
-                        cx,
-                    )
-                })
+                fixture(MenuSnapshot::fixture(GLASS, Vec::new()), 700., window, cx)
             })
             .unwrap()
         });
@@ -1182,29 +1134,13 @@ mod tests {
                     ..Default::default()
                 },
                 |window, cx| {
-                    cx.new(|cx| {
-                        GlassMenu::new(
-                            MenuSnapshot {
-                                current: None,
-                                tab_position: TabPosition::Top,
-                                skin: GLASS,
-                                chords: crate::settings::shown_chords(
-                                    &crate::settings::default_chords(),
-                                    &crate::settings::default_chords(),
-                                ),
-                                hosts: (0..70)
-                                    .map(|index| RemoteHost {
-                                        name: format!("Host {index}"),
-                                        endpoint: "ssh://fixture.invalid".into(),
-                                    })
-                                    .collect(),
-                            },
-                            None,
-                            220.,
-                            window,
-                            cx,
-                        )
-                    })
+                    let hosts = (0..70)
+                        .map(|index| RemoteHost {
+                            name: format!("Host {index}"),
+                            endpoint: "ssh://fixture.invalid".into(),
+                        })
+                        .collect();
+                    fixture(MenuSnapshot::fixture(GLASS, hosts), 220., window, cx)
                 },
             )
             .unwrap()

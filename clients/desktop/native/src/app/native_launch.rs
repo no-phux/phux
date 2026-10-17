@@ -10,10 +10,10 @@ use super::color::from_hex;
 use super::desk::{Desk, Modal};
 use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
-use super::overlays::corner;
-use super::skin::{Look, Surface, Surfaced};
+use super::overlays::{card, corner};
+use super::skin::Look;
+use super::view::{ghost_button, muted};
 use crate::connection::Connection;
-use crate::settings::theme::Palette;
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -33,6 +33,16 @@ struct Pending {
     revealed: bool,
 }
 
+/// Whether `owner` still names `client`.
+fn owned_by(
+    owner: &std::sync::Weak<phux_client_runtime::Client>,
+    client: &std::sync::Arc<phux_client_runtime::Client>,
+) -> bool {
+    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(client))
+}
+
+const LAUNCHED: &str = "The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.";
+
 impl State {
     pub(super) fn owns_terminal(
         &self,
@@ -40,8 +50,7 @@ impl State {
         terminal: &ResourceId,
     ) -> bool {
         self.pending.as_ref().is_some_and(|pending| {
-            &pending.terminal == terminal
-                && std::ptr::eq(pending.owner.as_ptr(), std::sync::Arc::as_ptr(client))
+            &pending.terminal == terminal && owned_by(&pending.owner, client)
         })
     }
 }
@@ -142,43 +151,59 @@ impl Desk {
         self.native_launch.error = None;
         cx.spawn_in(window, async move |this, cx| {
             let destination = session.clone();
-            let result = smol::unblock(move || host::launch_native(&phux, &socket, &integration, &destination)).await;
+            let result = smol::unblock(move || {
+                host::launch_native(&phux, &socket, &integration, &destination)
+            })
+            .await;
             let _ = this.update_in(cx, |desk, window, cx| {
-                if !desk.link.as_ref().is_some_and(|link| {
-                    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(&link.connection.client))
-                }) {
+                if !desk
+                    .link
+                    .as_ref()
+                    .is_some_and(|link| owned_by(&owner, &link.connection.client))
+                {
                     return;
                 }
                 desk.native_launch.launching = None;
                 match result {
                     Ok(launched) => {
-                        desk.native_launch.pending = Some(Pending { owner, session, terminal: ResourceId::local(launched.terminal_id), agent: launched.agent_session_id, activation: launched.activation, revealed: false });
+                        desk.native_launch.pending = Some(Pending {
+                            owner,
+                            session,
+                            terminal: ResourceId::local(launched.terminal_id),
+                            agent: launched.agent_session_id,
+                            activation: launched.activation,
+                            revealed: false,
+                        });
                         desk.close_modal(window, cx);
                         desk.reveal_pending_native(cx);
-                        if let Some(link) = desk.link.as_ref() { let _ = link.connection.refresh_topology(); }
-                        desk.post(Kind::Info, "Native agent launched", Some("The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.".into()));
+                        if let Some(link) = desk.link.as_ref() {
+                            let _ = link.connection.refresh_topology();
+                        }
+                        desk.post(Kind::Info, "Native agent launched", Some(LAUNCHED.into()));
                     }
                     Err(error) => {
                         desk.native_launch.error = Some(error.clone());
-                        if desk.modal != Modal::NativeLaunch { desk.post(Kind::Error, "Native launch failed", Some(error)); }
+                        if desk.modal != Modal::NativeLaunch {
+                            desk.post(Kind::Error, "Native launch failed", Some(error));
+                        }
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
     pub(crate) fn reveal_pending_native(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.native_launch.pending.as_ref() else {
+        let Some(pending) = self
+            .native_launch
+            .pending
+            .as_ref()
+            .filter(|pending| !pending.revealed && pending_guardian_ready(self, pending))
+        else {
             return;
         };
-        if pending.revealed {
-            return;
-        }
-        if !pending_guardian_ready(self, pending) {
-            return;
-        }
         let terminal = pending.terminal.clone();
         if let Some(pending) = self.native_launch.pending.as_mut() {
             pending.revealed = true;
@@ -217,12 +242,8 @@ impl Desk {
 
 fn pending_connection<'a>(desk: &'a Desk, pending: &Pending) -> Option<&'a Connection> {
     let connection = &desk.link.as_ref()?.connection;
-    (desk.session == pending.session
-        && std::ptr::eq(
-            pending.owner.as_ptr(),
-            std::sync::Arc::as_ptr(&connection.client),
-        ))
-    .then_some(connection)
+    (desk.session == pending.session && owned_by(&pending.owner, &connection.client))
+        .then_some(connection)
 }
 
 fn pending_guardian_ready(desk: &Desk, pending: &Pending) -> bool {
@@ -252,12 +273,8 @@ fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
         })
 }
 
-pub(crate) fn panel(
-    desk: &Desk,
-    colors: &Palette,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
     let state = &desk.native_launch;
     let busy = state.loading || state.launching.is_some();
     let rows = state.integrations.iter().map(|item| {
@@ -302,28 +319,15 @@ pub(crate) fn panel(
                 item.native_detail
                     .as_ref()
                     .filter(|_| !item.native_available)
-                    .map(|detail| {
-                        div()
-                            .text_xs()
-                            .text_color(from_hex(&colors.muted))
-                            .child(detail.clone())
-                    }),
+                    .map(|detail| muted(look, detail.clone())),
             )
     });
-    div()
+    card(look, 560.)
         .debug_selector(|| "native-launch-panel".into())
-        .w(px(560.))
         .max_w_full()
         .max_h(px(620.))
         .p(px(18.))
-        .text_color(look.ink)
-        .surface(look, Surface::Popover)
-        // A solid sheet with a tighter corner and the kit's large lift.
         .rounded(corner(look, 12.))
-        .bg(from_hex(&colors.raised))
-        .border_color(look.border)
-        .when(!look.popover_shadow.is_empty(), |panel| panel.shadow_lg())
-        .occlude()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .flex()
         .flex_col()
@@ -355,20 +359,14 @@ pub(crate) fn panel(
                 .justify_end()
                 .gap(px(8.))
                 .child(
-                    Button::new("native-launch-refresh")
-                        .label("Refresh")
-                        .ghost()
-                        .small()
+                    ghost_button("native-launch-refresh", "Refresh")
                         .disabled(busy || desk.remote.is_some())
                         .on_click(cx.listener(|desk, _, window, cx| {
                             desk.refresh_native_integrations(window, cx)
                         })),
                 )
                 .child(
-                    Button::new("native-launch-close")
-                        .label("Close")
-                        .ghost()
-                        .small()
+                    ghost_button("native-launch-close", "Close")
                         .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
                 ),
         )

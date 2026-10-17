@@ -1,13 +1,18 @@
 //! One process-wide updater; window subscriptions repaint on its activity.
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{Context, Subscription, Task};
+use gpui::prelude::*;
+use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, div, px};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::{Disableable, Sizable};
 
 use super::color::from_hex;
 use super::overlays::corner;
 use super::skin::Look;
-use crate::settings::theme::Palette;
+use super::view::muted;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
 
 pub(crate) struct Updater {
@@ -68,104 +73,129 @@ enum Tone {
     Bad,
 }
 
-fn pill(text: String, tone: Tone, colors: &Palette, look: &Look) -> gpui::Div {
-    use gpui::prelude::*;
-    use gpui::{div, px};
-    let (fg, bg) = match tone {
-        Tone::Quiet => (colors.muted.clone(), colors.hover.clone()),
-        Tone::Good => (colors.theme.success.clone(), colors.hover.clone()),
-        Tone::Ready => (colors.accent_text.clone(), colors.theme.accent.clone()),
-        Tone::Bad => (colors.theme.danger.clone(), colors.hover.clone()),
-    };
-    div()
-        .flex_shrink_0()
-        .px(px(8.))
-        .py(px(2.))
-        .rounded(corner(look, 10.))
-        .bg(from_hex(&bg))
-        .text_xs()
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(from_hex(&fg))
-        .child(text)
+/// A header button; primary actions are filled, the rest ghost.
+#[derive(Clone, Copy)]
+struct Action {
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+    disabled: bool,
+    run: fn(&mut Updater, &mut Context<Updater>),
 }
 
 /// A product's headline: name, the installed build in mono, a status pill, and
-/// its actions on the right. A note or failure sits under it as one callout,
-/// bordered in danger only for a failure.
-fn status_header(
+/// its actions on the right. A failure or detail sits under it as one callout,
+/// bordered in danger only for a failure; a muted note may follow.
+struct Header {
     title: &'static str,
     build: String,
     status: (String, Tone),
     detail: Option<(String, bool)>,
-    actions: Vec<gpui::AnyElement>,
-    look: &Look,
-    mono: &gpui::SharedString,
-) -> gpui::AnyElement {
-    use gpui::prelude::*;
-    use gpui::{div, px};
-    let (status, tone) = status;
-    let colors = &look.colors;
+    note: Option<String>,
+    actions: Vec<Action>,
+}
 
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(10.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(
-                                    div()
-                                        .text_base()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(from_hex(&colors.theme.foreground))
-                                        .child(title),
-                                )
-                                .child(pill(status, tone, colors, look)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family(mono.clone())
-                                .text_color(from_hex(&colors.muted))
-                                .child(build),
-                        ),
-                )
-                .child(div().flex().items_center().gap(px(6.)).children(actions)),
-        )
-        .when_some(detail, |header, (detail, failed)| {
-            let edge = if failed {
-                colors.theme.danger.clone()
-            } else {
-                colors.border.clone()
-            };
-            header.child(
+impl Header {
+    fn item(self, entity: &Entity<Updater>, look: &Rc<Look>, mono: &SharedString) -> SettingItem {
+        let (entity, look, mono) = (entity.clone(), look.clone(), mono.clone());
+        SettingItem::render(move |_, _, _| self.render(&entity, &look, &mono))
+    }
+
+    fn render(&self, entity: &Entity<Updater>, look: &Look, mono: &SharedString) -> AnyElement {
+        let colors = &look.chrome;
+        let (status, tone) = self.status.clone();
+        let (fg, bg) = match tone {
+            Tone::Quiet => (&colors.muted, &colors.hover),
+            Tone::Good => (&colors.theme.success, &colors.hover),
+            Tone::Ready => (&colors.accent_text, &colors.theme.accent),
+            Tone::Bad => (&colors.theme.danger, &colors.hover),
+        };
+        let pill = div()
+            .flex_shrink_0()
+            .px(px(8.))
+            .py(px(2.))
+            .rounded(corner(look, 10.))
+            .bg(from_hex(bg))
+            .text_xs()
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(from_hex(fg))
+            .child(status);
+        let actions = self.actions.iter().map(|action| {
+            let (entity, run) = (entity.clone(), action.run);
+            Button::new(action.id)
+                .label(action.label)
+                .small()
+                .disabled(action.disabled)
+                .map(|button| {
+                    if action.primary {
+                        button.primary()
+                    } else {
+                        button.ghost()
+                    }
+                })
+                .on_click(move |_, _, cx| entity.update(cx, run))
+        });
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
                 div()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(corner(look, 6.))
-                    .border_1()
-                    .border_color(from_hex(&edge))
-                    .bg(from_hex(&colors.hover))
-                    .text_xs()
-                    .text_color(from_hex(&colors.subtext))
-                    .child(detail),
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(look.ink)
+                                            .child(self.title),
+                                    )
+                                    .child(pill),
+                            )
+                            .child(muted(look, self.build.clone()).font_family(mono.clone())),
+                    )
+                    .child(div().flex().items_center().gap(px(6.)).children(actions)),
             )
-        })
-        .into_any_element()
+            .when_some(self.detail.clone(), |header, (detail, failed)| {
+                let edge = if failed {
+                    from_hex(&colors.theme.danger)
+                } else {
+                    look.border
+                };
+                header.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(8.))
+                        .rounded(corner(look, 6.))
+                        .border_1()
+                        .border_color(edge)
+                        .bg(look.hover)
+                        .text_xs()
+                        .text_color(from_hex(&colors.subtext))
+                        .child(detail),
+                )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(header)
+            .children(self.note.clone().map(|note| muted(look, note)))
+            .into_any_element()
+    }
 }
 
 /// The failure line a check left for `prefix`, without its prefix.
@@ -176,135 +206,137 @@ fn failure(message: &str, prefix: &str) -> Option<String> {
         .map(|line| line.trim().to_owned())
 }
 
+/// One updater preference as a switch.
+fn switch_item(
+    entity: &Entity<Updater>,
+    title: &'static str,
+    pref: fn(&mut Preferences) -> &mut bool,
+    description: &'static str,
+) -> SettingItem {
+    let (reader, writer) = (entity.clone(), entity.clone());
+    let field = SettingField::switch(
+        move |cx| *pref(&mut reader.read(cx).prefs.clone()),
+        move |value, cx| {
+            writer.update(cx, |updater, cx| {
+                updater.preferences(|prefs| *pref(prefs) = value, cx)
+            });
+        },
+    );
+    SettingItem::new(title, field).description(description)
+}
+
 /// The Updates page in a skin, with build strings in the terminal `font`.
 pub(crate) fn page(
-    entity: &gpui::Entity<Updater>,
-    colors: &Palette,
-    look: &Look,
+    entity: &Entity<Updater>,
+    look: &Rc<Look>,
     font: &str,
     cx: &gpui::App,
-) -> gpui_kit::component::setting::SettingPage {
-    use gpui::prelude::*;
-    use gpui_kit::component::button::{Button, ButtonVariants};
-    use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-    use gpui_kit::component::{Disableable, Sizable};
+) -> SettingPage {
     let updater = entity.read(cx);
-    let automatic_read = entity.clone();
-    let automatic_write = entity.clone();
-    let manage_read = entity.clone();
-    let manage_write = entity.clone();
     let busy = updater.busy;
-    let desktop_action = updater.desktop_action();
+    let mono = SharedString::from(font.to_owned());
+    let check = Action {
+        id: "updates-check",
+        label: "Check now",
+        primary: false,
+        disabled: busy,
+        run: Updater::check,
+    };
+    let install = updater.desktop_action().map(|action| Action {
+        id: "updates-install",
+        label: action.label(),
+        primary: true,
+        disabled: false,
+        run: Updater::desktop_act,
+    });
     let runtime_enabled = !busy
         && !updater.development
         && updater.prefs.manage_runtime
         && updater.runtime_available();
-    let check = entity.clone();
-    let install = entity.clone();
-    let runtime_install = entity.clone();
-    let runtime_label = if updater.pending_handoff {
-        "Retry handoff"
-    } else {
-        "Update & hand off"
+    let runtime_install = runtime_enabled.then_some(Action {
+        id: "runtime-update",
+        label: if updater.pending_handoff {
+            "Retry handoff"
+        } else {
+            "Update & hand off"
+        },
+        primary: true,
+        disabled: false,
+        run: Updater::install_runtime,
+    });
+    let desktop = Header {
+        title: "Phux Desktop",
+        build: updater
+            .current
+            .as_ref()
+            .map_or("development build".into(), |release| {
+                format!(
+                    "{} · {} · {}",
+                    release.version,
+                    release.channel.as_str(),
+                    release.revision.chars().take(8).collect::<String>()
+                )
+            }),
+        status: updater.desktop_status(),
+        detail: updater.desktop_detail(),
+        note: None,
+        actions: std::iter::once(check).chain(install).collect(),
     };
-    let build = updater
-        .current
-        .as_ref()
-        .map_or("development build".into(), |release| {
-            format!(
-                "{} · {} · {}",
-                release.version,
-                release.channel.as_str(),
-                release.revision.chars().take(8).collect::<String>()
-            )
-        });
-    let desktop_status = updater.desktop_status();
-    let desktop_detail = updater.desktop_detail();
-    let runtime_failure = failure(&updater.message, "phux:");
-    let runtime_build = updater.runtime.as_ref().map_or_else(
-        || "managed by the phux CLI".to_owned(),
-        |runtime| format!("{} → {}", runtime.current, runtime.target),
-    );
-    let runtime_status = if !updater.prefs.manage_runtime {
-        ("Not managed".to_owned(), Tone::Quiet)
-    } else if runtime_failure.is_some() {
-        ("Check failed".to_owned(), Tone::Bad)
-    } else if updater.runtime_available() {
-        ("Update available".to_owned(), Tone::Ready)
-    } else if updater.runtime.is_some() {
-        ("Up to date".to_owned(), Tone::Good)
-    } else {
-        ("Not checked".to_owned(), Tone::Quiet)
+    let runtime = Header {
+        title: "phux CLI & server",
+        build: updater.runtime.as_ref().map_or_else(
+            || "managed by the phux CLI".to_owned(),
+            |runtime| format!("{} → {}", runtime.current, runtime.target),
+        ),
+        status: updater.runtime_status(),
+        detail: failure(&updater.message, "phux:").map(|failure| (failure, true)),
+        note: updater
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.native_command.clone()),
+        actions: runtime_install.into_iter().collect(),
     };
-    let runtime_note = updater
-        .runtime
-        .as_ref()
-        .and_then(|runtime| runtime.native_command.clone());
-    let runtime_colors = colors.clone();
-    let (desktop_look, runtime_look) = (look.clone(), look.clone());
-    let mono = gpui::SharedString::from(font.to_owned());
-    let runtime_mono = mono.clone();
     SettingPage::new("Updates")
-        .group(SettingGroup::new().title("Desktop")
-            .item(SettingItem::render(move |_, _, _| {
-                let check = check.clone();
-                let install = install.clone();
-                let mut actions = vec![Button::new("updates-check").label("Check now").ghost().small().disabled(busy)
-                    .on_click(move |_, _, cx| check.update(cx, |updater, cx| updater.check(cx)))
-                    .into_any_element()];
-                if let Some(action) = desktop_action {
-                    actions.push(Button::new("updates-install").label(action.label()).primary().small()
-                        .on_click(move |_, _, cx| install.update(cx, |updater, cx| updater.desktop_act(cx)))
-                        .into_any_element());
-                }
-                status_header("Phux Desktop", build.clone(), desktop_status.clone(), desktop_detail.clone(), actions, &desktop_look, &mono)
-            }))
-            .item(SettingItem::new("Automatic checks", SettingField::switch(
-                move |cx| automatic_read.read(cx).prefs.automatic,
-                move |value, cx| { automatic_write.update(cx, |updater, cx| updater.preferences(|prefs| prefs.automatic = value, cx)); },
-            )).description("At launch and every six hours. Nothing downloads or restarts until you click."))
-            .item(channel_item(entity, false, busy, updater.prefs.desktop, colors, look)))
-        .group(SettingGroup::new().title("phux on this Mac")
-            .item(SettingItem::render(move |_, _, _| {
-                let install = runtime_install.clone();
-                let mut actions = Vec::new();
-                if runtime_enabled {
-                    actions.push(Button::new("runtime-update").label(runtime_label).primary().small()
-                        .on_click(move |_, _, cx| install.update(cx, |updater, cx| updater.install_runtime(cx)))
-                        .into_any_element());
-                }
-                let detail = runtime_failure.clone().map(|failure| (failure, true));
-                let header = status_header("phux CLI & server", runtime_build.clone(), runtime_status.clone(), detail, actions, &runtime_look, &runtime_mono);
-                match runtime_note.clone() {
-                    Some(note) => gpui::div().flex().flex_col().gap(gpui::px(6.)).child(header)
-                        .child(gpui::div().text_xs().text_color(from_hex(&runtime_colors.muted)).child(note)).into_any_element(),
-                    None => header,
-                }
-            }))
-            .item(SettingItem::new("Manage phux updates", SettingField::switch(
-                move |cx| manage_read.read(cx).prefs.manage_runtime,
-                move |value, cx| { manage_write.update(cx, |updater, cx| updater.preferences(|prefs| prefs.manage_runtime = value, cx)); },
-            )).description("Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone."))
-            .item(channel_item(entity, true, busy, updater.prefs.runtime, colors, look)))
+        .group(
+            SettingGroup::new()
+                .title("Desktop")
+                .item(desktop.item(entity, look, &mono))
+                .item(switch_item(
+                    entity,
+                    "Automatic checks",
+                    |prefs| &mut prefs.automatic,
+                    "At launch and every six hours. Nothing downloads or restarts until you click.",
+                ))
+                .item(channel_item(entity, false, busy, updater.prefs.desktop, look)),
+        )
+        .group(
+            SettingGroup::new()
+                .title("phux on this Mac")
+                .item(runtime.item(entity, look, &mono))
+                .item(switch_item(
+                    entity,
+                    "Manage phux updates",
+                    |prefs| &mut prefs.manage_runtime,
+                    "Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
+                ))
+                .item(channel_item(entity, true, busy, updater.prefs.runtime, look)),
+        )
 }
 
 /// Stable and Next as one segmented control, beside its title like every other row.
 fn channel_item(
-    entity: &gpui::Entity<Updater>,
+    entity: &Entity<Updater>,
     runtime: bool,
     busy: bool,
     selected: updates::Channel,
-    colors: &Palette,
-    look: &Look,
-) -> gpui_kit::component::setting::SettingItem {
-    use gpui::prelude::*;
-    use gpui::{div, px};
-    use gpui_kit::component::setting::{SettingField, SettingItem};
-    let entity = entity.clone();
-    let colors = colors.clone();
-    let outer = corner(look, 7.);
-    let inner = corner(look, 5.);
-    let lifts = !look.popover_shadow.is_empty();
+    look: &Rc<Look>,
+) -> SettingItem {
+    let (entity, look) = (entity.clone(), look.clone());
+    let pref: fn(&mut Preferences) -> &mut updates::Channel = if runtime {
+        |prefs| &mut prefs.runtime
+    } else {
+        |prefs| &mut prefs.desktop
+    };
     SettingItem::new(
         "Channel",
         SettingField::render(move |_, _, _| {
@@ -312,8 +344,8 @@ fn channel_item(
                 .flex()
                 .p(px(2.))
                 .gap(px(2.))
-                .rounded(outer)
-                .bg(from_hex(&colors.hover))
+                .rounded(corner(&look, 7.))
+                .bg(look.hover)
                 .children(
                     [updates::Channel::Stable, updates::Channel::Next]
                         .into_iter()
@@ -326,36 +358,30 @@ fn channel_item(
                                 channel.as_str()
                             );
                             div()
-                                .id(gpui::SharedString::from(id))
+                                .id(SharedString::from(id))
                                 .px(px(12.))
                                 .py(px(3.))
-                                .rounded(inner)
+                                .rounded(corner(&look, 5.))
                                 .text_sm()
                                 .when(on, |segment| {
                                     segment
-                                        .bg(from_hex(&colors.raised))
-                                        .when(lifts, |segment| segment.shadow_sm())
-                                        .text_color(from_hex(&colors.theme.foreground))
+                                        .bg(from_hex(&look.chrome.raised))
+                                        .when(!look.popover_shadow.is_empty(), |segment| {
+                                            segment.shadow_sm()
+                                        })
+                                        .text_color(look.ink)
                                 })
-                                .when(!on, |segment| segment.text_color(from_hex(&colors.muted)))
+                                .when(!on, |segment| {
+                                    segment.text_color(from_hex(&look.chrome.muted))
+                                })
                                 .when(!busy && !on, |segment| {
                                     segment
                                         .cursor_pointer()
-                                        .hover(|style| {
-                                            style.text_color(from_hex(&colors.theme.foreground))
-                                        })
+                                        .hover(|style| style.text_color(look.ink))
                                         .on_click(move |_, _, cx| {
                                             entity.update(cx, |updater, cx| {
-                                                updater.preferences(
-                                                    |prefs| {
-                                                        if runtime {
-                                                            prefs.runtime = channel;
-                                                        } else {
-                                                            prefs.desktop = channel;
-                                                        }
-                                                    },
-                                                    cx,
-                                                )
+                                                updater
+                                                    .preferences(|prefs| *pref(prefs) = channel, cx)
                                             })
                                         })
                                 })
@@ -643,6 +669,21 @@ impl Updater {
             Some(_) => ("Up to date".to_owned(), Tone::Good),
             None => ("Not checked".to_owned(), Tone::Quiet),
         }
+    }
+
+    fn runtime_status(&self) -> (String, Tone) {
+        let (status, tone) = if !self.prefs.manage_runtime {
+            ("Not managed", Tone::Quiet)
+        } else if failure(&self.message, "phux:").is_some() {
+            ("Check failed", Tone::Bad)
+        } else if self.runtime_available() {
+            ("Update available", Tone::Ready)
+        } else if self.runtime.is_some() {
+            ("Up to date", Tone::Good)
+        } else {
+            ("Not checked", Tone::Quiet)
+        };
+        (status.to_owned(), tone)
     }
 
     fn desktop_detail(&self) -> Option<(String, bool)> {

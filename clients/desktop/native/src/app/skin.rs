@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::settings::DisplayPrefs;
-use crate::settings::skin::{Backdrop, Shadow, Skin, tone};
+use crate::settings::skin::{Backdrop, RIM, Shadow, Skin, tone};
 use crate::settings::theme::{Palette, with_alpha};
 
 use super::color::from_hex;
@@ -16,8 +16,9 @@ use super::color::from_hex;
 #[derive(Clone)]
 pub struct Look {
     pub skin: Skin,
-    /// The palette with the skin's washes, as [`chrome_palette`] builds it.
-    pub colors: Palette,
+    /// The palette with the skin's translucent washes and hairlines, so
+    /// hovered and selected chrome tints the sheet instead of covering it.
+    pub chrome: Palette,
     /// Theme foreground.
     pub ink: Hsla,
     /// The window sheet.
@@ -25,14 +26,13 @@ pub struct Look {
     /// Top of the sheen gradient; it fades to transparent over
     /// `skin.material.sheen_height`.
     pub sheen: Hsla,
-    /// A pane card: the terminal background.
+    /// A pane card: the terminal background at the terminal opacity, raised
+    /// toward solid by the skin.
     pub card: Hsla,
     /// Dialog and popover backing.
     pub raised: Hsla,
     /// Floating capsule backing.
     pub capsule: Hsla,
-    /// A quiet pane's edge.
-    pub edge: Hsla,
     /// A focused pane's edge.
     pub lit: Hsla,
     /// Popover rim.
@@ -49,62 +49,46 @@ pub struct Look {
 
 impl Look {
     pub fn of(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> Self {
-        let light = colors.theme.appearance == "light";
-        let ink = from_hex(&colors.theme.foreground);
         let m = &skin.material;
-        let chrome = chrome_palette(colors, skin);
+        let theme = &colors.theme;
+        let light = theme.appearance == "light";
+        let ink = from_hex(&theme.foreground);
+        let solid = f64::from(m.card_solid);
+        let card_alpha = prefs.terminal_opacity + (1. - prefs.terminal_opacity) * solid;
+        let raised = from_hex(&colors.raised);
+        let wash = |amount: f32| with_alpha(&theme.foreground, f64::from(amount));
+        let washes = m.washes;
+        let mut chrome = colors.clone();
+        chrome.hover = wash(washes.hover);
+        chrome.active = wash(washes.active);
+        chrome.border = wash(washes.border);
+        chrome.divider = wash(washes.divider);
+        let lift = |layers: &[Shadow]| shadows(layers, light);
         Self {
             skin: *skin,
             ink,
-            sheet: from_hex(&colors.theme.background).opacity(tone(m.sheet_alpha, light)),
+            sheet: from_hex(&theme.background).opacity(tone(m.sheet_alpha, light)),
             sheen: ink.opacity(tone(m.sheen, light)),
-            card: card_color(skin, colors, prefs),
-            raised: from_hex(&colors.raised).opacity(m.raised),
-            capsule: from_hex(&colors.raised).opacity(m.capsule),
-            edge: if m.edge > 0. {
-                ink.opacity(m.edge)
-            } else {
-                gpui::transparent_black()
-            },
+            card: from_hex(&with_alpha(&theme.background, card_alpha)),
+            raised: raised.opacity(m.raised),
+            capsule: raised.opacity(m.capsule),
             lit: ink.opacity(m.lit),
-            rim: ink.opacity(tone(m.rim, light)),
+            rim: ink.opacity(tone(RIM, light)),
             hover: from_hex(&chrome.hover),
             active: from_hex(&chrome.active),
             border: from_hex(&chrome.border),
             divider: from_hex(&chrome.divider),
-            pane_shadow: shadows(&[m.pane_shadow], light),
-            popover_shadow: shadows(&m.popover_shadow, light),
-            capsule_shadow: shadows(&[m.capsule_shadow], light),
-            tab_shadow: shadows(&[m.tab_shadow], light),
-            colors: chrome,
+            pane_shadow: lift(&[m.pane_shadow]),
+            popover_shadow: lift(&m.popover_shadow),
+            capsule_shadow: lift(&[m.capsule_shadow]),
+            tab_shadow: lift(&[m.tab_shadow]),
+            chrome,
         }
     }
 }
 
-/// The palette with translucent washes and hairlines from the skin, so
-/// hovered and selected chrome tints the sheet instead of covering it.
-pub fn chrome_palette(colors: &Palette, skin: &Skin) -> Palette {
-    let mut colors = colors.clone();
-    let ink = colors.theme.foreground.clone();
-    let washes = &skin.material.washes;
-    let wash = |amount: f32| with_alpha(&ink, f64::from(amount));
-    colors.hover = wash(washes.hover);
-    colors.active = wash(washes.active);
-    colors.border = wash(washes.border);
-    colors.divider = wash(washes.divider);
-    colors
-}
-
-/// The terminal background a pane card paints: the theme background at the
-/// terminal opacity, raised toward solid by the skin.
-pub fn card_color(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> Hsla {
-    let opacity = prefs.terminal_opacity;
-    let alpha = opacity + (1. - opacity) * f64::from(skin.material.card_solid);
-    from_hex(&with_alpha(&colors.theme.background, alpha))
-}
-
 /// GPUI shadows for `layers`. Fully transparent layers are left out.
-pub fn shadows(layers: &[Shadow], light: bool) -> Vec<BoxShadow> {
+fn shadows(layers: &[Shadow], light: bool) -> Vec<BoxShadow> {
     layers
         .iter()
         .filter(|layer| tone(layer.alpha, light) > 0.)
@@ -127,7 +111,7 @@ pub enum Surface {
     /// A dialog, palette or popover card: card radius, raised backing, rim,
     /// popover shadow.
     Popover,
-    /// A pane card: pane radius, terminal background, quiet edge, pane
+    /// A pane card: pane radius, terminal background, clear edge, pane
     /// shadow. Set a focused edge with `border_color` after.
     Pane,
     /// A floating pill of controls.
@@ -143,40 +127,48 @@ pub enum Surface {
 pub trait Surfaced: Styled + Sized {
     fn surface(self, look: &Look, surface: Surface) -> Self {
         let shape = &look.skin.shape;
-        match surface {
-            Surface::Card => self
-                .rounded(px(shape.radius))
-                .bg(look.raised)
-                .border_1()
-                .border_color(look.border)
-                .shadow(look.popover_shadow.clone()),
-            Surface::Popover => self
-                .rounded(px(shape.card_radius))
-                .bg(look.raised)
-                .border_1()
-                .border_color(look.rim)
-                .shadow(look.popover_shadow.clone()),
-            Surface::Pane => self
-                .rounded(px(shape.radius))
-                .bg(look.card)
-                .border_1()
-                .border_color(look.edge)
-                .shadow(look.pane_shadow.clone()),
-            Surface::Capsule => self
-                .rounded_full()
-                .bg(look.capsule)
-                .border_1()
-                .border_color(look.border)
-                .shadow(look.capsule_shadow.clone()),
-            Surface::Tab | Surface::SideTab => self
-                .rounded(px(
-                    shape.tab_radius[usize::from(surface == Surface::SideTab)]
-                ))
-                .bg(look.active)
-                .border_1()
-                .border_color(look.border)
-                .shadow(look.tab_shadow.clone()),
+        // No radius is a pill.
+        let (radius, bg, border, shadow) = match surface {
+            Surface::Card => (
+                Some(shape.radius),
+                look.raised,
+                look.border,
+                &look.popover_shadow,
+            ),
+            Surface::Popover => (
+                Some(shape.card_radius),
+                look.raised,
+                look.rim,
+                &look.popover_shadow,
+            ),
+            Surface::Pane => (
+                Some(shape.radius),
+                look.card,
+                gpui::transparent_black(),
+                &look.pane_shadow,
+            ),
+            Surface::Capsule => (None, look.capsule, look.border, &look.capsule_shadow),
+            Surface::Tab => (
+                Some(shape.tab_radius[0]),
+                look.active,
+                look.border,
+                &look.tab_shadow,
+            ),
+            Surface::SideTab => (
+                Some(shape.tab_radius[1]),
+                look.active,
+                look.border,
+                &look.tab_shadow,
+            ),
+        };
+        match radius {
+            Some(radius) => self.rounded(px(radius)),
+            None => self.rounded_full(),
         }
+        .bg(bg)
+        .border_1()
+        .border_color(border)
+        .shadow(shadow.clone())
     }
 }
 
@@ -184,9 +176,9 @@ impl<T: Styled + Sized> Surfaced for T {}
 
 /// The platform window background for a backdrop. Glass blurs where native
 /// glass is unavailable and before [`apply_backdrop`] installs it.
-pub fn background_appearance(backdrop: Backdrop) -> WindowBackgroundAppearance {
+fn background_appearance(backdrop: Backdrop) -> WindowBackgroundAppearance {
     match backdrop {
-        Backdrop::Glass | Backdrop::Blur => WindowBackgroundAppearance::Blurred,
+        Backdrop::Glass => WindowBackgroundAppearance::Blurred,
         Backdrop::Opaque => WindowBackgroundAppearance::Opaque,
     }
 }
@@ -238,15 +230,14 @@ mod tests {
                     prefs.terminal_opacity
                 ))
             );
-            assert_eq!(look.edge, gpui::transparent_black());
             assert_eq!(look.lit, ink.opacity(0.22));
             assert_eq!(look.rim, ink.opacity(if light { 0.12 } else { 0.14 }));
             assert_eq!(look.raised, from_hex(&colors.raised).opacity(0.97));
             let ink_hex = &colors.theme.foreground;
-            assert_eq!(look.colors.hover, with_alpha(ink_hex, 0.06));
-            assert_eq!(look.colors.active, with_alpha(ink_hex, 0.11));
-            assert_eq!(look.colors.border, with_alpha(ink_hex, 0.08));
-            assert_eq!(look.colors.divider, with_alpha(ink_hex, 0.08));
+            assert_eq!(look.chrome.hover, with_alpha(ink_hex, 0.06));
+            assert_eq!(look.chrome.active, with_alpha(ink_hex, 0.11));
+            assert_eq!(look.chrome.border, with_alpha(ink_hex, 0.08));
+            assert_eq!(look.chrome.divider, with_alpha(ink_hex, 0.08));
             assert_eq!(look.pane_shadow.len(), 1);
             assert_eq!(
                 look.pane_shadow[0].color,

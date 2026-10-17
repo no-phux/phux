@@ -41,12 +41,7 @@ fn physical_key(name: &str) -> PhysicalKey {
     {
         return PhysicalKey::try_from(K::F1 as u32 + number - 1).unwrap_or(K::Unidentified);
     }
-    let mut chars = name.chars();
-    let first = chars.next();
-    if chars.next().is_none() {
-        return first.map_or(K::Unidentified, physical_key_for_char);
-    }
-    K::Unidentified
+    single_char(name).map_or(K::Unidentified, physical_key_for_char)
 }
 
 pub(super) fn uses_text(event: &KeyDownEvent, option_as_alt: bool) -> bool {
@@ -71,19 +66,31 @@ pub(super) fn event(stroke: &Keystroke, action: KeyAction) -> KeyEvent {
         consumed_mods: ModSet::empty(),
         composing: false,
         text: None,
-        unshifted_codepoint: single_scalar(&stroke.key),
+        unshifted_codepoint: single_char(&stroke.key).map(u32::from),
     }
 }
 
-fn single_scalar(text: &str) -> Option<u32> {
+fn single_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     let first = chars.next()?;
-    chars.next().is_none().then_some(first as u32)
+    chars.next().is_none().then_some(first)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn down(key: &str, text: &str, modifiers: Modifiers) -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: Keystroke {
+                key: key.into(),
+                key_char: Some(text.into()),
+                modifiers,
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
 
     #[test]
     fn named_and_function_keys_use_protocol_atoms() {
@@ -105,19 +112,14 @@ mod tests {
             ("escape", "\u{1b}"),
         ] {
             for shift in [false, true] {
-                let down = KeyDownEvent {
-                    keystroke: Keystroke {
-                        key: name.into(),
-                        key_char: Some(text.into()),
-                        modifiers: Modifiers {
-                            shift,
-                            ..Default::default()
-                        },
-                    },
-                    is_held: false,
-                    prefer_character_input: false,
+                let modifiers = Modifiers {
+                    shift,
+                    ..Default::default()
                 };
-                assert!(!uses_text(&down, false), "{name}, shift={shift}");
+                assert!(
+                    !uses_text(&down(name, text, modifiers), false),
+                    "{name}, shift={shift}"
+                );
             }
         }
     }
@@ -131,16 +133,10 @@ mod tests {
             ("漢", "漢"),
             ("e", "e\u{301}"),
         ] {
-            let down = KeyDownEvent {
-                keystroke: Keystroke {
-                    key: key.into(),
-                    key_char: Some(text.into()),
-                    modifiers: Modifiers::default(),
-                },
-                is_held: false,
-                prefer_character_input: false,
-            };
-            assert!(uses_text(&down, false), "{text:?}");
+            assert!(
+                uses_text(&down(key, text, Modifiers::default()), false),
+                "{text:?}"
+            );
         }
     }
 

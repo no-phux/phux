@@ -73,27 +73,22 @@ impl Options {
     }
 }
 
-/// Where installs land; a Finder-launched app has launchd's minimal `PATH`.
-#[must_use]
-pub fn installed_phux_candidates(home: &Path) -> Vec<PathBuf> {
-    vec![
+fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
+        return Some(path);
+    }
+    // Where installs land; a Finder-launched app has launchd's minimal `PATH`.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if let Some(found) = [
         home.join(".local/bin/phux"),
         PathBuf::from("/opt/homebrew/bin/phux"),
         PathBuf::from("/usr/local/bin/phux"),
         home.join(".cargo/bin/phux"),
     ]
-}
-
-fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
-        return Some(path);
-    }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    if let Some(found) = installed_phux_candidates(&home)
-        .into_iter()
-        .find(|path| path.is_file())
+    .into_iter()
+    .find(|path| path.is_file())
     {
         return Some(found);
     }
@@ -102,8 +97,13 @@ fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
     (which.status.success() && !path.is_empty()).then(|| PathBuf::from(path))
 }
 
-fn phux_json(phux: &Path, args: &[&str]) -> anyhow::Result<serde_json::Value> {
-    let output = Command::new(phux)
+/// `phux [--socket SOCKET] ARGS`'s stdout, or its stderr as the error.
+fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result<Vec<u8>> {
+    let mut command = Command::new(phux);
+    if let Some(socket) = socket {
+        command.arg("--socket").arg(socket);
+    }
+    let output = command
         .args(args)
         .output()
         .with_context(|| format!("could not run {}", phux.display()))?;
@@ -111,29 +111,17 @@ fn phux_json(phux: &Path, args: &[&str]) -> anyhow::Result<serde_json::Value> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("`phux {}` failed: {}", args.join(" "), stderr.trim());
     }
-    serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("`phux {}` printed no JSON", args.join(" ")))
+    Ok(output.stdout)
 }
 
 fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> {
-    let mut ensure = Command::new(phux);
-    if let Some(socket) = socket {
-        ensure.arg("--socket").arg(socket);
-    }
-    let output = ensure
-        .args(["server", "--ensure"])
-        .output()
-        .with_context(|| format!("could not run {}", phux.display()))?;
-    if !output.status.success() {
-        bail!(
-            "`phux server --ensure` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    run_phux(phux, socket, &["server", "--ensure"])?;
     if let Some(socket) = socket {
         return Ok(socket.to_owned());
     }
-    let status = phux_json(phux, &["status", "--json"])?;
+    let status: serde_json::Value =
+        serde_json::from_slice(&run_phux(phux, None, &["status", "--json"])?)
+            .context("`phux status --json` printed no JSON")?;
     status["socket"]
         .as_str()
         .map(PathBuf::from)
@@ -164,41 +152,36 @@ fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
             .ok()
             .filter(|name| !name.is_empty())
     });
-    let Some(phux) = phux else {
-        return Resolved {
-            socket: explicit_socket.unwrap_or_default(),
-            session: requested.unwrap_or_default(),
-            phux: PathBuf::from("phux"),
-            error: Some(
+    let (phux, socket, opened) = match phux {
+        None => (
+            PathBuf::from("phux"),
+            explicit_socket.unwrap_or_default(),
+            Err(
                 "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
                     .to_owned(),
             ),
-        };
-    };
-    let socket = match ensure_server(&phux, explicit_socket.as_deref()) {
-        Ok(socket) => socket,
-        Err(error) => {
-            return Resolved {
-                socket: explicit_socket.unwrap_or_default(),
-                session: requested.unwrap_or_default(),
+        ),
+        Some(phux) => match ensure_server(&phux, explicit_socket.as_deref()) {
+            Ok(socket) => {
+                let opened = open_home(&phux, &socket, requested.as_deref());
+                (phux, socket, opened)
+            }
+            Err(error) => (
                 phux,
-                error: Some(format!("{error:#}")),
-            };
-        }
+                explicit_socket.unwrap_or_default(),
+                Err(format!("{error:#}")),
+            ),
+        },
     };
-    match open_home(&phux, &socket, requested.as_deref()) {
-        Ok(session) => Resolved {
-            socket,
-            session,
-            phux,
-            error: None,
-        },
-        Err(error) => Resolved {
-            socket,
-            session: requested.unwrap_or_default(),
-            phux,
-            error: Some(error),
-        },
+    let (session, error) = match opened {
+        Ok(session) => (session, None),
+        Err(error) => (requested.unwrap_or_default(), Some(error)),
+    };
+    Resolved {
+        socket,
+        session,
+        phux,
+        error,
     }
 }
 

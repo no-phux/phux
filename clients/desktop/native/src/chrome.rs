@@ -26,17 +26,16 @@ impl DragRegion {
 impl Render for DragRegion {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::fonts::install(cx);
-        let id = self.id.clone();
-        div()
-            .id(id)
-            .size_full()
-            .on_mouse_down(MouseButton::Left, |event, window, cx| {
+        div().id(self.id.clone()).size_full().on_mouse_down(
+            MouseButton::Left,
+            |event, window, cx| {
                 if event.click_count >= 2 {
                     window.titlebar_double_click();
                 } else {
                     window.start_window_move();
                 }
                 cx.stop_propagation();
-            })
+            },
+        )
     }
 }

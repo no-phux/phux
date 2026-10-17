@@ -6,8 +6,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-pub const ENTER: Duration = Duration::from_millis(260);
-pub const LEAVE: Duration = Duration::from_millis(190);
+use crate::settings::skin::{GLASS, span_progress as progress};
+
+const ENTER: Duration = GLASS.motion.pane_enter();
+const LEAVE: Duration = GLASS.motion.pane_leave();
 
 pub struct Motion {
     /// How long a placement takes to grow in and to fold away.
@@ -49,28 +51,24 @@ impl Motion {
     /// previous frame also painted enters; switching tabs animates nothing.
     pub fn observe(&mut self, tab: Option<&str>, placements: &[&str], now: Instant) {
         let same_tab = tab.is_some() && self.tab.as_deref() == tab;
-        if same_tab
+        let unchanged = same_tab
             && placements.len() == self.seen.len()
-            && placements.iter().all(|id| self.seen.contains(*id))
-        {
-            let enter = self.enter;
-            self.entering
-                .retain(|_, at| now.duration_since(*at) < enter);
-            return;
-        }
-        if same_tab {
-            for id in placements {
-                if !self.seen.contains(*id) {
-                    self.entering.insert((*id).to_owned(), now);
+            && placements.iter().all(|id| self.seen.contains(*id));
+        if !unchanged {
+            if same_tab {
+                for id in placements {
+                    if !self.seen.contains(*id) {
+                        self.entering.insert((*id).to_owned(), now);
+                    }
                 }
             }
+            self.tab = tab.map(str::to_owned);
+            self.seen = placements.iter().map(|id| (*id).to_owned()).collect();
+            self.leaving.retain(|id, _| self.seen.contains(id));
         }
-        self.tab = tab.map(str::to_owned);
-        self.seen = placements.iter().map(|id| (*id).to_owned()).collect();
         let enter = self.enter;
         self.entering
             .retain(|id, at| self.seen.contains(id) && now.duration_since(*at) < enter);
-        self.leaving.retain(|id, _| self.seen.contains(id));
     }
 
     /// Start folding `id` away. False when it is already leaving.
@@ -123,13 +121,6 @@ pub fn ratio(settled: f32, first: f32, second: f32) -> f32 {
     } else {
         left / (left + right)
     }
-}
-
-fn progress(at: Instant, span: Duration, now: Instant) -> f32 {
-    if span.is_zero() {
-        return 1.;
-    }
-    (now.duration_since(at).as_secs_f32() / span.as_secs_f32()).clamp(0., 1.)
 }
 
 /// Fast start, long soft landing.

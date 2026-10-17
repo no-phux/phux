@@ -4,11 +4,12 @@
 //! live view handles, or process state. It binds to one daemon incarnation
 //! (`serverId`). A damaged or future value is not rewritten.
 
-use super::layout::{Axis, DeskTab, LayoutNode, placements};
+use super::layout::{Axis, DeskTab, LayoutNode, find_placement};
 use crate::settings::{
     DisplayPrefs, default_display, display_value, parse_display, sanitize_display,
 };
-use serde_json::{Map, Value};
+use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -97,35 +98,14 @@ pub struct LoadedLayout {
 /// Classify a raw store read.
 #[must_use]
 pub fn load_layout(raw: &StoreValue) -> LoadedLayout {
-    match raw {
-        StoreValue::Missing => LoadedLayout {
-            initial: None,
-            blocked: false,
-        },
-        StoreValue::Damaged => LoadedLayout {
-            initial: None,
-            blocked: true,
-        },
-        StoreValue::Present(value) => {
-            let initial = parse_layout(value);
-            LoadedLayout {
-                blocked: initial.is_none(),
-                initial,
-            }
-        }
+    let initial = match raw {
+        StoreValue::Present(value) => parse_layout(value),
+        StoreValue::Missing | StoreValue::Damaged => None,
+    };
+    LoadedLayout {
+        blocked: *raw != StoreValue::Missing && initial.is_none(),
+        initial,
     }
-}
-
-/// Write only when the store was readable.
-pub fn write_if_allowed(
-    loaded: &LoadedLayout,
-    layout: &SavedLayout,
-    write: impl FnOnce(&Value) -> io::Result<()>,
-) -> io::Result<()> {
-    if loaded.blocked {
-        return Ok(());
-    }
-    write(&layout_value(layout))
 }
 
 /// Snapshot tabs and display. View ids and credentials are omitted.
@@ -143,19 +123,14 @@ pub fn save_layout(
         display: sanitize_display(display),
         tabs: tabs
             .iter()
-            .map(|tab| {
-                let focused = placements(&tab.root)
-                    .into_iter()
-                    .find(|placement| placement.id == tab.focused_id);
-                SavedTab {
-                    id: tab.id.clone(),
-                    title: tab.title.clone().filter(|title| !title.is_empty()),
-                    root: save_node(&tab.root),
-                    focused_terminal: focused
-                        .map(|placement| placement.terminal_label.clone())
-                        .unwrap_or_default(),
-                    focused_id: Some(tab.focused_id.clone()),
-                }
+            .map(|tab| SavedTab {
+                id: tab.id.clone(),
+                title: tab.title.clone().filter(|title| !title.is_empty()),
+                root: save_node(&tab.root),
+                focused_terminal: find_placement(&tab.root, &tab.focused_id)
+                    .map(|placement| placement.terminal_label.clone())
+                    .unwrap_or_default(),
+                focused_id: Some(tab.focused_id.clone()),
             })
             .collect(),
     }
@@ -189,11 +164,13 @@ pub fn parse_layout(value: &Value) -> Option<SavedLayout> {
     let server_id = object.get("serverId")?.as_str()?.to_owned();
     let raw_tabs = object.get("tabs")?.as_array()?;
     let version = object.get("version")?.as_u64()?;
-    let tabs: Vec<SavedTab> = match version {
-        2 => raw_tabs.iter().filter_map(parse_tab).collect(),
-        1 => raw_tabs.iter().filter_map(migrate_tab).collect(),
-        _ => return None,
-    };
+    if !matches!(version, 1 | 2) {
+        return None;
+    }
+    let tabs: Vec<SavedTab> = raw_tabs
+        .iter()
+        .filter_map(|tab| parse_tab(tab, version))
+        .collect();
     if tabs.len() != raw_tabs.len() || !unique_identities(&tabs) {
         return None;
     }
@@ -213,30 +190,21 @@ pub fn parse_layout(value: &Value) -> Option<SavedLayout> {
 }
 
 fn unique_identities(tabs: &[SavedTab]) -> bool {
-    let mut tab_ids = Vec::new();
+    let mut tab_ids = HashSet::new();
     let mut placement_ids = Vec::new();
     for tab in tabs {
-        tab_ids.push(tab.id.as_str());
-        saved_ids(&tab.root, &mut placement_ids);
-    }
-    unique(&tab_ids) && unique(&placement_ids)
-}
-
-fn unique(ids: &[&str]) -> bool {
-    let mut seen = Vec::new();
-    for id in ids {
-        if seen.contains(id) {
+        if !tab_ids.insert(tab.id.as_str()) {
             return false;
         }
-        seen.push(*id);
+        saved_ids(&tab.root, &mut placement_ids);
     }
-    true
+    let mut seen = HashSet::new();
+    placement_ids.into_iter().all(|id| seen.insert(id))
 }
 
 fn saved_ids<'a>(node: &'a SavedNode, ids: &mut Vec<&'a str>) {
     match node {
-        SavedNode::Leaf { id: Some(id), .. } => ids.push(id),
-        SavedNode::Leaf { id: None, .. } => {}
+        SavedNode::Leaf { id, .. } => ids.extend(id.as_deref()),
         SavedNode::Split { first, second, .. } => {
             saved_ids(first, ids);
             saved_ids(second, ids);
@@ -244,33 +212,33 @@ fn saved_ids<'a>(node: &'a SavedNode, ids: &mut Vec<&'a str>) {
     }
 }
 
-fn parse_tab(value: &Value) -> Option<SavedTab> {
+fn parse_tab(value: &Value, version: u64) -> Option<SavedTab> {
     let object = value.as_object()?;
     let id = identity(object.get("id")?)?;
-    if object
-        .get("focusedId")
-        .is_some_and(|value| !value.is_string())
-    {
-        return None;
+    let focused_terminal = object
+        .get("focusedTerminal")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if version == 1 {
+        return Some(SavedTab {
+            id,
+            title: None,
+            root: migrate_root(object.get("terminals")?.as_array()?)?,
+            focused_terminal,
+            focused_id: None,
+        });
     }
-    let root = parse_node(object.get("root")?, 0)?;
+    let focused_id = match object.get("focusedId") {
+        None => None,
+        Some(value) => Some(value.as_str()?.to_owned()),
+    };
     Some(SavedTab {
         id,
-        title: object
-            .get("title")
-            .and_then(Value::as_str)
-            .filter(|title| !title.is_empty())
-            .map(str::to_owned),
-        root,
-        focused_terminal: object
-            .get("focusedTerminal")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned(),
-        focused_id: object
-            .get("focusedId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        title: object.get("title").and_then(identity),
+        root: parse_node(object.get("root")?, 0)?,
+        focused_terminal,
+        focused_id,
     })
 }
 
@@ -280,55 +248,42 @@ fn parse_node(value: &Value, depth: u32) -> Option<SavedNode> {
     }
     let object = value.as_object()?;
     match object.get("kind")?.as_str()? {
-        "leaf" => parse_leaf(object),
-        "split" => parse_split(object, depth),
+        "leaf" => Some(SavedNode::Leaf {
+            terminal_id: identity(object.get("terminalId")?)?,
+            id: match object.get("id") {
+                None => None,
+                Some(value) => Some(identity(value)?),
+            },
+        }),
+        "split" => {
+            let axis = Axis::parse(object.get("axis")?.as_str()?)?;
+            let first = parse_node(object.get("first")?, depth + 1)?;
+            let second = parse_node(object.get("second")?, depth + 1)?;
+            let ratio = match object.get("ratio") {
+                None => 0.5,
+                Some(value) => value.as_f64()? as f32,
+            };
+            if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
+                return None;
+            }
+            Some(SavedNode::Split {
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            })
+        }
         _ => None,
     }
 }
 
-fn parse_split(object: &Map<String, Value>, depth: u32) -> Option<SavedNode> {
-    let axis = Axis::parse(object.get("axis")?.as_str()?)?;
-    let first = parse_node(object.get("first")?, depth + 1)?;
-    let second = parse_node(object.get("second")?, depth + 1)?;
-    let ratio = match object.get("ratio") {
-        None => 0.5,
-        Some(value) => value.as_f64()? as f32,
-    };
-    if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
-        return None;
-    }
-    Some(SavedNode::Split {
-        axis,
-        ratio,
-        first: Box::new(first),
-        second: Box::new(second),
-    })
-}
-
-fn parse_leaf(object: &Map<String, Value>) -> Option<SavedNode> {
-    let terminal_id = identity(object.get("terminalId")?)?;
-    if object
-        .get("id")
-        .is_some_and(|value| identity(value).is_none())
-    {
-        return None;
-    }
-    Some(SavedNode::Leaf {
-        id: object.get("id").and_then(identity),
-        terminal_id,
-    })
-}
-
-fn migrate_tab(value: &Value) -> Option<SavedTab> {
-    let object = value.as_object()?;
-    let id = identity(object.get("id")?)?;
-    let terminals = object.get("terminals")?.as_array()?;
+/// Version 1 tabs list terminals left to right; each split gives its first leaf an even share.
+fn migrate_root(terminals: &[Value]) -> Option<SavedNode> {
     let ids: Vec<String> = terminals.iter().filter_map(identity).collect();
     if ids.len() != terminals.len() {
         return None;
     }
-    let root = ids
-        .iter()
+    ids.iter()
         .enumerate()
         .rev()
         .fold(None, |rest, (index, terminal_id)| {
@@ -345,18 +300,7 @@ fn migrate_tab(value: &Value) -> Option<SavedTab> {
                     second: Box::new(rest),
                 },
             })
-        })?;
-    Some(SavedTab {
-        id,
-        title: None,
-        root,
-        focused_terminal: object
-            .get("focusedTerminal")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned(),
-        focused_id: None,
-    })
+        })
 }
 
 fn identity(value: &Value) -> Option<String> {
@@ -366,71 +310,57 @@ fn identity(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// CamelCase JSON matching the existing snapshot.
+/// CamelCase JSON matching the existing snapshot. Absent optional fields are omitted.
 #[must_use]
 pub fn layout_value(layout: &SavedLayout) -> Value {
-    let mut object = Map::new();
-    object.insert("version".to_owned(), Value::from(2));
-    object.insert(
-        "serverId".to_owned(),
-        Value::String(layout.server_id.clone()),
-    );
-    if let Some(active) = &layout.active_tab {
-        object.insert("activeTab".to_owned(), Value::String(active.clone()));
-    }
-    object.insert(
-        "tabs".to_owned(),
-        Value::Array(layout.tabs.iter().map(tab_value).collect()),
-    );
-    object.insert("display".to_owned(), display_value(&layout.display));
-    Value::Object(object)
+    compact(json!({
+        "version": 2,
+        "serverId": layout.server_id,
+        "activeTab": layout.active_tab,
+        "tabs": layout.tabs.iter().map(tab_value).collect::<Vec<_>>(),
+        "display": display_value(&layout.display),
+    }))
 }
 
 fn tab_value(tab: &SavedTab) -> Value {
-    let mut object = Map::new();
-    object.insert("id".to_owned(), Value::String(tab.id.clone()));
-    if let Some(title) = &tab.title {
-        object.insert("title".to_owned(), Value::String(title.clone()));
-    }
-    object.insert("root".to_owned(), node_value(&tab.root));
-    object.insert(
-        "focusedTerminal".to_owned(),
-        Value::String(tab.focused_terminal.clone()),
-    );
-    if let Some(focused) = &tab.focused_id {
-        object.insert("focusedId".to_owned(), Value::String(focused.clone()));
-    }
-    Value::Object(object)
+    compact(json!({
+        "id": tab.id,
+        "title": tab.title,
+        "root": node_value(&tab.root),
+        "focusedTerminal": tab.focused_terminal,
+        "focusedId": tab.focused_id,
+    }))
 }
 
 fn node_value(node: &SavedNode) -> Value {
-    let mut object = Map::new();
     match node {
-        SavedNode::Leaf { id, terminal_id } => {
-            object.insert("kind".to_owned(), Value::String("leaf".to_owned()));
-            if let Some(id) = id {
-                object.insert("id".to_owned(), Value::String(id.clone()));
-            }
-            object.insert("terminalId".to_owned(), Value::String(terminal_id.clone()));
-        }
+        SavedNode::Leaf { id, terminal_id } => compact(json!({
+            "kind": "leaf",
+            "id": id,
+            "terminalId": terminal_id,
+        })),
         SavedNode::Split {
             axis,
             ratio,
             first,
             second,
-        } => {
-            object.insert("kind".to_owned(), Value::String("split".to_owned()));
-            object.insert("axis".to_owned(), Value::String(axis.as_str().to_owned()));
-            object.insert(
-                "ratio".to_owned(),
-                serde_json::Number::from_f64(f64::from(*ratio))
-                    .map(Value::Number)
-                    .unwrap_or(Value::from(0.5)),
-            );
-            object.insert("first".to_owned(), node_value(first));
-            object.insert("second".to_owned(), node_value(second));
-        }
+        } => json!({
+            "kind": "split",
+            "axis": axis.as_str(),
+            "ratio": serde_json::Number::from_f64(f64::from(*ratio))
+                .map_or(Value::from(0.5), Value::Number),
+            "first": node_value(first),
+            "second": node_value(second),
+        }),
     }
+}
+
+/// Drop the null members an absent `Option` field serialized to.
+fn compact(value: Value) -> Value {
+    let Value::Object(mut object) = value else {
+        return value;
+    };
+    object.retain(|_, member| !member.is_null());
     Value::Object(object)
 }
 
@@ -450,23 +380,17 @@ pub struct LayoutPaths {
 /// `$XDG_STATE_HOME/phux-desktop/<hash>/` or `~/.local/state/phux-desktop/<hash>/`.
 #[must_use]
 pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
-    let state = layout_state_directory();
-    let directory = state.join(target_hash(socket, session));
-    paths_in(directory, &state)
+    paths_in(PathBuf::from(target_hash(socket, session)))
 }
 
 /// Organization sessions use their immutable key, not their mutable name.
 /// The separate namespace cannot collide with an existing named-session store.
 #[must_use]
 pub fn session_layout_paths(socket: &str, key: phux_protocol::ids::SessionKey) -> LayoutPaths {
-    let state = layout_state_directory();
-    let directory = state
-        .join("sessions")
-        .join(target_hash(socket, &key.to_string()));
-    paths_in(directory, &state)
+    paths_in(Path::new("sessions").join(target_hash(socket, &key.to_string())))
 }
 
-fn layout_state_directory() -> PathBuf {
+fn paths_in(scope: PathBuf) -> LayoutPaths {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -474,11 +398,9 @@ fn layout_state_directory() -> PathBuf {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".local/state")
-        });
-    state.join("phux-desktop")
-}
-
-fn paths_in(directory: PathBuf, state: &Path) -> LayoutPaths {
+        })
+        .join("phux-desktop");
+    let directory = state.join(scope);
     LayoutPaths {
         layout: directory.join("layout.json"),
         quick: directory.join("quick.json"),
@@ -486,44 +408,16 @@ fn paths_in(directory: PathBuf, state: &Path) -> LayoutPaths {
         legacy_quick: state.join("quick.json"),
     }
 }
-/// A small, socket-scoped folder history. The empty session name cannot be
-/// opened, so its layout directory is free for process-wide desktop state.
-#[must_use]
-pub fn recent_projects_path(socket: &str) -> PathBuf {
-    layout_paths(socket, "")
-        .layout
-        .with_file_name("projects.json")
-}
 
 /// First 24 hex characters of SHA-256 over `JSON.stringify([socket, session])`.
 #[must_use]
 pub fn target_hash(socket: &str, session: &str) -> String {
-    let payload = format!("[{},{}]", json_string(socket), json_string(session));
-    let digest = sha256(payload.as_bytes());
-    digest
+    let payload = serde_json::to_string(&[socket, session]).unwrap_or_default();
+    sha256(payload.as_bytes())
         .iter()
         .take(12)
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-fn json_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{0008}' => out.push_str("\\b"),
-            '\u{000c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Private layout file. Missing files fall back to `legacy` without writing it.
@@ -579,22 +473,16 @@ impl FileLayoutStore {
         #[cfg(unix)]
         options.mode(0o600);
         let mut file = options.open(&next)?;
-        let write_result = (|| {
-            let text = format!("{value}\n");
-            file.write_all(text.as_bytes())?;
+        let result = (|| {
+            file.write_all(format!("{value}\n").as_bytes())?;
             file.sync_all()?;
-            Ok(())
+            drop(file);
+            fs::rename(&next, &self.path)
         })();
-        if let Err(error) = write_result {
+        if result.is_err() {
             let _ = fs::remove_file(&next);
-            return Err(error);
         }
-        drop(file);
-        if let Err(error) = fs::rename(&next, &self.path) {
-            let _ = fs::remove_file(&next);
-            return Err(error);
-        }
-        Ok(())
+        result
     }
 }
 
@@ -617,10 +505,14 @@ pub struct RecentProjects {
 }
 
 impl RecentProjects {
+    /// A small, socket-scoped folder history. The empty session name cannot be
+    /// opened, so its layout directory is free for process-wide desktop state.
     #[must_use]
     pub fn load(socket: &str) -> Self {
-        let store = FileLayoutStore::new(recent_projects_path(socket), None);
-        Self::from_store(store)
+        let path = layout_paths(socket, "")
+            .layout
+            .with_file_name("projects.json");
+        Self::from_store(FileLayoutStore::new(path, None))
     }
 
     fn from_store(store: FileLayoutStore) -> Self {
@@ -828,15 +720,9 @@ mod tests {
 
     #[test]
     fn key_store_imports_without_overwriting_old_or_conflicting_layouts() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("phux-layout-key-{}-{nonce}", std::process::id()));
-        fs::create_dir(&directory).unwrap();
-        let old = directory.join("name.json");
-        let keyed = directory.join("key.json");
+        let scratch = Scratch::new("layout-key");
+        let old = scratch.join("name.json");
+        let keyed = scratch.join("key.json");
         let old_value = serde_json::json!({"version": 2, "serverId": "old", "tabs": []});
         fs::write(&old, old_value.to_string()).unwrap();
         let store = FileLayoutStore::new(&keyed, Some(old.clone()));
@@ -845,12 +731,9 @@ mod tests {
             !keyed.exists(),
             "reading the fallback does not migrate destructively"
         );
-        let layout = parse_layout(&old_value).unwrap();
         for bytes in ["damaged", r#"{"version":99,"serverId":"other","tabs":[]}"#] {
             fs::write(&keyed, bytes).unwrap();
-            let loaded = load_layout(&store.read());
-            assert!(loaded.blocked);
-            write_if_allowed(&loaded, &layout, |value| store.write(value)).unwrap();
+            assert!(load_layout(&store.read()).blocked);
             assert_eq!(fs::read_to_string(&keyed).unwrap(), bytes);
             assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
         }
@@ -859,7 +742,6 @@ mod tests {
         assert_eq!(store.read(), StoreValue::Present(conflicting.clone()));
         assert_eq!(fs::read_to_string(&keyed).unwrap(), conflicting.to_string());
         assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -929,13 +811,8 @@ mod tests {
     }
     #[test]
     fn recent_folders_survive_restart_reorder_and_forget_without_exceeding_limit() {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("phux-recent-{}-{stamp}.json", std::process::id()));
-        let store = FileLayoutStore::new(&path, None);
+        let scratch = Scratch::new("recent");
+        let store = FileLayoutStore::new(scratch.join("projects.json"), None);
         let mut history = RecentProjects::from_store(store.clone());
         for index in 0..10 {
             history
@@ -950,53 +827,77 @@ mod tests {
             .record(PathBuf::from("/checkouts/4"))
             .expect("reorder");
         assert!(history.flush().is_empty());
-        let mut restarted = RecentProjects::from_store(store);
+        let mut restarted = RecentProjects::from_store(store.clone());
         assert_eq!(restarted.entries()[0], Path::new("/checkouts/4"));
         assert_eq!(restarted.entries().len(), 8);
         restarted.forget(Path::new("/checkouts/4")).expect("forget");
         assert!(restarted.flush().is_empty());
         assert!(
-            !RecentProjects::from_store(FileLayoutStore::new(&path, None))
+            !RecentProjects::from_store(store)
                 .entries()
                 .contains(&PathBuf::from("/checkouts/4"))
         );
-        fs::remove_file(path).expect("remove temporary history");
     }
 
     #[test]
     fn failed_rename_removes_the_staging_file_and_keeps_the_destination() {
-        let directory = std::env::temp_dir().join(format!(
-            "phux-layout-rename-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let _remove = RemoveDir(&directory);
-        let path = directory.join("layout.json");
+        let scratch = Scratch::new("layout-rename");
+        let path = scratch.join("layout.json");
         fs::create_dir(&path).unwrap();
         let marker = path.join("marker");
         fs::write(&marker, b"kept").unwrap();
         let store = FileLayoutStore::new(&path, None);
         assert!(store.write(&serde_json::json!(1)).is_err());
         assert_eq!(fs::read(&marker).unwrap(), b"kept");
-        let staging = fs::read_dir(&directory).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".next")
-        });
-        assert!(!staging, "a failed replace must not leave a staging file");
+        assert!(
+            !scratch.has_staging(),
+            "a failed replace must not leave a staging file"
+        );
     }
 
-    struct RemoveDir<'a>(&'a Path);
+    /// A unique temporary directory, removed (even when read-only) on drop.
+    pub(super) struct Scratch {
+        pub(super) path: PathBuf,
+    }
 
-    impl Drop for RemoveDir<'_> {
+    impl Scratch {
+        pub(super) fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "phux-desktop-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        pub(super) fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+
+        pub(super) fn has_staging(&self) -> bool {
+            fs::read_dir(&self.path).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".next")
+            })
+        }
+    }
+
+    impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(self.0);
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = fs::metadata(&self.path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(perms.mode() | 0o200);
+                let _ = fs::set_permissions(&self.path, perms);
+            }
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }

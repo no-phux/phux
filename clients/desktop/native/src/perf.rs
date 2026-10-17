@@ -14,7 +14,7 @@
 //! `desktop.key_to_paint` runs from a key reaching a focused terminal to the
 //! first paint of that terminal's next output. Everything is a `static` from
 //! [`phux_perf`], always on, one relaxed atomic add per sample.
-//! [`crate::diag::report_json`] appends them to the kernel and runtime rows.
+//! [`crate::diag::report`] appends them to the kernel and runtime rows.
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -48,7 +48,7 @@ pub static KEY_TO_PAINT: Histogram = Histogram::new();
 
 /// Samples longer than this are a program that did not answer, not a slow
 /// path (mirrors the kernel's echo ceiling).
-pub const KEY_SAMPLE_CEILING: Duration = Duration::from_secs(2);
+const KEY_SAMPLE_CEILING: Duration = Duration::from_secs(2);
 
 /// The desktop host's metric table, in render order.
 pub static TABLE: &[Metric] = &[
@@ -66,7 +66,7 @@ pub static TABLE: &[Metric] = &[
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Time since the host started; [`crate::diag::report_json`] counts from here.
+/// Time since the host started; [`crate::diag::report`] counts from here.
 #[must_use]
 pub fn uptime() -> Duration {
     STARTED.elapsed()
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn report_carries_every_layer() {
-        let json = crate::diag::report_json();
+        let json = crate::diag::report().to_json();
         for name in [
             "kernel.frames",
             "runtime.publish",

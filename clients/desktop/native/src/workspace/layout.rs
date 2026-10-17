@@ -116,6 +116,16 @@ pub struct Rect {
     pub height: f32,
 }
 
+impl Rect {
+    /// The unit square.
+    pub const UNIT: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+    };
+}
+
 /// A process-local id. Tests do not depend on the spelling, only uniqueness.
 #[must_use]
 pub fn new_id(prefix: &str) -> String {
@@ -137,17 +147,24 @@ pub fn leaf(placement: Placement) -> LayoutNode {
 /// Every placement, first child before second.
 #[must_use]
 pub fn placements(node: &LayoutNode) -> Vec<&Placement> {
-    let mut found = Vec::new();
-    walk(node, &mut found);
-    found
+    match node {
+        LayoutNode::Leaf { placement } => vec![placement],
+        LayoutNode::Split { first, second, .. } => {
+            let mut found = placements(first);
+            found.extend(placements(second));
+            found
+        }
+    }
 }
 
-fn walk<'a>(node: &'a LayoutNode, found: &mut Vec<&'a Placement>) {
+/// Every placement, mutably, in the same order as [`placements`].
+pub fn placements_mut(node: &mut LayoutNode) -> Vec<&mut Placement> {
     match node {
-        LayoutNode::Leaf { placement } => found.push(placement),
+        LayoutNode::Leaf { placement } => vec![placement],
         LayoutNode::Split { first, second, .. } => {
-            walk(first, found);
-            walk(second, found);
+            let mut found = placements_mut(first);
+            found.extend(placements_mut(second));
+            found
         }
     }
 }
@@ -166,42 +183,38 @@ pub fn focused_placement(tab: &DeskTab) -> Option<&Placement> {
     find_placement(&tab.root, &tab.focused_id).or_else(|| placements(&tab.root).into_iter().next())
 }
 
-/// Put `placement` beside `target_id`. `before` puts it left or above.
-#[must_use]
+/// Put `added` beside `target_id`. `before` puts it left or above.
 pub fn split_at(
-    node: LayoutNode,
+    node: &mut LayoutNode,
     target_id: &str,
     added: Placement,
     axis: Axis,
     before: bool,
-) -> LayoutNode {
+) {
+    let Some(target) = leaf_mut(node, target_id) else {
+        return;
+    };
+    let added = leaf(added);
+    let kept = std::mem::replace(target, added.clone());
+    let (first, second) = if before { (added, kept) } else { (kept, added) };
+    *target = LayoutNode::Split {
+        id: new_id("split"),
+        axis,
+        ratio: 0.5,
+        first: Box::new(first),
+        second: Box::new(second),
+    };
+}
+
+fn leaf_mut<'a>(node: &'a mut LayoutNode, id: &str) -> Option<&'a mut LayoutNode> {
+    if matches!(node, LayoutNode::Leaf { placement } if placement.id == id) {
+        return Some(node);
+    }
     match node {
-        LayoutNode::Leaf { placement } if placement.id == target_id => {
-            let kept = LayoutNode::Leaf { placement };
-            let added = leaf(added);
-            let (first, second) = if before { (added, kept) } else { (kept, added) };
-            LayoutNode::Split {
-                id: new_id("split"),
-                axis,
-                ratio: 0.5,
-                first: Box::new(first),
-                second: Box::new(second),
-            }
+        LayoutNode::Leaf { .. } => None,
+        LayoutNode::Split { first, second, .. } => {
+            leaf_mut(first, id).or_else(|| leaf_mut(second, id))
         }
-        LayoutNode::Leaf { placement } => LayoutNode::Leaf { placement },
-        LayoutNode::Split {
-            id,
-            axis: split_axis,
-            ratio,
-            first,
-            second,
-        } => LayoutNode::Split {
-            id,
-            axis: split_axis,
-            ratio,
-            first: Box::new(split_at(*first, target_id, added.clone(), axis, before)),
-            second: Box::new(split_at(*second, target_id, added, axis, before)),
-        },
     }
 }
 
@@ -218,77 +231,46 @@ pub fn remove_leaf(node: LayoutNode, id: &str) -> Option<LayoutNode> {
             ratio,
             first,
             second,
-        } => {
-            let first = remove_leaf(*first, id);
-            let second = remove_leaf(*second, id);
-            match (first, second) {
-                (None, second) => second,
-                (first, None) => first,
-                (Some(first), Some(second)) => Some(LayoutNode::Split {
-                    id: split_id,
-                    axis,
-                    ratio,
-                    first: Box::new(first),
-                    second: Box::new(second),
-                }),
-            }
-        }
+        } => match (remove_leaf(*first, id), remove_leaf(*second, id)) {
+            (None, other) | (other, None) => other,
+            (Some(first), Some(second)) => Some(LayoutNode::Split {
+                id: split_id,
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+        },
+    }
+}
+
+fn splits_mut(node: &mut LayoutNode, visit: &mut impl FnMut(&str, &mut f32)) {
+    if let LayoutNode::Split {
+        id,
+        ratio,
+        first,
+        second,
+        ..
+    } = node
+    {
+        visit(id, ratio);
+        splits_mut(first, visit);
+        splits_mut(second, visit);
     }
 }
 
 /// Set one split's ratio, clamped.
-#[must_use]
-pub fn set_ratio(node: LayoutNode, split_id: &str, ratio: f32) -> LayoutNode {
-    match node {
-        LayoutNode::Leaf { .. } => node,
-        LayoutNode::Split {
-            id,
-            axis,
-            first,
-            second,
-            ..
-        } if id == split_id => LayoutNode::Split {
-            id,
-            axis,
-            ratio: clamp_ratio(ratio),
-            first,
-            second,
-        },
-        LayoutNode::Split {
-            id,
-            axis,
-            ratio: current,
-            first,
-            second,
-        } => LayoutNode::Split {
-            id,
-            axis,
-            ratio: current,
-            first: Box::new(set_ratio(*first, split_id, ratio)),
-            second: Box::new(set_ratio(*second, split_id, ratio)),
-        },
-    }
+pub fn set_ratio(node: &mut LayoutNode, split_id: &str, ratio: f32) {
+    splits_mut(node, &mut |id, current| {
+        if id == split_id {
+            *current = clamp_ratio(ratio);
+        }
+    });
 }
 
 /// Reset every split to an even division.
-#[must_use]
-pub fn equalize(node: LayoutNode) -> LayoutNode {
-    match node {
-        LayoutNode::Leaf { .. } => node,
-        LayoutNode::Split {
-            id,
-            axis,
-            first,
-            second,
-            ..
-        } => LayoutNode::Split {
-            id,
-            axis,
-            ratio: 0.5,
-            first: Box::new(equalize(*first)),
-            second: Box::new(equalize(*second)),
-        },
-    }
+pub fn equalize(node: &mut LayoutNode) {
+    splits_mut(node, &mut |_, ratio| *ratio = 0.5);
 }
 
 /// Clamp a ratio. Non-finite values become an even split.
@@ -358,15 +340,7 @@ fn divide(rect: Rect, axis: Axis, ratio: f32) -> (Rect, Rect) {
 /// earlier leaf in reading order.
 #[must_use]
 pub fn neighbor(node: &LayoutNode, from_id: &str, direction: Direction) -> Option<String> {
-    let rects = layout_rects(
-        node,
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        },
-    );
+    let rects = layout_rects(node, Rect::UNIT);
     let from = rects.get(from_id)?;
     let mut best: Option<(String, f32, f32)> = None;
     for placement in placements(node) {
@@ -417,16 +391,17 @@ fn cross_overlap(from: &Rect, to: &Rect, direction: Direction) -> f32 {
 #[must_use]
 pub fn cycle(node: &LayoutNode, from_id: &str, step: i8) -> Option<String> {
     let order = placements(node);
-    if order.is_empty() {
-        return None;
-    }
     let index = order
         .iter()
         .position(|placement| placement.id == from_id)
-        .unwrap_or(0) as i32;
-    let len = order.len() as i32;
-    let next = (index.max(0) + i32::from(step)).rem_euclid(len) as usize;
-    order.get(next).map(|placement| placement.id.clone())
+        .unwrap_or(0);
+    Some(order[step_index(index, step, order.len())?].id.clone())
+}
+
+/// `index` moved by `step`, wrapping within `len`. `None` when `len` is zero.
+#[must_use]
+pub fn step_index(index: usize, step: i8, len: usize) -> Option<usize> {
+    (len > 0).then(|| (index as i64 + i64::from(step)).rem_euclid(len as i64) as usize)
 }
 
 /// The leaf to focus once `removed` leaves go.
@@ -453,90 +428,86 @@ pub fn focus_after_removal(
         .unwrap_or_default()
 }
 
+/// Drop the `removed` leaves, handing focus to a neighbour. `None` when the tab empties.
+#[must_use]
+pub fn remove_leaves(tab: DeskTab, removed: &HashSet<String>) -> Option<DeskTab> {
+    let order: Vec<String> = placements(&tab.root)
+        .into_iter()
+        .map(|placement| placement.id.clone())
+        .collect();
+    let root = removed
+        .iter()
+        .try_fold(tab.root, |node, id| remove_leaf(node, id))?;
+    let mut tab = DeskTab {
+        root,
+        focused_id: focus_after_removal(&order, &tab.focused_id, removed),
+        ..tab
+    };
+    refocus(&mut tab);
+    Some(tab)
+}
+
 /// Drop every leaf that shows `terminal_label`. Empty tabs disappear.
 #[must_use]
 pub fn without_terminal(tabs: Vec<DeskTab>, terminal_label: &str) -> Vec<DeskTab> {
     tabs.into_iter()
         .filter_map(|tab| {
-            let doomed: Vec<String> = placements(&tab.root)
+            let doomed: HashSet<String> = placements(&tab.root)
                 .into_iter()
                 .filter(|placement| placement.terminal_label == terminal_label)
                 .map(|placement| placement.id.clone())
                 .collect();
             if doomed.is_empty() {
-                return Some(tab);
+                Some(tab)
+            } else {
+                remove_leaves(tab, &doomed)
             }
-            let order: Vec<String> = placements(&tab.root)
-                .into_iter()
-                .map(|placement| placement.id.clone())
-                .collect();
-            let mut root = Some(tab.root);
-            for id in &doomed {
-                root = root.and_then(|node| remove_leaf(node, id));
-            }
-            let root = root?;
-            let removed: HashSet<String> = doomed.into_iter().collect();
-            Some(refocus(DeskTab {
-                root,
-                focused_id: focus_after_removal(&order, &tab.focused_id, &removed),
-                ..tab
-            }))
         })
         .collect()
 }
 
 /// Keep focus and zoom on leaves that still exist.
-#[must_use]
-pub fn refocus(mut tab: DeskTab) -> DeskTab {
-    let ids: HashSet<String> = placements(&tab.root)
+pub fn refocus(tab: &mut DeskTab) {
+    let ids: Vec<&str> = placements(&tab.root)
         .into_iter()
-        .map(|placement| placement.id.clone())
+        .map(|placement| placement.id.as_str())
         .collect();
-    if !ids.contains(&tab.focused_id) {
-        tab.focused_id = placements(&tab.root)
-            .into_iter()
-            .next()
-            .map(|placement| placement.id.clone())
-            .unwrap_or_default();
+    if !ids.contains(&tab.focused_id.as_str()) {
+        tab.focused_id = ids.first().copied().unwrap_or_default().to_owned();
     }
-    if tab.zoomed_id.as_ref().is_some_and(|id| !ids.contains(id)) {
+    if tab
+        .zoomed_id
+        .as_deref()
+        .is_some_and(|id| !ids.contains(&id))
+    {
         tab.zoomed_id = None;
     }
-    tab
 }
 
 /// Move `items[from]` to `to`, clamped.
-#[must_use]
-pub fn reorder<T>(mut items: Vec<T>, from: usize, to: usize) -> Vec<T> {
-    if from >= items.len() {
-        return items;
+pub fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from < items.len() {
+        let moved = items.remove(from);
+        items.insert(to.min(items.len()), moved);
     }
-    let moved = items.remove(from);
-    let index = to.min(items.len());
-    items.insert(index, moved);
-    items
 }
 
 /// Move the nearest divider along `direction` by `delta`, like Ghostty's resize_split.
-#[must_use]
-pub fn nudge(node: LayoutNode, leaf_id: &str, direction: Direction, delta: f32) -> LayoutNode {
-    let axis = match direction {
-        Direction::Left | Direction::Right => Axis::Row,
-        Direction::Up | Direction::Down => Axis::Column,
+pub fn nudge(node: &mut LayoutNode, leaf_id: &str, direction: Direction, delta: f32) {
+    let (axis, sign) = match direction {
+        Direction::Left => (Axis::Row, -1.0),
+        Direction::Right => (Axis::Row, 1.0),
+        Direction::Up => (Axis::Column, -1.0),
+        Direction::Down => (Axis::Column, 1.0),
     };
-    let sign = match direction {
-        Direction::Right | Direction::Down => 1.0,
-        Direction::Left | Direction::Up => -1.0,
-    };
-    let Some((_, ratio, id)) = path_to(&node, leaf_id)
+    if let Some((_, ratio, id)) = path_to(node, leaf_id)
         .unwrap_or_default()
         .into_iter()
         .rev()
         .find(|(split_axis, _, _)| *split_axis == axis)
-    else {
-        return node;
-    };
-    set_ratio(node, &id, ratio + sign * delta)
+    {
+        set_ratio(node, &id, ratio + sign * delta);
+    }
 }
 
 fn path_to(node: &LayoutNode, leaf_id: &str) -> Option<Vec<(Axis, f32, String)>> {
@@ -559,12 +530,7 @@ fn path_to(node: &LayoutNode, leaf_id: &str) -> Option<Vec<(Axis, f32, String)>>
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Axis, DeskTab, Direction, LayoutNode, Placement, Rect, clamp_ratio, cycle, equalize,
-        focus_after_removal, layout_rects, leaf, neighbor, nudge, placements, refocus, remove_leaf,
-        reorder, set_ratio, split_at, without_terminal,
-    };
-    use std::collections::HashSet;
+    use super::*;
 
     fn place(id: &str, terminal: &str) -> Placement {
         Placement {
@@ -572,6 +538,21 @@ mod tests {
             terminal_id: None,
             terminal_label: terminal.to_owned(),
             view_id: None,
+        }
+    }
+
+    fn split(mut node: LayoutNode, target: &str, added: Placement, axis: Axis) -> LayoutNode {
+        split_at(&mut node, target, added, axis, false);
+        node
+    }
+
+    fn tab(id: &str, root: LayoutNode, focused: &str) -> DeskTab {
+        DeskTab {
+            id: id.into(),
+            title: None,
+            root,
+            focused_id: focused.into(),
+            zoomed_id: None,
         }
     }
 
@@ -583,41 +564,22 @@ mod tests {
     }
 
     fn grid() -> LayoutNode {
-        let root = split_at(
-            leaf(place("a", "t-a")),
-            "a",
-            place("b", "t-b"),
-            Axis::Row,
-            false,
-        );
-        split_at(root, "b", place("c", "t-c"), Axis::Column, false)
+        let root = split(leaf(place("a", "t-a")), "a", place("b", "t-b"), Axis::Row);
+        split(root, "b", place("c", "t-c"), Axis::Column)
     }
 
     #[test]
     fn splitting_keeps_reading_order() {
-        let root = split_at(
-            leaf(place("a", "t-a")),
-            "a",
-            place("b", "t-b"),
-            Axis::Row,
-            false,
-        );
+        let root = split(leaf(place("a", "t-a")), "a", place("b", "t-b"), Axis::Row);
         assert_eq!(ids(&root), ["a", "b"]);
     }
 
     #[test]
     fn split_before_puts_the_new_leaf_above() {
-        let root = split_at(grid(), "c", place("d", "t-d"), Axis::Column, true);
+        let mut root = grid();
+        split_at(&mut root, "c", place("d", "t-d"), Axis::Column, true);
         assert_eq!(ids(&root), ["a", "b", "d", "c"]);
-        let rects = layout_rects(
-            &root,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 1.0,
-                height: 1.0,
-            },
-        );
+        let rects = layout_rects(&root, Rect::UNIT);
         assert!(rects["d"].y < rects["c"].y);
     }
 
@@ -633,56 +595,30 @@ mod tests {
 
     #[test]
     fn ratios_clamp_and_equalize() {
-        let root = grid();
+        let mut root = grid();
         let split_id = match &root {
             LayoutNode::Split { id, .. } => id.clone(),
             LayoutNode::Leaf { .. } => String::new(),
         };
-        let skewed = set_ratio(root, &split_id, 5.0);
-        assert!(matches!(skewed, LayoutNode::Split { ratio, .. } if ratio == clamp_ratio(5.0)));
-        let even = equalize(skewed);
-        assert!(matches!(even, LayoutNode::Split { ratio, .. } if ratio == 0.5));
+        set_ratio(&mut root, &split_id, 5.0);
+        assert!(matches!(root, LayoutNode::Split { ratio, .. } if ratio == clamp_ratio(5.0)));
+        equalize(&mut root);
+        assert!(matches!(root, LayoutNode::Split { ratio, .. } if ratio == 0.5));
         assert_eq!(clamp_ratio(f32::NAN), 0.5);
     }
 
     #[test]
     fn rects_tile_the_bounds() {
-        let rects = layout_rects(
-            &grid(),
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 60.0,
-            },
-        );
-        assert_eq!(
-            rects["a"],
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 50.0,
-                height: 60.0
-            }
-        );
-        assert_eq!(
-            rects["b"],
-            Rect {
-                x: 50.0,
-                y: 0.0,
-                width: 50.0,
-                height: 30.0
-            }
-        );
-        assert_eq!(
-            rects["c"],
-            Rect {
-                x: 50.0,
-                y: 30.0,
-                width: 50.0,
-                height: 30.0
-            }
-        );
+        let rect = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let rects = layout_rects(&grid(), rect(0.0, 0.0, 100.0, 60.0));
+        assert_eq!(rects["a"], rect(0.0, 0.0, 50.0, 60.0));
+        assert_eq!(rects["b"], rect(50.0, 0.0, 50.0, 30.0));
+        assert_eq!(rects["c"], rect(50.0, 30.0, 50.0, 30.0));
     }
 
     #[test]
@@ -705,53 +641,19 @@ mod tests {
 
     #[test]
     fn closed_terminal_drops_empty_tabs_and_hands_focus_to_the_neighbour() {
-        let shared = split_at(
-            leaf(place("a", "t1")),
-            "a",
-            place("b", "t1"),
-            Axis::Row,
-            false,
+        let shared = split(leaf(place("a", "t1")), "a", place("b", "t1"), Axis::Row);
+        let other = split(leaf(place("c", "t2")), "c", place("d", "t1"), Axis::Column);
+        let next = without_terminal(
+            vec![tab("tab", shared, "a"), tab("other", other, "d")],
+            "t1",
         );
-        let other = split_at(
-            leaf(place("c", "t2")),
-            "c",
-            place("d", "t1"),
-            Axis::Column,
-            false,
-        );
-        let tabs = vec![
-            DeskTab {
-                id: "tab".into(),
-                title: None,
-                root: shared,
-                focused_id: "a".into(),
-                zoomed_id: None,
-            },
-            DeskTab {
-                id: "other".into(),
-                title: None,
-                root: other,
-                focused_id: "d".into(),
-                zoomed_id: None,
-            },
-        ];
-        let next = without_terminal(tabs, "t1");
         assert_eq!(
             next.iter().map(|tab| tab.id.as_str()).collect::<Vec<_>>(),
             ["other"]
         );
         assert_eq!(ids(&next[0].root), ["c"]);
         assert_eq!(next[0].focused_id, "c");
-        let mut exited = without_terminal(
-            vec![DeskTab {
-                id: "tab".into(),
-                title: None,
-                root: grid(),
-                focused_id: "c".into(),
-                zoomed_id: None,
-            }],
-            "t-c",
-        );
+        let mut exited = without_terminal(vec![tab("tab", grid(), "c")], "t-c");
         let only = exited.pop().expect("one tab");
         assert!(exited.is_empty());
         assert_eq!(ids(&only.root), ["a", "b"]);
@@ -768,32 +670,39 @@ mod tests {
 
     #[test]
     fn refocus_drops_a_stale_zoom_and_reorder_clamps() {
-        let fixed = refocus(DeskTab {
-            id: "tab".into(),
-            title: None,
-            root: leaf(place("a", "t")),
-            focused_id: "gone".into(),
-            zoomed_id: Some("gone".into()),
-        });
+        let mut fixed = tab("tab", leaf(place("a", "t")), "gone");
+        fixed.zoomed_id = Some("gone".into());
+        refocus(&mut fixed);
         assert_eq!(fixed.focused_id, "a");
         assert!(fixed.zoomed_id.is_none());
-        assert_eq!(reorder(vec!["a", "b", "c"], 0, 2), ["b", "c", "a"]);
-        assert_eq!(reorder(vec!["a", "b", "c"], 2, 0), ["c", "a", "b"]);
+        let mut items = vec!["a", "b", "c"];
+        reorder(&mut items, 0, 2);
+        assert_eq!(items, ["b", "c", "a"]);
+        reorder(&mut items, 2, 0);
+        assert_eq!(items, ["a", "b", "c"]);
+        reorder(&mut items, 9, 0);
+        assert_eq!(items, ["a", "b", "c"]);
     }
 
     #[test]
     fn nudge_moves_only_the_matching_axis() {
-        let root = grid();
-        let right = nudge(root.clone(), "c", Direction::Right, 0.1);
+        let nudged = |direction| {
+            let mut root = grid();
+            nudge(&mut root, "c", direction, 0.1);
+            root
+        };
+        let right = nudged(Direction::Right);
         assert!(matches!(right, LayoutNode::Split { ratio, .. } if (ratio - 0.6).abs() < 1e-5));
-        let up = nudge(root.clone(), "c", Direction::Up, 0.1);
-        let LayoutNode::Split { second, .. } = up else {
+        let LayoutNode::Split { second, .. } = nudged(Direction::Up) else {
             panic!("split")
         };
         let LayoutNode::Split { ratio, .. } = second.as_ref() else {
             panic!("column")
         };
         assert!((ratio - 0.4).abs() < 1e-5);
-        assert_eq!(nudge(root.clone(), "a", Direction::Up, 0.1), root);
+        let mut root = grid();
+        let before = root.clone();
+        nudge(&mut root, "a", Direction::Up, 0.1);
+        assert_eq!(root, before);
     }
 }

@@ -53,26 +53,14 @@ fn fits(text: &str) -> bool {
 }
 
 fn checked(boot: &str, id: &str) -> Option<(String, String)> {
-    if fits(boot) && fits(id) {
-        Some((boot.to_owned(), id.to_owned()))
-    } else {
-        None
-    }
+    (fits(boot) && fits(id)).then(|| (boot.to_owned(), id.to_owned()))
 }
 
 /// A confirmed palette row. `listed` is whether that pane or tab still exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Choice<'a> {
-    Pane {
-        id: &'a str,
-        listed: bool,
-    },
-    Tab {
-        id: &'a str,
-        listed: bool,
-    },
-    /// Filter, query, highlight, command, session, path, or move.
-    Other,
+    Pane { id: &'a str, listed: bool },
+    Tab { id: &'a str, listed: bool },
 }
 
 /// The key to remember, or nothing when the row was not an open of a listed
@@ -82,9 +70,7 @@ pub(super) fn validated_key(boot: Option<&str>, choice: Choice<'_>) -> Option<Ke
     match choice {
         Choice::Pane { id, listed: true } => Key::pane(boot, id),
         Choice::Tab { id, listed: true } => Key::tab(boot, id),
-        Choice::Pane { listed: false, .. } | Choice::Tab { listed: false, .. } | Choice::Other => {
-            None
-        }
+        _ => None,
     }
 }
 
@@ -154,16 +140,9 @@ impl Store {
     /// Record `key` when a navigation was validated. `None` changes nothing:
     /// a chip, a query, a highlight, or a missing destination.
     pub(super) fn note(&mut self, key: Option<Key>, now: u64) {
-        let Some(key) = key else {
+        let Some(key) = key.filter(fits_key) else {
             return;
         };
-        self.visit(key, now);
-    }
-
-    fn visit(&mut self, key: Key, now: u64) {
-        if !fits_key(&key) {
-            return;
-        }
         match self.visits.iter_mut().find(|visit| visit.key == key) {
             Some(visit) => {
                 visit.score = visit.score_at(now) + 1.0;
@@ -225,7 +204,6 @@ mod tests {
         let now = 1_000;
         let opened = pane("@1");
         let ignored = [
-            validated_key(Some("boot"), Choice::Other),
             validated_key(
                 Some("boot"),
                 Choice::Pane {
@@ -275,7 +253,7 @@ mod tests {
         let once = store.boost(&opened, now);
         assert!(once > 0);
         assert_eq!(store.generation(), 1);
-        store.note(validated_key(Some("boot"), Choice::Other), now);
+        store.note(None, now);
         assert_eq!(store.boost(&opened, now), once);
         assert_eq!(store.generation(), 1);
 

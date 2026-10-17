@@ -95,9 +95,6 @@ struct NativeIntegrations {
 
 /// The CLI owns configured profiles, executable availability, and runtime/license policy.
 pub fn native_integrations(phux: &Path, socket: &Path) -> Result<Vec<NativeIntegration>, String> {
-    if phux.as_os_str().is_empty() {
-        return Err(MISSING_CLI.into());
-    }
     let output = run_output(
         phux,
         socket_args(socket, &["launch", "--list", "--acp", "--json"]),
@@ -142,9 +139,6 @@ pub fn launch_native(
     integration: &str,
     session: &str,
 ) -> Result<NativeLaunch, String> {
-    if phux.as_os_str().is_empty() {
-        return Err(MISSING_CLI.into());
-    }
     let output = run_output(
         phux,
         socket_args(
@@ -202,9 +196,6 @@ pub fn create_session(phux: &Path, socket: &Path, name: &str, directory: &str) -
     if directory.trim().is_empty() {
         return Some("A new session needs the focused directory or a chosen folder.".into());
     }
-    if phux.as_os_str().is_empty() {
-        return Some(MISSING_CLI.into());
-    }
     run(
         phux,
         socket_args(
@@ -229,9 +220,6 @@ pub fn rename_session(phux: &Path, socket: &Path, current: &str, next: &str) -> 
     if current.trim() == next.trim() {
         return None;
     }
-    if phux.as_os_str().is_empty() {
-        return Some(MISSING_CLI.into());
-    }
     run(
         phux,
         socket_args(socket, &["rename", current.trim(), next.trim()]),
@@ -243,9 +231,6 @@ pub fn rename_session(phux: &Path, socket: &Path, current: &str, next: &str) -> 
 pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     if name.trim().is_empty() {
         return Some("Kill needs a session name.".into());
-    }
-    if phux.as_os_str().is_empty() {
-        return Some(MISSING_CLI.into());
     }
     run(phux, socket_args(socket, &["kill", name.trim()])).err()
 }
@@ -261,19 +246,7 @@ pub struct RemoteHost {
 /// The remote registry, from `phux host ls`. Satellites are a hub's peers, not
 /// machines this app attaches to, so they are left out.
 pub fn list_hosts(phux: &Path) -> Result<Vec<RemoteHost>, String> {
-    if phux.as_os_str().is_empty() {
-        return Err(MISSING_CLI.into());
-    }
-    let output = run_output(
-        phux,
-        vec![
-            "host".into(),
-            "ls".into(),
-            "--role".into(),
-            "remote".into(),
-            "--json".into(),
-        ],
-    )?;
+    let output = run_output(phux, args(&["host", "ls", "--role", "remote", "--json"]))?;
     parse_hosts(&output)
 }
 
@@ -308,14 +281,7 @@ pub fn add_host(phux: &Path, target: &str, name: &str) -> Result<(), String> {
     if target.trim().is_empty() {
         return Err("Enter an ssh destination such as me@mini.".into());
     }
-    if phux.as_os_str().is_empty() {
-        return Err(MISSING_CLI.into());
-    }
-    let mut args = vec![
-        "host".to_owned(),
-        "add".to_owned(),
-        target.trim().to_owned(),
-    ];
+    let mut args = args(&["host", "add", target.trim()]);
     if !name.trim().is_empty() {
         args.extend(["--name".to_owned(), name.trim().to_owned()]);
     }
@@ -324,19 +290,7 @@ pub fn add_host(phux: &Path, target: &str, name: &str) -> Result<(), String> {
 
 /// `phux host rm NAME`. The token file stays, as the CLI leaves it.
 pub fn remove_host(phux: &Path, name: &str) -> Result<(), String> {
-    if phux.as_os_str().is_empty() {
-        return Err(MISSING_CLI.into());
-    }
-    run(
-        phux,
-        vec![
-            "host".into(),
-            "rm".into(),
-            "--role".into(),
-            "remote".into(),
-            name.to_owned(),
-        ],
-    )
+    run(phux, args(&["host", "rm", "--role", "remote", name]))
 }
 
 /// A fresh private file under the temporary directory. The path is never reused.
@@ -378,6 +332,10 @@ fn unique_dir(base: &Path) -> Result<PathBuf, String> {
     Err("Could not create a private temporary directory.".into())
 }
 
+fn args(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
 fn socket_args(socket: &Path, rest: &[&str]) -> Vec<String> {
     let mut args = vec!["--socket".into(), socket.display().to_string()];
     args.extend(rest.iter().map(|part| (*part).to_owned()));
@@ -389,6 +347,9 @@ fn run(phux: &Path, args: Vec<String>) -> Result<(), String> {
 }
 
 fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
+    if phux.as_os_str().is_empty() {
+        return Err(MISSING_CLI.into());
+    }
     let output = Command::new(phux)
         .args(&args)
         .stdin(std::process::Stdio::null())

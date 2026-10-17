@@ -3,7 +3,7 @@
 
 use super::skin::skin_by_id;
 use super::theme::{default_theme_id, themes};
-use serde_json::{Map, Value};
+use serde_json::{Value, json};
 
 /// Placement of the workspace tabs, independent of navigator visibility.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -161,25 +161,24 @@ pub const SIDEBAR_MAX: f64 = 440.0;
 #[must_use]
 pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
     let fallback = default_display();
-    let family = display.font_family.trim();
-    let family = family.chars().take(64).collect::<String>();
+    let family = display
+        .font_family
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>();
+    let hundredths = |value: f64, fallback: f64| round_to(finite(value, fallback), 100.0);
     DisplayPrefs {
         font_family: if family.is_empty() {
             fallback.font_family
         } else {
             family
         },
-        font_size: clamp(
-            finite(display.font_size, fallback.font_size).round(),
-            9.0,
-            28.0,
-        ),
-        line_height: clamp(
-            (finite(display.line_height, fallback.line_height) * 20.0).round() / 20.0,
-            1.0,
-            2.0,
-        ),
-        option_as_alt: display.option_as_alt,
+        font_size: finite(display.font_size, fallback.font_size)
+            .round()
+            .clamp(9.0, 28.0),
+        line_height: round_to(finite(display.line_height, fallback.line_height), 20.0)
+            .clamp(1.0, 2.0),
         theme_id: if display.theme_id == "ghostty"
             || themes().iter().any(|theme| theme.id == display.theme_id)
         {
@@ -187,79 +186,69 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         } else {
             fallback.theme_id
         },
-        sidebar_visible: display.sidebar_visible,
-        sidebar_width: clamp(
-            finite(display.sidebar_width, fallback.sidebar_width).round(),
-            SIDEBAR_MIN,
-            SIDEBAR_MAX,
-        ),
-        tab_position: display.tab_position,
-        notifications: display.notifications,
-        cell_width: clamp(round_to(finite(display.cell_width, 1.0), 100.0), 0.5, 2.0),
-        cell_height: clamp(round_to(finite(display.cell_height, 1.0), 100.0), 0.5, 2.0),
-        padding_x: clamp(
-            finite(display.padding_x, fallback.padding_x).round(),
-            0.0,
-            64.0,
-        ),
-        padding_y: clamp(
-            finite(display.padding_y, fallback.padding_y).round(),
-            0.0,
-            64.0,
-        ),
-        unfocused_opacity: clamp(
-            round_to(finite(display.unfocused_opacity, 1.0), 100.0),
-            0.15,
-            1.0,
-        ),
-        terminal_opacity: clamp(
-            round_to(finite(display.terminal_opacity, 1.0), 100.0),
-            0.55,
-            1.0,
-        ),
-        window_background: display.window_background,
-        ghostty_keys: display.ghostty_keys,
-        cursor_laser: display.cursor_laser,
+        sidebar_width: finite(display.sidebar_width, fallback.sidebar_width)
+            .round()
+            .clamp(SIDEBAR_MIN, SIDEBAR_MAX),
+        cell_width: hundredths(display.cell_width, 1.0).clamp(0.5, 2.0),
+        cell_height: hundredths(display.cell_height, 1.0).clamp(0.5, 2.0),
+        padding_x: finite(display.padding_x, fallback.padding_x)
+            .round()
+            .clamp(0.0, 64.0),
+        padding_y: finite(display.padding_y, fallback.padding_y)
+            .round()
+            .clamp(0.0, 64.0),
+        unfocused_opacity: hundredths(display.unfocused_opacity, 1.0).clamp(0.15, 1.0),
+        terminal_opacity: hundredths(display.terminal_opacity, 1.0).clamp(0.55, 1.0),
         skin_id: skin_by_id(&display.skin_id).id.to_owned(),
-        plain: display.plain,
-        animations: display.animations,
+        ..display.clone()
     }
 }
 
 /// Read a `display` object. A non-object becomes the defaults.
 #[must_use]
 pub fn parse_display(value: &Value) -> DisplayPrefs {
-    let Some(object) = value.as_object() else {
-        return default_display();
-    };
     let fallback = default_display();
+    let Some(object) = value.as_object() else {
+        return fallback;
+    };
+    let string = |key: &str, fallback: String| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map_or(fallback, str::to_owned)
+    };
+    let number =
+        |key: &str, fallback: f64| object.get(key).and_then(Value::as_f64).unwrap_or(fallback);
+    // Only a JSON boolean overrides a default.
+    let flag =
+        |key: &str, fallback: bool| object.get(key).and_then(Value::as_bool).unwrap_or(fallback);
     sanitize_display(&DisplayPrefs {
-        font_family: string(object, "fontFamily").unwrap_or(fallback.font_family),
-        font_size: number(object, "fontSize").unwrap_or(fallback.font_size),
-        line_height: number(object, "lineHeight").unwrap_or(fallback.line_height),
-        option_as_alt: object.get("optionAsAlt") == Some(&Value::Bool(true)),
-        theme_id: string(object, "themeId").unwrap_or(fallback.theme_id),
-        sidebar_visible: object.get("sidebarVisible") != Some(&Value::Bool(false)),
-        sidebar_width: number(object, "sidebarWidth").unwrap_or(fallback.sidebar_width),
+        font_family: string("fontFamily", fallback.font_family),
+        font_size: number("fontSize", fallback.font_size),
+        line_height: number("lineHeight", fallback.line_height),
+        option_as_alt: flag("optionAsAlt", fallback.option_as_alt),
+        theme_id: string("themeId", fallback.theme_id),
+        sidebar_visible: flag("sidebarVisible", fallback.sidebar_visible),
+        sidebar_width: number("sidebarWidth", fallback.sidebar_width),
         tab_position: match object.get("tabPosition").and_then(Value::as_str) {
             Some("side") => TabPosition::Side,
             _ => TabPosition::Top,
         },
-        notifications: object.get("notifications") != Some(&Value::Bool(false)),
-        cell_width: number(object, "cellWidth").unwrap_or(fallback.cell_width),
-        cell_height: number(object, "cellHeight").unwrap_or(fallback.cell_height),
-        padding_x: number(object, "paddingX").unwrap_or(fallback.padding_x),
-        padding_y: number(object, "paddingY").unwrap_or(fallback.padding_y),
-        unfocused_opacity: number(object, "unfocusedOpacity").unwrap_or(fallback.unfocused_opacity),
-        terminal_opacity: number(object, "terminalOpacity").unwrap_or(fallback.terminal_opacity),
+        notifications: flag("notifications", fallback.notifications),
+        cell_width: number("cellWidth", fallback.cell_width),
+        cell_height: number("cellHeight", fallback.cell_height),
+        padding_x: number("paddingX", fallback.padding_x),
+        padding_y: number("paddingY", fallback.padding_y),
+        unfocused_opacity: number("unfocusedOpacity", fallback.unfocused_opacity),
+        terminal_opacity: number("terminalOpacity", fallback.terminal_opacity),
         window_background: WindowBackground::parse(
             object.get("windowBackground").and_then(Value::as_str),
         ),
-        ghostty_keys: object.get("ghosttyKeys") != Some(&Value::Bool(false)),
-        cursor_laser: object.get("cursorLaser") != Some(&Value::Bool(false)),
-        skin_id: string(object, "skinId").unwrap_or(fallback.skin_id),
-        plain: object.get("plainTerminal") == Some(&Value::Bool(true)),
-        animations: object.get("animations") != Some(&Value::Bool(false)),
+        ghostty_keys: flag("ghosttyKeys", fallback.ghostty_keys),
+        cursor_laser: flag("cursorLaser", fallback.cursor_laser),
+        skin_id: string("skinId", fallback.skin_id),
+        plain: flag("plainTerminal", fallback.plain),
+        animations: flag("animations", fallback.animations),
     })
 }
 
@@ -267,66 +256,33 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
 #[must_use]
 pub fn display_value(display: &DisplayPrefs) -> Value {
     let display = sanitize_display(display);
-    let mut object = Map::new();
-    object.insert("fontFamily".to_owned(), Value::String(display.font_family));
-    object.insert("fontSize".to_owned(), num(display.font_size));
-    object.insert("lineHeight".to_owned(), num(display.line_height));
-    object.insert("optionAsAlt".to_owned(), Value::Bool(display.option_as_alt));
-    object.insert("themeId".to_owned(), Value::String(display.theme_id));
-    object.insert(
-        "sidebarVisible".to_owned(),
-        Value::Bool(display.sidebar_visible),
-    );
-    object.insert("sidebarWidth".to_owned(), num(display.sidebar_width));
-    object.insert(
-        "tabPosition".to_owned(),
-        Value::String(display.tab_position.as_str().to_owned()),
-    );
-    object.insert(
-        "notifications".to_owned(),
-        Value::Bool(display.notifications),
-    );
-    object.insert("cellWidth".to_owned(), num(display.cell_width));
-    object.insert("cellHeight".to_owned(), num(display.cell_height));
-    object.insert("paddingX".to_owned(), num(display.padding_x));
-    object.insert("paddingY".to_owned(), num(display.padding_y));
-    object.insert(
-        "unfocusedOpacity".to_owned(),
-        num(display.unfocused_opacity),
-    );
-    object.insert("terminalOpacity".to_owned(), num(display.terminal_opacity));
-    object.insert(
-        "windowBackground".to_owned(),
-        Value::String(display.window_background.as_str().to_owned()),
-    );
-    object.insert("ghosttyKeys".to_owned(), Value::Bool(display.ghostty_keys));
-    object.insert("cursorLaser".to_owned(), Value::Bool(display.cursor_laser));
-    object.insert("skinId".to_owned(), Value::String(display.skin_id));
-    object.insert("plainTerminal".to_owned(), Value::Bool(display.plain));
-    object.insert("animations".to_owned(), Value::Bool(display.animations));
-    Value::Object(object)
-}
-
-fn num(value: f64) -> Value {
-    serde_json::Number::from_f64(value)
-        .map(Value::Number)
-        .unwrap_or(Value::from(0))
-}
-
-fn string(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn number(object: &Map<String, Value>, key: &str) -> Option<f64> {
-    object.get(key).and_then(Value::as_f64)
+    json!({
+        "fontFamily": display.font_family,
+        "fontSize": display.font_size,
+        "lineHeight": display.line_height,
+        "optionAsAlt": display.option_as_alt,
+        "themeId": display.theme_id,
+        "sidebarVisible": display.sidebar_visible,
+        "sidebarWidth": display.sidebar_width,
+        "tabPosition": display.tab_position.as_str(),
+        "notifications": display.notifications,
+        "cellWidth": display.cell_width,
+        "cellHeight": display.cell_height,
+        "paddingX": display.padding_x,
+        "paddingY": display.padding_y,
+        "unfocusedOpacity": display.unfocused_opacity,
+        "terminalOpacity": display.terminal_opacity,
+        "windowBackground": display.window_background.as_str(),
+        "ghosttyKeys": display.ghostty_keys,
+        "cursorLaser": display.cursor_laser,
+        "skinId": display.skin_id,
+        "plainTerminal": display.plain,
+        "animations": display.animations,
+    })
 }
 
 fn finite(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
-}
-
-fn clamp(value: f64, low: f64, high: f64) -> f64 {
-    value.clamp(low, high)
 }
 
 fn round_to(value: f64, steps: f64) -> f64 {
@@ -336,7 +292,6 @@ fn round_to(value: f64, steps: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn tab_placement_round_trips_without_changing_other_preferences() {

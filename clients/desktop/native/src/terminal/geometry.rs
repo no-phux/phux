@@ -65,31 +65,12 @@ impl Geometry {
     }
 
     pub fn cell_bounds(self, row: u16, col: u16, width: u16) -> Bounds<Pixels> {
-        let left = edge(
-            self.bounds.left(),
-            self.cell_width,
-            u32::from(col),
-            self.scale,
-        );
-        let right = edge(
-            self.bounds.left(),
-            self.cell_width,
-            u32::from(col) + u32::from(width),
-            self.scale,
-        );
-        let top = edge(
-            self.bounds.top(),
-            self.cell_height,
-            u32::from(row),
-            self.scale,
-        );
-        let bottom = edge(
-            self.bounds.top(),
-            self.cell_height,
-            u32::from(row) + 1,
-            self.scale,
-        );
-        Bounds::new(point(left, top), size(right - left, bottom - top))
+        let (x, y) = (self.columns(), self.lines());
+        let (row, col) = (u32::from(row), u32::from(col));
+        Bounds::from_corners(
+            point(x.edge(col), y.edge(row)),
+            point(x.edge(col + u32::from(width)), y.edge(row + 1)),
+        )
     }
 
     /// No clamping: positions in clipped cells, padding, or outside the surface
@@ -98,21 +79,10 @@ impl Geometry {
         if !self.bounds.contains(&position) {
             return None;
         }
-        let col = hit_index(
-            self.bounds.left(),
-            self.cell_width,
-            position.x,
-            self.cols,
-            self.scale,
-        )?;
-        let row = hit_index(
-            self.bounds.top(),
-            self.cell_height,
-            position.y,
-            self.rows,
-            self.scale,
-        )?;
-        Some((row, col))
+        Some((
+            self.lines().hit(position.y)?,
+            self.columns().hit(position.x)?,
+        ))
     }
 
     /// The cell under `position`, or the nearest cell when the point misses
@@ -122,25 +92,71 @@ impl Geometry {
         if self.cols == 0 || self.rows == 0 {
             return None;
         }
-        if let Some(cell) = self.hit(position) {
-            return Some(cell);
+        self.hit(position).or_else(|| {
+            Some((
+                self.lines().clamp(position.y),
+                self.columns().clamp(position.x),
+            ))
+        })
+    }
+
+    fn columns(self) -> Track {
+        Track {
+            origin: self.bounds.left(),
+            step: self.cell_width,
+            count: self.cols,
+            scale: self.scale,
         }
-        Some((
-            clamp_index(
-                self.bounds.top(),
-                self.cell_height,
-                position.y,
-                self.rows,
-                self.scale,
-            ),
-            clamp_index(
-                self.bounds.left(),
-                self.cell_width,
-                position.x,
-                self.cols,
-                self.scale,
-            ),
-        ))
+    }
+
+    fn lines(self) -> Track {
+        Track {
+            origin: self.bounds.top(),
+            step: self.cell_height,
+            count: self.rows,
+            scale: self.scale,
+        }
+    }
+}
+
+/// One axis of a grid snapped to device pixels: `count` cells of `step` from `origin`.
+#[derive(Clone, Copy)]
+struct Track {
+    origin: Pixels,
+    step: Pixels,
+    count: u16,
+    scale: f32,
+}
+
+impl Track {
+    /// Compute both sides from the same grid edge, rather than accumulating
+    /// fractional widths. Adjacent translucent quads then neither overlap nor gap.
+    fn edge(self, index: u32) -> Pixels {
+        px(
+            ((f32::from(self.origin) + f32::from(self.step) * index as f32) * self.scale).round()
+                / self.scale,
+        )
+    }
+
+    fn hit(self, value: Pixels) -> Option<u16> {
+        let mut index = ((value - self.origin) / self.step).floor() as u32;
+        // Division can land one cell early at an exact snapped edge. Resolve
+        // against the same edges that painting uses, not a second ideal grid.
+        if index > 0 && value < self.edge(index) {
+            index -= 1;
+        } else if value >= self.edge(index.saturating_add(1)) {
+            index = index.saturating_add(1);
+        }
+        (index < u32::from(self.count)).then_some(index as u16)
+    }
+
+    /// [`Self::hit`], or the nearest cell when `value` is outside the grid.
+    fn clamp(self, value: Pixels) -> u16 {
+        self.hit(value).unwrap_or(if value < self.origin {
+            0
+        } else {
+            self.count.saturating_sub(1)
+        })
     }
 }
 
@@ -237,36 +253,6 @@ fn surface_axis(
 
 fn snap(value: Pixels, scale: f32) -> Pixels {
     px((f32::from(value) * scale).ceil() / scale)
-}
-
-/// Compute both sides from the same grid edge, rather than accumulating
-/// fractional widths. Adjacent translucent quads then neither overlap nor gap.
-fn edge(origin: Pixels, step: Pixels, index: u32, scale: f32) -> Pixels {
-    px(((f32::from(origin) + f32::from(step) * index as f32) * scale).round() / scale)
-}
-
-fn hit_index(origin: Pixels, step: Pixels, value: Pixels, count: u16, scale: f32) -> Option<u16> {
-    let mut index = ((value - origin) / step).floor() as u32;
-    // Division can land one cell early at an exact snapped edge. Resolve
-    // against the same edges that painting uses, not a second ideal grid.
-    if index > 0 && value < edge(origin, step, index, scale) {
-        index -= 1;
-    } else if value >= edge(origin, step, index.saturating_add(1), scale) {
-        index = index.saturating_add(1);
-    }
-    (index < u32::from(count)).then_some(index as u16)
-}
-
-/// `hit_index`, or the nearest in-range cell when the point is outside the grid.
-fn clamp_index(origin: Pixels, step: Pixels, value: Pixels, count: u16, scale: f32) -> u16 {
-    if let Some(index) = hit_index(origin, step, value, count, scale) {
-        return index;
-    }
-    if value < origin {
-        0
-    } else {
-        count.saturating_sub(1)
-    }
 }
 
 #[cfg(test)]

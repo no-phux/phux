@@ -94,25 +94,24 @@ pub(super) struct PreparedFields {
 impl PreparedFields {
     pub(super) fn from_row(row: &Row) -> Self {
         let mut metadata = Fold::new(MAX_HAYSTACK_GRAPHEMES);
-        // The same "{category} {detail} {keywords}" text ranking used before
-        // this cache, then the agent fields the row already carries.
-        metadata.push(row.category);
-        metadata.space();
-        metadata.push(row.detail.as_deref().unwrap_or(""));
-        metadata.space();
-        metadata.push(&row.keywords);
-        if let Some(agent) = &row.agent {
-            if let Some(kind) = &agent.kind {
-                metadata.space();
-                metadata.push(kind);
+        // "{category} {detail} {keywords}", then the agent fields the row
+        // already carries.
+        let agent = row.agent.as_ref();
+        let parts = [
+            Some(row.category),
+            Some(row.detail.as_deref().unwrap_or("")),
+            Some(&row.keywords),
+            agent.and_then(|agent| agent.kind.as_deref()),
+            agent.map(|agent| agent.name.as_str()),
+            agent
+                .map(|agent| agent.word())
+                .filter(|word| !word.is_empty()),
+        ];
+        for (index, part) in parts.into_iter().flatten().enumerate() {
+            if index > 0 {
+                metadata.push(" ");
             }
-            metadata.space();
-            metadata.push(&agent.name);
-            let word = agent.word();
-            if !word.is_empty() {
-                metadata.space();
-                metadata.push(word);
-            }
+            metadata.push(part);
         }
         Self {
             title: fold_one(&row.title, MAX_HAYSTACK_GRAPHEMES),
@@ -309,10 +308,6 @@ impl Fold {
             max_graphemes,
             max_bytes: max_graphemes.saturating_mul(MAX_BYTES_PER_GRAPHEME),
         }
-    }
-
-    fn space(&mut self) {
-        self.push(" ");
     }
 
     /// Fold `text` until the grapheme or byte budget is spent. Stops without

@@ -344,7 +344,7 @@ impl Feed {
     }
 
     pub fn retain(&mut self, keep: impl Fn(&Notification) -> bool) {
-        self.items.retain(|entry| keep(entry));
+        self.items.retain(keep);
         self.settle();
     }
 

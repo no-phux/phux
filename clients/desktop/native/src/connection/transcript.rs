@@ -45,11 +45,7 @@ impl Conversation {
             parent: info.parent.clone()?,
             epoch,
             stream: publication.stream,
-            state: AgentSessionState {
-                provider: info.provider.clone(),
-                native_id: info.native_id.clone(),
-                status: AgentSessionStatus::Unknown,
-            },
+            state: fresh_state(info),
             native: None,
             entries: VecDeque::new(),
             closed: false,
@@ -71,11 +67,7 @@ impl Conversation {
             self.bytes = 0;
             self.omitted = false;
             self.has_transcript = false;
-            self.state = AgentSessionState {
-                provider: info.provider.clone(),
-                native_id: info.native_id.clone(),
-                status: AgentSessionStatus::Unknown,
-            };
+            self.state = fresh_state(info);
         } else if publication.stream.stream_id == self.stream.stream_id
             && publication.stream.last_seq < self.stream.last_seq
         {
@@ -135,6 +127,14 @@ impl Conversation {
                 self.omitted = true;
             }
         }
+    }
+}
+
+fn fresh_state(info: &AgentSessionInfo) -> AgentSessionState {
+    AgentSessionState {
+        provider: info.provider.clone(),
+        native_id: info.native_id.clone(),
+        status: AgentSessionStatus::Unknown,
     }
 }
 
@@ -214,6 +214,22 @@ mod tests {
         }
     }
 
+    fn info() -> AgentSessionInfo {
+        AgentSessionInfo {
+            parent: Some(ResourceId::local(1)),
+            ..Default::default()
+        }
+    }
+
+    fn event(seq: u64, kind: AgentEventKind) -> AgentEventRecord {
+        AgentEventRecord {
+            seq,
+            ts_ms: 0,
+            kind,
+            data: json!({}),
+        }
+    }
+
     fn row(seq: u64, id: &str, text: &str) -> AgentEventRecord {
         AgentEventRecord {
             seq,
@@ -255,10 +271,7 @@ mod tests {
 
     #[test]
     fn closed_or_reparented_stream_cannot_accept_rows() {
-        let mut info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
+        let mut info = info();
         let batch = publication(AgentRecordMode::Replace, 1, vec![row(1, "reply", "a")]);
         let mut conversation = Conversation::new(&batch, &info, 1).unwrap();
         info.parent = Some(ResourceId::local(3));
@@ -272,10 +285,7 @@ mod tests {
 
     #[test]
     fn retention_is_bounded_and_lifecycle_only_is_readable() {
-        let info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
+        let info = info();
         let batch = publication(
             AgentRecordMode::Replace,
             300,
@@ -301,19 +311,11 @@ mod tests {
 
     #[test]
     fn permission_and_stop_state_is_folded_between_working_episodes() {
-        let info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
+        let info = info();
         let batch = publication(
             AgentRecordMode::Replace,
             1,
-            vec![AgentEventRecord {
-                seq: 1,
-                ts_ms: 0,
-                kind: AgentEventKind::Prompt,
-                data: json!({}),
-            }],
+            vec![event(1, AgentEventKind::Prompt)],
         );
         let mut conversation = Conversation::new(&batch, &info, 1).unwrap();
         conversation.apply(&batch, &info, 1);
@@ -351,12 +353,7 @@ mod tests {
             &publication(
                 AgentRecordMode::Append,
                 4,
-                vec![AgentEventRecord {
-                    seq: 4,
-                    ts_ms: 0,
-                    kind: AgentEventKind::Prompt,
-                    data: json!({}),
-                }],
+                vec![event(4, AgentEventKind::Prompt)],
             ),
             &info,
             1,
@@ -367,16 +364,8 @@ mod tests {
 
     #[test]
     fn transcript_supersedes_lifecycle_fallback_without_losing_state() {
-        let info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
-        let prompt = AgentEventRecord {
-            seq: 1,
-            ts_ms: 0,
-            kind: AgentEventKind::Prompt,
-            data: json!({}),
-        };
+        let info = info();
+        let prompt = event(1, AgentEventKind::Prompt);
         let batch = publication(AgentRecordMode::Replace, 1, vec![prompt.clone()]);
         let mut conversation = Conversation::new(&batch, &info, 1).unwrap();
         conversation.apply(&batch, &info, 1);
@@ -396,12 +385,7 @@ mod tests {
             &publication(
                 AgentRecordMode::Append,
                 3,
-                vec![AgentEventRecord {
-                    seq: 3,
-                    ts_ms: 0,
-                    kind: AgentEventKind::Stop,
-                    data: json!({}),
-                }],
+                vec![event(3, AgentEventKind::Stop)],
             ),
             &info,
             1,
@@ -418,10 +402,7 @@ mod tests {
 
     #[test]
     fn retained_replay_does_not_rearm_stop_for_the_same_working_episode() {
-        let info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
+        let info = info();
         let records = [
             AgentEventKind::Prompt,
             AgentEventKind::Stop,
@@ -429,12 +410,7 @@ mod tests {
         ]
         .into_iter()
         .enumerate()
-        .map(|(index, kind)| AgentEventRecord {
-            seq: index as u64 + 1,
-            ts_ms: 0,
-            kind,
-            data: json!({}),
-        })
+        .map(|(index, kind)| event(index as u64 + 1, kind))
         .collect();
         let batch = publication(AgentRecordMode::Replace, 3, records);
         let mut conversation = Conversation::new(&batch, &info, 1).unwrap();
@@ -450,12 +426,7 @@ mod tests {
             &publication(
                 AgentRecordMode::Append,
                 4,
-                vec![AgentEventRecord {
-                    seq: 4,
-                    ts_ms: 0,
-                    kind: AgentEventKind::Stop,
-                    data: json!({}),
-                }],
+                vec![event(4, AgentEventKind::Stop)],
             ),
             &info,
             2,
@@ -465,10 +436,7 @@ mod tests {
 
     #[test]
     fn sdk_auth_and_capability_notices_remain_visible_alongside_prose() {
-        let info = AgentSessionInfo {
-            parent: Some(ResourceId::local(1)),
-            ..Default::default()
-        };
+        let info = info();
         let notice = |seq, message| AgentEventRecord {
             seq,
             ts_ms: 0,

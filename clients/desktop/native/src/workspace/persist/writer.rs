@@ -166,9 +166,12 @@ impl Drop for Writer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::Scratch;
+    use super::super::{RecentProjects, StoreValue, load_layout, save_layout};
     use super::*;
+    use crate::settings::default_display;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -187,51 +190,34 @@ mod tests {
 
     #[test]
     fn identical_history_operations_and_quit_retry_failed_saves() {
-        let root =
-            std::env::temp_dir().join(format!("desktop-history-retry-{}", std::process::id()));
-        let store = FileLayoutStore::new(root.join("projects.json"), None);
-        let mut history = super::super::RecentProjects::from_store(store.clone());
+        let scratch = Scratch::new("history-retry");
+        let store = FileLayoutStore::new(scratch.join("projects.json"), None);
+        let entries = || RecentProjects::from_store(store.clone()).entries().to_vec();
+        let mut history = RecentProjects::from_store(store.clone());
         history.writer = fail_once();
         history.record("/checkouts/a".into()).unwrap();
         assert_eq!(history.writer.flush(), ["transient save failure"]);
         history.record("/checkouts/a".into()).unwrap();
         assert!(history.flush().is_empty());
-        assert_eq!(
-            super::super::RecentProjects::from_store(store.clone()).entries(),
-            [std::path::PathBuf::from("/checkouts/a")]
-        );
+        assert_eq!(entries(), [PathBuf::from("/checkouts/a")]);
         history.writer = fail_once();
-        history
-            .forget(std::path::Path::new("/checkouts/a"))
-            .unwrap();
+        history.forget(Path::new("/checkouts/a")).unwrap();
         assert_eq!(history.writer.flush(), ["transient save failure"]);
-        history
-            .forget(std::path::Path::new("/checkouts/a"))
-            .unwrap();
+        history.forget(Path::new("/checkouts/a")).unwrap();
         assert!(history.flush().is_empty());
-        assert!(
-            super::super::RecentProjects::from_store(store.clone())
-                .entries()
-                .is_empty()
-        );
+        assert!(entries().is_empty());
         history.writer = fail_once();
         history.record("/checkouts/b".into()).unwrap();
         // No identical operation this time: close/quit makes the retry.
         assert_eq!(history.flush(), ["transient save failure"]);
-        assert_eq!(
-            super::super::RecentProjects::from_store(store.clone()).entries(),
-            [std::path::PathBuf::from("/checkouts/b")]
-        );
-        std::fs::remove_file(store.path).unwrap();
-        std::fs::remove_dir(root).unwrap();
+        assert_eq!(entries(), [PathBuf::from("/checkouts/b")]);
     }
 
     #[test]
     fn read_after_write_barrier_preserves_a_host_round_trip_and_migration_source() {
-        let root =
-            std::env::temp_dir().join(format!("desktop-save-barrier-{}", std::process::id()));
-        let a = FileLayoutStore::new(root.join("a.json"), None);
-        let b = FileLayoutStore::new(root.join("b.json"), None);
+        let scratch = Scratch::new("save-barrier");
+        let a = FileLayoutStore::new(scratch.join("a.json"), None);
+        let b = FileLayoutStore::new(scratch.join("b.json"), None);
         a.write(&1.into()).unwrap();
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -243,47 +229,37 @@ mod tests {
         writer.json(a.clone(), 2.into());
         started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         writer.json(b, 3.into());
-        assert_eq!(a.read(), super::super::StoreValue::Present(1.into()));
+        assert_eq!(a.read(), StoreValue::Present(1.into()));
         release_tx.send(()).unwrap();
         release_tx.send(()).unwrap();
         // Host/session adoption must use this barrier before restoring A or
         // importing its named layout into the canonical key-scoped destination.
         assert!(writer.flush().is_empty());
-        assert_eq!(a.read(), super::super::StoreValue::Present(2.into()));
-        let migrated = FileLayoutStore::new(root.join("canonical.json"), Some(a.path.clone()));
+        assert_eq!(a.read(), StoreValue::Present(2.into()));
+        let migrated = FileLayoutStore::new(scratch.join("canonical.json"), Some(a.path.clone()));
         assert_eq!(migrated.read(), a.read());
-        std::fs::remove_file(a.path).unwrap();
-        std::fs::remove_file(root.join("b.json")).unwrap();
-        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
     fn flush_atomically_persists_the_final_layout_and_leaves_no_staging_file() {
-        let root = std::env::temp_dir().join(format!("desktop-writer-{}", std::process::id()));
-        let store = FileLayoutStore::new(root.join("layout.json"), None);
+        let scratch = Scratch::new("writer");
+        let store = FileLayoutStore::new(scratch.join("layout.json"), None);
         let writer = Writer::default();
-        let mut layout =
-            super::super::save_layout("server", &[], &crate::settings::default_display(), None);
+        let mut layout = save_layout("server", &[], &default_display(), None);
         writer.layout(store.clone(), layout.clone());
         layout.display.font_size = 22.;
         writer.layout(store.clone(), layout.clone());
         assert!(writer.flush().is_empty());
-        assert_eq!(
-            super::super::load_layout(&store.read()).initial,
-            Some(layout)
-        );
-        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        std::fs::remove_file(&store.path).unwrap();
-        std::fs::remove_dir(root).unwrap();
+        assert_eq!(load_layout(&store.read()).initial, Some(layout));
+        assert_eq!(std::fs::read_dir(&scratch.path).unwrap().count(), 1);
     }
 
     #[test]
     #[ignore = "observational disk benchmark; run with --ignored --nocapture"]
     fn measure_ui_save_cost() {
-        let root = std::env::temp_dir().join(format!("desktop-save-perf-{}", std::process::id()));
-        let store = FileLayoutStore::new(root.join("layout.json"), None);
-        let layout =
-            super::super::save_layout("server", &[], &crate::settings::default_display(), None);
+        let scratch = Scratch::new("save-perf");
+        let store = FileLayoutStore::new(scratch.join("layout.json"), None);
+        let layout = save_layout("server", &[], &default_display(), None);
         let start = std::time::Instant::now();
         for _ in 0..100 {
             store.write(&layout_value(&layout)).unwrap();
@@ -299,8 +275,6 @@ mod tests {
         println!(
             "100 saves: synchronous UI serialization+fsync {synchronous:?}; UI enqueue {enqueue:?} (disk flushed afterward)"
         );
-        std::fs::remove_file(&store.path).unwrap();
-        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
@@ -461,13 +435,7 @@ mod tests {
         );
         assert!(writer.failed(&path));
         assert_eq!(std::fs::read(&path).unwrap(), good);
-        assert!(std::fs::read_dir(&scratch.path).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".next")
-        }));
+        assert!(!scratch.has_staging());
 
         let other = FileLayoutStore::new(scratch.join("other.json"), None);
         writer.json(other.clone(), "elsewhere".into());
@@ -481,10 +449,7 @@ mod tests {
         writer.json(store.clone(), "recovered".into());
         assert!(writer.flush().is_empty());
         assert!(!writer.failed(&path));
-        assert_eq!(
-            store.read(),
-            super::super::StoreValue::Present("recovered".into())
-        );
+        assert_eq!(store.read(), StoreValue::Present("recovered".into()));
     }
 
     #[test]
@@ -496,41 +461,7 @@ mod tests {
         writer.json(store.clone(), "B".into());
         writer.json(store.clone(), "C".into());
         drop(writer);
-        assert_eq!(store.read(), super::super::StoreValue::Present("C".into()));
+        assert_eq!(store.read(), StoreValue::Present("C".into()));
         assert_eq!(std::fs::read_dir(&scratch.path).unwrap().count(), 1);
-    }
-
-    struct Scratch {
-        path: PathBuf,
-    }
-
-    impl Scratch {
-        fn new(label: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "phux-desktop-{label}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn join(&self, name: &str) -> PathBuf {
-            self.path.join(name)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            if let Ok(metadata) = std::fs::metadata(&self.path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(perms.mode() | 0o200);
-                let _ = std::fs::set_permissions(&self.path, perms);
-            }
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
     }
 }

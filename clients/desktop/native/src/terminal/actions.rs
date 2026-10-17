@@ -4,9 +4,9 @@
 //! and Command-V, minus its keyboard focus check: the find bar over the
 //! terminal may hold the keyboard.
 //!
-//! [`accept`] is the once-only gate. A request is delivered on the call that
-//! carries it and is not retained, so a later render cannot repeat it and an
-//! unbound surface cannot store one for a future bind.
+//! A request is delivered on the call that carries it and is not retained, so
+//! a later render cannot repeat it and an unbound surface cannot store one for
+//! a future bind.
 
 use crate::input::{InputNotice, LinkAdmit, TerminalInput, admit_path};
 use gpui::{self, ClipboardItem};
@@ -23,12 +23,6 @@ pub enum HostAction {
     CopyText(String),
     /// Open this path with its default application.
     Open(String),
-}
-
-/// `None` when the surface is not the bound entity. The caller must not keep
-/// the action for a later attempt.
-pub(super) fn accept(bound: bool, action: HostAction) -> Option<HostAction> {
-    bound.then_some(action)
 }
 
 /// Failures are as quiet as Command-C with nothing selected: the terminal's
@@ -56,34 +50,12 @@ pub(super) fn run(
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             None
         }
-        HostAction::Open(path) => match admit_path(std::path::Path::new(&path)) {
+        HostAction::Open(path) => match admit_path(path.as_ref()) {
             LinkAdmit::Open => {
-                cx.open_with_system(std::path::Path::new(&path));
+                cx.open_with_system(path.as_ref());
                 None
             }
             LinkAdmit::Refuse { title, body } => Some(InputNotice { title, body }),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{HostAction, accept};
-
-    #[test]
-    fn an_unbound_request_is_dropped_and_not_retained() {
-        assert_eq!(accept(false, HostAction::Paste), None);
-        assert_eq!(accept(false, HostAction::Copy), None);
-        // A later bind does not see the dropped request: accept keeps no slot.
-        assert_eq!(accept(true, HostAction::Copy), Some(HostAction::Copy));
-    }
-
-    #[test]
-    fn each_accepted_request_is_a_separate_delivery() {
-        let first = accept(true, HostAction::CopyText("a".into()));
-        let second = accept(true, HostAction::Open("/tmp/x.txt".into()));
-        assert_eq!(first, Some(HostAction::CopyText("a".into())));
-        assert_eq!(second, Some(HostAction::Open("/tmp/x.txt".into())));
-        assert_ne!(first, second);
     }
 }

@@ -388,19 +388,20 @@ fn metric_values(
         return [unavailable(), unavailable(), unavailable()];
     };
     match &interval.value {
-        MetricValue::Histogram(histogram) => [
-            rate(histogram.count, Unit::Count, seconds),
-            if histogram.is_empty() {
-                unavailable()
-            } else {
-                quantity(histogram.mean(), current.unit)
-            },
-            if histogram.is_empty() {
-                unavailable()
-            } else {
-                quantity(histogram.percentile(95), current.unit)
-            },
-        ],
+        MetricValue::Histogram(histogram) => {
+            let stat = |value: u64| {
+                if histogram.is_empty() {
+                    unavailable()
+                } else {
+                    quantity(value, current.unit)
+                }
+            };
+            [
+                rate(histogram.count, Unit::Count, seconds),
+                stat(histogram.mean()),
+                stat(histogram.percentile(95)),
+            ]
+        }
         MetricValue::Counter(value) => [
             rate(*value, current.unit, seconds),
             unavailable(),

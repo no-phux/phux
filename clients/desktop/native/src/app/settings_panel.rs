@@ -4,7 +4,7 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, Hsla, Keystroke, SharedString, Subscription, WeakEntity,
+    AnyElement, App, ClickEvent, Context, Entity, Hsla, SharedString, Subscription, WeakEntity,
     Window, div, px, relative,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -23,9 +23,9 @@ use crate::settings::theme::{self, Palette};
 use crate::settings::{self, DisplayPrefs, Skin};
 
 use super::color::from_hex;
-use super::desk::Desk;
-use super::keys::gpui_stroke;
-use super::skin::{Look, Surface, Surfaced};
+use super::desk::{Desk, Modal};
+use super::skin::Look;
+use super::view::{ghost_button, muted};
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
@@ -135,56 +135,66 @@ pub(crate) struct SettingsControls {
     _subs: Vec<Subscription>,
 }
 
-/// A continuous preference, shown in display units (percent or multiplier).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Knob {
-    LineHeight,
-    CellWidth,
-    Unfocused,
-    Glass,
+/// One preference, as a path into [`DisplayPrefs`].
+type Pref<T> = fn(&mut DisplayPrefs) -> &mut T;
+
+fn read<T: Clone>(pref: Pref<T>, mut prefs: DisplayPrefs) -> T {
+    pref(&mut prefs).clone()
+}
+
+/// A continuous preference, shown as a multiplier or a percent.
+#[derive(Clone, Copy)]
+struct Knob {
+    title: &'static str,
+    /// Display range and step.
+    range: (f32, f32, f32),
+    percent: bool,
+    pref: Pref<f64>,
 }
 
 impl Knob {
-    const ALL: [Knob; 4] = [
-        Knob::LineHeight,
-        Knob::CellWidth,
-        Knob::Unfocused,
-        Knob::Glass,
-    ];
+    const LINE_HEIGHT: Self = Self {
+        title: "Line height",
+        range: (1., 2., 0.05),
+        percent: false,
+        pref: |prefs| &mut prefs.line_height,
+    };
+    const CELL_WIDTH: Self = Self {
+        title: "Cell width",
+        range: (50., 200., 1.),
+        percent: true,
+        pref: |prefs| &mut prefs.cell_width,
+    };
+    const UNFOCUSED: Self = Self {
+        title: "Unfocused panes",
+        range: (15., 100., 5.),
+        percent: true,
+        pref: |prefs| &mut prefs.unfocused_opacity,
+    };
+    const GLASS: Self = Self {
+        title: "Background opacity",
+        range: (55., 100., 5.),
+        percent: true,
+        pref: |prefs| &mut prefs.terminal_opacity,
+    };
 
-    /// Display range and step.
-    fn range(self) -> (f32, f32, f32) {
-        match self {
-            Knob::LineHeight => (1., 2., 0.05),
-            Knob::CellWidth => (50., 200., 1.),
-            Knob::Unfocused => (15., 100., 5.),
-            Knob::Glass => (55., 100., 5.),
-        }
+    fn scale(self) -> f64 {
+        if self.percent { 100. } else { 1. }
     }
 
     fn shown(self, prefs: &DisplayPrefs) -> f32 {
-        match self {
-            Knob::LineHeight => prefs.line_height as f32,
-            Knob::CellWidth => (prefs.cell_width * 100.) as f32,
-            Knob::Unfocused => (prefs.unfocused_opacity * 100.) as f32,
-            Knob::Glass => (prefs.terminal_opacity * 100.) as f32,
-        }
+        (read(self.pref, prefs.clone()) * self.scale()) as f32
     }
 
     fn store(self, prefs: &mut DisplayPrefs, value: f32) {
-        let value = f64::from(value);
-        match self {
-            Knob::LineHeight => prefs.line_height = value,
-            Knob::CellWidth => prefs.cell_width = value / 100.,
-            Knob::Unfocused => prefs.unfocused_opacity = value / 100.,
-            Knob::Glass => prefs.terminal_opacity = value / 100.,
-        }
+        *(self.pref)(prefs) = f64::from(value) / self.scale();
     }
 
     fn readout(self, value: f32) -> String {
-        match self {
-            Knob::LineHeight => format!("{value:.2}"),
-            _ => format!("{value:.0}%"),
+        if self.percent {
+            format!("{value:.0}%")
+        } else {
+            format!("{value:.2}")
         }
     }
 }
@@ -197,31 +207,27 @@ fn font_families(desk: &Desk, cx: &App) -> Vec<SharedString> {
     let ghostty = desk
         .ghostty()
         .font_family
-        .as_ref()
-        .filter(|family| installed.contains(family))
-        .cloned();
+        .clone()
+        .filter(|family| installed.contains(family));
+    let pinned = [
+        crate::fonts::BUNDLED.to_owned(),
+        crate::fonts::SYMBOLS.to_owned(),
+        desk.prefs.font_family.clone(),
+    ]
+    .into_iter()
+    .chain(ghostty)
+    .map(|family| family.trim().to_owned());
     let mut families: Vec<SharedString> = Vec::new();
-    let candidates = std::iter::once(crate::fonts::BUNDLED.to_owned())
-        .chain(std::iter::once(crate::fonts::SYMBOLS.to_owned()))
-        .chain(std::iter::once(desk.prefs.font_family.clone()))
-        .chain(ghostty);
-    for family in candidates {
-        let family = family.trim();
+    for family in pinned.chain(installed) {
         if !family.is_empty() && !families.iter().any(|known| known.as_ref() == family) {
-            families.push(family.to_owned().into());
-        }
-    }
-    let pinned = families.len();
-    for family in installed {
-        if !family.is_empty()
-            && !families[..pinned]
-                .iter()
-                .any(|known| known.as_ref() == family)
-        {
             families.push(family.into());
         }
     }
     families
+}
+
+fn font_items(fonts: &[SharedString]) -> SearchableVec<FontChoice> {
+    SearchableVec::new(fonts.iter().cloned().map(FontChoice).collect::<Vec<_>>())
 }
 
 /// Build the controls once, then bring every value in line with the current prefs.
@@ -230,8 +236,13 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         let fonts = font_families(desk, cx);
         let mut subs = Vec::new();
         let mut sliders = Vec::new();
-        for knob in Knob::ALL {
-            let (min, max, step) = knob.range();
+        for knob in [
+            Knob::LINE_HEIGHT,
+            Knob::CELL_WIDTH,
+            Knob::UNFOCUSED,
+            Knob::GLASS,
+        ] {
+            let (min, max, step) = knob.range;
             let value = knob.shown(&desk.prefs);
             let slider = cx.new(|_| {
                 SliderState::new()
@@ -244,14 +255,11 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             subs.push(cx.subscribe_in(
                 &slider,
                 window,
-                move |desk, _, event: &SliderEvent, _, cx| match event {
-                    SliderEvent::Change(value) => {
-                        let value = value.start();
-                        desk.apply_prefs(|prefs| knob.store(prefs, value), cx);
-                    }
-                    SliderEvent::Release(value) => {
-                        let value = value.start();
-                        desk.apply_prefs(|prefs| knob.store(prefs, value), cx);
+                move |desk, _, event: &SliderEvent, _, cx| {
+                    let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                    let value = value.start();
+                    desk.apply_prefs(|prefs| knob.store(prefs, value), cx);
+                    if matches!(event, SliderEvent::Release(_)) {
                         desk.persist();
                     }
                 },
@@ -262,15 +270,8 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             .iter()
             .position(|family| family.as_ref() == desk.prefs.font_family)
             .map(|row| IndexPath::default().row(row));
-        let font = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(fonts.iter().cloned().map(FontChoice).collect::<Vec<_>>()),
-                selected,
-                window,
-                cx,
-            )
-            .searchable(true)
-        });
+        let font = cx
+            .new(|cx| SelectState::new(font_items(&fonts), selected, window, cx).searchable(true));
         subs.push(cx.subscribe_in(
             &font,
             window,
@@ -289,15 +290,20 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             _subs: subs,
         });
     }
-    sync_font(desk, window, cx);
-    sync_sliders(desk, window, cx);
+    sync_controls(desk, window, cx);
 }
 
-/// Imports and resets update the visible selection without rebuilding the controls.
-fn sync_font(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
+/// Chords, resets and imports move the visible controls without rebuilding them.
+fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     let Some(controls) = desk.settings_controls.as_mut() else {
         return;
     };
+    for (knob, slider) in &controls.sliders {
+        let wanted = knob.shown(&desk.prefs);
+        if (slider.read(cx).value().start() - wanted).abs() > knob.range.2 / 2. {
+            slider.update(cx, |slider, cx| slider.set_value(wanted, window, cx));
+        }
+    }
     if controls
         .font
         .read(cx)
@@ -309,60 +315,28 @@ fn sync_font(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     let current: SharedString = desk.prefs.font_family.clone().into();
     if !controls.fonts.contains(&current) {
         controls.fonts.push(current.clone());
-        controls.font.update(cx, |state, cx| {
-            state.set_items(
-                SearchableVec::new(
-                    controls
-                        .fonts
-                        .iter()
-                        .cloned()
-                        .map(FontChoice)
-                        .collect::<Vec<_>>(),
-                ),
-                window,
-                cx,
-            )
-        });
+        let items = font_items(&controls.fonts);
+        controls
+            .font
+            .update(cx, |state, cx| state.set_items(items, window, cx));
     }
     controls.font.update(cx, |state, cx| {
         state.set_selected_value(&current, window, cx)
     });
 }
 
-/// A slider follows a preference changed elsewhere (a chord, a reset, a Ghostty import).
-fn sync_sliders(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) {
-    let Some(controls) = desk.settings_controls.as_ref() else {
-        return;
-    };
-    for (knob, slider) in &controls.sliders {
-        let wanted = knob.shown(&desk.prefs);
-        let (_, _, step) = knob.range();
-        if (slider.read(cx).value().start() - wanted).abs() > step / 2. {
-            slider.update(cx, |slider, cx| slider.set_value(wanted, window, cx));
-        }
-    }
-}
-
-pub(crate) fn panel(
-    desk: &mut Desk,
-    colors: &Palette,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    sync_font(desk, window, cx);
-    sync_sliders(desk, window, cx);
+pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    sync_controls(desk, window, cx);
     let handle = cx.weak_entity();
     let page = desk.settings_page.unwrap_or(Page::Appearance);
+    let look = desk.look();
     let content = match page {
         Page::Appearance => appearance_page(desk, &handle, cx),
         Page::Layout => window_page(desk, &handle),
         Page::Keyboard => keyboard_page(desk, &handle),
         Page::Spacing => advanced_page(desk, &handle),
         Page::Ghostty => ghostty_page(desk, &handle),
-        Page::Updates => {
-            let look = desk.look();
-            super::updates::page(&desk.updates, colors, &look, &desk.prefs.font_family, cx)
-        }
+        Page::Updates => super::updates::page(&desk.updates, &look, &desk.prefs.font_family, cx),
         Page::Connections => connection_page(desk, &handle),
     };
     let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
@@ -379,33 +353,36 @@ pub(crate) fn panel(
     let top = super::overlays::sheet_top(viewport);
     let height = (viewport.height.as_f32() - top - gutter).clamp(180., 600.);
     let look = desk.look();
-    div()
-        .w(px((viewport.width.as_f32() - 2. * gutter).clamp(0., 720.)))
-        .surface(&look, Surface::Popover)
-        .text_color(look.ink)
-        .occlude()
-        .id("settings-panel")
-        .debug_selector(|| "settings-panel".into())
-        .h(px(height))
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(super::overlays::launcher::hub_header(desk, colors, cx))
-        .child(
-            div().h(px(40.)).px(px(14.)).flex().items_center().child(
-                Button::new("settings-back")
-                    .label("All settings")
-                    .icon(IconName::ChevronLeft)
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|desk, _, window, cx| {
-                        desk.open_modal(super::desk::Modal::Settings, window, cx)
-                    })),
-            ),
-        )
-        .child(div().flex_1().min_h_0().child(settings))
-        .into_any_element()
+    super::overlays::card(
+        &look,
+        (viewport.width.as_f32() - 2. * gutter).clamp(0., 720.),
+    )
+    .id("settings-panel")
+    .debug_selector(|| "settings-panel".into())
+    .h(px(height))
+    .overflow_hidden()
+    .flex()
+    .flex_col()
+    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    .child(super::overlays::launcher::hub_header(
+        desk,
+        &look.chrome,
+        cx,
+    ))
+    .child(
+        div().h(px(40.)).px(px(14.)).flex().items_center().child(
+            Button::new("settings-back")
+                .label("All settings")
+                .icon(IconName::ChevronLeft)
+                .small()
+                .ghost()
+                .on_click(
+                    cx.listener(|desk, _, window, cx| desk.open_modal(Modal::Settings, window, cx)),
+                ),
+        ),
+    )
+    .child(div().flex_1().min_h_0().child(settings))
+    .into_any_element()
 }
 
 fn prefs_of(handle: &WeakEntity<Desk>, cx: &App) -> DisplayPrefs {
@@ -435,35 +412,77 @@ fn set_prefs(handle: &WeakEntity<Desk>, cx: &mut App, change: impl FnOnce(&mut D
     let _ = handle.update(cx, |desk, cx| desk.update_prefs(change, cx));
 }
 
-fn switch(
-    handle: &WeakEntity<Desk>,
-    get: fn(&DisplayPrefs) -> bool,
-    set: fn(&mut DisplayPrefs, bool),
-) -> SettingField<bool> {
-    let reader = handle.clone();
-    let writer = handle.clone();
-    SettingField::switch(
-        move |cx| get(&prefs_of(&reader, cx)),
-        move |value, cx| set_prefs(&writer, cx, |prefs| set(prefs, value)),
-    )
-    .default_value(get(&settings::default_display()))
+type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// A click that changes the prefs.
+fn click_sets(handle: &WeakEntity<Desk>, change: impl Fn(&mut DisplayPrefs) + 'static) -> OnClick {
+    let handle = handle.clone();
+    Box::new(move |_, _, cx| set_prefs(&handle, cx, &change))
 }
 
-fn number(
+/// A click that runs `action` on the desk while it is open.
+fn click_runs(
     handle: &WeakEntity<Desk>,
-    range: (f64, f64, f64),
-    get: fn(&DisplayPrefs) -> f64,
-    set: fn(&mut DisplayPrefs, f64),
-) -> SettingField<f64> {
-    let reader = handle.clone();
-    let writer = handle.clone();
-    let (min, max, step) = range;
-    SettingField::number_input(
-        NumberFieldOptions { min, max, step },
-        move |cx| get(&prefs_of(&reader, cx)),
-        move |value, cx| set_prefs(&writer, cx, |prefs| set(prefs, value)),
+    action: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
+) -> OnClick {
+    let handle = handle.clone();
+    Box::new(move |_, window, cx| {
+        let _ = handle.update(cx, |desk, cx| action(desk, window, cx));
+    })
+}
+
+fn toggle(
+    handle: &WeakEntity<Desk>,
+    title: &'static str,
+    pref: Pref<bool>,
+    description: impl Into<String>,
+) -> SettingItem {
+    let (reader, writer) = (handle.clone(), handle.clone());
+    let field = SettingField::switch(
+        move |cx| read(pref, prefs_of(&reader, cx)),
+        move |value, cx| set_prefs(&writer, cx, |prefs| *pref(prefs) = value),
     )
-    .default_value(get(&settings::default_display()))
+    .default_value(read(pref, settings::default_display()));
+    SettingItem::new(title, field).description(description.into())
+}
+
+fn stepper(
+    handle: &WeakEntity<Desk>,
+    title: &'static str,
+    (min, max, step): (f64, f64, f64),
+    pref: Pref<f64>,
+    description: impl Into<String>,
+) -> SettingItem {
+    let (reader, writer) = (handle.clone(), handle.clone());
+    let field = SettingField::number_input(
+        NumberFieldOptions { min, max, step },
+        move |cx| read(pref, prefs_of(&reader, cx)),
+        move |value, cx| set_prefs(&writer, cx, |prefs| *pref(prefs) = value),
+    )
+    .default_value(read(pref, settings::default_display()));
+    SettingItem::new(title, field).description(description.into())
+}
+
+/// A reset to the shipped default for a custom-rendered `pref`.
+fn resets<T: Clone + PartialEq + 'static, F>(
+    field: SettingField<F>,
+    handle: &WeakEntity<Desk>,
+    pref: Pref<T>,
+) -> SettingField<F> {
+    let (dirty, reset) = (handle.clone(), handle.clone());
+    let shipped = move || read(pref, settings::default_display());
+    field.on_reset(
+        move |cx| read(pref, prefs_of(&dirty, cx)) != shipped(),
+        move |_, cx| set_prefs(&reset, cx, |prefs| *pref(prefs) = shipped()),
+    )
+}
+
+/// A line of text beside its title.
+fn fact(title: impl Into<SharedString>, value: String) -> SettingItem {
+    SettingItem::new(
+        title,
+        SettingField::render(move |_, _, _| div().text_sm().child(value.clone())),
+    )
 }
 
 /// A slider with its value beside it, and a reset to the shipped default.
@@ -471,20 +490,18 @@ fn slider_item(
     desk: &Desk,
     handle: &WeakEntity<Desk>,
     knob: Knob,
-    title: &str,
-    description: &str,
+    description: impl Into<String>,
 ) -> Option<SettingItem> {
     let slider = desk
         .settings_controls
         .as_ref()?
         .sliders
         .iter()
-        .find(|(owned, _)| *owned == knob)?
+        .find(|(owned, _)| owned.title == knob.title)?
         .1
         .clone();
-    let reader = handle.clone();
-    let dirty = handle.clone();
-    let reset = handle.clone();
+    let (reader, dirty, reset) = (handle.clone(), handle.clone(), handle.clone());
+    let shipped = move || knob.shown(&settings::default_display());
     let field = SettingField::render(move |_, _, cx| {
         let value = knob.shown(&prefs_of(&reader, cx));
         div()
@@ -502,14 +519,10 @@ fn slider_item(
             )
     })
     .on_reset(
-        move |cx| knob.shown(&prefs_of(&dirty, cx)) != knob.shown(&settings::default_display()),
-        move |_, cx| {
-            set_prefs(&reset, cx, |prefs| {
-                knob.store(prefs, knob.shown(&settings::default_display()))
-            })
-        },
+        move |cx| knob.shown(&prefs_of(&dirty, cx)) != shipped(),
+        move |_, cx| set_prefs(&reset, cx, |prefs| knob.store(prefs, shipped())),
     );
-    Some(SettingItem::new(title.to_owned(), field).description(description.to_owned()))
+    Some(SettingItem::new(knob.title, field).description(description.into()))
 }
 
 /// `text`, then where the value came from and when an edit to that source applies.
@@ -595,13 +608,10 @@ fn theme_source(desk: &Desk) -> String {
 }
 
 fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
-    let themes = {
-        let mut themes = theme::themes();
-        if let Some(extra) = settings::ghostty_theme(desk.ghostty()) {
-            themes.insert(0, extra);
-        }
-        themes
-    };
+    let mut themes = theme::themes();
+    if let Some(extra) = settings::ghostty_theme(desk.ghostty()) {
+        themes.insert(0, extra);
+    }
     let theme_handle = handle.clone();
     let theme_item = SettingItem::new(
         "Theme",
@@ -610,8 +620,7 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
             let label = themes
                 .iter()
                 .find(|theme| theme.id == selected)
-                .map(|theme| theme.name.clone())
-                .unwrap_or_else(|| selected.clone());
+                .map_or_else(|| selected.clone(), |theme| theme.name.clone());
             let choices: Vec<_> = themes
                 .iter()
                 .map(|theme| (theme.id.clone(), theme.name.clone()))
@@ -624,20 +633,17 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
                     .small()
                     .w(px(260.))
                     .dropdown_caret(true)
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for (id, name) in &choices {
+                    .dropdown_menu(move |menu, _, _| {
+                        choices.iter().fold(menu, |menu, (id, name)| {
                             let id = id.clone();
-                            let writer = writer.clone();
-                            menu = menu.item(
+                            menu.item(
                                 PopupMenuItem::new(name.clone())
                                     .checked(id == selected)
-                                    .on_click(move |_, _, cx| {
-                                        let id = id.clone();
-                                        set_prefs(&writer, cx, |prefs| prefs.theme_id = id);
-                                    }),
-                            );
-                        }
-                        menu
+                                    .on_click(click_sets(&writer, move |prefs| {
+                                        prefs.theme_id.clone_from(&id)
+                                    })),
+                            )
+                        })
                     }),
             )
         }),
@@ -647,68 +653,52 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
     let mut font_group = SettingGroup::new();
     if let Some(controls) = desk.settings_controls.as_ref() {
         let font = controls.font.clone();
-        let dirty = handle.clone();
-        let reset = handle.clone();
-        font_group = font_group.item(font_status(
-            SettingItem::new(
-                "Font family",
-                SettingField::render(move |_, _, _| {
-                    Select::new(&font)
-                        .id("font-family")
-                        .accessibility_label("Terminal font family")
-                        .w(px(260.))
-                        .rounded(px(10.))
-                        .menu_width(px(340.))
-                        .menu_max_h(px(360.))
-                        .search_placeholder("Find a font family…")
-                        .empty(|_, cx| {
+        let picker = SettingField::render(move |_, _, _| {
+            Select::new(&font)
+                .id("font-family")
+                .accessibility_label("Terminal font family")
+                .w(px(260.))
+                .rounded(px(10.))
+                .menu_width(px(340.))
+                .menu_max_h(px(360.))
+                .search_placeholder("Find a font family…")
+                .empty(|_, cx| {
+                    div()
+                        .p(px(20.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(div().text_sm().child("No matching fonts"))
+                        .child(
                             div()
-                                .p(px(20.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(div().text_sm().child("No matching fonts"))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Try another family name."),
-                                )
-                        })
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Try another family name."),
+                        )
                 })
-                .on_reset(
-                    move |cx| {
-                        prefs_of(&dirty, cx).font_family != settings::default_display().font_family
-                    },
-                    move |_, cx| {
-                        set_prefs(&reset, cx, |prefs| {
-                            prefs.font_family = settings::default_display().font_family
-                        })
-                    },
-                ),
-            )
-            .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]),
-            desk,
-            cx,
-        ));
-    }
-    font_group = font_group.item(
-        SettingItem::new(
-            "Font size",
-            number(
-                handle,
-                (9., 28., 1.),
-                |prefs| prefs.font_size,
-                |prefs, value| prefs.font_size = value,
-            ),
+        });
+        let item = SettingItem::new(
+            "Font family",
+            resets(picker, handle, |prefs| &mut prefs.font_family),
         )
-        .description(sourced(desk, "Points", &["font-size"], |prefs| {
-            prefs.font_size.to_string()
-        })),
-    );
+        .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]);
+        font_group = font_group.item(font_status(item, desk, cx));
+    }
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
-        .group(font_group.item(theme_item))
+        .group(
+            font_group
+                .item(stepper(
+                    handle,
+                    "Font size",
+                    (9., 28., 1.),
+                    |prefs| &mut prefs.font_size,
+                    sourced(desk, "Points", &["font-size"], |prefs| {
+                        prefs.font_size.to_string()
+                    }),
+                ))
+                .item(theme_item),
+        )
         .group(look_group(desk, handle))
 }
 
@@ -718,46 +708,38 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         .shown_chord("plain-terminal")
         .map(|chord| format!(" Toggle it with {chord}."))
         .unwrap_or_default();
-    let cards_handle = handle.clone();
-    let skins = SettingItem::render(move |_, _, cx| skin_cards(&cards_handle, cx))
-        .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]);
+    let cards = handle.clone();
     SettingGroup::new()
         .title("Look")
-        .item(skins)
         .item(
-            SettingItem::new(
+            SettingItem::render(move |_, _, cx| skin_cards(&cards, cx))
+                .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]),
+        )
+        .item(
+            toggle(
+                handle,
                 "Plain terminal",
-                switch(handle, |prefs| prefs.plain, |prefs, value| prefs.plain = value),
+                |prefs| &mut prefs.plain,
+                format!("Opaque and square, with no sidebar or status bar.{plain_chord}"),
             )
-            .description(format!(
-                "Opaque and square, with no sidebar or status bar.{plain_chord}"
-            ))
             .keywords(["plain", "ghostty", "minimal", "terminal", "skin"]),
         )
         .item(
-            SettingItem::new(
+            toggle(
+                handle,
                 "Animations",
-                switch(
-                    handle,
-                    |prefs| prefs.animations,
-                    |prefs, value| prefs.animations = value,
-                ),
-            )
-            .description(
+                |prefs| &mut prefs.animations,
                 "Pane folds, skin shifts and the laser cursor. macOS Reduce motion also turns them off.",
             )
             .keywords(["motion", "animation", "reduce"]),
         )
         .item(
-            SettingItem::new(
+            toggle(
+                handle,
                 "Laser cursor",
-                switch(
-                    handle,
-                    |prefs| prefs.cursor_laser,
-                    |prefs, value| prefs.cursor_laser = value,
-                ),
+                |prefs| &mut prefs.cursor_laser,
+                "A jumping cursor streaks a beam behind it.",
             )
-            .description("A jumping cursor streaks a beam behind it.")
             .keywords(["cursor", "laser", "trail"]),
         )
 }
@@ -766,12 +748,9 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
 /// overrides the pick, so a hint says so and the other cards dim.
 fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
     let prefs = prefs_of(handle, cx);
-    let colors = handle
-        .upgrade()
-        .map(|desk| desk.read(cx).palette())
-        .unwrap_or_else(|| theme::palette(&theme::theme_by_id(&prefs.theme_id, &[])));
+    let look = look_of(handle, cx);
+    let ink = look.ink;
     let picked = settings::skin_by_id(&prefs.skin_id).id;
-    let writer = handle.clone();
     let hint = prefs.plain.then(|| {
         div()
             .w_full()
@@ -779,95 +758,83 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
             .items_center()
             .justify_between()
             .gap(px(10.))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(from_hex(&colors.muted))
-                    .child("Plain terminal is on. Your skin returns when it is off."),
-            )
+            .child(muted(
+                &look,
+                "Plain terminal is on. Your skin returns when it is off.",
+            ))
             .child(
                 Button::new("skin-plain-off")
                     .label("Turn off")
                     .xsmall()
                     .ghost()
-                    .on_click(move |_, _, cx| set_prefs(&writer, cx, |prefs| prefs.plain = false)),
+                    .on_click(click_sets(handle, |prefs| prefs.plain = false)),
             )
     });
+    let card = |skin: &'static Skin| {
+        let selected = skin.id == picked;
+        let worn = if prefs.plain {
+            skin.id == settings::skin::TERMINAL.id
+        } else {
+            selected
+        };
+        div()
+            .id(SharedString::from(format!("skin-card-{}", skin.id)))
+            .debug_selector(move || format!("skin-card-{}", skin.id))
+            .w(px(168.))
+            .p(px(4.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(if selected {
+                ink.opacity(0.35)
+            } else {
+                gpui::transparent_black()
+            })
+            .hover(|card| card.bg(ink.opacity(0.04)))
+            .cursor_pointer()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .when(!worn, |card| card.opacity(0.7))
+            .child(skin_preview(skin, &look.chrome, &prefs))
+            .child(
+                div()
+                    .px(px(2.))
+                    .pb(px(2.))
+                    .text_sm()
+                    .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                    .child(skin.name),
+            )
+            .on_click(click_sets(handle, move |prefs| {
+                prefs.skin_id = skin.id.to_owned()
+            }))
+    };
     div()
         .flex()
         .flex_col()
         .gap(px(8.))
         .children(hint)
         .child(
-            div().flex().flex_wrap().gap(px(10.)).children(
-                settings::skins()
-                    .iter()
-                    .map(|skin| skin_card(skin, &colors, &prefs, skin.id == picked, handle)),
-            ),
-        )
-        .into_any_element()
-}
-
-fn skin_card(
-    skin: &'static Skin,
-    colors: &Palette,
-    prefs: &DisplayPrefs,
-    selected: bool,
-    handle: &WeakEntity<Desk>,
-) -> AnyElement {
-    let handle = handle.clone();
-    let ink = from_hex(&colors.theme.foreground);
-    let worn = if prefs.plain {
-        skin.id == settings::skin::TERMINAL.id
-    } else {
-        selected
-    };
-    div()
-        .id(SharedString::from(format!("skin-card-{}", skin.id)))
-        .debug_selector(move || format!("skin-card-{}", skin.id))
-        .w(px(168.))
-        .p(px(4.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(if selected {
-            ink.opacity(0.35)
-        } else {
-            gpui::transparent_black()
-        })
-        .hover(|card| card.bg(ink.opacity(0.04)))
-        .cursor_pointer()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .when(!worn, |card| card.opacity(0.7))
-        .child(skin_preview(skin, colors, prefs))
-        .child(
             div()
-                .px(px(2.))
-                .pb(px(2.))
-                .text_sm()
-                .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
-                .child(skin.name),
+                .flex()
+                .flex_wrap()
+                .gap(px(10.))
+                .children(settings::skins().iter().map(card)),
         )
-        .on_click(move |_, _, cx| {
-            set_prefs(&handle, cx, |prefs| prefs.skin_id = skin.id.to_owned());
-        })
         .into_any_element()
 }
 
 /// A window in miniature, painted from the skin's own tokens: sheet,
 /// titlebar, sidebar, gutter, pane cards and status bar.
 fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyElement {
-    const SCALE: f32 = 0.3;
     let look = Look::of(skin, colors, prefs);
     let (chrome, shape) = (&skin.chrome, &skin.shape);
-    let scaled = |value: f32| px(value * SCALE);
+    let scaled = |value: f32| px(value * 0.3);
     let corner = px(shape.radius * 0.4);
     let bar = |width: f32, color: Hsla| div().h(px(2.)).w(relative(width)).rounded_full().bg(color);
     let ink = look.ink.opacity(0.7);
     let muted = from_hex(&colors.muted);
     let accent = from_hex(&colors.theme.accent);
-    let pane = |lines: &[(f32, Hsla)]| {
+    let pane = |lines: [(f32, Hsla); 3]| {
         div()
             .flex_1()
             .h_full()
@@ -877,7 +844,7 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
             .flex_col()
             .gap(px(3.))
             .p(px(if shape.gutter > 0. { 4. } else { 3. }))
-            .children(lines.iter().map(|(width, color)| bar(*width, *color)))
+            .children(lines.map(|(width, color)| bar(width, color)))
     };
     let titlebar = div()
         .h(scaled(chrome.titlebar))
@@ -915,14 +882,6 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
             .child(bar(0.7, look.hover))
     });
     let split = (shape.divider > 0.).then(|| div().w(px(shape.divider)).h_full().bg(look.divider));
-    let canvas = div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .gap(scaled(shape.gap))
-        .child(pane(&[(0.5, accent), (0.85, ink), (0.6, muted)]))
-        .children(split)
-        .child(pane(&[(0.7, ink), (0.4, muted), (0.9, ink)]));
     let body = div()
         .flex_1()
         .min_h_0()
@@ -931,8 +890,16 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
         .px(scaled(shape.gutter))
         .pb(scaled(if chrome.status > 0. { 0. } else { shape.gutter }))
         .children(sidebar)
-        .child(canvas);
-    let status = (chrome.status > 0.).then(|| div().h(scaled(chrome.status)).flex_shrink_0());
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .gap(scaled(shape.gap))
+                .child(pane([(0.5, accent), (0.85, ink), (0.6, muted)]))
+                .children(split)
+                .child(pane([(0.7, ink), (0.4, muted), (0.9, ink)])),
+        );
     div()
         .w_full()
         .h(px(88.))
@@ -945,7 +912,9 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
         .flex_col()
         .child(titlebar)
         .child(body)
-        .children(status)
+        .when(chrome.status > 0., |preview| {
+            preview.child(div().h(scaled(chrome.status)).flex_shrink_0())
+        })
         .into_any_element()
 }
 
@@ -955,8 +924,6 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .map(|chord| format!("Toggle it with {chord}."))
         .unwrap_or_default();
     let tabs = handle.clone();
-    let tabs_dirty = handle.clone();
-    let tabs_reset = handle.clone();
     let tab_position = SettingField::render(move |_, _, cx| {
         let position = prefs_of(&tabs, cx).tab_position;
         let look = look_of(&tabs, cx);
@@ -977,15 +944,10 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                 ]
                 .into_iter()
                 .map(|(value, label, icon)| {
-                    let writer = tabs.clone();
+                    let id = format!("tab-position-{}", value.as_str());
                     let selected = position == value;
-                    div()
-                        .debug_selector(move || format!("tab-position-{}", value.as_str()))
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "tab-position-{}",
-                                value.as_str()
-                            )))
+                    div().debug_selector(|| id.clone()).child(
+                        Button::new(SharedString::from(id.clone()))
                             .label(label)
                             .icon(icon)
                             .small()
@@ -994,85 +956,70 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                             .rounded(px((radius - 1.).max(0.)))
                             .bg(ink.opacity(if selected { 0.10 } else { 0. }))
                             .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
-                            .on_click(move |_, _, cx| {
-                                set_prefs(&writer, cx, |prefs| prefs.tab_position = value);
-                            }),
-                        )
+                            .on_click(click_sets(&tabs, move |prefs| prefs.tab_position = value)),
+                    )
                 }),
             )
-    })
-    .on_reset(
-        move |cx| prefs_of(&tabs_dirty, cx).tab_position != settings::TabPosition::Top,
-        move |_, cx| {
-            set_prefs(&tabs_reset, cx, |prefs| {
-                prefs.tab_position = settings::TabPosition::Top
-            });
-        },
+    });
+    let (blur, solid) = (
+        settings::WindowBackground::Blur,
+        settings::WindowBackground::Solid,
     );
-    let layout = SettingGroup::new()
-        .title("Layout")
-        .item(
-            SettingItem::new("Tab placement", tab_position)
-                .description("Keep tabs above your work, or in a compact side rail."),
-        )
-        .item(
-            SettingItem::new(
-                "Show sidebar",
-                switch(
-                    handle,
-                    |prefs| prefs.sidebar_visible,
-                    |prefs, value| prefs.sidebar_visible = value,
-                ),
-            )
-            .description(sidebar_chord),
-        )
-        .item(
-            SettingItem::new(
-                "Blur behind window",
-                switch(
-                    handle,
-                    |prefs| prefs.window_background == settings::WindowBackground::Blur,
-                    |prefs, value| {
-                        prefs.window_background = if value {
-                            settings::WindowBackground::Blur
-                        } else {
-                            settings::WindowBackground::Solid
-                        };
-                    },
-                ),
-            )
-            .description(
-                "Off paints an opaque window, which costs the compositor less on every frame.",
-            ),
-        )
-        .items(
-            (desk.prefs.window_background == settings::WindowBackground::Blur)
-                .then(|| {
-                    slider_item(
-                        desk,
-                        handle,
-                        Knob::Glass,
-                        "Background opacity",
-                        "Terminal background over the blurred desktop.",
-                    )
-                })
-                .flatten(),
-        );
-    let notifications = SettingGroup::new().title("Notifications").item(
-        SettingItem::new(
-            "Agent notifications",
-            switch(
-                handle,
-                |prefs| prefs.notifications,
-                |prefs, value| prefs.notifications = value,
-            ),
-        )
-        .description("Alert when an agent needs you. Also appears in Notification Center."),
-    );
+    let (blur_reader, blur_writer) = (handle.clone(), handle.clone());
     SettingPage::new("Layout & notifications")
         .icon(IconName::PanelLeft)
-        .group(layout)
-        .group(notifications)
+        .group(
+            SettingGroup::new()
+                .title("Layout")
+                .item(
+                    SettingItem::new(
+                        "Tab placement",
+                        resets(tab_position, handle, |prefs| &mut prefs.tab_position),
+                    )
+                    .description("Keep tabs above your work, or in a compact side rail."),
+                )
+                .item(toggle(
+                    handle,
+                    "Show sidebar",
+                    |prefs| &mut prefs.sidebar_visible,
+                    sidebar_chord,
+                ))
+                .item(
+                    SettingItem::new(
+                        "Blur behind window",
+                        SettingField::switch(
+                            move |cx| prefs_of(&blur_reader, cx).window_background == blur,
+                            move |value, cx| {
+                                set_prefs(&blur_writer, cx, |prefs| {
+                                    prefs.window_background = if value { blur } else { solid };
+                                })
+                            },
+                        )
+                        .default_value(settings::default_display().window_background == blur),
+                    )
+                    .description(
+                        "Off paints an opaque window, which costs the compositor less on every frame.",
+                    ),
+                )
+                .items(
+                    (desk.prefs.window_background == blur)
+                        .then(|| {
+                            slider_item(
+                                desk,
+                                handle,
+                                Knob::GLASS,
+                                "Terminal background over the blurred desktop.",
+                            )
+                        })
+                        .flatten(),
+                ),
+        )
+        .group(SettingGroup::new().title("Notifications").item(toggle(
+            handle,
+            "Agent notifications",
+            |prefs| &mut prefs.notifications,
+            "Alert when an agent needs you. Also appears in Notification Center.",
+        )))
 }
 
 fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
@@ -1081,65 +1028,52 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .items(slider_item(
             desk,
             handle,
-            Knob::LineHeight,
-            "Line height",
-            &line_height_description(desk),
+            Knob::LINE_HEIGHT,
+            line_height_description(desk),
         ))
         .items(slider_item(
             desk,
             handle,
-            Knob::CellWidth,
-            "Cell width",
-            &sourced(
+            Knob::CELL_WIDTH,
+            sourced(
                 desk,
                 "Column width as a percent of the font's advance.",
                 &["adjust-cell-width"],
                 |prefs| prefs.cell_width.to_string(),
             ),
         ))
-        .item(
-            SettingItem::new(
-                "Horizontal padding",
-                number(
-                    handle,
-                    (0., 64., 1.),
-                    |prefs| prefs.padding_x,
-                    |prefs, value| prefs.padding_x = value,
-                ),
-            )
-            .description(sourced(
+        .item(stepper(
+            handle,
+            "Horizontal padding",
+            (0., 64., 1.),
+            |prefs| &mut prefs.padding_x,
+            sourced(
                 desk,
                 "Points between the pane edge and the text.",
                 &["window-padding-x"],
                 |prefs| prefs.padding_x.to_string(),
-            )),
-        )
-        .item(
-            SettingItem::new(
-                "Vertical padding",
-                number(
-                    handle,
-                    (0., 64., 1.),
-                    |prefs| prefs.padding_y,
-                    |prefs, value| prefs.padding_y = value,
-                ),
-            )
-            .description(sourced(
+            ),
+        ))
+        .item(stepper(
+            handle,
+            "Vertical padding",
+            (0., 64., 1.),
+            |prefs| &mut prefs.padding_y,
+            sourced(
                 desk,
                 "Points above and below the text.",
                 &["window-padding-y"],
                 |prefs| prefs.padding_y.to_string(),
-            )),
-        );
+            ),
+        ));
     SettingPage::new("Terminal spacing")
         .icon(IconName::Frame)
         .group(spacing)
         .group(SettingGroup::new().title("Pane dimming").items(slider_item(
             desk,
             handle,
-            Knob::Unfocused,
-            "Unfocused panes",
-            &sourced(
+            Knob::UNFOCUSED,
+            sourced(
                 desk,
                 "Visibility of panes you are not typing in. 100% disables dimming.",
                 &["unfocused-split-opacity"],
@@ -1151,19 +1085,23 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
 fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let input = SettingGroup::new()
         .title("Input")
-        .item(
-            SettingItem::new("Option sends Alt", switch(handle, |prefs| prefs.option_as_alt, |prefs, value| prefs.option_as_alt = value))
-                .description(sourced(
-                    desk,
-                    "Off keeps macOS Option characters such as å and ß.",
-                    &["macos-option-as-alt"],
-                    |prefs| prefs.option_as_alt.to_string(),
-                )),
-        )
-        .item(
-            SettingItem::new("Use Ghostty keybinds", switch(handle, |prefs| prefs.ghostty_keys, |prefs, value| prefs.ghostty_keys = value))
-                .description("Your Ghostty keybind lines override these shortcuts, and global: binds toggle the quick terminal."),
-        );
+        .item(toggle(
+            handle,
+            "Option sends Alt",
+            |prefs| &mut prefs.option_as_alt,
+            sourced(
+                desk,
+                "Off keeps macOS Option characters such as å and ß.",
+                &["macos-option-as-alt"],
+                |prefs| prefs.option_as_alt.to_string(),
+            ),
+        ))
+        .item(toggle(
+            handle,
+            "Use Ghostty keybinds",
+            |prefs| &mut prefs.ghostty_keys,
+            "Your Ghostty keybind lines override these shortcuts, and global: binds toggle the quick terminal.",
+        ));
     let catalog = settings::builtin_commands();
     let shown = settings::shown_chords(desk.keymap(), &settings::default_chords());
     // (title, group, chord, command id)
@@ -1194,7 +1132,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .title("Shortcuts")
         .items(rows.into_iter().map(|(title, group, chord, id)| {
             let shown = settings::display_chord(&chord);
-            let keystroke = gpui_stroke(&chord).and_then(|stroke| Keystroke::parse(&stroke).ok());
+            let keystroke = super::view::keystroke(&chord);
             let source =
                 settings::chord_source(desk.ghostty(), desk.prefs.ghostty_keys, &chord, &id);
             let applies = match source {
@@ -1281,8 +1219,6 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let found = desk.ghostty_found;
     let font = desk.ghostty().font_family.clone();
     let ignored = desk.ghostty().unmapped.len();
-    let apply = handle.clone();
-    let reload = handle.clone();
     let status = SettingItem::render(move |_, _, cx| {
         let muted = cx.theme().muted_foreground;
         div()
@@ -1302,21 +1238,18 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     .child(format!("Font: {font}"))
             }))
             .when(ignored > 0, |status| {
+                let (lines, are) = if ignored == 1 {
+                    ("line has", "is")
+                } else {
+                    ("lines have", "are")
+                };
                 status.child(div().text_xs().text_color(muted).child(format!(
-                    "{ignored} {} no phux equivalent and {} ignored.",
-                    if ignored == 1 {
-                        "line has"
-                    } else {
-                        "lines have"
-                    },
-                    if ignored == 1 { "is" } else { "are" },
+                    "{ignored} {lines} no phux equivalent and {are} ignored."
                 )))
             })
-            .into_any_element()
     });
+    let buttons = handle.clone();
     let actions = SettingItem::render(move |_, _, _| {
-        let apply = apply.clone();
-        let reload = reload.clone();
         div()
             .flex()
             .gap(px(8.))
@@ -1326,19 +1259,14 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     .primary()
                     .small()
                     .disabled(!found)
-                    .on_click(move |_, _, cx| {
-                        let _ = apply.update(cx, |desk, cx| desk.import_ghostty(cx));
-                    }),
+                    .on_click(click_runs(&buttons, |desk, _, cx| desk.import_ghostty(cx))),
             )
             .child(
                 Button::new("ghostty-reload")
                     .label("Reload config")
                     .small()
-                    .on_click(move |_, _, cx| {
-                        let _ = reload.update(cx, |desk, cx| desk.reload_ghostty(cx));
-                    }),
+                    .on_click(click_runs(&buttons, |desk, _, cx| desk.reload_ghostty(cx))),
             )
-            .into_any_element()
     });
     let page = SettingPage::new("Ghostty").icon(IconName::Frame).group(
         SettingGroup::new()
@@ -1400,86 +1328,57 @@ fn diagnostic_group(
 }
 
 fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
-    let add = handle.clone();
-    let retry = handle.clone();
+    let buttons = handle.clone();
     let controls = SettingItem::new(
         "Machines",
         SettingField::render(move |_, _, _| {
-            let add = add.clone();
-            let retry = retry.clone();
             div()
                 .flex()
                 .gap(px(8.))
                 .child(
-                    Button::new("settings-add-host")
-                        .label("Add host…")
-                        .small()
-                        .ghost()
-                        .on_click(move |_, window, cx| {
-                            let _ = add.update(cx, |desk, cx| {
-                                desk.open_modal(super::desk::Modal::AddHost, window, cx)
-                            });
-                        }),
+                    ghost_button("settings-add-host", "Add host…")
+                        .on_click(click_runs(&buttons, |desk, window, cx| {
+                            desk.open_modal(Modal::AddHost, window, cx)
+                        })),
                 )
                 .child(
-                    Button::new("settings-refresh-hosts")
-                        .label("Refresh all")
-                        .small()
-                        .ghost()
-                        .on_click(move |_, _, cx| {
-                            let _ = retry.update(cx, |desk, cx| desk.retry_fleet(cx));
-                        }),
+                    ghost_button("settings-refresh-hosts", "Refresh all")
+                        .on_click(click_runs(&buttons, |desk, _, cx| desk.retry_fleet(cx))),
                 )
         }),
     )
     .description("Sessions from every registered machine appear together in Work.");
-    let mut group = SettingGroup::new().title("Hosts").item(controls);
-    for host in &desk.hosts {
-        let remove = handle.clone();
-        let name = host.name.clone();
-        let endpoint = host.endpoint.clone();
-        group = group.item(
-            SettingItem::new(
-                name.clone(),
-                SettingField::render(move |_, _, _| {
-                    let remove = remove.clone();
-                    let name = name.clone();
-                    Button::new(SharedString::from(format!("settings-remove-host-{name}")))
-                        .label("Forget…")
-                        .small()
-                        .ghost()
-                        .on_click(move |_, window, cx| {
-                            let _ = remove.update(cx, |desk, cx| {
-                                desk.open_modal(
-                                    super::desk::Modal::RemoveHost { name: name.clone() },
-                                    window,
-                                    cx,
-                                )
-                            });
-                        })
-                }),
-            )
-            .description(endpoint),
-        );
-    }
-    for (host, error) in desk.fleet.failures() {
-        let label = format!("{} unavailable", host.as_deref().unwrap_or("Local"));
-        group = group.item(SettingItem::new(
-            label,
-            SettingField::render(move |_, _, _| div().text_sm().child(error.clone())),
-        ));
-    }
-    group
+    let hosts = desk.hosts.iter().map(|host| {
+        let (remove, name) = (handle.clone(), host.name.clone());
+        SettingItem::new(
+            name.clone(),
+            SettingField::render(move |_, _, _| {
+                let name = name.clone();
+                ghost_button(format!("settings-remove-host-{name}"), "Forget…").on_click(
+                    click_runs(&remove, move |desk, window, cx| {
+                        let name = name.clone();
+                        desk.open_modal(Modal::RemoveHost { name }, window, cx)
+                    }),
+                )
+            }),
+        )
+        .description(host.endpoint.clone())
+    });
+    let failures = desk.fleet.failures().into_iter().map(|(host, error)| {
+        fact(
+            format!("{} unavailable", host.as_deref().unwrap_or("Local")),
+            error,
+        )
+    });
+    SettingGroup::new()
+        .title("Hosts")
+        .item(controls)
+        .items(hosts)
+        .items(failures)
 }
 
 fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let (status, _) = desk.connection_label();
-    let fact = |title: &str, value: String| {
-        SettingItem::new(
-            title.to_owned(),
-            SettingField::render(move |_, _, _| div().text_sm().child(value.clone())),
-        )
-    };
     let reconnect = handle.clone();
     let attached = desk
         .link
@@ -1488,14 +1387,11 @@ fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let action = SettingItem::new(
         "Reconnect",
         SettingField::render(move |_, _, _| {
-            let reconnect = reconnect.clone();
             Button::new("conn-reconnect")
                 .label("Reconnect")
                 .small()
                 .map(|button| if attached { button } else { button.primary() })
-                .on_click(move |_, _, cx| {
-                    let _ = reconnect.update(cx, |desk, cx| desk.reconnect(cx));
-                })
+                .on_click(click_runs(&reconnect, |desk, _, cx| desk.reconnect(cx)))
         }),
     )
     .description("Reconnect and restore this window.");

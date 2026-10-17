@@ -3,7 +3,7 @@
 use gpui::{App, Hsla, px, rgb};
 use gpui_kit::component::{Theme, ThemeMode};
 
-use crate::settings::skin::Skin;
+use crate::settings::skin::{RIM, Skin, tone};
 use crate::settings::theme::{Palette, mix};
 
 /// Parse `#RRGGBB` or `#RRGGBBAA`.
@@ -27,7 +27,8 @@ pub fn from_hex(color: &str) -> Hsla {
 /// with the phux palette, in the theme's own light or dark mode, shaped by the skin.
 pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
     let theme = &colors.theme;
-    let mode = if theme.appearance == "light" {
+    let light = theme.appearance == "light";
+    let mode = if light {
         ThemeMode::Light
     } else {
         ThemeMode::Dark
@@ -42,14 +43,10 @@ pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
     let accent_text = from_hex(&colors.accent_text);
     let surface = from_hex(&theme.surface).opacity(0.94);
     let raised = from_hex(&colors.raised).opacity(0.98);
-    let border = fg.opacity(if mode == ThemeMode::Light { 0.12 } else { 0.14 });
+    let border = fg.opacity(tone(RIM, light));
     // Neutral controls should sit within the material, not read as opaque tiles.
     // Popovers retain a denser backing so terminal text cannot compete with labels.
-    let control = fg.opacity(if mode == ThemeMode::Light {
-        0.035
-    } else {
-        0.045
-    });
+    let control = fg.opacity(tone([0.035, 0.045], light));
     let hover = from_hex(&colors.hover);
     let active = from_hex(&colors.active);
     let muted = from_hex(&colors.muted);
@@ -75,11 +72,7 @@ pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
         kit.popover_foreground = fg;
         kit.muted = surface;
         kit.muted_foreground = muted;
-        kit.accent = fg.opacity(if mode == ThemeMode::Light {
-            0.055
-        } else {
-            0.075
-        });
+        kit.accent = fg.opacity(tone([0.055, 0.075], light));
         kit.accent_foreground = fg;
         kit.primary = accent;
         kit.primary_hover = accent_hover;
@@ -115,7 +108,7 @@ pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
         kit.warning_foreground = on_status;
         kit.list = raised;
         kit.list_hover = kit.accent;
-        kit.list_active = accent.opacity(if mode == ThemeMode::Light { 0.12 } else { 0.18 });
+        kit.list_active = accent.opacity(tone([0.12, 0.18], light));
         kit.list_active_border = accent.opacity(0.5);
         kit.group_box = control;
         kit.group_box_foreground = fg;

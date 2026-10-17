@@ -137,7 +137,7 @@ fn output(connection: &mut Connection, seq: u64, bytes: &[u8]) {
     connection.drain();
 }
 
-fn leaves(workspace: &Workspace) -> Vec<LeafPlacement> {
+fn leaves(workspace: &Workspace) -> Vec<Placement> {
     workspace
         .tabs
         .iter()
@@ -145,7 +145,7 @@ fn leaves(workspace: &Workspace) -> Vec<LeafPlacement> {
         .collect()
 }
 
-fn view(placement: &LeafPlacement) -> ViewId {
+fn view(placement: &Placement) -> ViewId {
     placement.view_id.expect("placement owns a view")
 }
 
@@ -180,7 +180,7 @@ fn releases_terminal(frame: &FrameKind) -> bool {
 }
 
 /// Placement, view, and terminal of a duplicated home pane.
-fn duplicated(connection: &mut Connection) -> (Workspace, LeafPlacement, LeafPlacement) {
+fn duplicated(connection: &mut Connection) -> (Workspace, Placement, Placement) {
     let mut workspace = opened(connection);
     let original = workspace.focused().cloned().unwrap();
     workspace.duplicate_view(connection);
@@ -320,7 +320,7 @@ fn saved_duplicate_placements_restore_as_two_views_of_the_same_terminal() {
     let display = crate::settings::default_display();
     let saved = snapshot_layout(&workspace, &connection, &display).expect("layout");
     assert_eq!(saved.server_id, "01".repeat(16));
-    let saved = parse_layout(&layout_value(&saved)).expect("round trip");
+    let saved = persist::parse_layout(&persist::layout_value(&saved)).expect("round trip");
 
     let mut restored = Workspace::new(SESSION.into(), WorkspaceOptions::default());
     restored.restore(Some(saved));

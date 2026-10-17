@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Bounds, Hsla, PathBuilder, Pixels, Point, linear_color_stop, linear_gradient, point, px,
+    Anchor, Bounds, Hsla, PathBuilder, Pixels, Point, linear_color_stop, linear_gradient, point, px,
 };
 
 use super::geometry::Geometry;
@@ -104,13 +104,12 @@ impl Laser {
         let head = cell(beam.to);
         // The tail chases the head, fast at first, then lands with it.
         let tail = lerp(cell(beam.from), head, 1. - (1. - t).powi(3));
-        let corners = [tail, head].iter().flat_map(corners).collect::<Vec<_>>();
-        let (dx, dy) = (
-            f32::from(head.center().x - tail.center().x),
-            f32::from(head.center().y - tail.center().y),
-        );
-        let angle = dx.atan2(-dy).to_degrees().rem_euclid(360.);
-        Some((hull(corners), 1. - t * t, angle))
+        let d = head.center() - tail.center();
+        let angle = f32::from(d.x)
+            .atan2(-f32::from(d.y))
+            .to_degrees()
+            .rem_euclid(360.);
+        Some((hull(tail, head), 1. - t * t, angle))
     }
 }
 
@@ -120,57 +119,39 @@ fn jumped(from: Spot, to: Spot) -> bool {
 }
 
 fn lerp(from: Bounds<Pixels>, to: Bounds<Pixels>, t: f32) -> Bounds<Pixels> {
-    let mix = |a: Pixels, b: Pixels| a + (b - a) * t;
+    let mix = |a: Point<Pixels>, b: Point<Pixels>| a + (b - a) * t;
     Bounds::from_corners(
-        point(mix(from.left(), to.left()), mix(from.top(), to.top())),
-        point(
-            mix(from.right(), to.right()),
-            mix(from.bottom(), to.bottom()),
-        ),
+        mix(from.origin, to.origin),
+        mix(from.bottom_right(), to.bottom_right()),
     )
 }
 
-fn corners(bounds: &Bounds<Pixels>) -> [Point<Pixels>; 4] {
-    [
-        bounds.origin,
-        bounds.top_right(),
-        bounds.bottom_right(),
-        bounds.bottom_left(),
-    ]
-}
-
-/// Convex hull, counter-clockwise (Andrew's monotone chain).
-fn hull(mut points: Vec<Point<Pixels>>) -> Vec<Point<Pixels>> {
-    points.sort_by(|a, b| {
-        f32::from(a.x)
-            .total_cmp(&f32::from(b.x))
-            .then(f32::from(a.y).total_cmp(&f32::from(b.y)))
-    });
-    points.dedup();
-    if points.len() < 3 {
-        return points;
-    }
-    let cross = |o: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>| {
-        f32::from(a.x - o.x) * f32::from(b.y - o.y) - f32::from(a.y - o.y) * f32::from(b.x - o.x)
-    };
-    let mut lower: Vec<Point<Pixels>> = Vec::new();
-    for &p in &points {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0. {
-            lower.pop();
+/// The convex hull of two rectangles, clockwise. At each corner it keeps the
+/// outer of the two rectangles' corners, or both when neither covers the other.
+fn hull(a: Bounds<Pixels>, b: Bounds<Pixels>) -> Vec<Point<Pixels>> {
+    let mut outline = Vec::with_capacity(6);
+    // Each corner's outward direction, and whether the corner further out
+    // along x comes first clockwise.
+    for (corner, sx, sy, x_first) in [
+        (Anchor::TopLeft, -1., -1., true),
+        (Anchor::TopRight, 1., -1., false),
+        (Anchor::BottomRight, 1., 1., true),
+        (Anchor::BottomLeft, -1., 1., false),
+    ] {
+        let (p, q) = (a.corner(corner), b.corner(corner));
+        let out = |p: Point<Pixels>| (sx * f32::from(p.x), sy * f32::from(p.y));
+        let ((ax, ay), (bx, by)) = (out(p), out(q));
+        if ax >= bx && ay >= by {
+            outline.push(p);
+        } else if bx >= ax && by >= ay {
+            outline.push(q);
+        } else if x_first == (ax > bx) {
+            outline.extend([p, q]);
+        } else {
+            outline.extend([q, p]);
         }
-        lower.push(p);
     }
-    let mut upper: Vec<Point<Pixels>> = Vec::new();
-    for &p in points.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0. {
-            upper.pop();
-        }
-        upper.push(p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower
+    outline
 }
 
 /// Push every vertex `by` away from the hull's centroid.
@@ -283,10 +264,8 @@ mod tests {
     #[test]
     fn hull_of_two_offset_cells_is_a_hexagon() {
         let g = geometry();
-        let points = [g.cell_bounds(0, 0, 1), g.cell_bounds(3, 5, 1)]
-            .iter()
-            .flat_map(corners)
-            .collect();
-        assert_eq!(hull(points).len(), 6);
+        let (a, b) = (g.cell_bounds(0, 0, 1), g.cell_bounds(3, 5, 1));
+        assert_eq!(hull(a, b).len(), 6);
+        assert_eq!(hull(a, g.cell_bounds(0, 5, 1)).len(), 4, "one row is a box");
     }
 }
