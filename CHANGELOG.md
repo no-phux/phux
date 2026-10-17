@@ -9,6 +9,23 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.90.3](https://github.com/no-phux/phux/compare/v0.90.2...v0.90.3) (2026-10-17)
+
+
+### Bug Fixes
+
+* **archive:** export and restore through the session arrangement, not legacy windows ([c1938d7](https://github.com/no-phux/phux/commit/c1938d7d06a9f51ed87f3a0442c377f8a3ad1fdf))
+* **archive:** export only arranged sessions' arrangements, keeping unnamed groups unnamed ([f462bfd](https://github.com/no-phux/phux/commit/f462bfdbcea5f2177a61ba8cab10c23c3a28defa))
+* **cli:** find an agent pane's session by its session facet, not its window ([9f83be5](https://github.com/no-phux/phux/commit/9f83be5b9287707b896426e3483243aad1ba9bce))
+* **tui:** read peer arrangements off the attach loop and harden the organization paths ([a42f817](https://github.com/no-phux/phux/commit/a42f8179c4f3b4e1554dfc1db022c8c717563bfe))
+* **tui:** retry peer arrangement reads in the reader and resync only on journal gaps ([1c29a86](https://github.com/no-phux/phux/commit/1c29a86861aca0c50eb955347fcc5adb3bcbfc1a))
+
+
+### Refactors
+
+* **archive:** write the restored arrangement through a phux-client helper ([756a62a](https://github.com/no-phux/phux/commit/756a62a80e6f0b8a41e57d981ea5305e17bb5db9))
+* **tui:** stop reading the legacy window surface on organization servers ([b644975](https://github.com/no-phux/phux/commit/b64497524c38f763db744710591fb30072f69789))
+
 ## [0.90.2](https://github.com/no-phux/phux/compare/v0.90.1...v0.90.2) (2026-10-17)
 
 
