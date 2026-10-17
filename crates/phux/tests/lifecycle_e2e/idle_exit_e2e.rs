@@ -50,9 +50,10 @@ const HEARTBEAT_SETTLE: Duration = Duration::from_secs(2);
 /// Monotonic counter so concurrent tests never collide on a socket path.
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// A running `phux server` child plus its private socket and scratch dir;
-/// `Drop` still kills it so a failed assertion cannot leak a daemon.
-struct ServerGuard {
+/// A [`common::ServerGuard`] whose seed pane ticks a heartbeat file in a
+/// scratch dir; `Drop` still kills it so a failed assertion cannot leak a
+/// daemon.
+struct HeartbeatServer {
     inner: common::ServerGuard,
     /// Owns the scratch directory `heartbeat` lives in. Never read — held
     /// solely so the directory outlives the guard rather than being unlinked
@@ -61,20 +62,20 @@ struct ServerGuard {
     heartbeat: PathBuf,
 }
 
-impl std::ops::Deref for ServerGuard {
+impl std::ops::Deref for HeartbeatServer {
     type Target = common::ServerGuard;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl std::ops::DerefMut for ServerGuard {
+impl std::ops::DerefMut for HeartbeatServer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-impl ServerGuard {
+impl HeartbeatServer {
     /// Start a server whose seed pane runs a heartbeat loop forever, with
     /// `--exit-after-idle` set to `idle_secs`.
     fn start(idle_secs: u64) -> Self {
@@ -131,7 +132,7 @@ impl ServerGuard {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn ephemeral_server_exits_unattended_and_reaps_its_pane() {
-    let mut server = ServerGuard::start(IDLE_SECS);
+    let mut server = HeartbeatServer::start(IDLE_SECS);
     let ticks_before = server.wait_for_live_pane();
     let spawned_at = server.spawned_at;
 
