@@ -241,10 +241,12 @@ Settings opens focused live controls, with **All settings** to return, rather
 than a separate category sidebar. Host enrollment and recovery live under
 **Hosts & connections**, which lists This Mac and every saved machine, even
 when disconnected or empty, with its connected, connecting, or unavailable
-state and an Open, Retry, or Reconnect action. **Machines…** reaches it from the
-titlebar session label, the sidebar's **Machines** row, the File menu, and the
-palette; **Add Machine…** opens enrollment the same ways. Hosts appear as
-session context, not sidebar roots.
+state and an Open, Retry, Reconnect, or Disconnect action. Disconnect drops
+another machine's inventory link until Retry; this window's own route only
+reconnects. **Machines…** reaches it from the titlebar machine chip, the
+sidebar's **Machines** row, the File menu, and the palette. **Add Machine…** is
+in the File menu, the palette, and on the Hosts & connections page. Hosts appear
+as session context, not sidebar roots.
 The tab strip keeps New Terminal and the notification bell.
 
 Local and registered remote hosts open concurrently with host-qualified

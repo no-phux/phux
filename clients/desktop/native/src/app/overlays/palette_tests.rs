@@ -900,7 +900,7 @@ fn machines_are_reachable_from_the_palette_sidebar_and_titlebar(cx: &mut TestApp
     keys(cx, "escape");
 
     keys(cx, "cmd-shift-p");
-    type_text(cx, "show machines");
+    type_text(cx, "machines…");
     assert_eq!(selected_command(&desk, cx), Some("machines"));
     keys(cx, "enter");
     assert_eq!(modal(&desk, cx), Modal::Settings);
@@ -919,7 +919,7 @@ fn machines_are_reachable_from_the_palette_sidebar_and_titlebar(cx: &mut TestApp
     );
     keys(cx, "escape");
 
-    click(cx, "workspace-identity");
+    click(cx, "workspace-machines");
     assert_eq!(modal(&desk, cx), Modal::Settings);
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.settings_page),
