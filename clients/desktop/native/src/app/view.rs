@@ -2774,7 +2774,7 @@ fn strongest_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
 }
 
 /// Agent lifecycle colours stay fixed across themes.
-pub(super) fn agent_swatch(state: AgentState) -> &'static str {
+fn agent_swatch(state: AgentState) -> &'static str {
     match state {
         AgentState::Working => "#f9e2af",
         AgentState::Blocked => "#f38ba8",
