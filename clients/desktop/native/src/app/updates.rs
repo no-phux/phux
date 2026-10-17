@@ -242,13 +242,16 @@ pub(crate) fn page(
         disabled: busy,
         run: Updater::check,
     };
-    let install = updater.desktop_action().map(|action| Action {
-        id: "updates-install",
-        label: action.label(),
-        primary: true,
-        disabled: false,
-        run: Updater::desktop_act,
-    });
+    let install = updater
+        .desktop_action()
+        .filter(|_| !cfg!(target_os = "linux"))
+        .map(|action| Action {
+            id: "updates-install",
+            label: action.label(),
+            primary: true,
+            disabled: false,
+            run: Updater::desktop_act,
+        });
     let runtime_enabled = !busy
         && !updater.development
         && updater.prefs.manage_runtime
@@ -279,7 +282,8 @@ pub(crate) fn page(
             }),
         status: updater.desktop_status(),
         detail: updater.desktop_detail(),
-        note: None,
+        note: cfg!(target_os = "linux")
+            .then(|| updates::linux_install_remedy(updater.prefs.desktop)),
         actions: std::iter::once(check).chain(install).collect(),
     };
     let runtime = Header {
@@ -602,6 +606,11 @@ impl Updater {
     }
 
     pub fn desktop_act(&mut self, cx: &mut Context<Self>) {
+        if cfg!(target_os = "linux") {
+            self.message = updates::linux_install_remedy(self.prefs.desktop);
+            cx.notify();
+            return;
+        }
         match self.desktop_action() {
             Some(DesktopAction::Download) => self.download_desktop(cx),
             Some(DesktopAction::Restart) => self.restart_to_update(cx),
@@ -1026,6 +1035,21 @@ mod tests {
             });
             updater.apply_staged();
             assert!(!updater.handed_off);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext;
+        let updater = cx.new(|_| installed("0.2.0"));
+        updater.update(cx, |updater, cx| {
+            updater.target = Some(release("0.3.0", &updates::own_protocol()));
+            updater.desktop_act(cx);
+            assert!(!updater.busy);
+            assert!(updater.staged.is_none());
+            assert!(!updater.handed_off);
+            assert!(updater.message.contains("PHUX_REQUIRE_SIGNATURE=1"));
         });
     }
 }
