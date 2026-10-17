@@ -49,14 +49,15 @@ fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WindowRole {
+    #[default]
     Main,
     Fresh,
     Quick,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OpenRequest {
     pub role: WindowRole,
     pub session: String,
@@ -246,7 +247,7 @@ pub struct Desk {
     /// Panes growing in and folding away.
     pub(crate) motion: Motion,
     /// The skin the prefs resolve to, and the change into it still painting.
-    skin_target: &'static str,
+    skin_target: &'static Skin,
     shift: Option<Shift>,
     /// The window background last applied.
     backdrop: Option<Backdrop>,
@@ -428,6 +429,19 @@ impl Paint {
     }
 }
 
+fn session_failure(create: bool) -> &'static str {
+    if create {
+        "Could not create the session"
+    } else {
+        "Could not rename the session"
+    }
+}
+
+/// The skin display preferences resolve to.
+fn resolved_skin(prefs: &DisplayPrefs) -> &'static Skin {
+    settings::skin_by_id(settings::resolved_id(&prefs.skin_id, prefs.plain))
+}
+
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -475,7 +489,7 @@ impl Desk {
         }
         prefs = settings::sanitize_display(&prefs);
         let keymap = settings::effective_keymap(&ghostty, prefs.ghostty_keys);
-        let skin_target = settings::resolved_id(&prefs.skin_id, prefs.plain);
+        let skin_target = resolved_skin(&prefs);
         let focus = cx.focus_handle();
         let saves = persist::writer::Writer::default();
         let errors = saves.errors();
@@ -870,16 +884,7 @@ impl Desk {
             return;
         }
         self.layout_key = Some(key);
-        let authority = self.remote.as_ref().map_or_else(
-            || self.socket.display().to_string(),
-            |host| format!("host:{host}"),
-        );
-        let paths = persist::session_layout_paths(&authority, key);
-        let path = if self.role == WindowRole::Quick {
-            paths.quick
-        } else {
-            paths.layout
-        };
+        let path = self.work_layout_path(self.remote.as_deref(), &self.session, Some(key));
         // A preferences edit can still be writing the legacy source. Adoption
         // must not restore older bytes over the snapshot we just queued.
         self.flush_saves();
@@ -908,7 +913,7 @@ impl Desk {
                 saved.display.clone()
             };
             self.last_saved = Some(saved.clone());
-            self.workspace_mut(|link| link.workspace.restore(Some(saved)));
+            self.workspace_call(|link| link.workspace.restore(Some(saved)));
             self.sync_bindings(cx);
             self.sync_skin(false, cx);
             self.apply_kit_theme(cx);
@@ -916,12 +921,33 @@ impl Desk {
     }
 
     fn note_operation_event(&mut self, event: &Event) {
-        if let Event::OrganizationOperation { operation, outcome } = event {
-            self.note_organization(*operation, outcome);
+        let Event::OrganizationOperation { operation, outcome } = event else {
+            return;
+        };
+        self.note_organization(*operation, outcome);
+        let sentence = || crate::connection::org::outcome_sentence(outcome);
+        if let Some(name) = self.kills.remove(operation)
+            && !matches!(outcome, phux_client_core::org_ops::OrgOutcome::Committed(_))
+        {
+            self.post(
+                Kind::Error,
+                &format!("Could not kill {name}"),
+                Some(sentence()),
+            );
         }
-        self.note_kill_event(event);
-        self.note_create_event(event);
-        self.note_rename_event(event);
+        if let Some(name) = self.creates.remove(operation)
+            && !outcome.succeeded()
+        {
+            let body = format!("{name}: {}", sentence());
+            self.post(Kind::Error, session_failure(true), Some(body));
+        }
+        if let Some(name) = self.renames.remove(operation) {
+            if outcome.succeeded() {
+                self.post(Kind::Info, "Session renamed", Some(name));
+            } else {
+                self.post(Kind::Error, session_failure(false), Some(sentence()));
+            }
+        }
     }
 
     fn note_terminal_event(&mut self, event: &Event) {
@@ -990,64 +1016,18 @@ impl Desk {
         }
     }
 
-    fn note_kill_event(&mut self, event: &Event) {
-        if let Event::OrganizationOperation { operation, outcome } = event
-            && let Some(name) = self.kills.remove(operation)
-            && !matches!(outcome, phux_client_core::org_ops::OrgOutcome::Committed(_))
-        {
-            self.post(
-                Kind::Error,
-                &format!("Could not kill {name}"),
-                Some(crate::connection::org::outcome_sentence(outcome)),
-            );
-        }
-    }
-
-    fn note_create_event(&mut self, event: &Event) {
-        if let Event::OrganizationOperation { operation, outcome } = event
-            && let Some(name) = self.creates.remove(operation)
-            && !outcome.succeeded()
-        {
-            self.post(
-                Kind::Error,
-                "Could not create the session",
-                Some(format!(
-                    "{name}: {}",
-                    crate::connection::org::outcome_sentence(outcome)
-                )),
-            );
-        }
-    }
-
-    fn note_rename_event(&mut self, event: &Event) {
-        if let Event::OrganizationOperation { operation, outcome } = event
-            && let Some(name) = self.renames.remove(operation)
-        {
-            if outcome.succeeded() {
-                self.post(Kind::Info, "Session renamed", Some(name));
-            } else {
-                self.post(
-                    Kind::Error,
-                    "Could not rename the session",
-                    Some(crate::connection::org::outcome_sentence(outcome)),
-                );
-            }
-        }
-    }
 
     fn note_input_event(&mut self, event: &Event) {
-        if let Some(message) = crate::connection::refused_input(event) {
+        let message = crate::connection::refused_input(event).or_else(|| match event {
+            Event::InputDelivery {
+                outcome: DeliveryOutcome::Refused,
+                message,
+                ..
+            } if !message.is_empty() => Some(message.clone()),
+            _ => None,
+        });
+        if let Some(message) = message {
             self.post(Kind::Error, "Input not delivered", Some(message));
-        }
-        if let Event::InputDelivery {
-            outcome: DeliveryOutcome::Refused,
-            message,
-            ..
-        } = event
-            && crate::connection::refused_input(event).is_none()
-            && !message.is_empty()
-        {
-            self.post(Kind::Error, "Input not delivered", Some(message.clone()));
         }
     }
 
@@ -1071,16 +1051,11 @@ impl Desk {
                         entry.agent_state == Some(info.state) && agent_attention(info).actionable()
                     })
         });
-        if !self.prefs.notifications {
-            self.agent_seen = current
-                .into_iter()
-                .map(|(id, info)| (id, agent_attention(&info)))
-                .collect();
-            return;
-        }
+        let notify = self.prefs.notifications;
         for (id, info) in &current {
             let next = agent_attention(info);
-            if !next.should_alert(self.agent_seen.get(id), focused.as_ref() == Some(id)) {
+            if !notify || !next.should_alert(self.agent_seen.get(id), focused.as_ref() == Some(id))
+            {
                 continue;
             }
             let title = match info.word() {
@@ -1154,8 +1129,8 @@ impl Desk {
             Send(text) => self.send_text(&text, cx),
             WriteFile { region, mode } => self.write_file(&region, &mode, window, cx),
             FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
-            ScrollLines(rows) => self.scroll_lines(rows as i64, cx),
-            PromptJump(prompts) => self.jump_prompt(prompts as i64, cx),
+            ScrollLines(rows) => self.scroll(Scroll::Delta(rows as i64), cx),
+            PromptJump(prompts) => self.scroll(Scroll::Prompt(prompts as i64), cx),
         }
     }
 
@@ -1204,25 +1179,25 @@ impl Desk {
             "close" => self.fold_pane(window, cx),
             "close-tab" => {
                 if let Some(id) = self.active_tab_id() {
-                    self.workspace_mut(|link| link.workspace.close_tab(&link.connection, &id));
+                    self.workspace_call(|link| link.workspace.close_tab(&link.connection, &id));
                 }
             }
-            "zoom" => self.workspace_mut(|link| link.workspace.toggle_zoom()),
-            "equalize" => self.workspace_mut(|link| link.workspace.equalize_tab()),
+            "zoom" => self.workspace_call(|link| link.workspace.toggle_zoom()),
+            "equalize" => self.workspace_call(|link| link.workspace.equalize_tab()),
             "pane-left" => {
-                self.workspace_mut(|link| link.workspace.focus_direction(Direction::Left))
+                self.workspace_call(|link| link.workspace.focus_direction(Direction::Left))
             }
             "pane-right" => {
-                self.workspace_mut(|link| link.workspace.focus_direction(Direction::Right))
+                self.workspace_call(|link| link.workspace.focus_direction(Direction::Right))
             }
-            "pane-up" => self.workspace_mut(|link| link.workspace.focus_direction(Direction::Up)),
+            "pane-up" => self.workspace_call(|link| link.workspace.focus_direction(Direction::Up)),
             "pane-down" => {
-                self.workspace_mut(|link| link.workspace.focus_direction(Direction::Down))
+                self.workspace_call(|link| link.workspace.focus_direction(Direction::Down))
             }
-            "pane-next" => self.workspace_mut(|link| link.workspace.cycle_pane(1)),
-            "pane-prev" => self.workspace_mut(|link| link.workspace.cycle_pane(-1)),
-            "tab-next" => self.workspace_mut(|link| link.workspace.step_tab(1)),
-            "tab-prev" => self.workspace_mut(|link| link.workspace.step_tab(-1)),
+            "pane-next" => self.workspace_call(|link| link.workspace.cycle_pane(1)),
+            "pane-prev" => self.workspace_call(|link| link.workspace.cycle_pane(-1)),
+            "tab-next" => self.workspace_call(|link| link.workspace.step_tab(1)),
+            "tab-prev" => self.workspace_call(|link| link.workspace.step_tab(-1)),
             "tab-move-left" => self.move_active_tab(-1),
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),
@@ -1251,14 +1226,14 @@ impl Desk {
             }
             "scroll-page-up" => self.scroll_page(-1, cx),
             "scroll-page-down" => self.scroll_page(1, cx),
-            "scroll-top" => self.scroll_top(cx),
+            "scroll-top" => self.scroll(Scroll::Top, cx),
             "clear" => self.send_text("\u{000c}", cx),
             "select-all" => self.select_all(cx),
             "copy" => self.host_action(HostAction::Copy, cx),
             "paste" => self.host_action(HostAction::Paste, cx),
             "paste-selection" => self.paste_selection(),
-            "prompt-prev" => self.jump_prompt(-1, cx),
-            "prompt-next" => self.jump_prompt(1, cx),
+            "prompt-prev" => self.scroll(Scroll::Prompt(-1), cx),
+            "prompt-next" => self.scroll(Scroll::Prompt(1), cx),
             "quick-terminal" => self.toggle_quick(cx),
             "new-window" => self.new_window(window, cx),
             "windows" => self.modal = Modal::Windows,
@@ -1285,14 +1260,14 @@ impl Desk {
                     });
                 });
             }
-            "resize-left" => self.workspace_mut(|link| link.workspace.nudge(Direction::Left)),
-            "resize-right" => self.workspace_mut(|link| link.workspace.nudge(Direction::Right)),
-            "resize-up" => self.workspace_mut(|link| link.workspace.nudge(Direction::Up)),
-            "resize-down" => self.workspace_mut(|link| link.workspace.nudge(Direction::Down)),
+            "resize-left" => self.workspace_call(|link| link.workspace.nudge(Direction::Left)),
+            "resize-right" => self.workspace_call(|link| link.workspace.nudge(Direction::Right)),
+            "resize-up" => self.workspace_call(|link| link.workspace.nudge(Direction::Up)),
+            "resize-down" => self.workspace_call(|link| link.workspace.nudge(Direction::Down)),
             other if other.starts_with("tab-") => {
                 if let Ok(index) = other.trim_start_matches("tab-").parse::<isize>() {
                     let index = if index == 9 { -1 } else { index - 1 };
-                    self.workspace_mut(|link| link.workspace.select_index(index));
+                    self.workspace_call(|link| link.workspace.select_index(index));
                 }
             }
             _ => {}
@@ -1324,42 +1299,39 @@ impl Desk {
             && !modifiers.shift
             && !modifiers.function;
         let key = event.keystroke.key.as_str();
-        if plain && key == "escape" && self.conversation_escape(cx) {
-            cx.stop_propagation();
-            return;
-        }
-        if plain && key == "escape" && self.text_field_has_keys() {
-            self.escape(window, cx);
-            cx.stop_propagation();
-            return;
-        }
-        if plain && key == "enter" {
-            match self.modal {
-                Modal::Terminate { .. } => {
-                    self.confirm_terminate(window, cx);
-                    cx.stop_propagation();
-                    return;
+        let handled = plain
+            && match key {
+                "escape" if self.conversation_escape(cx) => true,
+                "escape" if self.text_field_has_keys() => {
+                    self.escape(window, cx);
+                    true
                 }
-                Modal::KillSession { .. } => {
-                    self.confirm_kill_session(window, cx);
-                    cx.stop_propagation();
-                    return;
+                "enter" => match self.modal {
+                    Modal::Terminate { .. } => {
+                        self.confirm_terminate(window, cx);
+                        true
+                    }
+                    Modal::KillSession { .. } => {
+                        self.confirm_kill_session(window, cx);
+                        true
+                    }
+                    Modal::RemoveHost { .. } => {
+                        self.confirm_remove_host(window, cx);
+                        true
+                    }
+                    Modal::Paste { .. } => {
+                        self.confirm_paste(window, cx);
+                        true
+                    }
+                    _ => false,
+                },
+                "right" if self.modal == Modal::Path => {
+                    self.open_selected_directory(window, cx);
+                    true
                 }
-                Modal::RemoveHost { .. } => {
-                    self.confirm_remove_host(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                Modal::Paste { .. } => {
-                    self.confirm_paste(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                _ => {}
-            }
-        }
-        if plain && key == "right" && self.modal == Modal::Path {
-            self.open_selected_directory(window, cx);
+                _ => false,
+            };
+        if handled {
             cx.stop_propagation();
             return;
         }
@@ -1425,7 +1397,7 @@ impl Desk {
     /// Kit controls (buttons, inputs, palette, settings) paint with the phux theme.
     pub(crate) fn apply_kit_theme(&self, cx: &mut Context<Self>) {
         let colors = self.palette();
-        let skin = *settings::skin_by_id(self.skin_target);
+        let skin = *self.skin_target;
         cx.defer(move |cx| super::color::apply_kit_theme(&colors, &skin, cx));
     }
 
@@ -1433,19 +1405,13 @@ impl Desk {
     /// shift runs.
     /// A solid window background wears the skin opaque.
     pub(crate) fn skin(&self) -> Skin {
-        let skin = match &self.shift {
-            Some(shift) => shift.skin(Instant::now()),
-            None => *settings::skin_by_id(self.skin_target),
-        };
+        let skin = self
+            .shift
+            .map_or(*self.skin_target, |shift| shift.skin(Instant::now()));
         match self.prefs.window_background {
             WindowBackground::Blur => skin,
             WindowBackground::Solid => skin.opaque(),
         }
-    }
-
-    /// The skin the prefs resolve to, where any shift settles.
-    pub(crate) fn skin_target(&self) -> &'static Skin {
-        settings::skin_by_id(self.skin_target)
     }
 
     /// Linear progress of the running shift, 0 to 1. `None` when settled.
@@ -1454,34 +1420,27 @@ impl Desk {
     }
 
     /// Start a shift when the prefs resolve to a different skin. Without
-    /// `animate`, or under reduced motion, the shift is instant.
+    /// `animate`, animations off, or under reduced motion, it is instant.
     fn sync_skin(&mut self, animate: bool, cx: &mut Context<Self>) {
-        let id = settings::resolved_id(&self.prefs.skin_id, self.prefs.plain);
-        if id == self.skin_target {
+        let to = resolved_skin(&self.prefs);
+        if to.id == self.skin_target.id {
             return;
         }
-        let now = Instant::now();
-        let from = self.skin();
-        self.skin_target = id;
-        let to = *self.skin_target();
-        self.shift = Some(Shift::new(from, to, now, !animate || self.still(cx)));
+        let instant = !animate || !self.prefs.animations || cx.reduce_motion();
+        self.shift = Some(Shift::new(self.skin(), *to, Instant::now(), instant));
+        self.skin_target = to;
         self.set_motion_spans();
         cx.notify();
     }
 
     fn set_motion_spans(&mut self) {
-        let motion = self.skin_target().motion;
-        if self.prefs.animations {
-            self.motion
-                .set_spans(motion.pane_enter(), motion.pane_leave());
+        let motion = self.skin_target.motion;
+        let (enter, leave) = if self.prefs.animations {
+            (motion.pane_enter(), motion.pane_leave())
         } else {
-            self.motion.set_spans(Duration::ZERO, Duration::ZERO);
-        }
-    }
-
-    /// Animations are off in the prefs or under macOS reduce motion.
-    fn still(&self, cx: &App) -> bool {
-        !self.prefs.animations || cx.reduce_motion()
+            (Duration::ZERO, Duration::ZERO)
+        };
+        self.motion.set_spans(enter, leave);
     }
 
     /// Called from every render: applies the backdrop for this point of the
@@ -1492,10 +1451,10 @@ impl Desk {
         // A solid window is opaque all the way down: the window, its Metal
         // layer and the painted sheet, so the compositor neither blurs nor
         // blends it.
-        let backdrop = match (&self.shift, self.prefs.window_background) {
+        let backdrop = match (self.shift, self.prefs.window_background) {
             (_, WindowBackground::Solid) => Backdrop::Opaque,
             (Some(shift), WindowBackground::Blur) => shift.backdrop(now),
-            (None, WindowBackground::Blur) => self.skin_target().material.backdrop,
+            (None, WindowBackground::Blur) => self.skin_target.material.backdrop,
         };
         if self.backdrop != Some(backdrop) {
             let appearance = if self.palette().theme.appearance == "light" {
@@ -1510,18 +1469,19 @@ impl Desk {
             });
             self.backdrop = Some(backdrop);
         }
-        let Some(shift) = self.shift else {
-            return;
-        };
-        if shift.done(now) {
-            self.shift = None;
-            self.apply_kit_theme(cx);
-            return;
+        match self.shift {
+            Some(shift) if shift.done(now) => {
+                self.shift = None;
+                self.apply_kit_theme(cx);
+            }
+            Some(_) => {
+                let desk = cx.weak_entity();
+                window.on_next_frame(move |_, cx| {
+                    let _ = desk.update(cx, |_, cx| cx.notify());
+                });
+            }
+            None => {}
         }
-        let desk = cx.weak_entity();
-        window.on_next_frame(move |_, cx| {
-            let _ = desk.update(cx, |_, cx| cx.notify());
-        });
     }
 
     pub fn ghostty(&self) -> &settings::GhosttyConfig {
@@ -1599,10 +1559,6 @@ impl Desk {
         if let Some(link) = self.link.as_mut() {
             call(link);
         }
-    }
-
-    fn workspace_mut(&mut self, call: impl FnOnce(&mut Link)) {
-        self.workspace_call(call);
     }
 
     /// Change, apply and save display preferences.
@@ -1733,22 +1689,33 @@ impl Desk {
         }
         self.persist();
         self.flush_saves();
-        self.abort_uploads(false);
+        self.release_link(false);
+        cx.notify();
+    }
+
+    /// Release every view and close the connection. `replacing` also drops
+    /// what belonged to it: agent alerts, the find bar, and pending uploads
+    /// with a notice.
+    fn release_link(&mut self, replacing: bool) {
+        self.abort_uploads(replacing);
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
         }
         self.panes.clear();
-        cx.notify();
+        if replacing {
+            self.agent_seen.clear();
+            self.commands.clear();
+            self.feed.retain(|entry| entry.kind != Kind::Agent);
+            self.forget_approvals();
+            self.find = None;
+            self.find_input = None;
+        }
     }
 
     /// Resolve the existing home before redialing; never recreate a stale name.
     fn prepare_reconnect_home(&mut self, cx: &mut Context<Self>) -> bool {
-        if self
-            .link
-            .as_ref()
-            .is_some_and(|link| link.connection.status == Status::Attached)
-        {
+        if self.session_is_attached() {
             return true;
         }
         let key = self
@@ -1780,7 +1747,7 @@ impl Desk {
             }
             Ok(name) => {
                 self.session = name.clone();
-                self.workspace_mut(|link| link.workspace.set_home_session(name));
+                self.workspace_call(|link| link.workspace.set_home_session(name));
                 true
             }
             Err(error) => {
@@ -1817,18 +1784,7 @@ impl Desk {
             .as_ref()
             .is_some_and(|link| matches!(link.connection.status, Status::Closed | Status::Failed));
         if closed || self.link.is_none() {
-            self.abort_uploads(true);
-            if let Some(link) = self.link.as_mut() {
-                link.workspace.release_all(&link.connection);
-                link.connection.close();
-            }
-            self.panes.clear();
-            self.agent_seen.clear();
-            self.commands.clear();
-            self.feed.retain(|entry| entry.kind != Kind::Agent);
-            self.forget_approvals();
-            self.find = None;
-            self.find_input = None;
+            self.release_link(true);
             self.attach(None, cx);
             if let Some(link) = self.link.as_mut() {
                 link.workspace.restore(snapshot);
@@ -2188,7 +2144,7 @@ impl Desk {
 
     pub fn apply_rename(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Modal::Rename { tab_id } = self.modal.clone() {
-            self.workspace_mut(|link| link.workspace.rename_tab(&tab_id, &title));
+            self.workspace_call(|link| link.workspace.rename_tab(&tab_id, &title));
         }
         self.close_modal(window, cx);
         self.after_command(window, cx);
@@ -2212,7 +2168,9 @@ impl Desk {
         else {
             return;
         };
-        if !create && self.rename_organization_session(target.as_ref(), &name, window, cx) {
+        let directory = directory.unwrap_or_default();
+        if self.submit_organization_session(create, target.as_ref(), &name, &directory, window, cx)
+        {
             return;
         }
         if !create && !self.legacy_rename_matches(target.as_ref(), &current) {
@@ -2224,15 +2182,15 @@ impl Desk {
             cx.notify();
             return;
         }
-        let directory = directory.unwrap_or_default();
-        if create && self.create_organization_session(&name, &directory, window, cx) {
-            return;
-        }
         self.apply_legacy_session(create, &current, &name, &directory, window, cx);
     }
 
-    fn create_organization_session(
+    /// Submit through `ORGANIZATION`; the outcome is reported when the server
+    /// answers. False when the server does not have it.
+    fn submit_organization_session(
         &mut self,
+        create: bool,
+        target: Option<&SessionRenameTarget>,
         name: &str,
         directory: &str,
         window: &mut Window,
@@ -2245,20 +2203,40 @@ impl Desk {
         else {
             return false;
         };
-        let submitted = match crate::workspace::create_session_error(name, directory) {
-            Some(refused) => Err(refused.to_owned()),
-            None => link
-                .connection
-                .create_session(name.trim(), directory.trim()),
+        let submitted = if create {
+            match crate::workspace::create_session_error(name, directory) {
+                Some(refused) => Err(refused.to_owned()),
+                None => link
+                    .connection
+                    .create_session(name.trim(), directory.trim()),
+            }
+        } else {
+            target
+                .and_then(|target| target.key)
+                .ok_or_else(|| {
+                    "Session identity is unavailable. Reopen the rename dialog after refreshing."
+                        .to_owned()
+                })
+                .and_then(|key| {
+                    link.connection
+                        .client
+                        .rename_session(key, name.trim())
+                        .map_err(|error| error.to_string())
+                })
         };
         match submitted {
             Ok(operation) => {
-                self.creates.insert(operation, name.trim().to_owned());
+                let pending = if create {
+                    &mut self.creates
+                } else {
+                    &mut self.renames
+                };
+                pending.insert(operation, name.trim().to_owned());
                 self.close_modal(window, cx);
                 self.after_command(window, cx);
             }
             Err(failure) => {
-                self.post(Kind::Error, "Could not create the session", Some(failure));
+                self.post(Kind::Error, session_failure(create), Some(failure));
                 cx.notify();
             }
         }
@@ -2282,15 +2260,7 @@ impl Desk {
             host::rename_session(&self.phux, &self.socket, current, name)
         };
         if let Some(failure) = failure {
-            self.post(
-                Kind::Error,
-                if create {
-                    "Could not create the session"
-                } else {
-                    "Could not rename the session"
-                },
-                Some(failure),
-            );
+            self.post(Kind::Error, session_failure(create), Some(failure));
             cx.notify();
             return;
         }
@@ -2299,46 +2269,6 @@ impl Desk {
         }
         self.close_modal(window, cx);
         self.after_command(window, cx);
-    }
-
-    fn rename_organization_session(
-        &mut self,
-        target: Option<&SessionRenameTarget>,
-        name: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(link) = self
-            .link
-            .as_ref()
-            .filter(|link| link.connection.organization())
-        else {
-            return false;
-        };
-        let submitted = target
-            .and_then(|target| target.key)
-            .ok_or_else(|| {
-                "Session identity is unavailable. Reopen the rename dialog after refreshing."
-                    .to_owned()
-            })
-            .and_then(|key| {
-                link.connection
-                    .client
-                    .rename_session(key, name.trim())
-                    .map_err(|error| error.to_string())
-            });
-        match submitted {
-            Ok(operation) => {
-                self.renames.insert(operation, name.trim().to_owned());
-                self.close_modal(window, cx);
-                self.after_command(window, cx);
-            }
-            Err(error) => {
-                self.post(Kind::Error, "Could not rename the session", Some(error));
-                cx.notify();
-            }
-        }
-        true
     }
 
     fn legacy_rename_matches(&self, target: Option<&SessionRenameTarget>, name: &str) -> bool {
@@ -2482,61 +2412,40 @@ impl Desk {
             .position(|tab| tab.id == link.workspace.active_id);
         let Some(from) = from else { return };
         let to = (from as i32 + step as i32).rem_euclid(len as i32) as usize;
-        self.workspace_mut(|link| link.workspace.move_tab(from, to));
+        self.workspace_call(|link| link.workspace.move_tab(from, to));
     }
 
+    /// Reveal the agent that most needs the user: the most urgent state, then
+    /// the latest change.
     fn next_attention(&mut self) {
         let Some(link) = self.link.as_ref() else {
             return;
         };
-        let rank_of = |agent: &AgentInfo| crate::connection::state_rank(agent.state);
         let working = crate::connection::state_rank(AgentState::Working);
-        let mut panes: Vec<_> = link
+        let next = link
             .connection
             .panes()
             .iter()
-            .filter(|pane| {
-                link.connection
-                    .agents
-                    .get(&pane.terminal_id)
-                    .is_some_and(|agent| rank_of(agent) <= working)
+            .filter_map(|pane| {
+                let agent = link.connection.agents.get(&pane.terminal_id)?;
+                let rank = crate::connection::state_rank(agent.state);
+                (rank <= working).then(|| {
+                    let order = (rank, std::cmp::Reverse(agent.changed_at_ms));
+                    (order, pane.terminal_id.clone())
+                })
             })
-            .cloned()
-            .collect();
-        panes.sort_by(|left, right| {
-            let rank = |pane: &phux_client_runtime::control::PaneDescriptor| {
-                link.connection
-                    .agents
-                    .get(&pane.terminal_id)
-                    .map_or(9, rank_of)
-            };
-            rank(left).cmp(&rank(right)).then_with(|| {
-                let changed = |pane: &phux_client_runtime::control::PaneDescriptor| {
-                    link.connection
-                        .agents
-                        .get(&pane.terminal_id)
-                        .map(|agent| agent.changed_at_ms)
-                        .unwrap_or(0)
-                };
-                changed(right).cmp(&changed(left))
-            })
-        });
-        if let Some(pane) = panes.first() {
-            self.reveal_terminal(&pane.terminal_id);
-        } else {
-            self.post(Kind::Refusal, "No agent needs you", None);
+            .min_by_key(|(order, _)| *order)
+            .map(|(_, terminal)| terminal);
+        match next {
+            Some(terminal) => self.reveal_terminal(&terminal),
+            None => self.post(Kind::Refusal, "No agent needs you", None),
         }
     }
 
     pub fn reveal_terminal(&mut self, terminal: &ResourceId) {
-        let label = self.link.as_ref().and_then(|link| {
-            link.workspace.tabs.iter().find_map(|tab| {
-                crate::workspace::layout::placements(&tab.root)
-                    .into_iter()
-                    .find(|placement| placement.terminal_id.as_ref() == Some(terminal))
-                    .map(|placement| placement.terminal_label.clone())
-            })
-        });
+        let label = self
+            .placement_of(terminal)
+            .map(|placement| placement.terminal_label.clone());
         self.workspace_call(|link| {
             if let Some(pane) = link.connection.pane(terminal).cloned() {
                 link.workspace.open(&link.connection, &pane);
@@ -2547,11 +2456,11 @@ impl Desk {
     }
 
     pub fn select_tab(&mut self, id: &str) {
-        self.workspace_mut(|link| link.workspace.select_tab(id));
+        self.workspace_call(|link| link.workspace.select_tab(id));
     }
 
     pub fn close_tab(&mut self, id: &str) {
-        self.workspace_mut(|link| link.workspace.close_tab(&link.connection, id));
+        self.workspace_call(|link| link.workspace.close_tab(&link.connection, id));
     }
 
     pub fn focus_placement(
@@ -2561,7 +2470,7 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workspace_mut(|link| link.workspace.focus_placement(tab_id, placement_id));
+        self.workspace_call(|link| link.workspace.focus_placement(tab_id, placement_id));
         self.after_command(window, cx);
     }
 
@@ -2578,28 +2487,19 @@ impl Desk {
             input.update(cx, |input, cx| input.focus(window, cx));
             return;
         }
-        if let Some(id) = self
-            .focused_placement()
-            .map(|placement| placement.id.clone())
+        if let Some(id) = self.focused_id()
             && self.focus_conversation(&id, window, cx)
         {
             return;
         }
-        match self
-            .focused_placement()
-            .filter(|placement| placement.view_id.is_some())
-            .map(|placement| placement.id.clone())
-        {
+        match self.focused_view().and(self.focused_id()) {
             Some(id) if self.panes.get(&id).is_some() => self.panes.focus(&id, window, cx),
             _ => window.focus(&self.focus, cx),
         }
     }
 
     fn host_action(&mut self, action: HostAction, cx: &mut Context<Self>) {
-        if let Some(id) = self
-            .focused_placement()
-            .filter(|placement| placement.view_id.is_some())
-            .map(|placement| placement.id.clone())
+        if let Some(id) = self.focused_view().and(self.focused_id())
             && let Some(notice) = self.panes.request(&id, action, cx)
         {
             self.post(Kind::Refusal, notice.title, Some(notice.body));
@@ -2634,9 +2534,9 @@ impl Desk {
         client.wake();
     }
 
-    fn scroll_lines(&mut self, rows: i64, cx: &mut Context<Self>) {
+    fn scroll(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
         self.with_view(cx, |client, view| {
-            let _ = client.scroll_view(view, Scroll::Delta(rows));
+            let _ = client.scroll_view(view, scroll);
         });
     }
 
@@ -2653,21 +2553,9 @@ impl Desk {
         });
     }
 
-    fn scroll_top(&mut self, cx: &mut Context<Self>) {
-        self.with_view(cx, |client, view| {
-            let _ = client.scroll_view(view, Scroll::Top);
-        });
-    }
-
     fn follow(&mut self, cx: &mut Context<Self>) {
         self.with_view(cx, |client, view| {
             let _ = client.follow_live_view(view);
-        });
-    }
-
-    fn jump_prompt(&mut self, prompts: i64, cx: &mut Context<Self>) {
-        self.with_view(cx, |client, view| {
-            let _ = client.scroll_view(view, Scroll::Prompt(prompts));
         });
     }
 
@@ -2688,18 +2576,16 @@ impl Desk {
     }
 
     fn paste_cwd(&mut self) {
-        let cwd = self.focused_pane().and_then(|pane| pane.cwd.clone());
-        let Some(cwd) = cwd else { return };
+        let Some(cwd) = self.focused_cwd() else {
+            return;
+        };
         self.paste_text(&crate::attach::quote_paths(&[PathBuf::from(cwd)]));
     }
 
     /// Fold the focused pane away, then release it. A second close of a pane
     /// already folding does nothing.
     fn fold_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self
-            .focused_placement()
-            .map(|placement| placement.id.clone())
-        else {
+        let Some(id) = self.focused_id() else {
             return;
         };
         if !self.motion.leave(&id, Instant::now()) {
@@ -2778,15 +2664,16 @@ impl Desk {
         if !self.native_owned_terminal(terminal) {
             return false;
         }
+        self.refuse_paste("Native ACP agents do not accept raw terminal input or file drops. Use the structured conversation. Nothing was sent.");
+        true
+    }
+
+    fn refuse_paste(&mut self, body: impl Into<String>) {
         self.post(
             Kind::Refusal,
             crate::attach::PASTE_REFUSED,
-            Some(
-                "Native ACP agents do not accept raw terminal input or file drops. Use the structured conversation. Nothing was sent."
-                    .into(),
-            ),
+            Some(body.into()),
         );
-        true
     }
 
     fn paste_text(&mut self, text: &str) -> bool {
@@ -2801,9 +2688,20 @@ impl Desk {
         if self.refuse_native_input(terminal) {
             return false;
         }
-        let Some(client) = self.client() else {
-            return false;
-        };
+        let queued = self.queue_paste(terminal, text);
+        if queued == Some(false) {
+            self.post(
+                Kind::Error,
+                "Could not paste",
+                Some("The terminal is not ready.".into()),
+            );
+        }
+        queued == Some(true)
+    }
+
+    /// Queue a bracketed paste when the terminal takes input. `None` when not connected.
+    fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
+        let client = self.client()?;
         let queued = client.with_control(|control| {
             if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
@@ -2813,14 +2711,8 @@ impl Desk {
         });
         if queued {
             client.wake();
-        } else {
-            self.post(
-                Kind::Error,
-                "Could not paste",
-                Some("The terminal is not ready.".into()),
-            );
         }
-        queued
+        Some(queued)
     }
 
     /// Read local files off the UI thread, upload them, and paste nothing yet.
@@ -2834,19 +2726,11 @@ impl Desk {
             return;
         }
         let Some(client) = self.client() else {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some("Not connected. Nothing was pasted.".into()),
-            );
+            self.refuse_paste("Not connected. Nothing was pasted.");
             return;
         };
         let Some(started) = self.destination_of(terminal) else {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some("That terminal is gone. Nothing was pasted.".into()),
-            );
+            self.refuse_paste("That terminal is gone. Nothing was pasted.");
             return;
         };
         if matches!(started.host, crate::attach::TerminalHost::Local) {
@@ -2883,10 +2767,8 @@ impl Desk {
             .client()
             .is_none_or(|current| !Arc::ptr_eq(&current, client))
         {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some("The terminal changed before the upload started. Nothing was pasted.".into()),
+            self.refuse_paste(
+                "The terminal changed before the upload started. Nothing was pasted.",
             );
             return;
         }
@@ -2895,10 +2777,8 @@ impl Desk {
         }
         let current = self.destination_of(&started.terminal);
         if !crate::attach::same_upload_destination(started, current.as_ref()) {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some("The terminal changed before the upload started. Nothing was pasted.".into()),
+            self.refuse_paste(
+                "The terminal changed before the upload started. Nothing was pasted.",
             );
             for item in &prepared {
                 if let Err(error) = item {
@@ -2961,34 +2841,12 @@ impl Desk {
         if self.refuse_native_input(terminal) {
             return;
         }
-        let Some(client) = self.client() else {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some(format!(
-                    "The file is on that machine at {text}. Nothing was pasted."
-                )),
-            );
-            return;
+        let outcome = match self.queue_paste(terminal, text) {
+            Some(true) => return,
+            Some(false) => "The terminal was not ready, so nothing was pasted.",
+            None => "Nothing was pasted.",
         };
-        let queued = client.with_control(|control| {
-            if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
-                return false;
-            }
-            let _ = control.apply_paste(terminal, text);
-            true
-        });
-        if queued {
-            client.wake();
-            return;
-        }
-        self.post(
-            Kind::Refusal,
-            crate::attach::PASTE_REFUSED,
-            Some(format!(
-                "The file is on that machine at {text}. The terminal was not ready, so nothing was pasted."
-            )),
-        );
+        self.refuse_paste(format!("The file is on that machine at {text}. {outcome}"));
     }
 
     /// The placed terminal and the host [`crate::attach::terminal_host`] names.
@@ -2997,15 +2855,7 @@ impl Desk {
         if self.native_owned_terminal(terminal) {
             return None;
         }
-        let link = self.link.as_ref()?;
-        let placed = link.workspace.tabs.iter().any(|tab| {
-            crate::workspace::layout::placements(&tab.root)
-                .iter()
-                .any(|placement| placement.terminal_id.as_ref() == Some(terminal))
-        });
-        if !placed {
-            return None;
-        }
+        self.placement_of(terminal)?;
         Some(crate::attach::UploadDestination {
             terminal: terminal.clone(),
             host: self.terminal_host(terminal),
@@ -3017,10 +2867,8 @@ impl Desk {
         let reading = self.uploads_reading > 0;
         self.upload_epoch = self.upload_epoch.wrapping_add(1);
         if notify && (!pending.is_empty() || reading) {
-            self.post(
-                Kind::Refusal,
-                crate::attach::PASTE_REFUSED,
-                Some("The terminal changed before the upload finished. Nothing was pasted.".into()),
+            self.refuse_paste(
+                "The terminal changed before the upload finished. Nothing was pasted.",
             );
         }
     }
@@ -3036,10 +2884,13 @@ impl Desk {
             return;
         };
         let Some(client) = self.client() else { return };
-        let text = match region {
-            "selection" => self.selection_text().unwrap_or_default(),
-            "scrollback" => region_text(&client, view, TextRegion::History),
-            _ => region_text(&client, view, TextRegion::Screen),
+        let (text, name) = match region {
+            "selection" => (self.selection_text().unwrap_or_default(), "selection.txt"),
+            "scrollback" => (
+                region_text(&client, view, TextRegion::History),
+                "scrollback.txt",
+            ),
+            _ => (region_text(&client, view, TextRegion::Screen), "screen.txt"),
         };
         if text.is_empty() {
             self.post(
@@ -3053,11 +2904,6 @@ impl Desk {
             );
             return;
         }
-        let name = match region {
-            "selection" => "selection.txt",
-            "scrollback" => "scrollback.txt",
-            _ => "screen.txt",
-        };
         let path = match host::write_temp_file(name, &text) {
             Ok(path) => path,
             Err(error) => {
@@ -3080,10 +2926,7 @@ impl Desk {
 
     /// Open find on the focused pane with its field focused; reopening re-runs the search.
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(placement_id) = self
-            .focused_placement()
-            .map(|placement| placement.id.clone())
-        else {
+        let Some(placement_id) = self.focused_id() else {
             return;
         };
         if let Some(find) = self
@@ -3274,10 +3117,7 @@ impl Desk {
             .as_ref()
             .map(|link| link.connection.features())
             .unwrap_or_default();
-        let attached = self
-            .link
-            .as_ref()
-            .is_some_and(|link| link.connection.status == Status::Attached);
+        let attached = self.session_is_attached();
         if !paths::can_offer_path_picker(Some(features.as_slice()), attached, Some(&target)) {
             let body = if attached {
                 "This server can't search paths. Update phux on that machine."
@@ -3419,11 +3259,9 @@ impl Desk {
         let Some(active) = self.picker.clone() else {
             return;
         };
-        let attached = self
-            .link
-            .as_ref()
-            .is_some_and(|link| link.connection.status == Status::Attached);
-        if !attached || !paths::same_target(&active.target, self.path_target().as_ref()) {
+        if !self.session_is_attached()
+            || !paths::same_target(&active.target, self.path_target().as_ref())
+        {
             self.close_path_picker();
         }
     }
@@ -3539,6 +3377,11 @@ impl Desk {
         self.focused_placement()?.view_id
     }
 
+    fn focused_id(&self) -> Option<String> {
+        self.focused_placement()
+            .map(|placement| placement.id.clone())
+    }
+
     pub(crate) fn focused_terminal(&self) -> Option<ResourceId> {
         self.focused_placement()?.terminal_id.clone()
     }
@@ -3547,13 +3390,23 @@ impl Desk {
         self.link.as_ref().and_then(|link| link.workspace.focused())
     }
 
-    pub fn placement(&self, id: &str) -> Option<&Placement> {
-        let link = self.link.as_ref()?;
-        link.workspace.tabs.iter().find_map(|tab| {
-            crate::workspace::layout::placements(&tab.root)
-                .into_iter()
-                .find(|placement| placement.id == id)
+    /// Every placement in every tab.
+    fn placements(&self) -> impl Iterator<Item = &Placement> {
+        self.link.iter().flat_map(|link| {
+            link.workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| crate::workspace::layout::placements(&tab.root))
         })
+    }
+
+    pub fn placement(&self, id: &str) -> Option<&Placement> {
+        self.placements().find(|placement| placement.id == id)
+    }
+
+    fn placement_of(&self, terminal: &ResourceId) -> Option<&Placement> {
+        self.placements()
+            .find(|placement| placement.terminal_id.as_ref() == Some(terminal))
     }
 
     pub(crate) fn active_tab(&self) -> Option<&crate::workspace::layout::DeskTab> {
@@ -3747,18 +3600,10 @@ impl Desk {
     }
 
     fn retain_panes(&mut self) {
-        let live = self
-            .link
-            .as_ref()
-            .map(|link| {
-                link.workspace
-                    .tabs
-                    .iter()
-                    .flat_map(|tab| crate::workspace::layout::placements(&tab.root))
-                    .map(|placement| placement.id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let live: Vec<_> = self
+            .placements()
+            .map(|placement| placement.id.clone())
+            .collect();
         self.panes.retain(&live);
         let connection = self.link.as_ref().map(|link| &link.connection);
         self.conversation_faces.retain(|placement, face| {
@@ -3849,15 +3694,10 @@ impl Desk {
             || self.socket.display().to_string(),
             |host| format!("host:{host}"),
         );
-        if let Some(key) = key {
-            let paths = persist::session_layout_paths(&authority, key);
-            return if self.role == WindowRole::Quick {
-                paths.quick
-            } else {
-                paths.layout
-            };
-        }
-        let paths = crate::workspace::layout_paths(&authority, session);
+        let paths = match key {
+            Some(key) => persist::session_layout_paths(&authority, key),
+            None => crate::workspace::layout_paths(&authority, session),
+        };
         if self.role == WindowRole::Quick {
             paths.quick
         } else {
@@ -3884,19 +3724,8 @@ impl Desk {
         self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abandon_organize();
-        self.abort_uploads(true);
-        if let Some(link) = self.link.as_mut() {
-            link.workspace.release_all(&link.connection);
-            link.connection.close();
-        }
+        self.release_link(true);
         self.link = None;
-        self.panes.clear();
-        self.agent_seen.clear();
-        self.commands.clear();
-        self.feed.retain(|entry| entry.kind != Kind::Agent);
-        self.forget_approvals();
-        self.find = None;
-        self.find_input = None;
         self.pending_project_terminal = None;
         self.connect_error = None;
         self.goto_search = Default::default();
@@ -4169,7 +3998,7 @@ impl Desk {
                         (y - bounds.origin.y.as_f32()) / bounds.size.height.as_f32().max(1.)
                     }
                 };
-                self.workspace_mut(|link| link.workspace.resize_split(&id, ratio));
+                self.workspace_call(|link| link.workspace.resize_split(&id, ratio));
                 cx.notify();
             }
             Some(Drag::Tab {
@@ -4191,7 +4020,7 @@ impl Desk {
                 let Some(from) = from else { return };
                 let to = self.tab_geometry.borrow().drop_index(from, *position, x, y);
                 if to != from {
-                    self.workspace_mut(|link| link.workspace.move_tab(from, to));
+                    self.workspace_call(|link| link.workspace.move_tab(from, to));
                 }
                 cx.notify();
             }
@@ -4247,11 +4076,7 @@ impl Desk {
                     .placement(placement_id)
                     .and_then(|placement| placement.terminal_id.clone())
                 else {
-                    self.post(
-                        Kind::Refusal,
-                        crate::attach::PASTE_REFUSED,
-                        Some("That terminal is gone. Nothing was pasted.".into()),
-                    );
+                    self.refuse_paste("That terminal is gone. Nothing was pasted.");
                     return;
                 };
                 if self.refuse_native_input(&terminal) {
@@ -4303,11 +4128,11 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        TabGeometry, command_span, display_title, held_paste_target_holds, pane_label,
+        TabGeometry, command_span, display_title, held_paste_target_holds, paint_batch, pane_label,
         tab_drop_index,
     };
     use crate::settings::TabPosition;
-    use phux_client_runtime::control::PaneDescriptor;
+    use phux_client_runtime::control::{Event, PaneDescriptor};
     use phux_protocol::ResourceId;
     use std::time::Duration;
 
@@ -4445,6 +4270,22 @@ mod tests {
         }
         assert_eq!(tab_drop_index(2, &[], 10.), 2);
     }
+
+    #[test]
+    fn repeated_agent_metadata_rides_the_paint_path() {
+        let output = Event::TerminalChanged {
+            terminal_id: ResourceId::local(1),
+        };
+        let metadata = Event::AgentMetadata {
+            terminal_id: ResourceId::local(1),
+            value: None,
+        };
+        assert!(paint_batch(std::slice::from_ref(&output), false));
+        assert!(paint_batch(&[output.clone(), metadata.clone()], false));
+        assert!(!paint_batch(&[output, metadata], true));
+        assert!(!paint_batch(&[], false));
+        assert!(!paint_batch(&[Event::TopologyChanged], false));
+    }
 }
 
 fn region_text(client: &Client, view: phux_client_runtime::ViewId, region: TextRegion) -> String {
@@ -4479,19 +4320,10 @@ pub(crate) fn short_path(path: Option<String>) -> String {
     let Some(path) = path else {
         return String::new();
     };
-    if let Some(rest) = path
-        .strip_prefix("/Users/")
-        .and_then(|rest| rest.split_once('/').map(|(_, rest)| rest))
-    {
-        return format!("~/{rest}");
-    }
-    if let Some(rest) = path
-        .strip_prefix("/home/")
-        .and_then(|rest| rest.split_once('/').map(|(_, rest)| rest))
-    {
-        return format!("~/{rest}");
-    }
-    path
+    ["/Users/", "/home/"]
+        .into_iter()
+        .find_map(|home| path.strip_prefix(home)?.split_once('/'))
+        .map_or_else(|| path.clone(), |(_, rest)| format!("~/{rest}"))
 }
 
 /// How the status bar colours a state.
@@ -4600,28 +4432,5 @@ impl gpui::Render for Desk {
 impl gpui::Focusable for Desk {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
-    }
-}
-
-#[cfg(test)]
-mod paint_batch_tests {
-    use super::paint_batch;
-    use phux_client_runtime::control::Event;
-    use phux_protocol::ResourceId;
-
-    #[test]
-    fn repeated_agent_metadata_rides_the_paint_path() {
-        let output = Event::TerminalChanged {
-            terminal_id: ResourceId::local(1),
-        };
-        let metadata = Event::AgentMetadata {
-            terminal_id: ResourceId::local(1),
-            value: None,
-        };
-        assert!(paint_batch(std::slice::from_ref(&output), false));
-        assert!(paint_batch(&[output.clone(), metadata.clone()], false));
-        assert!(!paint_batch(&[output, metadata], true));
-        assert!(!paint_batch(&[], false));
-        assert!(!paint_batch(&[Event::TopologyChanged], false));
     }
 }

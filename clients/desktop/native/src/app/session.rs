@@ -143,21 +143,17 @@ impl Desktop {
         self.socket = options.socket;
         self.home_session = options.session.clone();
         self.home_key = None;
-        let socket = self.socket.display().to_string();
-        self.recent_projects = Some(RecentProjects::load(&socket));
+        self.recent_projects = Some(RecentProjects::load(&self.socket.display().to_string()));
         self.listen_history_errors(cx);
-        let paths = crate::workspace::layout_paths(&socket, &options.session);
+        self.follow_layout(&options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
         self.explicit_layout = explicit;
-        self.layout = if explicit {
-            options.layout_path
-        } else {
-            paths.layout
-        };
-        self.quick_layout = paths.quick;
-        self.legacy_layout = (!explicit).then_some(paths.legacy_layout);
-        self.legacy_quick = (!explicit).then_some(paths.legacy_quick);
+        if explicit {
+            self.layout = options.layout_path;
+            self.legacy_layout = None;
+            self.legacy_quick = None;
+        }
         if !self.fonts {
             crate::fonts::install(cx);
             self.fonts = true;
@@ -176,15 +172,13 @@ impl Desktop {
                     WindowRole::Main
                 },
                 session: options.session,
-                home_key: None,
                 fresh: options.fresh,
                 initial_terminal: options.initial_terminal,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
                 stable_layout: !explicit,
                 startup_error: options.startup_error,
-                main_display: None,
-                remote: None,
+                ..OpenRequest::default()
             };
             self.open_window(request, focus, false, cx)?
         };
@@ -198,18 +192,22 @@ impl Desktop {
         Ok(handle)
     }
 
+    /// Use the layout files of `session` on this socket.
+    fn follow_layout(&mut self, session: &str) {
+        let paths = crate::workspace::layout_paths(&self.socket.display().to_string(), session);
+        self.layout = paths.layout;
+        self.quick_layout = paths.quick;
+        self.legacy_layout = Some(paths.legacy_layout);
+        self.legacy_quick = Some(paths.legacy_quick);
+    }
+
     /// Reopen the window `old` on `session`, for a launch that could not name
     /// a session: the home session and the layout files follow it.
     pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
         self.home_session = session.clone();
         self.home_key = None;
         if !self.explicit_layout {
-            let paths =
-                crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
-            self.layout = paths.layout;
-            self.quick_layout = paths.quick;
-            self.legacy_layout = Some(paths.legacy_layout);
-            self.legacy_quick = Some(paths.legacy_quick);
+            self.follow_layout(&session);
         }
         let quick = self
             .quick
@@ -219,23 +217,15 @@ impl Desktop {
             self.quick_request(cx)
         } else {
             OpenRequest {
-                role: WindowRole::Main,
                 session,
-                home_key: None,
-                fresh: false,
-                initial_terminal: None,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
                 stable_layout: !self.explicit_layout,
-                startup_error: None,
-                main_display: None,
-                remote: None,
+                ..OpenRequest::default()
             }
         };
         let replaced = self
-            .windows
-            .iter()
-            .chain(self.quick.as_ref())
+            .opened()
             .find(|opened| opened.desk.entity_id() == old)
             .map(|opened| opened.handle);
         if let Err(error) = self.open_window(request, true, quick, cx) {
@@ -253,20 +243,32 @@ impl Desktop {
         remote: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.open_fresh(session, None, remote, cx);
+    }
+
+    /// A secondary window that shows new terminals instead of a saved layout.
+    fn open_fresh(
+        &mut self,
+        session: String,
+        initial_terminal: Option<ResourceId>,
+        remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
-            home_key: None,
             fresh: true,
-            initial_terminal: None,
+            initial_terminal,
             layout_path: self.layout.clone(),
-            legacy_layout: None,
-            stable_layout: false,
-            startup_error: None,
-            main_display: None,
             remote,
+            ..OpenRequest::default()
         };
         let _ = self.open_window(request, true, false, cx);
+    }
+
+    /// Every window, the quick one last.
+    fn opened(&self) -> impl Iterator<Item = &Opened> {
+        self.windows.iter().chain(self.quick.as_ref())
     }
 
     pub(crate) fn recent_projects(&self) -> &[PathBuf] {
@@ -284,7 +286,7 @@ impl Desktop {
         self._history_errors = Some(cx.spawn(async move |this, cx| {
             while let Ok(error) = errors.recv().await {
                 let _ = this.update(cx, |desktop, cx| {
-                    for opened in desktop.windows.iter().chain(desktop.quick.as_ref()) {
+                    for opened in desktop.opened() {
                         opened.desk.update(cx, |desk, cx| {
                             desk.post(
                                 super::notifications::Kind::Error,
@@ -330,9 +332,7 @@ impl Desktop {
     fn publish_recent_projects(&self, cx: &mut Context<Self>) {
         let paths = self.recent_projects().to_vec();
         let windows: Vec<_> = self
-            .windows
-            .iter()
-            .chain(self.quick.as_ref())
+            .opened()
             .map(|opened| opened.desk.downgrade())
             .collect();
         cx.defer(move |cx| {
@@ -368,17 +368,11 @@ impl Desktop {
         }
         let paths = crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
         let request = OpenRequest {
-            role: WindowRole::Main,
             session,
-            home_key: None,
-            fresh: false,
             initial_terminal: Some(terminal),
             layout_path: paths.layout,
-            legacy_layout: None,
             stable_layout: true,
-            startup_error: None,
-            main_display: None,
-            remote: None,
+            ..OpenRequest::default()
         };
         self.open_window(request, true, false, cx)?;
         Ok(())
@@ -426,20 +420,7 @@ impl Desktop {
         remote: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let request = OpenRequest {
-            role: WindowRole::Fresh,
-            session,
-            home_key: None,
-            fresh: true,
-            initial_terminal: Some(terminal),
-            layout_path: self.layout.clone(),
-            legacy_layout: None,
-            stable_layout: false,
-            startup_error: None,
-            main_display: None,
-            remote,
-        };
-        let _ = self.open_window(request, true, false, cx);
+        self.open_fresh(session, Some(terminal), remote, cx);
     }
 
     /// The next open window after `source` that talks to the same server
@@ -495,17 +476,11 @@ impl Desktop {
                 let result = home.and_then(|session| {
                     let paths = crate::workspace::layout_paths(&format!("host:{name}"), &session);
                     let request = OpenRequest {
-                        role: WindowRole::Main,
                         session,
-                        home_key: None,
-                        fresh: false,
-                        initial_terminal: None,
                         layout_path: paths.layout,
-                        legacy_layout: None,
                         stable_layout: true,
-                        startup_error: None,
-                        main_display: None,
                         remote: Some(name),
+                        ..OpenRequest::default()
                     };
                     desktop
                         .open_window(request, true, false, cx)
@@ -575,13 +550,11 @@ impl Desktop {
             session: self.home_session.clone(),
             home_key: self.home_key,
             fresh: true,
-            initial_terminal: None,
             layout_path: self.quick_layout.clone(),
             legacy_layout: self.legacy_quick.clone(),
             stable_layout: !self.explicit_layout,
-            startup_error: None,
             main_display: self.main_display(cx),
-            remote: None,
+            ..OpenRequest::default()
         }
     }
 
@@ -601,7 +574,7 @@ impl Desktop {
         let Some(tag) = SystemTag::parse(tag) else {
             return;
         };
-        let mut desks = self.windows.iter().chain(self.quick.iter());
+        let mut desks = self.opened();
         let found = match tag {
             SystemTag::Entry { desk, entry } => desks
                 .find(|opened| opened.desk.entity_id().as_u64() == desk)
