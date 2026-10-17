@@ -2442,8 +2442,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-linux"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "908b5fc7b6225e9b5cb0ce0aec500a4ae643a5ecdaa838b224d4c8f5690546c9"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2460,6 +2458,7 @@ dependencies = [
  "gpui-pre-collections",
  "gpui-pre-http-client",
  "gpui-pre-util",
+ "image",
  "libc",
  "log",
  "notify-rust",
@@ -2583,8 +2582,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-wgpu"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43832ede90bd5e924ad12774cf18f51ae288cc4a6f4f0c6888f8b14899590c39"
 dependencies = [
  "anyhow",
  "bytemuck",

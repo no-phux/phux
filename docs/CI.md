@@ -44,6 +44,9 @@ confirms a presented drawable, so real-GPU qualification stays manual:
 requires `confirmed` presentation.
 The Linux jobs run the native test/lint gates, build and extract the portable
 package, then run `smoke-linux.ts` under Xvfb/lavapipe with an isolated server.
+`just desktop-renderer-test` also exercises the pinned wgpu dependency's
+submission, shared-atlas and transparent-capture regressions in a disposable
+workspace, reusing the native target directory.
 Native frame capture and an independent X11 window screenshot with OCR,
 keyboard delivery, clipboard paste, shifted Meta bytes, window identity and
 app-crash session survival are checked separately.

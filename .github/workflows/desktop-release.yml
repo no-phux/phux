@@ -286,6 +286,7 @@ jobs:
           set -euo pipefail
           just desktop-lint
           xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+          just desktop-renderer-test
           cargo build --locked --release -p phux
           just desktop-native-build
           bun clients/desktop/scripts/package-linux.ts

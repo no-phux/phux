@@ -119,6 +119,8 @@ jobs:
         run: just desktop-lint
       - name: Native desktop tests under X11 and lavapipe
         run: xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+      - name: Pinned Linux renderer and capture regressions
+        run: just desktop-renderer-test
       - name: Build same-checkout CLI and Linux package
         run: |
           set -euo pipefail

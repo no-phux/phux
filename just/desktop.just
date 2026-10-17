@@ -31,6 +31,11 @@ desktop-test: worktree-claim desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
+[doc('Test the pinned Linux wgpu renderer, including native capture alpha')]
+desktop-renderer-test: worktree-claim desktop-source
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/clients/desktop/native/target}" python3 clients/desktop/toolchain/test-wgpu.py
+
+[group('desktop')]
 [doc('Measure GPUI terminal draws headlessly (pass release for optimized comparisons)')]
 desktop-perf-headless profile="test": desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml --profile {{profile}} --test pixels -- --headless-perf
