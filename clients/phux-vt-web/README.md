@@ -47,7 +47,17 @@ let grid = term.grid();              // styled snapshot, ready to render
 ```
 
 `Vt` owns the engine instance; `Terminal` is one screen on it; `Grid` is a
-row-major snapshot a renderer paints. That's the whole surface.
+row-major snapshot a renderer paints.
+
+A native bootstrap arrives as the server's official GHOSTSNP snapshot.
+`Vt::native_snapshot_available()` reports whether the engine decoded a
+snapshot through the browser's reader at load; only then does phux-web offer
+`LibghosttySnapshotV1`. `Vt::native_decoder` stages one unit at a time: feed
+the READY prefix and call `ready()` for a renderable `Terminal`, then feed each
+history page (or FINISH) and call `next_checked(rows)`. A truncated, corrupt,
+or mismatched unit fails closed and leaves the READY terminal intact.
+`tests/fixtures/server-snapshot-v1.bin` is a server capture, regenerated with
+`PHUX_BLESS_WEB_FIXTURE=1 cargo nextest run -p phux-server browser_snapshot_fixture`.
 
 ## The engine artifact (build dependency)
 
