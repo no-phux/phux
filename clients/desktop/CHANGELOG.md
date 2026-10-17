@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.37.0](https://github.com/no-phux/phux/compare/desktop-v0.36.1...desktop-v0.37.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** render on gpui-fast 0.1.9 with GPUI Kit 0.7.3 ([#1589](https://github.com/no-phux/phux/issues/1589)) ([3f22f89](https://github.com/no-phux/phux/commit/3f22f8913f964d1f9015955767680090d3405ecd))
+
 ## [0.36.1](https://github.com/no-phux/phux/compare/desktop-v0.36.0...desktop-v0.36.1) (2026-10-17)
 
 
