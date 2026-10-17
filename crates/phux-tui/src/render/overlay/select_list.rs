@@ -39,6 +39,8 @@ pub const WHEEL_SCROLL_ROWS: usize = 3;
 
 /// The key legend in the bottom border, right-aligned.
 const FOOTER_KEYS: &str = "↑↓ move · ⏎ run · esc";
+/// The legend when Tab opens session management.
+const FOOTER_KEYS_MANAGE: &str = "↑↓ move · ⏎ run · tab manage · esc";
 
 /// A selectable row or a non-selectable section header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +169,8 @@ pub struct SelectList {
     vi_navigation: bool,
     /// Tab opens management for the selected session, never for host/status rows.
     session_management: bool,
+    /// Replaces the `N of M` footer status when set (clipped from the left to fit).
+    footer_status: Option<String>,
     /// First visible filtered row. Interior-mutable because the viewport
     /// height is only known at paint time and `render` takes `&self` (the
     /// bargain ratatui's `ListState::offset` makes).
@@ -229,6 +233,7 @@ impl SelectList {
             live_key: None,
             vi_navigation: true,
             session_management: false,
+            footer_status: None,
             scroll: Cell::new(0),
             page: Cell::new(0),
             tallest: Cell::new(0),
@@ -251,6 +256,13 @@ impl SelectList {
     #[must_use]
     pub const fn with_session_management(mut self) -> Self {
         self.session_management = true;
+        self
+    }
+
+    /// Show `status` at the footer's left instead of the `N of M` count.
+    #[must_use]
+    pub fn with_footer_status(mut self, status: impl Into<String>) -> Self {
+        self.footer_status = Some(status.into());
         self
     }
 
@@ -649,6 +661,35 @@ fn session_management_command(item: &SelectItem) -> OverlayCommand {
     OverlayCommand::RunAbove(action)
 }
 
+/// Cells the footer's left status may use: the border minus both corners,
+/// the key legend with its padding, the status's own padding and one gap.
+fn footer_status_budget(modal_width: u16, keys: &str) -> usize {
+    let keys_w = crate::render::display_width(keys) + 2;
+    usize::from(modal_width).saturating_sub(2 + keys_w + 2 + 1)
+}
+
+/// `text` cut from the left to fit `max` cells, led by `…`, so the tail stays.
+fn clip_left(text: &str, max: usize) -> String {
+    if crate::render::display_width(text) <= max {
+        return text.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 1;
+    for ch in text.chars().rev() {
+        let w = crate::render::cell_width(ch).unwrap_or(0);
+        if used + w > max {
+            break;
+        }
+        used += w;
+        tail.push(ch);
+    }
+    tail.push('…');
+    tail.into_iter().rev().collect()
+}
+
 impl RenderOverlay for SelectList {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = self.modal_area(area);
@@ -665,8 +706,17 @@ impl RenderOverlay for SelectList {
             .unwrap_or(&[]);
 
         let body = self.body_lines(window, offset, inner_width);
+        let keys = if self.session_management {
+            FOOTER_KEYS_MANAGE
+        } else {
+            FOOTER_KEYS
+        };
+        let status = self.footer_status.as_deref().map_or_else(
+            || self.footer(&indices),
+            |status| clip_left(status, footer_status_budget(modal_area.width, keys)),
+        );
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer(self.footer(&indices), FOOTER_KEYS)
+            .footer(status, keys)
             .render_into(modal_area, buf);
         paint_scrollbar(
             buf,
@@ -1040,6 +1090,26 @@ mod tests {
         // word-boundary hit beats a mid-word one.
         assert!(fuzzy_score("sp", "split-pane") > fuzzy_score("sp", "previous-pane"));
         assert!(fuzzy_score("p", "split-pane") > fuzzy_score("p", "copy-mode"));
+    }
+
+    #[test]
+    fn session_management_legend_names_tab() {
+        let sl =
+            list(vec![SelectItem::new("a", action("switch-session"))]).with_session_management();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        sl.render(Rect::new(0, 0, 80, 24), &mut buf);
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(text.contains("tab manage"), "{text}");
+    }
+
+    #[test]
+    fn clip_left_keeps_the_tail() {
+        assert_eq!(clip_left("/a/b", 10), "/a/b");
+        assert_eq!(clip_left("/usr/local/share", 8), "…l/share");
     }
 
     #[test]

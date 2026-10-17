@@ -107,7 +107,17 @@ async fn run(
         .await
         .map_err(|err| format!("Nothing changed: {err}"))?;
     outcome.judge_error = outcome.judge_error.or(key_error);
-    Ok((outcome.summary(), toast_lines(&outcome)))
+    Ok(("Organize".to_owned(), result_lines(&outcome)))
+}
+
+/// The toast body: the one-line summary, then the plan. An untouched plan
+/// has nothing to summarize beyond the plan lines themselves.
+fn result_lines(outcome: &Outcome) -> Vec<String> {
+    let mut lines = toast_lines(outcome);
+    if outcome.applied.is_some() || !outcome.plan.is_empty() {
+        lines.insert(0, outcome.summary());
+    }
+    lines
 }
 
 /// The plan as the toast shows it: what moved, what failed, how to undo.
