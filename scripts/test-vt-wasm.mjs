@@ -6,10 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const engine = readFileSync(new URL('../clients/phux-vt-web/vendor/ghostty-vt.wasm', import.meta.url));
+const vendored = fileURLToPath(new URL('../clients/phux-vt-web/vendor/ghostty-vt.wasm', import.meta.url));
+const engine = readFileSync(vendored);
 const prepare = fileURLToPath(new URL('./prepare-vt-wasm.mjs', import.meta.url));
 const smoke = fileURLToPath(new URL('./smoke-vt-wasm.mjs', import.meta.url));
-const vendored = fileURLToPath(new URL('../clients/phux-vt-web/vendor/ghostty-vt.wasm', import.meta.url));
 test('the committed engine passes the behavioral smoke', () => {
   const result = spawnSync(process.execPath, [smoke, vendored], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);

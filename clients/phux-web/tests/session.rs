@@ -725,13 +725,13 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
 }
 
 #[wasm_bindgen_test]
-async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
+async fn hello_advertises_synthesized_until_wasm_decodes_official_snapshot() {
     let vt = Vt::load().await.expect("load engine");
-    // Vendored ghostty-vt.wasm still speaks the fork incremental ABI.
-    // Advertising native would select GHOSTSNP the WASM engine cannot decode.
+    // The engine carries official GHOSTSNP, but the browser decoder is not
+    // bound yet: advertising native would select a codec we cannot decode.
     assert!(
         vt.incremental_capabilities().is_none(),
-        "wasm must not publish native checkpoint until rebuilt against official GHOSTSNP"
+        "wasm must not publish native checkpoint until the official snapshot decoder is bound"
     );
 
     let session = Connection::new(&vt, 80, 24);
@@ -779,7 +779,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
 }
 
 #[wasm_bindgen_test]
-async fn session_rejects_native_hello_ok_until_wasm_speaks_official_snapshot() {
+async fn session_rejects_native_hello_ok_until_wasm_decodes_official_snapshot() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Connection::new(&vt, 80, 24);
     let negotiated = session.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));

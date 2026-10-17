@@ -567,7 +567,7 @@ fn to_wasm_usize(value: usize) -> Result<u32, NativeCodecError> {
     u32::try_from(value).map_err(|_| NativeCodecError::LimitExceeded)
 }
 
-/// Typed failure from the embedded incremental checkpoint engine.
+/// Typed failure from an engine call or the (unbound) native checkpoint codec.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCodecError {
     /// The exact checkpoint ABI or runtime capability set is unavailable.
