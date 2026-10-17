@@ -131,6 +131,14 @@ a recovery fence, or consumes errors needed by normal device recovery. Capture
 excludes native surfaces, compositor decorations and effects and may wait for
 the GPU.
 
+Path intermediates contain premultiplied color. Their shared wgpu blend state
+uses source-over for both RGB and alpha, including transparent native windows,
+cached layer tiles and captures; adding destination alpha would corrupt the
+straight-alpha result. This correction leaves opaque destination pixels
+unchanged. Quad/path overlap tests compare transparent PNG compositing against
+direct rendering on opaque white in both blend modes and all four capture
+formats.
+
 **Recovery limitation:** native projection recovery currently requires
 `on_drawable_presented`, which accepts only confirmed presentation. Linux's
 submission-only receipts deliberately cannot clear that fence. A different

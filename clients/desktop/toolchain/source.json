@@ -31,6 +31,7 @@
     "patches/0006-bulk-glyph-sprites.patch": "9f944c273e31992f974b7de8dd8043c95b7ad80afd08347eb105241ef6f3af6d",
     "patches/0007-clearable-native-glass.patch": "6598b70cbb608f8aebaf1e07bf281e3be5507bce5f5ac1c92a401033ba9bf3c9",
     "patches/0008-linux-submission-and-capture.patch": "2b1e51622cebe8df400e1f9dcc841a6c296f02472ccc7ec4cd6000519a1b48c0",
-    "patches/0009-straight-alpha-capture.patch": "8ce7d93db5f0675f85b0a4ddf5864a179641f9d321def284fa9573343b0f3885"
+    "patches/0009-straight-alpha-capture.patch": "8ce7d93db5f0675f85b0a4ddf5864a179641f9d321def284fa9573343b0f3885",
+    "patches/0010-path-source-over-alpha.patch": "405cb870623b8d40dc2dd7a7a736e73708b8ebc07e000b84e8937feae293e2dd"
   }
 }
