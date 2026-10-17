@@ -5,10 +5,14 @@
 //! - **URL userinfo** with a password (`wss://user:secret@host`) loses the
 //!   whole userinfo. A bare user (`ssh://alice@box`) is a route, not a secret.
 //! - **Labeled values** (`token=…`, `secret: …`, `Authorization: Bearer …`)
-//!   lose the value after the label.
+//!   lose the value after the label, including prefixed keys
+//!   (`relay_token=…`, `PHUX_WS_TOKENS=…`, `x-api-key: …`) and flags
+//!   (`--token …`). A key that only starts with a label (`token_count`,
+//!   `secretary`) or a plural key holding a count (`tokens=3`) is not one.
 //! - **Long opaque runs**: 40 or more characters of the base64 or base64url
 //!   alphabet that mix letters and digits, the shape of a pairing token, a
-//!   key line or a JWK member. Server ids (32 hex) and paths stay readable.
+//!   key line or a JWK member. Server ids (32 hex), git commit ids (40
+//!   lowercase hex) and paths stay readable.
 
 /// Shortest opaque run [`redact`] hides; the same bound the CLI uses.
 const OPAQUE_MIN_RUN: usize = 40;
@@ -16,7 +20,9 @@ const OPAQUE_MIN_RUN: usize = 40;
 /// What a hidden value reads as.
 pub const REDACTED: &str = "<redacted>";
 
-/// Labels whose value is a secret. Matched case-insensitively at a word start.
+/// Key names whose value is a secret. A key matches when it is one of these
+/// or ends with `_<label>` (`relay_token`, `PHUX_WS_TOKENS`, `x-api-key`),
+/// optionally plural; `-` in a key reads as `_`. Case-insensitive.
 const SECRET_LABELS: &[&str] = &[
     "authorization",
     "bearer",
@@ -89,30 +95,54 @@ fn redact_labeled(text: &str) -> String {
     out
 }
 
-/// The byte span of a secret value whose label starts at `at`, if one does.
+/// The byte span of a secret value whose key starts at `at`, if one does.
 fn labeled_value(lower: &str, at: usize) -> Option<(usize, usize)> {
     if !word_start(lower, at) {
         return None;
     }
-    let label = SECRET_LABELS
-        .iter()
-        .find(|label| lower[at..].starts_with(*label))?;
-    let after_label = skip_while(lower, at + label.len(), is_label_char);
-    let after_quote = skip_while(lower, after_label, is_quote);
+    let key_end = skip_while(lower, at, is_label_char);
+    let key = &lower[at..key_end];
+    let plural = secret_key(key)?;
+    let after_quote = skip_while(lower, key_end, is_quote);
     let after_space = skip_while(lower, after_quote, is_inline_space);
-    let separated = lower[after_space..].starts_with(['=', ':']);
-    let start = if separated {
+    let spaced = after_space > after_quote;
+    let start = if lower[after_space..].starts_with(['=', ':']) {
         skip_while(lower, after_space + 1, |ch| {
             is_inline_space(ch) || is_quote(ch)
         })
-    } else if *label == "bearer" && after_space > after_quote {
+    } else if spaced && (key == "bearer" || is_flag(key, &lower[after_space..])) {
         after_space
     } else {
         return None;
     };
     let start = skip_auth_scheme(lower, start);
     let end = skip_while(lower, start, is_value_char);
-    (end > start).then_some((start, end))
+    let value = &lower[start..end];
+    // `tokens=3` is a count, not a list of tokens.
+    let count = plural && value.bytes().all(|byte| byte.is_ascii_digit());
+    (end > start && !count).then_some((start, end))
+}
+
+/// `Some(plural)` when `key` names a secret: a label, or a label after a
+/// `_` or `-` segment break. `token_count` and `secretary` do not.
+fn secret_key(key: &str) -> Option<bool> {
+    let name = key.trim_start_matches('-').replace('-', "_");
+    let (stem, plural) = match name.strip_suffix('s') {
+        Some(stem) if SECRET_LABELS.iter().any(|label| stem.ends_with(label)) => (stem, true),
+        _ => (name.as_str(), false),
+    };
+    SECRET_LABELS
+        .iter()
+        .any(|label| {
+            stem.strip_suffix(label)
+                .is_some_and(|head| head.is_empty() || head.ends_with('_'))
+        })
+        .then_some(plural)
+}
+
+/// `--token abc`: a command-line flag followed by its value.
+fn is_flag(key: &str, value: &str) -> bool {
+    key.starts_with('-') && !value.starts_with('-')
 }
 
 /// `Authorization: Bearer abc` hides `abc`, not the scheme word.
@@ -187,11 +217,20 @@ fn flush_run(out: &mut String, run: &mut String) {
     run.clear();
 }
 
-/// Long and mixed: a long identifier made only of words is not a key.
+/// Long and mixed: a long identifier made only of words is not a key, and a
+/// git commit id (exactly 40 lowercase hex) is a build fact, not a secret.
 fn looks_like_credential(run: &str) -> bool {
     run.len() >= OPAQUE_MIN_RUN
+        && !is_commit_id(run)
         && run.bytes().any(|byte| byte.is_ascii_digit())
         && run.bytes().any(|byte| byte.is_ascii_alphabetic())
+}
+
+fn is_commit_id(run: &str) -> bool {
+    run.len() == 40
+        && run
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -230,6 +269,37 @@ mod tests {
             redact("PASSWORD=p4ss api_key: k"),
             format!("PASSWORD={REDACTED} api_key: {REDACTED}")
         );
+    }
+
+    #[test]
+    fn prefixed_keys_and_flags_lose_their_values() {
+        for (line, expected) in [
+            ("PHUX_WS_TOKENS=/etc/phux/ws", "PHUX_WS_TOKENS=<redacted>"),
+            ("relay_token=abc123 ok", "relay_token=<redacted> ok"),
+            (
+                "ran phux --token abc123 serve",
+                "ran phux --token <redacted> serve",
+            ),
+            ("ran phux --token=abc123", "ran phux --token=<redacted>"),
+            ("x-api-key: k3y", "x-api-key: <redacted>"),
+            ("PHUX_TEST_TOKEN='t0k'", "PHUX_TEST_TOKEN='<redacted>'"),
+        ] {
+            assert_eq!(redact(line), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn keys_that_only_start_with_a_label_are_untouched() {
+        for line in [
+            "tokens=3 pending",
+            "token_count: 5",
+            "secretary: alice",
+            "--token-file /Users/me/.config/phux/box.token",
+            "--token --verbose",
+            "built from dec9d4550c1a2b3c4d5e6f708192a3b4c5d6e7f8",
+        ] {
+            assert_eq!(redact(line), line);
+        }
     }
 
     #[test]

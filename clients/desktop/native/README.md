@@ -72,8 +72,13 @@ resolution failure still opens the window, with the reason shown.
   does no background work. `diag::report()` exposes the existing typed report.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr
   (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`). Lines are redacted
-  (URL passwords, labeled tokens and secrets, long opaque runs) before they
-  are written, and the file rotates to one `.1` backup at 8 MiB.
+  (URL passwords, labeled tokens and secrets including `PREFIX_TOKEN=` keys
+  and `--token` flags, long opaque runs) before they are written, startup
+  errors on stderr included. The file rotates to one `.1` backup at 8 MiB; a
+  rotation that cannot move the file keeps appending rather than truncate.
+- **Titles:** terminal-set titles, names and directories lose control and
+  bidi override characters and are bounded before any tab, sidebar or window
+  title shows them (`desk::display_title`).
 - **Copy Diagnostics** (palette, Utilities): a JSON receipt of app and runtime
   versions, server id, connection epoch, host (`local` or the registry name)
   and the last 20 redacted warnings. It has a closed set of fields and carries
