@@ -91,12 +91,31 @@ mod tests {
         assert_eq!(cloned_tunnel.state(), TunnelState::Resolved);
         drop(source);
         assert_eq!(cloned_tunnel.state(), TunnelState::Resolved);
-        let (_embedder, tunnel_end) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let (mut embedder, tunnel_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        embedder
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("read timeout");
         cloned_tunnel
             .start(tunnel_end)
             .expect("the clone starts after the source is gone");
         assert_eq!(cloned.endpoint, "wss://endpoint-A:8788");
         assert_eq!(cloned.session, "work");
+        // Credential provenance, not just structure: the dial reads the
+        // CAPTURED token file before any network step (it is absent, so the
+        // dial fails offline), proving the rewritten registry did not
+        // displace it. The tunnel publishes FAILED before the embedder's EOF.
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            std::io::Read::read(&mut embedder, &mut byte).expect("EOF after failure"),
+            0
+        );
+        assert_eq!(cloned_tunnel.state(), TunnelState::Failed);
+        let message = cloned_tunnel.message().expect("failure reason");
+        assert!(
+            message.contains(&token.display().to_string()),
+            "the dial must name the captured token file, got {message}"
+        );
     }
 
     #[test]
