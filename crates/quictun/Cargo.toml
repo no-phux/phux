@@ -1,6 +1,8 @@
 [package]
 name = "quictun"
 description = "A blind QUIC tunnel relay: services behind NAT dial out, consumers dial in by route name in the TLS server name, and the relay splices their streams without reading them. Depends on no phux crate."
+# Publish-ready (ADR-0181): no path dependencies, its own README and
+# docs.rs config. Remove this line to publish to crates.io.
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -8,6 +10,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+keywords = ["quic", "tunnel", "relay", "nat-traversal", "reverse-proxy"]
+categories = ["network-programming", "asynchronous"]
 
 [lints]
 workspace = true
@@ -50,3 +55,7 @@ testing = []
 tempfile.workspace = true
 # Self dev-dependency so crate-scoped test runs build every module.
 quictun = { path = ".", features = ["relay", "testing"] }
+
+[package.metadata.docs.rs]
+# Render every module, the relay and provisioning included.
+all-features = true

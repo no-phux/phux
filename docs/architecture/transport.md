@@ -100,8 +100,8 @@ seam changes.
   stream gets only 64 KiB of receive credit
   (`TUNNEL_STREAM_RECEIVE_WINDOW`), so a slow consumer hop back-pressures the
   server writer the same way. The connector tags its tunnel's initial
-  connection ID (`phux_dial::quic::TUNNEL_CID_PREFIX`) so the relay can pick
-  the bounded config before ALPN is known; the tag selects a config, never a
+  connection ID (`phux_dial::quic::TUNNEL_CID_TAG`, a `quictun::CidTag`)
+  so the relay can pick the bounded config before ALPN is known; the tag selects a config, never a
   role. Untagged tunnels from older connectors get quinn's defaults. The
   64 KiB bound caps each bridged consumer at about 5 Mbit/s at 100 ms RTT;
   faster output resyncs even a healthy consumer. The relay route negotiates

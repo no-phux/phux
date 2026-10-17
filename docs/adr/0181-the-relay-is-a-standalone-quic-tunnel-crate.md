@@ -11,7 +11,8 @@ crate. Its ALPNs, connection-ID tag, and state directory are a `Protocol`
 and a config a deployment supplies. `phux-relay` shrinks to phux's
 binding of it. `quictun` also owns the tunnel wire, both client legs, leaf
 pinning, and the cert, secret-file, and send-window modules `phux-dial`
-re-exports. Nothing on the wire changes.
+re-exports. It is ready for crates.io but not published. Nothing on the
+wire changes.
 
 Status: Accepted
 Date: 2026-10-17
@@ -59,6 +60,11 @@ on QUIC.
    `DropProxy` move from `phux-dial` into `quictun`. `phux-dial`
    re-exports them under the same paths, and `phux_dial::quic` takes
    `TUNNEL_CID_TAG` and `AUTH_FAILED_CODE` from `quictun`.
+6. **Publish-ready, not published.** `quictun` has no path dependency, its
+   own README (compiled as a doctest), crates.io metadata, and docs.rs
+   config. `cargo package -p quictun` builds and tests it from the
+   tarball alone. Its manifest keeps `publish = false` until the owner
+   chooses to publish; removing that line is the whole change.
 
 ## Why
 

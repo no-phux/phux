@@ -50,6 +50,11 @@ pub mod tunnel;
 pub mod window;
 
 pub use tunnel::CidTag;
+
+/// Compiles the README's example, so the published front page cannot rot.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 pub use window::{SendWindow, TrackedSend};
 
 /// What makes one relay deployment its own: the ALPN a service's tunnel
