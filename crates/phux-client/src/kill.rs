@@ -521,15 +521,15 @@ fn target_miss(target: &str, degradation: Degradation) -> KillError {
     }
 }
 
-/// Whether the session named `name` holds nothing (ADR-0105): no resource
-/// names it, from a server that reports resource sessions (ADR-0161 §7),
-/// else no legacy window.
+/// Whether the session named `name` holds no Terminal (ADR-0105): read from
+/// the session facet on a server that reports it (ADR-0161 §7), else from
+/// the legacy window count.
 fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
     let by_facet = crate::resource::reports_sessions(snapshot);
     snapshot.sessions.iter().any(|session| {
         session.name == name
             && if by_facet {
-                crate::resource::in_session(snapshot, session.id)
+                crate::resource::terminals_in(snapshot, session.id)
                     .next()
                     .is_none()
             } else {
@@ -1129,18 +1129,23 @@ mod tests {
     /// never from the synthesized window count.
     #[test]
     fn emptiness_reads_the_session_facet() {
-        let (busy, parked) = (SessionId::new(1), SessionId::new(2));
+        let (busy, parked, agent) = (SessionId::new(1), SessionId::new(2), SessionId::new(3));
         let state = SessionSnapshot::new(busy, WindowId::new(10), ResourceId::local(1))
             .with_sessions(vec![
                 SessionInfo::new(busy, "busy").with_window_count(0),
                 SessionInfo::new(parked, "parked").with_window_count(1),
+                SessionInfo::new(agent, "agent").with_window_count(1),
             ])
             .with_resources(vec![
                 ResourceInfo::new(ResourceId::local(1), WindowId::new(99), 80, 24)
                     .with_session(Some(busy)),
+                ResourceInfo::new(ResourceId::local(2), WindowId::new(99), 0, 0)
+                    .with_kind(phux_protocol::ids::ResourceKind::AgentSession)
+                    .with_session(Some(agent)),
             ]);
         assert!(!session_is_empty(&state, "busy"));
         assert!(session_is_empty(&state, "parked"));
+        assert!(session_is_empty(&state, "agent"), "no Terminal");
     }
 
     /// Without `ORGANIZATION`, an empty session cannot be deleted and

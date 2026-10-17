@@ -808,8 +808,8 @@ fn terminals_in_session(snapshot: &SessionSnapshot, session: SessionId) -> Vec<R
 
 /// Terminals in the group `name`/`group` names: the group's leaves in
 /// depth-first order when the session's arrangement is known; else, from a
-/// server that reports resource sessions, group `0` is all the session's
-/// Terminals; else (an older server) the legacy window's Terminals in
+/// server that reports resource sessions, group `0` (or `window-0`) is all
+/// the session's Terminals; else (an older server) the legacy window's Terminals in
 /// snapshot order.
 fn resolve_group(
     snapshot: &SessionSnapshot,
@@ -837,10 +837,13 @@ fn resolve_group(
     }
     if crate::resource::reports_sessions(snapshot) {
         // A server that reports each resource's session keeps no windows of
-        // its own: an unarranged session is one unnamed group, so only index
-        // 0 names it.
+        // its own: an unarranged session is one group, named by index 0 or
+        // by the name its synthesized window carried.
         return match group {
             GroupRef::Index(0) => terminals_in_session(snapshot, sid),
+            GroupRef::Tag(tag) if tag == SYNTHESIZED_GROUP_NAME => {
+                terminals_in_session(snapshot, sid)
+            }
             _ => Vec::new(),
         };
     }
@@ -860,6 +863,11 @@ fn resolve_group(
             .collect()
     })
 }
+
+/// The name a server that reports resource sessions gives each session's
+/// one synthesized window (ADR-0161 §7), which `phux agent` still prints:
+/// it keeps naming an unarranged session's one group.
+const SYNTHESIZED_GROUP_NAME: &str = "window-0";
 
 fn session_id_by_name(snapshot: &SessionSnapshot, name: &str) -> Option<SessionId> {
     snapshot
@@ -1557,8 +1565,8 @@ mod tests {
     }
 
     /// From a server that reports resource sessions, an unarranged session is
-    /// one unnamed group: its synthesized window is never read, so neither a
-    /// window name nor an index past 0 resolves.
+    /// one group: its synthesized window is never read, so only index 0 and
+    /// the synthesized name resolve.
     #[test]
     fn an_unarranged_session_on_a_facet_server_is_one_group() {
         let work = SessionId::new(1);
@@ -1579,7 +1587,8 @@ mod tests {
             ("work:0", ids(&[100, 101])),
             ("work:0.1", ids(&[101])),
             ("work:1", vec![]),
-            ("work:window-0", vec![]),
+            ("work:window-0", ids(&[100, 101])),
+            ("work:shell", vec![]),
         ] {
             assert_eq!(resolve(&parse(raw).unwrap(), &snap), expected, "{raw}");
         }

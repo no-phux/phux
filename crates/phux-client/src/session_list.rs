@@ -72,7 +72,8 @@ pub async fn glance_view(conn: &mut Connection) -> Result<StateView, AttachError
 ///
 /// Such a server's windows are synthesized, one per non-empty session, so
 /// the count is whether the session holds a Terminal; [`count_layout_windows`]
-/// then raises it to the arrangement's group count where it can read one.
+/// then replaces it with the arrangement's group count where it can read
+/// one.
 /// An older server's count is its own and stays.
 fn count_session_windows(snapshot: &mut SessionSnapshot) {
     if !resource::reports_sessions(snapshot) {
