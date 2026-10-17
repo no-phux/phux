@@ -1,24 +1,24 @@
-diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 1ced587..d346296 100644
---- a/gpui-pre-macos/src/window.rs
-+++ b/gpui-pre-macos/src/window.rs
-@@ -661,6 +661,7 @@ struct MacWindowState {
-     native_window: id,
-     native_view: NonNull<Object>,
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index 6d40139..078b406 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -665,6 +665,7 @@ pub(crate) struct MacWindowState {
+     pub(crate) native_view: NonNull<Object>,
+     pub(crate) fast_composition: crate::fast::composition::MacComposition,
      blurred_view: Option<id>,
 +    glass_view: Option<id>,
      background_appearance: WindowBackgroundAppearance,
      cursor_style: CursorStyle,
      cursor_visible: Arc<AtomicBool>,
-@@ -1095,6 +1096,7 @@ impl MacWindow {
-                 native_window,
-                 native_view: NonNull::new_unchecked(native_view),
+@@ -1102,6 +1103,7 @@ impl MacWindow {
+                     renderer_context.clone(),
+                 ),
                  blurred_view: None,
 +                glass_view: None,
                  background_appearance: WindowBackgroundAppearance::Opaque,
                  cursor_style: CursorStyle::Arrow,
                  cursor_visible,
-@@ -1926,6 +1928,71 @@ impl PlatformWindow for MacWindow {
+@@ -1933,6 +1935,71 @@ impl PlatformWindow for MacWindow {
          }
      }
  
@@ -90,11 +90,11 @@ index 1ced587..d346296 100644
      fn background_appearance(&self) -> WindowBackgroundAppearance {
          self.0.as_ref().lock().background_appearance
      }
-diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index ac970bb..c31380e 100644
---- a/gpui-pre/src/platform.rs
-+++ b/gpui-pre/src/platform.rs
-@@ -1260,6 +1260,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
+index 3fac56f..f81dd29 100644
+--- a/gpui-fast/src/platform.rs
++++ b/gpui-fast/src/platform.rs
+@@ -1261,6 +1261,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn background_appearance(&self) -> WindowBackgroundAppearance;
      fn set_title(&mut self, title: &str);
      fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
@@ -108,11 +108,11 @@ index ac970bb..c31380e 100644
      fn minimize(&self);
      fn zoom(&self);
      fn toggle_fullscreen(&self);
-diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index d26dafa..8cebf93 100644
---- a/gpui-pre/src/window.rs
-+++ b/gpui-pre/src/window.rs
-@@ -3137,6 +3137,18 @@ impl Window {
+diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
+index 204e93e..397bf8b 100644
+--- a/gpui-fast/src/window.rs
++++ b/gpui-fast/src/window.rs
+@@ -3164,6 +3164,18 @@ impl Window {
              .set_background_appearance(background_appearance);
      }
  

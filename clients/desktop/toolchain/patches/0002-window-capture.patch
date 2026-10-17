@@ -1,8 +1,8 @@
-diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
-index c0a0e28..bd71b84 100644
---- a/gpui-pre-apple/src/metal_renderer.rs
-+++ b/gpui-pre-apple/src/metal_renderer.rs
-@@ -6,7 +6,6 @@ use gpui::{
+diff --git a/gpui-fast-apple/src/metal_renderer.rs b/gpui-fast-apple/src/metal_renderer.rs
+index 312a084..be3c91d 100644
+--- a/gpui-fast-apple/src/metal_renderer.rs
++++ b/gpui-fast-apple/src/metal_renderer.rs
+@@ -7,7 +7,6 @@ use gpui::{
      AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
      PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
  };
@@ -10,7 +10,7 @@ index c0a0e28..bd71b84 100644
  use image::RgbaImage;
  use objc2::runtime::AnyObject;
  
-@@ -623,7 +622,10 @@ impl MetalRenderer {
+@@ -632,7 +631,10 @@ impl MetalRenderer {
      ///
      /// Note: This requires a layer-backed renderer. For headless rendering,
      /// use `render_scene_to_image()` instead.
@@ -22,7 +22,7 @@ index c0a0e28..bd71b84 100644
      pub fn render_to_image(&mut self, scene: &Scene) -> Result<RgbaImage> {
          let layer = self
              .layer
-@@ -634,24 +636,13 @@ impl MetalRenderer {
+@@ -643,24 +645,13 @@ impl MetalRenderer {
              (viewport_size.width.ceil() as i32).into(),
              (viewport_size.height.ceil() as i32).into(),
          );
@@ -48,7 +48,7 @@ index c0a0e28..bd71b84 100644
      pub fn render_scene_to_image(
          &mut self,
          scene: &Scene,
-@@ -1347,7 +1338,6 @@ fn new_command_encoder_for_texture<'a>(
+@@ -1377,7 +1368,6 @@ pub(crate) fn new_command_encoder_for_texture<'a>(
      command_encoder
  }
  
@@ -56,11 +56,11 @@ index c0a0e28..bd71b84 100644
  fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
      let width = texture.width() as u32;
      let height = texture.height() as u32;
-diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index ae1b2a2..1ced587 100644
---- a/gpui-pre-macos/src/window.rs
-+++ b/gpui-pre-macos/src/window.rs
-@@ -33,7 +33,6 @@ use gpui::{
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index b504f63..6d40139 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -34,7 +34,6 @@ use gpui::{
      SharedString, Size, SystemWindowTab, WindowAppearance, WindowBackgroundAppearance,
      WindowBounds, WindowControlArea, WindowKind, WindowParams, WindowVisibility, point, px, size,
  };
@@ -68,7 +68,7 @@ index ae1b2a2..1ced587 100644
  use image::RgbaImage;
  
  use core_foundation::base::{CFRelease, CFTypeRef};
-@@ -2400,8 +2399,7 @@ impl PlatformWindow for MacWindow {
+@@ -2426,8 +2425,7 @@ impl PlatformWindow for MacWindow {
          NSBeep()
      }
  
@@ -78,11 +78,11 @@ index ae1b2a2..1ced587 100644
          let mut this = self.0.lock();
          this.renderer.render_to_image(scene)
      }
-diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 8dca552..ac970bb 100644
---- a/gpui-pre/src/platform.rs
-+++ b/gpui-pre/src/platform.rs
-@@ -50,7 +50,6 @@ use anyhow::{Context as _, Result};
+diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
+index 5104921..3fac56f 100644
+--- a/gpui-fast/src/platform.rs
++++ b/gpui-fast/src/platform.rs
+@@ -51,7 +51,6 @@ use anyhow::{Context as _, Result};
  use async_task::Runnable;
  use collections::FxHashMap;
  use futures::channel::oneshot;
@@ -90,7 +90,7 @@ index 8dca552..ac970bb 100644
  use image::RgbaImage;
  use image::codecs::gif::GifDecoder;
  use image::{AnimationDecoder as _, DynamicImage, Frame};
-@@ -1431,7 +1430,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1449,7 +1448,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
      /// This does not present the frame to screen - useful for visual testing where we want
      /// to capture what would be rendered without displaying it or requiring the window to be visible.
@@ -98,11 +98,11 @@ index 8dca552..ac970bb 100644
      fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
          anyhow::bail!("render_to_image not implemented for this platform")
      }
-diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index c861250..d26dafa 100644
---- a/gpui-pre/src/window.rs
-+++ b/gpui-pre/src/window.rs
-@@ -2944,7 +2944,6 @@ impl Window {
+diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
+index 88b53b0..204e93e 100644
+--- a/gpui-fast/src/window.rs
++++ b/gpui-fast/src/window.rs
+@@ -2971,7 +2971,6 @@ impl Window {
      /// Renders the current frame's scene to a texture and returns the pixel data as an RGBA image.
      /// This does not present the frame to screen - useful for visual testing where we want
      /// to capture what would be rendered without displaying it or requiring the window to be visible.

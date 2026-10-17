@@ -1,7 +1,7 @@
-diff --git a/gpui-pre-apple/src/open_type.rs b/gpui-pre-apple/src/open_type.rs
+diff --git a/gpui-fast-apple/src/open_type.rs b/gpui-fast-apple/src/open_type.rs
 index d23a09b..df237ee 100644
---- a/gpui-pre-apple/src/open_type.rs
-+++ b/gpui-pre-apple/src/open_type.rs
+--- a/gpui-fast-apple/src/open_type.rs
++++ b/gpui-fast-apple/src/open_type.rs
 @@ -21,7 +21,7 @@ use core_text::{
          kCTFontFeatureSettingsAttribute,
      },
@@ -71,11 +71,11 @@ index d23a09b..df237ee 100644
              let name = CFString::from(user_fallback.as_str());
  
              let traits_keys = [kCTFontWeightTrait, kCTFontSlantTrait];
-diff --git a/gpui-pre-apple/src/text_system.rs b/gpui-pre-apple/src/text_system.rs
-index 3c0e17d..763bc84 100644
---- a/gpui-pre-apple/src/text_system.rs
-+++ b/gpui-pre-apple/src/text_system.rs
-@@ -298,7 +298,6 @@ impl AppleTextSystemState {
+diff --git a/gpui-fast-apple/src/text_system.rs b/gpui-fast-apple/src/text_system.rs
+index 1a88baa..99410c0 100644
+--- a/gpui-fast-apple/src/text_system.rs
++++ b/gpui-fast-apple/src/text_system.rs
+@@ -301,7 +301,6 @@ impl AppleTextSystemState {
          for font in family.fonts() {
              let mut font = font.load()?;
  
@@ -83,7 +83,7 @@ index 3c0e17d..763bc84 100644
              // This block contains a precautionary fix to guard against loading fonts
              // that might cause panics due to `.unwrap()`s up the chain.
              {
-@@ -355,6 +354,7 @@ impl AppleTextSystemState {
+@@ -358,6 +357,7 @@ impl AppleTextSystemState {
                  );
                  continue;
              }

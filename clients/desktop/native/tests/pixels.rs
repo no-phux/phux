@@ -888,6 +888,9 @@ fn streaming_output_recycles_frame_buffers() {
                 bytes: format!("line {seq}\r\n").into_bytes().into(),
             })
             .expect("live output");
+        // The desk notifies a terminal its runtime changed; the view is
+        // otherwise drawn from the last frame.
+        window.update(cx, |_, _, cx| cx.notify()).expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
@@ -1186,11 +1189,16 @@ fn headless_perf() {
         .capture_screenshot(window.into())
         .expect("initial pixels");
 
-    let mut draw = || {
+    // `changed` notifies the terminal first, as the desk does for a
+    // terminal whose runtime published; unchanged draws reuse the last frame.
+    let mut draw = |changed: bool| {
+        if changed {
+            window.update(&mut cx, |_, _, cx| cx.notify()).expect("notify");
+        }
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
-    bench_phase("cached", FRAMES, |_| draw());
+    bench_phase("cached", FRAMES, |_| draw(false));
     let mut seq = 0_u64;
     bench_phase("sparse", FRAMES, |index| {
         seq += 1;
@@ -1204,7 +1212,7 @@ fn headless_perf() {
                 bytes: [b"\x1b[13;1H".as_slice(), &[letter]].concat().into(),
             })
             .expect("sparse output");
-        draw();
+        draw(true);
     });
     bench_phase("scroll", FRAMES, |index| {
         seq += 1;
@@ -1219,7 +1227,7 @@ fn headless_perf() {
                     .into(),
             })
             .expect("scroll output");
-        draw();
+        draw(true);
     });
     drop(draw);
     let geometry = window
@@ -1271,7 +1279,12 @@ fn headless_perf_wide() {
     let before = cx
         .capture_screenshot(window.into())
         .expect("initial pixels");
-    let mut draw = || {
+    // `changed` notifies the terminal first, as the desk does for a
+    // terminal whose runtime published; unchanged draws reuse the last frame.
+    let mut draw = |changed: bool| {
+        if changed {
+            window.update(&mut cx, |_, _, cx| cx.notify()).expect("notify");
+        }
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
@@ -1288,14 +1301,14 @@ fn headless_perf_wide() {
             })
             .expect("wide output");
     };
-    bench_phase("wide_cached", FRAMES, |_| draw());
+    bench_phase("wide_cached", FRAMES, |_| draw(false));
     bench_phase("wide_redraw", FRAMES, |index| {
         feed(screen(index + 1).into_bytes());
-        draw();
+        draw(true);
     });
     bench_phase("wide_scroll", FRAMES, |index| {
         feed(format!("\x1b[{ROWS};1H{}\r\n", wide_line(index * 7, COLS)).into_bytes());
-        draw();
+        draw(true);
     });
     drop(draw);
     drop(feed);

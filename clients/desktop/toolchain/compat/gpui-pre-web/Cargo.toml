@@ -1,0 +1,21 @@
+# Adapted from gpui-fast compat/gpui-pre-web (Apache-2.0): the gpui-pre name and
+# version GPUI Kit pins, re-exporting the published gpui-fast crate.
+[package]
+name = "gpui-pre-web"
+version = "0.3.9"
+description = "gpui-fast's `gpui_web` under the gpui-pre name GPUI Kit pins."
+license = "Apache-2.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "gpui_web"
+path = "lib.rs"
+doctest = false
+
+[features]
+default = ["gpui_fast/default"]
+multithreaded = ["gpui_fast/multithreaded"]
+
+[dependencies]
+gpui_fast = { package = "gpui-fast-web", version = "=0.1.9", default-features = false }
