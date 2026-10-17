@@ -411,8 +411,10 @@ pub(crate) fn organization_resolved(
 /// it is one typed `SESSION_CREATE`; an ephemeral session launches its
 /// first shell, a persistent one is created empty. Otherwise the legacy
 /// keep-empty metadata operation creates a persistent, empty session, and an
-/// ephemeral one is refused. An `ORGANIZATION` server whose records are not
-/// live yet refuses the call (`INVALID_STATE`, request ID not consumed).
+/// ephemeral one is refused. Against an `ORGANIZATION` server the typed
+/// command is held until the records' seed lands; only when no seed can land
+/// (refused, with no authority known) is the call refused (`INVALID_STATE`,
+/// request ID not consumed) until `phux_client_organization_refresh`.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread. Name is a
@@ -472,15 +474,11 @@ fn create(
     }
     let lifetime = crate::c::organization::lifetime_in(lifetime)?;
     let name = valid_name(name)?;
-    // An ORGANIZATION server is only ever sent the typed command; until its
-    // records are live the call is refused before the request ID is consumed,
-    // so it can be retried, and the legacy key is never the fallback.
+    // An ORGANIZATION server is only ever sent the typed command, which the
+    // runtime's journal holds until the seed names the authority; the legacy
+    // key is never the fallback.
     let typed = client.control().organization_supported();
-    if typed && !crate::c::organization::live(client) {
-        return Err(BridgeError::state(
-            "the organization records are not loaded yet; wait for PhuxOrganizationInfo.state LIVE",
-        ));
-    }
+    crate::c::organization::ensure_deliverable(client)?;
     if !typed && (lifetime != SessionLifetime::Persistent || !client.keep_empty_sessions) {
         return Err(BridgeError::state(
             "without ORGANIZATION the server must support keep-empty sessions, and only persistent sessions can be created",

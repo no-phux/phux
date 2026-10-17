@@ -74,13 +74,6 @@ static void open_client(const char *path) {
     checked(phux_client_new(&options, &client));
     checked(phux_client_queue_hello(client, text("session-create-live")));
     while (phux_client_state(client) != PHUX_CLIENT_STATE_NEGOTIATED) pump();
-    /* An ORGANIZATION server takes a create only once its records are LIVE. */
-    PhuxOrganizationInfo org = {.size = sizeof(org), .version = PHUX_CLIENT_ABI_VERSION};
-    for (;;) {
-        checked(phux_client_organization_info(client, &org));
-        if (!org.supported || org.state == 2) break;
-        pump();
-    }
 }
 
 static void close_client(void) {

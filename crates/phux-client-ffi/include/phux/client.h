@@ -1637,18 +1637,18 @@ PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool
  * settles REFUSED with the reason.
  * One rename may be PENDING (INVALID_STATE otherwise).
  *
- * Against a server that advertised ORGANIZATION whose records this client
- * holds, a rename that must be sent is instead one typed SESSION_RENAME at
- * the session record's revision, through the runtime's operation journal
- * (request_id is consumed but not put on the wire): the commit settles it
- * RENAMED, a refusal REFUSED with its sentence, an unresolvable outcome
- * UNKNOWN_OUTCOME. A rename from another client arrives through the
- * organization records and moves sessions_revision the same way. Such a
- * server is never sent the metadata key: before this client holds its
- * records (PhuxOrganizationInfo.state not LIVE) a rename that must be sent is
- * INVALID_STATE and consumes no request_id, and one the records cannot carry
- * (no record for the session, or the journal refuses the submission) returns
- * INVALID_STATE and settles REFUSED with the reason. */
+ * Against a server that advertised ORGANIZATION, a rename that must be sent
+ * is instead one typed SESSION_RENAME (the last writer wins) through the
+ * runtime's operation journal, which holds it until the records' seed names
+ * the server's authority (request_id is consumed but not put on the wire):
+ * the commit settles it RENAMED, a refusal REFUSED with its sentence, an
+ * unresolvable outcome UNKNOWN_OUTCOME. A rename from another client arrives
+ * through the organization records and moves sessions_revision the same way.
+ * Such a server is never sent the metadata key. Only when no seed can land
+ * (it was refused and no authority is known) is such a rename INVALID_STATE
+ * without consuming request_id; call phux_client_organization_refresh. A
+ * session whose listing carries no session key, or a submission the journal
+ * refuses, returns INVALID_STATE and settles REFUSED with the reason. */
 typedef enum PhuxSessionRenameStatus {
     PHUX_SESSION_RENAME_NONE = 0,
     PHUX_SESSION_RENAME_PENDING = 1,
@@ -1686,10 +1686,12 @@ PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxS
  * holds: one typed SESSION_CREATE through the runtime's operation journal. A
  * PERSISTENT session without a directory is created empty; an EPHEMERAL one
  * always launches its first shell (it is never empty). On commit an ordered
- * GET_STATE binds the created key to its live session_id. Before this client
- * holds those records (PhuxOrganizationInfo.state not LIVE) the call is
- * INVALID_STATE and consumes no request_id; retry once LIVE. Such a server is
- * never sent the metadata operation below.
+ * GET_STATE binds the created key to its live session_id. The journal holds
+ * the command until the records' seed names the server's authority; only when
+ * no seed can land (it was refused and no authority is known) is the call
+ * INVALID_STATE without consuming request_id, until
+ * phux_client_organization_refresh. Such a server is never sent the metadata
+ * operation below.
  *
  * Otherwise: the CLI's nonce-correlated keep-empty metadata operation. Only
  * PERSISTENT is possible there, and a server without KEEP_EMPTY_SESSIONS is
@@ -1727,9 +1729,12 @@ PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t
  * server delivers METADATA_CHANGED to a client that never attached, so a
  * listing client may follow. Each broadcast renames the session list in
  * place and bumps sessions_revision, as above. Against a server that
- * advertised ORGANIZATION nothing is subscribed: every rename already
- * arrives through the organization records and moves sessions_revision the
- * same way. Idempotent; INVALID_STATE once DETACHED. */
+ * advertised ORGANIZATION the key is never subscribed: renames arrive as
+ * SessionRenamed on the server-wide event stream, which an attach subscribes;
+ * a client that has not attached queues SUBSCRIBE_EVENTS (from the records'
+ * journal cut) once its organization records are LIVE. Each one renames the
+ * session list and moves sessions_revision the same way. Idempotent;
+ * INVALID_STATE once DETACHED. */
 PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
 
 /* ---------------------------------------------------------- organization

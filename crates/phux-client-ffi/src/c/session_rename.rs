@@ -9,8 +9,10 @@
 //!
 //! Against a server that advertises `ORGANIZATION` none of that metadata
 //! surface is used (ADR-0161 section 9): a rename is one typed
-//! `SESSION_RENAME`, and every rename reaches the session list through the
-//! organization replica (`organization::changed`).
+//! `SESSION_RENAME`, and every rename reaches the session list as a
+//! journal `SessionRenamed` the organization replica applies
+//! (`organization::changed`). An attach subscribes the event stream that
+//! carries it; following without one subscribes it once the replica is live.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"
@@ -267,12 +269,20 @@ fn organization_advertised(client: &Client) -> bool {
     client.control().organization_supported()
 }
 
-/// Subscribe to the rename key once per client. Read-only: it attaches
-/// nothing and sizes nothing. Nothing to do against a server that advertises
-/// `ORGANIZATION`: the replica's records carry every rename.
+/// Subscribe once per client to what carries renames. Read-only: it
+/// attaches nothing and sizes nothing.
+///
+/// Against a server that advertises `ORGANIZATION` that is the event stream,
+/// whose `SessionRenamed` the replica applies to the session list. An attach
+/// already subscribes it; a client that never attaches subscribes here, once
+/// the replica is live, from the seed's journal cut so nothing between the
+/// seed and the subscription is missed. Otherwise it is the rename key.
 fn subscribe(client: &mut Client) -> Result<(), BridgeError> {
-    if client.session_rename.subscribed || organization_advertised(client) {
+    if client.session_rename.subscribed {
         return Ok(());
+    }
+    if organization_advertised(client) {
+        return subscribe_events(client);
     }
     client.queue_frame(&FrameKind::SubscribeMetadata {
         scope: Scope::Global,
@@ -282,8 +292,37 @@ fn subscribe(client: &mut Client) -> Result<(), BridgeError> {
     Ok(())
 }
 
-/// `HELLO_OK` was applied: a client following renames subscribes now, as the
-/// first frame it queues on the negotiated connection.
+/// The `ORGANIZATION` half of [`subscribe`]: wait for the replica's cut, then
+/// ask for the server-wide event stream unless an attach already did.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the control guard lives exactly as long as the replica borrow it lends"
+)]
+fn subscribe_events(client: &mut Client) -> Result<(), BridgeError> {
+    if client.attached {
+        client.session_rename.subscribed = true;
+        return Ok(());
+    }
+    let cut = {
+        let control = client.control();
+        let replica = control.organization();
+        replica.is_live().then(|| replica.journal_seq())
+    };
+    let Some(cut) = cut else {
+        // `negotiated` retries on every frame until the seed lands.
+        return Ok(());
+    };
+    client.queue_frame(&FrameKind::SubscribeEvents {
+        terminal: None,
+        after_seq: client.event_journal.then_some(cut),
+    })?;
+    client.session_rename.subscribed = true;
+    Ok(())
+}
+
+/// A frame was applied on the negotiated connection: a client following
+/// renames subscribes as soon as it can (at `HELLO_OK`, or against an
+/// `ORGANIZATION` server once the replica is live).
 pub(crate) fn negotiated(client: &mut Client) -> Result<(), BridgeError> {
     if client.session_rename.follow {
         subscribe(client)?;
@@ -307,7 +346,8 @@ fn queue_rename(
 }
 
 /// Against a server that advertises `ORGANIZATION`, rename by the typed
-/// `SESSION_RENAME` at the session record's revision. False only against a
+/// `SESSION_RENAME` (the last writer wins); the runtime's journal holds it
+/// until a seed names the authority. False only against a
 /// server that does not advertise it, where the legacy metadata path carries
 /// the rename; an `ORGANIZATION` server is never sent the legacy key.
 fn submit_typed(client: &mut Client, session_id: u32, new_name: &str) -> Result<bool, BridgeError> {
@@ -319,7 +359,7 @@ fn submit_typed(client: &mut Client, session_id: u32, new_name: &str) -> Result<
         .iter()
         .find(|session| session.session_id == session_id)
         .and_then(|session| session.key)
-        .ok_or_else(|| BridgeError::state("the organization records do not hold that session"))?;
+        .ok_or_else(|| BridgeError::state("the session list carries no key for that session"))?;
     let operation = client
         .control()
         .rename_session(key, new_name)
@@ -327,19 +367,6 @@ fn submit_typed(client: &mut Client, session_id: u32, new_name: &str) -> Result<
     client.session_rename.operation = Some(operation);
     client.process_runtime_events()?;
     Ok(true)
-}
-
-/// Against a server that advertises `ORGANIZATION`, a rename waits for the
-/// replica: until it is live the typed command has no record revision to
-/// name, and the legacy key is never the fallback. Checked before the
-/// request ID is consumed, so the same call can be retried.
-fn ensure_typed_ready(client: &Client) -> Result<(), BridgeError> {
-    if organization_advertised(client) && !client.control().organization().is_live() {
-        return Err(BridgeError::state(
-            "the organization records are not loaded yet; wait for PhuxOrganizationInfo.state LIVE",
-        ));
-    }
-    Ok(())
 }
 
 /// A typed rename resolved. True when `operation` was this client's rename.
@@ -417,7 +444,7 @@ pub unsafe extern "C" fn phux_client_rename_session(
         }
         let judged = plan(client, current_name, new_name_str);
         if matches!(judged, RenamePlan::Send { .. }) {
-            ensure_typed_ready(client)?;
+            crate::c::organization::ensure_deliverable(client)?;
         }
         client.operations.consume_request_id(request_id);
         let rename = &mut client.session_rename;
@@ -458,8 +485,9 @@ pub unsafe extern "C" fn phux_client_rename_session(
 ///
 /// Subscribes to `phux.session.name/v1` now if `HELLO_OK` has been applied,
 /// else as soon as it is. Once per client; idempotent. Against a server that
-/// advertises `ORGANIZATION` nothing is subscribed: the organization replica
-/// already applies every rename to the session list.
+/// advertises `ORGANIZATION` the key is never subscribed: a client that has
+/// not attached subscribes the server-wide event stream once the replica is
+/// live, and the replica applies each `SessionRenamed` to the session list.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread.
