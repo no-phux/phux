@@ -4,8 +4,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, Hsla, Keystroke, SharedString, Subscription,
-    WeakEntity, Window, div, px, relative,
+    AnyElement, App, ClickEvent, Context, Entity, Hsla, SharedString, Subscription, WeakEntity,
+    Window, div, px, relative,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
@@ -24,8 +24,7 @@ use crate::settings::{self, DisplayPrefs, Skin};
 
 use super::color::from_hex;
 use super::desk::{Desk, Modal};
-use super::keys::gpui_stroke;
-use super::skin::{Look, Surface, Surfaced};
+use super::skin::Look;
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
@@ -353,37 +352,36 @@ pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     let top = super::overlays::sheet_top(viewport);
     let height = (viewport.height.as_f32() - top - gutter).clamp(180., 600.);
     let look = desk.look();
-    div()
-        .w(px((viewport.width.as_f32() - 2. * gutter).clamp(0., 720.)))
-        .surface(&look, Surface::Popover)
-        .text_color(look.ink)
-        .occlude()
-        .id("settings-panel")
-        .debug_selector(|| "settings-panel".into())
-        .h(px(height))
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(super::overlays::launcher::hub_header(
-            desk,
-            &look.chrome,
-            cx,
-        ))
-        .child(
-            div().h(px(40.)).px(px(14.)).flex().items_center().child(
-                Button::new("settings-back")
-                    .label("All settings")
-                    .icon(IconName::ChevronLeft)
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|desk, _, window, cx| {
-                        desk.open_modal(Modal::Settings, window, cx)
-                    })),
-            ),
-        )
-        .child(div().flex_1().min_h_0().child(settings))
-        .into_any_element()
+    super::overlays::card(
+        &look,
+        (viewport.width.as_f32() - 2. * gutter).clamp(0., 720.),
+    )
+    .id("settings-panel")
+    .debug_selector(|| "settings-panel".into())
+    .h(px(height))
+    .overflow_hidden()
+    .flex()
+    .flex_col()
+    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    .child(super::overlays::launcher::hub_header(
+        desk,
+        &look.chrome,
+        cx,
+    ))
+    .child(
+        div().h(px(40.)).px(px(14.)).flex().items_center().child(
+            Button::new("settings-back")
+                .label("All settings")
+                .icon(IconName::ChevronLeft)
+                .small()
+                .ghost()
+                .on_click(
+                    cx.listener(|desk, _, window, cx| desk.open_modal(Modal::Settings, window, cx)),
+                ),
+        ),
+    )
+    .child(div().flex_1().min_h_0().child(settings))
+    .into_any_element()
 }
 
 fn prefs_of(handle: &WeakEntity<Desk>, cx: &App) -> DisplayPrefs {
@@ -1138,7 +1136,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .title("Shortcuts")
         .items(rows.into_iter().map(|(title, group, chord, id)| {
             let shown = settings::display_chord(&chord);
-            let keystroke = gpui_stroke(&chord).and_then(|stroke| Keystroke::parse(&stroke).ok());
+            let keystroke = super::view::keystroke(&chord);
             let source =
                 settings::chord_source(desk.ghostty(), desk.prefs.ghostty_keys, &chord, &id);
             let applies = match source {

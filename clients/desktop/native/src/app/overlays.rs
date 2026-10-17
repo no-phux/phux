@@ -18,11 +18,12 @@ use phux_protocol::ids::SessionKey;
 
 use crate::connection::AgentInfo;
 use crate::connection::path::{self as paths};
-use crate::settings::theme::Palette;
 
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 use super::skin::{Look, Surface, Surfaced};
+use super::view::{dot, ghost_icon, muted};
+use crate::settings::theme::Palette;
 
 mod goto_facts;
 mod goto_filter;
@@ -694,22 +695,16 @@ pub fn find_bar(desk: &Desk, case_sensitive: bool, cx: &mut Context<Desk>) -> An
             ),
         )
         .child(
-            div()
+            muted(&look, desk.find_status())
                 .px(px(6.))
                 .py(px(3.))
                 .rounded(corner(&look, 5.))
-                .bg(look.ink.opacity(0.045))
-                .text_xs()
-                .text_color(from_hex(&look.chrome.muted))
-                .child(desk.find_status()),
+                .bg(look.ink.opacity(0.045)),
         )
         .child(
-            Button::new("find-case")
-                .icon(IconName::CaseSensitive)
-                .ghost()
+            ghost_icon("find-case", IconName::CaseSensitive, "Match case")
                 .small()
                 .toggled(case_sensitive)
-                .tooltip("Match case")
                 .on_click(cx.listener(|desk, _, window, cx| {
                     let case = !desk
                         .find
@@ -725,31 +720,17 @@ pub fn find_bar(desk: &Desk, case_sensitive: bool, cx: &mut Context<Desk>) -> An
                     desk.after_command(window, cx);
                 })),
         )
-        .child(
-            Button::new("find-prev")
-                .icon(IconName::ChevronUp)
-                .ghost()
-                .small()
-                .tooltip("Previous match")
-                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-prev", window, cx))),
-        )
-        .child(
-            Button::new("find-next")
-                .icon(IconName::ChevronDown)
-                .ghost()
-                .small()
-                .tooltip("Next match")
-                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-next", window, cx))),
-        )
-        .child(
-            Button::new("find-close")
-                .icon(IconName::Close)
-                .ghost()
-                .small()
-                .tooltip("Close")
-                .on_click(
-                    cx.listener(|desk, _, window, cx| desk.execute("find-close", window, cx)),
-                ),
+        .children(
+            [
+                ("find-prev", IconName::ChevronUp, "Previous match"),
+                ("find-next", IconName::ChevronDown, "Next match"),
+                ("find-close", IconName::Close, "Close"),
+            ]
+            .map(|(id, icon, tooltip)| {
+                ghost_icon(id, icon, tooltip)
+                    .small()
+                    .on_click(cx.listener(move |desk, _, window, cx| desk.execute(id, window, cx)))
+            }),
         )
         .into_any_element()
 }
@@ -1609,7 +1590,7 @@ fn notification_rows(
             let decide = entry
                 .approval
                 .map(|approval| approval_buttons(desk, approval, id, cx));
-            let edge = from_hex(&super::view::notification_edge(entry, colors));
+            let edge = super::view::notification_edge(entry, look);
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
@@ -1629,13 +1610,16 @@ fn notification_rows(
                 .cursor_pointer()
                 .hover(|style| style.bg(from_hex(&colors.hover)))
                 .child(
-                    div()
-                        .mt(px(5.))
-                        .size(px(7.))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .when(entry.read, |dot| dot.border_1().border_color(edge))
-                        .when(!entry.read, |dot| dot.bg(edge)),
+                    dot(
+                        7.,
+                        if entry.read {
+                            gpui::transparent_black()
+                        } else {
+                            edge
+                        },
+                    )
+                    .mt(px(5.))
+                    .when(entry.read, |dot| dot.border_1().border_color(edge)),
                 )
                 .child(
                     div()
@@ -1653,20 +1637,19 @@ fn notification_rows(
                                 .text_color(from_hex(&colors.theme.foreground))
                                 .child(entry.title.clone()),
                         )
-                        .children(entry.body.clone().map(|body| {
-                            div()
-                                .text_xs()
-                                .line_clamp(2)
-                                .text_color(from_hex(&colors.muted))
-                                .child(body)
-                        }))
+                        .children(
+                            entry
+                                .body
+                                .clone()
+                                .map(|body| muted(look, body).line_clamp(2)),
+                        )
                         .children(decide),
                 )
                 .child(
                     div()
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(from_hex(&colors.subtext))
+                        .text_color(from_hex(&look.chrome.subtext))
                         .child(age),
                 )
                 .on_click(cx.listener(move |desk, _, window, cx| {
@@ -1711,15 +1694,12 @@ fn approval_buttons(
         .into_any_element()
 }
 
-fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
-    div()
+fn notification_heading(title: &str, unread: usize, look: &Look) -> AnyElement {
+    muted(look, format!("{title} · {unread} unread alerts"))
         .px(px(10.))
         .pt(px(14.))
         .pb(px(8.))
-        .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(from_hex(&colors.muted))
-        .child(format!("{title} · {unread} unread alerts"))
         .into_any_element()
 }
 
@@ -1741,7 +1721,7 @@ fn notifications_panel(
     let mut rows = vec![notification_heading(
         "Inbox — agents and approvals",
         unread_agents,
-        colors,
+        look,
     )];
     if agent_rows.is_empty() {
         rows.push(
@@ -1758,11 +1738,7 @@ fn notifications_panel(
     }
     rows.extend(agent_rows);
     if !general_rows.is_empty() {
-        rows.push(notification_heading(
-            "Notifications",
-            unread_general,
-            colors,
-        ));
+        rows.push(notification_heading("Notifications", unread_general, look));
         rows.extend(general_rows);
     }
     sheet(look, 460.)
@@ -1800,7 +1776,6 @@ fn notifications_panel(
             div()
                 .px(px(20.))
                 .py(px(28.))
-                .rounded(inset_radius(look))
                 .border_1()
                 .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))

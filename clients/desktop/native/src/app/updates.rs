@@ -12,6 +12,7 @@ use gpui_kit::component::{Disableable, Sizable};
 use super::color::from_hex;
 use super::overlays::corner;
 use super::skin::Look;
+use super::view::muted;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
 
 pub(crate) struct Updater {
@@ -159,26 +160,20 @@ impl Header {
                                         div()
                                             .text_base()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(from_hex(&colors.theme.foreground))
+                                            .text_color(look.ink)
                                             .child(self.title),
                                     )
                                     .child(pill),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_family(mono.clone())
-                                    .text_color(from_hex(&colors.muted))
-                                    .child(self.build.clone()),
-                            ),
+                            .child(muted(look, self.build.clone()).font_family(mono.clone())),
                     )
                     .child(div().flex().items_center().gap(px(6.)).children(actions)),
             )
             .when_some(self.detail.clone(), |header, (detail, failed)| {
                 let edge = if failed {
-                    &colors.theme.danger
+                    from_hex(&colors.theme.danger)
                 } else {
-                    &colors.border
+                    look.border
                 };
                 header.child(
                     div()
@@ -186,8 +181,8 @@ impl Header {
                         .py(px(8.))
                         .rounded(corner(look, 6.))
                         .border_1()
-                        .border_color(from_hex(edge))
-                        .bg(from_hex(&colors.hover))
+                        .border_color(edge)
+                        .bg(look.hover)
                         .text_xs()
                         .text_color(from_hex(&colors.subtext))
                         .child(detail),
@@ -199,12 +194,7 @@ impl Header {
                 .flex_col()
                 .gap(px(6.))
                 .child(header)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(from_hex(&colors.muted))
-                        .child(note),
-                )
+                .child(muted(look, note))
                 .into_any_element(),
             None => header.into_any_element(),
         }

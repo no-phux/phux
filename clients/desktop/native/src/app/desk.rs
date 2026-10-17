@@ -1016,7 +1016,6 @@ impl Desk {
         }
     }
 
-
     fn note_input_event(&mut self, event: &Event) {
         let message = crate::connection::refused_input(event).or_else(|| match event {
             Event::InputDelivery {

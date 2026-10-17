@@ -20,7 +20,7 @@ use crate::settings::{Backdrop, Skin, TabPosition};
 
 use super::desk::{Desk, Modal};
 use super::host::RemoteHost;
-use super::keys::gpui_stroke;
+use super::view::keystroke;
 
 const WIDTH: f32 = 316.;
 const INSET: f32 = 8.;
@@ -55,10 +55,6 @@ fn builtin(id: &str) -> Option<&'static crate::settings::CommandSpec> {
     crate::settings::builtin_commands()
         .iter()
         .find(|command| command.id == id)
-}
-
-fn keystroke(chord: &str) -> Option<Keystroke> {
-    Keystroke::parse(&gpui_stroke(chord)?).ok()
 }
 
 /// Whether the skin wants the compositor material behind the menu.

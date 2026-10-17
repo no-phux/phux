@@ -12,6 +12,7 @@ use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
 use super::overlays::{card, corner};
 use super::skin::Look;
+use super::view::muted;
 use crate::connection::Connection;
 
 #[derive(Default)]
@@ -318,12 +319,7 @@ pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
                 item.native_detail
                     .as_ref()
                     .filter(|_| !item.native_available)
-                    .map(|detail| {
-                        div()
-                            .text_xs()
-                            .text_color(from_hex(&colors.muted))
-                            .child(detail.clone())
-                    }),
+                    .map(|detail| muted(look, detail.clone())),
             )
     });
     card(look, 560.)
@@ -331,11 +327,7 @@ pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
         .max_w_full()
         .max_h(px(620.))
         .p(px(18.))
-        // A solid sheet with a tighter corner and the kit's large lift.
         .rounded(corner(look, 12.))
-        .bg(from_hex(&colors.raised))
-        .border_color(look.border)
-        .when(!look.popover_shadow.is_empty(), |panel| panel.shadow_lg())
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .flex()
         .flex_col()
