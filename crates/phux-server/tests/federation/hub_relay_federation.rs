@@ -39,6 +39,7 @@ mod kill_visibility;
 mod link_gap;
 mod list_directory;
 mod live_reload;
+mod mixed_window;
 mod path_query;
 mod retain_on_exit;
 mod satellite_spawn;
