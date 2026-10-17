@@ -4,8 +4,9 @@ use super::{
     ChromeCtx, JobDone, PaneScene, RepaintAccumulator, RepaintLevel, ResourceId,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay,
     adopt_config_reload, content_rect, finish_return_onboarding_after_paint, paint_active_overlay,
-    paint_chrome_in_place, paint_full_frame, paint_panes_in_place, push_which_key_overlay,
-    refresh_window_chrome, sidebar_reservation, sync_overlays_to_focused_pane,
+    paint_chrome_in_place, paint_full_frame, paint_pane_rows_in_place, paint_panes_in_place,
+    push_which_key_overlay, refresh_window_chrome, sidebar_reservation,
+    sync_overlays_to_focused_pane,
 };
 
 impl super::SessionLoop {
@@ -143,6 +144,14 @@ impl super::SessionLoop {
             RepaintLevel::Chrome => {
                 paint_chrome_in_place(out, ls.as_ref(), &self.mirror.panes, focused, &mut chrome)
             }
+            RepaintLevel::Rows => paint_pane_rows_in_place(
+                out,
+                ls.as_ref(),
+                &mut self.mirror.panes,
+                &self.mirror.engine_kernel,
+                focused,
+                &mut chrome,
+            ),
             RepaintLevel::Panes => paint_panes_in_place(
                 out,
                 ls.as_ref(),
