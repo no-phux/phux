@@ -1537,27 +1537,7 @@ async fn write_restored_layout(
     seed: &ResourceId,
     workspace: ArrangementDoc,
 ) -> Result<(), String> {
-    use phux_client::layout::wire::{EntryBinding, HandleMap, to_protocol};
-    let mut conn = Connection::connect(socket_path)
-        .await
-        .map_err(|err| format!("archive: could not connect: {err}"))?;
-    let inventory = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
-        .await
-        .map_err(|err| format!("archive: could not read the session records: {err}"))?;
-    let session = inventory
-        .resource_by_live(seed)
-        .map(|record| record.session)
-        .ok_or_else(|| {
-            "archive: the seed pane vanished before its layout could be written".to_owned()
-        })?;
-    let handles = HandleMap::from_pairs(
-        inventory
-            .members(&session)
-            .map(|member| (member.key, member.live.clone())),
-    );
-    let document = to_protocol(&workspace, &handles, &EntryBinding::default())
-        .map_err(|err| format!("archive: could not write layout: {err}"))?;
-    phux_client::org::replace_session_arrangement(&mut conn, session, &document)
+    phux_client::org::replace_arrangement_of_member(socket_path, seed, &workspace)
         .await
         .map(drop)
         .map_err(|err| format!("archive: could not write layout: {err}"))

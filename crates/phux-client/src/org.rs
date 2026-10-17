@@ -785,6 +785,41 @@ pub async fn replace_session_arrangement(
     run_cas(conn, Edit::ReplaceArrangement(session, document)).await
 }
 
+/// Replace the arrangement of `member`'s session with `document`.
+///
+/// `document` is a client document over live handles; its leaves are
+/// translated to the session's member keys. Runs over a fresh connection
+/// (`phux archive` restore).
+///
+/// # Errors
+///
+/// [`OrgError::NotFound`] when `member` is not a live member here or a leaf
+/// names no member of its session; otherwise as
+/// [`replace_session_arrangement`].
+pub async fn replace_arrangement_of_member(
+    socket_path: &std::path::Path,
+    member: &ResourceId,
+    document: &crate::layout::ArrangementDoc,
+) -> Result<Committed, OrgError> {
+    use crate::layout::wire::{EntryBinding, HandleMap, to_protocol};
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(OrgError::Attach)?;
+    let inventory = fetch(&mut conn, OrgFilter::All, FIRST_REQUEST_ID).await?;
+    let session = inventory
+        .resource_by_live(member)
+        .map(|record| record.session)
+        .ok_or_else(|| OrgError::NotFound(crate::selector::format_terminal_id(member)))?;
+    let handles = HandleMap::from_pairs(
+        inventory
+            .members(&session)
+            .map(|record| (record.key, record.live.clone())),
+    );
+    let document = to_protocol(document, &handles, &EntryBinding::default())
+        .map_err(|err| OrgError::NotFound(err.to_string()))?;
+    replace_session_arrangement(&mut conn, session, &document).await
+}
+
 /// `phux restore [SESSION]`: relaunch every restorable resource
 /// ([`OrgInventory::restorable`]), in their sessions, one result per
 /// resource in page order.
