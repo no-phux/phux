@@ -1189,16 +1189,17 @@ fn headless_perf() {
         .capture_screenshot(window.into())
         .expect("initial pixels");
 
-    // `changed` notifies the terminal first, as the desk does for a
-    // terminal whose runtime published; unchanged draws reuse the last frame.
-    let mut draw = |changed: bool| {
-        if changed {
-            window.update(&mut cx, |_, _, cx| cx.notify()).expect("notify");
-        }
+    // Each tick notifies the terminal, as the desk does for a terminal whose
+    // runtime published; without it GPUI draws the view from its last frame.
+    // A tick with no new output measures the painter's scene reuse.
+    let mut draw = || {
+        window
+            .update(&mut cx, |_, _, cx| cx.notify())
+            .expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
-    bench_phase("cached", FRAMES, |_| draw(false));
+    bench_phase("cached", FRAMES, |_| draw());
     let mut seq = 0_u64;
     bench_phase("sparse", FRAMES, |index| {
         seq += 1;
@@ -1212,7 +1213,7 @@ fn headless_perf() {
                 bytes: [b"\x1b[13;1H".as_slice(), &[letter]].concat().into(),
             })
             .expect("sparse output");
-        draw(true);
+        draw();
     });
     bench_phase("scroll", FRAMES, |index| {
         seq += 1;
@@ -1227,7 +1228,7 @@ fn headless_perf() {
                     .into(),
             })
             .expect("scroll output");
-        draw(true);
+        draw();
     });
     drop(draw);
     let geometry = window
@@ -1279,12 +1280,13 @@ fn headless_perf_wide() {
     let before = cx
         .capture_screenshot(window.into())
         .expect("initial pixels");
-    // `changed` notifies the terminal first, as the desk does for a
-    // terminal whose runtime published; unchanged draws reuse the last frame.
-    let mut draw = |changed: bool| {
-        if changed {
-            window.update(&mut cx, |_, _, cx| cx.notify()).expect("notify");
-        }
+    // Each tick notifies the terminal, as the desk does for a terminal whose
+    // runtime published; without it GPUI draws the view from its last frame.
+    // A tick with no new output measures the painter's scene reuse.
+    let mut draw = || {
+        window
+            .update(&mut cx, |_, _, cx| cx.notify())
+            .expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
@@ -1301,14 +1303,14 @@ fn headless_perf_wide() {
             })
             .expect("wide output");
     };
-    bench_phase("wide_cached", FRAMES, |_| draw(false));
+    bench_phase("wide_cached", FRAMES, |_| draw());
     bench_phase("wide_redraw", FRAMES, |index| {
         feed(screen(index + 1).into_bytes());
-        draw(true);
+        draw();
     });
     bench_phase("wide_scroll", FRAMES, |index| {
         feed(format!("\x1b[{ROWS};1H{}\r\n", wide_line(index * 7, COLS)).into_bytes());
-        draw(true);
+        draw();
     });
     drop(draw);
     drop(feed);
