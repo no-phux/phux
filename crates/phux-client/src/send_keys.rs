@@ -397,6 +397,23 @@ mod tests {
             resolve_focused_pane(&session_level, &target, Some(&ResourceId::local(1))),
             Some(ResourceId::local(2))
         );
+        // No recent input, but a legacy window the server fell back to its
+        // first member: the window is still read, so the first member wins
+        // over the first arrangement leaf until legacy windows go (ADR-0161
+        // §9 step 3).
+        let window_fallback = SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(session, "work").with_recent_input(None),
+            ])
+            .with_windows(vec![
+                WindowInfo::new(window, session, "window-0")
+                    .with_active_resource(Some(ResourceId::local(1))),
+            ])
+            .with_resources(resources.clone());
+        assert_eq!(
+            resolve_focused_pane(&window_fallback, &target, Some(&ResourceId::local(2))),
+            Some(ResourceId::local(1))
+        );
         let without = SessionSnapshot::new(session, window, ResourceId::local(1))
             .with_sessions(vec![SessionInfo::new(session, "work")])
             .with_resources(resources);

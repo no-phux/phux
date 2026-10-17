@@ -156,10 +156,13 @@ pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<Session
 /// is still a Terminal in the session.
 ///
 /// The session-level `SESSION_STATE.recent_input` (`docs/spec/L1.md`
-/// §9.1), or, from a server that does not report it, the session's legacy
-/// window's `active_resource` (ADR-0161 §7), which such a server falls back
-/// to the session's first Terminal. The window read goes with the legacy
-/// windows (ADR-0161 §9).
+/// §9.1), else the session's legacy window's `active_resource` (ADR-0161
+/// §7). The window is read whenever `recent_input` is absent, from any
+/// server: a snapshot does not say whether its server reports
+/// `recent_input`, and every server falls the window back to the session's
+/// first Terminal, so a session with no recent input still resolves to that
+/// Terminal here. Callers' own first-leaf fallbacks take over only when the
+/// window read goes with the legacy windows (ADR-0161 §9 step 3).
 #[must_use]
 pub fn recent_terminal(snapshot: &SessionSnapshot, session: &SessionInfo) -> Option<ResourceId> {
     let in_session = |id: &ResourceId| {
@@ -173,7 +176,7 @@ pub fn recent_terminal(snapshot: &SessionSnapshot, session: &SessionInfo) -> Opt
 }
 
 /// The `active_resource` of the session's active legacy window, else of its
-/// first one; a client of a server that predates `recent_input` reads it.
+/// first one.
 fn legacy_window_focus(snapshot: &SessionSnapshot, session: &SessionInfo) -> Option<ResourceId> {
     session
         .active_window

@@ -93,9 +93,10 @@ pub(super) fn archive_from_snapshot(
 
 /// The session's focused pane: its reported recent input target
 /// (`SESSION_STATE.recent_input`) when it is one of the session's panes,
-/// else, from a server that predates it, the legacy window's active pane,
-/// else the snapshot's focused pane when it is in this session, else the
-/// session's first pane.
+/// else the legacy window's active pane (read from any server while legacy
+/// windows exist, and the session's first pane when it has no recent
+/// input; ADR-0161 §9 step 3 removes it), else the snapshot's focused pane
+/// when it is in this session, else the session's first pane.
 fn session_focus(
     snapshot: &SessionSnapshot,
     session: &SessionInfo,
