@@ -11,7 +11,7 @@ import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SURFACES = ("phux", "web", "web_engine", "integrations", "native")
+SURFACES = ("phux", "web", "web_engine", "integrations", "native", "desktop")
 ALL = set(SURFACES)
 
 
@@ -49,19 +49,22 @@ class RoutingTests(unittest.TestCase):
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),
             ([".claude-plugin/marketplace.json"], {"integrations"}),
             (["crates/phux-server/src/lib.rs"], {"phux", "web"}),
-            (["crates/phux-protocol/Cargo.toml"], {"phux", "web", "native"}),
-            (["crates/phux-protocol/src/lib.rs"], {"phux", "web"}),
-            (["crates/phux-client-core/src/lib.rs"], {"phux", "web"}),
-            (["crates/phux-perf/src/lib.rs"], {"phux", "web"}),
-            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "web"}),
+            (["crates/phux-protocol/Cargo.toml"], {"phux", "web", "native", "desktop"}),
+            (["crates/phux-protocol/src/lib.rs"], {"phux", "web", "desktop"}),
+            (["crates/phux-protocol/tests/wire.rs"], {"phux"}),
+            (["crates/phux-client-core/src/lib.rs"], {"phux", "web", "desktop"}),
+            (["crates/phux-perf/src/lib.rs"], {"phux", "web", "desktop"}),
+            (["crates/phux-client-ffi/src/lib.rs"], {"phux", "web", "desktop"}),
             (["crates/phux/build.rs"], {"phux", "web", "native"}),
-            (["Cargo.toml"], {"phux", "web", "native"}),
+            (["Cargo.toml"], {"phux", "web", "native", "desktop"}),
             (["Cargo.lock"], {"phux", "web", "native"}),
-            ([".cargo/config.toml"], {"phux", "web", "native"}),
-            ([".config/zig-toolchain.json"], {"phux", "web", "web_engine", "native"}),
-            (["scripts/install-zig.sh"], {"native", "web_engine"}),
-            (["scripts/lib/dev-toolchain.sh"], {"native", "web_engine"}),
-            (["scripts/setup-rust.sh"], {"native"}),
+            ([".cargo/config.toml"], {"phux", "web", "native", "desktop"}),
+            ([".config/zig-toolchain.json"], {"phux", "web", "web_engine", "native", "desktop"}),
+            (["scripts/install-zig.sh"], {"native", "web_engine", "desktop"}),
+            (["scripts/lib/dev-toolchain.sh"], {"native", "web_engine", "desktop"}),
+            (["scripts/setup-rust.sh"], {"native", "desktop"}),
+            (["clients/desktop/native/Cargo.lock"], ALL),
+            (["just/desktop.just"], ALL),
             (["scripts/doctor.sh"], {"native"}),
             (["scripts/test-dev-setup.sh"], {"native"}),
             (["scripts/native-smoke.sh"], {"native"}),
@@ -234,6 +237,38 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(crate=name):
                 self.assertEqual(classify([f"crates/{name}/src/lib.rs"])["web_needed"], "true")
 
+    def test_desktop_routes_exactly_its_path_dependency_closure(self):
+        # clients/desktop/native is its own workspace; a root crate reaches it
+        # only through a path dependency, directly or transitively. Cargo
+        # builds dev-dependencies for the desktop crate alone, not for its
+        # dependencies (the `cargo metadata` set).
+        manifests = {path.parent.name: tomllib.loads(path.read_text())
+                     for path in (ROOT / "crates").glob("*/Cargo.toml")}
+
+        def dependencies(manifest, keys=("dependencies", "build-dependencies")):
+            tables = [manifest, *manifest.get("target", {}).values()]
+            return {dependency for table in tables
+                    for key in keys
+                    for dependency in table.get(key, {})}
+
+        desktop = tomllib.loads((ROOT / "clients/desktop/native/Cargo.toml").read_text())
+        closure = set()
+        roots = dependencies(desktop, ("dependencies", "dev-dependencies", "build-dependencies"))
+        pending = list(roots & manifests.keys())
+        self.assertTrue(pending)
+        while pending:
+            name = pending.pop()
+            if name in closure:
+                continue
+            closure.add(name)
+            pending.extend(dependencies(manifests[name]) & manifests.keys() - closure)
+        for name in manifests:
+            with self.subTest(crate=name):
+                self.assertEqual(
+                    classify([f"crates/{name}/src/lib.rs"])["desktop_needed"],
+                    "true" if name in closure else "false",
+                )
+
 
 class EventTests(unittest.TestCase):
     @classmethod
@@ -375,7 +410,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("test_filterset:", action)
 
     def test_shared_detection_has_no_outer_path_filter(self):
-        for name in ("ci", "native-setup", "web-check"):
+        for name in ("ci", "native-setup", "web-check", "desktop-test"):
             workflow = (ROOT / f".github/workflows/{name}.yml").read_text()
             triggers = workflow.split("concurrency:")[0]
             with self.subTest(workflow=name):

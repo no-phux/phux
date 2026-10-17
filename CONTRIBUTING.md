@@ -143,7 +143,8 @@ children, not the developer's release settings.
 ### Gates that are CI-only or local-only
 
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
-`just native-smoke`). The Zig Cockpit is [archived](./docs/consumers/cockpit.md).
+`just native-smoke`). The native desktop crate runs in `desktop-test.yml`
+(macOS; reproduce with `just desktop-lint desktop-test`). The Zig Cockpit is [archived](./docs/consumers/cockpit.md).
 The following have
 no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
 mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use

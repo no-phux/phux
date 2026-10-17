@@ -22,6 +22,9 @@ outputs:
   native_needed:
     description: Clean native setup assurance (setup/toolchain/Cargo/build/link inputs).
     value: ${{ steps.detect.outputs.native_needed }}
+  desktop_needed:
+    description: Native desktop host crate tests on macOS (its path crates, toolchain and unrouted clients/desktop inputs).
+    value: ${{ steps.detect.outputs.desktop_needed }}
   test_filterset:
     description: nextest rdeps expression for PR library changes; empty runs the full pool.
     value: ${{ steps.detect.outputs.test_filterset }}
