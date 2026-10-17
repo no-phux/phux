@@ -375,17 +375,17 @@ pub(crate) fn panel(
         .with_group_variant(GroupBoxVariant::Normal)
         .page(content.title(page.title()));
     let viewport = window.viewport_size();
-    let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
-    let height = (viewport.height.as_f32() - top - 24.).clamp(180., 600.);
+    let gutter = super::overlays::SHEET_GUTTER;
+    let top = super::overlays::sheet_top(viewport);
+    let height = (viewport.height.as_f32() - top - gutter).clamp(180., 600.);
     let look = desk.look();
     div()
-        .w(px((viewport.width.as_f32() - 32.).clamp(0., 720.)))
+        .w(px((viewport.width.as_f32() - 2. * gutter).clamp(0., 720.)))
         .surface(&look, Surface::Popover)
         .text_color(look.ink)
         .occlude()
         .id("settings-panel")
         .debug_selector(|| "settings-panel".into())
-        .mt(px(top))
         .h(px(height))
         .overflow_hidden()
         .flex()

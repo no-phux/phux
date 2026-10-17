@@ -311,7 +311,9 @@ pub(crate) fn panel(
             )
     });
     div()
+        .debug_selector(|| "native-launch-panel".into())
         .w(px(560.))
+        .max_w_full()
         .max_h(px(620.))
         .p(px(18.))
         .text_color(look.ink)

@@ -40,8 +40,10 @@ pub struct PickerState {
     pub parent: Option<String>,
     /// Outstanding request. Late replies for another id are ignored.
     pub pending: Option<u32>,
-    /// Status line.
+    /// Status beside the rows: truncation or a warming index.
     pub message: String,
+    /// Why the last search or insertion failed. Shown in the results area.
+    pub failure: Option<String>,
 }
 
 /// Start a picker at `root`.
@@ -55,6 +57,7 @@ pub fn begin_picker(target: PathTarget, root: impl Into<String>) -> PickerState 
         parent: None,
         pending: None,
         message: String::new(),
+        failure: None,
     }
 }
 
@@ -70,7 +73,8 @@ pub fn can_offer_path_picker(
         && features.is_some_and(|features| features.iter().any(|feature| feature == "path-query"))
 }
 
-/// A new search replaces the listing until its own reply arrives. It searches beneath `root`.
+/// A new search replaces the listing, including the previous root's parent,
+/// until its own reply arrives. It searches beneath `root`.
 #[must_use]
 pub fn start_query(
     mut state: PickerState,
@@ -82,7 +86,9 @@ pub fn start_query(
     state.query = query.into();
     state.pending = Some(request_id);
     state.rows.clear();
-    state.message = "Searching host paths…".to_owned();
+    state.parent = None;
+    state.message.clear();
+    state.failure = None;
     state
 }
 
@@ -94,16 +100,12 @@ pub fn accept_path_answer(state: Option<PickerState>, reply: &PathAnswer) -> Opt
         return Some(state);
     }
     if let Some(failure) = reply.failure {
-        return Some(PickerState {
-            pending: None,
-            rows: Vec::new(),
-            message: if reply.message.is_empty() {
-                failure_text(failure).to_owned()
-            } else {
-                reply.message.clone()
-            },
-            ..state
-        });
+        let text = if reply.message.is_empty() {
+            failure_text(failure).to_owned()
+        } else {
+            reply.message.clone()
+        };
+        return Some(fail_search(state, text));
     }
     Some(PickerState {
         pending: None,
@@ -125,6 +127,40 @@ pub fn accept_path_answer(state: Option<PickerState>, reply: &PathAnswer) -> Opt
             _ => String::new(),
         },
         ..state
+    })
+}
+
+/// End the outstanding search at `state.root` with `failure`.
+///
+/// A refusal's listing fields are ignored (the spec says they MUST be), so the
+/// `..` row is the attempted root's lexical parent, computed here. That keeps a
+/// way back up from a directory the host refused to list.
+#[must_use]
+pub fn fail_search(state: PickerState, failure: impl Into<String>) -> PickerState {
+    PickerState {
+        pending: None,
+        rows: Vec::new(),
+        parent: lexical_parent(&state.root),
+        message: String::new(),
+        failure: Some(failure.into()),
+        ..state
+    }
+}
+
+/// The directory above `root` by its text alone: `/a/b` gives `/a`, `/a`
+/// gives `/`, `~/a` gives `~`. `/`, `~`, empty, and bare relative roots have
+/// no parent the client can name without asking the host.
+#[must_use]
+pub fn lexical_parent(root: &str) -> Option<String> {
+    let trimmed = root.trim_end_matches('/');
+    let (head, last) = trimmed.rsplit_once('/')?;
+    if last.is_empty() || last == "." || last == ".." {
+        return None;
+    }
+    Some(if head.is_empty() {
+        "/".to_owned()
+    } else {
+        head.to_owned()
     })
 }
 
@@ -230,7 +266,9 @@ pub fn directory_for_terminal(kind: &str, path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_client_runtime::control::{PathAnswer, PathMatch, PathMatchKind, PathSearchStatus};
+    use phux_client_runtime::control::{
+        PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
+    };
 
     fn target() -> PathTarget {
         PathTarget {
@@ -261,6 +299,69 @@ mod tests {
             true,
             Some(&target)
         ));
+    }
+
+    #[test]
+    fn a_search_drops_the_old_parent_and_a_failure_keeps_a_way_up() {
+        let answered = accept_path_answer(
+            Some(start_query(begin_picker(target(), "~"), 1, "/repo", "")),
+            &PathAnswer {
+                request_id: 1,
+                root: "/repo".into(),
+                parent: Some("/".into()),
+                rows: Vec::new(),
+                status: Some(PathSearchStatus::Truncated),
+                failure: None,
+                message: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(answered.parent.as_deref(), Some("/"));
+        assert!(answered.failure.is_none());
+        assert_eq!(answered.message, "Results truncated; narrow the search.");
+
+        let searching = start_query(answered, 2, "/repo/src", "");
+        assert_eq!(searching.parent, None, "the old root's parent is stale");
+        assert!(searching.message.is_empty() && searching.failure.is_none());
+
+        let failed = accept_path_answer(
+            Some(searching),
+            &PathAnswer {
+                request_id: 2,
+                root: String::new(),
+                parent: Some("/elsewhere".into()),
+                rows: Vec::new(),
+                status: None,
+                failure: Some(PathFailure::PermissionDenied),
+                message: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(failed.failure.as_deref(), Some("permission denied"));
+        assert_eq!(
+            failed.parent.as_deref(),
+            Some("/repo"),
+            "the way up is the refused root's parent, not the reply's"
+        );
+        assert_eq!(failed.root, "/repo/src");
+        assert!(failed.message.is_empty() && failed.pending.is_none());
+    }
+
+    #[test]
+    fn lexical_parent_names_only_what_the_root_text_implies() {
+        for (root, parent) in [
+            ("/repo/secret", Some("/repo")),
+            ("/repo/secret/", Some("/repo")),
+            ("/repo", Some("/")),
+            ("/", None),
+            ("~/src", Some("~")),
+            ("~", None),
+            ("", None),
+            ("relative", None),
+            ("/repo/..", None),
+        ] {
+            assert_eq!(lexical_parent(root).as_deref(), parent, "{root:?}");
+        }
     }
 
     #[test]

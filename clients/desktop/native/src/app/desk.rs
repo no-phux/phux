@@ -1871,6 +1871,14 @@ impl Desk {
         cx.notify();
     }
 
+    /// Install a Ghostty config as if `reload-config` read it, with its binds on.
+    #[cfg(test)]
+    pub(crate) fn install_ghostty_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.ghostty = settings::parse_ghostty(text);
+        self.prefs.ghostty_keys = true;
+        self.sync_bindings(cx);
+    }
+
     pub(crate) fn import_ghostty(&mut self, cx: &mut Context<Self>) {
         let next = settings::ghostty_prefs(&self.prefs, &self.ghostty);
         self.update_prefs(|prefs| *prefs = next, cx);
@@ -3316,10 +3324,7 @@ impl Desk {
             let mut failed = active;
             failed.root = root;
             failed.query = query;
-            failed.pending = None;
-            failed.rows.clear();
-            failed.message = "Path search is unavailable on this server.".into();
-            failed
+            paths::fail_search(failed, "Path search is unavailable on this server.")
         } else {
             paths::start_query(active, id, root, &query)
         });
@@ -3343,7 +3348,8 @@ impl Desk {
         let Some(text) = paths::prepared_insertion(Some(&active), &path, current.as_ref(), ready)
         else {
             let mut rejected = active;
-            rejected.message = "The pane changed or is not ready; nothing was inserted.".into();
+            rejected.failure =
+                Some("The pane changed or is not ready; nothing was inserted.".into());
             self.picker = Some(rejected);
             cx.notify();
             return;
@@ -3352,7 +3358,7 @@ impl Desk {
             self.close_modal(window, cx);
             self.after_command(window, cx);
         } else if let Some(picker) = self.picker.as_mut() {
-            picker.message = "The path was not queued; nothing was inserted.".into();
+            picker.failure = Some("The path was not queued; nothing was inserted.".into());
             cx.notify();
         }
     }

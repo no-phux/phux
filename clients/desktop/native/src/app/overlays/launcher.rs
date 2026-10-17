@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, MouseButton, Styled,
-    StyledText, WeakEntity, Window, div, px,
+    AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, Styled, StyledText,
+    WeakEntity, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem};
@@ -105,8 +105,8 @@ pub(super) fn palette(
     let preview = selected_preview(&sections, selected);
     let details = preview.filter(|_| desk.palette_view.details);
     let viewport = window.viewport_size();
-    let top = (viewport.height.as_f32() * 0.13).clamp(16., 84.);
-    let available = (viewport.height.as_f32() - top - 16.).max(120.);
+    let top = super::sheet_top(viewport);
+    let available = (viewport.height.as_f32() - top - super::SHEET_GUTTER).max(120.);
     let detail_height = if details.is_some() {
         (available * 0.4).min(160.)
     } else {
@@ -125,7 +125,7 @@ pub(super) fn palette(
     let list_height = (80. + extra_header + count.clamp(1, 8) as f32 * 36. + headings as f32 * 28.)
         .min(400.)
         .min(available - detail_height);
-    let width = (viewport.width.as_f32() - 32.).clamp(0., 560.);
+    let width = (viewport.width.as_f32() - 2. * super::SHEET_GUTTER).clamp(0., 560.);
     let look = desk.look();
     let handle = cx.weak_entity();
     let confirm = handle.clone();
@@ -193,14 +193,11 @@ pub(super) fn palette(
             },
         )));
     }
-    super::card(&look, width)
+    super::sheet(&look, width)
         .id("palette-panel")
         .debug_selector(|| "palette-panel".into())
-        .mt(px(top))
         .text_left()
         .overflow_hidden()
-        .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(command)
         .children(details.map(|card| facts_panel(card, detail_height, &colors, look.border)))
         .into_any_element()
@@ -482,7 +479,9 @@ fn item(
                     .child(detail)
             }))
             .children(chord.clone().map(|chord| {
+                let selector = format!("palette-chord:{chord}");
                 div()
+                    .debug_selector(move || selector)
                     .text_size(px(11.))
                     .text_color(from_hex(&colors.muted))
                     .child(chord)
