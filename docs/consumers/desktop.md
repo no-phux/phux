@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-17
 ---
 
 # Desktop
@@ -176,6 +176,14 @@ received it. Acknowledged actions distinguish **Delivered**, **Refused**, and
 **Unknown**. Unknown delivery blocks further unsafe action until fresh
 authoritative output has actually been presented; it never triggers blind
 replay by the UI. An offscreen acquired frame is not that evidence.
+
+Shell integration (OSC 133) marks a terminal as running a command from its
+start to its finish. A paste containing a line break into such a terminal
+waits for confirmation, since each line would reach the running program rather
+than a prompt; at a prompt, or without shell integration, it pastes at once.
+A command that ran at least five seconds and finishes in a pane that is not
+focused posts a notification naming the pane, its outcome, and its run time,
+unless notifications are turned off.
 
 Required text fidelity includes wide and combining characters, fallback fonts,
 dense colors, cursor shapes, decorations, alternate-screen applications,

@@ -144,6 +144,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::NativeLaunch
         | Modal::Terminate { .. }
         | Modal::RemoveHost { .. }
+        | Modal::Paste { .. }
         | Modal::Notifications => window.focus(&desk.focus, cx),
     }
 }
@@ -550,6 +551,15 @@ pub fn layer(
             &look,
             cx,
             |desk, window, cx| desk.confirm_terminate(window, cx),
+        ),
+        Modal::Paste { title, paste, .. } => confirm(
+            paste_question(&title, paste.lines()),
+            "It is running a command, so each line goes to that program as input, not to a shell prompt.",
+            "Paste",
+            colors,
+            &look,
+            cx,
+            |desk, window, cx| desk.confirm_paste(window, cx),
         ),
     };
     backdrop(colors, cx, card)
@@ -1706,6 +1716,14 @@ fn add_host_dialog(
         .into_any_element()
 }
 
+/// The held-paste dialog's question.
+fn paste_question(title: &str, lines: usize) -> String {
+    match lines {
+        1 => format!("Paste a line break into {title}?"),
+        lines => format!("Paste {lines} lines into {title}?"),
+    }
+}
+
 fn confirm(
     title: String,
     body: &str,
@@ -1738,8 +1756,14 @@ mod tests {
     use super::goto_filter::{GotoCursor, GotoFilter, GotoId, apply_filter, selection_path};
     use super::{
         AgentInfo, Row, Section, Target, filter_sections, goto_candidates,
-        move_destination_sections, rank_sections, section_ids,
+        move_destination_sections, paste_question, rank_sections, section_ids,
     };
+
+    #[test]
+    fn the_held_paste_question_names_the_lines_and_the_pane() {
+        assert_eq!(paste_question("make", 3), "Paste 3 lines into make?");
+        assert_eq!(paste_question("make", 1), "Paste a line break into make?");
+    }
     use phux_protocol::ids::{Revision, SessionKey};
     use phux_protocol::wire::frame::SessionRecord;
 
