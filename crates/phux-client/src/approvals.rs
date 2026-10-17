@@ -16,6 +16,7 @@ use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, FrameKind, Scope};
 use crate::attach::AttachError;
 use crate::attach::connection::{Connection, Refusal};
 
+use phux_client_runtime::approvals::DecisionOutcome;
 /// The record and the decision are the runtime's one parse, shared with the
 /// control plane's live projection.
 pub use phux_client_runtime::approvals::{Approval, Decision, Requester};
@@ -119,18 +120,24 @@ pub async fn decide(
         .request_metadata(CONFIRM_ID, Scope::Global, id.record_key())
         .await?
         .into_parts();
-    if let Some(refusal) = decision_refusal(&interleaved) {
-        return Err(ApprovalError::Refused(refusal));
-    }
+    let refusal = decision_refusal(&interleaved);
     // A decider without OBSERVE on Global cannot read the record; its
-    // refusal of the read says nothing about the decision, which the server
-    // already handled without refusing it.
-    if matches!(answer, Ok(Some(_))) {
-        return Err(ApprovalError::Malformed(format!(
+    // refusal of the read says nothing about the decision (`None`).
+    let still_pending = answer.ok().map(|record| record.is_some());
+    let outcome = DecisionOutcome::classify(
+        refusal
+            .as_ref()
+            .map(|refusal| (refusal.code, refusal.message.clone())),
+        still_pending,
+    );
+    match (outcome, refusal) {
+        (DecisionOutcome::Decided, _) => Ok(()),
+        // Stale or refused: report the server's own refusal.
+        (_, Some(refusal)) => Err(ApprovalError::Refused(refusal)),
+        (_, None) => Err(ApprovalError::Malformed(format!(
             "approval {id} is still pending after the decision"
-        )));
+        ))),
     }
-    Ok(())
 }
 
 /// The correlated refusal of the decision, if the server sent one.
