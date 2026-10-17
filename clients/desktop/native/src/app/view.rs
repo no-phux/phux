@@ -1046,10 +1046,7 @@ fn organization_bar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
                     })),
             )
             .child(
-                Button::new("clear-work-selection")
-                    .label("Clear")
-                    .ghost()
-                    .small()
+                ghost_button("clear-work-selection", "Clear")
                     .disabled(busy)
                     .on_click(cx.listener(|desk, _, _, cx| {
                         desk.organization.selected.clear();
@@ -2206,17 +2203,13 @@ fn pane_view(
         })
         .children(controls_bar)
         .when(conversation_toggle, |card| {
-            card.child(
-                div().absolute().top(px(8.)).right(px(10.)).child(
-                    Button::new(SharedString::from(format!("conversation-open-{id}")))
-                        .label("Conversation")
-                        .small()
-                        .ghost()
-                        .on_click(cx.listener(move |desk, _, window, cx| {
-                            desk.toggle_conversation(&conversation_id, window, cx);
-                        })),
+            card.child(div().absolute().top(px(8.)).right(px(10.)).child(
+                ghost_button(format!("conversation-open-{id}"), "Conversation").on_click(
+                    cx.listener(move |desk, _, window, cx| {
+                        desk.toggle_conversation(&conversation_id, window, cx);
+                    }),
                 ),
-            )
+            ))
         })
         .when(dropping, |card| card.child(drop_hint(&look, remote_files)))
         .children(find_bar)
@@ -2278,18 +2271,18 @@ fn pane_controls(
         .when(desk.conversation_eligible(&id), |row| {
             let conversation_id = id.clone();
             row.child(
-                Button::new(SharedString::from(format!("pane-conversation-{id}")))
-                    .label(if desk.conversation_visible(&id) {
+                ghost_button(
+                    format!("pane-conversation-{id}"),
+                    if desk.conversation_visible(&id) {
                         "Terminal"
                     } else {
                         "Conversation"
-                    })
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(move |desk, _, window, cx| {
-                        cx.stop_propagation();
-                        desk.toggle_conversation(&conversation_id, window, cx);
-                    })),
+                    },
+                )
+                .on_click(cx.listener(move |desk, _, window, cx| {
+                    cx.stop_propagation();
+                    desk.toggle_conversation(&conversation_id, window, cx);
+                })),
             )
         })
         .child(
@@ -2717,6 +2710,14 @@ pub(super) fn ghost_icon(
         .xsmall()
         .accessibility_label(label.clone())
         .tooltip(label)
+}
+
+/// A small ghost button showing `label`.
+pub(super) fn ghost_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+) -> Button {
+    Button::new(id).label(label).ghost().small()
 }
 
 /// A chrome icon button that keeps the titlebar from dragging the window when pressed.

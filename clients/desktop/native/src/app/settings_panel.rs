@@ -25,6 +25,7 @@ use crate::settings::{self, DisplayPrefs, Skin};
 use super::color::from_hex;
 use super::desk::{Desk, Modal};
 use super::skin::Look;
+use super::view::{ghost_button, muted};
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
@@ -747,11 +748,8 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
 /// overrides the pick, so a hint says so and the other cards dim.
 fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
     let prefs = prefs_of(handle, cx);
-    let colors = handle
-        .upgrade()
-        .map(|desk| desk.read(cx).palette())
-        .unwrap_or_else(|| theme::palette(&theme::theme_by_id(&prefs.theme_id, &[])));
-    let ink = from_hex(&colors.theme.foreground);
+    let look = look_of(handle, cx);
+    let ink = look.ink;
     let picked = settings::skin_by_id(&prefs.skin_id).id;
     let hint = prefs.plain.then(|| {
         div()
@@ -760,12 +758,10 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
             .items_center()
             .justify_between()
             .gap(px(10.))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(from_hex(&colors.muted))
-                    .child("Plain terminal is on. Your skin returns when it is off."),
-            )
+            .child(muted(
+                &look,
+                "Plain terminal is on. Your skin returns when it is off.",
+            ))
             .child(
                 Button::new("skin-plain-off")
                     .label("Turn off")
@@ -799,7 +795,7 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
             .flex_col()
             .gap(px(6.))
             .when(!worn, |card| card.opacity(0.7))
-            .child(skin_preview(skin, &colors, &prefs))
+            .child(skin_preview(skin, &look.chrome, &prefs))
             .child(
                 div()
                     .px(px(2.))
@@ -1340,19 +1336,13 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
                 .flex()
                 .gap(px(8.))
                 .child(
-                    Button::new("settings-add-host")
-                        .label("Add host…")
-                        .small()
-                        .ghost()
+                    ghost_button("settings-add-host", "Add host…")
                         .on_click(click_runs(&buttons, |desk, window, cx| {
                             desk.open_modal(Modal::AddHost, window, cx)
                         })),
                 )
                 .child(
-                    Button::new("settings-refresh-hosts")
-                        .label("Refresh all")
-                        .small()
-                        .ghost()
+                    ghost_button("settings-refresh-hosts", "Refresh all")
                         .on_click(click_runs(&buttons, |desk, _, cx| desk.retry_fleet(cx))),
                 )
         }),
@@ -1364,14 +1354,12 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
             name.clone(),
             SettingField::render(move |_, _, _| {
                 let name = name.clone();
-                Button::new(SharedString::from(format!("settings-remove-host-{name}")))
-                    .label("Forget…")
-                    .small()
-                    .ghost()
-                    .on_click(click_runs(&remove, move |desk, window, cx| {
+                ghost_button(format!("settings-remove-host-{name}"), "Forget…").on_click(
+                    click_runs(&remove, move |desk, window, cx| {
                         let name = name.clone();
                         desk.open_modal(Modal::RemoveHost { name }, window, cx)
-                    }))
+                    }),
+                )
             }),
         )
         .description(host.endpoint.clone())

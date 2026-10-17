@@ -12,7 +12,7 @@ use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
 use super::overlays::{card, corner};
 use super::skin::Look;
-use super::view::muted;
+use super::view::{ghost_button, muted};
 use crate::connection::Connection;
 
 #[derive(Default)]
@@ -359,20 +359,14 @@ pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
                 .justify_end()
                 .gap(px(8.))
                 .child(
-                    Button::new("native-launch-refresh")
-                        .label("Refresh")
-                        .ghost()
-                        .small()
+                    ghost_button("native-launch-refresh", "Refresh")
                         .disabled(busy || desk.remote.is_some())
                         .on_click(cx.listener(|desk, _, window, cx| {
                             desk.refresh_native_integrations(window, cx)
                         })),
                 )
                 .child(
-                    Button::new("native-launch-close")
-                        .label("Close")
-                        .ghost()
-                        .small()
+                    ghost_button("native-launch-close", "Close")
                         .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
                 ),
         )

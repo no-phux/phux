@@ -22,7 +22,7 @@ use crate::connection::path::{self as paths};
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 use super::skin::{Look, Surface, Surfaced};
-use super::view::{dot, ghost_icon, muted};
+use super::view::{dot, ghost_button, ghost_icon, muted};
 use crate::settings::theme::Palette;
 
 mod goto_facts;
@@ -1761,15 +1761,11 @@ fn notifications_panel(
                         .child("Notifications"),
                 )
                 .when(!empty, |header| {
-                    header.child(
-                        Button::new("notifications-clear")
-                            .label("Clear all")
-                            .ghost()
-                            .small()
-                            .on_click(cx.listener(|desk, _, window, cx| {
-                                desk.execute("clear-notifications", window, cx)
-                            })),
-                    )
+                    header.child(ghost_button("notifications-clear", "Clear all").on_click(
+                        cx.listener(|desk, _, window, cx| {
+                            desk.execute("clear-notifications", window, cx)
+                        }),
+                    ))
                 }),
         )
         .child(if empty {
