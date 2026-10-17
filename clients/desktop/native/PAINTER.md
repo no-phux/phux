@@ -153,7 +153,16 @@ Four JSON lines report 128 cached redraws, one-row updates, sustained
 full-width scrolling, and wheel steps of three eighths of a row back through
 that history, dispatched as real wheel events. Four more (`wide_*`) repeat
 them on a 200×60 grid of faint, bold and coloured prose with box drawing,
-with whole-screen rewrites in place of one-row updates. `runtime.owner_turns`
+with whole-screen rewrites in place of one-row updates. Four `window_*` phases
+draw the whole desk window instead (titlebar, sidebar with five sessions and
+fourteen agent rows, tab strip, status bar, and one 120x40 terminal pane;
+`tests/support/window_perf.rs`). The window dials an embedded runtime and the
+benchmark plays the server. `window_idle` forces a redraw with nothing changed,
+`window_agents` changes every agent's state each tick, `window_hover` moves the
+pointer across sidebar rows and the tab strip, and `window_stream` scrolls the
+terminal pane with the chrome present. Their `tick_us` covers the tick's change plus
+the whole GPUI `Window::draw`; `scene.terminal_renders` shows whether the terminal view
+re-rendered. `runtime.owner_turns`
 counts blocking engine owner requests. `tick_us` covers the in-process VT feed (for changed
 frames) plus the draw; `stages` separate acquisition, scene preparation,
 painting and presentation handoff. `scene` counts reused/patched scenes and
@@ -168,8 +177,9 @@ closed on a missing or unbudgeted phase.
 
 The default test profile is quick for iteration; use
 `just desktop-perf-headless release` for comparable optimized runs. Compare
-back-to-back runs on the same machine without concurrent builds. This measures
-the terminal view, not the desk's chrome, input-to-pixel latency, compositor
+back-to-back runs on the same machine without concurrent builds. The terminal phases
+measure the terminal view only, and the `window_*` phases add the chrome's
+layout and paint. None measures input-to-pixel latency, compositor
 presentation or production thread contention. Use `perf-bench.ts` with a
 visible desktop for those; it refuses to report a locked-display run that
 never drew a frame. The hosted packaged-app smoke remains the visual release

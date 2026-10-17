@@ -232,7 +232,6 @@ impl Listener for ActivityListener {
 /// has no server; `Runtime::connect` would still spawn the driver, and
 /// `ActivityListener` would wake GPUI's test scheduler from that thread.
 fn open_client(target: Target, control: ControlOptions) -> anyhow::Result<Client> {
-    #[cfg(test)]
     if deterministic_dial::armed() {
         return Ok(Runtime::embedded(control));
     }
@@ -246,7 +245,6 @@ fn open_client(target: Target, control: ControlOptions) -> anyhow::Result<Client
 }
 
 fn remote_target(host: &str) -> anyhow::Result<Target> {
-    #[cfg(test)]
     if deterministic_dial::armed() {
         return Ok(Target::uds(PathBuf::from(
             "/deterministic-desktop-remote.sock",
@@ -1251,12 +1249,13 @@ fn own_spawn(event: &Event) -> Option<&ResourceId> {
 /// Keeps [`open_client`] on [`Runtime::embedded`] for the current thread.
 ///
 /// Dropping the guard restores [`Runtime::connect`]. Unit tests run on a
-/// thread pool, so the flag is thread-local and cleared on unwind.
-#[cfg(test)]
+/// thread pool, so the flag is thread-local and cleared on unwind. The
+/// headless window benchmark (`tests/pixels.rs`) arms it too and scripts the
+/// server side by feeding frames to the window's embedded client.
+#[doc(hidden)]
 #[must_use = "dropping the guard starts the runtime driver again"]
-pub(crate) struct DeterministicDial;
+pub struct DeterministicDial;
 
-#[cfg(test)]
 mod deterministic_dial {
     use std::cell::Cell;
 
@@ -1267,7 +1266,8 @@ mod deterministic_dial {
     }
 
     impl DeterministicDial {
-        pub(crate) fn arm() -> Self {
+        /// Route this thread's dials to [`Runtime::embedded`] until dropped.
+        pub fn arm() -> Self {
             ARMED.with(|armed| armed.set(true));
             Self
         }
