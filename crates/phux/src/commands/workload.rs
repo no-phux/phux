@@ -81,9 +81,11 @@ pub(crate) enum WorkloadAction {
         file: Option<PathBuf>,
 
         /// Scope ceiling as `<verb>[,<verb>...]@<selector>`, where a verb is
-        /// inventory, observe, create, bind, input, signal, or `*`, and a
-        /// selector is global, host, host:NAME, group:ID, terminal:ID, or
-        /// terminal:HOST/ID. Repeatable; at least one is required.
+        /// inventory, observe, create, bind, input, signal, organize,
+        /// terminate, or `*`, and a selector is global, host, host:NAME,
+        /// session:KEY, or resource:KEY (a record's full 26-character key;
+        /// session and Terminal ids restart with the server, so group:ID and
+        /// terminal:ID are refused). Repeatable; at least one is required.
         #[usage(long, value_name = "VERBS@SELECTOR")]
         scope: Vec<String>,
 
@@ -631,7 +633,7 @@ fn cli_error(error: &WorkloadError) -> CliError {
             "pass --scope VERBS@SELECTOR, for example --scope observe,input@host"
         }
         WorkloadError::UnstableSelector { .. } => {
-            "persist a global, host, or host:<name> selector; session and Terminal ids restart with the server"
+            "name a session or Terminal by its record key (session:<key> or resource:<key>); session and Terminal ids restart with the server"
         }
         WorkloadError::Insecure { .. } | WorkloadError::PartialPair { .. } => {
             "workload authority files are owner-only regular files in a directory only their owner can write"

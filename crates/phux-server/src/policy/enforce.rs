@@ -7,7 +7,7 @@
 //! here is a session; the opaque `GroupId(1)` resolves to the local host.
 
 use phux_core::ids::ResourceId as CoreResourceId;
-use phux_protocol::ids::{ResourceId as WireResourceId, SessionId as WireSessionId};
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::kinds::{
     Classification, Exemption, Subject, Verb, Verbs, classify_command, classify_frame,
 };
@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 };
 
 use super::hold::Admission;
-use super::{Authority, ConnectionGrant, POLICY_TARGET};
+use super::{Authority, ConnectionGrant, GroupPoint, POLICY_TARGET};
 use crate::state::{ClientId, ServerState};
 
 const OBSERVE: Verbs = Verbs::of(&[Verb::Observe]);
@@ -366,8 +366,8 @@ pub(super) enum Point {
     /// `GroupId`, an unowned spawn's session); only Global and Host contain
     /// it.
     LocalHost,
-    /// A local Group (session), by wire session id.
-    Group(u32),
+    /// A local Group (session), by wire session id and record key.
+    Group(GroupPoint),
     /// A satellite host.
     SatelliteHost(String),
     /// A Terminal, or a child resource admitted through its parent.
@@ -377,9 +377,12 @@ pub(super) enum Point {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TerminalPoint {
     pub(super) at: Located,
-    /// The wire session id of the window holding it; `None` when it is
-    /// absent, a satellite Terminal, or a child with no window.
-    pub(super) group: Option<u32>,
+    /// The session holding it; `None` when it is absent, a satellite
+    /// Terminal, or a child with no window.
+    pub(super) group: Option<GroupPoint>,
+    /// Its resource record's persistent key, which a `resource:` selector
+    /// names; `None` for a satellite Terminal or one with no record.
+    pub(super) key: Option<phux_protocol::ids::ResourceKey>,
     /// A child resource's parent Terminal: the child matches whatever its
     /// parent matches (workload-auth §6, L1 §1.2).
     pub(super) parent: Option<Box<Self>>,
@@ -401,6 +404,7 @@ impl TerminalPoint {
             WireResourceId::Satellite { host, id } => Self {
                 at: Located::Satellite(host.as_str().to_owned(), *id),
                 group: None,
+                key: None,
                 parent: None,
             },
         }
@@ -415,7 +419,7 @@ impl TerminalPoint {
     }
 
     /// The local Group holding it, if it is a local Terminal in a window.
-    const fn local_group(&self) -> Option<u32> {
+    const fn local_group(&self) -> Option<GroupPoint> {
         match self.at {
             Located::Local(_) | Located::Unnamed => self.group,
             Located::Satellite(..) => None,
@@ -427,6 +431,7 @@ fn local_terminal(s: &ServerState, id: u32, core: Option<CoreResourceId>) -> Ter
     TerminalPoint {
         at: Located::Local(id),
         group: core.and_then(|core| group_of(s, core)),
+        key: core.and_then(|core| resource_key_of(s, core)),
         parent: core
             .and_then(|core| s.resource_parent(core))
             .map(|parent| Box::new(local_point(s, parent))),
@@ -443,16 +448,27 @@ pub(super) fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoin
     TerminalPoint {
         at,
         group: group_of(s, core),
+        key: resource_key_of(s, core),
         parent: None,
     }
 }
 
-/// The wire session id of the session `core` is a member of now, so a
-/// membership move changes what a `group:` selector reaches in the same
-/// commit.
-pub(super) fn group_of(s: &ServerState, core: CoreResourceId) -> Option<u32> {
-    let session = s.registry().session_of(core)?;
-    s.idspace.session_wire(session).map(WireSessionId::get)
+/// The session `core` is a member of now, so a membership move changes what
+/// a `group:` or `session:` selector reaches in the same commit.
+pub(super) fn group_of(s: &ServerState, core: CoreResourceId) -> Option<GroupPoint> {
+    s.registry()
+        .session_of(core)
+        .and_then(|session| GroupPoint::of(s, session))
+}
+
+/// The persistent key of the resource record behind `core`.
+pub(super) fn resource_key_of(
+    s: &ServerState,
+    core: CoreResourceId,
+) -> Option<phux_protocol::ids::ResourceKey> {
+    s.registry()
+        .resource_key(core)
+        .and_then(crate::org_wire::resource_key)
 }
 
 fn terminal_subject(s: &ServerState, wire: &WireResourceId) -> Point {
@@ -505,7 +521,7 @@ fn place_in(selector: &Selector, point: &Point) -> bool {
         | (_, Point::Anywhere)
         | (Selector::HostLocal, Point::LocalHost | Point::Group(_)) => true,
         (Selector::HostSatellite(host), Point::SatelliteHost(name)) => host.as_str() == name,
-        (Selector::Group(id), Point::Group(group)) => id == group,
+        (Selector::Group(_) | Selector::Session(_), Point::Group(group)) => group.is_in(selector),
         _ => false,
     }
 }
@@ -514,8 +530,13 @@ fn terminal_in(selector: &Selector, terminal: &TerminalPoint) -> bool {
     match (selector, &terminal.at) {
         (Selector::Global, _) | (Selector::HostLocal, Located::Local(_) | Located::Unnamed) => true,
         (Selector::HostSatellite(host), Located::Satellite(name, _)) => host.as_str() == name,
-        (Selector::Group(id), Located::Local(_) | Located::Unnamed) => terminal.group == Some(*id),
+        (Selector::Group(_) | Selector::Session(_), Located::Local(_) | Located::Unnamed) => {
+            terminal.group.is_some_and(|group| group.is_in(selector))
+        }
         (Selector::TerminalLocal(id), Located::Local(at)) => id == at,
+        (Selector::Resource(key), Located::Local(_) | Located::Unnamed) => {
+            terminal.key == Some(*key)
+        }
         (Selector::TerminalSatellite(host, id), Located::Satellite(name, at)) => {
             host.as_str() == name && id == at
         }
@@ -823,8 +844,8 @@ fn last_session(s: &ServerState) -> Option<phux_core::ids::SessionId> {
 
 fn session_point(s: &ServerState, session: Option<phux_core::ids::SessionId>) -> Point {
     session
-        .and_then(|session| s.idspace.session_wire(session))
-        .map_or(Point::LocalHost, |wire| Point::Group(wire.get()))
+        .and_then(|session| GroupPoint::of(s, session))
+        .map_or(Point::LocalHost, Point::Group)
 }
 
 fn spawn_satellite(request: Request<'_>) -> Option<String> {
@@ -872,6 +893,7 @@ fn satellite_agent_spawn(request: Request<'_>) -> Option<Vec<Need>> {
     let parent = TerminalPoint {
         at: Located::Satellite(parent_host.as_str().to_owned(), *id),
         group: None,
+        key: None,
         parent: None,
     };
     Some(vec![

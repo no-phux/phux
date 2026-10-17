@@ -302,11 +302,11 @@ impl ConnectionGrant {
     }
 
     /// Whether this grant admits `verb` on every resource of the local
-    /// session whose wire id is `group`: the owner always does; a scoped
-    /// grant needs an un-held clause carrying `verb` on a selector that
-    /// contains the whole session (Global, the local host, or that Group).
+    /// session `group`: the owner always does; a scoped grant needs an
+    /// un-held clause carrying `verb` on a selector that contains the whole
+    /// session (Global, the local host, or that Group by id or key).
     #[must_use]
-    pub fn admits_session(&self, verb: Verb, group: u32) -> bool {
+    pub fn admits_session(&self, verb: Verb, group: GroupPoint) -> bool {
         if self.revoked.is_some() {
             return false;
         }
@@ -382,11 +382,75 @@ impl ConnectionGrant {
 pub const WORKLOAD_PRINCIPAL: &str = "workload";
 
 /// Whether `selector` covers every resource of the session `group`.
-const fn contains_session(selector: &Selector, group: u32) -> bool {
-    match selector {
-        Selector::Global | Selector::HostLocal => true,
-        Selector::Group(id) => *id == group,
-        _ => false,
+fn contains_session(selector: &Selector, group: GroupPoint) -> bool {
+    matches!(selector, Selector::Global | Selector::HostLocal) || group.is_in(selector)
+}
+
+/// The persistent key of `session`'s record, as the wire spells it.
+fn session_key(
+    s: &crate::state::ServerState,
+    session: phux_core::ids::SessionId,
+) -> Option<phux_protocol::ids::SessionKey> {
+    s.registry()
+        .session_key(session)
+        .and_then(crate::org_wire::session_key)
+}
+
+/// A local Group (session) as a scope subject: its wire session id, which a
+/// `group:` selector names, and its record's persistent key, which a
+/// `session:` selector names (workload-auth §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupPoint {
+    /// The wire session id.
+    pub id: u32,
+    /// The session record's key; `None` only for a session with no record.
+    pub key: Option<phux_protocol::ids::SessionKey>,
+}
+
+impl GroupPoint {
+    /// The session `session` as it stands in `s`; `None` until a wire id
+    /// names it.
+    #[must_use]
+    pub fn of(s: &crate::state::ServerState, session: phux_core::ids::SessionId) -> Option<Self> {
+        let id = s.idspace.session_wire(session)?.get();
+        Some(Self::with_id(s, session, id))
+    }
+
+    /// The session `session` under the wire id `id` already interned for it.
+    #[must_use]
+    pub fn with_id(
+        s: &crate::state::ServerState,
+        session: phux_core::ids::SessionId,
+        id: u32,
+    ) -> Self {
+        Self {
+            id,
+            key: session_key(s, session),
+        }
+    }
+
+    /// The session a snapshot names by wire id; its key is absent when no
+    /// live session holds that id.
+    #[must_use]
+    pub fn of_wire(s: &crate::state::ServerState, id: phux_protocol::ids::SessionId) -> Self {
+        Self {
+            id: id.get(),
+            key: s
+                .idspace
+                .resolve_session(id)
+                .and_then(|session| session_key(s, session)),
+        }
+    }
+
+    /// Whether the `group:` or `session:` selector `selector` names this
+    /// session; `false` for every other selector.
+    #[must_use]
+    pub fn is_in(self, selector: &Selector) -> bool {
+        match selector {
+            Selector::Group(id) => *id == self.id,
+            Selector::Session(key) => self.key == Some(*key),
+            _ => false,
+        }
     }
 }
 

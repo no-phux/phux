@@ -58,6 +58,26 @@ fn a_group_never_statically_covers_a_terminal() {
     assert!(!covers(&Selector::HostLocal, &Selector::Global));
 }
 
+#[test]
+fn the_local_host_covers_keyed_selectors_and_a_session_never_covers_a_resource() {
+    let session = Selector::Session(phux_protocol::ids::SessionKey::new([1; 16]).unwrap());
+    let resource = Selector::Resource(phux_protocol::ids::ResourceKey::new([2; 16]).unwrap());
+    assert!(covers(&Selector::HostLocal, &session));
+    assert!(covers(&Selector::HostLocal, &resource));
+    assert!(covers(&session, &session));
+    assert!(!covers(&session, &resource));
+    assert!(!covers(
+        &Selector::HostSatellite(phux_protocol::scope::Host::new("sat").unwrap()),
+        &resource
+    ));
+    // A credential narrowed from the host to one record revokes its
+    // host-wide connections; the record's own grant survives a reload.
+    let keyed = format!("observe@{session}");
+    assert!(still_contained(&[&keyed], &["observe@host"]));
+    assert!(!still_contained(&["observe@host"], &[&keyed]));
+    assert!(still_contained(&[&keyed], &[&keyed]));
+}
+
 /// §7 step 1: a revoked grant admits nothing, whatever its shape. The
 /// owner-shaped grant a bearer holds in the transitional posture is the case
 /// the owner shortcut would otherwise let through.

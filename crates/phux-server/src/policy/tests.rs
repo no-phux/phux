@@ -30,7 +30,7 @@ use phux_protocol::kinds::{
     COMMAND_RULES, Exemption, FRAME_RULES, Requirement, Verb, Verbs, frame_rule,
 };
 use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::scope::TerminalScopeSet;
+use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, InputMode, KillPrecondition,
     ListenerTransport, ReportedAgentState, SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY, Scope,
@@ -2155,9 +2155,33 @@ fn persisted_ceilings_refuse_ids_that_restart_with_the_server() {
             "{scope}"
         );
     }
-    for scope in ["*@global", "observe@host", "observe@host:devbox"] {
-        assert!(validate_scopes(&[scope.to_owned()]).is_ok(), "{scope}");
+    let session = phux_protocol::ids::SessionKey::new([0x11; 16]).unwrap();
+    let resource = phux_protocol::ids::ResourceKey::new([0x22; 16]).unwrap();
+    for scope in [
+        "*@global".to_owned(),
+        "observe@host".to_owned(),
+        "observe@host:devbox".to_owned(),
+        format!("observe,input@session:{session}"),
+        format!("*@resource:{resource}"),
+    ] {
+        assert!(
+            validate_scopes(std::slice::from_ref(&scope)).is_ok(),
+            "{scope}"
+        );
     }
+    // A record key outlives the process, so a registry may hold one.
+    let key = [8_u8; 4];
+    let keyed = serde_json::json!({
+        "version": 1,
+        "credentials": [{
+            "id": crate::workload::credential_id(&key),
+            "public_key": hex::encode(key),
+            "scopes": [format!("observe@session:{session}"), format!("input@resource:{resource}")],
+            "expires_at": null,
+            "revoked_at": null,
+        }],
+    });
+    assert!(WorkloadRegistry::from_bytes(keyed.to_string().as_bytes()).is_ok());
     // A registry file holding one is malformed: the whole snapshot is.
     let key = [7_u8; 4];
     let file = serde_json::json!({
@@ -2462,3 +2486,155 @@ fn a_server_wide_subscription_delivers_only_observable_events() {
 }
 
 mod delegation;
+
+// -----------------------------------------------------------------------------
+// Keyed selectors (§5.1): record keys that outlive the server process.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn session_key_ceiling_follows_membership_like_a_group_ceiling() {
+    let mut world = world();
+    let grant = scoped(&[&format!("observe,bind@session:{}", world.org.session)]);
+    let screen = |world: &World| get_screen(world.alpha.clone());
+    assert!(admits_command(&world, &grant, screen(&world)));
+    assert!(!admits_command(
+        &world,
+        &grant,
+        get_screen(world.beta.clone())
+    ));
+    // The session's own operations, and the session-wide helper.
+    assert!(admits(
+        &world,
+        &grant,
+        &attach(AttachTarget::ByName("alpha".to_owned()))
+    ));
+    assert!(!admits(
+        &world,
+        &grant,
+        &attach(AttachTarget::ByName("beta".to_owned()))
+    ));
+    let alpha = super::GroupPoint::of(&world.state, world.alpha_session).unwrap();
+    let beta = super::GroupPoint::of(&world.state, world.beta_session).unwrap();
+    assert!(grant.admits_session(Verb::Observe, alpha));
+    assert!(!grant.admits_session(Verb::Observe, beta));
+    assert!(!grant.admits_session(Verb::Input, alpha));
+
+    // Membership is live: moving the Terminal out of the session ends the
+    // clause's reach over it, and moving it back restores it.
+    world
+        .state
+        .move_resource_to(
+            world.alpha_core,
+            world.beta_session,
+            &phux_core::Actor::owner(),
+        )
+        .unwrap();
+    assert!(!admits_command(&world, &grant, screen(&world)));
+    world
+        .state
+        .move_resource_to(
+            world.alpha_core,
+            world.alpha_session,
+            &phux_core::Actor::owner(),
+        )
+        .unwrap();
+    assert!(admits_command(&world, &grant, screen(&world)));
+}
+
+#[test]
+fn resource_key_ceiling_reaches_exactly_that_record() {
+    let mut world = world();
+    let grant = scoped(&[&format!("*@resource:{}", world.org.resource)]);
+    assert!(admits_command(
+        &world,
+        &grant,
+        get_screen(world.alpha.clone())
+    ));
+    assert!(!admits_command(
+        &world,
+        &grant,
+        get_screen(world.beta.clone())
+    ));
+    let same_id_elsewhere = WireResourceId::satellite("devbox", local_id(&world.alpha));
+    assert!(!admits_command(
+        &world,
+        &grant,
+        get_screen(same_id_elsewhere)
+    ));
+    // A resource grant never reaches the session that holds it.
+    assert!(!admits(
+        &world,
+        &grant,
+        &attach(AttachTarget::ByName("alpha".to_owned()))
+    ));
+    // It follows the record, not its session: still matched after a move.
+    world
+        .state
+        .move_resource_to(
+            world.alpha_core,
+            world.beta_session,
+            &phux_core::Actor::owner(),
+        )
+        .unwrap();
+    assert!(admits_command(
+        &world,
+        &grant,
+        get_screen(world.alpha.clone())
+    ));
+    // A key no record holds names nothing.
+    let stranger = phux_protocol::ids::ResourceKey::new([0xEE; 16]).unwrap();
+    let nobody = scoped(&[&format!("*@resource:{stranger}")]);
+    assert!(!admits_command(
+        &world,
+        &nobody,
+        get_screen(world.alpha.clone())
+    ));
+}
+
+#[test]
+fn keyed_ceilings_filter_snapshots_and_events_like_their_id_spellings() {
+    let mut world = world();
+    let (alpha, beta) = (world.alpha.clone(), world.beta.clone());
+    let g = world.alpha_group;
+    let (session_key, resource_key) = (world.org.session, world.org.resource);
+
+    let session = filtered(
+        &mut world,
+        &[&format!("observe@session:{session_key}")],
+        Verb::Observe,
+    );
+    assert_eq!(resource_ids(&session), vec![alpha.clone()]);
+    assert_eq!(session.sessions.len(), 1);
+    assert_eq!(session.sessions[0].id.get(), g);
+
+    let resource = filtered(
+        &mut world,
+        &[&format!("observe@resource:{resource_key}")],
+        Verb::Observe,
+    );
+    assert_eq!(resource_ids(&resource), vec![alpha.clone()]);
+    assert!(
+        resource.sessions.is_empty(),
+        "a resource grant holds no Group"
+    );
+
+    // An event is stamped with the keys when it is recorded, and judged
+    // without the state lock against them.
+    let observe = |scopes: &[&str], terminal: &WireResourceId| {
+        let effective =
+            EffectiveScopeSet::unattenuated(&TerminalScopeSet::parse_all(scopes).unwrap()).unwrap();
+        let subject = super::filter::EventSubject::at(&world.state, Some(terminal), None);
+        super::filter::observes_event(&effective, Some(terminal), None, &subject)
+    };
+    for scope in [
+        format!("observe@session:{}", world.org.session),
+        format!("observe@resource:{}", world.org.resource),
+    ] {
+        assert!(observe(&[&scope], &alpha), "{scope}");
+        assert!(!observe(&[&scope], &beta), "{scope}");
+    }
+    assert!(!observe(
+        &[&format!("observe@session:{}", world.org.other_session)],
+        &alpha
+    ));
+}

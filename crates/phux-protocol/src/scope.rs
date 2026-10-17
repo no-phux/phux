@@ -24,6 +24,7 @@
 
 use std::fmt;
 
+use crate::ids::{ResourceKey, SessionKey};
 pub use crate::kinds::{Verb, Verbs};
 
 /// The scope schema this build writes (workload-auth §5).
@@ -90,6 +91,8 @@ const TAG_GLOBAL: u8 = 0x00;
 const TAG_HOST: u8 = 0x01;
 const TAG_GROUP: u8 = 0x02;
 const TAG_TERMINAL: u8 = 0x03;
+const TAG_SESSION: u8 = 0x04;
+const TAG_RESOURCE: u8 = 0x05;
 const SUB_LOCAL: u8 = 0x00;
 const SUB_SATELLITE: u8 = 0x01;
 
@@ -131,7 +134,7 @@ pub enum ScopeError {
     /// A selector's declared length exceeds its canonical encoding.
     #[error("scope selector length is not minimal")]
     NonMinimalSelector,
-    /// A selector tag outside `0x00..=0x03`.
+    /// A selector tag outside `0x00..=0x05`.
     #[error("scope selector tag is unknown")]
     UnknownSelectorTag,
     /// A Host or Terminal subtype outside `LOCAL` / `SATELLITE`.
@@ -141,6 +144,9 @@ pub enum ScopeError {
     /// control character.
     #[error("scope host must be 1..=255 UTF-8 bytes with no NUL or control character")]
     InvalidHost,
+    /// A session or resource key that is all zero.
+    #[error("scope key must be 16 bytes, not all zero")]
+    InvalidKey,
     /// A grant or clause with no verb.
     #[error("scope verbs must be nonzero")]
     ZeroVerbs,
@@ -186,7 +192,7 @@ pub enum ScopeGrammarError {
     RedundantVerb,
     /// A selector outside the closed set.
     #[error(
-        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>"
+        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>|session:<key>|resource:<key>"
     )]
     UnknownSelector,
     /// A host that is empty, too long, or carries a control character.
@@ -195,6 +201,9 @@ pub enum ScopeGrammarError {
     /// An id that is not a canonical unsigned 32-bit decimal.
     #[error("a scope id must be a canonical unsigned 32-bit decimal")]
     InvalidId,
+    /// A key that is not 26 lowercase base32 digits naming a nonzero key.
+    #[error("a scope key must be 26 lowercase base32 digits naming a nonzero 16-byte key")]
+    InvalidKey,
 }
 
 // -----------------------------------------------------------------------------
@@ -413,6 +422,12 @@ pub enum Selector {
     TerminalLocal(u32),
     /// Exactly one satellite Terminal.
     TerminalSatellite(Host, u32),
+    /// One local session record, by its persistent key, and its current
+    /// Terminal members: a Group named so it survives a server restart.
+    Session(SessionKey),
+    /// One local resource record, by its persistent key: whichever
+    /// activation of it is current.
+    Resource(ResourceKey),
 }
 
 impl Selector {
@@ -446,6 +461,14 @@ impl Selector {
                 write_host(out, host);
                 out.extend_from_slice(&id.to_be_bytes());
             }
+            Self::Session(key) => {
+                out.push(TAG_SESSION);
+                out.extend_from_slice(key.as_bytes());
+            }
+            Self::Resource(key) => {
+                out.push(TAG_RESOURCE);
+                out.extend_from_slice(key.as_bytes());
+            }
         }
     }
 
@@ -463,6 +486,8 @@ impl Selector {
             TAG_HOST => decode_host_selector(&mut reader)?,
             TAG_GROUP => Self::Group(reader.u32()?),
             TAG_TERMINAL => decode_terminal_selector(&mut reader)?,
+            TAG_SESSION => Self::Session(reader.key(SessionKey::new)?),
+            TAG_RESOURCE => Self::Resource(reader.key(ResourceKey::new)?),
             _ => return Err(ScopeError::UnknownSelectorTag),
         };
         if !reader.is_empty() {
@@ -472,7 +497,8 @@ impl Selector {
     }
 
     /// Parse the registry spelling: `global`, `host`, `host:<name>`,
-    /// `group:<u32>`, `terminal:<u32>`, or `terminal:<host>/<u32>`.
+    /// `group:<u32>`, `terminal:<u32>`, `terminal:<host>/<u32>`,
+    /// `session:<key>`, or `resource:<key>`.
     ///
     /// # Errors
     ///
@@ -487,13 +513,15 @@ impl Selector {
             Some(("host", name)) => parse_host(name).map(Self::HostSatellite),
             Some(("group", id)) => parse_id(id).map(Self::Group),
             Some(("terminal", target)) => parse_terminal(target),
+            Some(("session", key)) => parse_key(key, SessionKey::parse).map(Self::Session),
+            Some(("resource", key)) => parse_key(key, ResourceKey::parse).map(Self::Resource),
             _ => Err(ScopeGrammarError::UnknownSelector),
         }
     }
 
     /// A short, identity-free name for the selector's kind (`global`,
-    /// `host`, `group`, `terminal`), for diagnostics that must not name a
-    /// subject.
+    /// `host`, `group`, `terminal`, `session`, `resource`), for diagnostics
+    /// that must not name a subject.
     #[must_use]
     pub const fn kind_name(&self) -> &'static str {
         match self {
@@ -501,7 +529,20 @@ impl Selector {
             Self::HostLocal | Self::HostSatellite(_) => "host",
             Self::Group(_) => "group",
             Self::TerminalLocal(_) | Self::TerminalSatellite(..) => "terminal",
+            Self::Session(_) => "session",
+            Self::Resource(_) => "resource",
         }
+    }
+
+    /// Whether the selector names a resource by an id that restarts with the
+    /// server process (`group:`, `terminal:`), so a persisted record cannot
+    /// hold it. Keyed selectors name records that outlive the process.
+    #[must_use]
+    pub const fn names_process_id(&self) -> bool {
+        matches!(
+            self,
+            Self::Group(_) | Self::TerminalLocal(_) | Self::TerminalSatellite(..)
+        )
     }
 
     /// Whether some subject could lie in both selectors under some topology.
@@ -519,11 +560,24 @@ impl Selector {
 }
 
 /// Whether `outer` can contain a subject `inner` also contains, for two
-/// distinct, non-Global selectors.
+/// distinct, non-Global selectors. A key and a wire id may name the same
+/// session or Terminal, so a keyed selector overlaps every local one of the
+/// other spelling.
 fn overlaps_one_way(outer: &Selector, inner: &Selector) -> bool {
     match (outer, inner) {
-        (Selector::HostLocal, Selector::Group(_) | Selector::TerminalLocal(_))
-        | (Selector::Group(_), Selector::TerminalLocal(_)) => true,
+        (
+            Selector::HostLocal,
+            Selector::Group(_)
+            | Selector::TerminalLocal(_)
+            | Selector::Session(_)
+            | Selector::Resource(_),
+        )
+        | (
+            Selector::Group(_) | Selector::Session(_),
+            Selector::TerminalLocal(_) | Selector::Resource(_),
+        )
+        | (Selector::Session(_), Selector::Group(_))
+        | (Selector::Resource(_), Selector::TerminalLocal(_)) => true,
         (Selector::HostSatellite(host), Selector::TerminalSatellite(terminal_host, _)) => {
             host == terminal_host
         }
@@ -540,6 +594,8 @@ impl fmt::Display for Selector {
             Self::Group(id) => write!(f, "group:{id}"),
             Self::TerminalLocal(id) => write!(f, "terminal:{id}"),
             Self::TerminalSatellite(host, id) => write!(f, "terminal:{}/{id}", host.as_str()),
+            Self::Session(key) => write!(f, "session:{key}"),
+            Self::Resource(key) => write!(f, "resource:{key}"),
         }
     }
 }
@@ -585,6 +641,17 @@ fn parse_terminal(target: &str) -> Result<Selector, ScopeGrammarError> {
 
 fn parse_host(name: &str) -> Result<Host, ScopeGrammarError> {
     Host::new(name).map_err(|_| ScopeGrammarError::InvalidHost)
+}
+
+/// One spelling per value: a key's full lowercase text form (L1 §5.7.1),
+/// never a shortened prefix or the uppercase a key reader also accepts.
+fn parse_key<K: fmt::Display>(
+    text: &str,
+    parse: impl FnOnce(&str) -> Option<K>,
+) -> Result<K, ScopeGrammarError> {
+    parse(text)
+        .filter(|key| key.to_string() == text)
+        .ok_or(ScopeGrammarError::InvalidKey)
 }
 
 /// One spelling per value: digits only, no sign, no leading zero.
@@ -1126,6 +1193,13 @@ impl<'a> Reader<'a> {
     fn selector_bytes(&mut self) -> Result<Vec<u8>, ScopeError> {
         let len = usize::from(self.u16()?);
         Ok(self.take(len)?.to_vec())
+    }
+
+    /// A 16-byte key, refused when `new` rejects it (all zero).
+    fn key<K>(&mut self, new: impl FnOnce([u8; 16]) -> Option<K>) -> Result<K, ScopeError> {
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(self.take(16)?);
+        new(bytes).ok_or(ScopeError::InvalidKey)
     }
 
     /// `V16(host)`, validated.

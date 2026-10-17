@@ -915,10 +915,7 @@ fn delegate_native_host(
         use phux_protocol::kinds::{Verb, Verbs};
         let mut verbs = Verbs::of(&[Verb::Bind]);
         if let Some(grant) = s.connection_grant(ctx.client_id) {
-            let group = s
-                .idspace
-                .session_wire(session)
-                .map(phux_protocol::ids::SessionId::get);
+            let group = crate::policy::GroupPoint::of(s, session);
             for verb in [Verb::Inventory, Verb::Observe, Verb::Input] {
                 if grant.is_owner() || group.is_some_and(|group| grant.admits_session(verb, group))
                 {

@@ -391,7 +391,13 @@ const fn verbs_cover(have: Verbs, need: Verbs) -> bool {
 fn covers(outer: &Selector, inner: &Selector) -> bool {
     match (outer, inner) {
         (Selector::Global, _)
-        | (Selector::HostLocal, Selector::Group(_) | Selector::TerminalLocal(_)) => true,
+        | (
+            Selector::HostLocal,
+            Selector::Group(_)
+            | Selector::TerminalLocal(_)
+            | Selector::Session(_)
+            | Selector::Resource(_),
+        ) => true,
         (Selector::HostSatellite(host), Selector::TerminalSatellite(terminal_host, _)) => {
             host == terminal_host
         }

@@ -23,7 +23,7 @@ pub use client::{
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
 pub use phux_protocol::scope::ScopeGrammarError;
-use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, Selector, TerminalScopeSet};
+use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, TerminalScopeSet};
 pub use reload::{BrokenRegistry, RegistryObservation, ReloadingWorkloadRegistry};
 pub use server_identity::{
     IssuedServerIdentity, Rotation, ServerPair, issue_server_identity, rotate_authority,
@@ -100,9 +100,11 @@ pub enum WorkloadError {
         reason: ScopeGrammarError,
     },
     /// A persisted scope names a session (`group:`) or Terminal
-    /// (`terminal:`) id, which restarts with the server. `index` is 1-based.
+    /// (`terminal:`) id, which restarts with the server; the keyed
+    /// `session:<key>` and `resource:<key>` name the same records durably.
+    /// `index` is 1-based.
     #[error(
-        "workload scope {index}: group: and terminal: selectors name ids that restart with the server, so a registry cannot hold them"
+        "workload scope {index}: group: and terminal: selectors name ids that restart with the server, so a registry cannot hold them; name the record with session:<key> or resource:<key>"
     )]
     UnstableSelector {
         /// Position of the scope among those supplied, counting from 1.
@@ -737,21 +739,15 @@ fn parse_ceiling(scopes: &[String]) -> Result<TerminalScopeSet, WorkloadError> {
 
 /// Refuse `group:` and `terminal:` selectors in a persisted ceiling: the ids
 /// they name restart with the server, so a registry record would come to name
-/// a different session or Terminal (workload-auth §5.1).
+/// a different session or Terminal (workload-auth §5.1). The keyed
+/// `session:` and `resource:` selectors name records that outlive it.
 fn refuse_restartable_ids(scopes: &[String]) -> Result<(), WorkloadError> {
     let restartable = |scope: &String| {
-        ScopeGrant::parse(scope).is_ok_and(|grant| names_restartable_id(&grant.selector))
+        ScopeGrant::parse(scope).is_ok_and(|grant| grant.selector.names_process_id())
     };
     scopes.iter().position(restartable).map_or(Ok(()), |index| {
         Err(WorkloadError::UnstableSelector { index: index + 1 })
     })
-}
-
-const fn names_restartable_id(selector: &Selector) -> bool {
-    matches!(
-        selector,
-        Selector::Group(_) | Selector::TerminalLocal(_) | Selector::TerminalSatellite(..)
-    )
 }
 
 /// An expiry must lie after now and within [`MAX_EXPIRY_SECONDS`].
