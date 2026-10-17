@@ -3115,3 +3115,134 @@ async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
         "the inventory refresh was requested: {sent:?}"
     );
 }
+
+/// A key press for `spec`, as the attach parser decodes it.
+fn chord_press(spec: &str) -> InputEvent {
+    let chord = phux_config::keybind::parse_chord(spec).expect("chord");
+    InputEvent::Key(KeyEvent {
+        action: KeyAction::Press,
+        key: chord.key,
+        mods: chord.modifiers,
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    })
+}
+
+/// A bootstrapped loop showing panes 1 and 2 side by side, focus on 1, plus
+/// any `extra` published slots outside the layout.
+async fn side_by_side_loop(
+    extra: &[(&ResourceId, u16, u16, &[u8])],
+) -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
+
+    let (mut state, mut client, mut server, out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
+        .expect("shipped defaults parse");
+    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    state.viewport_dims = (80, 24);
+
+    let (a, b) = (ResourceId::local(1), ResourceId::local(2));
+    let mut seeds: Vec<(&ResourceId, u16, u16, &[u8])> = vec![
+        (&a, 30, 20, b"left pane\r\n"),
+        (&b, 30, 20, b"right pane\r\n"),
+    ];
+    seeds.extend_from_slice(extra);
+    let (kernel, _effects, panes) = crate::attach::pane_state::published_test_state(&seeds);
+    state.mirror.engine_kernel = kernel;
+    state.mirror.panes = panes;
+    let tree = split_at(
+        &LayoutNode::Leaf(a.clone()),
+        &a,
+        &b,
+        SplitDir::Horizontal,
+        0.5,
+    )
+    .expect("split");
+    let mut workspace = ArrangementDoc::single(a.clone());
+    workspace.groups[0].state = LayoutState {
+        tree: Some(tree),
+        focus: Some(a.clone()),
+    };
+    state.mirror.workspace = workspace;
+    state.mirror.focused_resource = Some(a);
+    state.layout_read_complete = true;
+    drop(frames_sent(&mut client, &mut server).await);
+    (state, client, server, out)
+}
+
+/// Closing the floating overlay (ADR-0147) with `kill-pane` leaves every tile
+/// where it was, yet its box covered them: the view must clear and recompose,
+/// or the box frame and the covered cells stay on screen.
+#[tokio::test(flavor = "current_thread")]
+async fn closing_the_floating_overlay_clears_its_box() {
+    let float = ResourceId::local(3);
+    let (mut state, mut client, server, mut out) =
+        side_by_side_loop(&[(&float, 60, 18, b"overlay pane\r\n")]).await;
+    state
+        .mirror
+        .panes
+        .get_mut(&float)
+        .expect("floating slot")
+        .floating = Some("Float Box".into());
+
+    let sidebar = state.sidebar();
+    out.clear();
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![chord_press("C-a"), chord_press("x")],
+        )
+        .await
+        .expect("dispatch");
+
+    assert!(
+        !state.mirror.panes.contains_key(&float),
+        "kill-pane closed the overlay"
+    );
+    assert!(
+        out.windows(4).any(|s| s == b"\x1b[2J"),
+        "closing the overlay must clear its box: {:?}",
+        String::from_utf8_lossy(&out)
+    );
+    drop(client);
+    drop(server);
+}
+
+/// Dismissing the command palette leaves the tiles unchanged, but the modal
+/// covered pane cells: the dismissal must recompose the view, not only move
+/// the chrome, or the palette's frame and rows stay on screen.
+#[tokio::test(flavor = "current_thread")]
+async fn dismissing_the_palette_clears_its_box() {
+    let (mut state, mut client, server, mut out) = side_by_side_loop(&[]).await;
+    let sidebar = state.sidebar();
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![chord_press("C-a"), chord_press("?")],
+        )
+        .await
+        .expect("open palette");
+    assert!(state.overlays.is_active(), "the palette is open");
+
+    out.clear();
+    state
+        .dispatch_batch(&mut client, &mut out, sidebar, vec![chord_press("Escape")])
+        .await
+        .expect("dismiss palette");
+
+    assert!(!state.overlays.is_active(), "Escape dismissed the palette");
+    assert!(
+        out.windows(4).any(|s| s == b"\x1b[2J"),
+        "dismissing the palette must clear its box: {:?}",
+        String::from_utf8_lossy(&out)
+    );
+    drop(client);
+    drop(server);
+}

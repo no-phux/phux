@@ -14,6 +14,13 @@ struct PriorView {
     sidebar: Option<SidebarReservation>,
     active_window: usize,
     rects: HashMap<ResourceId, crate::layout::Rect>,
+    /// Whether the floating overlay (ADR-0147) was open: it covers panes
+    /// without changing their tiles, so opening or closing it is invisible
+    /// to the rect diff yet leaves its box on screen unless the view clears.
+    floating: bool,
+    /// Whether a modal overlay (palette, picker, prompt) was up. Like the
+    /// floating box it scribbles over pane cells the rect diff cannot see.
+    overlay: bool,
 }
 
 /// How much of the view a batch that reported `layout_changed` must redraw,
@@ -133,6 +140,8 @@ impl super::SessionLoop {
                 self.content(sidebar),
                 self.viewport_dims,
             ),
+            floating: crate::attach::floating::floating_pane(&self.mirror.panes).is_some(),
+            overlay: self.overlays.is_active(),
         };
         // Batch this read's wire writes into one; released before parking.
         conn.cork();
@@ -189,6 +198,13 @@ impl super::SessionLoop {
         prior: &PriorView,
         sidebar: Option<SidebarReservation>,
     ) -> RepaintLevel {
+        // A floating box came or went, or a modal was dismissed, over
+        // unchanged tiles: only a full clear-and-recompose removes the box and
+        // restores the pane cells it covered.
+        let floating = crate::attach::floating::floating_pane(&self.mirror.panes).is_some();
+        if prior.floating != floating || (prior.overlay && !self.overlays.is_active()) {
+            return RepaintLevel::Full;
+        }
         let after = view_rects(
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),
