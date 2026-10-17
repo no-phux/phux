@@ -27,8 +27,8 @@ JS (xterm.js-style), phux runs **ghostty's actual engine** in the browser, so
 every feature — truecolor, OSC 8 hyperlinks, Kitty keyboard, grapheme
 clustering, sixel parsing — behaves exactly as it does natively, for free.
 
-The engine ships as a **self-contained** wasm module: it imports `env.log` and
-`ghostty.host_entropy_fill`, and bundles its own allocator. This crate loads it through the
+The engine ships as a **self-contained** wasm module: it imports nothing and
+bundles its own allocator. This crate loads it through the
 plain `WebAssembly` JS API and drives its C ABI — **no Zig is linked into the
 Rust binary** (that would mean sharing one wasm linear memory between two
 toolchains; instead we run the engine as a sibling module and copy bytes across

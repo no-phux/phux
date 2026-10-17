@@ -44,6 +44,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/web_agent_fixture.py"], {"web"}),
             (["clients/phux-vt-web/vendor/ghostty-vt.wasm"], {"web", "web_engine"}),
             (["scripts/build-vt-wasm.sh"], {"web", "web_engine"}),
+            (["scripts/prepare-vt-wasm.mjs"], {"web", "web_engine"}),
+            (["scripts/smoke-vt-wasm.mjs"], {"web", "web_engine"}),
             (["integrations/pi/src/index.ts"], {"integrations"}),
             (["scripts/ci/agent-integrations.sh"], {"integrations"}),
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),

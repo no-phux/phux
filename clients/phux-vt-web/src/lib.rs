@@ -3,9 +3,9 @@
 //!
 //! The phux browser client renders terminals with the *same* VT engine native
 //! phux uses. Rather than link zig into the Rust wasm binary, we load
-//! `ghostty-vt.wasm` as a separate module, providing only logging and secure
-//! entropy host imports, and drive its C ABI through the WebAssembly JS API.
-//! This module is the thin, safe Rust surface over that ABI.
+//! `ghostty-vt.wasm` as a separate module, which imports nothing from the
+//! host, and drive its C ABI through the WebAssembly JS API. This module is
+//! the thin, safe Rust surface over that ABI.
 //!
 //! The ABI is the public `libghostty-vt` C surface (`include/ghostty/vt.h`).
 //! Pointers are offsets into the engine module's linear memory; by-value
@@ -40,7 +40,10 @@ pub const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.
 /// Exact immutable checkpoint envelope version implemented by protocol 0.7.
 pub const CHECKPOINT_CODEC_VERSION: u16 = 2;
 
-/// Runtime metadata reported by the embedded checkpoint-capable engine.
+/// Runtime metadata of a checkpoint-capable engine. The embedded engine is
+/// built from the official libghostty-vt snapshot ABI, whose browser decoder
+/// is not bound yet, so [`Vt::incremental_capabilities`] reports none and the
+/// browser stays on synthesized VT.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncrementalCapabilities {
     /// Incremental C ABI version.
@@ -103,12 +106,6 @@ impl IncrementalCapabilities {
     }
 }
 
-const SNAPSHOT_ABI_VERSION: u32 = 1;
-const SNAPSHOT_STATUS_SUCCESS: i32 = 0;
-const SNAPSHOT_STATUS_INVALID_STATE: i32 = -14;
-const DECODER_OPTIONS_SIZE: u32 = 20;
-const DECODE_EVENT_SIZE: u32 = 36;
-const TAKE_TERMINAL_SIZE: u32 = 16;
 const TERMINAL_OPT_SCROLLBACK_MAX_BYTES: f64 = 27.0;
 const TERMINAL_OPT_SCROLLBACK_MAX_LINES: f64 = 28.0;
 const TERMINAL_DATA_SCROLLBACK_MAX_BYTES: f64 = 34.0;
@@ -133,6 +130,9 @@ const TERMINAL_DATA_TITLE: f64 = 12.0;
 const TERMINAL_DATA_VIEWPORT_ACTIVE: f64 = 32.0;
 const TERMINAL_DATA_SCROLLBAR: f64 = 9.0;
 const TERMINAL_DATA_MOUSE_TRACKING: f64 = 11.0;
+const TERMINAL_DATA_MODE: f64 = 37.0;
+// `GhosttyTerminalModeConfig`: `{ mode: u16, value: bool }`.
+const MODE_CONFIG_VALUE_OFFSET: u32 = 2;
 const TERMINAL_OPT_BELL: f64 = 2.0;
 /// Longest title read back; OSC 0/2 titles are short, a hostile one is not.
 const MAX_TITLE_BYTES: u32 = 1024;
@@ -234,45 +234,6 @@ pub struct Grid {
     pub cursor_visible: bool,
 }
 
-struct NativeAbi {
-    decoder_new: Function,
-    decoder_push: Function,
-    decoder_take_terminal: Function,
-    decoder_replay_continuation: Function,
-    decoder_free: Function,
-}
-
-fn secure_entropy(memory: &RefCell<Option<WebAssembly::Memory>>, ptr: u32, len: u32) -> i32 {
-    let Some(memory) = memory.borrow().as_ref().cloned() else {
-        return -1;
-    };
-    let Some(end) = ptr.checked_add(len) else {
-        return -1;
-    };
-    let bytes = Uint8Array::new(&memory.buffer());
-    if end > bytes.length() {
-        return -1;
-    }
-    let Ok(crypto) = Reflect::get(&js_sys::global(), &"crypto".into()) else {
-        return -1;
-    };
-    let Ok(get_random_values) = Reflect::get(&crypto, &"getRandomValues".into())
-        .and_then(|value| value.dyn_into::<Function>())
-    else {
-        return -1;
-    };
-    let mut offset = 0;
-    while offset < len {
-        let count = (len - offset).min(65_536);
-        let chunk = bytes.subarray(ptr + offset, ptr + offset + count);
-        if get_random_values.call1(&crypto, &chunk).is_err() {
-            return -1;
-        }
-        offset += count;
-    }
-    0
-}
-
 /// A loaded ghostty-vt engine instance. Holds the WebAssembly instance, its
 /// linear memory, and cached handles to the C ABI exports the client uses.
 pub struct Vt {
@@ -305,12 +266,9 @@ pub struct Vt {
     formatter_format: Function,
     formatter_free: Function,
     ghostty_free: Function,
-    mode_get: Function,
     codepoint_width: Function,
-    native: Option<NativeAbi>,
     native_capabilities: Option<IncrementalCapabilities>,
     bell: Option<BellHook>,
-    _entropy: Closure<dyn FnMut(u32, u32) -> i32>,
 }
 
 /// The engine's bell callback: a table slot calling back into Rust, which
@@ -377,30 +335,13 @@ pub struct Scrollbar {
 
 impl Vt {
     /// Instantiate the engine module. Async because WebAssembly instantiation
-    /// is. The host supplies secure browser entropy required by authenticated
-    /// checkpoint history; an engine without the incremental ABI still loads
-    /// as a synthesized-VT-only renderer.
+    /// is. The engine imports nothing; it loads as a synthesized-VT renderer.
     ///
     /// # Errors
     /// Returns the underlying `JsValue` if instantiation fails or a required
     /// baseline terminal/render export is missing.
     pub async fn load() -> Result<Rc<Self>, JsValue> {
-        let env = Object::new();
-        Reflect::set(&env, &"log".into(), &Function::new_no_args(""))?;
-        let entropy_memory = Rc::new(RefCell::new(None));
-        let entropy_memory_for_host = Rc::clone(&entropy_memory);
-        let entropy = Closure::<dyn FnMut(u32, u32) -> i32>::new(move |ptr, len| {
-            secure_entropy(&entropy_memory_for_host, ptr, len)
-        });
-        let ghostty = Object::new();
-        Reflect::set(
-            &ghostty,
-            &"host_entropy_fill".into(),
-            entropy.as_ref().unchecked_ref(),
-        )?;
         let imports = Object::new();
-        Reflect::set(&imports, &"env".into(), &env)?;
-        Reflect::set(&imports, &"ghostty".into(), &ghostty)?;
 
         let result =
             JsFuture::from(WebAssembly::instantiate_buffer(GHOSTTY_VT_WASM, &imports)).await?;
@@ -408,35 +349,17 @@ impl Vt {
             Reflect::get(&result, &"instance".into())?.dyn_into()?;
         let exports = instance.exports();
         let memory: WebAssembly::Memory = Reflect::get(&exports, &"memory".into())?.dyn_into()?;
-        *entropy_memory.borrow_mut() = Some(memory.clone());
 
         let f = |name: &str| -> Result<Function, JsValue> {
             Reflect::get(&exports, &JsValue::from_str(name))?
                 .dyn_into::<Function>()
                 .map_err(|_| JsValue::from_str(&format!("missing export: {name}")))
         };
-        let optional = |name: &str| -> Option<Function> {
-            Reflect::get(&exports, &JsValue::from_str(name))
-                .ok()?
-                .dyn_into::<Function>()
-                .ok()
-        };
-        let native = (|| {
-            Some(NativeAbi {
-                decoder_new: optional("ghostty_terminal_snapshot_decoder_new")?,
-                decoder_push: optional("ghostty_terminal_snapshot_decoder_push")?,
-                decoder_take_terminal: optional("ghostty_terminal_snapshot_decoder_take_terminal")?,
-                decoder_replay_continuation: optional(
-                    "ghostty_terminal_snapshot_decoder_replay_continuation",
-                )?,
-                decoder_free: optional("ghostty_terminal_snapshot_decoder_free")?,
-            })
-        })();
 
         let vt = Self {
             memory,
-            alloc: f("ghostty_wasm_alloc_u8_array")?,
-            free: f("ghostty_wasm_free_u8_array")?,
+            alloc: f("ghostty_wasm_alloc")?,
+            free: f("ghostty_wasm_free")?,
             terminal_new: f("ghostty_terminal_new")?,
             terminal_free: f("ghostty_terminal_free")?,
             terminal_get: f("ghostty_terminal_get")?,
@@ -463,17 +386,13 @@ impl Vt {
             formatter_format: f("ghostty_formatter_format_alloc")?,
             formatter_free: f("ghostty_formatter_free")?,
             ghostty_free: f("ghostty_free")?,
-            mode_get: f("ghostty_terminal_mode_get")?,
             codepoint_width: f("ghostty_unicode_codepoint_width")?,
             bell: BellHook::install(&exports),
-            native,
-            // Vendored ghostty-vt.wasm still speaks the fork incremental
-            // snapshot ABI. Official GHOSTSNP on the server would be selected
-            // if we advertised native here, and the WASM engine cannot decode
-            // it. Stay synthesized until wasm is rebuilt against the official
-            // snapshot C API.
+            // The engine carries the official GHOSTSNP snapshot C API, but
+            // its streaming decoder (a host reader callback) is not bound
+            // yet. Advertising native would let the server select a codec
+            // this client cannot decode, so stay synthesized.
             native_capabilities: None,
-            _entropy: entropy,
         };
         Ok(Rc::new(vt))
     }
@@ -488,69 +407,15 @@ impl Vt {
     /// Construct a bounded incremental checkpoint decoder.
     ///
     /// # Errors
-    /// Fails closed when the embedded module lacks the exact incremental ABI,
-    /// rejects the configured bounds, or cannot allocate decoder state.
+    /// Always [`NativeCodecError::Unavailable`] until the official snapshot
+    /// decoder is bound: the embedded engine advertises no native codec.
     pub fn native_decoder(
         self: &Rc<Self>,
-        max_continuation_bytes: usize,
-        max_record_bytes: usize,
-        max_pages: usize,
+        _max_continuation_bytes: usize,
+        _max_record_bytes: usize,
+        _max_pages: usize,
     ) -> Result<NativeDecoder, NativeCodecError> {
-        let max_input_bytes = max_record_bytes;
-        let capabilities = self
-            .native_capabilities
-            .as_ref()
-            .filter(|capabilities| capabilities.supports_protocol_07(max_record_bytes))
-            .ok_or(NativeCodecError::Unavailable)?;
-        let max_pages = max_pages.min(capabilities.max_pages).max(1);
-        let max_continuation_bytes = to_wasm_usize(max_continuation_bytes)?;
-        let max_record_bytes = to_wasm_usize(max_record_bytes)?;
-        let max_pages = to_wasm_usize(max_pages)?;
-        let options = self.alloc_zeroed(DECODER_OPTIONS_SIZE)?;
-        self.w_u32(options, DECODER_OPTIONS_SIZE);
-        self.w_u32(options + 4, SNAPSHOT_ABI_VERSION);
-        self.w_u32(options + 8, max_continuation_bytes);
-        self.w_u32(options + 12, max_record_bytes);
-        self.w_u32(options + 16, max_pages);
-        let slot = match self.alloc_zeroed(4) {
-            Ok(slot) => slot,
-            Err(error) => {
-                self.wasm_free(options, DECODER_OPTIONS_SIZE);
-                return Err(error);
-            }
-        };
-        let native = self.native.as_ref().ok_or(NativeCodecError::Unavailable)?;
-        let status = self.call_i32(
-            &native.decoder_new,
-            &[0.0, f64::from(options), f64::from(slot)],
-        );
-        self.wasm_free(options, DECODER_OPTIONS_SIZE);
-        let status = match status {
-            Ok(status) => status,
-            Err(error) => {
-                self.wasm_free(slot, 4);
-                return Err(error);
-            }
-        };
-        if status != SNAPSHOT_STATUS_SUCCESS {
-            self.wasm_free(slot, 4);
-            return Err(NativeCodecError::Status {
-                code: status,
-                consumed: 0,
-            });
-        }
-        let handle = self.r_u32(slot);
-        self.wasm_free(slot, 4);
-        if handle == 0 {
-            return Err(NativeCodecError::InvalidHandle);
-        }
-        Ok(NativeDecoder {
-            vt: Rc::clone(self),
-            handle,
-            max_input_bytes,
-            terminal_taken: false,
-            finished: false,
-        })
+        Err(NativeCodecError::Unavailable)
     }
 
     /// Open a terminal of `cols`×`rows`, with its own render state + reusable
@@ -687,11 +552,6 @@ impl Vt {
             | (u32::from(b.get_index(ptr + 3)) << 24)
     }
 
-    fn r_u16(&self, ptr: u32) -> u16 {
-        let bytes = self.bytes();
-        u16::from(bytes.get_index(ptr)) | (u16::from(bytes.get_index(ptr + 1)) << 8)
-    }
-
     fn r_u8(&self, ptr: u32) -> u8 {
         self.bytes().get_index(ptr)
     }
@@ -810,203 +670,20 @@ pub enum NativeDecodeKind {
 }
 
 /// Engine-owned incremental decoder retained from bootstrap through history.
+/// Uninhabited until the official snapshot decoder is bound, so no value of
+/// it exists and [`Vt::native_decoder`] always fails closed.
 pub struct NativeDecoder {
-    vt: Rc<Vt>,
-    handle: u32,
-    max_input_bytes: usize,
-    terminal_taken: bool,
-    finished: bool,
+    never: std::convert::Infallible,
 }
 
 impl NativeDecoder {
     /// Consume at most one bounded transition from an arbitrary fragment.
     ///
     /// # Errors
-    /// Returns the exact engine status and consumed-byte count on malformed,
+    /// Returns the engine status and consumed-byte count on malformed,
     /// oversized, truncated, or otherwise invalid checkpoint input.
-    pub fn push(&mut self, data: &[u8]) -> Result<NativeDecodeEvent, NativeCodecError> {
-        if self.finished {
-            return Err(NativeCodecError::Status {
-                code: SNAPSHOT_STATUS_INVALID_STATE,
-                consumed: 0,
-            });
-        }
-        if data.len() > self.max_input_bytes {
-            return Err(NativeCodecError::LimitExceeded);
-        }
-        let len = to_wasm_usize(data.len())?;
-        let input = if len == 0 {
-            0
-        } else {
-            let input = self.vt.alloc_zeroed(len)?;
-            self.vt.w_bytes(input, data);
-            input
-        };
-        let event = match self.vt.alloc_zeroed(DECODE_EVENT_SIZE) {
-            Ok(event) => event,
-            Err(error) => {
-                if input != 0 {
-                    self.vt.wasm_free(input, len);
-                }
-                return Err(error);
-            }
-        };
-        self.vt.w_u32(event, DECODE_EVENT_SIZE);
-        self.vt.w_u32(event + 4, SNAPSHOT_ABI_VERSION);
-        let native = self
-            .vt
-            .native
-            .as_ref()
-            .ok_or(NativeCodecError::Unavailable)?;
-        let status = self.vt.call_i32(
-            &native.decoder_push,
-            &[
-                f64::from(self.handle),
-                f64::from(input),
-                f64::from(len),
-                f64::from(event),
-            ],
-        );
-        if input != 0 {
-            self.vt.wasm_free(input, len);
-        }
-        let consumed = self.vt.r_u32(event + 28) as usize;
-        let status = match status {
-            Ok(status) => status,
-            Err(error) => {
-                self.vt.wasm_free(event, DECODE_EVENT_SIZE);
-                return Err(error);
-            }
-        };
-        if status != SNAPSHOT_STATUS_SUCCESS {
-            self.vt.wasm_free(event, DECODE_EVENT_SIZE);
-            return Err(NativeCodecError::Status {
-                code: status,
-                consumed,
-            });
-        }
-        if consumed > data.len() {
-            self.vt.wasm_free(event, DECODE_EVENT_SIZE);
-            return Err(NativeCodecError::InvalidProgress {
-                consumed,
-                available: data.len(),
-            });
-        }
-        let raw_kind = self.vt.r_u32(event + 8) as i32;
-        let kind = match raw_kind {
-            0 => NativeDecodeKind::NeedInput,
-            1 => NativeDecodeKind::Progress,
-            2 => NativeDecodeKind::Ready,
-            3 => NativeDecodeKind::HistoryBegin,
-            4 => NativeDecodeKind::HistoryPage,
-            5 => NativeDecodeKind::Finish,
-            _ => {
-                self.vt.wasm_free(event, DECODE_EVENT_SIZE);
-                return Err(NativeCodecError::InvalidEvent(raw_kind));
-            }
-        };
-        let codec_version = self.vt.r_u16(event + 12);
-        let retained = self.vt.r_u8(event + 24) != 0;
-        let needed = self.vt.r_u32(event + 32) as usize;
-        self.vt.wasm_free(event, DECODE_EVENT_SIZE);
-        if codec_version != 0 && codec_version != CHECKPOINT_CODEC_VERSION {
-            return Err(NativeCodecError::WrongCodecVersion {
-                expected: CHECKPOINT_CODEC_VERSION,
-                actual: codec_version,
-            });
-        }
-        let terminal = if kind == NativeDecodeKind::Ready {
-            Some(self.take_ready_terminal(codec_version)?)
-        } else {
-            None
-        };
-        if kind == NativeDecodeKind::Finish {
-            self.finished = true;
-        }
-        Ok(NativeDecodeEvent {
-            kind,
-            consumed,
-            needed,
-            codec_version,
-            retained,
-            terminal,
-        })
-    }
-
-    fn take_ready_terminal(&mut self, event_version: u16) -> Result<Terminal, NativeCodecError> {
-        if self.terminal_taken {
-            return Err(NativeCodecError::Status {
-                code: SNAPSHOT_STATUS_INVALID_STATE,
-                consumed: 0,
-            });
-        }
-        let result = self.vt.alloc_zeroed(TAKE_TERMINAL_SIZE)?;
-        self.vt.w_u32(result, TAKE_TERMINAL_SIZE);
-        self.vt.w_u32(result + 4, SNAPSHOT_ABI_VERSION);
-        let native = self
-            .vt
-            .native
-            .as_ref()
-            .ok_or(NativeCodecError::Unavailable)?;
-        let status = match self.vt.call_i32(
-            &native.decoder_take_terminal,
-            &[f64::from(self.handle), f64::from(result)],
-        ) {
-            Ok(status) => status,
-            Err(error) => {
-                self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
-                return Err(error);
-            }
-        };
-        if status != SNAPSHOT_STATUS_SUCCESS {
-            self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
-            return Err(NativeCodecError::Status {
-                code: status,
-                consumed: 0,
-            });
-        }
-        let terminal = self.vt.r_u32(result + 8);
-        let codec_version = self.vt.r_u16(result + 12);
-        self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
-        if terminal == 0 {
-            return Err(NativeCodecError::InvalidHandle);
-        }
-        if codec_version != CHECKPOINT_CODEC_VERSION || event_version != CHECKPOINT_CODEC_VERSION {
-            let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
-            return Err(NativeCodecError::WrongCodecVersion {
-                expected: CHECKPOINT_CODEC_VERSION,
-                actual: codec_version,
-            });
-        }
-        let status = match self.vt.call_i32(
-            &native.decoder_replay_continuation,
-            &[f64::from(self.handle), f64::from(terminal)],
-        ) {
-            Ok(status) => status,
-            Err(error) => {
-                let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
-                return Err(error);
-            }
-        };
-        if status != SNAPSHOT_STATUS_SUCCESS {
-            let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
-            return Err(NativeCodecError::Status {
-                code: status,
-                consumed: 0,
-            });
-        }
-        self.terminal_taken = true;
-        Ok(self.vt.terminal_from_handle(terminal))
-    }
-}
-
-impl Drop for NativeDecoder {
-    fn drop(&mut self) {
-        if let Some(native) = self.vt.native.as_ref() {
-            let _ = self
-                .vt
-                .call(&native.decoder_free, &[f64::from(self.handle)]);
-        }
+    pub fn push(&mut self, _data: &[u8]) -> Result<NativeDecodeEvent, NativeCodecError> {
+        match self.never {}
     }
 }
 
@@ -1224,16 +901,17 @@ impl Terminal {
     #[must_use]
     pub fn dec_mode(&self, mode: u16) -> bool {
         let vt = &*self.vt;
-        vt.w_u32(self.scratch, 0);
+        // A `GhosttyMode` with the ANSI bit (15) clear, and `value` cleared.
+        vt.w_u32(self.scratch, u32::from(mode & 0x7fff));
         let status = vt.call(
-            &vt.mode_get,
+            &vt.terminal_get,
             &[
                 f64::from(self.term),
-                f64::from(mode & 0x7fff),
+                TERMINAL_DATA_MODE,
                 f64::from(self.scratch),
             ],
         ) as i32;
-        status == GHOSTTY_SUCCESS && vt.r_u8(self.scratch) != 0
+        status == GHOSTTY_SUCCESS && vt.r_u8(self.scratch + MODE_CONFIG_VALUE_OFFSET) != 0
     }
 
     /// Plain text of every row of the active screen, oldest scrollback row

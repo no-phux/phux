@@ -2,7 +2,6 @@
 // before publishing a rebuilt engine. No optimizer or extra tool version pin.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { webcrypto } from 'node:crypto';
 
 const path = process.argv[2];
 assert.ok(path, 'usage: node scripts/prepare-vt-wasm.mjs ARTIFACT');
@@ -30,61 +29,75 @@ while (offset < bytes.length) {
   offset = end;
 }
 const stripped = Buffer.concat(sections);
-let memory;
-const { instance } = await WebAssembly.instantiate(stripped, {
-  env: { log() {} },
-  ghostty: {
-    host_entropy_fill(ptr, len) {
-      try {
-        for (let i = 0; i < len; i += 65536) {
-          webcrypto.getRandomValues(new Uint8Array(memory.buffer, ptr + i, Math.min(65536, len - i)));
-        }
-        return 0;
-      } catch { return -1; }
-    },
-  },
-});
-const e = instance.exports;
-memory = e.memory;
+const module = await WebAssembly.compile(stripped);
+// phux-vt-web instantiates the engine with an empty import object.
+assert.deepEqual(WebAssembly.Module.imports(module), [], 'engine imports nothing');
+const { exports: e } = await WebAssembly.instantiate(module, {});
+assert.ok(e.memory instanceof WebAssembly.Memory, 'exported memory');
+// The bell callback is installed by growing this table.
+assert.ok(e.__indirect_function_table instanceof WebAssembly.Table, 'exported function table');
+for (const name of [
+  'ghostty_wasm_alloc', 'ghostty_wasm_free', 'ghostty_free', 'ghostty_type_json',
+  'ghostty_terminal_new', 'ghostty_terminal_free', 'ghostty_terminal_get', 'ghostty_terminal_set',
+  'ghostty_terminal_vt_write', 'ghostty_terminal_resize', 'ghostty_terminal_scroll_viewport',
+  'ghostty_terminal_grid_ref', 'ghostty_grid_ref_hyperlink_uri', 'ghostty_terminal_selection_format_alloc',
+  'ghostty_formatter_terminal_new', 'ghostty_formatter_format_alloc', 'ghostty_formatter_free',
+  'ghostty_render_state_new', 'ghostty_render_state_free', 'ghostty_render_state_update',
+  'ghostty_render_state_get', 'ghostty_render_state_row_iterator_new',
+  'ghostty_render_state_row_iterator_free', 'ghostty_render_state_row_iterator_next',
+  'ghostty_render_state_row_get', 'ghostty_render_state_row_cells_new',
+  'ghostty_render_state_row_cells_free', 'ghostty_render_state_row_cells_next',
+  'ghostty_render_state_row_cells_get', 'ghostty_unicode_codepoint_width',
+]) assert.equal(typeof e[name], 'function', `export ${name}`);
 const jsonPtr = e.ghostty_type_json();
-const jsonBytes = new Uint8Array(memory.buffer);
-const layouts = JSON.parse(new TextDecoder().decode(jsonBytes.subarray(jsonPtr, jsonBytes.indexOf(0, jsonPtr))));
-// Decoder buffers are allocated by Rust at fixed sizes and read at these
-// offsets. Comparing against constants catches a self-consistent upstream ABI
-// change that its own smoke (which discovers layouts dynamically) would accept.
+const jsonBytes = new Uint8Array(e.memory.buffer);
+const { abi, types } = JSON.parse(new TextDecoder().decode(jsonBytes.subarray(jsonPtr, jsonBytes.indexOf(0, jsonPtr))));
+assert.equal(abi?.pointer_size, 4, 'wasm32 pointers');
+assert.equal(abi.usize_size, 4, 'wasm32 size_t');
+assert.equal(abi.endian, 'little', 'little-endian');
+// phux-vt-web reads and writes these structs at fixed sizes and offsets, and
+// passes these enum tags as literals. Comparing against constants that match
+// clients/phux-vt-web/src/lib.rs, rather than trusting the candidate's own
+// manifest, catches a self-consistent upstream ABI change.
 for (const [name, size, fields] of [
-  ['DecoderOptions', 20, { size: 0, version: 4, max_continuation_bytes: 8, max_record_bytes: 12, max_pages: 16 }],
-  ['DecodeEvent', 36, { size: 0, version: 4, kind: 8, codec_version: 12, screen_key: 14, index: 16, count: 20, retained: 24, consumed: 28, needed: 32 }],
-  ['TakeTerminalResult', 16, { size: 0, version: 4, terminal: 8, codec_version: 12 }],
+  ['GhosttyString', 8, { ptr: 0, len: 4 }],
+  ['GhosttyColorRgb', 3, { r: 0, g: 1, b: 2 }],
+  ['GhosttyStyle', 72, { size: 0, inverse: 60 }],
+  ['GhosttyTerminalModeConfig', 4, { mode: 0, value: 2 }],
+  ['GhosttyTerminalScrollbar', 24, { total: 0, offset: 8, len: 16 }],
+  ['GhosttyTerminalScrollViewport', 24, { tag: 0, value: 8 }],
+  ['GhosttyPoint', 24, { tag: 0, value: 8 }],
+  ['GhosttyPointCoordinate', 8, { x: 0, y: 4 }],
+  ['GhosttyGridRef', 12, { size: 0, node: 4, x: 8, y: 10 }],
+  ['GhosttySelection', 32, { size: 0, start: 4, end: 16, rectangle: 28 }],
+  ['GhosttyTerminalSelectionFormatOptions', 16, { size: 0, emit: 4, unwrap: 8, trim: 9, selection: 12 }],
+  ['GhosttyFormatterTerminalOptions', 40, { size: 0, emit: 4, unwrap: 8, trim: 9, extra: 12, selection: 36 }],
+  ['GhosttyFormatterTerminalExtra', 24, { size: 0, screen: 12 }],
+  ['GhosttyFormatterScreenExtra', 12, { size: 0 }],
 ]) {
-  const layout = layouts[`GhosttyTerminalSnapshot${name}`];
+  const layout = types[name];
   assert.equal(layout?.size, size, `${name} size`);
-  for (const [field, offset] of Object.entries(fields)) {
-    assert.equal(layout.fields[field]?.offset, offset, `${name}.${field}`);
+  for (const [field, at] of Object.entries(fields)) {
+    assert.equal(layout.fields[field]?.offset, at, `${name}.${field}`);
   }
 }
-const ptr = e.ghostty_alloc(0, 56);
-assert.ok(ptr, 'capability allocation');
-new Uint8Array(memory.buffer, ptr, 56).fill(0);
-new DataView(memory.buffer).setUint32(ptr, 56, true);
-assert.equal(e.ghostty_terminal_snapshot_incremental_capabilities(ptr), 0);
-const view = new DataView(memory.buffer);
-// These offsets intentionally match phux-vt-web's probe, rather than querying
-// the candidate to tell us what layout it wants us to accept.
-assert.equal(view.getUint32(ptr + 4, true), 1, 'incremental ABI version');
-assert.ok(view.getUint16(ptr + 8, true) <= 2, 'minimum decode version');
-assert.ok(view.getUint16(ptr + 10, true) >= 2, 'maximum decode version');
-assert.equal(view.getUint16(ptr + 12, true), 2, 'encode version');
-for (let i = 14; i <= 20; i++) assert.equal(view.getUint8(ptr + i), 1, `capability at ${i}`);
-assert.ok(view.getUint32(ptr + 24, true) >= 1024 * 1024, 'record limit');
-for (const i of [28, 32, 36]) assert.ok(view.getUint32(ptr + i, true) > 0, `limit at ${i}`);
-function stringAt(offset) {
-  const start = view.getUint32(ptr + offset, true);
-  const length = view.getUint32(ptr + offset + 4, true);
-  return new TextDecoder().decode(new Uint8Array(memory.buffer, start, length));
+for (const [name, values] of [
+  ['GhosttyResult', { SUCCESS: 0, OUT_OF_SPACE: -3 }],
+  ['GhosttyTerminalOption', { BELL: 2, SCROLLBACK_MAX_BYTES: 27, SCROLLBACK_MAX_LINES: 28 }],
+  ['GhosttyTerminalData', {
+    CURSOR_X: 3, CURSOR_Y: 4, CURSOR_VISIBLE: 7, SCROLLBAR: 9, MOUSE_TRACKING: 11, TITLE: 12,
+    VIEWPORT_ACTIVE: 32, SCROLLBACK_MAX_BYTES: 34, SCROLLBACK_MAX_LINES: 35, MODE: 37,
+  }],
+  ['GhosttyRenderStateData', { COLS: 1, ROWS: 2, ROW_ITERATOR: 4, COLOR_BACKGROUND: 5, COLOR_FOREGROUND: 6 }],
+  ['GhosttyRenderStateRowData', { CELLS: 3 }],
+  ['GhosttyRenderStateRowCellsData', { STYLE: 2, GRAPHEMES_LEN: 3, GRAPHEMES_BUF: 4, BG_COLOR: 5, FG_COLOR: 6 }],
+  ['GhosttyPointTag', { VIEWPORT: 1 }],
+  ['GhosttyTerminalScrollViewportTag', { TOP: 0, BOTTOM: 1, DELTA: 2 }],
+  ['GhosttyFormatterFormat', { PLAIN: 0 }],
+]) {
+  for (const [key, value] of Object.entries(values)) {
+    assert.equal(types[name]?.values?.[key], value, `${name}.${key}`);
+  }
 }
-assert.equal(stringAt(40), 'ghostty.snapshot.v1-v2.incremental.v1', 'codec identity');
-assert.ok(stringAt(48).length > 0, 'build identity');
-e.ghostty_free(0, ptr, 56);
 writeFileSync(path, stripped);
 console.log(`frozen consumer ABI verified; stripped ${bytes.length - stripped.length} metadata bytes`);
