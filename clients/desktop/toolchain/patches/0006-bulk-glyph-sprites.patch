@@ -13,6 +13,346 @@ index a635bc4..19f9962 100644
  }
  
  impl AtlasBackend for MetalAtlasTextures {
+diff --git a/gpui-fast/src/fast/composition.rs b/gpui-fast/src/fast/composition.rs
+index 5e27d46..d66b7f0 100644
+--- a/gpui-fast/src/fast/composition.rs
++++ b/gpui-fast/src/fast/composition.rs
+@@ -511,7 +511,7 @@ impl Scene {
+                         "source scene closes a layer that is not open"
+                     );
+                 }
+-                PaintOperation::Primitive(_) => {}
++                PaintOperation::Primitive(_) | PaintOperation::GlyphSprites(_) => {}
+                 PaintOperation::FastRoundedClip(clip) => {
+                     crate::fast::rounded_clip::track(*clip, &mut active_clips)?
+                 }
+@@ -531,6 +531,12 @@ impl Scene {
+         for operation in operations {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
++                PaintOperation::GlyphSprites(batch) => self.insert_glyph_sprites(
++                    &batch.sprites,
++                    batch.offset,
++                    batch.content_mask,
++                    batch.opacity,
++                ),
+                 PaintOperation::StartLayer(bounds) => {
+                     active_layers.push(*bounds);
+                     self.push_layer(*bounds);
+diff --git a/gpui-fast/src/fast/layers/background.rs b/gpui-fast/src/fast/layers/background.rs
+index 14e29be..075a148 100644
+--- a/gpui-fast/src/fast/layers/background.rs
++++ b/gpui-fast/src/fast/layers/background.rs
+@@ -34,19 +34,40 @@ pub(crate) fn bake_operations(
+     operations: &[PaintOperation],
+     viewport: Bounds<ScaledPixels>,
+ ) -> Option<Rgba> {
+-    // The primitive drawn last over the viewport, and how many share its
+-    // draw order, whose drawing order among themselves is by kind.
+-    let mut top: Option<(DrawOrder, &Primitive)> = None;
++    // The primitive drawn last over the viewport (`None` for a glyph sprite,
++    // which is never a quad), and how many share its draw order, whose
++    // drawing order among themselves is by kind.
++    let mut top: Option<(DrawOrder, Option<&Primitive>)> = None;
+     let mut sharing_top = 0;
+     for operation in operations {
+-        let PaintOperation::Primitive(primitive) = operation else {
+-            continue;
++        let (order, primitive) = match operation {
++            PaintOperation::Primitive(primitive) => {
++                if !visible_bounds(primitive).intersects(&viewport) {
++                    continue;
++                }
++                (draw_order(primitive), Some(primitive))
++            }
++            PaintOperation::GlyphSprites(batch) => {
++                let visible = batch
++                    .primitives()
++                    .filter(|primitive| visible_bounds(primitive).intersects(&viewport))
++                    .count();
++                if visible == 0 {
++                    continue;
++                }
++                // Each visible sprite shares the batch's draw order.
++                match top {
++                    Some((top_order, _)) if batch.order < top_order => {}
++                    Some((top_order, _)) if batch.order == top_order => sharing_top += visible,
++                    _ => {
++                        top = Some((batch.order, None));
++                        sharing_top = visible;
++                    }
++                }
++                continue;
++            }
++            _ => continue,
+         };
+-        let visible = visible_bounds(primitive);
+-        if !visible.intersects(&viewport) {
+-            continue;
+-        }
+-        let order = draw_order(primitive);
+         match top {
+             Some((top_order, _)) if order < top_order => {}
+             Some((top_order, _)) if order == top_order => sharing_top += 1,
+@@ -56,7 +77,7 @@ pub(crate) fn bake_operations(
+             }
+         }
+     }
+-    let (_, Primitive::Quad(quad)) = top? else {
++    let (_, Some(Primitive::Quad(quad))) = top? else {
+         return None;
+     };
+     if sharing_top != 1 || !covers(quad, viewport) {
+diff --git a/gpui-fast/src/fast/layers/lists.rs b/gpui-fast/src/fast/layers/lists.rs
+index a46e7ff..8594320 100644
+--- a/gpui-fast/src/fast/layers/lists.rs
++++ b/gpui-fast/src/fast/layers/lists.rs
+@@ -1632,6 +1632,9 @@ fn drawn_alike(a: &Row, b: &Row) -> bool {
+                     move_primitive(&mut primitive, to_row);
+                     PaintOperation::Primitive(primitive)
+                 }
++                PaintOperation::GlyphSprites(batch) => {
++                    PaintOperation::GlyphSprites(batch.translated(to_row))
++                }
+                 PaintOperation::StartLayer(bounds) => PaintOperation::StartLayer(Bounds {
+                     origin: bounds.origin + to_row,
+                     size: bounds.size,
+@@ -2842,6 +2845,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
+         for operation in &mut row_operations {
+             match operation {
+                 PaintOperation::Primitive(primitive) => move_primitive(primitive, to_content),
++                PaintOperation::GlyphSprites(batch) => *batch = batch.translated(to_content),
+                 PaintOperation::StartLayer(bounds) => bounds.origin = bounds.origin + to_content,
+                 PaintOperation::EndLayer => {}
+                 PaintOperation::FastRoundedClip(clip) => *clip = clip.translated(to_content),
+diff --git a/gpui-fast/src/fast/layers/overlay.rs b/gpui-fast/src/fast/layers/overlay.rs
+index e91e718..73a07ec 100644
+--- a/gpui-fast/src/fast/layers/overlay.rs
++++ b/gpui-fast/src/fast/layers/overlay.rs
+@@ -82,6 +82,13 @@ pub(crate) fn split(
+     {
+         return None;
+     }
++    // Primitives are lifted one by one, so a glyph sprite batch is split up.
++    if operations
++        .iter()
++        .any(|operation| matches!(operation, PaintOperation::GlyphSprites(_)))
++    {
++        return split(&crate::scene::expand_glyph_sprites(operations));
++    }
+     // Every primitive in the order the renderer draws them: by draw order,
+     // then by kind, then as inserted.
+     let mut sequence: Vec<((u32, u8, usize), &Primitive)> = operations
+@@ -117,6 +124,7 @@ pub(crate) fn split(
+         .filter(|(_, in_overlay)| !**in_overlay)
+         .map(|(operation, _)| match operation {
+             PaintOperation::Primitive(primitive) => PaintOperation::Primitive(primitive.clone()),
++            PaintOperation::GlyphSprites(batch) => PaintOperation::GlyphSprites(batch.clone()),
+             PaintOperation::StartLayer(bounds) => PaintOperation::StartLayer(*bounds),
+             PaintOperation::EndLayer => PaintOperation::EndLayer,
+             PaintOperation::FastRoundedClip(clip) => PaintOperation::FastRoundedClip(*clip),
+@@ -135,6 +143,12 @@ pub(crate) fn lift(content: Scene) -> (Scene, Rc<[Primitive]>) {
+     for operation in tiles {
+         match operation {
+             PaintOperation::Primitive(primitive) => rest.insert_primitive(primitive),
++            PaintOperation::GlyphSprites(batch) => rest.insert_glyph_sprites(
++                &batch.sprites,
++                batch.offset,
++                batch.content_mask,
++                batch.opacity,
++            ),
+             PaintOperation::StartLayer(bounds) => rest.push_layer(bounds),
+             PaintOperation::EndLayer => rest.pop_layer(),
+             PaintOperation::FastRoundedClip(clip) => {
+diff --git a/gpui-fast/src/fast/layers/paint.rs b/gpui-fast/src/fast/layers/paint.rs
+index 510831f..dcf036b 100644
+--- a/gpui-fast/src/fast/layers/paint.rs
++++ b/gpui-fast/src/fast/layers/paint.rs
+@@ -657,6 +657,13 @@ pub(crate) fn draw_into_frame<'a>(
+                 clip_primitive(&mut primitive, viewports);
+                 scene.insert_primitive(primitive);
+             }
++            PaintOperation::GlyphSprites(batch) => {
++                for primitive in batch.primitives() {
++                    let mut primitive = translate_primitive(&primitive, delta);
++                    clip_primitive(&mut primitive, viewports);
++                    scene.insert_primitive(primitive);
++                }
++            }
+             PaintOperation::StartLayer(bounds) => {
+                 let bounds = Bounds {
+                     origin: bounds.origin + delta,
+@@ -761,9 +768,18 @@ fn repaint(
+     let mut rendered_work = 0;
+     let mut visible_work = 0;
+     for operation in &content.paint_operations {
+-        if let PaintOperation::Primitive(primitive) = operation {
+-            rendered_work += 1;
+-            visible_work += usize::from(visible_bounds(primitive).intersects(&visible));
++        match operation {
++            PaintOperation::Primitive(primitive) => {
++                rendered_work += 1;
++                visible_work += usize::from(visible_bounds(primitive).intersects(&visible));
++            }
++            PaintOperation::GlyphSprites(batch) => {
++                for primitive in batch.primitives() {
++                    rendered_work += 1;
++                    visible_work += usize::from(visible_bounds(&primitive).intersects(&visible));
++                }
++            }
++            _ => {}
+         }
+     }
+     policy::note_work(
+@@ -917,6 +933,15 @@ fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
+             PaintOperation::Primitive(primitive) => {
+                 translated.insert_primitive(translate_primitive(primitive, delta))
+             }
++            PaintOperation::GlyphSprites(batch) => {
++                let batch = batch.translated(delta);
++                translated.insert_glyph_sprites(
++                    &batch.sprites,
++                    batch.offset,
++                    batch.content_mask,
++                    batch.opacity,
++                )
++            }
+             PaintOperation::StartLayer(bounds) => translated.push_layer(Bounds {
+                 origin: bounds.origin + delta,
+                 size: bounds.size,
+diff --git a/gpui-fast/src/fast/layers/scene.rs b/gpui-fast/src/fast/layers/scene.rs
+index 9aa6dac..3cb7687 100644
+--- a/gpui-fast/src/fast/layers/scene.rs
++++ b/gpui-fast/src/fast/layers/scene.rs
+@@ -122,6 +122,13 @@ impl LayerFrame {
+                         scene.insert_primitive(translate_primitive(primitive, delta));
+                     }
+                 }
++                PaintOperation::GlyphSprites(batch) => {
++                    for primitive in batch.primitives() {
++                        if visible_bounds(&primitive).intersects(&bounds) {
++                            scene.insert_primitive(translate_primitive(&primitive, delta));
++                        }
++                    }
++                }
+                 PaintOperation::StartLayer(layer_bounds) => {
+                     scene.push_layer(translate_bounds(*layer_bounds, delta))
+                 }
+diff --git a/gpui-fast/src/fast/layers/tiles.rs b/gpui-fast/src/fast/layers/tiles.rs
+index be26f70..3e3599e 100644
+--- a/gpui-fast/src/fast/layers/tiles.rs
++++ b/gpui-fast/src/fast/layers/tiles.rs
+@@ -46,6 +46,15 @@ pub(crate) fn tile_hashes(
+                     hash_primitive(&translate_primitive(primitive, origin), &tile, hasher);
+                 });
+             }
++            PaintOperation::GlyphSprites(batch) => {
++                for primitive in batch.primitives() {
++                    let visible = visible_bounds(&primitive);
++                    for_tiles(&mut hashers, visible, tile_size, |hasher, origin| {
++                        hasher.write_u8(0);
++                        hash_primitive(&translate_primitive(&primitive, origin), &tile, hasher);
++                    });
++                }
++            }
+             PaintOperation::StartLayer(bounds) => {
+                 open_layers.push(*bounds);
+                 for_tiles(&mut hashers, *bounds, tile_size, |hasher, origin| {
+@@ -113,6 +122,18 @@ pub(crate) fn part_tile_hashes(
+                 hasher.write_u8(0);
+                 hash_primitive(primitive, &drawn, &mut hasher);
+             }
++            PaintOperation::GlyphSprites(batch) => {
++                for primitive in batch.primitives() {
++                    let drawn = drawn_bounds(&primitive);
++                    let visible = drawn.intersect(&primitive.content_mask().bounds);
++                    if visible.size.width.0 <= 0. || visible.size.height.0 <= 0. {
++                        continue;
++                    }
++                    reach = Some(reach.map_or(visible, |reach| reach.union(&visible)));
++                    hasher.write_u8(0);
++                    hash_primitive(&primitive, &drawn, &mut hasher);
++                }
++            }
+             PaintOperation::StartLayer(_) => hasher.write_u8(1),
+             PaintOperation::EndLayer => hasher.write_u8(2),
+             PaintOperation::FastRoundedClip(clip) => clip.hash(&mut hasher),
+diff --git a/gpui-fast/src/fast/layers/verify.rs b/gpui-fast/src/fast/layers/verify.rs
+index 1949c0f..5112d6a 100644
+--- a/gpui-fast/src/fast/layers/verify.rs
++++ b/gpui-fast/src/fast/layers/verify.rs
+@@ -89,6 +89,14 @@ fn expand_layer(
+                 clip_to(&mut moved, viewport);
+                 scratch.insert_primitive(moved);
+             }
++            PaintOperation::GlyphSprites(batch) => {
++                for primitive in batch.primitives() {
++                    let mut moved =
++                        crate::fast::layers::scene::translate_primitive(&primitive, translation);
++                    clip_to(&mut moved, viewport);
++                    scratch.insert_primitive(moved);
++                }
++            }
+             PaintOperation::StartLayer(bounds) => scratch.push_layer(Bounds {
+                 origin: bounds.origin + translation,
+                 size: bounds.size,
+diff --git a/gpui-fast/src/fast/rounded_clip_scene.rs b/gpui-fast/src/fast/rounded_clip_scene.rs
+index cb1c6bc..1467dae 100644
+--- a/gpui-fast/src/fast/rounded_clip_scene.rs
++++ b/gpui-fast/src/fast/rounded_clip_scene.rs
+@@ -98,6 +98,12 @@ pub(crate) fn compile(scene: &mut Scene) {
+                 .last_mut()
+                 .unwrap()
+                 .insert_primitive(primitive.clone()),
++            PaintOperation::GlyphSprites(batch) => stack.last_mut().unwrap().insert_glyph_sprites(
++                &batch.sprites,
++                batch.offset,
++                batch.content_mask,
++                batch.opacity,
++            ),
+             PaintOperation::StartLayer(bounds) => stack.last_mut().unwrap().push_layer(*bounds),
+             PaintOperation::EndLayer => stack.last_mut().unwrap().pop_layer(),
+         }
+diff --git a/gpui-fast/src/fast/scene.rs b/gpui-fast/src/fast/scene.rs
+index df9c763..de61ed5 100644
+--- a/gpui-fast/src/fast/scene.rs
++++ b/gpui-fast/src/fast/scene.rs
+@@ -187,7 +187,7 @@ impl Scene {
+                 crate::PaintOperation::FastRoundedClip(clip) => {
+                     lines.push(format!("rounded clip {clip:?}"))
+                 }
+-                crate::PaintOperation::Primitive(..) => {}
++                crate::PaintOperation::Primitive(..) | crate::PaintOperation::GlyphSprites(..) => {}
+             }
+         }
+         lines.extend(self.shadows.iter().map(|shadow| format!("{shadow:?}")));
+@@ -225,9 +225,10 @@ impl Scene {
+ }
+ 
+ /// What [`Scene::finish`] does: puts every primitive in drawing order.
+-/// Sprites of one order are grouped by the atlas texture they come from:
+-/// a batch draws from one texture, and tile ids, which each texture
+-/// numbers from zero, would interleave them.
++/// Sprites of one order are grouped by the atlas texture they come from, the
++/// only key a batch is drawn by, and keep the order they were painted in
++/// within a texture, so a layer's sprites from one texture stay a presorted
++/// run that needs no sort.
+ #[inline]
+ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
+     crate::fast::rounded_clip_scene::compile(scene);
+@@ -249,11 +250,7 @@ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
+                 &mut scratch.permutation,
+                 &mut scratch.$field,
+                 |sprite| {
+-                    (
+-                        sprite.order,
+-                        sprite.tile.texture_id.index,
+-                        sprite.tile.tile_id.0,
+-                    )
++                    (sprite.order, sprite.tile.texture_id.index, 0)
+                 },
+             )
+         };
 diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
 index f81dd29..44f5bf0 100644
 --- a/gpui-fast/src/platform.rs
@@ -83,7 +423,7 @@ index f81dd29..44f5bf0 100644
      fn contains(&self, key: &AtlasKey) -> bool {
          self.0.lock().contains(key)
 diff --git a/gpui-fast/src/scene.rs b/gpui-fast/src/scene.rs
-index cef791d..61ea93c 100644
+index cef791d..6860626 100644
 --- a/gpui-fast/src/scene.rs
 +++ b/gpui-fast/src/scene.rs
 @@ -14,6 +14,7 @@ use std::{
@@ -94,15 +434,15 @@ index cef791d..61ea93c 100644
  };
  
  #[allow(non_camel_case_types, unused)]
-@@ -144,6 +145,23 @@ impl Scene {
+@@ -144,11 +145,54 @@ impl Scene {
              .push(PaintOperation::Primitive(primitive));
      }
  
 +    /// Insert `sprites` moved by `offset`, each clipped to its own clip and
-+    /// to `content_mask`, with `opacity` applied. Each sprite is an ordinary
-+    /// primitive, so retained views, scroll layers and replay treat it as any
-+    /// glyph painted alone; inside a layer every sprite takes the layer's
-+    /// draw order.
++    /// to `content_mask`, with `opacity` applied. Inside a layer every sprite
++    /// takes the layer's draw order, so the whole slice is one paint
++    /// operation and a vector extension per sprite kind; outside one each
++    /// sprite is inserted as a primitive of its own.
 +    pub(crate) fn insert_glyph_sprites(
 +        &mut self,
 +        sprites: &Arc<[GlyphSprite]>,
@@ -110,15 +450,54 @@ index cef791d..61ea93c 100644
 +        content_mask: ContentMask<ScaledPixels>,
 +        opacity: f32,
 +    ) {
++        let Some(&order) = self.layer_stack.last() else {
++            for sprite in sprites.iter() {
++                self.insert_primitive(sprite.primitive(offset, &content_mask, opacity, 0));
++            }
++            return;
++        };
 +        for sprite in sprites.iter() {
-+            self.insert_primitive(sprite.primitive(offset, &content_mask, opacity));
++            match sprite.primitive(offset, &content_mask, opacity, order) {
++                primitive if primitive_is_empty(&primitive) => {}
++                Primitive::MonochromeSprite(sprite) => self.monochrome_sprites.push(sprite),
++                Primitive::SubpixelSprite(sprite) => self.subpixel_sprites.push(sprite),
++                Primitive::PolychromeSprite(sprite) => self.polychrome_sprites.push(sprite),
++                _ => unreachable!("a glyph sprite is a sprite primitive"),
++            }
 +        }
++        self.paint_operations
++            .push(PaintOperation::GlyphSprites(GlyphSpriteBatch {
++                sprites: Arc::clone(sprites),
++                offset,
++                content_mask,
++                opacity,
++                order,
++            }));
 +    }
 +
      pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
          crate::fast::layers::paint::replay_layers(self, range.clone(), prev_scene);
          for operation in &prev_scene.paint_operations[range] {
-@@ -218,6 +236,90 @@ pub(crate) enum PaintOperation {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
++                PaintOperation::GlyphSprites(batch) => self.insert_glyph_sprites(
++                    &batch.sprites,
++                    batch.offset,
++                    batch.content_mask,
++                    batch.opacity,
++                ),
+                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                 PaintOperation::EndLayer => self.pop_layer(),
+                 PaintOperation::FastRoundedClip(fast_clip) => {
+@@ -213,11 +257,160 @@ pub(crate) enum PrimitiveKind {
+ 
+ pub(crate) enum PaintOperation {
+     Primitive(Primitive),
++    /// Retained glyph sprites painted inside a layer; see
++    /// [`Scene::insert_glyph_sprites`].
++    GlyphSprites(GlyphSpriteBatch),
+     StartLayer(Bounds<ScaledPixels>),
+     EndLayer,
      FastRoundedClip(crate::fast::rounded_clip::ClipOperation),
  }
  
@@ -168,6 +547,7 @@ index cef791d..61ea93c 100644
 +        offset: Point<ScaledPixels>,
 +        content_mask: &ContentMask<ScaledPixels>,
 +        opacity: f32,
++        order: DrawOrder,
 +    ) -> Primitive {
 +        let bounds = self.bounds + offset;
 +        let content_mask = ContentMask {
@@ -175,7 +555,7 @@ index cef791d..61ea93c 100644
 +        };
 +        match self.kind {
 +            GlyphSpriteKind::Monochrome => Primitive::MonochromeSprite(MonochromeSprite {
-+                order: 0,
++                order,
 +                pad: 0,
 +                bounds,
 +                content_mask,
@@ -184,7 +564,7 @@ index cef791d..61ea93c 100644
 +                transformation: TransformationMatrix::unit(),
 +            }),
 +            GlyphSpriteKind::Subpixel => Primitive::SubpixelSprite(SubpixelSprite {
-+                order: 0,
++                order,
 +                pad: 0,
 +                bounds,
 +                content_mask,
@@ -193,7 +573,7 @@ index cef791d..61ea93c 100644
 +                transformation: TransformationMatrix::unit(),
 +            }),
 +            GlyphSpriteKind::Polychrome => Primitive::PolychromeSprite(PolychromeSprite {
-+                order: 0,
++                order,
 +                pad: 0,
 +                grayscale: false.into(),
 +                opacity,
@@ -204,6 +584,67 @@ index cef791d..61ea93c 100644
 +            }),
 +        }
 +    }
++}
++
++/// The operation [`Scene::insert_glyph_sprites`] records inside a layer: the
++/// sprites and what places them, and the layer's draw order they took.
++#[derive(Clone)]
++pub(crate) struct GlyphSpriteBatch {
++    pub(crate) sprites: Arc<[GlyphSprite]>,
++    pub(crate) offset: Point<ScaledPixels>,
++    pub(crate) content_mask: ContentMask<ScaledPixels>,
++    pub(crate) opacity: f32,
++    pub(crate) order: DrawOrder,
++}
++
++impl GlyphSpriteBatch {
++    /// Each sprite that draws something, as the primitive painting it alone
++    /// in the same layer would have inserted, draw order included.
++    pub(crate) fn primitives(&self) -> impl Iterator<Item = Primitive> + '_ {
++        self.sprites.iter().filter_map(|sprite| {
++            let primitive =
++                sprite.primitive(self.offset, &self.content_mask, self.opacity, self.order);
++            (!primitive_is_empty(&primitive)).then_some(primitive)
++        })
++    }
++
++    /// The batch moved by `delta`, content mask included.
++    pub(crate) fn translated(&self, delta: Point<ScaledPixels>) -> Self {
++        let mut batch = self.clone();
++        batch.offset = batch.offset + delta;
++        batch.content_mask.bounds.origin = batch.content_mask.bounds.origin + delta;
++        batch
++    }
++}
++
++/// Whether `primitive` draws nothing: its bounds miss its content mask.
++fn primitive_is_empty(primitive: &Primitive) -> bool {
++    primitive
++        .bounds()
++        .intersect(&primitive.content_mask().bounds)
++        .is_empty()
++}
++
++/// `operations` with every glyph sprite batch replaced by the primitives it
++/// paints, for passes that look at primitives one by one.
++pub(crate) fn expand_glyph_sprites(operations: &[PaintOperation]) -> Vec<PaintOperation> {
++    let mut expanded = Vec::with_capacity(operations.len());
++    for operation in operations {
++        match operation {
++            PaintOperation::GlyphSprites(batch) => {
++                expanded.extend(batch.primitives().map(PaintOperation::Primitive))
++            }
++            PaintOperation::Primitive(primitive) => {
++                expanded.push(PaintOperation::Primitive(primitive.clone()))
++            }
++            PaintOperation::StartLayer(bounds) => expanded.push(PaintOperation::StartLayer(*bounds)),
++            PaintOperation::EndLayer => expanded.push(PaintOperation::EndLayer),
++            PaintOperation::FastRoundedClip(clip) => {
++                expanded.push(PaintOperation::FastRoundedClip(*clip))
++            }
++        }
++    }
++    expanded
 +}
 +
  #[derive(Clone)]

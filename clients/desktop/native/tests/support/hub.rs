@@ -213,7 +213,7 @@ fn save(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle, name: 
 /// GPUI draws a view again from its last frame while nothing it read
 /// changed. State a view renders without being notified of it would show
 /// stale here: the retained frame must equal one drawn from scratch.
-fn assert_retained_matches_scratch(
+pub(super) fn assert_retained_matches_scratch(
     cx: &mut gpui::HeadlessAppContext,
     window: gpui::AnyWindowHandle,
     retained: &image::RgbaImage,

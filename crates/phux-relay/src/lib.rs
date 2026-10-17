@@ -1,180 +1,98 @@
-//! phux reference relay core (ADR-0051, ADR-0052): a byte relay between
-//! outbound connector tunnels and inbound consumers.
+//! phux's reference relay (ADR-0051, ADR-0052, ADR-0057): `quictun`'s relay
+//! bound to phux's protocol and state directory.
 //!
 //! A phux server behind NAT dials OUT under the `phux-relay/1` ALPN and
 //! registers a tunnel for a named route; consumers dial IN under
 //! `phux-quic/1`, naming the route via TLS SNI. The relay splices each
-//! admitted consumer onto a fresh stream over the route's tunnel.
+//! admitted consumer onto a fresh stream over the route's tunnel, and every
+//! consumer runs TLS end to end with the server inside it (ADR-0180).
 //!
-//! The relay **never parses phux frames**: its only parse is the connector's
-//! stream-0 auth preamble; consumer bytes, including their bearer preamble,
-//! cross opaquely (ADR-0051 invariants 1 and 5). The `phux relay` verb fronts
-//! [`RelayRuntime`].
+//! The relay itself is [`quictun`], which depends on no phux crate
+//! (ADR-0181). This crate supplies only what makes it phux's: [`protocol`]
+//! (the two ALPNs and the `phxT` connection-ID tag) and the files under
+//! phux's state directory. The `phux relay` verb fronts it.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
-#![allow(
-    clippy::redundant_pub_crate,
-    reason = "private modules keep pub(crate) items; conflicts with unreachable_pub"
-)]
 
-use std::path::PathBuf;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
-mod registry;
-mod runtime;
-mod splice;
-mod tls;
-mod tokens;
-
-pub use runtime::{
-    BoundRelay, DEFAULT_HANDSHAKES_PER_SOURCE, DEFAULT_MAX_CONNS, RelayConfig, RelayRuntime,
+use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
+pub use quictun::relay::{
+    BoundRelay, DEFAULT_HANDSHAKES_PER_SOURCE, DEFAULT_MAX_CONNS, RelayConfig, RelayError,
+    RelayRuntime, RouteTokenStore, cert_fingerprint, ensure_self_signed, mint_route_token,
+    validate_route_name,
 };
-pub use tls::{cert_fingerprint, ensure_self_signed};
-pub use tokens::{RouteTokenStore, mint_route_token, validate_route_name};
+pub use quictun::tunnel::{
+    AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, RECLAIMED_CODE, ROUTE_OFFLINE_CODE,
+};
 
-/// Application close code: bad, missing, or unknown tunnel token on the
-/// connector leg; matches the server listener's auth refusal.
-pub const AUTH_FAILED_CODE: u32 = 0x01;
+/// phux's relay protocol: connectors offer [`QUIC_RELAY_ALPN`], consumers
+/// [`QUIC_ALPN`], and tunnels tag their connection ID with
+/// [`phux_dial::quic::TUNNEL_CID_TAG`].
+#[must_use]
+pub fn protocol() -> quictun::Protocol {
+    quictun::Protocol::new(QUIC_RELAY_ALPN, QUIC_ALPN, phux_dial::quic::TUNNEL_CID_TAG)
+}
 
-/// Application close code: enrolled route, no live tunnel (`ROUTE_OFFLINE`).
-/// Sent after the TLS handshake; unknown routes are refused at TLS instead.
-pub const ROUTE_OFFLINE_CODE: u32 = 0x02;
+/// A phux relay config listening on `listen` with its files in `dir` and
+/// the default connection cap.
+#[must_use]
+pub fn config_in(listen: SocketAddr, dir: &Path) -> RelayConfig {
+    RelayConfig::in_dir(listen, dir, protocol())
+}
 
-/// Application close code: a newer claim on the same route superseded this
-/// tunnel (`RECLAIMED`, last-writer-wins).
-pub const RECLAIMED_CODE: u32 = 0x03;
-
-/// Application close code: the connector sent bytes on reserved stream 0
-/// after the auth preamble (ADR-0051 invariant 4).
-pub const PROTOCOL_VIOLATION_CODE: u32 = 0x04;
-
-/// Application close code: the relay is at its `--max-conns` cap
-/// (`OVER_CAP`); existing connections are unaffected.
-pub const OVER_CAP_CODE: u32 = 0x05;
+/// A phux relay config listening on `listen` with its files in phux's state
+/// directory and the default connection cap.
+#[must_use]
+pub fn config(listen: SocketAddr) -> RelayConfig {
+    config_in(listen, &state_dir())
+}
 
 /// phux's per-user state directory: `$XDG_STATE_HOME/phux`, else
 /// `$HOME/.local/state/phux`. Profile-free on purpose, unlike
 /// `phux_config::instance::state_dir`: the relay is not a profiled instance
 /// and must not depend on the daemon (ADR-0051).
 fn state_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|v| !v.is_empty())
-        .map_or_else(
-            || {
-                let mut home = std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from);
-                home.push(".local");
-                home.push("state");
-                home
-            },
-            PathBuf::from,
-        );
-    base.join("phux")
+    quictun::relay::state_dir("phux")
 }
 
 /// Default relay certificate path: `<state-dir>/relay-cert.pem`.
 #[must_use]
 pub fn default_relay_cert_path() -> PathBuf {
-    state_dir().join("relay-cert.pem")
+    state_dir().join(quictun::relay::CERT_FILE)
 }
 
 /// Default relay private-key path: `<state-dir>/relay-key.pem`.
 #[must_use]
 pub fn default_relay_key_path() -> PathBuf {
-    state_dir().join("relay-key.pem")
+    state_dir().join(quictun::relay::KEY_FILE)
 }
 
 /// Default route-token store path: `<state-dir>/relay-tokens`.
 #[must_use]
 pub fn default_relay_tokens_path() -> PathBuf {
-    state_dir().join("relay-tokens")
+    state_dir().join(quictun::relay::TOKENS_FILE)
 }
 
-/// Errors surfaced by the relay library.
-///
-/// Only startup-fatal conditions reach this type (bind, token-store load,
-/// certificate provisioning). Per-connection failures are logged and never
-/// tear down the endpoint.
-#[derive(Debug, thiserror::Error)]
-pub enum RelayError {
-    /// File or network I/O failed: state files, endpoint bind, or building
-    /// the tokio runtime.
-    #[error("relay io: {0}")]
-    Io(#[from] std::io::Error),
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Generating the self-signed certificate failed.
-    #[error("certificate generation: {0}")]
-    Rcgen(#[from] rcgen::Error),
-
-    /// A PEM certificate or key file could not be parsed.
-    #[error("pem: {0}")]
-    Pem(#[from] rustls::pki_types::pem::Error),
-
-    /// rustls rejected the certificate/key material or the TLS config.
-    #[error("rustls: {0}")]
-    Rustls(#[from] rustls::Error),
-
-    /// The certificate file held no certificates.
-    #[error("no certificates in {0}")]
-    NoCerts(String),
-
-    /// Exactly one of the persisted cert/key pair exists; regenerating would
-    /// rotate the pinned fingerprint, so the operator must delete it.
-    #[error(
-        "partial TLS pair: {present} exists but {missing} is missing — delete {present} to regenerate (this rotates the pinned fingerprint and breaks existing pins)"
-    )]
-    PartialTlsPair {
-        /// Path of the file that still exists.
-        present: String,
-        /// Path of the file that is missing.
-        missing: String,
-    },
-
-    /// A secret file (the TLS key or the route-token store) is owned by
-    /// another account, or other accounts can replace it (or, for the key,
-    /// read it). Carries the refusal and its fix.
-    #[error("{0}")]
-    InsecureFile(String),
-
-    /// The OS random source failed while minting a token.
-    #[error("os random source unavailable: {0}")]
-    Random(#[from] getrandom::Error),
-
-    /// A line in the route-token file was not `<64-char hex> <route>`.
-    #[error(
-        "malformed route-token line {line} (expected `<{hex_len}-char hex> <route>`, one entry per line)",
-        hex_len = tokens::TOKEN_LEN * 2
-    )]
-    MalformedTokenLine {
-        /// 1-based line number in the token file.
-        line: usize,
-    },
-
-    /// A route name failed the lowercase RFC 1123 label grammar; route names
-    /// ride SNI, so they are rejected, never normalized.
-    #[error("invalid route name {name:?}: {reason}")]
-    InvalidRouteName {
-        /// The offending name, verbatim.
-        name: String,
-        /// Which grammar rule it broke.
-        reason: &'static str,
-    },
-}
-
-/// Maps `phux_dial`'s provisioning errors onto the relay's own vocabulary so
-/// operator messages keep the relay's wording.
-impl From<phux_dial::cert::CertError> for RelayError {
-    fn from(err: phux_dial::cert::CertError) -> Self {
-        use phux_dial::cert::CertError;
-        match err {
-            CertError::Io(err) => Self::Io(err),
-            CertError::Rcgen(err) => Self::Rcgen(err),
-            CertError::Pem(err) => Self::Pem(err),
-            CertError::NoCerts(path) => Self::NoCerts(path),
-            CertError::InsecureKey(message) => Self::InsecureFile(message),
-            CertError::PartialTlsPair { present, missing } => {
-                Self::PartialTlsPair { present, missing }
-            }
-        }
+    /// The relay serves phux's wire exactly: the ALPNs the server and the
+    /// dialer use, and the tag the dialer puts on a tunnel.
+    #[test]
+    fn the_protocol_is_phux_wire() {
+        let protocol = protocol();
+        assert!(protocol.validate().is_ok());
+        assert_eq!(protocol.tunnel_alpn, b"phux-relay/1");
+        assert_eq!(protocol.consumer_alpns, vec![b"phux-quic/1".to_vec()]);
+        assert_eq!(protocol.cid_tag.0, *b"phxT");
+        let config = config_in("127.0.0.1:0".parse().unwrap(), Path::new("/state"));
+        assert_eq!(config.tokens_path, Path::new("/state/relay-tokens"));
+        assert_eq!(config.cert_path, Path::new("/state/relay-cert.pem"));
+        assert_eq!(config.key_path, Path::new("/state/relay-key.pem"));
     }
 }

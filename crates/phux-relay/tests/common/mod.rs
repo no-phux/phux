@@ -73,18 +73,15 @@ pub async fn spawn_relay_tuned(
     max_conns: usize,
     tune: impl FnOnce(RelayRuntime) -> RelayRuntime,
 ) -> RelayHandle {
-    let cert_path = dir.join("relay-cert.pem");
-    let key_path = dir.join("relay-key.pem");
-    let tokens_path = dir.join("relay-tokens");
-    phux_relay::ensure_self_signed(&cert_path, &key_path).expect("provision relay cert");
-    let fingerprint = phux_relay::cert_fingerprint(&cert_path).expect("relay fingerprint");
-    let runtime = tune(RelayRuntime::new(RelayConfig {
-        listen: "127.0.0.1:0".parse().expect("loopback listen addr"),
-        cert_path,
-        key_path,
-        tokens_path: tokens_path.clone(),
+    let config = RelayConfig {
         max_conns,
-    }));
+        ..phux_relay::config_in("127.0.0.1:0".parse().expect("loopback listen addr"), dir)
+    };
+    let tokens_path = config.tokens_path.clone();
+    phux_relay::ensure_self_signed(&config.cert_path, &config.key_path)
+        .expect("provision relay cert");
+    let fingerprint = phux_relay::cert_fingerprint(&config.cert_path).expect("relay fingerprint");
+    let runtime = tune(RelayRuntime::new(config));
     let bound = runtime.bind().expect("relay binds on port 0");
     let addr = bound.local_addr();
     let (shutdown, rx) = oneshot::channel::<()>();

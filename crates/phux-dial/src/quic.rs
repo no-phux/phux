@@ -7,7 +7,7 @@
 //! preamble (`len: u32 BE` + raw token) as the first stream bytes.
 //!
 //! **Tunnel tag.** A dial offering [`QUIC_RELAY_ALPN`] uses an initial
-//! destination connection ID of [`TUNNEL_CID_PREFIX`] plus 16 random bytes. A
+//! destination connection ID of [`TUNNEL_CID_TAG`] plus 16 random bytes. A
 //! relay reads it off the first packet to pick the tunnel's bounded
 //! flow-control config, which quinn fixes at accept time, before the ALPN is
 //! known. The tag selects a config, never a role: admission is still by ALPN.
@@ -43,29 +43,17 @@ const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 /// QUIC application close code for a refused auth preamble (`AUTH_FAILED`,
 /// `docs/spec/proto.md` §4.1), shared with the server listener and relay.
-pub const AUTH_FAILED_CODE: u32 = 0x01;
+pub const AUTH_FAILED_CODE: u32 = quictun::tunnel::AUTH_FAILED_CODE;
 
-/// First bytes of a tunnel dial's initial destination connection ID: `phxT`.
-pub const TUNNEL_CID_PREFIX: [u8; 4] = *b"phxT";
+/// The tag phux tunnel dials put on their initial destination connection ID:
+/// `phxT`.
+pub const TUNNEL_CID_TAG: quictun::CidTag = quictun::CidTag(*b"phxT");
 
-/// Length of a tagged connection ID: QUIC's 20-byte maximum.
-const TUNNEL_CID_LEN: usize = 20;
-
-/// Whether an initial destination connection ID carries the tunnel tag.
-#[must_use]
-pub fn is_tunnel_cid(cid: &[u8]) -> bool {
-    cid.len() == TUNNEL_CID_LEN && cid.starts_with(&TUNNEL_CID_PREFIX)
-}
-
-/// A fresh tagged connection ID: the prefix plus 16 CSPRNG bytes.
+/// A fresh tagged connection ID: the tag plus 16 CSPRNG bytes.
 fn tunnel_cid() -> Result<quinn::ConnectionId, DialError> {
-    let mut bytes = [0_u8; TUNNEL_CID_LEN];
-    bytes[..TUNNEL_CID_PREFIX.len()].copy_from_slice(&TUNNEL_CID_PREFIX);
-    rustls::crypto::ring::default_provider()
-        .secure_random
-        .fill(&mut bytes[TUNNEL_CID_PREFIX.len()..])
-        .map_err(|_| DialError::Connect("no randomness for the tunnel connection ID".to_owned()))?;
-    Ok(quinn::ConnectionId::new(&bytes))
+    TUNNEL_CID_TAG
+        .fresh_cid()
+        .map_err(|_| DialError::Connect("no randomness for the tunnel connection ID".to_owned()))
 }
 
 /// Everything the dialer needs to reach a `phux server --quic` listener.
@@ -420,22 +408,13 @@ mod tests {
         }
     }
 
+    /// phux's tunnel dials carry phux's tag; the tag's own rules are
+    /// `quictun`'s and tested there.
     #[test]
-    fn tunnel_cids_are_tagged_full_length_and_random() {
-        let first = tunnel_cid().expect("tagged cid");
-        let second = tunnel_cid().expect("tagged cid");
-        assert!(is_tunnel_cid(&first) && is_tunnel_cid(&second));
-        assert_ne!(
-            first[TUNNEL_CID_PREFIX.len()..],
-            second[TUNNEL_CID_PREFIX.len()..]
-        );
-
-        let mut tagged = [0x42_u8; TUNNEL_CID_LEN];
-        tagged[..4].copy_from_slice(&TUNNEL_CID_PREFIX);
-        assert!(is_tunnel_cid(&tagged));
-        assert!(!is_tunnel_cid(&[0x42_u8; TUNNEL_CID_LEN]));
-        assert!(!is_tunnel_cid(&TUNNEL_CID_PREFIX));
-        assert!(!is_tunnel_cid(&tagged[..8]));
+    fn tunnel_cids_carry_the_phux_tag() {
+        let cid = tunnel_cid().expect("tagged cid");
+        assert!(TUNNEL_CID_TAG.matches(&cid));
+        assert_eq!(&cid[..4], b"phxT");
     }
 
     /// Dial a loopback peer that reads the bearer preamble and then closes

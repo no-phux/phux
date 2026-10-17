@@ -103,7 +103,7 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
 
     crate::print_banner();
 
-    let mut config = phux_relay::RelayConfig::new(listen);
+    let mut config = phux_relay::config(listen);
     config.max_conns = max_conns;
 
     // Pre-flight the banner's ingredients so a bad token store, certificate,

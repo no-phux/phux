@@ -1,5 +1,5 @@
-//! Route-bound enrollment tokens for connector tunnels (ADR-0052
-//! Decision 2): which route a presented tunnel token is enrolled for.
+//! Route-bound enrollment tokens for service tunnels: which route a
+//! presented tunnel token is enrolled for.
 //!
 //! On disk, one owner-only (`0o600`) line per entry, `#` comments and blank
 //! lines ignored:
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::RelayError;
+use crate::relay::RelayError;
 
 /// Length in bytes of a minted enrollment token (256 bits from the OS CSPRNG).
 pub(crate) const TOKEN_LEN: usize = 32;
@@ -59,7 +59,7 @@ impl RouteTokenStore {
     /// malformed line or an invalid route name is an error (fail-fast at
     /// startup rather than silently dropping an enrollment), and so is a
     /// file another account owns or can write
-    /// ([`phux_dial::secret_file::SecretFile::TokenStore`]). A file others
+    /// ([`crate::secret_file::SecretFile::TokenStore`]). A file others
     /// can read loads with a warning.
     pub fn load(path: &Path) -> Result<Self, RelayError> {
         check_store_file(path)?;
@@ -179,7 +179,7 @@ pub fn mint_route_token(path: &Path, route: &str) -> Result<String, RelayError> 
 /// route or read every tunnel token), and warn about one others can read.
 /// A missing store passes: it loads empty.
 fn check_store_file(path: &Path) -> Result<(), RelayError> {
-    use phux_dial::secret_file::{SecretFile, check_metadata, effective_uid};
+    use crate::secret_file::{SecretFile, check_metadata, effective_uid};
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -225,7 +225,7 @@ impl StoreStamp {
 /// handshake.
 ///
 /// The file is re-read only when it changed since the last read (one `stat`
-/// per handshake otherwise), so `phux relay pair` and line deletion still
+/// per handshake otherwise), so minting a route and deleting a line still
 /// apply without a restart while a flood of `ClientHello`s costs no file
 /// reads. A store that cannot be read or parsed, or is insecure, reads as
 /// empty (fail closed) and is warned about once per change.
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_empty_store_that_rejects_all() {
-        let store = RouteTokenStore::load(Path::new("/nonexistent/phux/relay-tokens")).unwrap();
+        let store = RouteTokenStore::load(Path::new("/nonexistent/quictun/relay-tokens")).unwrap();
         assert!(store.is_empty());
         assert!(store.lookup(&[0u8; TOKEN_LEN]).is_none());
     }

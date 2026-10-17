@@ -87,8 +87,8 @@ alone. Wide cells and graphemes of several characters are shaped alone.
 When a row is shaped, its glyphs are resolved against the window's sprite
 atlas (`Window::resolve_glyph`, toolchain patch 0006) and kept with the scene
 as one sprite list per row. Painting a row is then one
-`Window::paint_glyph_sprites` call: no shaping, rasterizing or atlas lookup
-for the whole row. A scroll moves a kept row's
+`Window::paint_glyph_sprites` call: no shaping, rasterizing or atlas lookup,
+and one GPUI paint operation for the whole row. A scroll moves a kept row's
 sprites by whole device pixels instead of resolving them again, and the
 sub-row `shift` is the same kind of offset. The sprites are valid while
 `Window::glyph_raster` is unchanged (window, atlas generation, scale factor,
