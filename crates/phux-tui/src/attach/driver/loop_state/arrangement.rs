@@ -75,7 +75,9 @@ impl super::SessionLoop {
                     vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
                 );
-                // The first read still has to release the write fence.
+                // The first read still has to release the input fence; the
+                // link stays unloaded, so the frame handler neither heals
+                // nor writes, and nothing is saved until a read succeeds.
                 let Some(request_id) = first else {
                     return Ok(None);
                 };
@@ -120,11 +122,21 @@ impl super::SessionLoop {
     }
 
     /// Write `document` as the session's arrangement record. `false` when
-    /// there is no link (the caller uses the legacy key).
+    /// there is no link (the caller uses the legacy key). Until a read of
+    /// the record has succeeded nothing is written, since a compare-and-swap
+    /// against a record this client never saw would replace it whole: the
+    /// edit is reported unsaved and the read is owed again.
     pub(super) async fn write_arrangement(&mut self, document: &ArrangementDoc) -> bool {
         let Some(link) = self.arrangement.as_mut() else {
             return false;
         };
+        if !link.loaded() {
+            self.arrangement_read_owed = true;
+            self.show_notices([Notice::warn(
+                "layout not saved: the stored layout is not loaded yet".to_owned(),
+            )]);
+            return true;
+        }
         if let Err(err) = link.write(document).await {
             tracing::warn!(error = %err, "arrangement write failed");
             self.show_notices([Notice::warn(format!("layout not saved: {err}"))]);

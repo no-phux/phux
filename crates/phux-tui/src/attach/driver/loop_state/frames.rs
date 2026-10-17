@@ -76,9 +76,12 @@ impl super::SessionLoop {
             // On an `ORGANIZATION` server the layout is the session's
             // arrangement record, and a member it leaves out was closed on
             // purpose: it stays unarranged behind the reopen action (R15).
-            // Only an absent record, or a legacy key, is healed.
-            let key_absent = !outcome.layout_replaced;
-            let heal = key_absent || !self.organization_supported;
+            // Only an absent record, or a legacy key, is healed. A record
+            // that could not be read is not absent: healing it would save a
+            // default over the stored arrangement, so it is left alone.
+            let unloaded = self.arrangement.as_ref().is_some_and(|link| !link.loaded());
+            let key_absent = !outcome.layout_replaced && !unloaded;
+            let heal = key_absent || !(self.organization_supported || unloaded);
             if heal && self.place_unplaced_panes() {
                 outcome.layout_replaced = true;
                 outcome.emit_set_metadata = true;

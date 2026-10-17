@@ -34,6 +34,9 @@ pub(in crate::attach) struct ArrangementLink {
     session: SessionId,
     conn: Option<Connection>,
     next_request_id: u32,
+    /// Whether a read has succeeded: until one has, the client holds no
+    /// copy of the stored arrangement to write over, so it must not write.
+    loaded: bool,
 }
 
 impl std::fmt::Debug for ArrangementLink {
@@ -41,6 +44,7 @@ impl std::fmt::Debug for ArrangementLink {
         f.debug_struct("ArrangementLink")
             .field("session", &self.session)
             .field("connected", &self.conn.is_some())
+            .field("loaded", &self.loaded)
             .finish_non_exhaustive()
     }
 }
@@ -65,6 +69,7 @@ impl ArrangementLink {
             session,
             conn: Some(conn),
             next_request_id: 1,
+            loaded: false,
         }))
     }
 
@@ -78,7 +83,15 @@ impl ArrangementLink {
             session,
             conn: None,
             next_request_id: 1,
+            loaded: false,
         }
+    }
+
+    /// Whether a read has succeeded on this link. A read that failed is
+    /// "not loaded", never "absent": the stored arrangement may hold groups
+    /// this client has not seen, so nothing may be written until it has.
+    pub(in crate::attach) const fn loaded(&self) -> bool {
+        self.loaded
     }
 
     /// The session this link edits.
@@ -100,11 +113,13 @@ impl ArrangementLink {
         let result = LayoutOps::new(self.connection().await?, session, first)
             .read()
             .await;
-        match result {
-            Ok(document) => Ok(Some(document)),
-            Err(LayoutOpsError::MissingLayout) => Ok(None),
-            Err(err) => Err(self.settle(err)),
-        }
+        let read = match result {
+            Ok(document) => Some(document),
+            Err(LayoutOpsError::MissingLayout) => None,
+            Err(err) => return Err(self.settle(err)),
+        };
+        self.loaded = true;
+        Ok(read)
     }
 
     /// Replace the session's arrangement with `document`: a compare-and-swap

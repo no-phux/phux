@@ -7,8 +7,10 @@
 //!
 //! An `ORGANIZATION` server gives every session an arrangement (SPEC L2
 //! section 2.2), so the legacy value is never read or written there: a read
-//! that starts before the replica names the session's arrangement waits for
-//! it, and fails if the replica becomes unavailable instead.
+//! that starts while the replica is seeding, or before it lists the session,
+//! waits for the arrangement and fails if the replica becomes unavailable; a
+//! read against a failed replica, or a session listed without an
+//! arrangement, fails at once.
 //!
 //! An arrangement is presentation only: an empty one means the session's
 //! members are not arranged, never that the session is empty, and no
@@ -294,13 +296,39 @@ fn stored_arrangement(client: &Client) -> Option<ArrangementKey> {
 }
 
 /// The document a read goes to: the stored arrangement on an
-/// `ORGANIZATION` server (awaited until the replica names it), else the
-/// legacy value.
-fn read_backend(client: &Client) -> Backend {
+/// `ORGANIZATION` server, else the legacy value.
+///
+/// A read waits for the replica only while something will end the wait: a
+/// seed in flight (it ends in `OrganizationChanged` or
+/// `OrganizationUnavailable`), or a live replica that does not list the
+/// session yet (its journal event will). A replica that is neither live nor
+/// seeding, or a live one listing the session with no arrangement, fails the
+/// read now, so a pending read can never block later transactions forever.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the control guard lives exactly as long as the replica borrow it lends"
+)]
+fn read_backend(client: &Client) -> Result<Backend, BridgeError> {
     if !crate::c::organization::supported(client) {
-        return Backend::Legacy;
+        return Ok(Backend::Legacy);
     }
-    stored_arrangement(client).map_or(Backend::Awaiting, Backend::Organization)
+    if let Some(key) = stored_arrangement(client) {
+        return Ok(Backend::Organization(key));
+    }
+    let selected = selected_key(client);
+    let (live, listed, seeding) = {
+        let control = client.control();
+        let replica = control.organization();
+        let listed = selected.is_some_and(|key| replica.session(&key).is_some());
+        (replica.is_live(), listed, replica.seeding())
+    };
+    match (live, listed, seeding) {
+        (true, true, _) => Err(BridgeError::state("the session has no arrangement")),
+        (true, false, _) | (false, _, true) => Ok(Backend::Awaiting),
+        (false, _, false) => Err(BridgeError::state(
+            "the organization records could not be read; call phux_client_organization_refresh",
+        )),
+    }
 }
 
 /// Queue the reads of a transaction: the document first, then the registry
@@ -335,11 +363,11 @@ fn resume_awaited_read(client: &mut Client) -> Result<(), BridgeError> {
         return Ok(());
     }
     let (metadata_id, state_id) = (pending.metadata_id, pending.state_id);
-    let Some(key) = stored_arrangement(client) else {
+    let backend = read_backend(client)?;
+    if backend == Backend::Awaiting {
         return Ok(());
-    };
+    }
     let state_id = state_id.ok_or_else(|| BridgeError::state("missing arrangement registry"))?;
-    let backend = Backend::Organization(key);
     queue_reads(client, backend, metadata_id, state_id)?;
     if let Some(pending) = client.arrangement.pending.as_mut() {
         pending.backend = backend;
@@ -400,6 +428,9 @@ pub(crate) fn organization_changed(client: &mut Client) {
         _ => true,
     };
     if stale && let Err(error) = start_read(client, 0, None) {
+        // The stored arrangement went away: stop following it, so the next
+        // change does not fail the same read again.
+        client.arrangement.backend = Backend::Awaiting;
         client.arrangement.fail(&error);
     }
 }
@@ -480,7 +511,7 @@ pub(super) fn start_read(
             .arrangement
             .stored_key()
             .map_or(Backend::Awaiting, Backend::Organization),
-        None => read_backend(client),
+        None => read_backend(client)?,
     };
     let state_id = client.arrangement.reserve_internal()?;
     let metadata_id = client.arrangement.reserve_internal()?;
