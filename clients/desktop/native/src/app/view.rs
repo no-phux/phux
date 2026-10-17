@@ -226,22 +226,30 @@ fn host_chip(host: Option<&str>, online: bool, look: &Look) -> impl IntoElement 
         })
 }
 
-/// The active session and machine. Clicking it lists every machine.
+/// The active session and machine. Only the machine chip takes clicks (it
+/// lists every machine), so the session name still drags the window.
 fn workspace_identity(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let host = desk.remote.as_deref();
-    let full = format!(
-        "{} · Runs on {} · Click for machines",
-        desk.session,
-        host.unwrap_or("Local")
-    );
+    let full = format!("{} · Runs on {}", desk.session, host.unwrap_or("Local"));
+    let online = desk
+        .link
+        .as_ref()
+        .is_some_and(|link| link.connection.status == Status::Attached);
+    let machines = div()
+        .id("workspace-machines")
+        .debug_selector(|| "workspace-machines".into())
+        .min_w_0()
+        .max_w_full()
+        .occlude()
+        .cursor_pointer()
+        .rounded_full()
+        .hover(|style| style.bg(look.hover))
+        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
+        .tooltip(|window, cx| Tooltip::new("Machines…").build(window, cx))
+        .child(host_chip(host, online, look));
     div()
         .id("workspace-identity")
         .debug_selector(|| "workspace-identity".into())
-        .occlude()
-        .cursor_pointer()
-        .rounded(px(6.))
-        .hover(|style| style.bg(look.hover))
-        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
         .w(px(180.))
         .min_w_0()
         .flex_shrink_0()
@@ -258,13 +266,7 @@ fn workspace_identity(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl 
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(desk.session.clone()),
         )
-        .child(host_chip(
-            host,
-            desk.link
-                .as_ref()
-                .is_some_and(|link| link.connection.status == Status::Attached),
-            look,
-        ))
+        .child(machines)
         .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
 }
 #[derive(Clone)]

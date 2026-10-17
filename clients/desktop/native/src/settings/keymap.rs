@@ -191,7 +191,7 @@ const CATALOG: &str = "\
     reload-config | Reload Ghostty Config | Ghostty | cmd+shift+, | Read the Ghostty configuration again. |
     import-ghostty | Use Ghostty Font, Colors and Padding | Ghostty |  | Apply Ghostty appearance settings to this window. |
     reconnect | Reconnect to Server | Connection | cmd+shift+r | Restart this window's connection to the server. |
-    machines | Show Machines… | Connection |  | List this Mac and every saved machine with its connection state; open, retry or forget one. | hosts remote servers ssh connect status
+    machines | Machines… | Connection |  | List this Mac and every saved machine with its connection state; open, retry, disconnect or forget one. | hosts remote servers ssh connect status
     add-host | Add Machine… | Connection |  | Enroll a machine over ssh so its sessions appear in Work. | host remote server ssh enroll pair connect
     performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
     copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log

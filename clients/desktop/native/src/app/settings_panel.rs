@@ -1328,7 +1328,31 @@ fn diagnostic_group(
     )
 }
 
-/// One machine with its live state and the action that state allows. Saved
+/// A machine row's button, findable by its element id.
+fn machine_button(
+    id: String,
+    label: &'static str,
+    handle: &WeakEntity<Desk>,
+    run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
+) -> impl IntoElement {
+    let selector = id.clone();
+    div()
+        .debug_selector(move || selector.clone())
+        .child(ghost_button(id, label).on_click(click_runs(handle, run)))
+}
+
+/// The one action a machine's state allows: this window's own route
+/// reconnects, another unavailable machine retries, a connected one opens.
+pub(super) fn machine_action(reach: &Reach, current: bool) -> Option<&'static str> {
+    match (reach, current) {
+        (Reach::Unavailable(_), true) => Some("Reconnect"),
+        (Reach::Unavailable(_), false) => Some("Retry"),
+        (Reach::Connected, false) => Some("Open"),
+        (_, _) => None,
+    }
+}
+
+/// One machine with its live state and the actions that state allows. Saved
 /// machines stay listed while disconnected or empty.
 fn machine_item(
     desk: &Desk,
@@ -1347,45 +1371,52 @@ fn machine_item(
     }
     let id = host.unwrap_or("local").to_owned();
     let target = host.map(str::to_owned);
-    let (open, forget) = (handle.clone(), handle.clone());
-    let action = match (&reach, current) {
-        (Reach::Unavailable(_), true) => Some("Reconnect"),
-        (Reach::Unavailable(_), false) => Some("Retry"),
-        (Reach::Connected, false) => Some("Open"),
-        _ => None,
-    };
+    let action = machine_action(&reach, current);
+    // Another machine's inventory link can be dropped; this window's own
+    // route only reconnects.
+    let disconnect = !current && !matches!(reach, Reach::Unavailable(_));
+    let handle = handle.clone();
     SettingItem::new(
         host.unwrap_or("This Mac").to_owned(),
         SettingField::render(move |_, _, _| {
-            let target = target.clone();
-            let forget_name = target.clone();
+            let (open, drop) = (target.clone(), target.clone());
             div()
                 .flex()
                 .gap(px(8.))
                 .when_some(action, |row, label| {
-                    row.child(
-                        ghost_button(format!("settings-machine-{label}-{id}"), label).on_click(
-                            click_runs(&open, move |desk, window, cx| match label {
-                                "Reconnect" => desk.reconnect(cx),
-                                "Retry" => desk.retry_fleet(cx),
-                                _ => {
-                                    desk.close_modal(window, cx);
-                                    desk.open_machine(target.clone(), cx);
-                                    desk.after_command(window, cx);
-                                }
-                            }),
-                        ),
-                    )
+                    row.child(machine_button(
+                        format!("settings-machine-{label}-{id}"),
+                        label,
+                        &handle,
+                        move |desk, window, cx| match label {
+                            "Reconnect" => desk.reconnect(cx),
+                            "Retry" => desk.retry_fleet(cx),
+                            _ => {
+                                desk.close_modal(window, cx);
+                                desk.open_machine(open.clone(), cx);
+                                desk.after_command(window, cx);
+                            }
+                        },
+                    ))
                 })
-                .when_some(forget_name, |row, name| {
-                    row.child(
-                        ghost_button(format!("settings-remove-host-{name}"), "Forget…").on_click(
-                            click_runs(&forget, move |desk, window, cx| {
-                                let name = name.clone();
-                                desk.open_modal(Modal::RemoveHost { name }, window, cx)
-                            }),
-                        ),
-                    )
+                .when(disconnect, |row| {
+                    row.child(machine_button(
+                        format!("settings-machine-Disconnect-{id}"),
+                        "Disconnect",
+                        &handle,
+                        move |desk, _, cx| desk.disconnect_machine(drop.clone(), cx),
+                    ))
+                })
+                .when_some(target.clone(), |row, name| {
+                    row.child(machine_button(
+                        format!("settings-remove-host-{name}"),
+                        "Forget…",
+                        &handle,
+                        move |desk, window, cx| {
+                            let name = name.clone();
+                            desk.open_modal(Modal::RemoveHost { name }, window, cx);
+                        },
+                    ))
                 })
         }),
     )

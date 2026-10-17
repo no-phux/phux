@@ -474,9 +474,10 @@ impl GlassMenu {
                     entry.checked = self.current.as_ref() == Some(&host.name);
                     entry
                 }));
-                let mut add = Entry::new("Add Host…", IconName::Plus, Choice::AddHost);
-                add.gap = true;
-                entries.push(add);
+                let mut machines = self.command("machines", IconName::Server);
+                machines.gap = true;
+                entries.push(machines);
+                entries.push(Entry::new("Add Machine…", IconName::Plus, Choice::AddHost));
                 entries
             }
         }
@@ -704,11 +705,11 @@ impl GlassMenu {
                     .clone()
                     .unwrap_or_else(|| "Local".into())
                     .into(),
-                "Switch host",
+                "Switch machine",
             ),
             Page::Panes => ("Pane Layout".into(), "Split or duplicate this terminal"),
             Page::Tabs => ("Tab Placement".into(), "Choose top or side workspace tabs"),
-            Page::Hosts => ("Switch Host".into(), "Local and saved hosts"),
+            Page::Hosts => ("Switch Machine".into(), "This Mac and saved machines"),
         };
         let icon = match (home, self.current.is_some()) {
             (true, true) => IconName::Server,
@@ -718,7 +719,11 @@ impl GlassMenu {
         div()
             .id("glass-menu-header")
             .role(gpui::Role::MenuItem)
-            .aria_label(if home { "Switch host" } else { "Back to menu" })
+            .aria_label(if home {
+                "Switch machine"
+            } else {
+                "Back to menu"
+            })
             .aria_selected(self.selected.is_none())
             .when(self.selected.is_none(), |el| {
                 el.aria_active_descendant().bg(washes.quiet)
@@ -1162,7 +1167,7 @@ mod tests {
         );
         cx.simulate_keystrokes("up");
         let bounds = cx
-            .debug_bounds("glass-menu-row-71")
+            .debug_bounds("glass-menu-row-72")
             .expect("last host-page row");
         assert!(bounds.origin.y >= px(HEADER));
         assert!(

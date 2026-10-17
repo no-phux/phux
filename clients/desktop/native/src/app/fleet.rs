@@ -1,6 +1,6 @@
 //! Work-first inventory across authorities. Browsing never acquires terminal views.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, Task};
 use phux_client_runtime::control::Status;
@@ -54,12 +54,15 @@ impl Drop for Observer {
 #[derive(Default)]
 pub(crate) struct Fleet {
     observers: HashMap<Option<String>, Observer>,
+    /// Routes the user disconnected; not redialed until a retry.
+    held: HashSet<Option<String>>,
     pub revision: u64,
 }
 
 impl Fleet {
     pub fn clear(&mut self) {
         self.observers.clear();
+        self.held.clear();
     }
 
     pub fn failures(&self) -> Vec<(Option<String>, String)> {
@@ -130,6 +133,9 @@ impl Reach {
         }
     }
 }
+
+/// Why a machine the user disconnected is not listed live.
+pub(crate) const DISCONNECTED: &str = "Disconnected. Retry to reconnect.";
 
 fn available(connection: &Connection) -> bool {
     matches!(connection.status, Status::Negotiated | Status::Attached)
@@ -212,12 +218,15 @@ impl Desk {
             routes.push(None);
         }
         self.fleet.observers.retain(|host, _| routes.contains(host));
+        self.fleet.held.retain(|host| routes.contains(host));
         for host in routes {
-            if self
-                .fleet
-                .observers
-                .get(&host)
-                .is_some_and(|observer| observer.connection.is_some())
+            let held = self.fleet.held.contains(&host);
+            if held
+                || self
+                    .fleet
+                    .observers
+                    .get(&host)
+                    .is_some_and(|observer| observer.connection.is_some())
             {
                 continue;
             }
@@ -376,7 +385,8 @@ impl Desk {
     }
 
     /// Open a machine from its row: its intake, else its first live session.
-    /// A machine that cannot be opened says why; an unavailable one is retried.
+    /// A machine that cannot be opened says why; an unavailable one is retried,
+    /// or reconnected when it is this window's own route.
     pub(crate) fn open_machine(&mut self, host: Option<String>, cx: &mut Context<Self>) {
         let target = self
             .work_catalog()
@@ -390,6 +400,10 @@ impl Desk {
         }
         let name = host.as_deref().unwrap_or("Local");
         match self.machine_reach(host.as_deref()) {
+            Reach::Unavailable(_) if host == self.remote => {
+                self.post(Kind::Info, &format!("Reconnecting {name}"), None);
+                self.reconnect(cx);
+            }
             Reach::Unavailable(_) => {
                 self.post(Kind::Info, &format!("Retrying {name}"), None);
                 self.retry_fleet(cx);
@@ -406,7 +420,30 @@ impl Desk {
         cx.notify();
     }
 
+    /// Stop observing another machine: close its inventory connection, keep
+    /// its work listed offline, and leave it down until a retry. This
+    /// window's own route reconnects instead; it is never disconnected here.
+    pub(crate) fn disconnect_machine(&mut self, host: Option<String>, cx: &mut Context<Self>) {
+        if host == self.remote {
+            return;
+        }
+        if let Some(observer) = self.fleet.observers.get_mut(&host) {
+            if let Some(mut connection) = observer.connection.take() {
+                connection.close();
+            }
+            observer._wake = None;
+            for work in &mut observer.last {
+                work.online = false;
+            }
+            observer.error = Some(DISCONNECTED.into());
+        }
+        self.fleet.held.insert(host);
+        self.fleet.revision = self.fleet.revision.wrapping_add(1);
+        cx.notify();
+    }
+
     pub(crate) fn retry_fleet(&mut self, cx: &mut Context<Self>) {
+        self.fleet.held.clear();
         for observer in self.fleet.observers.values_mut() {
             if observer
                 .connection
