@@ -2807,9 +2807,9 @@ dependencies = [
  "hex",
  "phux-dial",
  "phux-protocol",
+ "quictun",
  "quinn",
  "rcgen",
- "rustix",
  "rustls",
  "sha2 0.11.0",
  "tempfile",
@@ -2817,7 +2817,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
- "tracing",
 ]
 
 [[package]]
@@ -2900,18 +2899,12 @@ dependencies = [
 name = "phux-relay"
 version = "0.100.0"
 dependencies = [
- "getrandom 0.4.3",
- "hex",
  "phux-dial",
  "phux-protocol",
+ "quictun",
  "quinn",
- "rcgen",
- "rustls",
- "subtle",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3249,6 +3242,25 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+
+[[package]]
+name = "quictun"
+version = "0.99.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "hex",
+ "quictun",
+ "quinn",
+ "rcgen",
+ "rustix",
+ "rustls",
+ "sha2 0.11.0",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "quinn"

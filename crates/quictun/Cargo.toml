@@ -1,0 +1,52 @@
+[package]
+name = "quictun"
+description = "A blind QUIC tunnel relay: services behind NAT dial out, consumers dial in by route name in the TLS server name, and the relay splices their streams without reading them. Depends on no phux crate."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+# SHA-256 leaf fingerprints, for pinning and for printing a pin.
+sha2 = "0.11"
+# Self-signed certificate generation (`provision`).
+rcgen = { version = "0.14", default-features = false, features = [
+    "ring",
+    "pem",
+], optional = true }
+# The effective uid a secret file's owner is checked against (`provision`).
+rustix = { version = "1.1", default-features = false, features = [
+    "std",
+    "process",
+], optional = true }
+# Hex encode/decode of route tokens (`relay`).
+hex = { version = "0.4", optional = true }
+# Constant-time token comparison, so lookup has no timing oracle (`relay`).
+subtle = { version = "2", optional = true }
+# OS CSPRNG for token minting; `std` for `std::error::Error` (`relay`).
+getrandom = { version = "0.4", features = ["std"], optional = true }
+
+[features]
+default = ["relay"]
+# Certificate provisioning and secret-file checks, for whoever terminates TLS.
+provision = ["dep:rcgen", "dep:rustix"]
+# The relay itself: the endpoint, the SNI gate, and the route-token store.
+relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom"]
+# Test-only `testing::DropProxy` UDP impairment; off in shipped builds.
+testing = []
+
+[dev-dependencies]
+tempfile.workspace = true
+# Self dev-dependency so crate-scoped test runs build every module.
+quictun = { path = ".", features = ["relay", "testing"] }

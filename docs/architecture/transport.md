@@ -89,7 +89,8 @@ seam changes.
   and token store. Opt-in via `phux server --quic <HOST:PORT>`.
   **Backpressure:** every QUIC writer that can outrun its path (server QUIC
   and WebTransport writers, `phux-relay`'s consumer leg) holds quinn's send
-  window to the congestion window plus 16 KiB (`phux_dial::window`), so a
+  window to the congestion window plus 16 KiB (`quictun::window`, which
+  `phux_dial::window` re-exports), so a
   slow link blocks the writer within about a round trip. The attach pump
   measures lag in time: a live chunk older than 250ms
   (`runtime::pump::STALE_OUTPUT_BUDGET`) fences the generation and resyncs

@@ -235,11 +235,8 @@ impl RelayedServer {
             tokio::task::LocalSet::new().block_on(&runtime, async move {
                 let relay = phux_server_testkit::relay::RelayHarness::start_observing(
                     phux_relay::RelayConfig {
-                        listen: SocketAddr::from(([127, 0, 0, 1], 0)),
-                        cert_path: state.join("relay-cert.pem"),
-                        key_path: state.join("relay-key.pem"),
-                        tokens_path: state.join("relay-tokens"),
                         max_conns: 16,
+                        ..phux_relay::config_in(SocketAddr::from(([127, 0, 0, 1], 0)), &state)
                     },
                     relay_sni,
                 );

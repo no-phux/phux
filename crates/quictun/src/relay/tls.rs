@@ -1,21 +1,19 @@
 //! TLS termination for the relay's single QUIC endpoint.
 //!
-//! One endpoint advertises both ALPNs (`phux-relay/1` for connectors,
-//! `phux-quic/1` for consumers); the leg is read from the negotiated ALPN,
-//! never the byte stream (ADR-0051 invariant 7). Consumer hellos whose SNI is
-//! absent or not an enrolled route are refused **at the TLS layer** by
-//! [`SniGate`] (ADR-0052 Decision 1). Certificate provisioning is
-//! [`phux_dial::cert`]'s.
+//! One endpoint advertises the tunnel ALPN and every consumer ALPN of its
+//! [`Protocol`]; the leg is read from the negotiated ALPN, never the byte
+//! stream. Consumer hellos whose SNI is absent or not an enrolled route are
+//! refused **at the TLS layer** by [`SniGate`]. Certificate provisioning is
+//! [`crate::cert`]'s.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use phux_dial::cert;
-use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
-
-use crate::RelayError;
-use crate::tokens::CachedRouteTokens;
+use crate::Protocol;
+use crate::cert;
+use crate::relay::RelayError;
+use crate::relay::tokens::CachedRouteTokens;
 
 /// Provision the relay's self-signed certificate + key if missing.
 ///
@@ -26,16 +24,17 @@ pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), Relay
 }
 
 /// SHA-256 fingerprint of the leaf certificate as uppercase colon-separated
-/// hex, the shape `phux pair` prints.
+/// hex, the spelling [`crate::pin`] pins.
 pub fn cert_fingerprint(cert_path: &Path) -> Result<String, RelayError> {
     Ok(cert::cert_fingerprint(cert_path)?)
 }
 
-/// The relay's rustls `ServerConfig`: TLS 1.3 only, no client auth, both
-/// ALPNs, and the [`SniGate`] resolver.
+/// The relay's rustls `ServerConfig`: TLS 1.3 only, no client auth, the
+/// protocol's ALPNs (tunnel first), and the [`SniGate`] resolver.
 pub(crate) fn server_config(
     cert_path: &Path,
     key_path: &Path,
+    protocol: &Protocol,
     tokens: Arc<CachedRouteTokens>,
 ) -> Result<rustls::ServerConfig, RelayError> {
     let certs = cert::load_certs(cert_path)?;
@@ -50,9 +49,12 @@ pub(crate) fn server_config(
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(SniGate {
             key: certified,
+            tunnel_alpn: protocol.tunnel_alpn.clone(),
             tokens,
         }));
-    config.alpn_protocols = vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()];
+    config.alpn_protocols = std::iter::once(protocol.tunnel_alpn.clone())
+        .chain(protocol.consumer_alpns.iter().cloned())
+        .collect();
     Ok(config)
 }
 
@@ -60,11 +62,13 @@ pub(crate) fn server_config(
 /// application byte flows.
 ///
 /// The enrolled-route set follows the store file per handshake (re-read
-/// only when it changed) so `phux relay pair` is live without a restart; an
+/// only when it changed) so a newly minted route is live without a restart; an
 /// unreadable store fails closed.
 struct SniGate {
     /// The relay's one certified key, served to every admitted hello.
     key: Arc<rustls::sign::CertifiedKey>,
+    /// The ALPN that marks a tunnel hello.
+    tunnel_alpn: Vec<u8>,
     /// The route-token store; source of the enrolled-route set.
     tokens: Arc<CachedRouteTokens>,
 }
@@ -85,7 +89,7 @@ impl rustls::server::ResolvesServerCert for SniGate {
     ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         let offers_relay_alpn = client_hello
             .alpn()
-            .is_some_and(|mut alpns| alpns.any(|alpn| alpn == QUIC_RELAY_ALPN));
+            .is_some_and(|mut alpns| alpns.any(|alpn| alpn == self.tunnel_alpn));
         let routes = if offers_relay_alpn {
             BTreeSet::new()
         } else {
@@ -170,7 +174,7 @@ mod tests {
             "missing file: no routes"
         );
 
-        crate::tokens::mint_route_token(&path, "alpha").unwrap();
+        crate::relay::tokens::mint_route_token(&path, "alpha").unwrap();
         assert!(enrolled_routes(&tokens).contains("alpha"));
         fs::remove_file(&path).unwrap();
         assert!(enrolled_routes(&tokens).is_empty());
@@ -183,18 +187,20 @@ mod tests {
     }
 
     #[test]
-    fn server_config_offers_both_alpns_and_needs_material() {
+    fn server_config_offers_every_alpn_and_needs_material() {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("relay-cert.pem");
         let key = dir.path().join("relay-key.pem");
         let tokens = Arc::new(CachedRouteTokens::new(dir.path().join("relay-tokens")));
-        assert!(server_config(&cert, &key, Arc::clone(&tokens)).is_err());
+        let mut protocol = Protocol::new(b"t/1", b"c/1", crate::CidTag(*b"test"));
+        protocol.consumer_alpns.push(b"h3".to_vec());
+        assert!(server_config(&cert, &key, &protocol, Arc::clone(&tokens)).is_err());
 
         ensure_self_signed(&cert, &key).unwrap();
-        let config = server_config(&cert, &key, tokens).unwrap();
+        let config = server_config(&cert, &key, &protocol, tokens).unwrap();
         assert_eq!(
             config.alpn_protocols,
-            vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()]
+            vec![b"t/1".to_vec(), b"c/1".to_vec(), b"h3".to_vec()]
         );
     }
 }
