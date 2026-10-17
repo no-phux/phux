@@ -199,6 +199,59 @@ fn old_events_queued_before_a_reconnect_precede_its_boundary() {
     assert_eq!(order, ["bell", "lost", "opened", "bell"]);
 }
 
+fn shell_event(plane: &mut ControlPlane, event: phux_protocol::wire::frame::AgentEvent) {
+    plane
+        .feed(FrameKind::Event {
+            terminal: Some(terminal()),
+            event,
+            stamp: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
+    use phux_protocol::wire::frame::AgentEvent;
+    let mut plane = attached();
+    assert!(
+        !plane.command_running(&terminal()),
+        "unknown reads as not running"
+    );
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    assert!(plane.command_running(&terminal()));
+    shell_event(
+        &mut plane,
+        AgentEvent::CommandFinished { exit_code: Some(0) },
+    );
+    assert!(!plane.command_running(&terminal()));
+    assert!(plane.take_observation().events.iter().any(|event| matches!(
+        event,
+        Event::CommandFinished {
+            exit_code: Some(0),
+            ..
+        }
+    )));
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    reconnect_with_reused_ids(&mut plane);
+    assert!(
+        !plane.command_running(&terminal()),
+        "a new connection does not inherit the old one's command state"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::ResourceClosed {
+            exit_status: Some(0),
+        },
+    );
+    assert!(
+        !plane.command_running(&terminal()),
+        "a closed terminal runs nothing"
+    );
+}
+
 #[test]
 fn an_ordinary_refresh_is_not_a_new_incarnation() {
     let mut plane = attached();

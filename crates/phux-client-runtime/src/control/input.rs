@@ -211,6 +211,16 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, events)
     }
 
+    /// Whether the terminal's shell is known to be running a command: it
+    /// reported a start (OSC 133 C) and no finish (OSC 133 D) since, on this
+    /// connection. `false` is at a prompt *or unknown* (no shell
+    /// integration, a start before this connection, or a closed terminal),
+    /// so a caller that guards input on it fails open.
+    #[must_use]
+    pub fn command_running(&self, terminal_id: &ResourceId) -> bool {
+        self.running_commands.contains(terminal_id)
+    }
+
     /// Whether raw input for the terminal would pass the server's gate
     /// right now: attached, a published replica, no delivery fence, and
     /// either the attached session's terminal or a confirmed per-terminal

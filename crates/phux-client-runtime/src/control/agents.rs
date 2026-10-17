@@ -149,11 +149,17 @@ impl ControlPlane {
                     waiting_seconds: elapsed_seconds,
                 });
             }
-            AgentEvent::CommandStarted => self.push_event(Event::CommandStarted { terminal_id }),
-            AgentEvent::CommandFinished { exit_code } => self.push_event(Event::CommandFinished {
-                terminal_id,
-                exit_code,
-            }),
+            AgentEvent::CommandStarted => {
+                self.running_commands.insert(terminal_id.clone());
+                self.push_event(Event::CommandStarted { terminal_id });
+            }
+            AgentEvent::CommandFinished { exit_code } => {
+                self.running_commands.remove(&terminal_id);
+                self.push_event(Event::CommandFinished {
+                    terminal_id,
+                    exit_code,
+                });
+            }
             AgentEvent::CwdChanged { cwd } => {
                 if let Some(pane) = self
                     .topology
@@ -200,6 +206,7 @@ impl ControlPlane {
         }
         self.forget_agent_metadata(terminal_id);
         self.live_asks.remove(terminal_id);
+        self.running_commands.remove(terminal_id);
         self.listings.forget(terminal_id);
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)
