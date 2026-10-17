@@ -164,7 +164,7 @@ resolve() {
   matches "$version_found" "$SEMVER" || die "the manifest names an invalid $1 version"
   sha_found="$(manifest_value "${work}/manifest" "${key}.sha")"
   matches "$sha_found" '[0-9a-f]{40}' || die "the manifest names an invalid $1 commit"
-  build_sha256="$(manifest_value "${work}/manifest" "${key}.sha256.$2")"
+  build_sha256="$(manifest_value "${work}/manifest" "${key}.artifacts.$2.sha256")"
   matches "$build_sha256" '[0-9a-f]{64}' || die "the manifest publishes no $1 digest for $2"
   if [ "$channel" = next ]; then build_id="$sha_found"; else build_id="$version_found"; fi
 }
@@ -221,8 +221,9 @@ cli_member() {
   return 1
 }
 
+# GNU stat reads -f as "file system", so try its -c first.
 link_count() {
-  stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1"
+  if stat -c '%h' "$1" >/dev/null 2>&1; then stat -c '%h' "$1"; else stat -f '%l' "$1"; fi
 }
 
 # Unpack the verified tarball into the work directory; refuse any member a
@@ -530,7 +531,7 @@ while [ "$#" -gt 0 ]; do
     --sha256) pin_sha256="$2" ;;
     --install-dir) install_dir="$2" ;;
     --applications-dir) applications_dir="$2" ;;
-    --stage-dir) stage_dir="${2%/}" ;;
+    --stage-dir) stage_dir="$2" ;;
     --os) os="$2" ;;
     --arch) arch="$2" ;;
     --desktop) desktop=1 ;;
@@ -561,7 +562,7 @@ fi
 [ -n "$install_dir" ] || die "--install-dir resolved to an empty path"
 if [ -n "$stage_dir" ]; then
   [ "$desktop" -eq 1 ] || die "--stage-dir stages Phux Desktop; pass --desktop"
-  case "$stage_dir" in /?*) ;; *) die "--stage-dir must be an absolute path" ;; esac
+  case "$stage_dir" in /?*) stage_dir="${stage_dir%/}" ;; *) die "--stage-dir must be an absolute directory other than /" ;; esac
   # Stage on the volume the app swaps into, under the same lock.
   applications_dir="$(dirname "$stage_dir")"
 elif [ -z "$applications_dir" ]; then

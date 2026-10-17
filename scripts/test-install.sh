@@ -89,8 +89,8 @@ refuse_manifest() {
 refuse_manifest stable 'm["schema_version"] = 2' 'unsupported schema'
 refuse_manifest stable 'm["channel"] = "next"' 'names another channel'
 refuse_manifest stable 'del m["products"]["phux"]' 'no phux release is published'
-refuse_manifest stable 'del m["products"]["phux"]["sha256"]["aarch64-apple-darwin"]' 'no phux digest for aarch64-apple-darwin'
-refuse_manifest stable 'm["products"]["phux"]["sha256"]["aarch64-apple-darwin"] = "F" * 64' 'no phux digest'
+refuse_manifest stable 'del m["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]' 'no phux digest for aarch64-apple-darwin'
+refuse_manifest stable 'm["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]["sha256"] = "F" * 64' 'no phux digest'
 refuse_manifest stable 'm["products"]["phux"]["version"] = "09.8.7"' 'invalid phux version'
 refuse_manifest next 'm["products"]["phux"]["sha"] = "A" * 40' 'invalid phux commit'
 for value in '[1]' 'True' '{}' '"has space"'; do
@@ -141,8 +141,8 @@ package() { # ID: pack a release whose binaries say ID, and serve it
 digest_stable="$(package v9.8.7)"
 digest_next="$(package "next.$sha_a")"
 serve_golden
-mutate stable "m['products']['phux']['sha256']['$TARGET'] = '$digest_stable'"
-mutate next "m['products']['phux']['sha256']['$TARGET'] = '$digest_next'"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+mutate next "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_next'"
 install_to() { local dir="$1"; shift; installer --os linux --arch x86_64 --install-dir "$dir" "$@"; }
 
 : > "$CALLS"
@@ -159,11 +159,11 @@ FAIL_MANIFEST=1 install_to "$TMP/pinned" --version 9.8.7 >/dev/null 2>&1
 grep -Fq "phux-v9.8.7-$TARGET.tar.gz.sha256" "$CALLS" || fail "a pin must verify its sidecar"
 
 # A digest the archive does not match installs nothing.
-mutate stable "m['products']['phux']['sha256']['$TARGET'] = '0' * 64"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
 printf 'old phux\n' > "$TMP/stable/phux"
 refused 'checksum mismatch' --os linux --arch x86_64 --install-dir "$TMP/stable"
 grep -Fxq 'old phux' "$TMP/stable/phux" || fail "a mismatch replaced the binary"
-mutate stable "m['products']['phux']['sha256']['$TARGET'] = '$digest_stable'"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
 
 no_leftovers() {
   if find "$1" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then fail "$2 left transaction state"; fi

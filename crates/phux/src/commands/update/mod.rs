@@ -1045,7 +1045,7 @@ mod tests {
                 "version": version,
                 "sha": sha,
                 "protocol": "0.9",
-                "sha256": {target(): digest},
+                "artifacts": {target(): {"sha256": digest}},
             }},
         })
         .to_string()

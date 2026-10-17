@@ -21,6 +21,7 @@ from pathlib import Path
 from publish_plan import parse_tag
 
 REPO = "no-phux/phux"
+DOWNLOAD = f"https://github.com/{REPO}/releases/download"
 CHANNELS = ("stable", "next")
 PRODUCTS = ("phux", "desktop")
 TARGETS = {
@@ -57,6 +58,12 @@ def require(pattern, value, what):
     return value
 
 
+def release_of(product, channel, version):
+    if channel == "next":
+        return "next"
+    return f"v{version}" if product == "phux" else f"desktop-v{version}"
+
+
 def asset_name(product, channel, version, sha, target):
     """The naming rule every client derives on its own (ADR-0176 decision 1)."""
     if product == "phux":
@@ -66,16 +73,29 @@ def asset_name(product, channel, version, sha, target):
     return f"phux-desktop-{identity}-macos-arm64.zip"
 
 
-def entry(product, version, sha, protocol, digests):
+def entry(product, channel, version, sha, protocol, digests):
+    """One product's entry. `release`, `name`, `url` and `minimum_macos` are
+    derived, and current clients ignore them; v0.87.0 and Desktop 0.26.0
+    check them (ADR-0176 decision 8)."""
     targets = TARGETS[product]
     if set(digests) != set(targets):
         raise ManifestError(f"{product} needs digests for exactly {', '.join(targets)}")
-    return {
+    release = release_of(product, channel, version)
+    artifacts = {}
+    for target in targets:
+        name = asset_name(product, channel, version, sha, target)
+        artifacts[target] = {"name": name, "url": f"{DOWNLOAD}/{release}/{name}",
+                             "sha256": require(DIGEST, digests[target], f"{name} sha256")}
+    document = {
         "version": require(VERSION, version, f"{product} version"),
+        "release": release,
         "sha": require(SHA, sha, f"{product} sha"),
         "protocol": require(PROTOCOL, protocol, f"{product} protocol"),
-        "sha256": {t: require(DIGEST, digests[t], f"{product} {t} sha256") for t in targets},
     }
+    if product == "desktop":
+        document["minimum_macos"] = "27.0"
+    document["artifacts"] = artifacts
+    return document
 
 
 def manifest(channel, products, generated_at):
@@ -239,7 +259,7 @@ def stable_entry(product, row):
     sha = tag_commit(tag)
     names = {t: asset_name(product, "stable", version, None, t) for t in TARGETS[product]}
     digests = asset_digests(row["assets"], names.values())
-    return entry(product, version, sha, protocol_at(sha, product),
+    return entry(product, "stable", version, sha, protocol_at(sha, product),
                  {t: digests[name] for t, name in names.items()})
 
 
@@ -337,7 +357,7 @@ def publish_next(product, sha, dist):
 
     products = dict((current or {}).get("products", {}))
     previous_sha = products.get(product, {}).get("sha")
-    products[product] = entry(product, version, sha, protocol, digests)
+    products[product] = entry(product, "next", version, sha, protocol, digests)
     publish_manifest(manifest("next", products, now()), current)
 
     with tempfile.TemporaryDirectory() as scratch:
@@ -356,8 +376,8 @@ def publish_next(product, sha, dist):
 def fixture(channel):
     digests = {t: f"{i:x}" * 64 for i, t in enumerate(TARGETS["phux"], 1)}
     return manifest(channel, {
-        "phux": entry("phux", "9.8.7", "a" * 40, "0.9", digests),
-        "desktop": entry("desktop", "1.2.3", "b" * 40, "0.9", {"aarch64-apple-darwin": "d" * 64}),
+        "phux": entry("phux", channel, "9.8.7", "a" * 40, "0.9", digests),
+        "desktop": entry("desktop", channel, "1.2.3", "b" * 40, "0.9", {"aarch64-apple-darwin": "d" * 64}),
     }, "2026-01-01T00:00:00Z")
 
 

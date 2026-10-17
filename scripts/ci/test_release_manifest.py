@@ -40,10 +40,10 @@ class ManifestTests(unittest.TestCase):
 
     def test_entry_refuses_malformed_facts(self):
         digests = {t: "e" * 64 for t in rm.TARGETS["phux"]}
-        good = ["phux", "1.2.3", "a" * 40, "0.9", digests]
-        for index, value in [(1, "1.02.3"), (2, "A" * 40), (3, "0.09"),
-                             (4, {"aarch64-apple-darwin": "e" * 64}),
-                             (4, {t: "E" * 64 for t in rm.TARGETS["phux"]})]:
+        good = ["phux", "stable", "1.2.3", "a" * 40, "0.9", digests]
+        for index, value in [(2, "1.02.3"), (3, "A" * 40), (4, "0.09"),
+                             (5, {"aarch64-apple-darwin": "e" * 64}),
+                             (5, {t: "E" * 64 for t in rm.TARGETS["phux"]})]:
             args = list(good)
             args[index] = value
             with self.assertRaises(rm.ManifestError, msg=value):

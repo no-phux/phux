@@ -90,7 +90,7 @@ class DesktopInstaller(unittest.TestCase):
     def manifest(self, channel, sha="c" * 40, digest=None):
         document = json.loads((GOLDEN / f"{channel}.json").read_text())
         document["products"]["desktop"].update(version=VERSION, sha=sha)
-        document["products"]["desktop"]["sha256"]["aarch64-apple-darwin"] = digest or self.digest
+        document["products"]["desktop"]["artifacts"]["aarch64-apple-darwin"]["sha256"] = digest or self.digest
         (self.fixture / "manifest.json").write_text(json.dumps(document, indent=2) + "\n")
 
     def next_build(self):
@@ -188,7 +188,7 @@ class DesktopInstaller(unittest.TestCase):
         archive.rename(self.fixture / "cli.tar.gz")
         self.manifest("stable")
         document = json.loads((self.fixture / "manifest.json").read_text())
-        document["products"]["phux"]["sha256"]["aarch64-apple-darwin"] = hashlib.sha256(
+        document["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]["sha256"] = hashlib.sha256(
             (self.fixture / "cli.tar.gz").read_bytes()).hexdigest()
         (self.fixture / "manifest.json").write_text(json.dumps(document, indent=2) + "\n")
         result = self.install("--channel", "stable")
@@ -227,7 +227,8 @@ class DesktopInstaller(unittest.TestCase):
         self.stage("--stage-dir", str(stage), "--channel", "next", "--revision", sha, "--sha256", self.digest)
         before = (stage / "Phux.app/Contents/Info.plist").read_bytes()
         for args, message in (
-            (["--stage-dir", "relative/dir", "--version", VERSION], "absolute path"),
+            (["--stage-dir", "relative/dir", "--version", VERSION], "absolute directory"),
+            (["--stage-dir", "/", "--version", VERSION], "absolute directory"),
             (["--stage-dir", str(stage), "--sha256", self.digest], "--sha256 needs"),
             (["--stage-dir", str(stage), "--channel", "next", "--revision", sha, "--sha256", "0" * 64],
              "checksum mismatch"),

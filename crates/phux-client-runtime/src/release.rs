@@ -269,7 +269,7 @@ pub fn parse(
     if !is_protocol(protocol) {
         return Err(malformed("protocol"));
     }
-    let sha256 = entry["sha256"][target]
+    let sha256 = entry["artifacts"][target]["sha256"]
         .as_str()
         .filter(|digest| is_lower_hex(digest, 64))
         .ok_or_else(|| {
