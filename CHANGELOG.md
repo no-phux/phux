@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.94.2](https://github.com/no-phux/phux/compare/v0.94.1...v0.94.2) (2026-10-17)
+
+
+### Refactors
+
+* **desktop:** fold the desktop app into shared helpers, net -3,040 lines ([#1559](https://github.com/no-phux/phux/issues/1559)) ([592f1b8](https://github.com/no-phux/phux/commit/592f1b82cbf1a09c05a5fa8cea567f99c92c2251))
+
 ## [0.94.1](https://github.com/no-phux/phux/compare/v0.94.0...v0.94.1) (2026-10-17)
 
 
