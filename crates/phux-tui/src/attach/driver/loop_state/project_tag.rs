@@ -6,7 +6,10 @@ use super::{
 };
 
 impl super::SessionLoop {
-    /// Global metadata the picker and status line follow after attach.
+    /// Global metadata the picker and status line follow after attach. An
+    /// `ORGANIZATION` server reports renames and lifetime changes as
+    /// `SESSION_RENAMED` and `SESSION_LIFETIME_CHANGED` events (ADR-0161), so
+    /// only an older server's translated session keys are watched.
     pub(super) async fn subscribe_global_session_keys(
         &self,
         conn: &mut Connection,
@@ -14,12 +17,15 @@ impl super::SessionLoop {
         use phux_protocol::wire::frame::{
             CONFIG_RELOAD_KEY, SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, SESSION_PROJECT_KEY,
         };
-        for key in [
-            CONFIG_RELOAD_KEY,
-            SESSION_KEEP_EMPTY_KEY,
-            SESSION_NAME_KEY,
-            SESSION_PROJECT_KEY,
-        ] {
+        let legacy: &[&str] = if self.organization_supported {
+            &[]
+        } else {
+            &[SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY]
+        };
+        for key in [CONFIG_RELOAD_KEY, SESSION_PROJECT_KEY]
+            .into_iter()
+            .chain(legacy.iter().copied())
+        {
             conn.send(&FrameKind::SubscribeMetadata {
                 scope: Scope::Global,
                 key: key.to_owned(),
@@ -161,6 +167,19 @@ impl super::SessionLoop {
     ) {
         if let Some((current, new_name)) = outcome.session_rename.take() {
             apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
+            self.peers.chrome_dirty = true;
+            self.session_picker_dirty = true;
+            self.note_chrome_change(repaint);
+        }
+        if let Some((key, new_name)) = outcome.session_renamed.take() {
+            if let Some(session) = self
+                .peers
+                .sessions
+                .iter_mut()
+                .find(|session| session.key == Some(key))
+            {
+                session.name = new_name;
+            }
             self.peers.chrome_dirty = true;
             self.session_picker_dirty = true;
             self.note_chrome_change(repaint);

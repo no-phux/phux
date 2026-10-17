@@ -322,6 +322,7 @@ impl super::SessionLoop {
             cell_px: self.cell_px_dims,
             next_request_id: &mut self.next_request_id,
             spawn_initial_size_supported: self.spawn_initial_size_supported,
+            organization_supported: self.organization_supported,
             pending_splits: &mut self.mirror.pending_splits,
             pending_windows: &mut self.mirror.pending_windows,
             pending_floating: &mut self.mirror.pending_floating,

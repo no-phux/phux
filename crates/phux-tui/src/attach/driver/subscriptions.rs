@@ -37,16 +37,23 @@ pub(super) struct PeerWatch {
     /// this to list peer sessions; `focused_session` marks the row the
     /// client is currently attached to (excluded from the picker).
     pub(super) sessions: Vec<phux_protocol::wire::info::SessionInfo>,
-    /// Windows from the same graph; the sidebar falls back to these when a
-    /// peer has no persisted TUI layout.
+    /// Windows from the same graph: an older server's tab grouping, and the
+    /// session join for a resource that does not name its session. Never
+    /// read for a resource that does (an `ORGANIZATION` server).
     pub(super) windows: Vec<phux_protocol::wire::info::WindowInfo>,
-    /// Resources from the same graph, joined via `ResourceInfo::window_id`.
+    /// Resources from the same graph, joined to their session by their
+    /// `session` facet, else through `ResourceInfo::window_id`.
     pub(super) resources: Vec<phux_protocol::wire::info::ResourceInfo>,
     /// The session this client is attached to, once ATTACHED has named it.
     pub(super) focused_session: Option<SessionId>,
-    /// Peer sessions' persisted layouts (one `GET_METADATA` per peer), for
-    /// one-step cross-session window rows in the picker.
+    /// Peer sessions' arrangements, for one-step cross-session window rows
+    /// in the picker: their arrangement records on an `ORGANIZATION` server
+    /// (read over the arrangement link), else one `GET_METADATA` of the
+    /// legacy layout key per peer.
     pub(super) foreign_layouts: HashMap<SessionId, ArrangementDoc>,
+    /// Peer arrangement records to read over the arrangement link once this
+    /// burst settles (the `ORGANIZATION` form of the layout sweep).
+    pub(super) arrangement_reads_owed: PeerArrangementReads,
     /// In-flight peer-layout GETs, by request id.
     pub(super) foreign_layout_pending: HashMap<u32, SessionId>,
     /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
@@ -95,6 +102,31 @@ pub(super) struct PeerWatch {
     pub(super) sweep_pending: bool,
 }
 
+/// Which peer arrangement records a settled burst still owes a read.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) enum PeerArrangementReads {
+    /// Nothing to read.
+    #[default]
+    Settled,
+    /// The peers whose record changed (`ARRANGEMENT_CHANGED`).
+    Sessions(HashSet<phux_protocol::ids::SessionKey>),
+    /// Every peer: a sweep.
+    All,
+}
+
+impl PeerArrangementReads {
+    /// Owe a read of `session`; a pending sweep already covers it.
+    pub(super) fn add(&mut self, session: phux_protocol::ids::SessionKey) {
+        match self {
+            Self::All => {}
+            Self::Sessions(sessions) => {
+                sessions.insert(session);
+            }
+            Self::Settled => *self = Self::Sessions(HashSet::from([session])),
+        }
+    }
+}
+
 impl PeerWatch {
     /// The peer-wide projection the sidebar strip renders from.
     pub(super) fn inputs<'a>(
@@ -119,9 +151,11 @@ impl PeerWatch {
         }
     }
 
-    /// GET and SUBSCRIBE each peer session's layout key (every session but
-    /// the focused one), correlated through `foreign_layout_pending`, for the
-    /// picker's one-step rows.
+    /// GET and SUBSCRIBE each peer session's legacy layout key (every
+    /// session but the focused one), correlated through
+    /// `foreign_layout_pending`, for the picker's one-step rows. Only against
+    /// a server without `ORGANIZATION`; the arrangement link reads peers
+    /// otherwise.
     pub(super) async fn sweep_layouts(
         &mut self,
         conn: &mut Connection,
@@ -220,6 +254,30 @@ impl PeerWatch {
             }
         }
         Ok(())
+    }
+
+    /// Fold a sweep of peer arrangement records: a full sweep replaces the
+    /// cache, a targeted read replaces only the sessions it read. A session
+    /// with no arrangement clears its entry.
+    pub(super) fn apply_arrangement_reads(
+        &mut self,
+        reads: HashMap<SessionId, Option<ArrangementDoc>>,
+        full: bool,
+    ) {
+        if full {
+            self.foreign_layouts
+                .retain(|session, _| reads.contains_key(session));
+        }
+        for (session, document) in reads {
+            match document {
+                Some(document) => {
+                    self.foreign_layouts.insert(session, document);
+                }
+                None => {
+                    self.foreign_layouts.remove(&session);
+                }
+            }
+        }
     }
 
     /// Fold a peer layout GET reply; `None` or garbage clears the entry.

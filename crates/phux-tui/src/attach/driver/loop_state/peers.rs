@@ -123,7 +123,7 @@ impl super::SessionLoop {
             self.peers.focused_session = Some(focused);
             self.fold_inventory(std::mem::take(&mut outcome.inventory));
             // This sweep satisfies a pending deferred one; clearing the flag
-            // avoids a duplicate GET per peer.
+            // avoids reading every peer twice.
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
         } else {
@@ -358,13 +358,19 @@ impl super::SessionLoop {
             return false;
         };
         // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone. A
-        // legacy server's window names the tab.
+        // legacy server's window names the tab; a resource that names its
+        // session (an `ORGANIZATION` server) takes the default tab name.
         let layout = crate::layout::LayoutNode::Leaf(id.clone());
-        let name = self
-            .peers
-            .windows
-            .iter()
-            .find(|window| window.id == info.window_id)
+        let name = info
+            .session
+            .is_none()
+            .then(|| {
+                self.peers
+                    .windows
+                    .iter()
+                    .find(|window| window.id == info.window_id)
+            })
+            .flatten()
             .map_or_else(
                 || self.mirror.workspace.default_group_name(),
                 |window| window.name.clone(),

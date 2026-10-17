@@ -168,8 +168,10 @@ fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
     graph_leaves(peers, session.id)
 }
 
-/// A session's terminals from the server graph, joined by session; a legacy
-/// server's window still orders them and names their tab.
+/// A session's terminals from the server graph, joined by session. A
+/// resource that names its session (an `ORGANIZATION` server) sits in the
+/// first tab under the default tab name; a legacy server's window still
+/// orders the rest and names their tab.
 fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
     let mut out: Vec<(u16, u32, PeerLeaf)> = peers
         .resources
@@ -177,13 +179,22 @@ fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
         .filter(|info| info.kind.is_terminal())
         .filter(|info| resource_session(info, peers.windows) == Some(session))
         .map(|info| {
-            let window = peers.windows.iter().find(|w| w.id == info.window_id);
+            let window = info
+                .session
+                .is_none()
+                .then(|| peers.windows.iter().find(|w| w.id == info.window_id))
+                .flatten();
             let index = window.map_or(0, |w| w.index);
+            let window_name = match (window, info.session) {
+                (Some(window), _) => window.name.clone(),
+                (None, Some(_)) => ArrangementDoc::default().default_group_name(),
+                (None, None) => String::new(),
+            };
             let leaf = PeerLeaf {
                 window: usize::from(index),
                 pane: None,
                 id: info.id.clone(),
-                window_name: window.map(|w| w.name.clone()).unwrap_or_default(),
+                window_name,
             };
             (index, window.map_or(0, |w| w.id.get()), leaf)
         })
@@ -974,6 +985,41 @@ mod tests {
         let roster = session_roster(&f.inputs(), &[]);
         assert_eq!(roster[1].settled, 1);
         assert_eq!(roster[1].total(), 2);
+    }
+
+    /// A resource that names its session (an `ORGANIZATION` server) is
+    /// joined and named without the legacy window: the synthesized window's
+    /// name and index never reach the row.
+    #[test]
+    fn session_facet_rows_ignore_the_synthesized_window() {
+        let mut f = fixture();
+        f.layouts.clear();
+        f.windows = vec![graph_window(9, 10, 3, "window-0", ResourceId::local(10))];
+        f.resources = vec![
+            graph_resource(ResourceId::local(11), 10).with_session(Some(SessionId::new(2))),
+            graph_resource(ResourceId::local(10), 10).with_session(Some(SessionId::new(2))),
+        ];
+        for id in [10, 11] {
+            f.agents.insert(
+                ResourceId::local(id),
+                record(&format!("agent{id}"), AgentMetaState::Idle),
+            );
+        }
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(
+            rows.iter()
+                .map(|row| (
+                    row.resource.clone(),
+                    row.window,
+                    row.window_name.as_str(),
+                    row.session_id
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(ResourceId::local(10)), 0, "1", Some(SessionId::new(2))),
+                (Some(ResourceId::local(11)), 0, "1", Some(SessionId::new(2))),
+            ]
+        );
     }
 
     /// Two terminals in one unvisited session appear once each, in window

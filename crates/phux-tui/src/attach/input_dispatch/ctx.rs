@@ -20,6 +20,10 @@ use crate::render::{ChromeBreakpoints, Theme};
 use super::effects::ReattachTarget;
 
 /// Driver state the dispatch path reads and mutates, lent per batch.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent negotiated-capability flags lent from the driver; a bitset would obscure every read site"
+)]
 pub(in crate::attach) struct DispatchCtx<'a> {
     /// Dial used to open a dedicated request/response connection for actions
     /// that cannot safely consume interleaved frames from the attach stream.
@@ -57,6 +61,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
         Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
     /// Whether the server supports `SPAWN_RESOURCE.initial_size`.
     pub spawn_initial_size_supported: bool,
+    /// Whether the server advertises `ORGANIZATION` (ADR-0161): session
+    /// edits are typed commands, not writes to the translated session keys.
+    pub organization_supported: bool,
     /// Parked split actions awaiting their
     /// `RESOURCE_SPAWNED` reply. `run_action` inserts;
     /// `handle_server_frame` removes.
