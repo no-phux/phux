@@ -322,11 +322,17 @@ impl super::SessionLoop {
             tracing::debug!(request_id, "dropping stale DIRECTORY_LISTING");
             return;
         };
+        let home = std::env::var("HOME").ok();
         let picker = crate::render::overlay::SelectList::new(
-            crate::attach::directory_picker::picker_title(&result, &pending.host),
+            crate::attach::directory_picker::picker_title(&pending.host),
             crate::attach::directory_picker::picker_items(&result, &pending.host),
             &self.settings.theme,
-        );
+        )
+        .with_footer_status(crate::attach::directory_picker::picker_status(
+            &result,
+            &pending.host,
+            home.as_deref(),
+        ));
         // Only over its own placeholder: if the user cancelled it or opened
         // something else on top, the reply is dropped.
         if !self.overlays.replace_pending(request_id, Box::new(picker)) {

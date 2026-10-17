@@ -40,7 +40,7 @@ impl PathPicker {
 }
 
 /// `root` as the shell shows it: `home` becomes `~`; empty means home.
-fn home_to_tilde(root: &str, home: Option<&str>) -> String {
+pub(crate) fn home_to_tilde(root: &str, home: Option<&str>) -> String {
     if root.is_empty() {
         return "~".to_owned();
     }

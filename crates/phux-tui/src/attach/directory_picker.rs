@@ -82,17 +82,36 @@ pub(super) struct PendingDirectory {
     pub(super) host: ListingHost,
 }
 
-/// The picker's modal title: the directory it shows, naming the host
-/// whenever it is not simply the attached server's.
-pub(super) fn picker_title(result: &DirectoryListingResult, host: &ListingHost) -> String {
+/// The picker's modal title: the action, naming the host whenever it is
+/// not simply the attached server's. The directory itself is the footer
+/// status ([`picker_status`]), where a long path clips from the left
+/// instead of pushing the title off the border.
+pub(super) fn picker_title(host: &ListingHost) -> String {
+    match host {
+        ListingHost::Attached => "Go to directory".to_owned(),
+        ListingHost::Satellite(satellite) => format!("Go to directory on {satellite}"),
+        ListingHost::AttachedInsteadOf(_) => "Go to directory on this host".to_owned(),
+    }
+}
+
+/// The picker's footer status: the directory it shows, as the shell would
+/// show it. On the attached host `home` (this client's `$HOME`, which is
+/// the serving user's on a local server) becomes `~`; a satellite's path
+/// is shown whole, since its home is another machine's.
+pub(super) fn picker_status(
+    result: &DirectoryListingResult,
+    host: &ListingHost,
+    home: Option<&str>,
+) -> String {
     let path = match result {
-        Ok(listing) => &listing.path,
-        Err(error) => &error.path,
+        Ok(listing) => listing.path.as_str(),
+        Err(error) => error.path.as_str(),
     };
     match host {
-        ListingHost::Attached => format!("go to directory: {path}"),
-        ListingHost::Satellite(satellite) => format!("go to directory on {satellite}: {path}"),
-        ListingHost::AttachedInsteadOf(_) => format!("go to directory on this host: {path}"),
+        ListingHost::Satellite(_) => path.to_owned(),
+        ListingHost::Attached | ListingHost::AttachedInsteadOf(_) => {
+            crate::render::overlay::path_picker::home_to_tilde(path, home)
+        }
     }
 }
 
@@ -114,7 +133,7 @@ fn fallback_note(host: &ListingHost) -> Option<SelectItem> {
         return None;
     };
     Some(SelectItem::header(format!(
-        "this hub cannot list {satellite}; showing its own host"
+        "This hub cannot list {satellite}; showing its own host"
     )))
 }
 
@@ -132,7 +151,7 @@ fn listing_items(listing: &DirectoryListing, host: Option<&SatelliteHost>) -> Ve
     );
     if listing.truncated {
         items.push(SelectItem::header(format!(
-            "(listing truncated at {} directories)",
+            "Listing cut off at {} directories",
             listing.entries.len()
         )));
     }
@@ -155,10 +174,10 @@ fn refusal_items(error: &DirectoryListingError, host: Option<&SatelliteHost>) ->
 
 const fn refusal_reason(code: DirectoryErrorCode) -> &'static str {
     match code {
-        DirectoryErrorCode::NotFound => "not found",
-        DirectoryErrorCode::PermissionDenied => "permission denied",
-        DirectoryErrorCode::NotADirectory => "not a directory",
-        DirectoryErrorCode::Other => "cannot list",
+        DirectoryErrorCode::NotFound => "Not found",
+        DirectoryErrorCode::PermissionDenied => "Permission denied",
+        DirectoryErrorCode::NotADirectory => "Not a directory",
+        DirectoryErrorCode::Other => "Cannot list",
     }
 }
 
@@ -172,7 +191,7 @@ fn ordered_children(entries: &[DirectoryEntry]) -> impl Iterator<Item = &Directo
 }
 
 fn open_here_item(path: &str, host: Option<&SatelliteHost>) -> SelectItem {
-    SelectItem::new("open new tab here", open_window_at(path, host)).secondary("new tab")
+    SelectItem::new("Open a new tab here", open_window_at(path, host)).secondary("new tab")
 }
 
 fn parent_item(parent: &str, host: Option<&SatelliteHost>) -> SelectItem {
@@ -272,7 +291,7 @@ mod tests {
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(
             labels,
-            ["open new tab here", "..", "src/", "www/", ".cache/"]
+            ["Open a new tab here", "..", "src/", "www/", ".cache/"]
         );
         assert_eq!(committed(&items[0]), ("new-window", Some("/home/u")));
         assert_eq!(committed(&items[1]), ("go-to-directory", Some("/home")));
@@ -281,9 +300,14 @@ mod tests {
             ("go-to-directory", Some("/home/u/src"))
         );
         assert_eq!(items[3].secondary.as_deref(), Some("symlink"));
+        assert_eq!(picker_title(&ListingHost::Attached), "Go to directory");
         assert_eq!(
-            picker_title(&result, &ListingHost::Attached),
-            "go to directory: /home/u"
+            picker_status(&result, &ListingHost::Attached, Some("/home/u")),
+            "~"
+        );
+        assert_eq!(
+            picker_status(&result, &ListingHost::Attached, Some("/home/x")),
+            "/home/u"
         );
     }
 
@@ -319,12 +343,12 @@ mod tests {
         let items = picker_items(&result, &ListingHost::Attached);
 
         assert!(items[0].is_header());
-        assert!(items[0].label.starts_with("permission denied"));
+        assert!(items[0].label.starts_with("Permission denied"));
         assert_eq!(committed(&items[1]), ("go-to-directory", Some("/root")));
         assert_eq!(committed(&items[2]), ("go-to-directory", Some("~")));
         assert_eq!(
-            picker_title(&result, &ListingHost::Attached),
-            "go to directory: /root/secret"
+            picker_status(&result, &ListingHost::Attached, Some("/home/u")),
+            "/root/secret"
         );
     }
 
@@ -343,9 +367,11 @@ mod tests {
 
         let items = picker_items(&result, &host);
 
+        assert_eq!(picker_title(&host), "Go to directory on edge");
         assert_eq!(
-            picker_title(&result, &host),
-            "go to directory on edge: /home/e"
+            picker_status(&result, &host, Some("/home/e")),
+            "/home/e",
+            "a satellite's home is not this client's"
         );
         assert_eq!(items[0].action.action, "new-window");
         assert_eq!(arg(&items[0], "cwd"), Some("/home/e"));
@@ -389,12 +415,10 @@ mod tests {
             "{}",
             items[0].label
         );
-        assert_eq!(items[1].label, "open new tab here");
+        assert_eq!(items[1].label, "Open a new tab here");
         assert!(items.iter().all(|item| arg(item, "host").is_none()));
-        assert_eq!(
-            picker_title(&result, &host),
-            "go to directory on this host: /home/hub"
-        );
+        assert_eq!(picker_title(&host), "Go to directory on this host");
+        assert_eq!(picker_status(&result, &host, None), "/home/hub");
     }
 
     #[test]
