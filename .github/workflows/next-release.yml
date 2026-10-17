@@ -86,7 +86,7 @@ jobs:
           }
           {
             echo "phux=$(changed phux phux_needed native_needed)"
-            echo "desktop=$(changed desktop phux_needed native_needed)"
+            echo "desktop=$(changed desktop phux_needed native_needed desktop_needed)"
           } >> "$GITHUB_OUTPUT"
 
   build:

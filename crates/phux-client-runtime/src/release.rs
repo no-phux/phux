@@ -67,7 +67,7 @@ impl Channel {
 pub enum Product {
     /// `phux` and `phux-mcp`, one tarball per target.
     Phux,
-    /// The macOS app, one zip for Apple silicon.
+    /// The macOS app and Linux desktop, one archive per target.
     Desktop,
 }
 
@@ -178,9 +178,11 @@ impl Asset {
 }
 
 /// The asset `product` publishes for `build` on `target`: the one name
-/// derivation. Desktop ships only for Apple silicon, so it ignores `target`.
+/// derivation. Linux desktop archives use short architecture labels; macOS
+/// keeps its original Apple silicon name.
 #[must_use]
 pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
+    let (desktop_platform, desktop_extension) = desktop_archive(target);
     let (release, stem, extension) = match (product, build) {
         (Product::Phux, Build::Stable(version)) => (
             format!("v{version}"),
@@ -194,18 +196,26 @@ pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
         ),
         (Product::Desktop, Build::Stable(version)) => (
             format!("desktop-v{version}"),
-            format!("phux-desktop-{version}-macos-arm64"),
-            "zip",
+            format!("phux-desktop-{version}-{desktop_platform}"),
+            desktop_extension,
         ),
         (Product::Desktop, Build::Next(sha)) => (
             "next".to_owned(),
-            format!("phux-desktop-next.{sha}-macos-arm64"),
-            "zip",
+            format!("phux-desktop-next.{sha}-{desktop_platform}"),
+            desktop_extension,
         ),
     };
     let name = format!("{stem}.{extension}");
     let url = format!("{RELEASES}/{release}/{name}");
     Asset { stem, name, url }
+}
+
+fn desktop_archive(target: &str) -> (&'static str, &'static str) {
+    match target {
+        "x86_64-unknown-linux-gnu" => ("linux-x64", "tar.gz"),
+        "aarch64-unknown-linux-gnu" => ("linux-arm64", "tar.gz"),
+        _ => ("macos-arm64", "zip"),
+    }
 }
 
 /// The URL of `channel`'s manifest.
@@ -384,12 +394,12 @@ mod tests {
             (
                 Product::Desktop,
                 &stable,
-                "desktop-v1.2.3/phux-desktop-1.2.3-macos-arm64.zip".to_owned(),
+                "desktop-v1.2.3/phux-desktop-1.2.3-linux-x64.tar.gz".to_owned(),
             ),
             (
                 Product::Desktop,
                 &next,
-                format!("next/phux-desktop-next.{sha}-macos-arm64.zip"),
+                format!("next/phux-desktop-next.{sha}-linux-x64.tar.gz"),
             ),
         ];
         for (product, build, path) in rows {
@@ -405,6 +415,39 @@ mod tests {
                 asset.signature_url(),
                 format!("{}.sha256.minisig", asset.url)
             );
+        }
+    }
+
+    #[test]
+    fn desktop_archives_cover_every_published_target() {
+        let stable = Build::Stable(version("1.2.3"));
+        let next = Build::Next("b".repeat(40));
+        for (target, suffix) in [
+            ("aarch64-apple-darwin", "macos-arm64.zip"),
+            (LINUX, "linux-x64.tar.gz"),
+            ("aarch64-unknown-linux-gnu", "linux-arm64.tar.gz"),
+        ] {
+            for (build, identity) in [
+                (&stable, "1.2.3".to_owned()),
+                (&next, format!("next.{}", "b".repeat(40))),
+            ] {
+                let archive = asset(Product::Desktop, build, target);
+                assert_eq!(archive.name, format!("phux-desktop-{identity}-{suffix}"));
+                let body = match build.channel() {
+                    Channel::Stable => STABLE,
+                    Channel::Next => NEXT,
+                };
+                let entry = parse(body, build.channel(), Product::Desktop, target)
+                    .unwrap()
+                    .unwrap();
+                let document: serde_json::Value = serde_json::from_str(body).unwrap();
+                let recorded = &document["products"]["desktop"]["artifacts"][target];
+                assert_eq!(
+                    recorded["name"],
+                    asset(Product::Desktop, &entry.build, target).name
+                );
+                assert_eq!(entry.sha256.len(), 64);
+            }
         }
     }
 

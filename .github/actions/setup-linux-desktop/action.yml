@@ -1,0 +1,39 @@
+name: Linux desktop setup
+description: Native Ubuntu 24.04 desktop build and X11 software-rendering qualification dependencies
+inputs:
+  source:
+    description: Checkout containing the pinned contributor toolchains
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Install native desktop and qualification dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config clang cmake mold curl xz-utils \
+          libfontconfig1-dev libfreetype6-dev libasound2-dev libxkbcommon-dev \
+          libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev \
+          libssl-dev libvulkan-dev mesa-vulkan-drivers libegl1-mesa-dev \
+          xvfb xauth dbus-x11 tesseract-ocr fonts-dejavu-core just
+        icd="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+        test -n "$icd"
+        echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+        echo 'WGPU_BACKEND=vulkan' >> "$GITHUB_ENV"
+        echo 'LIBGL_ALWAYS_SOFTWARE=1' >> "$GITHUB_ENV"
+    - name: Contributor Rust and Zig setup
+      shell: bash
+      working-directory: ${{ inputs.source }}
+      run: |
+        set -euo pipefail
+        bash scripts/setup-rust.sh native
+        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+    - name: Select pinned Bun
+      id: bun
+      shell: bash
+      working-directory: ${{ inputs.source }}
+      run: python3 -c 'import json; print("version=" + json.load(open("clients/desktop/package.json"))["engines"]["bun"])' >> "$GITHUB_OUTPUT"
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.bun.outputs.version }}
