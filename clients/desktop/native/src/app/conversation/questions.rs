@@ -592,8 +592,18 @@ fn render_question(
             .selectable(true)
             .scrollable(false),
         );
+    let group = |panel: gpui::Div| {
+        panel
+            .id(SharedString::from(format!(
+                "native-question-panel-{}",
+                question.id
+            )))
+            .role(gpui::Role::Group)
+            .aria_label(question.title.clone())
+            .into_any_element()
+    };
     let Some(draft) = face.questions.get(&question.id) else {
-        return panel.into_any_element();
+        return group(panel);
     };
     if let Some(details) = &draft.details {
         panel = panel.child(
@@ -619,7 +629,7 @@ fn render_question(
     if let Some(status) = status {
         panel = panel.child(div().text_xs().child(status.clone()));
     }
-    panel.into_any_element()
+    group(panel)
 }
 
 fn render_controls(
@@ -635,7 +645,7 @@ fn render_controls(
         "select" | "permission" => {
             render_permission(panel, question, draft, placement, disabled, cx)
         }
-        "input" | "editor" => render_text(panel, draft, "text", disabled),
+        "input" | "editor" => render_text(panel, draft, "text", &question.title, disabled),
         "ask" => render_ask(panel, question, draft, placement, disabled, cx),
         "form" => render_form(panel, question, draft, placement, disabled, cx),
         _ => panel.child(
@@ -688,9 +698,20 @@ fn render_permission(
     }
     panel
 }
-fn render_text(mut panel: gpui::Div, draft: &Draft, id: &str, disabled: bool) -> gpui::Div {
+fn render_text(
+    mut panel: gpui::Div,
+    draft: &Draft,
+    id: &str,
+    label: &str,
+    disabled: bool,
+) -> gpui::Div {
     if let Some(input) = draft.inputs.get(id) {
-        panel = panel.child(Textarea::new(input).w_full().disabled(disabled));
+        panel = panel.child(
+            Textarea::new(input)
+                .aria_label(label.to_owned())
+                .w_full()
+                .disabled(disabled),
+        );
     }
     panel
 }
@@ -724,6 +745,7 @@ fn render_ask(
                 panel.child(div().text_xs().child("Custom response (optional)")),
                 draft,
                 &item.id,
+                &format!("Custom response to {}", item.question),
                 disabled,
             );
         }
@@ -742,9 +764,10 @@ fn render_form(
         return panel.child("Unsupported provider form schema; no response submitted.");
     };
     for (id, schema) in properties {
+        let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
         panel = panel.child(div().text_sm().child(format!(
             "{}{}",
-            schema.get("title").and_then(Value::as_str).unwrap_or(id),
+            title,
             if field_required(question, id) {
                 " *"
             } else {
@@ -765,7 +788,7 @@ fn render_form(
                 cx,
             ));
         } else {
-            panel = render_text(panel, draft, id, disabled);
+            panel = render_text(panel, draft, id, title, disabled);
         }
     }
     panel
