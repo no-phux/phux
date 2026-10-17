@@ -5,9 +5,12 @@
 //!
 //! Trust boundary:
 //!
-//! * The download's digest must equal the channel manifest's (or, for a
-//!   `--version` pin the manifest does not name, its `.sha256` sidecar's)
-//!   before anything is unpacked; a mismatch installs nothing.
+//! * The artifact's `.sha256` sidecar must carry a minisign signature from a
+//!   key compiled into this binary (see [`signature`], ADR-0177); a missing,
+//!   invalid, or foreign signature installs nothing.
+//! * The download's digest must equal that signed digest, and the channel
+//!   manifest's when it names the build, before anything is unpacked; a
+//!   mismatch installs nothing.
 //! * Nothing downloaded is executed to decide whether to install it; the
 //!   archive is data, validated before and after unpacking.
 //! * Replacement is atomic and permission-preserving (see [`apply`]).
@@ -21,6 +24,7 @@
 pub(crate) mod apply;
 pub(crate) mod channel;
 pub(crate) mod release;
+pub(crate) mod signature;
 pub(crate) mod source;
 
 use std::path::PathBuf;
@@ -56,6 +60,10 @@ pub(crate) enum UpdateError {
     /// hashed. Distinct from a mismatch: nothing disagreed, something was
     /// unreadable.
     Checksum(String),
+    /// The checksum's signature was missing, malformed, made by a key this
+    /// binary does not embed, or did not verify; or the signed digest and
+    /// the channel manifest disagree.
+    Signature(String),
     /// The published digest and the downloaded bytes disagree. The one
     /// failure this whole module exists to produce.
     ChecksumMismatch {
@@ -81,6 +89,7 @@ impl std::fmt::Display for UpdateError {
             | Self::UnsupportedPlatform(message)
             | Self::Fetch(message)
             | Self::Checksum(message)
+            | Self::Signature(message)
             | Self::Archive(message)
             | Self::Install(message)
             | Self::NoBackup(message) => f.write_str(message),
@@ -105,6 +114,7 @@ impl UpdateError {
             Self::UnsupportedPlatform(_) => codes::UPDATE_UNSUPPORTED_PLATFORM,
             Self::Fetch(_) => codes::UPDATE_FETCH_FAILED,
             Self::Checksum(_) => codes::UPDATE_CHECKSUM_INVALID,
+            Self::Signature(_) => codes::UPDATE_SIGNATURE_INVALID,
             Self::ChecksumMismatch { .. } => codes::UPDATE_CHECKSUM_MISMATCH,
             Self::Archive(_) => codes::UPDATE_ARCHIVE_REJECTED,
             Self::Install(_) => codes::UPDATE_INSTALL_FAILED,
@@ -140,6 +150,10 @@ impl UpdateError {
                  hand — report it at https://github.com/no-phux/phux/issues"
                     .to_owned()
             }
+            Self::Signature(_) => "nothing was installed. Re-run in a minute in case a \
+                 release is still uploading; if it fails again, do not install this \
+                 artifact by hand — report it at https://github.com/no-phux/phux/issues"
+                .to_owned(),
             Self::Archive(_) => "nothing was installed. Re-run to download again; a repeat \
                  failure means the published artifact is malformed"
                 .to_owned(),
@@ -353,6 +367,9 @@ pub(crate) struct UpdateEnv<'a> {
     pub(crate) handoff: &'a dyn Fn() -> Handoff,
     /// The install this run operates on.
     pub(crate) install: Install,
+    /// The minisign public keys a release checksum must be signed by:
+    /// [`signature::RELEASE_KEYS`] outside tests.
+    pub(crate) release_keys: &'a [&'a str],
 }
 
 /// How the live-server handoff went.
@@ -473,6 +490,7 @@ impl Outcome {
                 "archive": artifact.name,
                 "archive_url": artifact.url,
                 "checksum_url": artifact.sidecar_url(),
+                "signature_url": artifact.signature_url(),
                 "sha256": self.digest,
             })),
             "binaries": self.binaries,
@@ -739,18 +757,19 @@ fn install_release(
     let archive_path = staging.path().join(&artifact.name);
     env.releases.download(&artifact.url, &archive_path)?;
 
-    // The gate: nothing below runs unless the published digest matches.
-    let expected = if let Some(entry) = plan.vouched() {
-        entry.sha256.clone()
-    } else {
-        let sidecar_path = staging.path().join(format!("{}.sha256", artifact.name));
-        env.releases
-            .download(&artifact.sidecar_url(), &sidecar_path)?;
-        let sidecar = std::fs::read_to_string(&sidecar_path).map_err(|err| {
-            UpdateError::Checksum(format!("could not read the .sha256 sidecar: {err}"))
-        })?;
-        apply::expected_digest(&sidecar, &artifact.name)?
-    };
+    // The gate: nothing below runs unless a release key signed the digest
+    // and the bytes match it.
+    let expected = signed_digest(env, &artifact, staging.path())?;
+    if let Some(entry) = plan.vouched()
+        && entry.sha256 != expected
+    {
+        return Err(UpdateError::Signature(format!(
+            "the {} release manifest publishes {} for {}, but the signed checksum is {expected}",
+            plan.channel.as_str(),
+            entry.sha256,
+            artifact.name
+        )));
+    }
     let digest = apply::verify_digest(&archive_path, &expected, &artifact.name)?;
     let staged = apply::unpack_verified(&archive_path, &artifact.stem, staging.path())?;
 
@@ -788,6 +807,41 @@ fn install_release(
         backup: Some(replaced.backup),
         handoff: Some(handoff),
     })
+}
+
+/// Download `artifact`'s `.sha256` sidecar and its `.minisig` into `staging`
+/// and return the digest a release key signed. A signature that cannot be
+/// fetched refuses like one that does not verify: an unsigned release is
+/// never installed.
+fn signed_digest(
+    env: &UpdateEnv<'_>,
+    artifact: &Asset,
+    staging: &std::path::Path,
+) -> Result<String, UpdateError> {
+    let sidecar_path = staging.join(format!("{}.sha256", artifact.name));
+    env.releases
+        .download(&artifact.sidecar_url(), &sidecar_path)?;
+    let signature_path = staging.join(format!("{}.sha256.minisig", artifact.name));
+    env.releases
+        .download(&artifact.signature_url(), &signature_path)
+        .map_err(|err| {
+            UpdateError::Signature(format!(
+                "no signature for {} could be fetched ({err}); an unsigned release is \
+                 never installed",
+                artifact.name
+            ))
+        })?;
+    let read = |path: &std::path::Path| {
+        std::fs::read(path).map_err(|err| {
+            UpdateError::Checksum(format!("could not read {}: {err}", path.display()))
+        })
+    };
+    signature::signed_digest(
+        &read(&sidecar_path)?,
+        &read(&signature_path)?,
+        &artifact.name,
+        env.release_keys,
+    )
 }
 
 /// Restore the binaries saved by the previous update. The handoff runs here
@@ -882,6 +936,7 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         releases: &release::NetworkReleaseSource,
         handoff: &handoff,
         install,
+        release_keys: signature::RELEASE_KEYS,
     };
 
     match execute(opts, &env) {
@@ -1008,6 +1063,7 @@ mod tests {
     use super::apply::BACKUP_DIR;
     use super::channel::{self, ChannelArg};
     use super::release::{ReleaseSource, current_version, host_target};
+    use super::signature::tests::TestKey;
     use super::source::{Install, InstallSource};
     use super::{
         Action, Handoff, Outcome, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan,
@@ -1144,19 +1200,33 @@ mod tests {
         opts: &UpdateOpts,
     ) -> Result<Outcome, UpdateError> {
         let handoff = move || handoff.clone();
+        let release_key = TestKey::new(RELEASE_SEED).public();
         let env = UpdateEnv {
             releases: fake,
             handoff: &handoff,
             install,
+            release_keys: &[&release_key],
         };
         execute(opts, &env)
+    }
+
+    /// The seed of the key fake releases are signed with and `run` trusts.
+    const RELEASE_SEED: u8 = 7;
+
+    /// Sign `sidecar` with `key` and serve the signature beside it.
+    fn sign(fake: &mut FakeReleases, artifact: &Asset, sidecar: &str, key: &TestKey) {
+        fake.serve(&artifact.sidecar_url(), sidecar.as_bytes().to_vec());
+        fake.serve(
+            &artifact.signature_url(),
+            key.sign(sidecar.as_bytes()).into_bytes(),
+        );
     }
 
     fn version(text: &str) -> Version {
         Version::parse(text).unwrap()
     }
 
-    /// Build a release tarball plus its sidecar, serve both where the real
+    /// Build a release tarball plus its signed sidecar, serve them where the real
     /// naming puts them, and name it in the stable manifest.
     fn publish(fake: &mut FakeReleases, workdir: &Path, tag: &str) -> Asset {
         let version = tag.trim_start_matches('v');
@@ -1203,10 +1273,8 @@ mod tests {
 
         let digest = super::apply::sha256_file(&archive).unwrap();
         fake.serve(&artifact.url, fs::read(&archive).unwrap());
-        fake.serve(
-            &artifact.sidecar_url(),
-            format!("{digest}  {}\n", artifact.name).into_bytes(),
-        );
+        let sidecar = format!("{digest}  {}\n", artifact.name);
+        sign(fake, &artifact, &sidecar, &TestKey::new(RELEASE_SEED));
         (artifact, digest)
     }
 
@@ -1420,9 +1488,71 @@ mod tests {
         assert_eq!(doc["protocol"]["target"], "0.9");
         assert_eq!(doc["protocol"]["current"], super::current_protocol());
 
-        // The manifest's digest is the gate; the sidecar is not fetched.
+        assert_eq!(doc["artifact"]["signature_url"], artifact.signature_url());
+
+        // The signed sidecar is the gate, cross-checked against the manifest.
         let fetched = fake.downloads.borrow().clone();
-        assert_eq!(fetched, vec![artifact.url]);
+        assert_eq!(
+            fetched,
+            vec![
+                artifact.url.clone(),
+                artifact.sidecar_url(),
+                artifact.signature_url()
+            ]
+        );
+    }
+
+    /// Run a default update against `fake` and return the refusal, checking
+    /// that the install was left alone.
+    fn refused(fake: &FakeReleases, bin: &Path) -> UpdateError {
+        let err = run(fake, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap_err();
+        assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
+        assert!(!bin.join(BACKUP_DIR).exists());
+        err
+    }
+
+    fn signature_refusal(err: &UpdateError, expect: &str) {
+        assert!(matches!(err, UpdateError::Signature(_)), "{err:?}");
+        assert_eq!(err.code(), "update_signature_invalid");
+        assert_eq!(err.exit_code(), 1);
+        assert!(err.to_string().contains(expect), "{err}");
+    }
+
+    /// A missing signature, one from another key, and one over different
+    /// bytes each refuse before anything is unpacked.
+    #[test]
+    fn an_unsigned_foreign_or_tampered_checksum_installs_nothing() {
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
+        let mut fake = FakeReleases::new("v9.9.9");
+        let artifact = publish(&mut fake, scratch.path(), "v9.9.9");
+        let signed = String::from_utf8(fake.files[&artifact.sidecar_url()].clone()).unwrap();
+        let good = fake.files[&artifact.signature_url()].clone();
+
+        fake.files.remove(&artifact.signature_url());
+        signature_refusal(&refused(&fake, &bin), "never installed");
+
+        sign(&mut fake, &artifact, &signed, &TestKey::new(99));
+        signature_refusal(&refused(&fake, &bin), "does not trust");
+
+        // A rewritten sidecar under the genuine signature.
+        let forged = format!("{}  {}\n", "e".repeat(64), artifact.name);
+        fake.serve(&artifact.sidecar_url(), forged.into_bytes());
+        fake.serve(&artifact.signature_url(), good);
+        signature_refusal(&refused(&fake, &bin), "does not verify");
+    }
+
+    /// A host that rewrites the manifest and the sidecar together still
+    /// cannot sign; one that only rewrites the manifest is caught by the
+    /// signed digest.
+    #[test]
+    fn a_manifest_that_disagrees_with_the_signed_checksum_is_refused() {
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
+        let mut fake = FakeReleases::new("v9.9.9");
+        publish(&mut fake, scratch.path(), "v9.9.9");
+        fake.name(Channel::Stable, "9.9.9", &"c".repeat(40), &"f".repeat(64));
+        signature_refusal(&refused(&fake, &bin), "the signed checksum is");
     }
 
     /// A pin to a release the manifest does not name is verified against that
@@ -1623,7 +1753,14 @@ mod tests {
         );
         assert_eq!(channel::read_file(&bin), Some(Channel::Next));
         let fetched = fake.downloads.borrow().clone();
-        assert_eq!(fetched, vec![artifact.url]);
+        assert_eq!(
+            fetched,
+            vec![
+                artifact.url.clone(),
+                artifact.sidecar_url(),
+                artifact.signature_url()
+            ]
+        );
     }
 
     #[test]

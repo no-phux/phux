@@ -60,6 +60,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
+    secrets:
+      PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
 
@@ -70,6 +72,8 @@ jobs:
     uses: ./.github/workflows/desktop-release.yml
     permissions:
       contents: write
+    secrets:
+      PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
     with:
       tag: ${{ needs.plan.outputs.desktop_tag }}
 

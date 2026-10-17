@@ -166,6 +166,12 @@ impl Asset {
     pub fn sidecar_url(&self) -> String {
         format!("{}.sha256", self.url)
     }
+
+    /// The minisign signature over the sidecar (ADR-0177).
+    #[must_use]
+    pub fn signature_url(&self) -> String {
+        format!("{}.sha256.minisig", self.url)
+    }
 }
 
 /// The asset `product` publishes for `build` on `target`: the one name
@@ -392,6 +398,10 @@ mod tests {
             assert!(path.ends_with(&format!("/{}", asset.name)));
             assert!(asset.name.starts_with(&asset.stem));
             assert_eq!(asset.sidecar_url(), format!("{}.sha256", asset.url));
+            assert_eq!(
+                asset.signature_url(),
+                format!("{}.sha256.minisig", asset.url)
+            );
         }
     }
 

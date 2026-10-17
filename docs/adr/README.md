@@ -105,7 +105,7 @@ column is the base status word plus at most one relationship clause, about
 | [0071](./0071-what-phux-1-0-commits-to.md) | What phux 1.0 commits to | Proposed (builds on [0061](./0061-capabilities-add-versions-break.md)) |
 | [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) | Prune the policy vocabulary, keep the authorization seam | Proposed (amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0073](./0073-service-managed-pane-login-shell.md) | Login-shell semantics for service-managed pane spawns | Accepted (builds on [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
-| [0074](./0074-self-update-trust-boundary.md) | The self-update trust boundary | Accepted (builds on [0071](./0071-what-phux-1-0-commits-to.md); superseded in part by [0176](./0176-the-release-pipeline.md)) |
+| [0074](./0074-self-update-trust-boundary.md) | The self-update trust boundary | Accepted (builds on [0071](./0071-what-phux-1-0-commits-to.md); superseded in part by [0176](./0176-the-release-pipeline.md), [0177](./0177-release-checksums-are-minisign-signed.md)) |
 | [0075](./0075-agent-name-addressing.md) | Agent names are addressable, and a withdrawn name is refused | Accepted (builds on [0021](./0021-control-plane-commands.md), [0040](./0040-agent-identity-metadata.md)) |
 | [0076](./0076-agent-prompt-and-lifecycle-wait.md) | Prompting an agent is acknowledged; waiting on one is event-driven | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md), [0046](./0046-server-side-agent-state-detection.md)) |
 | [0077](./0077-agent-read-surface.md) | The agent read surface: sources, soft wrap, and truncation | Accepted (builds on [0022](./0022-tool-for-agents.md)) |
@@ -207,7 +207,8 @@ column is the base status word plus at most one relationship clause, about
 | [0173](./0173-mission-control-is-a-client-composition.md) | Mission control is a client composition with an interim work store | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md), [0132](./0132-swarm-members-are-coordinator-clients.md)) |
 | [0174](./0174-organize-asks-a-judge-and-code-decides.md) | Organize asks a judge; code decides | Accepted (builds on [0160](./0160-sessions-own-resources-and-window-is-retired.md), [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md), [0168](./0168-project-identity-is-a-session-attribute.md)) |
 | [0175](./0175-one-release-manifest-per-channel.md) | One release manifest per channel, and Desktop updates on restart | Accepted (superseded in part by [0176](./0176-the-release-pipeline.md)) |
-| [0176](./0176-the-release-pipeline.md) | The release pipeline | Accepted (supersedes [0113](./0113-next-release-channel.md); supersedes in part [0074](./0074-self-update-trust-boundary.md), [0175](./0175-one-release-manifest-per-channel.md)) |
+| [0176](./0176-the-release-pipeline.md) | The release pipeline | Accepted (supersedes [0113](./0113-next-release-channel.md); supersedes in part [0074](./0074-self-update-trust-boundary.md), [0175](./0175-one-release-manifest-per-channel.md); superseded in part by [0177](./0177-release-checksums-are-minisign-signed.md)) |
+| [0177](./0177-release-checksums-are-minisign-signed.md) | Release checksums are minisign-signed | Accepted (supersedes in part [0074](./0074-self-update-trust-boundary.md), [0176](./0176-the-release-pipeline.md)) |
 
 ## When to write an ADR
 

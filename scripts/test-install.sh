@@ -177,6 +177,59 @@ refused 'checksum mismatch' --os linux --arch x86_64 --install-dir "$TMP/stable"
 grep -Fxq 'old phux' "$TMP/stable/phux" || fail "a mismatch replaced the binary"
 mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
 
+# --- signatures (ADR-0177) ------------------------------------------------------
+
+# With minisign on PATH the signed sidecar must verify and agree with the
+# manifest. A fake minisign drives the installer's side; the real one, when
+# the host has it, proves the invocation against real signatures below.
+mkdir -p "$TMP/sig-bin"
+cat > "$TMP/sig-bin/minisign" <<'EOF'
+#!/bin/sh
+printf 'minisign %s\n' "$*" >> "$CALLS"
+exit "${MINISIGN_STATUS:-0}"
+EOF
+chmod 755 "$TMP/sig-bin/minisign"
+SIG_PATH="$TMP/sig-bin:/usr/bin:/bin"
+printf 'signature\n' > "$SERVED/$archive.sha256.minisig"
+: > "$CALLS"
+TEST_PATH="$SIG_PATH" install_to "$TMP/signed" >/dev/null 2>"$TMP/err" || fail "signed install: $(cat "$TMP/err")"
+grep -Fq "$archive.sha256.minisig" "$CALLS" || fail "a signed install must fetch the signature"
+grep -Fq "minisign -V -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked against the release key"
+MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key' \
+  --os linux --arch x86_64 --install-dir "$TMP/badsig"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
+TEST_PATH="$SIG_PATH" refused "the signed checksum for $archive is $digest_stable" \
+  --os linux --arch x86_64 --install-dir "$TMP/badsig"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+rm "$SERVED/$archive.sha256.minisig"
+TEST_PATH="$SIG_PATH" refused 'an unsigned release is never installed' \
+  --os linux --arch x86_64 --install-dir "$TMP/badsig"
+PHUX_REQUIRE_SIGNATURE=1 refused 'PHUX_REQUIRE_SIGNATURE is set but minisign is not on PATH' \
+  --os linux --arch x86_64 --install-dir "$TMP/badsig"
+[[ ! -e $TMP/badsig/phux ]] || fail "a refused signature installed"
+
+if real="$(command -v minisign)"; then
+  mkdir -p "$TMP/real-sig-bin" "$TMP/keys"
+  ln -s "$real" "$TMP/real-sig-bin/minisign"
+  minisign -G -W -p "$TMP/keys/test.pub" -s "$TMP/keys/test.key" >/dev/null
+  minisign -S -s "$TMP/keys/test.key" -m "$SERVED/$archive.sha256" -x "$SERVED/$archive.sha256.minisig" </dev/null >/dev/null
+  # A genuine signature from a key the installer does not embed is refused.
+  TEST_PATH="$TMP/real-sig-bin:/usr/bin:/bin" refused 'is not signed by a phux release key' \
+    --os linux --arch x86_64 --install-dir "$TMP/badsig"
+  # The same installer trusting that key accepts it, and refuses a tampered sidecar.
+  sed "s|^RELEASE_KEYS=.*|RELEASE_KEYS='$(sed -n 2p "$TMP/keys/test.pub")'|" "$ROOT/scripts/install.sh" > "$TMP/install-testkey.sh"
+  PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --os linux --arch x86_64 --install-dir "$TMP/real-signed" >/dev/null 2>"$TMP/err" \
+    || fail "a real signature: $(cat "$TMP/err")"
+  printf '%s  %s\n' "$digest_next" "$archive" > "$SERVED/$archive.sha256"
+  if PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --os linux --arch x86_64 --install-dir "$TMP/badsig" >/dev/null 2>&1; then
+    fail "a tampered sidecar passed a real signature check"
+  fi
+  printf '%s  %s\n' "$digest_stable" "$archive" > "$SERVED/$archive.sha256"
+  rm "$SERVED/$archive.sha256.minisig"
+fi
+
 no_leftovers() {
   if find "$1" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then fail "$2 left transaction state"; fi
 }

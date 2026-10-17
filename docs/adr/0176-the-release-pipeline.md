@@ -16,6 +16,7 @@ Release Please cuts stable drafts, `publish.yml` publishes them on green
 
 Status: Accepted
 Date: 2026-10-16
+Superseded in part by [ADR-0177](./0177-release-checksums-are-minisign-signed.md): decision 3; the signed sidecar is the trust root, and the manifest digest must agree with it.
 
 ## Context
 

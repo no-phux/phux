@@ -5,6 +5,10 @@
 set -eu
 
 RELEASES=https://github.com/no-phux/phux/releases/download
+# minisign keys a release checksum may be signed by (ADR-0177): current
+# (9F105950F46456C9), then next (B9E437599627DC6A). One line, kept equal to
+# RELEASE_KEYS in crates/phux/src/commands/update/signature.rs by a test.
+RELEASE_KEYS='RWTJVmT0UFkQn2Zw1mG2cIcm5O/9kLuffefLpHw3vwhWAxgn/gcsoxiX RWRq3CeWWTfkuYUoONcL0LsC/L3BYav/SIeHRPDMauxHAZnrUd+UoYU1'
 
 phux_message() (
   label="$1"
@@ -44,6 +48,9 @@ the CLI only when none is found.
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
   --help                          Show this help.
+
+With minisign on PATH, the release checksum's signature is verified against
+the phux release keys; set PHUX_REQUIRE_SIGNATURE=1 to refuse without it.
 EOF
 }
 
@@ -185,10 +192,45 @@ name_asset() {
   [ "$1/$channel" != desktop/stable ] || sidecar_url="${RELEASES}/${release}/SHA256SUMS"
 }
 
+# Whether a release key signed SIDECAR with SIGNATURE.
+signed_by_release_key() {
+  for key in $RELEASE_KEYS; do
+    minisign -V -q -P "$key" -m "$1" -x "$2" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# With minisign on PATH, the asset's signed sidecar is the trust root: it
+# must verify against RELEASE_KEYS and agree with the expected digest, or
+# supply it. Without minisign the SHA-256 alone is checked, unless
+# PHUX_REQUIRE_SIGNATURE=1 makes that a refusal.
+verify_signature() {
+  if ! command -v minisign >/dev/null 2>&1; then
+    case "${PHUX_REQUIRE_SIGNATURE:-0}" in
+      0 | '') phux_message info "minisign not found; checking the SHA-256 without its release signature" ;;
+      *) die "PHUX_REQUIRE_SIGNATURE is set but minisign is not on PATH; nothing was installed" ;;
+    esac
+    return 0
+  fi
+  download "${asset_url}.sha256" "${work}/signed.sha256" \
+    || die "could not download the checksum for ${asset_name}; nothing was installed"
+  download "${asset_url}.sha256.minisig" "${work}/signed.sha256.minisig" \
+    || die "could not download the signature for ${asset_name}; an unsigned release is never installed"
+  signed_by_release_key "${work}/signed.sha256" "${work}/signed.sha256.minisig" \
+    || die "the checksum for ${asset_name} is not signed by a phux release key; nothing was installed"
+  signed="$(sidecar_digest "${work}/signed.sha256" "$asset_name")"
+  if [ -z "$build_sha256" ]; then
+    build_sha256="$signed"
+  elif [ "$signed" != "$build_sha256" ]; then
+    die "the signed checksum for ${asset_name} is ${signed}, not ${build_sha256}; nothing was installed"
+  fi
+}
+
 # Download PRODUCT's asset for TARGET into the work directory and verify it.
 fetch_verified() {
   download "$asset_url" "${work}/${asset_name}" \
     || die "could not download ${asset_name}; nothing was installed"
+  verify_signature
   if [ -z "$build_sha256" ]; then
     download "$sidecar_url" "${work}/sidecar" \
       || die "could not download the checksum for ${asset_name}; nothing was installed"
