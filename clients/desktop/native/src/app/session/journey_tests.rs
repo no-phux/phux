@@ -189,8 +189,9 @@ fn wait_for(cx: &mut TestAppContext, mut predicate: impl FnMut(&mut TestAppConte
     }
 }
 
-/// Press a key the way the macOS platform delivers it: one key-down that its
-/// binding consumes, then key-up. GPUI's `simulate_keystrokes` also runs a
+/// Press a key the way the macOS platform delivers it: one key-down dispatched
+/// to its bindings (consumed or propagated) with no IME text insertion, then
+/// key-up. GPUI's `simulate_keystrokes` also runs a
 /// simulated IME that types `"\n"` after a propagated Enter binding, which
 /// marks a just-submitted composer draft as edited; a real Return never does.
 fn press(cx: &mut TestAppContext, window: gpui::AnyWindowHandle, key: &str) {
