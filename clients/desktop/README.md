@@ -375,6 +375,26 @@ PHUX_DESKTOP_JOURNEY_TEST_BIN="$PWD/target/debug/phux" \
   --lib app::session::journey_tests -- --ignored
 ```
 
+Remote attach has its own opt-in acceptance run. It enrolls a second,
+isolated server as a remote host over loopback QUIC and WSS (`phux pair`,
+then `phux host add NAME quic://... --token-file ... --cert-fingerprint ...`)
+and drives the window's connection through it: split, type, rename,
+reconnect, relaunch by persistent key, a host kill and restart, a stale pin,
+and a revoked token:
+
+```sh
+cargo build -p phux
+PHUX_DESKTOP_JOURNEY_TEST_BIN="$PWD/target/debug/phux" \
+  cargo test --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --lib connection::remote_acceptance -- --ignored
+```
+
+It does not replace a run against a second machine: a routed network with
+NAT, loss, and real latency, and a host enrolled with `phux host add me@HOST`
+over ssh. Do that by hand after a change to remote attach: register the host,
+open it from the sidebar's Hosts section, split, rename, quit and relaunch,
+and drop the link (sleep the host or cut its network) and bring it back.
+
 `desktop-framework-check` packages `Phux.app` and runs
 
 ```sh
