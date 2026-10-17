@@ -27,7 +27,7 @@ desktop-check:
 
 [group('desktop')]
 [doc('Run the native desktop crate tests (model, painter, input, presentation, launch)')]
-desktop-test: desktop-source
+desktop-test: worktree-claim desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
@@ -58,7 +58,7 @@ desktop-cli:
 
 [group('desktop')]
 [doc('Build the debug GPUI desktop and launch it against this checkout')]
-desktop-app: desktop-host-debug desktop-cli
+desktop-app: worktree-claim desktop-host-debug desktop-cli
     cd clients/desktop && PHUX_BIN="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" PHUX_DESKTOP_BIN="$PWD/native/target/debug/phux-desktop" bun scripts/launch-desktop.ts
 
 [group('desktop')]

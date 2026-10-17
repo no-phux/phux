@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-10-07
+last-reviewed: 2026-10-17
 ---
 # Agent Instructions
 
@@ -34,7 +34,12 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
   update `main`, fast-forward verified work, push, remove finished worktrees.
 - Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
   your work in a new worktree instead.
-- One agent session per worktree.
+- One agent session per worktree. `just ci`, `check`, `test`, `install-dev`,
+  `desktop-test` and `desktop-app` lease the worktree to the running session
+  (`PHUX_WORKTREE_OWNER`, else the harness session id) and refuse another
+  live session's run with exit 3; a lease idle for 6h is taken over, and
+  `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. Human shells
+  and CI are never checked. See `scripts/lib/worktree-owner.sh`.
 
 ## Never touch the installed phux
 
