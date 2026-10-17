@@ -2065,6 +2065,16 @@ impl Desk {
         };
     }
 
+    /// The durable key of session `id` in the current topology.
+    pub(crate) fn session_key(&self, id: u32) -> Option<SessionKey> {
+        let topology = self.link.as_ref()?.connection.topology.as_ref()?;
+        topology
+            .sessions
+            .iter()
+            .find(|session| session.id == id)?
+            .key
+    }
+
     pub(crate) fn rename_session_target(&self, id: u32) -> Option<SessionRenameTarget> {
         let connection = &self.link.as_ref()?.connection;
         let session = connection
@@ -2329,13 +2339,10 @@ impl Desk {
             );
             return;
         };
-        let key = link
-            .connection
-            .topology
-            .as_ref()
-            .and_then(|topology| topology.sessions.iter().find(|s| s.id == session))
-            .and_then(|descriptor| descriptor.key);
-        if let Some(operation) = key.and_then(|key| link.connection.kill_session(key)) {
+        if let Some(operation) = self
+            .session_key(session)
+            .and_then(|key| link.connection.kill_session(key))
+        {
             self.kills.insert(operation, name.to_owned());
             return;
         }
@@ -2969,11 +2976,7 @@ impl Desk {
             self.open_find(window, cx);
             return;
         }
-        let case = self
-            .find
-            .as_ref()
-            .map(|find| find.case_sensitive)
-            .unwrap_or(false);
+        let case = self.find.as_ref().is_some_and(|find| find.case_sensitive);
         if self
             .find
             .as_ref()
@@ -3031,11 +3034,8 @@ impl Desk {
 
     /// Next or previous match, wrapping. A step with no matches searches again.
     pub(crate) fn step_find(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
-        if self.find.is_none() {
-            self.open_find(window, cx);
-            return;
-        }
         let Some(state) = self.find.clone() else {
+            self.open_find(window, cx);
             return;
         };
         if state.matches.is_empty() {
@@ -4071,30 +4071,19 @@ impl Desk {
             crate::terminal::TerminalEvent::Notice { title, body } => {
                 self.post(Kind::Refusal, title, Some(body.clone()));
             }
-            crate::terminal::TerminalEvent::Upload(batch) => {
-                let Some(terminal) = self
-                    .placement(placement_id)
-                    .and_then(|placement| placement.terminal_id.clone())
-                else {
-                    self.refuse_paste("That terminal is gone. Nothing was pasted.");
-                    return;
-                };
-                if self.refuse_native_input(&terminal) {
-                    cx.notify();
-                    return;
-                }
-                self.start_upload(&terminal, batch.clone(), cx);
-            }
+            crate::terminal::TerminalEvent::Upload(batch) => match self
+                .placement(placement_id)
+                .and_then(|placement| placement.terminal_id.clone())
+            {
+                Some(terminal) => self.start_upload(&terminal, batch.clone(), cx),
+                None => self.refuse_paste("That terminal is gone. Nothing was pasted."),
+            },
             crate::terminal::TerminalEvent::ConfirmPaste(paste) => {
                 let Some(terminal_id) = self
                     .placement(placement_id)
                     .and_then(|placement| placement.terminal_id.clone())
                 else {
-                    self.post(
-                        Kind::Refusal,
-                        crate::attach::PASTE_REFUSED,
-                        Some("That terminal is gone. Nothing was pasted.".into()),
-                    );
+                    self.refuse_paste("That terminal is gone. Nothing was pasted.");
                     cx.notify();
                     return;
                 };

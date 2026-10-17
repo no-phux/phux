@@ -144,15 +144,11 @@ impl Desk {
 
     pub(crate) fn select_session_work(&mut self, session: u32, cx: &mut Context<Self>) {
         let Some(client) = self.client() else { return };
-        let replica = client.organization();
-        let key = self
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.topology.as_ref())
-            .and_then(|topology| topology.sessions.iter().find(|row| row.id == session))
-            .and_then(|row| row.key);
-        let Some(key) = key else { return };
-        let keys = replica
+        let Some(key) = self.session_key(session) else {
+            return;
+        };
+        let keys = client
+            .organization()
             .resources()
             .iter()
             .filter(|resource| resource.session == key)
