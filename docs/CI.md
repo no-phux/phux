@@ -28,7 +28,11 @@ requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `.github/actions/classify-changes`, with no outer path filters.
 `desktop_needed` runs `just desktop-lint` and `just desktop-test` on an
 `xcode-27` runner for the desktop host's path crates, the toolchain inputs,
-and unrouted `clients/desktop` paths; it holds no build cache. Unknown paths, unavailable history, and empty diffs
+the root files the crate embeds, its own workflow, and unrouted
+`clients/desktop` paths. It holds no build cache, so each run is a cold GPUI
+and libghostty build on one of the 5 macOS slots it shares with the release
+lanes; a burst of core-crate merges to `main` can queue a release behind it.
+Unknown paths, unavailable history, and empty diffs
 request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
 unrelated crates. A `tests/`-only diff builds just that test. Pushes to

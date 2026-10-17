@@ -4,7 +4,8 @@
 # workflow a desktop regression reached main with nothing red (phux-piaf7).
 #
 # The shared classifier routes it (desktop_needed): the crate's root path
-# dependencies, the toolchain inputs, and every unrouted clients/desktop path.
+# dependencies, the toolchain inputs, the root files it embeds, this file,
+# and every unrouted clients/desktop path.
 # Not part of the required `ci` aggregate, like web-check and native-setup.
 # No build cache: a PR may not write one, and a main entry would compete with
 # the release lanes for the 10 GB budget docs/CI.md describes.

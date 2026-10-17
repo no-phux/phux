@@ -65,6 +65,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/setup-rust.sh"], {"native", "desktop"}),
             (["clients/desktop/native/Cargo.lock"], ALL),
             (["just/desktop.just"], ALL),
+            (["scripts/fixtures/release-manifest/stable.json"], {"phux", "desktop"}),
+            ([".github/workflows/desktop-test.yml"], {"desktop"}),
             (["scripts/doctor.sh"], {"native"}),
             (["scripts/test-dev-setup.sh"], {"native"}),
             (["scripts/native-smoke.sh"], {"native"}),
@@ -268,6 +270,24 @@ class RoutingTests(unittest.TestCase):
                     classify([f"crates/{name}/src/lib.rs"])["desktop_needed"],
                     "true" if name in closure else "false",
                 )
+
+    def test_desktop_file_inputs_outside_its_tree_run_desktop(self):
+        # include_str!/include_bytes! reach past the Cargo graph; each target
+        # outside clients/desktop must still request the desktop lane.
+        literal = re.compile(r'include_(?:str|bytes)!\(\s*"([^"]+)"')
+        native = ROOT / "clients/desktop/native"
+        inputs = set()
+        for directory in ("src", "tests", "examples", "benches"):
+            for source in (native / directory).rglob("*.rs"):
+                for match in literal.finditer(source.read_text(encoding="utf-8")):
+                    target = (source.parent / match.group(1)).resolve()
+                    relative = target.relative_to(ROOT).as_posix()
+                    if not relative.startswith("clients/desktop/"):
+                        inputs.add(relative)
+        self.assertTrue(inputs)
+        for path in sorted(inputs):
+            with self.subTest(path=path):
+                self.assertEqual(classify([path])["desktop_needed"], "true")
 
 
 class EventTests(unittest.TestCase):
