@@ -10,7 +10,7 @@ doctor SCOPE="native":
 
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
 [group('setup')]
-native-smoke:
+native-smoke: worktree-claim
     bash scripts/native-smoke.sh
 
 

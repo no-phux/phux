@@ -9,7 +9,7 @@ core-check: (doctor "core") (crate-check "phux-core")
 
 # One crate's gate; optional test features (e.g. phux-protocol server).
 [group('gates')]
-crate-check PACKAGE FEATURES="":
+crate-check PACKAGE FEATURES="": worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     args=(--locked -p "{{PACKAGE}}")
@@ -37,7 +37,7 @@ binding-uniffi-test:
 # One agent integration's type, unit, packed-artifact, and audit gates.
 # The all-packages lane also checks generated artifact freshness.
 [group('gates')]
-integration-check PACKAGE:
+integration-check PACKAGE: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, or grok' >&2; exit 2 ;; esac
@@ -59,7 +59,7 @@ integration-check PACKAGE:
 
 # Format every Rust file in place.
 [group('gates')]
-fmt:
+fmt: worktree-claim
     cargo fmt --all
 
 
@@ -72,7 +72,7 @@ fmt-check:
 
 # Clippy with warnings denied. The bar.
 [group('gates')]
-lint:
+lint: worktree-claim
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 
@@ -80,7 +80,7 @@ lint:
 # job does; `just ci` does not. No backticks in the echo — just would run them.
 [group('gates')]
 [doc('Iteration loop: the fast gates ci would reject you on, in the order ci hits them.')]
-precommit: fmt lint docs-gen test e2e
+precommit: worktree-claim fmt lint docs-gen test e2e
     @. ./scripts/lib/output.sh; phux_ok "precommit clean - now run 'just ci' once to confirm the remaining gates"
 
 
@@ -226,10 +226,26 @@ agent-integrations-check:
 
 # Lease this worktree to the running agent session, or refuse (exit 3) when
 # another live session holds it (AGENTS.md "Worktree Isolation"). Human shells
-# and CI are never checked. The agent-facing entrypoints depend on it.
+# and CI are never checked. Every recipe that builds, tests or formats the tree
+# depends on it; scripts/lib/worktree-owner_test.sh holds the list.
 [private]
 worktree-claim:
     @bash scripts/worktree-claim.sh
+
+
+# After a long run (`ci`, `test`, `e2e`): fail (exit 3) when HEAD moved or the
+# lease changed hands since the claim, so a straddled run is not a green.
+[private]
+worktree-verify CALLER:
+    @bash scripts/worktree-verify.sh "{{CALLER}}"
+
+
+# Drop this agent session's worktree lease when handing the worktree to another
+# session (e.g. an orchestrator's implement then fix sessions).
+[group('setup')]
+[doc("Release this agent session's worktree lease for the next session.")]
+worktree-release:
+    @bash scripts/worktree-release.sh worktree-release
 
 
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
@@ -237,7 +253,7 @@ worktree-claim:
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
-ci: worktree-claim ci-static test
+ci: worktree-claim ci-static test && (worktree-verify "ci")
     @. ./scripts/lib/output.sh; phux_ok "root validation passed"
 
 

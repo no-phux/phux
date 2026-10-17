@@ -1,7 +1,7 @@
 # Shared unwind-safe C ABI archives for native embedders.
 
 [group('build')]
-ffi-build:
+ffi-build: worktree-claim
     cargo rustc --locked --profile ffi-dev -p phux-client-ffi --lib --crate-type staticlib
 
 
