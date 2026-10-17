@@ -146,14 +146,19 @@ recovery policy or real native presentation feedback must be designed outside
 this bridge before claiming equivalent recovery behavior.
 
 The wgpu patches include submission-receipt, shared-atlas, and translucent
-capture/PNG-compositing tests. Run the dependency's unit tests on Linux:
+capture/PNG-compositing tests. Run the shipping regression gate on Linux:
 
 ```sh
-mise exec -- python3 clients/desktop/toolchain/test-wgpu.py
+mise exec -- just desktop-renderer-test
 # Optional: retain build outputs in a caller-owned, isolated directory.
 CARGO_TARGET_DIR=/path/to/isolated/target mise exec -- \
   python3 clients/desktop/toolchain/test-wgpu.py wgpu_renderer::tests
 ```
+
+The gate selects the low-level `wgpu_` modules. Running the script without a
+filter also exercises upstream's opt-in composed-window tile suite: four
+composed-path equivalence failures reproduce unchanged with pristine 0.1.9 on
+lavapipe (`phux-9ddi1`). The desktop does not enable that composition path.
 
 The script verifies/materializes pinned sources, copies wgpu into a disposable
 standalone Cargo workspace with the patched GPUI dependency, and reuses the

@@ -44,12 +44,16 @@ quarantine. See the [desktop guide](./consumers/desktop.md).
 ### Linux desktop
 
 The same command installs the Linux desktop on x86-64 and ARM64 systems with
-glibc, X11 or Wayland, and a Vulkan driver. Ubuntu 24.04 is the release build
+glibc, X11 or Wayland, and a current Vulkan driver. Ubuntu 24.04 is the release build
 baseline. The package does not bundle a coordinator: an existing CLI is reused
 and a missing CLI is installed separately. Linux keyboard shortcuts include
 `Ctrl-Shift-P` for the palette, `Ctrl-Shift-T` for a terminal, and
 `Ctrl-Shift-C` / `Ctrl-Shift-V` for copy/paste; plain `Ctrl-C` stays a shell
 interrupt. See [desktop prerequisites](./SETUP.md#gpui-desktop) for libraries.
+Update Mesa or your vendor's graphics driver if the window stays black:
+Mesa 22.3.6's software Vulkan presentation failed qualification even when its
+offscreen rendering worked; current Ubuntu 24.04 Mesa passed the visible-window
+checks.
 
 The bundle lives at `$XDG_DATA_HOME/phux-desktop` (default
 `~/.local/share/phux-desktop`), with a launcher in `~/.local/bin` and a desktop

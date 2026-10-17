@@ -47,9 +47,15 @@ package, then run `smoke-linux.ts` under Xvfb/lavapipe with an isolated server.
 `just desktop-renderer-test` also exercises the pinned wgpu dependency's
 submission, shared-atlas and transparent-capture regressions in a disposable
 workspace, reusing the native target directory.
+That gate targets the low-level `wgpu_` modules, not gpui-fast's opt-in
+composed-window tile suite. Four composed-path equivalence failures reproduce
+unchanged in pristine gpui-fast 0.1.9 on lavapipe (`phux-9ddi1`); the desktop
+does not enable that composition path.
 Native frame capture and an independent X11 window screenshot with OCR,
 keyboard delivery, clipboard paste, shifted Meta bytes, window identity and
 app-crash session survival are checked separately.
+Release and CI smoke runs require the renderer's log to identify Vulkan;
+silently falling back to OpenGL does not qualify the Vulkan lane.
 Submitted receipts never count as confirmed physical-display presentation.
 Wayland compositor, physical GPU, IME and screen-reader qualification are not
 implied by this software-renderer lane.

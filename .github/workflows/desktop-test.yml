@@ -135,6 +135,7 @@ jobs:
           bun clients/desktop/scripts/smoke-linux.ts
           --app "$RUNNER_TEMP/desktop-qualified/phux-desktop"
           --phux target/debug/phux
+          --require-backend Vulkan
           --output "$RUNNER_TEMP/desktop-evidence"
       - name: Retain packaged Linux runtime evidence
         if: always()

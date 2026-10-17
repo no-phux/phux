@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertPresentedEvidence } from "../../scripts/evidence.ts";
+import { assertPresentedEvidence, selectedWgpuBackend } from "../../scripts/evidence.ts";
 import {
   installedPhuxCandidates,
   isInstalledPhux,
@@ -45,6 +45,12 @@ const interaction = JSON.stringify({
   visible: true,
   clipped: false,
   bounds: { width: 80, height: 24 },
+});
+
+test("qualification records the selected backend, not a requested Vulkan driver", () => {
+  expect(selectedWgpuBackend('INFO Selected GPU adapter: "llvmpipe" (Vulkan)')).toBe("Vulkan");
+  expect(selectedWgpuBackend('INFO Selected GPU adapter: "llvmpipe" (Gl)')).toBe("Gl");
+  expect(selectedWgpuBackend("VK_DRIVER_FILES=/nonexistent")).toBeUndefined();
 });
 
 test("presented evidence requires a PNG, a live layout and a matching interaction", () => {

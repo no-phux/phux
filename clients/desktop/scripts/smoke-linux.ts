@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { assertPresentedEvidence } from "./evidence.ts";
+import { assertPresentedEvidence, selectedWgpuBackend } from "./evidence.ts";
 import { isInstalledPhux, layoutFile, productionSocketReason } from "./host.ts";
 
 const { values } = parseArgs({
@@ -12,16 +12,21 @@ const { values } = parseArgs({
     app: { type: "string" },
     phux: { type: "string" },
     output: { type: "string" },
+    "require-backend": { type: "string" },
     help: { type: "boolean" },
   },
 });
 if (values.help) {
   console.log(
-    "xvfb-run -a dbus-run-session -- bun clients/desktop/scripts/smoke-linux.ts --app <phux-desktop-bundle> --phux <same-checkout-cli> [--output <evidence-dir>]",
+    "xvfb-run -a dbus-run-session -- bun clients/desktop/scripts/smoke-linux.ts --app <phux-desktop-bundle> --phux <same-checkout-cli> [--output <evidence-dir>] [--require-backend Vulkan|Gl]",
   );
   process.exit(0);
 }
 assert(values.app && values.phux, "--app and explicit --phux are required");
+assert(
+  !values["require-backend"] || ["Vulkan", "Gl"].includes(values["require-backend"]),
+  "--require-backend must be Vulkan or Gl",
+);
 assert(process.platform === "linux", "Linux qualification requires a Linux runner");
 assert(process.env.DISPLAY, "Run under Xvfb: the qualification backend is X11");
 const executable = join(resolve(values.app), "bin/phux-desktop");
@@ -67,6 +72,8 @@ for (const key of [
   "VK_ICD_FILENAMES",
   "WGPU_BACKEND",
   "LIBGL_ALWAYS_SOFTWARE",
+  "MESA_VK_WSI_DEBUG",
+  "MESA_VK_WSI_PRESENT_MODE",
 ]) {
   const value = process.env[key];
   if (value) env[key] = value;
@@ -145,6 +152,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 const marker = "PHUXSURVIVAL";
 const presentations: Record<string, string> = {};
+const backends: Record<string, string> = {};
 function appArgs(dir: string): string[] {
   return [
     executable,
@@ -165,6 +173,10 @@ function verifyCapture(label: string, expected: string): void {
   // Xvfb cannot confirm real-display presentation. The native receipt must
   // still prove a submitted, visible frame with matching layout generation.
   presentations[label] = assertPresentedEvidence(dir, session, true).presentation;
+  const backend = selectedWgpuBackend(readFileSync(join(evidence, `${label}.stderr.log`), "utf8"));
+  assert(backend, `${label}: native renderer must identify the selected GPU backend`);
+  if (values["require-backend"]) assert.equal(backend, values["require-backend"]);
+  backends[label] = backend;
   const text = run(["tesseract", join(dir, "presented.png"), "stdout", "--psm", "11", "-l", "eng"]);
   writeFileSync(join(evidence, `${label}.ocr.txt`), text);
   assert(text.includes(expected), `${label}: terminal marker not rendered; OCR: ${text}`);
@@ -195,6 +207,10 @@ function visibleWindowContains(window: string, expected: string): boolean {
   run(["import", "-window", window, image]);
   const text = run(["tesseract", image, "stdout", "--psm", "11", "-l", "eng"]);
   writeFileSync(join(evidence, "x11-window.ocr.txt"), text);
+  if (!text.includes(expected)) {
+    run(["import", "-window", "root", join(evidence, "x11-screen.png")]);
+    run(["import", "-descend", "-window", window, join(evidence, "x11-descend.png")]);
+  }
   return text.includes(expected);
 }
 
@@ -307,7 +323,8 @@ try {
   const result = {
     ok: true,
     platform: `linux-${process.arch}`,
-    backend: "X11 (Xvfb/lavapipe qualification; not real-GPU or Wayland qualification)",
+    backend: "X11 (Xvfb/software-renderer qualification; not real-GPU or Wayland qualification)",
+    gpuBackends: backends,
     serverPid: server.pid,
     shellPid,
     scenarios: [

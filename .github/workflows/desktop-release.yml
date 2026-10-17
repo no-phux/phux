@@ -315,7 +315,8 @@ jobs:
           xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- \
             bun harness/clients/desktop/scripts/smoke-linux.ts \
             --app "$RUNNER_TEMP/desktop-qualified/phux-desktop" \
-            --phux "$GITHUB_WORKSPACE/source/target/release/phux" \
+             --phux "$GITHUB_WORKSPACE/source/target/release/phux" \
+             --require-backend Vulkan \
             --output "$RUNNER_TEMP/desktop-evidence"
       - name: Retain packaged Linux runtime evidence
         if: always()

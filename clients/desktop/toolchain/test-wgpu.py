@@ -11,6 +11,7 @@ No committed lockfile, materialized source, or installed application is modified
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -69,9 +70,15 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="phux-wgpu-tests-") as scratch:
         workspace = Path(scratch)
         prepare_workspace(workspace)
+        runtime = workspace / "runtime"
+        runtime.mkdir(mode=0o700)
+        env = os.environ.copy()
+        if not env.get("XDG_RUNTIME_DIR"):
+            env["XDG_RUNTIME_DIR"] = str(runtime)
         return subprocess.run(
             ["cargo", "test", "--workspace", "--lib", "--features", "test-support", *cargo_arguments],
             cwd=workspace,
+            env=env,
             check=False,
         ).returncode
 
