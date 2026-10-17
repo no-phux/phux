@@ -1629,11 +1629,14 @@ mod tests {
         );
     }
 
-    /// The browser decoder's committed server-produced GHOSTSNP transcript.
-    const BROWSER_FIXTURE: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../clients/phux-vt-web/tests/fixtures/server-snapshot-v1.bin"
-    );
+    /// The browser decoder's committed server-produced GHOSTSNP transcript,
+    /// resolved at run time so no checkout path is compiled into the test.
+    fn browser_fixture_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
+        )
+        .join("../../clients/phux-vt-web/tests/fixtures/server-snapshot-v1.bin")
+    }
 
     /// Capture the browser fixture through the production prefix and leased
     /// history paths. Layout: `PHUXSNP1`, cols u16, rows u16, then units of
@@ -1719,14 +1722,16 @@ mod tests {
             browser_fixture_transcript(),
             "the fixture capture must be deterministic"
         );
+        let fixture = browser_fixture_path();
         if std::env::var_os("PHUX_BLESS_WEB_FIXTURE").is_some() {
-            std::fs::write(BROWSER_FIXTURE, &captured).expect("write browser fixture");
+            std::fs::write(&fixture, &captured).expect("write browser fixture");
         }
-        let committed = std::fs::read(BROWSER_FIXTURE).expect("read browser fixture");
+        let committed = std::fs::read(&fixture).expect("read browser fixture");
         assert!(
             committed == captured,
-            "{BROWSER_FIXTURE} is stale; regenerate it with PHUX_BLESS_WEB_FIXTURE=1 \
-             cargo nextest run -p phux-server browser_snapshot_fixture"
+            "{} is stale; regenerate it with PHUX_BLESS_WEB_FIXTURE=1 \
+             cargo nextest run -p phux-server browser_snapshot_fixture",
+            fixture.display()
         );
     }
 }
