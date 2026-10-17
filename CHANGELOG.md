@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.90.0](https://github.com/no-phux/phux/compare/v0.89.1...v0.90.0) (2026-10-17)
+
+
+### Features
+
+* **server:** name workload grants by session and resource record keys ([fd6b652](https://github.com/no-phux/phux/commit/fd6b6529afccb8913ae39c3c7b2226f0b8e37af9))
+
+
+### Bug Fixes
+
+* **server:** reach a session by its record key before it has a wire id ([f7e9703](https://github.com/no-phux/phux/commit/f7e97034d83ed99f01649f40af440636c6dc2efe))
+
 ## [0.89.1](https://github.com/no-phux/phux/compare/v0.89.0...v0.89.1) (2026-10-17)
 
 
