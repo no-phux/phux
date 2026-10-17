@@ -2204,6 +2204,30 @@ mod tests {
         assert_eq!(r.last_cursor(), Some((0, 5)));
     }
 
+    /// A client-local viewport scroll changes every visible row: the next
+    /// incremental paint must report dirt and emit the history rows, with
+    /// no forced paint and no output from the pane.
+    #[test]
+    fn scrolling_the_viewport_dirties_the_next_incremental_paint() {
+        let mut t = fresh(10, 3);
+        for n in 0..12 {
+            t.vt_write(format!("line{n:02}\r\n").as_bytes());
+        }
+        let mut r = renderer();
+        let (_, first) = paint(&mut r, &t);
+        assert!(String::from_utf8_lossy(&first).contains("line11"));
+        t.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Delta(-3));
+        let (dirty, buf) = paint(&mut r, &t);
+        let s = String::from_utf8_lossy(&buf);
+        assert!(
+            !matches!(dirty, Dirty::Clean),
+            "scroll left the frame clean"
+        );
+        // The cell diff re-emits only what changed: the digits, and the
+        // whole row the cursor line used to be.
+        assert!(s.contains("07") && s.contains("line09"), "{s:?}");
+    }
+
     /// Alt-screen exit repaints the restored primary rows plus the new prompt
     /// instead of classifying as Clean.
     #[test]

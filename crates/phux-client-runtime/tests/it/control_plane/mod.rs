@@ -34,6 +34,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 use crate::embedded::*;
 
 mod agent_sessions;
+mod approvals;
 mod geometry;
 mod native_agent;
 mod observation;
@@ -833,6 +834,36 @@ fn a_control_ending_outranks_an_earlier_stale_engine_frame() {
         matches!(&error, ControlError::Refused(message) if message.contains("fatal ending")),
         "expected the ending to outrank stale generation, got {error:?}"
     );
+}
+
+/// A revoked or expired authorization ends the attach before the socket
+/// closes; nothing typed in that window may be admitted toward the wire.
+#[test]
+fn input_is_not_admitted_after_the_server_ends_the_attach() {
+    for reason in [
+        DetachReason::AuthorizationRevoked,
+        DetachReason::AuthorizationExpired,
+        DetachReason::SessionKilled,
+    ] {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"ready");
+        assert!(plane.input_ready(&terminal()));
+        let _ = plane.take_outbound();
+        plane
+            .feed(FrameKind::Detached {
+                reason: Some(reason),
+                message: String::new(),
+            })
+            .expect("a non-fatal ending");
+        assert!(!plane.input_ready(&terminal()), "{reason:?}");
+        assert!(plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::Detached { reason: Some(ended), .. } if *ended == reason
+        )));
+        // A fresh connection may attach again.
+        plane.connection_opened();
+        assert!(!plane.input_ready(&terminal()), "not before a new attach");
+    }
 }
 
 #[cfg(feature = "engine")]

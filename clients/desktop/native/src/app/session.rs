@@ -25,6 +25,7 @@ use super::AppOptions;
 use super::actions::{OpenPathDirectory, Quit, Run};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
+use super::notifications::SystemTag;
 
 struct Opened {
     handle: AnyWindowHandle,
@@ -441,6 +442,30 @@ impl Desktop {
         let _ = self.open_window(request, true, false, cx);
     }
 
+    /// The next open window after `source` that talks to the same server
+    /// (`remote`, `None` for local) and can take a moved terminal now. The
+    /// quick window is never a target. The source desk is never read: the
+    /// caller is usually updating it.
+    pub(crate) fn next_window(
+        &self,
+        source: EntityId,
+        remote: Option<&str>,
+        cx: &App,
+    ) -> Option<(AnyWindowHandle, Entity<Desk>)> {
+        let peers: Vec<_> = self
+            .windows
+            .iter()
+            .map(|opened| {
+                let id = opened.desk.entity_id();
+                let ready = id != source && opened.desk.read(cx).accepts_moved_terminal();
+                (id, opened.remote.as_deref(), ready)
+            })
+            .collect();
+        let index = next_peer(&peers, source, remote)?;
+        let opened = &self.windows[index];
+        Some((opened.handle, opened.desk.clone()))
+    }
+
     /// Show registered host `name`: raise its window, or find the session to
     /// open there off the main thread and open one. `done` hears the refusal.
     pub fn open_host(
@@ -573,18 +598,20 @@ impl Desktop {
     /// A system notification was clicked: bring its window forward and open the
     /// entry. The tag is `<desk entity id>/<entry id>`, as [`Desk::flush_system`] posts it.
     fn open_notification(&mut self, tag: &str, cx: &mut Context<Self>) {
-        let Some((desk, entry)) = tag.split_once('/') else {
+        let Some(tag) = SystemTag::parse(tag) else {
             return;
         };
-        let (Ok(desk), Ok(entry)) = (desk.parse::<u64>(), entry.parse::<u64>()) else {
-            return;
+        let mut desks = self.windows.iter().chain(self.quick.iter());
+        let found = match tag {
+            SystemTag::Entry { desk, entry } => desks
+                .find(|opened| opened.desk.entity_id().as_u64() == desk)
+                .map(|opened| (opened, entry)),
+            SystemTag::Approval(id) => desks.find_map(|opened| {
+                let entry = opened.desk.read(cx).feed.approval_entry(id)?;
+                Some((opened, entry))
+            }),
         };
-        let Some(opened) = self
-            .windows
-            .iter()
-            .chain(self.quick.iter())
-            .find(|opened| opened.desk.entity_id().as_u64() == desk)
-        else {
+        let Some((opened, entry)) = found else {
             return;
         };
         let target = opened.desk.clone();
@@ -593,6 +620,21 @@ impl Desktop {
             window.activate_window();
             target.update(cx, |desk, cx| desk.open_notification(entry, window, cx));
         });
+    }
+
+    /// Every open terminal window in the order it opened, the quick terminal
+    /// last. The performance window is a utility and is not listed.
+    pub(crate) fn desk_windows(
+        &self,
+    ) -> impl Iterator<Item = (AnyWindowHandle, &Entity<Desk>, bool)> {
+        self.windows
+            .iter()
+            .map(|opened| (opened.handle, &opened.desk, false))
+            .chain(
+                self.quick
+                    .iter()
+                    .map(|opened| (opened.handle, &opened.desk, true)),
+            )
     }
 
     /// Whether a performance window currently owns the live sampler.
@@ -806,12 +848,18 @@ impl Desktop {
             Menu::new("Terminal").items([
                 MenuItem::action("Split Right", Run::new("split-right")),
                 MenuItem::action("Split Down", Run::new("split-down")),
+                MenuItem::action("Mirror Pane", Run::new("view")),
                 MenuItem::action("Zoom Pane", Run::new("zoom")),
                 MenuItem::separator(),
                 MenuItem::action("Clear Screen", Run::new("clear")),
                 MenuItem::action("Jump to Agent Needing Attention", Run::new("attention")),
                 MenuItem::separator(),
                 MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
+            ]),
+            // AppKit appends its own list of open windows to the menu named "Window".
+            Menu::new("Window").items([
+                MenuItem::action("Minimize", Run::new("minimize")),
+                MenuItem::action("Show All Windows…", Run::new("windows")),
             ]),
         ];
         cx.set_menus(menus);
@@ -862,6 +910,26 @@ impl Desktop {
             }
         }));
     }
+}
+
+/// Index of the first ready peer after `source` (wrapping) on the same
+/// server. A source that is not listed (the quick window) starts from the
+/// front.
+fn next_peer<T: PartialEq + Copy>(
+    peers: &[(T, Option<&str>, bool)],
+    source: T,
+    remote: Option<&str>,
+) -> Option<usize> {
+    let start = peers
+        .iter()
+        .position(|(id, ..)| *id == source)
+        .map_or(0, |index| index + 1);
+    (0..peers.len())
+        .map(|step| (start + step) % peers.len())
+        .find(|&index| {
+            let (id, peer_remote, ready) = peers[index];
+            id != source && peer_remote == remote && ready
+        })
 }
 
 // Explicit Tab shortcuts must outrank the terminal's default traversal masks.

@@ -55,14 +55,14 @@ impl PromptOverlay {
     /// name and styled with `theme`.
     #[must_use]
     pub fn rename_window(current_name: &str, theme: &Theme) -> Self {
-        Self::new("rename tab", "rename-window", "name", current_name, theme)
+        Self::new("Rename tab", "rename-window", "name", current_name, theme)
     }
 
     /// The `rename-session` prompt, pre-filled with the current name.
     #[must_use]
     pub fn rename_session(current_name: &str, theme: &Theme) -> Self {
         Self::new(
-            "rename session",
+            "Rename session",
             "rename-session",
             "name",
             current_name,
@@ -73,7 +73,7 @@ impl PromptOverlay {
     /// The `new-session` prompt; committing re-attaches to the new session.
     #[must_use]
     pub fn new_session(theme: &Theme) -> Self {
-        Self::new("new session", "new-session", "name", "", theme)
+        Self::new("New session", "new-session", "name", "", theme)
     }
 
     fn committed_action(&self) -> ResolvedAction {
@@ -103,7 +103,9 @@ impl RenderOverlay for PromptOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
         let line = Line::from(self.input.spans(Style::default().fg(self.theme.text)));
-        Modal::new(&self.theme, self.title.clone(), vec![line]).render_into(modal_area, buf);
+        Modal::new(&self.theme, self.title.clone(), vec![line])
+            .footer("", "⏎ ok · esc")
+            .render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {

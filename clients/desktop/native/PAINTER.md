@@ -154,6 +154,12 @@ painting and presentation handoff. `scene` counts reused/patched scenes and
 shaped lines, and `process` carries CPU and peak RSS. A render count check and
 screenshots outside the timed path reject an empty/no-op benchmark.
 
+`just desktop-perf-budget` runs the same benchmark in CI and checks it against
+the `BUDGETS` table in `clients/desktop/scripts/perf-budget.ts`. Its scene and
+runtime counters are exact budgets, so adding, renaming or changing the work of
+a phase needs a matching table edit in the same change; the checker fails
+closed on a missing or unbudgeted phase.
+
 The default test profile is quick for iteration; use
 `just desktop-perf-headless release` for comparable optimized runs. Compare
 back-to-back runs on the same machine without concurrent builds. This measures

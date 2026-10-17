@@ -158,6 +158,18 @@ grep -Fxq "phux next.$sha_a" "$TMP/next/phux" && grep -Fxq next "$TMP/next/.phux
 FAIL_MANIFEST=1 install_to "$TMP/pinned" --version 9.8.7 >/dev/null 2>&1
 grep -Fq "phux-v9.8.7-$TARGET.tar.gz.sha256" "$CALLS" || fail "a pin must verify its sidecar"
 
+# An interrupted asset or sidecar download says what failed and installs nothing.
+archive="phux-v9.8.7-$TARGET.tar.gz"
+mv "$SERVED/$archive.sha256" "$TMP/held.sha256"
+refused "could not download the checksum for $archive; nothing was installed" \
+  --os linux --arch x86_64 --install-dir "$TMP/sidecarless" --version 9.8.7
+mv "$TMP/held.sha256" "$SERVED/$archive.sha256"
+mv "$SERVED/$archive" "$TMP/held.tar.gz"
+refused "could not download $archive; nothing was installed" \
+  --os linux --arch x86_64 --install-dir "$TMP/assetless"
+mv "$TMP/held.tar.gz" "$SERVED/$archive"
+[[ ! -e $TMP/sidecarless/phux && ! -e $TMP/assetless/phux ]] || fail "a failed download installed"
+
 # A digest the archive does not match installs nothing.
 mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
 printf 'old phux\n' > "$TMP/stable/phux"

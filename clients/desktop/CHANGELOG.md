@@ -31,6 +31,32 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.30.0](https://github.com/no-phux/phux/compare/desktop-v0.29.0...desktop-v0.30.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** project server-held approvals into the Inbox ([#1542](https://github.com/no-phux/phux/issues/1542)) ([8fa3405](https://github.com/no-phux/phux/commit/8fa34057e0159880af61cce3fc25e3a3df4f4e39))
+
+## [0.29.0](https://github.com/no-phux/phux/compare/desktop-v0.28.2...desktop-v0.29.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** bound and redact the log, add Copy Diagnostics ([044714a](https://github.com/no-phux/phux/commit/044714a06cf6da82ff4ba997e8264daa53f484cb))
+* **desktop:** label the conversation view for screen readers ([4fcf622](https://github.com/no-phux/phux/commit/4fcf622066d1759ce3b103ef341d90ba5121b906))
+* **desktop:** ship license notices and a generated third-party notice in Phux.app ([a8fdb29](https://github.com/no-phux/phux/commit/a8fdb2989db0ece0c4abd9de6e5ef19553ab637b))
+* **desktop:** show settings provenance, shortcut conflicts and skipped Ghostty lines ([a834c82](https://github.com/no-phux/phux/commit/a834c8276d52d4faa83e3a866af640bb758bedb4))
+
+
+### Bug Fixes
+
+* **desktop:** expose whole conversation bodies to screen readers ([f44a437](https://github.com/no-phux/phux/commit/f44a437212b71d1a3a63f9ae9bded0bed4723a5f))
+* **desktop:** list valid Ghostty values the app cannot use apart from malformed lines ([fb4d8c8](https://github.com/no-phux/phux/commit/fb4d8c8091f77b394ae5cd189855758efe751af1))
+* **desktop:** print license text for every shipped crate and separate build-time tools ([f16dee2](https://github.com/no-phux/phux/commit/f16dee20addf14c03ac1095906817fa0cf8f3d26))
+* **desktop:** sanitize titles, harden log rotation and redaction, prove failure paths ([768548a](https://github.com/no-phux/phux/commit/768548aabe013db0194348942b05ef1329bf4ddc))
+* **desktop:** tighten settings provenance, conflicts and reload coverage ([292c816](https://github.com/no-phux/phux/commit/292c8166a698da49c9d80b94020875c5714e7ca8))
+
 ## [0.28.2](https://github.com/no-phux/phux/compare/desktop-v0.28.1...desktop-v0.28.2) (2026-10-17)
 
 

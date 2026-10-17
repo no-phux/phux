@@ -199,6 +199,79 @@ fn old_events_queued_before_a_reconnect_precede_its_boundary() {
     assert_eq!(order, ["bell", "lost", "opened", "bell"]);
 }
 
+fn shell_event(plane: &mut ControlPlane, event: phux_protocol::wire::frame::AgentEvent) {
+    plane
+        .feed(FrameKind::Event {
+            terminal: Some(terminal()),
+            event,
+            stamp: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
+    use phux_protocol::wire::frame::AgentEvent;
+    let mut plane = attached();
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "no shell event yet is unknown"
+    );
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    assert_eq!(plane.command_state(&terminal()), Some(true));
+    shell_event(
+        &mut plane,
+        AgentEvent::CommandFinished { exit_code: Some(0) },
+    );
+    assert_eq!(plane.command_state(&terminal()), Some(false));
+    assert!(plane.take_observation().events.iter().any(|event| matches!(
+        event,
+        Event::CommandFinished {
+            exit_code: Some(0),
+            ..
+        }
+    )));
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    reconnect_with_reused_ids(&mut plane);
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a new connection does not inherit the old one's events; the replica answers"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+            exit_status: Some(0),
+            input_holder: None,
+            action: phux_protocol::wire::frame::ControlAction::Exited,
+            actor: None,
+        },
+    );
+    assert_eq!(
+        plane.command_state(&terminal()),
+        Some(false),
+        "an exited shell runs nothing"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::ResourceClosed {
+            exit_status: Some(0),
+        },
+    );
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a closed terminal forgets its state"
+    );
+}
+
 #[test]
 fn an_ordinary_refresh_is_not_a_new_incarnation() {
     let mut plane = attached();

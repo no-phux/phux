@@ -1466,16 +1466,21 @@ impl App {
     }
 
     /// Scroll the current match into view, if it is off screen, and repaint.
-    fn reveal_current_match(&self) {
+    /// Returns whether the viewport moved, so the caller can demand older
+    /// history once the borrow is released.
+    fn reveal_current_match(&self) -> bool {
         let current = self.search.borrow().current();
+        let mut moved = false;
         if let (Some(found), Some(terminal)) = (current, self.session.terminal()) {
             let bar = terminal.scrollbar();
             if let Some(top) = reveal_row(found.row, bar.offset, bar.len, bar.total) {
                 terminal.scroll_to_row(top);
                 self.clear_selection();
+                moved = true;
             }
         }
         self.request_paint();
+        moved
     }
 
     /// Row-major indices of the selected cells, empty without a selection.
@@ -3129,11 +3134,18 @@ fn scroll(
             send_input(app, arrows.into_iter().map(InputEvent::Key));
         }
         WheelAction::Scrollback => {
-            let app = app.borrow();
-            let rows = wheel_travel(&app, delta_y, delta_mode, 1.0);
-            if rows != 0 && app.session.scroll_viewport(rows) {
-                app.clear_selection();
-                app.request_paint();
+            let scrolled = {
+                let app = app.borrow();
+                let rows = wheel_travel(&app, delta_y, delta_mode, 1.0);
+                let scrolled = rows != 0 && app.session.scroll_viewport(rows);
+                if scrolled {
+                    app.clear_selection();
+                    app.request_paint();
+                }
+                scrolled
+            };
+            if scrolled {
+                demand_history(app);
             }
         }
     }
@@ -3325,12 +3337,19 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
     }
     if let Some(direction) = crate::input::scrollback_page(&browser_key) {
         event.prevent_default();
-        let app = app.borrow();
-        let (_, rows) = app.session.dims();
-        let page = i32::from(rows.saturating_sub(1).max(1));
-        if app.session.scroll_viewport(direction * page) {
-            app.clear_selection();
-            app.request_paint();
+        let scrolled = {
+            let app = app.borrow();
+            let (_, rows) = app.session.dims();
+            let page = i32::from(rows.saturating_sub(1).max(1));
+            let scrolled = app.session.scroll_viewport(direction * page);
+            if scrolled {
+                app.clear_selection();
+                app.request_paint();
+            }
+            scrolled
+        };
+        if scrolled {
+            demand_history(app);
         }
         return;
     }
@@ -3427,6 +3446,17 @@ fn typed_keys(app: &Rc<RefCell<App>>, mut keys: Vec<KeyEvent>) -> Vec<InputEvent
         app.publish_modifiers();
     }
     keys.into_iter().map(InputEvent::Key).collect()
+}
+
+/// Request older history when a scroll nears the oldest loaded row; a
+/// transport failure closes the connection.
+fn demand_history(app: &Rc<RefCell<App>>) {
+    let mut a = app.borrow_mut();
+    let frames = a.session.history_demand();
+    if let Err(message) = a.send(frames) {
+        drop(a);
+        close_with_transport_error(app, &message);
+    }
 }
 
 /// Send input the user typed or pointed: as [`send_events`], and when any

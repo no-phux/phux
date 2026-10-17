@@ -43,8 +43,8 @@ impl PasteConfirmOverlay {
     }
 
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        let wide = centered_panel(outer, 5, 20, 4, bp);
-        let h = 4.min(outer.height);
+        let wide = centered_panel(outer, 5, 20, 3, bp);
+        let h = 3.min(outer.height);
         let y = outer.y + (outer.height.saturating_sub(h)) / 2;
         Rect::new(wide.x, y, wide.width, h)
     }
@@ -53,11 +53,9 @@ impl PasteConfirmOverlay {
 impl RenderOverlay for PasteConfirmOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let text = Style::default().fg(self.theme.text);
-        let lines = vec![
-            Line::styled(self.message.clone(), text),
-            Line::styled("Enter paste  ·  Esc cancel", text),
-        ];
-        Modal::new(&self.theme, "paste?".to_owned(), lines)
+        let lines = vec![Line::styled(self.message.clone(), text)];
+        Modal::new(&self.theme, "Paste?".to_owned(), lines)
+            .footer("", "⏎ paste · esc cancel")
             .render_into(Self::modal_area(area, self.breakpoints), buf);
     }
 

@@ -95,9 +95,94 @@ fn render_appearance(light: bool) {
         Modal::Settings
     );
     save(&mut cx, window.into(), &format!("{appearance}-layout"));
+    ghostty_settings_render(&mut cx, window.into(), &desk, appearance);
     cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
     drop(cx);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A reloaded Ghostty config with a duplicated chord, a malformed line and a
+/// valid line this app cannot use: the reload rebinds, repaints the Ghostty
+/// theme, posts one notice for the malformed line only, and Settings renders
+/// the conflict and both line groups.
+fn ghostty_settings_render(
+    cx: &mut gpui::HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    desk: &gpui::Entity<Desk>,
+    appearance: &str,
+) {
+    use phux_desktop::settings::GhosttySource;
+    let sources = [GhosttySource {
+        path: Some("/fixture/ghostty/config".into()),
+        text: "background = #123456\nforeground = #fedcba\n\
+               keybind = super+d=new_split:right\nkeybind = super+d=new_split:down\n\
+               not a setting\npalette = 200=#ffffff\n"
+            .to_owned(),
+    }];
+    cx.update(|cx| {
+        desk.update(cx, |desk, cx| {
+            desk.prefs.ghostty_keys = true;
+            desk.prefs.theme_id = "ghostty".to_owned();
+            desk.apply_ghostty_sources(Some(&sources), cx);
+        });
+    });
+    draw(cx, window);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.palette().theme.background, "#123456");
+        assert_eq!(
+            desk.shown_chord("split-down"),
+            Some(phux_desktop::settings::display_chord("cmd+d"))
+        );
+        // Refusals show as the peeked notice, not in the feed list.
+        let notice = desk.feed.peek().expect("reload notice");
+        assert_eq!(notice.title, "Skipped 1 Ghostty config line");
+        let body = notice.body.as_deref().unwrap_or_default();
+        assert!(body.contains("config:5: not a setting"), "{body}");
+        assert_eq!(desk.ghostty().unsupported.len(), 1);
+    });
+    for query in ["conflicts", "skipped"] {
+        // `settings` toggles, so an open panel closes first and reopens
+        // with an empty search.
+        for _ in 0..2 {
+            cx.update_window(window, |_, window, cx| {
+                desk.update(cx, |desk, cx| desk.execute("settings", window, cx));
+            })
+            .unwrap();
+            draw(cx, window);
+            if desk.read_with(cx, |desk, _| desk.modal.clone()) == Modal::Settings {
+                break;
+            }
+        }
+        type_text(cx, window, query);
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+        })
+        .unwrap();
+        draw(cx, window);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::Settings
+        );
+        save(cx, window, &format!("{appearance}-ghostty-{query}"));
+    }
+}
+
+fn type_text(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle, text: &str) {
+    for character in text.chars() {
+        cx.update_window(window, |_, window, cx| {
+            let key = character.to_string();
+            window.dispatch_keystroke(
+                Keystroke {
+                    key: key.clone(),
+                    key_char: Some(key),
+                    ..Default::default()
+                },
+                cx,
+            );
+        })
+        .unwrap();
+        draw(cx, window);
+    }
 }
 
 fn draw(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle) {

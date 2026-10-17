@@ -44,6 +44,9 @@ pub enum TerminalEvent {
     /// Local files or image bytes to upload into this terminal.
     /// The shell pastes the server path only after the receipt.
     Upload(crate::attach::UploadBatch),
+    /// A line-breaking paste held while this terminal runs a command. The
+    /// shell asks first and sends it with [`HostAction::PasteConfirmed`].
+    ConfirmPaste(crate::input::HeldPaste),
 }
 
 /// A terminal view bound to one runtime publication.
@@ -240,6 +243,9 @@ fn subscribe_notices(
             }),
             crate::input::InputEvent::Upload(batch) => {
                 cx.emit(TerminalEvent::Upload(batch.clone()));
+            }
+            crate::input::InputEvent::ConfirmPaste(paste) => {
+                cx.emit(TerminalEvent::ConfirmPaste(paste.clone()));
             }
         },
     )

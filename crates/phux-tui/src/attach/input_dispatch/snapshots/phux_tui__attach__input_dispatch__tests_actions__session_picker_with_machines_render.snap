@@ -1,5 +1,6 @@
 ---
 source: crates/phux-tui/src/attach/input_dispatch/tests_actions.rs
+assertion_line: 2516
 expression: text
 ---
 
@@ -37,4 +38,4 @@ expression: text
                          │                                                │
                          │                                                │
                          │                                                │
-                         ╰────────────────────────────────────────────────╯
+                         ╰ 1 of 7 ───────────────── ↑↓ move · ⏎ run · esc ╯

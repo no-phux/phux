@@ -15,7 +15,10 @@
 
 #![deny(missing_docs)]
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use js_sys::{Array, Function, Object, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::JsCast;
@@ -35,77 +38,6 @@ pub const fn engine_wasm_len() -> usize {
     GHOSTTY_VT_WASM.len()
 }
 
-/// Canonical incremental checkpoint codec identity implemented by protocol 0.7.
-pub const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
-/// Exact immutable checkpoint envelope version implemented by protocol 0.7.
-pub const CHECKPOINT_CODEC_VERSION: u16 = 2;
-
-/// Runtime metadata of a checkpoint-capable engine. The embedded engine is
-/// built from the official libghostty-vt snapshot ABI, whose browser decoder
-/// is not bound yet, so [`Vt::incremental_capabilities`] reports none and the
-/// browser stays on synthesized VT.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IncrementalCapabilities {
-    /// Incremental C ABI version.
-    pub abi_version: u32,
-    /// Lowest accepted checkpoint envelope version.
-    pub min_decode_version: u16,
-    /// Highest accepted checkpoint envelope version.
-    pub max_decode_version: u16,
-    /// Checkpoint envelope version emitted by this engine.
-    pub default_encode_version: u16,
-    /// Whether the engine exposes incremental transitions.
-    pub incremental: bool,
-    /// Whether the engine exposes an authenticated READY boundary.
-    pub ready: bool,
-    /// Whether history can follow READY progressively.
-    pub history: bool,
-    /// Whether history cursors are authenticated.
-    pub authenticated_tokens: bool,
-    /// Whether record sizes are bounded by decoder options.
-    pub bounded_records: bool,
-    /// Whether page counts are bounded by decoder options.
-    pub bounded_pages: bool,
-    /// Whether imported history units are bounded.
-    pub bounded_units: bool,
-    /// Maximum supported record size.
-    pub max_record_bytes: usize,
-    /// Maximum supported page count.
-    pub max_pages: usize,
-    /// Maximum supported history-unit size.
-    pub max_unit_bytes: usize,
-    /// Maximum supported history rows.
-    pub max_rows: usize,
-    /// Stable codec ABI identity.
-    pub codec_identity: String,
-    /// Engine build identity, retained for diagnostics only.
-    pub build_identity: String,
-}
-
-impl IncrementalCapabilities {
-    /// Whether this runtime exactly implements protocol-0.7 native checkpoint v2.
-    #[must_use]
-    pub fn supports_protocol_07(&self, required_record_bytes: usize) -> bool {
-        self.abi_version == 1
-            && self.default_encode_version == CHECKPOINT_CODEC_VERSION
-            && self.min_decode_version <= CHECKPOINT_CODEC_VERSION
-            && self.max_decode_version >= CHECKPOINT_CODEC_VERSION
-            && self.incremental
-            && self.ready
-            && self.history
-            && self.authenticated_tokens
-            && self.bounded_records
-            && self.bounded_pages
-            && self.bounded_units
-            && self.max_record_bytes >= required_record_bytes
-            && self.max_pages > 0
-            && self.max_unit_bytes > 0
-            && self.max_rows > 0
-            && self.codec_identity == CHECKPOINT_CODEC_IDENTITY
-            && !self.build_identity.is_empty()
-    }
-}
-
 const TERMINAL_OPT_SCROLLBACK_MAX_BYTES: f64 = 27.0;
 const TERMINAL_OPT_SCROLLBACK_MAX_LINES: f64 = 28.0;
 const TERMINAL_DATA_SCROLLBACK_MAX_BYTES: f64 = 34.0;
@@ -113,6 +45,18 @@ const TERMINAL_DATA_SCROLLBACK_MAX_LINES: f64 = 35.0;
 
 // ── ABI constants (from include/ghostty/vt.h) ────────────────────────────────
 const GHOSTTY_SUCCESS: i32 = 0;
+const GHOSTTY_NO_VALUE: i32 = -4;
+// `GhosttySnapshotDecoderOption` / `GhosttySnapshotDecoderData` tags.
+const SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES: f64 = 0.0;
+const SNAPSHOT_DECODER_DATA_PROGRESS_ROWS: f64 = 6.0;
+const SNAPSHOT_DECODER_DATA_PROGRESS_REMAINING: f64 = 7.0;
+// GHOSTSNP record framing: `{ tag: u16, payload_len: u32, crc32c: u32 }`.
+const SNAPSHOT_RECORD_HEADER_BYTES: usize = 10;
+const SNAPSHOT_RECORD_PAGE: u16 = 3;
+const SNAPSHOT_RECORD_HISTORY: u16 = 4;
+const SNAPSHOT_RECORD_FINISH: u16 = 6;
+// `GhosttyReader`: `{ read: fn-table index, userdata: ptr }`, passed by pointer.
+const READER_SIZE: u32 = 8;
 // RenderStateData (whole-frame reads via ghostty_render_state_get)
 const RENDER_STATE_DATA_COLS: f64 = 1.0;
 const RENDER_STATE_DATA_ROWS: f64 = 2.0;
@@ -167,6 +111,14 @@ const SCROLL_VIEWPORT_TOP: u32 = 0;
 const BELL_TRAMPOLINE_WASM: [u8; 32] = [
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic, version
     0x01, 0x06, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x00, // type: (i32, i32) -> ()
+    0x02, 0x07, 0x01, 0x01, 0x65, 0x01, 0x66, 0x00, 0x00, // import "e" "f"
+    0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, // export "f"
+];
+/// The same re-export for the snapshot decoder's `GhosttyReaderFn`:
+/// `(func (param i32 i32 i32 i32) (result i32))`.
+const READER_TRAMPOLINE_WASM: [u8; 35] = [
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic, version
+    0x01, 0x09, 0x01, 0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f, // type
     0x02, 0x07, 0x01, 0x01, 0x65, 0x01, 0x66, 0x00, 0x00, // import "e" "f"
     0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, // export "f"
 ];
@@ -267,8 +219,34 @@ pub struct Vt {
     formatter_free: Function,
     ghostty_free: Function,
     codepoint_width: Function,
-    native_capabilities: Option<IncrementalCapabilities>,
+    snapshot: Option<SnapshotAbi>,
+    snapshot_verified: Cell<bool>,
     bell: Option<BellHook>,
+}
+
+/// Put a JS callback in the engine's function table, the only place the
+/// engine's C callbacks can point. `trampoline` is a one-function module that
+/// re-exports its import `e.f` with the C signature, since a `funcref` table
+/// accepts only wasm functions. `None` when the host cannot (the table does
+/// not grow).
+fn install_table_function(exports: &JsValue, trampoline: &[u8], callback: &JsValue) -> Option<u32> {
+    let table: WebAssembly::Table = Reflect::get(exports, &"__indirect_function_table".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let host = Object::new();
+    Reflect::set(&host, &"f".into(), callback).ok()?;
+    let imports = Object::new();
+    Reflect::set(&imports, &"e".into(), &host).ok()?;
+    let module = WebAssembly::Module::new(&Uint8Array::from(trampoline)).ok()?;
+    let instance = WebAssembly::Instance::new(&module, &imports).ok()?;
+    let function: Function = Reflect::get(&instance.exports(), &"f".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let table_index = table.grow(1).ok()?;
+    table.set(table_index, &function).ok()?;
+    Some(table_index)
 }
 
 /// The engine's bell callback: a table slot calling back into Rust, which
@@ -281,12 +259,8 @@ struct BellHook {
 
 impl BellHook {
     /// Install the callback in the engine's function table. `None` when the
-    /// host cannot (the table does not grow): terminals then never ring.
+    /// host cannot: terminals then never ring.
     fn install(exports: &JsValue) -> Option<Self> {
-        let table: WebAssembly::Table = Reflect::get(exports, &"__indirect_function_table".into())
-            .ok()?
-            .dyn_into()
-            .ok()?;
         let rang = Rc::new(RefCell::new(Vec::new()));
         let record = Rc::clone(&rang);
         let callback = Closure::<dyn FnMut(u32, u32)>::new(move |terminal: u32, _userdata: u32| {
@@ -295,18 +269,11 @@ impl BellHook {
                 rang.push(terminal);
             }
         });
-        let host = Object::new();
-        Reflect::set(&host, &"f".into(), callback.as_ref().unchecked_ref()).ok()?;
-        let imports = Object::new();
-        Reflect::set(&imports, &"e".into(), &host).ok()?;
-        let module = WebAssembly::Module::new(&Uint8Array::from(&BELL_TRAMPOLINE_WASM[..])).ok()?;
-        let instance = WebAssembly::Instance::new(&module, &imports).ok()?;
-        let function: Function = Reflect::get(&instance.exports(), &"f".into())
-            .ok()?
-            .dyn_into()
-            .ok()?;
-        let table_index = table.grow(1).ok()?;
-        table.set(table_index, &function).ok()?;
+        let table_index = install_table_function(
+            exports,
+            &BELL_TRAMPOLINE_WASM,
+            callback.as_ref().unchecked_ref(),
+        )?;
         Some(Self {
             table_index,
             rang,
@@ -319,6 +286,104 @@ impl BellHook {
         let before = rang.len();
         rang.retain(|&handle| handle != terminal);
         rang.len() != before
+    }
+}
+
+/// Bytes the snapshot decoder may read during one engine call.
+#[derive(Default)]
+struct StagedSource {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+/// The official GHOSTSNP decoder exports plus the one reader every decoder
+/// shares. The engine reads only synchronously inside `ready`/`next`, so a
+/// decoder lends its staged unit to `source` for exactly that call.
+struct SnapshotAbi {
+    decoder_new: Function,
+    decoder_free: Function,
+    decoder_set: Function,
+    decoder_get: Function,
+    decoder_ready: Function,
+    decoder_next: Function,
+    reader_index: u32,
+    source: Rc<RefCell<StagedSource>>,
+    _reader: Closure<dyn FnMut(u32, u32, u32, u32) -> u32>,
+}
+
+impl SnapshotAbi {
+    /// Bind the decoder exports and install the reader. `None` when any is
+    /// missing or the host cannot install the reader: the browser then
+    /// advertises synthesized VT only.
+    fn install(exports: &JsValue, memory: &WebAssembly::Memory) -> Option<Self> {
+        let f = |name: &str| -> Option<Function> {
+            Reflect::get(exports, &JsValue::from_str(name))
+                .ok()?
+                .dyn_into()
+                .ok()
+        };
+        let source = Rc::new(RefCell::new(StagedSource::default()));
+        let staged = Rc::clone(&source);
+        let memory = memory.clone();
+        // `GhosttyReaderFn(userdata, buffer, capacity, out_read) -> bool`.
+        // Returning the staged unit's end as end-of-file is what makes a
+        // truncated unit fail closed instead of waiting for more bytes.
+        let reader = Closure::<dyn FnMut(u32, u32, u32, u32) -> u32>::new(
+            move |_userdata: u32, buffer: u32, capacity: u32, out_read: u32| {
+                let Ok(mut source) = staged.try_borrow_mut() else {
+                    return 0;
+                };
+                let remaining = source.bytes.len() - source.offset;
+                let len = remaining.min(capacity as usize);
+                let view = Uint8Array::new(&memory.buffer());
+                view.subarray(buffer, buffer + len as u32)
+                    .copy_from(&source.bytes[source.offset..source.offset + len]);
+                for (index, byte) in (len as u32).to_le_bytes().into_iter().enumerate() {
+                    view.set_index(out_read + index as u32, byte);
+                }
+                source.offset += len;
+                1
+            },
+        );
+        let decoder_new = f("ghostty_snapshot_decoder_new")?;
+        let decoder_free = f("ghostty_snapshot_decoder_free")?;
+        let decoder_set = f("ghostty_snapshot_decoder_set")?;
+        let decoder_get = f("ghostty_snapshot_decoder_get")?;
+        let decoder_ready = f("ghostty_snapshot_decoder_ready")?;
+        let decoder_next = f("ghostty_snapshot_decoder_next")?;
+        let reader_index = install_table_function(
+            exports,
+            &READER_TRAMPOLINE_WASM,
+            reader.as_ref().unchecked_ref(),
+        )?;
+        Some(Self {
+            decoder_new,
+            decoder_free,
+            decoder_set,
+            decoder_get,
+            decoder_ready,
+            decoder_next,
+            reader_index,
+            source,
+            _reader: reader,
+        })
+    }
+
+    /// Run one decoder call over exactly `unit`, then release it. Returns
+    /// the call's status and how many bytes the engine read.
+    fn with_source(
+        &self,
+        unit: Vec<u8>,
+        call: impl FnOnce() -> Result<i32, NativeCodecError>,
+    ) -> (Result<i32, NativeCodecError>, usize, usize) {
+        let len = unit.len();
+        *self.source.borrow_mut() = StagedSource {
+            bytes: unit,
+            offset: 0,
+        };
+        let status = call();
+        let consumed = std::mem::take(&mut *self.source.borrow_mut()).offset;
+        (status, consumed, len)
     }
 }
 
@@ -356,6 +421,7 @@ impl Vt {
                 .map_err(|_| JsValue::from_str(&format!("missing export: {name}")))
         };
 
+        let snapshot = SnapshotAbi::install(&exports, &memory);
         let vt = Self {
             memory,
             alloc: f("ghostty_wasm_alloc")?,
@@ -388,34 +454,126 @@ impl Vt {
             ghostty_free: f("ghostty_free")?,
             codepoint_width: f("ghostty_unicode_codepoint_width")?,
             bell: BellHook::install(&exports),
-            // The engine carries the official GHOSTSNP snapshot C API, but
-            // its streaming decoder (a host reader callback) is not bound
-            // yet. Advertising native would let the server select a codec
-            // this client cannot decode, so stay synthesized.
-            native_capabilities: None,
+            snapshot,
+            snapshot_verified: Cell::new(false),
         };
-        Ok(Rc::new(vt))
+        let vt = Rc::new(vt);
+        // Advertise native only after one real round trip through the
+        // reader: a codec this client cannot decode must never be selected.
+        let encode = f("ghostty_snapshot_encode_alloc").ok();
+        let verified = encode.is_some_and(|encode| vt.snapshot_round_trip(&encode));
+        vt.snapshot_verified.set(verified);
+        Ok(vt)
     }
 
-    /// Runtime checkpoint metadata when the embedded engine exposes the exact
-    /// incremental ABI. Missing or malformed metadata means synthesized-only.
+    /// Whether this engine decodes the official GHOSTSNP snapshot, the
+    /// codec protocol 0.7 names `LibghosttySnapshotV1`. `false` means the
+    /// browser must stay on synthesized VT.
     #[must_use]
-    pub fn incremental_capabilities(&self) -> Option<&IncrementalCapabilities> {
-        self.native_capabilities.as_ref()
+    pub fn native_snapshot_available(&self) -> bool {
+        self.snapshot.is_some() && self.snapshot_verified.get()
     }
 
-    /// Construct a bounded incremental checkpoint decoder.
+    /// Construct a staged GHOSTSNP decoder (see [`NativeDecoder`]).
+    /// `max_bytes` bounds both the staged unit and the parser continuation
+    /// READY may restore.
     ///
     /// # Errors
-    /// Always [`NativeCodecError::Unavailable`] until the official snapshot
-    /// decoder is bound: the embedded engine advertises no native codec.
+    /// [`NativeCodecError::Unavailable`] when the engine cannot decode
+    /// snapshots, or the engine's status when it refuses the decoder.
     pub fn native_decoder(
         self: &Rc<Self>,
-        _max_continuation_bytes: usize,
-        _max_record_bytes: usize,
-        _max_pages: usize,
+        max_bytes: usize,
     ) -> Result<NativeDecoder, NativeCodecError> {
-        Err(NativeCodecError::Unavailable)
+        if !self.native_snapshot_available() {
+            return Err(NativeCodecError::Unavailable);
+        }
+        self.snapshot_decoder(max_bytes)
+    }
+
+    fn snapshot_decoder(
+        self: &Rc<Self>,
+        max_bytes: usize,
+    ) -> Result<NativeDecoder, NativeCodecError> {
+        let abi = self
+            .snapshot
+            .as_ref()
+            .ok_or(NativeCodecError::Unavailable)?;
+        let continuation = to_wasm_usize(max_bytes)?;
+        let reader = self.alloc_zeroed(READER_SIZE)?;
+        self.w_u32(reader, abi.reader_index);
+        let slot = match self.alloc_zeroed(4) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.wasm_free(reader, READER_SIZE);
+                return Err(error);
+            }
+        };
+        // The decoder stores its own copy of the reader struct.
+        let status = self.call_i32(&abi.decoder_new, &[0.0, f64::from(slot), f64::from(reader)]);
+        let handle = self.r_u32(slot);
+        self.wasm_free(reader, READER_SIZE);
+        let decoder = NativeDecoder {
+            vt: Rc::clone(self),
+            handle,
+            staged: Vec::new(),
+            max_bytes,
+            terminal: None,
+            state: DecoderState::Collecting,
+        };
+        let result = status
+            .and_then(|status| check_status(status, 0))
+            .and_then(|()| {
+                if handle == 0 {
+                    return Err(NativeCodecError::InvalidHandle);
+                }
+                self.w_u32(slot, continuation);
+                check_status(
+                    self.call_i32(
+                        &abi.decoder_set,
+                        &[
+                            f64::from(handle),
+                            SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
+                            f64::from(slot),
+                        ],
+                    )?,
+                    0,
+                )
+            });
+        self.wasm_free(slot, 4);
+        result.map(|()| decoder)
+    }
+
+    /// Encode a tiny terminal with the engine and decode it back through
+    /// the reader, the whole path a native bootstrap takes.
+    fn snapshot_round_trip(self: &Rc<Self>, encode: &Function) -> bool {
+        let source = self.terminal(2, 2);
+        source.write(b"ok");
+        let Some(snapshot) = self.allocated_bytes(|out_ptr, out_len| {
+            self.call(
+                encode,
+                &[
+                    f64::from(source.term),
+                    0.0,
+                    f64::from(out_ptr),
+                    f64::from(out_len),
+                ],
+            ) as i32
+        }) else {
+            return false;
+        };
+        let Some(ready) = snapshot_ready_end(&snapshot) else {
+            return false;
+        };
+        let Ok(mut decoder) = self.snapshot_decoder(snapshot.len()) else {
+            return false;
+        };
+        decoder.feed(&snapshot[..ready]).is_ok()
+            && decoder
+                .ready()
+                .is_ok_and(|terminal| terminal.rows_text().first().is_some_and(|row| row == "ok"))
+            && decoder.feed(&snapshot[ready..]).is_ok()
+            && matches!(decoder.next_checked(0), Ok(None))
     }
 
     /// Open a terminal of `cols`×`rows`, with its own render state + reusable
@@ -473,16 +631,22 @@ impl Vt {
     /// Run an engine call that allocates its output (`out_ptr`, `out_len`
     /// slots), copy the bytes out as text, and free the engine's buffer.
     fn allocated_output(&self, call: impl FnOnce(u32, u32) -> i32) -> Option<String> {
+        self.allocated_bytes(call)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// [`Self::allocated_output`] without the text conversion.
+    fn allocated_bytes(&self, call: impl FnOnce(u32, u32) -> i32) -> Option<Vec<u8>> {
         let slots = self.alloc_zeroed(8).ok()?;
         let status = call(slots, slots + 4);
         let (ptr, len) = (self.r_u32(slots), self.r_u32(slots + 4));
         self.wasm_free(slots, 8);
         if ptr == 0 {
-            return (status == GHOSTTY_SUCCESS).then(String::new);
+            return (status == GHOSTTY_SUCCESS).then(Vec::new);
         }
         let bytes = self.bytes().subarray(ptr, ptr + len).to_vec();
         let _ = self.call(&self.ghostty_free, &[0.0, f64::from(ptr), f64::from(len)]);
-        (status == GHOSTTY_SUCCESS).then(|| String::from_utf8_lossy(&bytes).into_owned())
+        (status == GHOSTTY_SUCCESS).then_some(bytes)
     }
 
     // ── call + memory marshalling ────────────────────────────────────────────
@@ -567,123 +731,301 @@ fn to_wasm_usize(value: usize) -> Result<u32, NativeCodecError> {
     u32::try_from(value).map_err(|_| NativeCodecError::LimitExceeded)
 }
 
-/// Typed failure from an engine call or the (unbound) native checkpoint codec.
+fn check_status(code: i32, consumed: usize) -> Result<(), NativeCodecError> {
+    if code == GHOSTTY_SUCCESS {
+        Ok(())
+    } else {
+        Err(NativeCodecError::Status { code, consumed })
+    }
+}
+
+/// Typed failure from an engine call or the native snapshot decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCodecError {
-    /// The exact checkpoint ABI or runtime capability set is unavailable.
+    /// The engine cannot decode the official snapshot codec.
     Unavailable,
     /// A host-to-engine call threw or returned a non-numeric value.
     Host(String),
-    /// The engine rejected a checkpoint transition.
+    /// The engine rejected a call or the snapshot bytes.
     Status {
-        /// Exact incremental status code.
+        /// Exact libghostty result code.
         code: i32,
-        /// Bytes consumed from the submitted fragment before rejection.
+        /// Bytes the engine read from the staged unit before failing.
         consumed: usize,
     },
-    /// A configured or submitted size cannot be represented by wasm32.
+    /// A configured or submitted size exceeds its bound or wasm32.
     LimitExceeded,
     /// The module allocator returned null.
     OutOfMemory,
     /// The module returned a null decoder or terminal handle.
     InvalidHandle,
-    /// The module returned an unknown decode transition.
-    InvalidEvent(i32),
-    /// Decoder-reported accounting exceeded the supplied fragment.
-    InvalidProgress {
-        /// Bytes the engine reported consumed.
-        consumed: usize,
-        /// Bytes supplied by the caller.
-        available: usize,
-    },
-    /// The authenticated envelope used a different exact codec version.
-    WrongCodecVersion {
-        /// Required immutable checkpoint version.
-        expected: u16,
-        /// Version reported by the decoder.
-        actual: u16,
-    },
+    /// The staged bytes were not exactly one READY prefix, history page, or
+    /// FINISH, or a page's rows differ from the rows the protocol declared.
+    InvalidUnit,
+    /// The decoder was driven out of order, after FINISH, or after a failure.
+    InvalidState,
 }
 
 impl std::fmt::Display for NativeCodecError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable => formatter.write_str("native checkpoint codec unavailable"),
-            Self::Host(message) => write!(formatter, "checkpoint host call failed: {message}"),
+            Self::Unavailable => formatter.write_str("native snapshot codec unavailable"),
+            Self::Host(message) => write!(formatter, "snapshot host call failed: {message}"),
             Self::Status { code, consumed } => {
-                write!(formatter, "checkpoint status {code} after {consumed} bytes")
+                write!(formatter, "snapshot status {code} after {consumed} bytes")
             }
-            Self::LimitExceeded => formatter.write_str("checkpoint limit exceeded"),
-            Self::OutOfMemory => formatter.write_str("checkpoint engine allocation failed"),
-            Self::InvalidHandle => formatter.write_str("checkpoint engine returned a null handle"),
-            Self::InvalidEvent(kind) => write!(formatter, "unknown checkpoint event {kind}"),
-            Self::InvalidProgress {
-                consumed,
-                available,
-            } => write!(
-                formatter,
-                "invalid checkpoint progress: consumed {consumed} of {available}"
-            ),
-            Self::WrongCodecVersion { expected, actual } => {
-                write!(
-                    formatter,
-                    "checkpoint codec mismatch: expected {expected}, got {actual}"
-                )
-            }
+            Self::LimitExceeded => formatter.write_str("snapshot limit exceeded"),
+            Self::OutOfMemory => formatter.write_str("snapshot engine allocation failed"),
+            Self::InvalidHandle => formatter.write_str("snapshot engine returned a null handle"),
+            Self::InvalidUnit => formatter.write_str("staged bytes are not one snapshot unit"),
+            Self::InvalidState => formatter.write_str("snapshot decoder used out of order"),
         }
     }
 }
 
 impl std::error::Error for NativeCodecError {}
 
-/// One bounded transition produced by the incremental decoder.
-pub struct NativeDecodeEvent {
-    /// Decoder lifecycle transition.
-    pub kind: NativeDecodeKind,
-    /// Bytes consumed from the caller's fragment.
-    pub consumed: usize,
-    /// Additional bytes currently needed, when known.
-    pub needed: usize,
-    /// Exact checkpoint envelope version, or zero before the envelope header.
-    pub codec_version: u16,
-    /// Whether an imported history page fit the configured engine budget.
-    pub retained: bool,
-    /// Authenticated terminal transferred exactly at READY.
-    pub terminal: Option<Terminal>,
+/// One record's `(tag, payload start, end)` at `offset`, if it fits `bytes`.
+fn snapshot_record(bytes: &[u8], offset: usize) -> Option<(u16, usize, usize)> {
+    let payload = offset.checked_add(SNAPSHOT_RECORD_HEADER_BYTES)?;
+    let header = bytes.get(offset..payload)?;
+    let tag = u16::from_le_bytes([header[0], header[1]]);
+    let len = u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
+    let end = payload.checked_add(len).filter(|end| *end <= bytes.len())?;
+    Some((tag, payload, end))
 }
 
-/// Incremental checkpoint decoder transition.
+/// The end of the READY record of a complete snapshot: the split between
+/// the renderable prefix and its history units.
+fn snapshot_ready_end(bytes: &[u8]) -> Option<usize> {
+    const ENVELOPE_BYTES: usize = 10;
+    const RECORD_READY: u16 = 5;
+    let mut offset = ENVELOPE_BYTES;
+    loop {
+        let (tag, _, end) = snapshot_record(bytes, offset)?;
+        if tag == RECORD_READY {
+            return Some(end);
+        }
+        offset = end;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeDecodeKind {
-    /// The decoder retained a fragment and needs more bytes.
-    NeedInput,
-    /// One bounded prefix transition completed.
-    Progress,
-    /// The terminal is authenticated and renderable.
-    Ready,
-    /// Progressive history metadata began.
-    HistoryBegin,
-    /// One progressive history page was imported.
-    HistoryPage,
-    /// The complete checkpoint transcript finished.
+enum HistoryUnit {
+    Page { rows: usize },
     Finish,
 }
 
-/// Engine-owned incremental decoder retained from bootstrap through history.
-/// Uninhabited until the official snapshot decoder is bound, so no value of
-/// it exists and [`Vt::native_decoder`] always fails closed.
+/// Check one staged history unit's framing before the engine can touch the
+/// terminal: optional HISTORY manifests, then exactly one PAGE or FINISH
+/// ending the unit. Mirrors libghostty-vt's `FeedIncrementalDecoder`.
+fn history_unit(bytes: &[u8]) -> Option<HistoryUnit> {
+    let mut offset = 0;
+    let mut manifests = 0;
+    loop {
+        let (tag, payload, end) = snapshot_record(bytes, offset)?;
+        match tag {
+            SNAPSHOT_RECORD_HISTORY if manifests < 2 => {
+                manifests += 1;
+                offset = end;
+            }
+            SNAPSHOT_RECORD_PAGE if end == bytes.len() => {
+                let header = bytes.get(payload..payload.checked_add(4)?)?;
+                let rows = u16::from_le_bytes([header[2], header[3]]);
+                return Some(HistoryUnit::Page {
+                    rows: usize::from(rows),
+                });
+            }
+            SNAPSHOT_RECORD_FINISH if end == bytes.len() => return Some(HistoryUnit::Finish),
+            _ => return None,
+        }
+    }
+}
+
+/// Rows one history unit delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryProgress {
+    /// Rows the authenticated PAGE carried; compare with protocol metadata.
+    pub authenticated_rows: usize,
+    /// Rows kept in the terminal; zero when the local history budget
+    /// discarded the authenticated page.
+    pub rows: usize,
+    /// Pages left in this screen's HISTORY sequence.
+    pub remaining: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DecoderState {
+    Collecting,
+    Ready,
+    Finished,
+    Failed,
+}
+
+/// The official GHOSTSNP decoder, fed one complete unit at a time, like
+/// libghostty-vt's `FeedDecoder` / `FeedIncrementalDecoder`.
+///
+/// Stage the READY prefix with [`Self::feed`] (in fragments as they
+/// arrive), then call [`Self::ready`]. After READY, stage each history unit
+/// and call [`Self::next_checked`] until it reports FINISH. Each call decodes
+/// exactly the staged bytes and releases them: the engine never mistakes
+/// starvation for end-of-file, and a short or long unit fails closed. Any
+/// failure poisons the decoder; the READY terminal stays renderable.
 pub struct NativeDecoder {
-    never: std::convert::Infallible,
+    vt: Rc<Vt>,
+    handle: u32,
+    staged: Vec<u8>,
+    max_bytes: usize,
+    terminal: Option<Terminal>,
+    state: DecoderState,
 }
 
 impl NativeDecoder {
-    /// Consume at most one bounded transition from an arbitrary fragment.
+    /// Append a fragment to the staged unit.
     ///
     /// # Errors
-    /// Returns the engine status and consumed-byte count on malformed,
-    /// oversized, truncated, or otherwise invalid checkpoint input.
-    pub fn push(&mut self, _data: &[u8]) -> Result<NativeDecodeEvent, NativeCodecError> {
-        match self.never {}
+    /// [`NativeCodecError::LimitExceeded`] past the decoder's byte bound,
+    /// [`NativeCodecError::InvalidState`] after FINISH or a failure.
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<(), NativeCodecError> {
+        if matches!(self.state, DecoderState::Finished | DecoderState::Failed) {
+            return Err(NativeCodecError::InvalidState);
+        }
+        if self
+            .staged
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|total| total > self.max_bytes)
+        {
+            return Err(NativeCodecError::LimitExceeded);
+        }
+        self.staged
+            .try_reserve(bytes.len())
+            .map_err(|_| NativeCodecError::OutOfMemory)?;
+        self.staged.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Heap bytes the staged unit holds.
+    #[must_use]
+    pub fn staged_capacity(&self) -> usize {
+        self.staged.capacity()
+    }
+
+    /// The renderable terminal, from READY on.
+    #[must_use]
+    pub fn terminal(&self) -> Option<&Terminal> {
+        self.terminal.as_ref()
+    }
+
+    /// Decode the staged prefix through its authenticated READY record.
+    ///
+    /// # Errors
+    /// The engine status for malformed or truncated input,
+    /// [`NativeCodecError::InvalidUnit`] when bytes follow READY, and
+    /// [`NativeCodecError::InvalidState`] when not called exactly once first.
+    pub fn ready(&mut self) -> Result<&Terminal, NativeCodecError> {
+        if self.state != DecoderState::Collecting {
+            return Err(NativeCodecError::InvalidState);
+        }
+        self.state = DecoderState::Failed;
+        let vt = Rc::clone(&self.vt);
+        let abi = vt.snapshot.as_ref().ok_or(NativeCodecError::Unavailable)?;
+        let slot = vt.alloc_zeroed(4)?;
+        let (status, consumed, len) = abi.with_source(std::mem::take(&mut self.staged), || {
+            vt.call_i32(
+                &abi.decoder_ready,
+                &[f64::from(self.handle), f64::from(slot)],
+            )
+        });
+        let term = vt.r_u32(slot);
+        vt.wasm_free(slot, 4);
+        // Own a transferred terminal first, so every failure below frees it.
+        let terminal = (term != 0).then(|| vt.terminal_from_handle(term));
+        check_status(status?, consumed)?;
+        if consumed != len {
+            return Err(NativeCodecError::InvalidUnit);
+        }
+        self.state = DecoderState::Ready;
+        Ok(self
+            .terminal
+            .insert(terminal.ok_or(NativeCodecError::InvalidHandle)?))
+    }
+
+    /// Decode the staged history unit, which must carry `expected_rows`
+    /// rows (zero for FINISH). `Ok(None)` means FINISH was authenticated.
+    ///
+    /// Framing and the row count are checked before the engine reads, so a
+    /// rejected unit never touches the terminal.
+    ///
+    /// # Errors
+    /// [`NativeCodecError::InvalidUnit`] for a malformed or mismatched unit,
+    /// the engine status for a corrupt one, and
+    /// [`NativeCodecError::InvalidState`] before READY or after FINISH.
+    pub fn next_checked(
+        &mut self,
+        expected_rows: usize,
+    ) -> Result<Option<HistoryProgress>, NativeCodecError> {
+        if self.state != DecoderState::Ready {
+            return Err(NativeCodecError::InvalidState);
+        }
+        self.state = DecoderState::Failed;
+        let unit = std::mem::take(&mut self.staged);
+        let expected = match history_unit(&unit) {
+            Some(HistoryUnit::Page { rows }) if rows == expected_rows => HistoryUnit::Page { rows },
+            Some(HistoryUnit::Finish) if expected_rows == 0 => HistoryUnit::Finish,
+            _ => return Err(NativeCodecError::InvalidUnit),
+        };
+        let vt = Rc::clone(&self.vt);
+        let abi = vt.snapshot.as_ref().ok_or(NativeCodecError::Unavailable)?;
+        let (status, consumed, len) = abi.with_source(unit, || {
+            vt.call_i32(&abi.decoder_next, &[f64::from(self.handle)])
+        });
+        let status = status?;
+        let finished = status == GHOSTTY_NO_VALUE;
+        if !finished {
+            check_status(status, consumed)?;
+        }
+        if consumed != len || finished != (expected == HistoryUnit::Finish) {
+            return Err(NativeCodecError::InvalidUnit);
+        }
+        let HistoryUnit::Page { rows } = expected else {
+            self.state = DecoderState::Finished;
+            return Ok(None);
+        };
+        let progress = HistoryProgress {
+            authenticated_rows: rows,
+            rows: self.progress(SNAPSHOT_DECODER_DATA_PROGRESS_ROWS)? as usize,
+            remaining: self.progress(SNAPSHOT_DECODER_DATA_PROGRESS_REMAINING)?,
+        };
+        self.state = DecoderState::Ready;
+        Ok(Some(progress))
+    }
+
+    /// One u32-sized progress value (`usize` and `uint32_t` on wasm32).
+    fn progress(&self, data: f64) -> Result<u32, NativeCodecError> {
+        let vt = &*self.vt;
+        let abi = vt.snapshot.as_ref().ok_or(NativeCodecError::Unavailable)?;
+        let out = vt.alloc_zeroed(4)?;
+        let status = vt.call_i32(
+            &abi.decoder_get,
+            &[f64::from(self.handle), data, f64::from(out)],
+        );
+        let value = vt.r_u32(out);
+        vt.wasm_free(out, 4);
+        check_status(status?, 0)?;
+        Ok(value)
+    }
+}
+
+impl Drop for NativeDecoder {
+    fn drop(&mut self) {
+        // Free the decoder, which borrows the READY terminal's handle,
+        // before the `terminal` field drops.
+        if let Some(abi) = self.vt.snapshot.as_ref()
+            && self.handle != 0
+        {
+            let _ = self.vt.call(&abi.decoder_free, &[f64::from(self.handle)]);
+        }
     }
 }
 

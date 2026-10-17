@@ -59,6 +59,10 @@ pub struct PaneLabel<'a> {
     /// Transient origin of the latest input (`input_activity`), drawn as
     /// `[name]` and dimmed once the fade has started.
     pub origin: Option<OriginBadge<'a>>,
+    /// Rows between the viewport's bottom and the live tail while the user
+    /// has scrolled into history; `None` at the tail. Drawn as `↑ N` at the
+    /// right end of the rule.
+    pub scrolled_back: Option<u64>,
 }
 
 /// A fading `[origin]` mark inset into the pane's title rule.
@@ -441,13 +445,14 @@ fn draw_one_title(
     let text = label.text.trim();
     let host = label.host.map(str::trim).filter(|host| !host.is_empty());
     let mut origin = label.origin.filter(|origin| !origin.text.trim().is_empty());
+    let scroll = draw_scroll_mark(cells, rect, y, label.scrolled_back, theme, focused);
     if text.is_empty() && host.is_none() && origin.is_none() {
         return;
     }
     let badge = label.badge(theme);
     // Budget: the pane's width, less the lead-in rule cell, the two
-    // padding spaces, and one closing rule cell.
-    let mut budget = usize::from(rect.w - TITLE_CHROME_CELLS);
+    // padding spaces, one closing rule cell, and the scroll mark's cells.
+    let mut budget = usize::from(rect.w - TITLE_CHROME_CELLS).saturating_sub(scroll);
     // Measure the badge: `put_measured` writes it at its real width.
     let badge_cells = badge.map_or(0, |b| text_columns(b.glyph) + 1);
     // Host badge plus the space that separates it from the title.
@@ -510,6 +515,46 @@ fn draw_one_title(
         x = put_clipped(cells, x, y, text, budget, title_style);
         put_measured(cells, x, y, " ", pad);
     }
+}
+
+/// Inset ` ↑ N ` at the right end of the rule when the pane is scrolled
+/// back `rows` rows, in the focus accent so the state is seen, not
+/// searched for. Returns the cells it took off the title's budget (its
+/// text, the padding, and one rule cell before it), or 0.
+fn draw_scroll_mark(
+    cells: &mut ChromeCells,
+    rect: Rect,
+    y: u16,
+    rows: Option<u64>,
+    theme: &Theme,
+    focused: bool,
+) -> usize {
+    let Some(rows) = rows.filter(|&rows| rows > 0) else {
+        return 0;
+    };
+    let mark = format!("↑ {rows}");
+    let width = text_columns(&mark) + 2;
+    // The mark, its two pads, and a rule cell on each side.
+    if usize::from(rect.w) < width + 2 {
+        return 0;
+    }
+    let x = rect.x + rect.w - 1 - u16::try_from(width).unwrap_or(u16::MAX);
+    let pad = Style::default().fg(if focused {
+        theme.divider_focus
+    } else {
+        theme.divider
+    });
+    let style = Style::default()
+        .fg(if focused {
+            theme.pane_title_focus
+        } else {
+            theme.pane_title
+        })
+        .add_modifier(Modifier::BOLD);
+    let x = put_measured(cells, x, y, " ", pad);
+    let x = put_measured(cells, x, y, &mark, style);
+    put_measured(cells, x, y, " ", pad);
+    width + 1
 }
 
 /// The columns `text` advances, counting only what may reach the wire (the
@@ -692,6 +737,7 @@ mod tests {
             host: None,
             unreachable: false,
             origin: None,
+            scrolled_back: None,
         }
     }
 

@@ -687,6 +687,7 @@ fn surface(modal: &Modal) -> &'static str {
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
+        | Modal::Windows
         | Modal::MoveResources
         | Modal::Settings => "palette-panel",
         _ => "modal-sheet",
@@ -744,10 +745,19 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
         Modal::Path,
         Modal::Goto,
         Modal::WindowSession,
+        Modal::Windows,
         Modal::MoveResources,
         Modal::Terminate {
             terminal: phux_protocol::ResourceId::local(1),
             title: "shell".into(),
+        },
+        Modal::Paste {
+            placement_id: "place-1".into(),
+            terminal_id: phux_protocol::ResourceId::local(1),
+            title: "shell".into(),
+            paste: crate::input::HeldPaste {
+                text: "one\ntwo".into(),
+            },
         },
     ]
     .into_iter()

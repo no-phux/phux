@@ -1,6 +1,6 @@
 ---
 source: crates/phux-tui/src/render/overlay/select_list.rs
-expression: out
+expression: "render_to_string(&sl, 44, 16)"
 ---
 ╭ command palette ─────────────────────────╮
 │ >                                        │
@@ -17,4 +17,4 @@ expression: out
 │ item-13                                  │
 │ item-14                                  │
 │ item-15                                  │
-╰──────────────────────────────────────────╯
+╰ 16 of 24 ───────── ↑↓ move · ⏎ run · esc ╯
