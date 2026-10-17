@@ -190,7 +190,8 @@ fetch_verified() {
   download "$asset_url" "${work}/${asset_name}" \
     || die "could not download ${asset_name}; nothing was installed"
   if [ -z "$build_sha256" ]; then
-    download "$sidecar_url" "${work}/sidecar"
+    download "$sidecar_url" "${work}/sidecar" \
+      || die "could not download the checksum for ${asset_name}; nothing was installed"
     build_sha256="$(sidecar_digest "${work}/sidecar" "$asset_name")"
   fi
   verify_sha256 "${work}/${asset_name}" "$build_sha256"
