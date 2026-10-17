@@ -717,6 +717,22 @@ fn catalog() -> Vec<CommandSpec> {
             &[],
         ),
         spec(
+            "minimize",
+            "Minimize Window",
+            "View",
+            Some("cmd+m"),
+            "Send this window to the Dock.",
+            &["hide"],
+        ),
+        spec(
+            "windows",
+            "Show All Windows…",
+            "View",
+            None,
+            "List every open window with its session, host and tabs, and bring one forward.",
+            &["overview", "switch", "minimized", "tabs"],
+        ),
+        spec(
             "reload-config",
             "Reload Ghostty Config",
             "Ghostty",

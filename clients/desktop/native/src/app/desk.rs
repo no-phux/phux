@@ -107,6 +107,8 @@ pub enum Modal {
         session: u32,
     },
     WindowSession,
+    /// Every open native window, its session, host and tabs.
+    Windows,
     Terminate {
         terminal: ResourceId,
         title: String,
@@ -1063,6 +1065,7 @@ impl Desk {
                 (&open, id),
                 (Modal::Commands, "palette")
                     | (Modal::Goto, "goto")
+                    | (Modal::Windows, "windows")
                     | (Modal::Settings, "settings")
                     | (Modal::Notifications, "notifications")
             );
@@ -1196,6 +1199,8 @@ impl Desk {
             "prompt-next" => self.jump_prompt(1, cx),
             "quick-terminal" => self.toggle_quick(cx),
             "new-window" => self.new_window(window, cx),
+            "windows" => self.modal = Modal::Windows,
+            "minimize" => window.minimize_window(),
             "fullscreen" => window.toggle_fullscreen(),
             "maximize" => window.zoom_window(),
             "reload-config" => self.reload_ghostty(cx),
@@ -3830,11 +3835,14 @@ impl Desk {
 
     /// `{tab} — phux`, or `phux` with no tab, plus the host on a remote window.
     /// Written only when it changes.
+    /// The native title names the shown tab and its session, so the Window
+    /// menu and Mission Control tell apart windows whose terminals look alike.
     pub(crate) fn sync_title(&mut self, window: &mut Window) {
-        let title = self
-            .active_tab()
-            .map(|tab| format!("{} — phux", tab_title(self, tab)))
-            .unwrap_or_else(|| "phux".into());
+        let title = match (self.active_tab(), self.session.as_str()) {
+            (Some(tab), "") => format!("{} — phux", tab_title(self, tab)),
+            (Some(tab), session) => format!("{} — {session}", tab_title(self, tab)),
+            (None, _) => "phux".into(),
+        };
         let title = match self.remote.as_deref() {
             Some(host) => format!("{title} · {}", display_title(host)),
             None => title,

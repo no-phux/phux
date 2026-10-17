@@ -595,6 +595,21 @@ impl Desktop {
         });
     }
 
+    /// Every open terminal window in the order it opened, the quick terminal
+    /// last. The performance window is a utility and is not listed.
+    pub(crate) fn desk_windows(
+        &self,
+    ) -> impl Iterator<Item = (AnyWindowHandle, &Entity<Desk>, bool)> {
+        self.windows
+            .iter()
+            .map(|opened| (opened.handle, &opened.desk, false))
+            .chain(
+                self.quick
+                    .iter()
+                    .map(|opened| (opened.handle, &opened.desk, true)),
+            )
+    }
+
     /// Whether a performance window currently owns the live sampler.
     pub(crate) fn performance_is_open(&self) -> bool {
         self.performance.is_some()
@@ -812,6 +827,11 @@ impl Desktop {
                 MenuItem::action("Jump to Agent Needing Attention", Run::new("attention")),
                 MenuItem::separator(),
                 MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
+            ]),
+            // AppKit appends its own list of open windows to the menu named "Window".
+            Menu::new("Window").items([
+                MenuItem::action("Minimize", Run::new("minimize")),
+                MenuItem::action("Show All Windows…", Run::new("windows")),
             ]),
         ];
         cx.set_menus(menus);

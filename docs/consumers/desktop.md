@@ -127,6 +127,15 @@ closing that destination before the reply cannot insert it into whichever pane
 happens to be focused later.
 
 **Go to Terminal** (⌘P) finds an existing placement and focuses its window.
+**Show All Windows…** (Window menu, the palette's **Windows** mode, or the
+`windows` command) lists every open native window as `Window N` with its
+phux session, host and tab count, each followed by its tabs. The window you
+are in and the tab it shows are marked **Current**; another window's visible
+tab is marked **Shown**. Choosing a row brings that window forward, out of the
+Dock if minimized, and shows the chosen tab; it never opens a window or a
+session. Typing in Go To also finds tabs in other windows. Window titles name
+the shown tab and its session, so AppKit's own window list in the Window menu
+tells look-alike windows apart.
 **Mirror Pane** creates a new view of the same terminal in a chosen
 split, tab, or window. Scrolling,
 selecting, or searching in one view leaves the others unchanged; all show the
