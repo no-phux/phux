@@ -424,8 +424,14 @@ pub(super) fn paint_pane_rows_in_place<W: super::RenderSink>(
             .unwrap_or_else(|| super::floating::untiled_rect(panes, fid, content));
         paint(fid, rect, panes);
     }
-    let (painted, composed) =
-        paint_chrome_in_place_into(&mut block, layout_state, panes, focused_resource, chrome);
+    let (painted, composed) = paint_chrome_in_place_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+    );
     if composed && block.end().is_ok() {
         return painted;
     }
@@ -613,7 +619,7 @@ fn paint_full_frame_into<W: Write>(
         rail,
         focused_resource,
         chrome.theme,
-        |id| super::pane_state::pane_label(panes_ref, id),
+        |id| super::pane_state::pane_label(kernel, panes_ref, id),
     );
     // The ED2 cleared the strip, so force it to re-emit.
     repaint_sidebar_strip(out, chrome, rail);
@@ -669,12 +675,19 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
     focused_resource: Option<&ResourceId>,
     chrome: &mut ChromeCtx<'_>,
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
-    let (painted, composed) =
-        paint_chrome_in_place_into(&mut block, layout_state, panes, focused_resource, chrome);
+    let (painted, composed) = paint_chrome_in_place_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+    );
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
@@ -683,6 +696,7 @@ fn paint_chrome_in_place_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
     focused_resource: Option<&ResourceId>,
     chrome: &mut ChromeCtx<'_>,
 ) -> (StatusBarPaint, bool) {
@@ -728,7 +742,7 @@ fn paint_chrome_in_place_into<W: Write>(
             rail,
             focused_resource,
             chrome.theme,
-            |id| super::pane_state::pane_label(panes, id),
+            |id| super::pane_state::pane_label(kernel, panes, id),
         );
     }
     if let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) {
@@ -1652,7 +1666,15 @@ mod tests {
             session_name: "demo",
             theme: &theme,
         };
-        paint_chrome_in_place(out, layout, panes, layout.focus.as_ref(), &mut chrome);
+        let (kernel, _effects, _panes) = published_test_state(&[]);
+        paint_chrome_in_place(
+            out,
+            layout,
+            panes,
+            &kernel,
+            layout.focus.as_ref(),
+            &mut chrome,
+        );
     }
 
     /// The anti-strobe contract: the in-place chrome paint is one

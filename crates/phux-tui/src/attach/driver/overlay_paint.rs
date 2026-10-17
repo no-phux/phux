@@ -97,7 +97,15 @@ fn paint_copy_mode<W: crate::attach::RenderSink>(
         slot.renderer.set_copy_marks(CopyMarks::default());
     }
     let search = overlays.copy_search_status();
-    let _ = paint_copy_mode_status(out, sel, search.as_deref(), chrome.viewport, chrome.theme);
+    let content = chrome.content_layout().rect;
+    let _ = paint_copy_mode_status(
+        out,
+        sel,
+        search.as_deref(),
+        content,
+        chrome.viewport,
+        chrome.theme,
+    );
     // The strip lands on the bottom viewport row, which is a
     // pane row under a top-docked bar or no bar at all.
     crate::attach::pane_state::invalidate_all_fronts(panes);
@@ -136,18 +144,23 @@ fn visible_search_hits(
         .collect()
 }
 
-/// Emit the copy-mode status strip over the bottom viewport row, then hide the
-/// hardware cursor (the reverse-video selection is the position indicator).
+/// The copy-mode keys, right-aligned on the strip when they fit.
+const COPY_MODE_KEYS: &str = "⏎ copy · w word · v line · / find · tab block · esc";
+
+/// Emit the copy-mode status strip over the bottom row of `content` (the
+/// pane columns; the sidebar keeps its own rows), then hide the hardware
+/// cursor (the reverse-video selection is the position indicator).
 /// `search` is the search line being typed or the last search's position.
 pub(super) fn paint_copy_mode_status<W: Write>(
     out: &mut W,
     sel: SelectionRect,
     search: Option<&str>,
+    content: crate::layout::Rect,
     viewport_dims: (u16, u16),
     theme: &crate::render::Theme,
 ) -> io::Result<()> {
     let (cols, rows) = viewport_dims;
-    if rows == 0 || cols == 0 {
+    if rows == 0 || cols == 0 || content.w == 0 {
         return Ok(());
     }
     let span_rows = u32::from(sel.end_row - sel.start_row + 1);
@@ -168,14 +181,25 @@ pub(super) fn paint_copy_mode_status<W: Write>(
         || format!(" copy-mode · {geom} · {cell_count} "),
         |search| format!(" copy-mode · {geom} · {cell_count} · {search} "),
     );
-    write_cup(out, rows - 1, 0)?;
-    // Selection strip from the theme (`selection_bg`/`selection_fg`). `\x1b[K`
-    // fills the rest of the row with the strip bg; then reset + hide the cursor.
+    let width = usize::from(content.w.min(cols.saturating_sub(content.x)));
+    let status = crate::render::clip_text(&status, width);
+    let status_w = crate::render::display_width(&status);
+    // The key legend, when the status leaves room for it and a gap.
+    let keys = format!(" {COPY_MODE_KEYS} ");
+    let keys_w = crate::render::display_width(&keys);
+    let legend = (status_w + keys_w + 2 <= width).then_some(keys);
+    let fill = width - status_w - legend.as_ref().map_or(0, |_| keys_w);
+    write_cup(out, rows - 1, content.x)?;
+    // Selection strip from the theme (`selection_bg`/`selection_fg`), padded
+    // to the pane columns only; then reset + hide the cursor.
     out.write_all(b"\x1b[0m")?;
     crate::render::write_sgr_color(out, theme.selection_bg, false)?;
     crate::render::write_sgr_color(out, theme.selection_fg, true)?;
-    let visible: String = status.chars().take(cols as usize).collect();
-    out.write_all(visible.as_bytes())?;
-    out.write_all(b"\x1b[K\x1b[0m\x1b[?25l")?;
+    out.write_all(status.as_bytes())?;
+    out.write_all(" ".repeat(fill).as_bytes())?;
+    if let Some(keys) = legend {
+        out.write_all(keys.as_bytes())?;
+    }
+    out.write_all(b"\x1b[0m\x1b[?25l")?;
     out.flush()
 }

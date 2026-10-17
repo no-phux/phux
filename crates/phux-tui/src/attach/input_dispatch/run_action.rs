@@ -32,8 +32,8 @@ use super::dispatch::{
 };
 use super::effects::{ActionEffects, PaneMoveIntent, ReattachTarget};
 use super::pickers::{
-    SESSION_PICKER_LIVE_KEY, move_pane_picker_items, session_picker_rows, switch_window,
-    window_holding, window_picker_items,
+    SESSION_PICKER_LIVE_KEY, WindowNames, move_pane_picker_items, session_picker_rows,
+    switch_window, window_holding, window_picker_items,
 };
 
 /// Open the single fuzzy discovery surface. `show-help` and
@@ -825,11 +825,15 @@ pub(super) fn kill_window_confirm(
         return None;
     }
     let active = ctx.workspace.active;
+    // A user-given name is worth repeating; an auto-numbered one is not
+    // what the tab bar shows, and the confirm is about the active tab
+    // anyway ("this tab").
     let window = ctx
         .workspace
         .groups
         .get(active)
         .map(|group| group.name.clone())
+        .filter(|name| !crate::attach::pane_state::auto_named(name))
         .unwrap_or_default();
     let shared: Vec<crate::render::overlay::SharedTarget> = leaves
         .iter()
@@ -844,6 +848,17 @@ pub(super) fn kill_window_confirm(
     Some(crate::render::overlay::KillConfirmOverlay::new(
         &window, leaves, &shared, ctx.theme,
     ))
+}
+
+/// How a message names a tab: a user-given name, else the index the tab bar
+/// shows and `C-a <n>` reaches (never the auto-number, which would read as
+/// a second, disagreeing index).
+fn tab_name(index: usize, name: &str) -> String {
+    if crate::attach::pane_state::auto_named(name) {
+        index.to_string()
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Where else `leaf` is arranged: another window of this session, or a
@@ -871,7 +886,7 @@ fn shown_elsewhere(ctx: &DispatchCtx<'_>, active: usize, leaf: &ResourceId) -> V
                     .as_ref()
                     .is_some_and(|tree| crate::layout::leaves(tree).contains(leaf))
         })
-        .map(|(_, group)| format!("tab {}", group.name))
+        .map(|(index, group)| format!("tab {}", tab_name(index, &group.name)))
         .collect();
     let mut sessions: Vec<String> = ctx
         .peers
@@ -1233,9 +1248,21 @@ pub(in crate::attach) fn push_context_menu(ActionCall { ctx, focused, .. }: Acti
 
 /// Push the grouped window picker (sessions as headers, one-step rows for
 /// peers with cached layouts). Bells with no rows.
-pub(in crate::attach) fn push_window_picker(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+pub(in crate::attach) fn push_window_picker(
+    ActionCall {
+        ctx,
+        effects,
+        panes,
+        ..
+    }: ActionCall<'_, '_>,
+) {
+    let names = WindowNames {
+        panes,
+        agent_meta: ctx.agent_meta,
+    };
     let items = window_picker_items(
         ctx.workspace,
+        &names,
         ctx.peers.sessions,
         ctx.peers.foreign_layouts,
         ctx.peers

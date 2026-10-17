@@ -89,6 +89,7 @@ fn append_move_destinations(
 /// reports each resource's session (`PeerInputs::reports_sessions`).
 pub(super) fn window_picker_items(
     workspace: &ArrangementDoc,
+    names: &WindowNames<'_>,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, ArrangementDoc>,
     terminals: Option<&HashMap<phux_protocol::ids::SessionId, usize>>,
@@ -109,7 +110,7 @@ pub(super) fn window_picker_items(
         items.push(SelectItem::header(session.name.clone()));
 
         if is_current {
-            items.extend(current_session_window_rows(workspace));
+            items.extend(current_session_window_rows(workspace, names));
         } else if let Some(foreign) = foreign_layouts
             .get(&session.id)
             .filter(|ws| !ws.groups.is_empty())
@@ -141,9 +142,29 @@ pub(super) fn window_picker_items(
     // No sessions cached yet (pre-snapshot): fall back to a flat list of
     // the current workspace's windows so the picker is still useful.
     if items.is_empty() {
-        items.extend(current_session_window_rows(workspace));
+        items.extend(current_session_window_rows(workspace, names));
     }
     items
+}
+
+/// What the picker needs to call a window what the tab bar calls it.
+pub(super) struct WindowNames<'a> {
+    pub panes: &'a HashMap<ResourceId, crate::attach::pane_state::PaneSlot>,
+    pub agent_meta: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
+}
+
+impl WindowNames<'_> {
+    /// The tab bar's label for the window at `index`, with its index in
+    /// front, since `C-a <index>` is how the keyboard reaches it.
+    fn label(&self, index: usize, window: &crate::layout::Group) -> String {
+        let name = crate::attach::pane_state::display_window_name(
+            &window.name,
+            window.state.focus.as_ref(),
+            self.panes,
+            self.agent_meta,
+        );
+        format!("{index} {name}")
+    }
 }
 
 /// How many tabs a peer session with no cached arrangement opens as.
@@ -166,9 +187,12 @@ fn session_tab_count(
 }
 
 /// The indented, selectable window rows for the locally-attached session,
-/// drawn from the client's [`ArrangementDoc`]. Each commits
-/// `select-window { index }`.
-pub(super) fn current_session_window_rows(workspace: &ArrangementDoc) -> Vec<SelectItem> {
+/// drawn from the client's [`ArrangementDoc`], labelled as the tab bar
+/// labels them. Each commits `select-window { index }`.
+pub(super) fn current_session_window_rows(
+    workspace: &ArrangementDoc,
+    names: &WindowNames<'_>,
+) -> Vec<SelectItem> {
     workspace
         .groups
         .iter()
@@ -179,7 +203,7 @@ pub(super) fn current_session_window_rows(workspace: &ArrangementDoc) -> Vec<Sel
                 .tree
                 .as_ref()
                 .map_or(0, |tree| crate::layout::leaves(tree).len());
-            let label = window.name.clone();
+            let label = names.label(index, window);
             let secondary = if panes == 1 {
                 "1 pane".to_owned()
             } else {
