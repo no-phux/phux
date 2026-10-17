@@ -609,24 +609,24 @@ which-key-delay-ms = 400
 # the padding also widens the mouse target by two columns per tab.
 #
 # The bar sits on the theme's `surface`, the same bed as the sidebar, so
-# the two read as one frame around the panes. The active tab is lime +
-# bold on the selection bed (the sidebar's selected-row colour), a chip
-# with one cell of padding either side. Inactive tabs are dim text with no
-# fill, so the strip is not a row of slabs. The `{index}` selector recedes
-# a step further than the name it selects. Session name and clock recede
-# to the same dim, and the clock keeps one cell of gutter from the edge,
-# matching the sidebar's. Lime and dim both clear 4.5:1 against the
-# surface, the contrast floor documented in crates/phux-tui/src/render/theme.rs.
-# They are spelled out rather than named because widget styles are plain
-# data — see `[theme]` in docs/consumers/tui.md section 4.4 for the slot list.
+# the two read as one frame around the panes. The active tab is the
+# theme's `accent` + bold on its `selection_bg` (the sidebar's selected-row
+# colour), a chip with one cell of padding either side. Inactive tabs are
+# `dim` text with no fill, so the strip is not a row of slabs. The
+# `{index}` selector recedes a step further, to `border`. Session name and
+# clock recede to the same dim, and the clock keeps one cell of gutter from
+# the edge, matching the sidebar's. The tabs ride the theme's slots, named
+# `theme.<slot>`, so a `[theme]` name, file, or override recolours the bar
+# with the rest of the chrome; any widget colour may name a slot this way
+# (see `[theme]` in docs/consumers/tui.md section 4.4 for the slot list).
 #
 # A `button` runs one argument-free action on click. The `+` that follows
 # the tabs opens a new tab, where a browser puts it; `+ session` in the
 # top-right corner prompts for a new session's name. Both use the inactive tabs' ink,
 # so they read as part of the strip rather than as alerts.
 left = [
-  { kind = "windows", format = " {index} {name} ", separator = " ", active = { fg = "#bef264", bg = "#293628", bold = true }, inactive = { fg = "#9aa4b2" }, index = { fg = "#7c8696" } },
-  { kind = "button", label = "+", action = "new-window", style = { fg = "#9aa4b2", bold = true } },
+  { kind = "windows", format = " {index} {name} ", separator = " ", active = { fg = "theme.accent", bg = "theme.selection_bg", bold = true }, inactive = { fg = "theme.dim" }, index = { fg = "theme.border" } },
+  { kind = "button", label = "+", action = "new-window", style = { fg = "theme.dim", bold = true } },
 ]
 center = []
 # The right slot changes shape with the terminal, via the universal
@@ -641,10 +641,10 @@ center = []
 # press prefix-A) for every agent, which on a small terminal opens
 # full-screen.
 right = [
-  { kind = "session-name", min-cols = 65, style = { fg = "#9aa4b2" } },
-  { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "#9aa4b2" } },
-  { kind = "button", label = "+ session", action = "new-session", min-cols = 65, style = { fg = "#9aa4b2" } },
-  { kind = "switch", max-cols = 64, chip = { fg = "#bef264", bold = true } },
+  { kind = "session-name", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "button", label = "+ session", action = "new-session", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "switch", max-cols = 64, chip = { fg = "theme.accent", bold = true } },
 ]
 # Which outer-terminal row the bar reserves: "top" (default) or "bottom".
 # position = "top"
