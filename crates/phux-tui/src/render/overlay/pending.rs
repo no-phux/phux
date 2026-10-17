@@ -28,13 +28,15 @@ pub struct PendingOverlay {
 
 impl PendingOverlay {
     /// The placeholder for a `go-to-directory` listing of `path` (empty
-    /// means the server user's home) sent as `request_id`.
+    /// means the server user's home) sent as `request_id`. It wears the
+    /// title of the directory picker it turns into, so the box does not
+    /// retitle itself when the listing lands.
     #[must_use]
     pub fn listing(path: &str, request_id: u32, theme: &Theme) -> Self {
         let shown = if path.is_empty() { "~" } else { path };
         Self {
-            title: "go to directory".to_owned(),
-            line: format!("Listing {shown}..."),
+            title: "Go to directory".to_owned(),
+            line: format!("Listing {shown}\u{2026}"),
             request_id,
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
@@ -42,20 +44,34 @@ impl PendingOverlay {
     }
 }
 
-impl RenderOverlay for PendingOverlay {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let modal_area = self.bounds(area).unwrap_or(area);
+impl PendingOverlay {
+    fn modal(&self) -> Modal<'_> {
         let body = vec![Line::from(Span::styled(
             self.line.as_str(),
             Style::default().fg(self.theme.text),
         ))];
         Modal::new(&self.theme, self.title.clone(), body)
             .wrap(true)
-            .render_into(modal_area, buf);
+            .footer("", "esc cancel")
+    }
+}
+
+impl RenderOverlay for PendingOverlay {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let modal_area = self.bounds(area).unwrap_or(area);
+        self.modal().render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        Some(centered_panel(area, 5, 32, 6, self.breakpoints))
+        // The same box as a toast: half the viewport wide, only as tall as
+        // its one line needs, so a placeholder is not a mostly empty frame.
+        let panel = centered_panel(area, 5, 32, 6, self.breakpoints);
+        if self.breakpoints.is_row_starved(area.height) {
+            return Some(panel);
+        }
+        let height = self.modal().height_for(panel.width).min(panel.height);
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        Some(Rect { y, height, ..panel })
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -117,7 +133,29 @@ mod tests {
             pending.handle_key(&key(PhysicalKey::Escape)),
             OverlayCommand::Dismiss
         );
-        assert_eq!(pending.line, "Listing ~...");
+        assert_eq!(pending.line, "Listing ~\u{2026}");
+        assert_eq!(pending.title, "Go to directory");
+    }
+
+    #[test]
+    fn the_placeholder_is_only_as_tall_as_its_line() {
+        let pending = PendingOverlay::listing("/srv", 1, &Theme::default());
+        let area = Rect::new(0, 0, 100, 40);
+        let b = pending.bounds(area).expect("bounded");
+        assert_eq!(b.height, 3, "border, one line, border: {b:?}");
+        assert!(b.y > 0 && b.y + b.height < area.height, "centered: {b:?}");
+        let mut buf = Buffer::empty(area);
+        pending.render(area, &mut buf);
+        let text: String = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Go to directory"), "title:\n{text}");
+        assert!(text.contains("esc cancel"), "legend:\n{text}");
     }
 
     #[test]
