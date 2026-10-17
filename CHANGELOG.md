@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.89.1](https://github.com/no-phux/phux/compare/v0.89.0...v0.89.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **server:** keep a doorbell-promoted hub across upgrade re-exec ([134e014](https://github.com/no-phux/phux/commit/134e014bf364f7dafa5c9d52521edb5db98f7057))
+* **server:** refuse upgrading a hub whose satellite registry would fail startup ([a657636](https://github.com/no-phux/phux/commit/a657636a1e061c5d244997f788932ac4aaeb0ced))
+
 ## [0.89.0](https://github.com/no-phux/phux/compare/v0.88.2...v0.89.0) (2026-10-17)
 
 
