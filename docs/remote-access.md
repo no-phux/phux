@@ -361,9 +361,10 @@ Afterwards this machine is the hub: host-qualified operations reach
 `mini` over the hub-and-spoke link. Join stays accountless QUIC on your
 overlay; there is no phux-operated relay on this path.
 
-If the local server is already running without `--hub`, the unit is
-updated and hub mode starts the next time that server starts — the
-running process is not restarted, so panes stay up. `--no-service` skips
+If the local server is already running without `--hub`, it becomes a hub
+in place when the reload doorbell finds the new enabled satellite: it is not
+restarted, keeps its panes, and keeps hub mode across `phux upgrade`. The
+patched unit makes the next cold start a hub as well. `--no-service` skips
 installing the *remote* unit only; the local `--hub` ensure still runs.
 
 ## A fleet that sees itself: registrations are one-way

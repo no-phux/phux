@@ -244,6 +244,19 @@ impl SatelliteSource {
     fn read(&self) -> Result<Vec<SatelliteConfigEntry>, String> {
         (self.0)()
     }
+
+    /// Re-read and validate the registry the way a `--hub` startup will,
+    /// without touching any running link.
+    ///
+    /// # Errors
+    ///
+    /// The read error, or the [`HubTableError`] startup would fail with.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let entries = self.read()?;
+        HubTable::from_registry(&entries)
+            .map(drop)
+            .map_err(|err| err.to_string())
+    }
 }
 
 impl core::fmt::Debug for SatelliteSource {
