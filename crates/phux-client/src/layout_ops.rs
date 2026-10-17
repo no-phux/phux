@@ -6,8 +6,9 @@
 //! translates its keys to live handles ([`crate::layout::wire`]), applies the
 //! pure [`apply_mutation`], and writes it back with `ARRANGEMENT_REPLACE`
 //! naming the revision it read: a real compare-and-swap, retried on
-//! `CONFLICT` against a fresh read. A session with no arrangement yet is
-//! seeded through the legacy key, which the server translates into one.
+//! `CONFLICT` against a fresh read. Such a server gives every session an
+//! arrangement (SPEC L2 §2.2), so seeding is the same compare-and-swap:
+//! an arrangement with no groups takes the fallback.
 //!
 //! Against an older server, and always for a named projection key
 //! (ADR-0129), the layout is the v3 [`ArrangementDoc`] envelope under L3
@@ -370,32 +371,30 @@ impl<'a> LayoutOps<'a> {
         Err(LayoutOpsError::Conflict)
     }
 
-    /// Seed a session that has no arrangement record yet through the legacy
-    /// key (the server translates it into the session's arrangement), then
-    /// read the record back.
+    /// The session's arrangement, seeded from `fallback` by
+    /// compare-and-swap when it has no groups yet. An arrangement that has
+    /// groups is returned unchanged.
     async fn seed_arrangement(
         &mut self,
         fallback: &ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
-        let bytes = fallback.encode_cbor()?;
-        let set_request_id = self.allocate_request_id();
-        self.conn
-            .send(&FrameKind::SetMetadata {
-                request_id: set_request_id,
-                scope: Scope::Group(self.group),
-                key: self.key.clone(),
-                value: bytes,
-            })
-            .await?;
-        match self.read_arrangement().await {
-            Ok(read) => Ok(read.document),
-            Err(LayoutOpsError::MissingLayout) => Ok(fallback.clone()),
-            Err(err) => Err(err),
+        for _ in 0..org::MAX_CAS_ATTEMPTS {
+            let read = self.read_arrangement().await?;
+            if !read.document.groups.is_empty() {
+                return Ok(read.document);
+            }
+            let mut document = read.document.clone();
+            adopt_unarranged_groups(&mut document, fallback);
+            if let Some(written) = self.replace(&read, &document).await? {
+                return Ok(written);
+            }
         }
+        Err(LayoutOpsError::Conflict)
     }
 
     /// Read this session's layout, writing and confirming `fallback` only
-    /// when no value exists (create-without-attach seeding).
+    /// when no value exists (create-without-attach seeding). Against an
+    /// arrangement record, "no value" is an arrangement with no groups.
     ///
     /// # Errors
     ///
@@ -405,11 +404,7 @@ impl<'a> LayoutOps<'a> {
         fallback: ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
         if self.uses_arrangement() {
-            return match self.read().await {
-                Ok(document) => Ok(document),
-                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(&fallback).await,
-                Err(err) => Err(err),
-            };
+            return self.seed_arrangement(&fallback).await;
         }
         match self.read().await {
             Ok(workspace) => Ok(workspace),
@@ -456,13 +451,6 @@ impl<'a> LayoutOps<'a> {
         mutation: LayoutMutation,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
         if self.uses_arrangement() {
-            match self.read_arrangement().await {
-                Ok(_) => {}
-                Err(LayoutOpsError::MissingLayout) => {
-                    self.seed_arrangement(&fallback).await?;
-                }
-                Err(err) => return Err(err),
-            }
             return self
                 .edit_arrangement(|document| {
                     adopt_unarranged_groups(document, &fallback);
@@ -504,17 +492,12 @@ impl<'a> LayoutOps<'a> {
         workspace: &ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
         if self.uses_arrangement() {
-            return match self.read_arrangement().await {
-                Ok(_) => {
-                    self.edit_arrangement(|document| {
-                        document.clone_from(workspace);
-                        Ok(())
-                    })
-                    .await
-                }
-                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(workspace).await,
-                Err(err) => Err(err),
-            };
+            return self
+                .edit_arrangement(|document| {
+                    document.clone_from(workspace);
+                    Ok(())
+                })
+                .await;
         }
         let bytes = workspace.encode_cbor()?;
         let set_request_id = self.allocate_request_id();
@@ -1405,14 +1388,15 @@ mod tests {
             );
         }
 
-        /// A session without an arrangement is seeded through the legacy key
-        /// (the server translates it); a projection key never touches the
-        /// arrangement.
+        /// An arrangement with no groups is seeded by compare-and-swap, never
+        /// through the legacy key; one with groups is returned unchanged; a
+        /// projection key never touches the arrangement.
         #[tokio::test]
-        async fn a_missing_arrangement_seeds_through_the_legacy_key() {
+        async fn an_empty_arrangement_is_seeded_by_compare_and_swap() {
             let mut fixture = OrgFixture::new();
             let work = fixture.session("work", SessionLifetime::Persistent);
             let a = fixture.shell(work);
+            fixture.arrangement(work, WireDoc { groups: Vec::new() });
             let session = fixture.live_session(&work).unwrap();
             let pane = fixture.live(&a).unwrap();
             let (mut conn, server, _dir) = connect(fixture).await;
@@ -1422,23 +1406,65 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 leaves(seeded.groups[0].state.tree.as_ref().unwrap()),
-                vec![pane]
+                vec![pane.clone()]
+            );
+            let again = LayoutOps::new(&mut conn, session, 200)
+                .read_or_seed(ArrangementDoc::single(ResourceId::local(999)))
+                .await
+                .unwrap();
+            assert_eq!(
+                leaves(again.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane],
+                "a seeded arrangement is not seeded again"
             );
             let projection = LayoutOps::with_key(
                 &mut conn,
                 session,
                 format!("myapp.layout/v1/{}", session.get()),
-                40,
+                400,
             )
             .unwrap();
             assert!(!projection.uses_arrangement());
             drop(projection);
             drop(conn);
             let seen = server.await.unwrap();
-            assert!(seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::SetMetadata { key, .. } if *key == layout_key(session)
-            )));
+            let replaces = replaces(&seen);
+            assert_eq!(replaces.len(), 1, "one seed, no second write");
+            assert_eq!(
+                crate::layout::wire::wire_leaves(&replaces[0].groups[0].tree)[0].target,
+                EntryTarget::Member(a)
+            );
+            assert!(
+                !seen
+                    .iter()
+                    .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+                "no legacy metadata write: {seen:?}"
+            );
+        }
+
+        /// A session the server lists without an arrangement is refused as
+        /// missing rather than seeded through the legacy key.
+        #[tokio::test]
+        async fn a_missing_arrangement_is_an_error_not_a_legacy_write() {
+            let mut fixture = OrgFixture::new();
+            let work = fixture.session("work", SessionLifetime::Persistent);
+            let a = fixture.shell(work);
+            let session = fixture.live_session(&work).unwrap();
+            let pane = fixture.live(&a).unwrap();
+            let (mut conn, server, _dir) = connect(fixture).await;
+            let err = LayoutOps::new(&mut conn, session, 10)
+                .read_or_seed(ArrangementDoc::single(pane))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LayoutOpsError::MissingLayout), "{err:?}");
+            drop(conn);
+            let seen = server.await.unwrap();
+            assert!(
+                !seen
+                    .iter()
+                    .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+                "no legacy metadata write: {seen:?}"
+            );
         }
     }
 }

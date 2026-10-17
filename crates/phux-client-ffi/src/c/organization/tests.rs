@@ -213,6 +213,17 @@ fn snapshot() -> SessionSnapshot {
 
 /// Negotiate with `ORGANIZATION` and answer the replica's seed.
 fn negotiated(arrangement: Option<ArrangementKey>) -> Harness {
+    let (mut h, seed) = unseeded();
+    h.answer(
+        seed,
+        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page(arrangement)))),
+    );
+    h
+}
+
+/// Negotiate with `ORGANIZATION`; the replica's seed is still in flight
+/// under the returned request id.
+fn unseeded() -> (Harness, u32) {
     let mut h = Harness(
         // SAFETY: the fixture returns a uniquely owned heap client.
         unsafe { Box::from_raw(new_client()) },
@@ -229,16 +240,16 @@ fn negotiated(arrangement: Option<ArrangementKey>) -> Harness {
     let _ = h.take_outgoing();
     h.feed(&hello_ok(caps, BootstrapProfile::SynthesizedVtRaw));
     let (seed, _) = h.command(|command| matches!(command, Command::GetOrganization { .. }));
-    h.answer(
-        seed,
-        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page(arrangement)))),
-    );
-    h
+    (h, seed)
 }
 
 /// `negotiated`, then attached to session 1 with terminal 1 bootstrapped.
 fn attached(arrangement: Option<ArrangementKey>) -> Harness {
-    let mut h = negotiated(arrangement);
+    attach(negotiated(arrangement))
+}
+
+/// Attach `h` to session 1 with terminal 1 bootstrapped.
+fn attach(mut h: Harness) -> Harness {
     let options = PhuxAttachOptions {
         size: mem::size_of::<PhuxAttachOptions>(),
         version: crate::c::ABI_VERSION,
@@ -1166,6 +1177,71 @@ fn the_stored_arrangement_is_read_and_replaced_by_compare_and_swap() {
     assert_eq!(info.server_revision, 5);
     assert!(String::from_utf8_lossy(&span(info.message)).contains("revision 5"));
     assert_eq!(h.client().arrangement.topology.groups[0].name, "other");
+}
+
+/// Whether `frames` touch the legacy layout key or read the stored
+/// arrangement.
+fn reads_a_layout(frames: &[FrameKind]) -> bool {
+    frames.iter().any(|frame| {
+        matches!(
+            frame,
+            FrameKind::GetMetadata { .. }
+                | FrameKind::SetMetadata { .. }
+                | FrameKind::Command {
+                    command: Command::ArrangementGet { .. },
+                    ..
+                }
+        )
+    })
+}
+
+/// A read that starts before the replica names the session's arrangement
+/// waits for it instead of reading the legacy layout key, then reads the
+/// stored arrangement.
+#[test]
+fn a_read_before_the_replica_waits_for_the_stored_arrangement() {
+    let (h, seed) = unseeded();
+    let mut h = attach(h);
+    let frames = h.take_outgoing();
+    assert!(!reads_a_layout(&frames), "{frames:?}");
+    assert_eq!(arrangement_info(&h).status, 1, "the read is pending");
+
+    h.answer(
+        seed,
+        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page(Some(
+            layout(),
+        ))))),
+    );
+    answer_arrangement_read(&mut h, &stored(4, "main"));
+    let info = arrangement_info(&h);
+    assert_eq!(info.state, 2, "AUTHORITATIVE");
+    assert_eq!(info.backend, 2, "ORGANIZATION");
+    assert_eq!(info.server_revision, 4);
+    assert_eq!(h.client().arrangement.topology.groups[0].name, "main");
+}
+
+/// A replica that cannot be read fails the waiting read; nothing falls back
+/// to the legacy layout key.
+#[test]
+fn an_unavailable_replica_fails_the_read_without_the_legacy_key() {
+    let (h, seed) = unseeded();
+    let mut h = attach(h);
+    let _ = h.take_outgoing();
+    h.answer(
+        seed,
+        CommandResult::Refused(phux_protocol::wire::frame::Refusal::Unsupported {
+            capability: "organization".to_owned(),
+        }),
+    );
+    let info = arrangement_info(&h);
+    assert_eq!(info.status, 3, "the read failed");
+    assert!(
+        String::from_utf8_lossy(&span(info.message)).contains("arrangement is unavailable"),
+        "{:?}",
+        String::from_utf8_lossy(&span(info.message))
+    );
+    let frames = h.take_outgoing();
+    assert!(!reads_a_layout(&frames), "{frames:?}");
 }
 
 #[test]

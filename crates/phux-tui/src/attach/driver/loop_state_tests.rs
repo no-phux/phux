@@ -3455,3 +3455,48 @@ async fn a_switch_carries_the_peer_caches_into_the_next_entry() {
         "the left session's agent is a peer now"
     );
 }
+
+/// phux-ytxc gap (c): on an `ORGANIZATION` server a control connection that
+/// cannot open is a failed arrangement read, reported, that releases the
+/// write fence; the attach never falls back to the layout key.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreachable_arrangement_link_never_falls_back_to_the_layout_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let _ = frames_sent(&mut client, &mut server).await;
+    state.organization_supported = true;
+    state.set_control_dial(crate::attach::Dial::uds(&dir.path().join("absent.sock")));
+    let session = state.peers.focused_session.expect("a focused session");
+
+    state.subscribe_bootstrap(&mut client, true).await.unwrap();
+    assert!(
+        state.arrangement.is_some(),
+        "the link is set without connecting"
+    );
+    assert!(state.layout_get_request_id.is_some());
+    state
+        .settle_arrangement_read(
+            &mut client,
+            &mut out,
+            None,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        state.layout_read_complete,
+        "the failed read releases the fence"
+    );
+    let sent = frames_sent(&mut client, &mut server).await;
+    assert!(
+        !sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::GetMetadata { key, .. }
+                | FrameKind::SubscribeMetadata { key, .. }
+                | FrameKind::SetMetadata { key, .. }
+                if *key == phux_client::layout_ops::layout_key(session)
+        )),
+        "the layout key is never used: {sent:?}"
+    );
+}

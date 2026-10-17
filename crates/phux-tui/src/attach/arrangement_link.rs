@@ -14,7 +14,9 @@
 //! [`crate::attach::peer_arrangements`].
 //!
 //! Against an older server there is no link and the driver keeps the
-//! legacy `phux.tui.layout/v1` metadata key.
+//! legacy `phux.tui.layout/v1` metadata key. Against an `ORGANIZATION` server
+//! the driver never uses that key: a link that cannot connect reports the
+//! failure and connects again on the next operation.
 
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
 use phux_protocol::ids::SessionId;
@@ -66,13 +68,26 @@ impl ArrangementLink {
         }))
     }
 
+    /// A link for `session` on `dial` against a server already known to
+    /// advertise `ORGANIZATION`. It connects on first use and reconnects
+    /// after a transport failure, so a dial that fails now never sends the
+    /// caller back to the legacy key.
+    pub(in crate::attach) const fn lazy(dial: Dial, session: SessionId) -> Self {
+        Self {
+            dial,
+            session,
+            conn: None,
+            next_request_id: 1,
+        }
+    }
+
     /// The session this link edits.
     pub(in crate::attach) const fn session(&self) -> SessionId {
         self.session
     }
 
     /// Read the session's arrangement in handle space; `Ok(None)` when the
-    /// session has none yet.
+    /// server lists the session without one.
     ///
     /// # Errors
     ///
@@ -94,7 +109,7 @@ impl ArrangementLink {
 
     /// Replace the session's arrangement with `document`: a compare-and-swap
     /// against the revision just read, retried on conflict, so the write
-    /// lands whole. A session with no arrangement yet is seeded.
+    /// lands whole.
     ///
     /// # Errors
     ///

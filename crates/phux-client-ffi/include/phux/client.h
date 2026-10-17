@@ -1011,10 +1011,13 @@ PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index
  * zero groups); unarranged_count says how many of its terminals no group
  * shows, so a host can offer to arrange them.
  *
- * Backend ORGANIZATION (the server advertised ORGANIZATION and the session
- * has a stored arrangement): reads are ARRANGEMENT_GET; a mutation is a
- * compare-and-swap ARRANGEMENT_REPLACE at server_revision, followed by a
- * confirming read. A concurrent writer makes it fail (status REFUSED, the
+ * Backend ORGANIZATION (the server advertised ORGANIZATION, which gives
+ * every session a stored arrangement): reads are ARRANGEMENT_GET, and a read
+ * that starts before the organization replica names the session's
+ * arrangement stays pending until it does (or fails if the replica is
+ * unavailable); a mutation before the first such read is refused. A
+ * mutation is a compare-and-swap ARRANGEMENT_REPLACE at server_revision,
+ * followed by a confirming read. A concurrent writer makes it fail (status REFUSED, the
  * message names the current revision) and the confirming read publishes the
  * winner; redo the edit against it. It is never last-write-wins. Stored
  * entries whose resource has no live handle here are kept on write
@@ -1022,11 +1025,10 @@ PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index
  * organization replica and re-reads it on its own (request_id 0) when it
  * moves past server_revision.
  *
- * Backend LEGACY (no ORGANIZATION, or no stored arrangement yet): the
+ * Backend LEGACY (a server without ORGANIZATION): the
  * phux.tui.layout/v1/<session-id> metadata value, written by whole-value
  * last-write-wins SET and a confirming GET; expected_revision fences only
- * this client's snapshot. An ORGANIZATION server creates the stored
- * arrangement from that first write.
+ * this client's snapshot. Never used against an ORGANIZATION server.
  *
  * Initial attachment exposes catalog only (state UNAVAILABLE) until the
  * document/state replies complete. Present legacy layouts require schema v3
