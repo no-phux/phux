@@ -1846,12 +1846,18 @@ impl Desk {
         let target = self
             .desktop
             .read(cx)
-            .next_window(cx.entity_id(), self.remote.as_deref());
+            .next_window(cx.entity_id(), self.remote.as_deref(), cx);
         let Some((handle, desk)) = target else {
+            // Refuse before releasing anything: a target that is not attached
+            // could never reveal the terminal, which would then have no view
+            // in either window.
             self.post(
                 Kind::Refusal,
-                "No other window",
-                Some("Open another window on this server, or use Move Pane to New Window.".into()),
+                "No other connected window",
+                Some(
+                    "Open or reconnect another window on this server, or use Move Pane to New Window."
+                        .into(),
+                ),
             );
             cx.notify();
             return;
@@ -1955,6 +1961,17 @@ impl Desk {
             );
         }
         cx.notify();
+    }
+
+    /// Whether a terminal moved here from another window would be revealed:
+    /// attached, and not already waiting to reveal another one (which a new
+    /// move would silently replace).
+    pub(crate) fn accepts_moved_terminal(&self) -> bool {
+        self.pending_project_terminal.is_none()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
     pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {

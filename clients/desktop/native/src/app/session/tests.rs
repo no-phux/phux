@@ -36,7 +36,12 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
 #[test]
 fn next_window_cycles_same_server_peers_and_never_picks_the_source() {
     use super::next_peer;
-    let peers = [(1, None), (2, Some("mini")), (3, None), (4, None)];
+    let peers = [
+        (1, None, true),
+        (2, Some("mini"), true),
+        (3, None, true),
+        (4, None, true),
+    ];
     assert_eq!(next_peer(&peers, 1, None), Some(2));
     assert_eq!(next_peer(&peers, 3, None), Some(3));
     assert_eq!(next_peer(&peers, 4, None), Some(0));
@@ -46,6 +51,19 @@ fn next_window_cycles_same_server_peers_and_never_picks_the_source() {
     // An unlisted source (the quick window) starts at the front.
     assert_eq!(next_peer(&peers, 9, None), Some(0));
     assert_eq!(next_peer::<u8>(&[], 1, None), None);
+}
+
+#[test]
+fn next_window_skips_peers_that_cannot_take_the_terminal_yet() {
+    use super::next_peer;
+    // Window 2 is still connecting (or failed, or already revealing another
+    // moved terminal); releasing the source view into it would strand the
+    // terminal with no view in either window.
+    let peers = [(1, None, false), (2, None, false), (3, None, true)];
+    assert_eq!(next_peer(&peers, 1, None), Some(2));
+    assert_eq!(next_peer(&peers, 3, None), None);
+    let none_ready = [(1, None, false), (2, None, false)];
+    assert_eq!(next_peer(&none_ready, 1, None), None);
 }
 
 #[gpui::test]
