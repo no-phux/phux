@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.98.0](https://github.com/no-phux/phux/compare/v0.97.0...v0.98.0) (2026-10-17)
+
+
+### Features
+
+* **protocol:** carry a session's recent input target on SESSION_STATE ([#1570](https://github.com/no-phux/phux/issues/1570)) ([7545fcb](https://github.com/no-phux/phux/commit/7545fcbe07fb8576a853ed73526975b3171f335d))
+
 ## [0.97.0](https://github.com/no-phux/phux/compare/v0.96.0...v0.97.0) (2026-10-17)
 
 
