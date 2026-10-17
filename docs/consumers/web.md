@@ -114,8 +114,9 @@ Two crates make it up, plus one vendored artifact:
 ## The two-wasm architecture
 
 The Rust wasm module embeds and instantiates a separate engine module.
-The engine imports nothing from the host and has its own allocator. `phux-vt-web` loads it through the `WebAssembly` JS API;
-Zig is not linked into the Rust binary. Bytes are copied between the two
+The engine imports nothing from the host and has its own allocator.
+`phux-vt-web` loads it through the `WebAssembly` JS API; Zig is not linked
+into the Rust binary. Bytes are copied between the two
 instances rather than sharing linear memory across toolchains
 ([ADR-0025](../adr/0025-browser-web-client.md)).
 
