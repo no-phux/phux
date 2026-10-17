@@ -1107,7 +1107,10 @@ before. Registry scopes name `global`, `host`, `host:<name>`, or one
 record by its persistent key: `session:<key>` or `resource:<key>`. Session
 and Terminal ids restart with the server, so `phux workload add-key`
 refuses `group:` and `terminal:` selectors; a record key names the same
-session or resource across restarts and relaunches.
+session or resource across restarts and relaunches. A server older than
+the keyed selectors reads a registry holding one as malformed and loads the
+empty snapshot, so downgrading the binary refuses every workload credential
+until the `session:`/`resource:` records are removed.
 
 #### On-demand listeners (`phux attach --ssh`)
 

@@ -392,7 +392,8 @@ pub(super) struct TerminalPoint {
 pub(super) enum Located {
     Local(u32),
     /// A local resource no wire id names yet. No client can have addressed
-    /// it, so only Global, the local Host, and its Group contain it.
+    /// it, so only Global, the local Host, its Group (by id or `session:`
+    /// key), and its record's `resource:` key contain it.
     Unnamed,
     Satellite(String, u32),
 }

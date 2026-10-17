@@ -399,21 +399,31 @@ fn session_key(
 /// A local Group (session) as a scope subject: its wire session id, which a
 /// `group:` selector names, and its record's persistent key, which a
 /// `session:` selector names (workload-auth §5.1).
+///
+/// The two are independent: a session gets its wire id lazily but its
+/// record key at creation, so a
+/// `session:` grant reaches it before anything has named it on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupPoint {
-    /// The wire session id.
-    pub id: u32,
+    /// The wire session id; `None` until something interns one for it.
+    pub id: Option<u32>,
     /// The session record's key; `None` only for a session with no record.
     pub key: Option<phux_protocol::ids::SessionKey>,
 }
 
 impl GroupPoint {
-    /// The session `session` as it stands in `s`; `None` until a wire id
-    /// names it.
+    /// The session `session` as it stands in `s`; `None` only when it has
+    /// neither a wire id nor a record.
     #[must_use]
     pub fn of(s: &crate::state::ServerState, session: phux_core::ids::SessionId) -> Option<Self> {
-        let id = s.idspace.session_wire(session)?.get();
-        Some(Self::with_id(s, session, id))
+        let point = Self {
+            id: s
+                .idspace
+                .session_wire(session)
+                .map(phux_protocol::ids::SessionId::get),
+            key: session_key(s, session),
+        };
+        (point.id.is_some() || point.key.is_some()).then_some(point)
     }
 
     /// The session `session` under the wire id `id` already interned for it.
@@ -424,7 +434,7 @@ impl GroupPoint {
         id: u32,
     ) -> Self {
         Self {
-            id,
+            id: Some(id),
             key: session_key(s, session),
         }
     }
@@ -434,7 +444,7 @@ impl GroupPoint {
     #[must_use]
     pub fn of_wire(s: &crate::state::ServerState, id: phux_protocol::ids::SessionId) -> Self {
         Self {
-            id: id.get(),
+            id: Some(id.get()),
             key: s
                 .idspace
                 .resolve_session(id)
@@ -447,7 +457,7 @@ impl GroupPoint {
     #[must_use]
     pub fn is_in(self, selector: &Selector) -> bool {
         match selector {
-            Selector::Group(id) => *id == self.id,
+            Selector::Group(id) => self.id == Some(*id),
             Selector::Session(key) => self.key == Some(*key),
             _ => false,
         }
