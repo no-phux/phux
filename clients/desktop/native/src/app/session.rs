@@ -25,6 +25,7 @@ use super::AppOptions;
 use super::actions::{OpenPathDirectory, Quit, Run};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
+use super::notifications::SystemTag;
 
 struct Opened {
     handle: AnyWindowHandle,
@@ -573,18 +574,20 @@ impl Desktop {
     /// A system notification was clicked: bring its window forward and open the
     /// entry. The tag is `<desk entity id>/<entry id>`, as [`Desk::flush_system`] posts it.
     fn open_notification(&mut self, tag: &str, cx: &mut Context<Self>) {
-        let Some((desk, entry)) = tag.split_once('/') else {
+        let Some(tag) = SystemTag::parse(tag) else {
             return;
         };
-        let (Ok(desk), Ok(entry)) = (desk.parse::<u64>(), entry.parse::<u64>()) else {
-            return;
+        let mut desks = self.windows.iter().chain(self.quick.iter());
+        let found = match tag {
+            SystemTag::Entry { desk, entry } => desks
+                .find(|opened| opened.desk.entity_id().as_u64() == desk)
+                .map(|opened| (opened, entry)),
+            SystemTag::Approval(id) => desks.find_map(|opened| {
+                let entry = opened.desk.read(cx).feed.approval_entry(id)?;
+                Some((opened, entry))
+            }),
         };
-        let Some(opened) = self
-            .windows
-            .iter()
-            .chain(self.quick.iter())
-            .find(|opened| opened.desk.entity_id().as_u64() == desk)
-        else {
+        let Some((opened, entry)) = found else {
             return;
         };
         let target = opened.desk.clone();

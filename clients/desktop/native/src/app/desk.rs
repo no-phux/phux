@@ -32,7 +32,7 @@ use super::actions::Run;
 use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::Motion;
-use super::notifications::{Feed, Kind};
+use super::notifications::{Feed, Kind, SystemTag};
 use super::overlays::{GotoFrecency, GotoPalette, GotoSearch, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
@@ -732,7 +732,7 @@ impl Desk {
         self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
-        self.note_approvals();
+        self.note_approvals(cx);
         self.note_approval_outcomes();
         self.flush_system(cx);
         for answer in answers {
@@ -3491,9 +3491,10 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    /// Mirror new agent and error entries to the system notification center
-    /// while no Phux window is active. A click comes back through
-    /// [`super::session::Desktop`] by the tag's desk entity and entry id.
+    /// Mirror new agent, approval, and error entries to the system
+    /// notification center while no Phux window is active. A click comes
+    /// back through [`super::session::Desktop`] by its [`SystemTag`]; an
+    /// approval's tag is shared by every window that holds it.
     pub(crate) fn flush_system(&mut self, cx: &mut Context<Self>) {
         let outbound = self.feed.take_outbound();
         if outbound.is_empty() || cx.active_window().is_some() {
@@ -3502,7 +3503,7 @@ impl Desk {
         let desk = cx.entity_id().as_u64();
         for entry in outbound {
             cx.show_system_notification(gpui::SystemNotification {
-                tag: format!("{desk}/{}", entry.id).into(),
+                tag: SystemTag::of(desk, &entry).to_string().into(),
                 title: entry.title.into(),
                 body: entry.body.unwrap_or_default().into(),
                 actions: Vec::new(),

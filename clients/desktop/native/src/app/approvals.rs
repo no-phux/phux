@@ -9,20 +9,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gpui::Context;
+use gpui::{App, Context};
 use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
 use phux_protocol::ids::ApprovalId;
 
 use super::desk::Desk;
-use super::notifications::Kind;
+use super::notifications::{Kind, SystemTag};
 use crate::connection::ApprovalOutcome;
 
 /// What the Inbox knows about approvals beyond the feed.
 #[derive(Debug, Default)]
 pub(crate) struct ApprovalInbox {
-    /// Approvals already posted on this connection; a cleared entry is not
-    /// posted again.
-    seen: HashSet<ApprovalId>,
     /// Decisions sent and not yet resolved, with what each one decides.
     deciding: HashMap<ApprovalId, String>,
 }
@@ -68,8 +65,9 @@ pub(crate) fn body(approval: &Approval) -> String {
 
 impl Desk {
     /// Fold the pending set into the Inbox: post new approvals, and take
-    /// down every entry the server no longer lists.
-    pub(super) fn note_approvals(&mut self) {
+    /// down every entry the server no longer lists, with its system
+    /// notification.
+    pub(super) fn note_approvals(&mut self, cx: &App) {
         let Some(link) = self.link.as_ref() else {
             return;
         };
@@ -78,18 +76,25 @@ impl Desk {
             .iter()
             .filter_map(|approval| ApprovalId::parse(&approval.id))
             .collect();
+        let ended: Vec<ApprovalId> = self
+            .feed
+            .items()
+            .filter_map(|entry| entry.approval)
+            .filter(|id| !live.contains(id))
+            .collect();
         self.feed.retain(|entry| {
             entry.kind != Kind::Approval || entry.approval.is_some_and(|id| live.contains(&id))
         });
+        for id in ended {
+            cx.dismiss_system_notification(&SystemTag::Approval(id).to_string());
+        }
         for approval in &pending {
             let Some(id) = ApprovalId::parse(&approval.id) else {
                 continue;
             };
-            if self.approvals.seen.insert(id) {
-                self.feed.post_approval(title(approval), body(approval), id);
-            }
+            // Idempotent: the feed keeps one entry per approval.
+            self.feed.post_approval(title(approval), body(approval), id);
         }
-        self.approvals.seen.retain(|id| live.contains(id));
     }
 
     /// Report each resolved decision once, as a typed notification.

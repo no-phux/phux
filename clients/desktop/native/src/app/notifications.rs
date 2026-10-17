@@ -15,7 +15,8 @@ use phux_protocol::ids::ApprovalId;
 
 use crate::connection::{AgentAttention as AttentionLevel, AgentState};
 
-/// Entries kept, oldest dropped first.
+/// Entries kept, oldest dropped first. A pending approval is never dropped:
+/// it stands exactly while the server lists it.
 const LIMIT: usize = 100;
 /// How long the peek card stays up.
 const PEEK: Duration = Duration::from_secs(10);
@@ -99,6 +100,50 @@ pub struct Notification {
     pub read: bool,
 }
 
+/// Where a system notification's click goes back to: an entry of one window,
+/// or a server-held approval. An approval's tag names only the approval, so
+/// every window on its server offers the same notification and the system
+/// replaces it instead of stacking one per window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SystemTag {
+    Entry { desk: u64, entry: u64 },
+    Approval(ApprovalId),
+}
+
+impl SystemTag {
+    const APPROVAL: &'static str = "approval/";
+
+    pub(crate) fn of(desk: u64, entry: &Notification) -> Self {
+        match entry.approval {
+            Some(id) => Self::Approval(id),
+            None => Self::Entry {
+                desk,
+                entry: entry.id,
+            },
+        }
+    }
+
+    pub(crate) fn parse(tag: &str) -> Option<Self> {
+        if let Some(id) = tag.strip_prefix(Self::APPROVAL) {
+            return ApprovalId::parse(id).map(Self::Approval);
+        }
+        let (desk, entry) = tag.split_once('/')?;
+        Some(Self::Entry {
+            desk: desk.parse().ok()?,
+            entry: entry.parse().ok()?,
+        })
+    }
+}
+
+impl std::fmt::Display for SystemTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Entry { desk, entry } => write!(f, "{desk}/{entry}"),
+            Self::Approval(id) => write!(f, "{}{id}", Self::APPROVAL),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Feed {
     /// Oldest first.
@@ -168,12 +213,24 @@ impl Feed {
         if kind.interrupts() {
             self.outbound.push(id);
         }
-        let excess = self.items.len().saturating_sub(LIMIT);
-        if excess > 0 {
-            self.items.drain(..excess);
-            self.settle();
-        }
+        self.evict();
         id
+    }
+
+    /// Drop the oldest entries past [`LIMIT`], sparing approvals.
+    fn evict(&mut self) {
+        let mut excess = self.items.len().saturating_sub(LIMIT);
+        if excess == 0 {
+            return;
+        }
+        self.items.retain(|entry| {
+            if excess == 0 || entry.kind == Kind::Approval {
+                return true;
+            }
+            excess -= 1;
+            false
+        });
+        self.settle();
     }
 
     /// Newest first, without refusals.
@@ -186,6 +243,14 @@ impl Feed {
 
     pub fn get(&self, id: u64) -> Option<&Notification> {
         self.items.iter().find(|entry| entry.id == id)
+    }
+
+    /// The entry that decides approval `id`, if this feed holds one.
+    pub(crate) fn approval_entry(&self, id: ApprovalId) -> Option<u64> {
+        self.items
+            .iter()
+            .find(|entry| entry.approval == Some(id))
+            .map(|entry| entry.id)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -368,6 +433,24 @@ mod tests {
     }
 
     #[test]
+    fn an_approval_tag_names_the_approval_not_the_window() {
+        let mut feed = Feed::default();
+        let id = ApprovalId::new([7; 16]).unwrap();
+        let entry = feed.post_approval("Approve kill?".into(), "agent".into(), id);
+        let error = feed.post(Kind::Error, "Detached", None);
+        let approval = feed.get(entry).cloned().unwrap();
+        let tag = SystemTag::of(4, &approval);
+        assert_eq!(tag, SystemTag::of(9, &approval));
+        assert_eq!(SystemTag::parse(&tag.to_string()), Some(tag));
+        assert_eq!(feed.approval_entry(id), Some(entry));
+        let other = SystemTag::of(4, feed.get(error).unwrap());
+        assert_eq!(other.to_string(), format!("4/{error}"));
+        assert_eq!(SystemTag::parse(&other.to_string()), Some(other));
+        assert_eq!(SystemTag::parse("approval/zz"), None);
+        assert_eq!(SystemTag::parse("4"), None);
+    }
+
+    #[test]
     fn reading_clears_the_peek_and_the_count() {
         let mut feed = Feed::default();
         let first = feed.post(Kind::Error, "one", None);
@@ -411,6 +494,32 @@ mod tests {
         assert!(feed.expire_peek(Instant::now() + REFUSAL_PEEK));
         assert!(feed.peek().is_none());
         assert!(feed.get(refusal).is_none());
+    }
+
+    #[test]
+    fn a_pending_approval_outlasts_the_limit() {
+        let mut feed = Feed::default();
+        let id = ApprovalId::new([7; 16]).unwrap();
+        let approval = feed.post_approval("Approve kill?".into(), "agent".into(), id);
+        for index in 0..LIMIT + 5 {
+            feed.post(Kind::Info, &index.to_string(), None);
+        }
+        assert_eq!(feed.items().count(), LIMIT);
+        assert_eq!(
+            feed.get(approval).and_then(|entry| entry.approval),
+            Some(id)
+        );
+        assert_eq!(
+            feed.post_approval("again".into(), "agent".into(), id),
+            approval
+        );
+        assert_eq!(
+            feed.items()
+                .filter(|entry| entry.kind == Kind::Info)
+                .last()
+                .map(|entry| entry.title.as_str()),
+            Some("6")
+        );
     }
 
     #[test]

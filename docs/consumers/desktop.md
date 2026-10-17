@@ -201,7 +201,8 @@ server's held approvals (ADR-0128) with **Approve** and **Deny**, only when
 the server advertises `APPROVALS`. An entry stays exactly while the server
 lists the approval. A decision is sent once; one that arrives after the
 approval was decided elsewhere, expired, or was withdrawn is reported as
-already decided and not retried.
+already decided and not retried. Every window on the server offers an approval
+under one system notification, so macOS shows it once.
 
 ## Connections, settings, and native behavior
 
@@ -254,7 +255,7 @@ notarization, accessibility journeys, and Linux remain separate gaps.
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, identity-scoped restore, Open Folder, and repository grouping across the all-host catalog. Cross-server Workspace records are not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import, and an active-session Inbox of agent attention and server-held approvals. Mixed-authority tab trees, the inspector, and catalogue-backed settings provenance are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import, and an active-session Inbox of agent attention and server-held approvals. Mixed-authority tab trees and catalogue-backed settings provenance are not built; the inspector (bounded agent event and detail view) is not built. | phux-d4x9.10–.12, phux-d4x9.23 (inspector) |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
