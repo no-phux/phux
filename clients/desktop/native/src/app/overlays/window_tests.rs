@@ -3,12 +3,16 @@
 
 use gpui::{AnyWindowHandle, Entity, TestAppContext, VisualTestContext};
 use gpui_kit::component::Root;
+use phux_client_core::layout::wire::HandleMap;
+use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status, Topology};
+use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionKey;
 
-use super::{Section, Target, WINDOWS, window_sections};
+use super::{Section, Target, WINDOWS, goto_sections, window_sections};
 use crate::app::desk::Link;
 use crate::app::{AppOptions, Desk, Desktop, Modal};
 use crate::connection::{Connection, DeterministicDial};
-use crate::workspace::layout::{DeskTab, LayoutNode, Placement};
+use crate::workspace::layout::{Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::{Workspace, WorkspaceOptions, persist};
 
 struct Fixture {
@@ -371,5 +375,126 @@ fn native_window_menu_and_palette_share_the_overview_command(cx: &mut TestAppCon
     assert_eq!(
         first.read_with(cx, |desk, _| desk.modal.clone()),
         Modal::None
+    );
+}
+
+fn placement(id: &str, terminal: u32) -> LayoutNode {
+    LayoutNode::Leaf {
+        placement: Placement {
+            id: id.into(),
+            terminal_id: Some(ResourceId::local(terminal)),
+            terminal_label: String::new(),
+            view_id: None,
+        },
+    }
+}
+
+fn split_tab(id: &str, title: &str, panes: [(&str, u32); 2]) -> DeskTab {
+    DeskTab {
+        id: id.into(),
+        title: Some(title.into()),
+        root: LayoutNode::Split {
+            id: format!("{id}-split"),
+            axis: Axis::Row,
+            ratio: 0.5,
+            first: Box::new(placement(panes[0].0, panes[0].1)),
+            second: Box::new(placement(panes[1].0, panes[1].1)),
+        },
+        focused_id: panes[1].0.into(),
+        zoomed_id: None,
+    }
+}
+
+fn pane(terminal: u32) -> PaneDescriptor {
+    PaneDescriptor {
+        terminal_id: ResourceId::local(terminal),
+        session_id: 1,
+        session_name: "api".into(),
+        cols: 80,
+        rows: 24,
+        title: Some(format!("zsh {terminal}")),
+        cwd: Some("/repo".into()),
+        is_focused: false,
+        key: None,
+        revision: None,
+        name: None,
+        activation: None,
+        exec: None,
+    }
+}
+
+fn session(byte: u8, name: &str) -> SessionDescriptor {
+    SessionDescriptor {
+        id: u32::from(byte),
+        name: name.into(),
+        attached_client_count: 0,
+        keep_empty: true,
+        created_at_unix_secs: 0,
+        key: SessionKey::new([byte; 16]),
+        lifetime: None,
+        revision: None,
+        members: 0,
+        arrangement: None,
+        awaiting_organization: false,
+    }
+}
+
+/// Go To names the work, terminal and tab this window shows among look-alikes:
+/// two sessions whose names share a prefix and two tabs with the same title.
+#[gpui::test]
+fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let desk = fixture.first.1.clone();
+    let socket = desk.read_with(cx, |desk, _| desk.socket.clone());
+    let sessions = vec![session(1, "api"), session(2, "api-old")];
+    let mut connection =
+        Connection::connect_with_key(socket, "api".into(), sessions[0].key).unwrap();
+    connection.status = Status::Attached;
+    connection.topology = Some(Topology {
+        focused_session: 1,
+        focused_pane: ResourceId::local(4),
+        sessions,
+        panes: (1..=4).map(pane).collect(),
+        agent_sessions: Vec::new(),
+        authority: None,
+        inbox: None,
+        handles: HandleMap::default(),
+    });
+    desk.update(cx, |desk, _| {
+        let mut workspace = Workspace::new("api".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![
+            split_tab("a", "build", [("a1", 1), ("a2", 2)]),
+            split_tab("b", "build", [("b1", 3), ("b2", 4)]),
+        ];
+        workspace.active_id = "b".into();
+        desk.session = "api".into();
+        desk.link = Some(Link {
+            connection,
+            workspace,
+        });
+    });
+    let sections = desk.read_with(cx, |desk, _| goto_sections(desk));
+    let current: Vec<(&str, String, String)> = sections
+        .iter()
+        .flat_map(|section| {
+            section.rows.iter().map(move |row| {
+                (
+                    section.label.unwrap_or_default(),
+                    row.title.to_string(),
+                    row.detail.as_deref().unwrap_or_default().to_owned(),
+                )
+            })
+        })
+        .filter(|(_, _, detail)| detail.starts_with("Current · "))
+        .collect();
+    assert_eq!(
+        current,
+        vec![
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
+        ],
+        "exactly one work, terminal and tab is marked"
     );
 }

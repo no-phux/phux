@@ -100,7 +100,9 @@ server behind the supervisor.
 The titlebar **Phux** button, **⌘P**, **⇧⌘P**, and **⌘,** open the same
 searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
 across hosts plus the active session's terminals and tabs; a typed search also
-finds actions and settings. Settings search opens a focused page of live controls,
+finds actions and settings. The work, terminal and tab this window shows
+read **Current**, so the one in use stays distinguishable from similar names
+on other hosts or tabs. Settings search opens a focused page of live controls,
 with **All settings** to go back instead of a second sidebar. Actions start with five everyday commands; **All commands** expands the list.
 Rows show the name and the selected command's shortcut. Typing searches the
 complete catalog, including descriptions and settings. **Filter** narrows Work
