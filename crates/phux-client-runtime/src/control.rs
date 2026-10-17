@@ -459,11 +459,11 @@ pub struct ControlPlane {
     /// The fallback [`ControlPlane::apply_answer`] guards with when the
     /// pane's title carries no ADR-0035 sentinel (a hook-reported ask).
     live_asks: HashMap<ResourceId, String>,
-    /// Terminals whose shell reported a command start (OSC 133 C) and no
-    /// finish since, on this connection. Absent means at a prompt or
-    /// unknown (no shell integration, or the start predates the
-    /// connection); see [`ControlPlane::command_running`].
-    running_commands: HashSet<ResourceId>,
+    /// Each terminal's command state as this connection's shell events
+    /// report it: `true` after a start (OSC 133 C), `false` after a finish
+    /// (OSC 133 D) or the shell's exit. Absent means no event yet, so the
+    /// replica's marks answer instead; see [`ControlPlane::command_state`].
+    command_states: HashMap<ResourceId, bool>,
     clock_origin: Instant,
     outbound: Vec<Vec<u8>>,
     events: Vec<Event>,
@@ -535,7 +535,7 @@ impl ControlPlane {
             delivery_fences: HashMap::new(),
             input_delivery_ids: HashMap::new(),
             live_asks: HashMap::new(),
-            running_commands: HashSet::new(),
+            command_states: HashMap::new(),
             input_deadlines: HashMap::new(),
             input_delivery_seq: 1,
             clock_origin: Instant::now(),
@@ -859,7 +859,7 @@ impl ControlPlane {
         self.terminal_roles.clear();
         self.stream_recoveries.clear();
         self.own_spawns.clear();
-        self.running_commands.clear();
+        self.command_states.clear();
         self.handshake_ready = false;
         self.active_attach_id = None;
         self.attach_terminals.clear();
@@ -931,7 +931,7 @@ impl ControlPlane {
         self.terminal_attached.clear();
         self.terminal_roles.clear();
         self.agent_streams.clear();
-        self.running_commands.clear();
+        self.command_states.clear();
         self.preserve_terminal_geometry.clear();
         self.geometry_bootstrapped.clear();
         self.set_status(Status::Closed);

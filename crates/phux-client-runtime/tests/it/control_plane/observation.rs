@@ -213,17 +213,18 @@ fn shell_event(plane: &mut ControlPlane, event: phux_protocol::wire::frame::Agen
 fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
     use phux_protocol::wire::frame::AgentEvent;
     let mut plane = attached();
-    assert!(
-        !plane.command_running(&terminal()),
-        "unknown reads as not running"
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "no shell event yet is unknown"
     );
     shell_event(&mut plane, AgentEvent::CommandStarted);
-    assert!(plane.command_running(&terminal()));
+    assert_eq!(plane.command_state(&terminal()), Some(true));
     shell_event(
         &mut plane,
         AgentEvent::CommandFinished { exit_code: Some(0) },
     );
-    assert!(!plane.command_running(&terminal()));
+    assert_eq!(plane.command_state(&terminal()), Some(false));
     assert!(plane.take_observation().events.iter().any(|event| matches!(
         event,
         Event::CommandFinished {
@@ -234,9 +235,27 @@ fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
 
     shell_event(&mut plane, AgentEvent::CommandStarted);
     reconnect_with_reused_ids(&mut plane);
-    assert!(
-        !plane.command_running(&terminal()),
-        "a new connection does not inherit the old one's command state"
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a new connection does not inherit the old one's events; the replica answers"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+            exit_status: Some(0),
+            input_holder: None,
+            action: phux_protocol::wire::frame::ControlAction::Exited,
+            actor: None,
+        },
+    );
+    assert_eq!(
+        plane.command_state(&terminal()),
+        Some(false),
+        "an exited shell runs nothing"
     );
 
     shell_event(&mut plane, AgentEvent::CommandStarted);
@@ -246,9 +265,10 @@ fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
             exit_status: Some(0),
         },
     );
-    assert!(
-        !plane.command_running(&terminal()),
-        "a closed terminal runs nothing"
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a closed terminal forgets its state"
     );
 }
 

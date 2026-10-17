@@ -15,8 +15,8 @@ use super::{
     Arc, CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
     EngineDocumentPoint, EngineDocumentSelection, EngineError, FrameKey, GhosttyAdapter,
     GhosttyReplica, GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode,
-    Publication, ReplicaInfo, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults,
-    SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
+    Publication, ReplicaInfo, ReplicaPrompt, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch,
+    SearchResults, SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
 };
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
@@ -333,6 +333,12 @@ impl Owner {
             }
             Query::BracketedPaste(id, reply) => {
                 let _ = reply.send(self.bracketed_paste(&id));
+            }
+            Query::Prompt(id, reply) => {
+                let _ = reply.send(
+                    self.terminal(&id)
+                        .map_or(ReplicaPrompt::Unknown, views::replica_prompt),
+                );
             }
             query => return Some(query),
         }

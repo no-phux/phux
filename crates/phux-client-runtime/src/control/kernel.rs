@@ -242,7 +242,7 @@ impl ControlPlane {
                 reason,
             } => {
                 // An exited shell runs nothing; a retained resource is not busy.
-                self.running_commands.remove(&terminal_id);
+                self.command_states.insert(terminal_id.clone(), false);
                 self.push_event(Event::Exited {
                     terminal_id,
                     exit_status,

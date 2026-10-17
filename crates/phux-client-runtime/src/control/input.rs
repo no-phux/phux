@@ -211,14 +211,14 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, events)
     }
 
-    /// Whether the terminal's shell is known to be running a command: it
-    /// reported a start (OSC 133 C) and no finish (OSC 133 D) since, on this
-    /// connection. `false` is at a prompt *or unknown* (no shell
-    /// integration, a start before this connection, or a closed terminal),
-    /// so a caller that guards input on it fails open.
+    /// Whether the terminal's shell is running a command, as this
+    /// connection's shell events report it: `Some(true)` after a start
+    /// (OSC 133 C), `Some(false)` after a finish (OSC 133 D) or the shell's
+    /// exit, `None` before either. A start that predates the connection is
+    /// `None`; [`crate::Client::command_running`] then reads the replica.
     #[must_use]
-    pub fn command_running(&self, terminal_id: &ResourceId) -> bool {
-        self.running_commands.contains(terminal_id)
+    pub fn command_state(&self, terminal_id: &ResourceId) -> Option<bool> {
+        self.command_states.get(terminal_id).copied()
     }
 
     /// Whether raw input for the terminal would pass the server's gate
