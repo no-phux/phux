@@ -57,6 +57,10 @@ fn builtin(id: &str) -> Option<&'static crate::settings::CommandSpec> {
         .find(|command| command.id == id)
 }
 
+fn keystroke(chord: &str) -> Option<Keystroke> {
+    Keystroke::parse(&gpui_stroke(chord)?).ok()
+}
+
 /// Whether the skin wants the compositor material behind the menu.
 fn wants_glass(skin: &Skin) -> bool {
     matches!(skin.material.backdrop, Backdrop::Glass | Backdrop::Blur)
@@ -415,8 +419,7 @@ impl GlassMenu {
             .chords
             .iter()
             .find(|(command, _)| command == id)
-            .and_then(|(_, chord)| gpui_stroke(chord))
-            .and_then(|chord| Keystroke::parse(&chord).ok());
+            .and_then(|(_, chord)| keystroke(chord));
         entry
     }
 
@@ -510,7 +513,7 @@ impl GlassMenu {
         self.rows_height(index) + Self::gap(&self.entries[index])
     }
 
-    fn page(&mut self, page: Page, _window: &mut Window, cx: &mut Context<Self>) {
+    fn page(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.closing.is_some() {
             return;
         }
@@ -559,7 +562,7 @@ impl GlassMenu {
             return;
         }
         if let Choice::Page(page) = choice {
-            self.page(page, window, cx);
+            self.page(page, cx);
             return;
         }
         self.dismiss(true, window, cx);
@@ -575,6 +578,12 @@ impl GlassMenu {
                 Choice::Page(_) => {}
             });
         });
+    }
+
+    /// The header opens the host list from home and goes home from a page.
+    fn header_click(&mut self, cx: &mut Context<Self>) {
+        let home = self.page == Page::Commands;
+        self.page(if home { Page::Hosts } else { Page::Commands }, cx);
     }
 
     fn move_selection(&mut self, up: bool, window: &Window, cx: &mut Context<Self>) {
@@ -612,12 +621,7 @@ impl GlassMenu {
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.selected else {
-            let page = if self.page == Page::Commands {
-                Page::Hosts
-            } else {
-                Page::Commands
-            };
-            self.page(page, window, cx);
+            self.header_click(cx);
             return;
         };
         let choice = self.entries[index].choice.clone();
@@ -630,21 +634,10 @@ impl GlassMenu {
         let command = self
             .chords
             .iter()
-            .find(|(_, chord)| {
-                gpui_stroke(chord)
-                    .and_then(|chord| Keystroke::parse(&chord).ok())
-                    .as_ref()
-                    == Some(stroke)
-            })
+            .find(|(_, chord)| keystroke(chord).as_ref() == Some(stroke))
             .and_then(|(id, _)| builtin(id));
         if let Some(command) = command {
             self.choose(Choice::Command(command.id), window, cx);
-        }
-    }
-
-    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != Page::Commands {
-            self.page(Page::Commands, window, cx);
         }
     }
 
@@ -672,7 +665,8 @@ impl GlassMenu {
         self.pointer = window.mouse_position();
         match event.keystroke.key.as_str() {
             "escape" => self.dismiss(true, window, cx),
-            "left" => self.back(window, cx),
+            "left" if self.page != Page::Commands => self.page(Page::Commands, cx),
+            "left" => {}
             "up" | "down" => self.move_selection(event.keystroke.key == "up", window, cx),
             "enter" | "space" => self.activate_selection(false, window, cx),
             "right" => self.activate_selection(true, window, cx),
@@ -718,31 +712,24 @@ impl GlassMenu {
         }
     }
 
-    fn header_icon(&self) -> IconName {
-        match (self.page, self.current.is_some()) {
-            (Page::Commands, true) => IconName::Server,
-            (Page::Commands, false) => IconName::LaptopMinimal,
-            _ => IconName::ChevronLeft,
-        }
-    }
-
     fn header(&self, ink: Hsla, washes: Washes, cx: &mut Context<Self>) -> impl IntoElement {
         let home = self.page == Page::Commands;
-        let title: SharedString = match self.page {
-            Page::Commands => self
-                .current
-                .clone()
-                .unwrap_or_else(|| "Local".into())
-                .into(),
-            Page::Panes => "Pane layout".into(),
-            Page::Tabs => "Tab placement".into(),
-            Page::Hosts => "Switch host".into(),
+        let (title, detail): (SharedString, _) = match self.page {
+            Page::Commands => (
+                self.current
+                    .clone()
+                    .unwrap_or_else(|| "Local".into())
+                    .into(),
+                "Switch host",
+            ),
+            Page::Panes => ("Pane layout".into(), "Split or duplicate this terminal"),
+            Page::Tabs => ("Tab placement".into(), "Choose top or side workspace tabs"),
+            Page::Hosts => ("Switch host".into(), "Local and saved hosts"),
         };
-        let detail = match self.page {
-            Page::Commands => "Switch host",
-            Page::Panes => "Split or duplicate this terminal",
-            Page::Tabs => "Choose top or side workspace tabs",
-            Page::Hosts => "Local and saved hosts",
+        let icon = match (home, self.current.is_some()) {
+            (true, true) => IconName::Server,
+            (true, false) => IconName::LaptopMinimal,
+            (false, _) => IconName::ChevronLeft,
         };
         div()
             .id("glass-menu-header")
@@ -762,9 +749,7 @@ impl GlassMenu {
             .items_center()
             .gap(px(12.))
             .cursor_pointer()
-            .on_click(cx.listener(move |menu, _, window, cx| {
-                menu.page(if home { Page::Hosts } else { Page::Commands }, window, cx)
-            }))
+            .on_click(cx.listener(|menu, _, _, cx| menu.header_click(cx)))
             .child(
                 div()
                     .size(px(34.))
@@ -773,7 +758,7 @@ impl GlassMenu {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(Icon::new(self.header_icon()).size(px(17.))),
+                    .child(Icon::new(icon).size(px(17.))),
             )
             .child(
                 div()

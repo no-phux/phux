@@ -32,6 +32,16 @@ struct Pending {
     revealed: bool,
 }
 
+/// Whether `owner` still names `client`.
+fn owned_by(
+    owner: &std::sync::Weak<phux_client_runtime::Client>,
+    client: &std::sync::Arc<phux_client_runtime::Client>,
+) -> bool {
+    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(client))
+}
+
+const LAUNCHED: &str = "The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.";
+
 impl State {
     pub(super) fn owns_terminal(
         &self,
@@ -39,8 +49,7 @@ impl State {
         terminal: &ResourceId,
     ) -> bool {
         self.pending.as_ref().is_some_and(|pending| {
-            &pending.terminal == terminal
-                && std::ptr::eq(pending.owner.as_ptr(), std::sync::Arc::as_ptr(client))
+            &pending.terminal == terminal && owned_by(&pending.owner, client)
         })
     }
 }
@@ -141,43 +150,59 @@ impl Desk {
         self.native_launch.error = None;
         cx.spawn_in(window, async move |this, cx| {
             let destination = session.clone();
-            let result = smol::unblock(move || host::launch_native(&phux, &socket, &integration, &destination)).await;
+            let result = smol::unblock(move || {
+                host::launch_native(&phux, &socket, &integration, &destination)
+            })
+            .await;
             let _ = this.update_in(cx, |desk, window, cx| {
-                if !desk.link.as_ref().is_some_and(|link| {
-                    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(&link.connection.client))
-                }) {
+                if !desk
+                    .link
+                    .as_ref()
+                    .is_some_and(|link| owned_by(&owner, &link.connection.client))
+                {
                     return;
                 }
                 desk.native_launch.launching = None;
                 match result {
                     Ok(launched) => {
-                        desk.native_launch.pending = Some(Pending { owner, session, terminal: ResourceId::local(launched.terminal_id), agent: launched.agent_session_id, activation: launched.activation, revealed: false });
+                        desk.native_launch.pending = Some(Pending {
+                            owner,
+                            session,
+                            terminal: ResourceId::local(launched.terminal_id),
+                            agent: launched.agent_session_id,
+                            activation: launched.activation,
+                            revealed: false,
+                        });
                         desk.close_modal(window, cx);
                         desk.reveal_pending_native(cx);
-                        if let Some(link) = desk.link.as_ref() { let _ = link.connection.refresh_topology(); }
-                        desk.post(Kind::Info, "Native agent launched", Some("The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.".into()));
+                        if let Some(link) = desk.link.as_ref() {
+                            let _ = link.connection.refresh_topology();
+                        }
+                        desk.post(Kind::Info, "Native agent launched", Some(LAUNCHED.into()));
                     }
                     Err(error) => {
                         desk.native_launch.error = Some(error.clone());
-                        if desk.modal != Modal::NativeLaunch { desk.post(Kind::Error, "Native launch failed", Some(error)); }
+                        if desk.modal != Modal::NativeLaunch {
+                            desk.post(Kind::Error, "Native launch failed", Some(error));
+                        }
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
     pub(crate) fn reveal_pending_native(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.native_launch.pending.as_ref() else {
+        let Some(pending) = self
+            .native_launch
+            .pending
+            .as_ref()
+            .filter(|pending| !pending.revealed && pending_guardian_ready(self, pending))
+        else {
             return;
         };
-        if pending.revealed {
-            return;
-        }
-        if !pending_guardian_ready(self, pending) {
-            return;
-        }
         let terminal = pending.terminal.clone();
         if let Some(pending) = self.native_launch.pending.as_mut() {
             pending.revealed = true;
@@ -216,12 +241,8 @@ impl Desk {
 
 fn pending_connection<'a>(desk: &'a Desk, pending: &Pending) -> Option<&'a Connection> {
     let connection = &desk.link.as_ref()?.connection;
-    (desk.session == pending.session
-        && std::ptr::eq(
-            pending.owner.as_ptr(),
-            std::sync::Arc::as_ptr(&connection.client),
-        ))
-    .then_some(connection)
+    (desk.session == pending.session && owned_by(&pending.owner, &connection.client))
+        .then_some(connection)
 }
 
 fn pending_guardian_ready(desk: &Desk, pending: &Pending) -> bool {

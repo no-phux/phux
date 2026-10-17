@@ -4,8 +4,6 @@
 //! Escape closes it, a click inside never does, and its control takes the
 //! keyboard on open.
 
-use std::rc::Rc;
-
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyWindowHandle, App, Context, Entity, EntityId, IntoElement, MouseButton,
@@ -225,19 +223,17 @@ fn input_with(
 }
 
 impl Desk {
-    fn input_value(&self, slot: InputSlot, cx: &App) -> String {
-        self.modal_inputs
-            .iter()
-            .find(|(owned, _, _)| *owned == slot)
-            .map(|(_, input, _)| input.read(cx).value().to_string())
-            .unwrap_or_default()
-    }
-
     fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
         self.modal_inputs
             .iter()
             .find(|(owned, _, _)| *owned == slot)
             .map(|(_, input, _)| input.clone())
+    }
+
+    fn input_value(&self, slot: InputSlot, cx: &App) -> String {
+        self.input_entity(slot)
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default()
     }
 
     /// A field edit (`submit` is `None`) or Enter (`Some(shift)`).
@@ -251,11 +247,7 @@ impl Desk {
     ) {
         match (slot, submit) {
             (InputSlot::Find, None) => {
-                let case = self
-                    .find
-                    .as_ref()
-                    .map(|find| find.case_sensitive)
-                    .unwrap_or(false);
+                let case = self.find.as_ref().is_some_and(|find| find.case_sensitive);
                 self.run_search(value, case, cx);
             }
             (InputSlot::Find, Some(shift)) => {
@@ -461,15 +453,7 @@ impl Desk {
                     goto_frecency::Choice::Tab { id, listed },
                 )
             }
-            Target::Command
-            | Target::Session(_)
-            | Target::Window { .. }
-            | Target::Work(_)
-            | Target::Setting(_)
-            | Target::Move(_, _)
-            | Target::Path(_) => {
-                goto_frecency::validated_key(boot.as_deref(), goto_frecency::Choice::Other)
-            }
+            _ => None,
         };
         self.goto_frecency.note(key, now);
     }
@@ -1498,7 +1482,7 @@ fn path_panel(
         empty,
         status,
     } = path_presentation(&picker, !items.is_empty());
-    let targets: Rc<Vec<Target>> = Rc::new(items.iter().cloned().map(Target::Path).collect());
+    let targets: Vec<Target> = items.iter().cloned().map(Target::Path).collect();
     let desk_handle = cx.weak_entity();
     let confirm_handle = desk_handle.clone();
     let terminal_handle = desk_handle.clone();
@@ -1517,8 +1501,7 @@ fn path_panel(
                 item.directory(),
             ),
         };
-        let search = label.clone();
-        CommandItem::new().label(search).child(move |_, cx| {
+        CommandItem::new().label(label.clone()).child(move |_, cx| {
             let terminal_handle = terminal_handle.clone();
             div()
                 .group("path-row")
@@ -1533,26 +1516,21 @@ fn path_panel(
                         .text_color(cx.theme().muted_foreground),
                 )
                 .child(div().flex_1().min_w_0().truncate().child(label.clone()))
-                .children(
-                    directory
-                        .clone()
-                        .filter(|_| !matches!(icon, IconName::ArrowUp))
-                        .map(|directory| {
-                            Button::new(format!("open-{directory}"))
-                                .invisible()
-                                .group_hover("path-row", |style| style.visible())
-                                .label("Open terminal")
-                                .ghost()
-                                .xsmall()
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    let directory = directory.clone();
-                                    let _ = terminal_handle.update(cx, |desk, cx| {
-                                        desk.open_path_terminal(directory, window, cx)
-                                    });
-                                })
-                        }),
-                )
+                .children(directory.clone().map(|directory| {
+                    Button::new(format!("open-{directory}"))
+                        .invisible()
+                        .group_hover("path-row", |style| style.visible())
+                        .label("Open terminal")
+                        .ghost()
+                        .xsmall()
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let directory = directory.clone();
+                            let _ = terminal_handle.update(cx, |desk, cx| {
+                                desk.open_path_terminal(directory, window, cx)
+                            });
+                        })
+                }))
         })
     });
     let root = picker.root.clone();
