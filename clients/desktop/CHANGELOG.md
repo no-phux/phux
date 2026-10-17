@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.34.1](https://github.com/no-phux/phux/compare/desktop-v0.34.0...desktop-v0.34.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **client-runtime:** end a reconnecting session on a refused QUIC token ([c389e05](https://github.com/no-phux/phux/commit/c389e05cba8c39aeb81cbf87505bf391bfbdadac))
+
 ## [0.34.0](https://github.com/no-phux/phux/compare/desktop-v0.33.0...desktop-v0.34.0) (2026-10-17)
 
 
