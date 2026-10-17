@@ -2411,6 +2411,40 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     assert_eq!(owner, whole);
 }
 
+/// `SESSION_STATE.recent_input` names the session's recent input target
+/// (R14) and is withheld when the grant does not cover that Terminal.
+#[test]
+fn a_snapshot_reports_the_recent_input_target_the_grant_covers() {
+    let mut world = world();
+    let alpha_session = world.alpha_session;
+    let whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    assert!(
+        whole.sessions.iter().all(|s| s.recent_input.is_none()),
+        "no input yet: nothing recent, no first-member fallback"
+    );
+
+    let _ = world
+        .state
+        .registry_mut()
+        .set_recent(alpha_session, Some(world.alpha_core));
+    let g = world.alpha_group;
+    let group = filtered(
+        &mut world,
+        &[&format!("bind,observe@group:{g}")],
+        Verb::Observe,
+    );
+    assert_eq!(group.sessions[0].recent_input, Some(world.alpha.clone()));
+
+    // A recent target outside the grant is not disclosed.
+    let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    for session in &mut whole.sessions {
+        session.recent_input = Some(world.beta.clone());
+    }
+    let seen = super::filter::filter_snapshot(&world.state, CLIENT, Verb::Observe, whole);
+    assert_eq!(seen.sessions.len(), 1);
+    assert_eq!(seen.sessions[0].recent_input, None);
+}
+
 /// The Bell events a server-wide subscription holding `scopes` receives,
 /// after one Bell each on `alpha`, `beta`, no Terminal, and a child of
 /// `alpha`, in that order.

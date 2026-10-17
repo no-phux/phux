@@ -155,23 +155,31 @@ pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<Session
 /// The session's most recent input target as the server reports it, when it
 /// is still a Terminal in the session.
 ///
-/// The one read of the legacy window surface left in this crate: the server
-/// carries a session's recent target only as its synthesized window's
-/// `active_resource` (ADR-0161 §7), and neither `ResourceInfo`, the
-/// session's snapshot facets, nor the organization records carry it. It
-/// needs a session-level field before the legacy windows can be removed
-/// (ADR-0161 §9).
+/// The session-level `SESSION_STATE.recent_input` (`docs/spec/L1.md`
+/// §9.1), or, from a server that does not report it, the session's legacy
+/// window's `active_resource` (ADR-0161 §7), which such a server falls back
+/// to the session's first Terminal. The window read goes with the legacy
+/// windows (ADR-0161 §9).
 #[must_use]
 pub fn recent_terminal(snapshot: &SessionSnapshot, session: &SessionInfo) -> Option<ResourceId> {
+    let in_session = |id: &ResourceId| {
+        find(snapshot, id).is_some_and(is_terminal) && session_of(snapshot, id) == Some(session.id)
+    };
+    session
+        .recent_input
+        .clone()
+        .filter(in_session)
+        .or_else(|| legacy_window_focus(snapshot, session).filter(in_session))
+}
+
+/// The `active_resource` of the session's active legacy window, else of its
+/// first one; a client of a server that predates `recent_input` reads it.
+fn legacy_window_focus(snapshot: &SessionSnapshot, session: &SessionInfo) -> Option<ResourceId> {
     session
         .active_window
         .and_then(|window| snapshot.windows.iter().find(|w| w.id == window))
         .or_else(|| snapshot.windows.iter().find(|w| w.session_id == session.id))
         .and_then(|window| window.active_resource.clone())
-        .filter(|id| {
-            find(snapshot, id).is_some_and(is_terminal)
-                && session_of(snapshot, id) == Some(session.id)
-        })
 }
 
 /// Whether the snapshot's server reports each resource's session.

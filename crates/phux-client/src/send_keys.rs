@@ -387,6 +387,16 @@ mod tests {
             resolve_focused_pane(&with_recent, &target, Some(&ResourceId::local(1))),
             Some(ResourceId::local(2))
         );
+        // The session-level SESSION_STATE.recent_input, with no window.
+        let session_level = SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(session, "work").with_recent_input(Some(ResourceId::local(2))),
+            ])
+            .with_resources(resources.clone());
+        assert_eq!(
+            resolve_focused_pane(&session_level, &target, Some(&ResourceId::local(1))),
+            Some(ResourceId::local(2))
+        );
         let without = SessionSnapshot::new(session, window, ResourceId::local(1))
             .with_sessions(vec![SessionInfo::new(session, "work")])
             .with_resources(resources);

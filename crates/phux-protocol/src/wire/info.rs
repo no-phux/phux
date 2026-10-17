@@ -88,6 +88,11 @@ pub struct SessionInfo {
     /// order, from the extension block's `SESSION_STATE`; empty from a
     /// server that does not report them.
     pub attrs: Vec<(String, String)>,
+    /// The session's most recent input target (R14), a Terminal listed in
+    /// this snapshot and owned by this session, from the extension block's
+    /// `SESSION_STATE`; `None` when the session has none or the server does
+    /// not report it.
+    pub recent_input: Option<ResourceId>,
 }
 
 impl SessionInfo {
@@ -105,6 +110,7 @@ impl SessionInfo {
             lifetime: None,
             key: None,
             attrs: Vec::new(),
+            recent_input: None,
         }
     }
 
@@ -141,10 +147,20 @@ impl SessionInfo {
         self
     }
 
+    /// Builder setter for [`Self::recent_input`].
+    #[must_use]
+    pub fn with_recent_input(mut self, recent_input: Option<ResourceId>) -> Self {
+        self.recent_input = recent_input;
+        self
+    }
+
     /// Whether this session's extension-block `SESSION_STATE` has anything
     /// to say.
     const fn has_session_state(&self) -> bool {
-        self.lifetime.is_some() || self.key.is_some() || !self.attrs.is_empty()
+        self.lifetime.is_some()
+            || self.key.is_some()
+            || !self.attrs.is_empty()
+            || self.recent_input.is_some()
     }
 
     /// Whether the session currently holds no windows: a keep-empty session
@@ -840,6 +856,7 @@ pub(super) fn decode_session_info(dec: &mut Decoder<'_>) -> Result<SessionInfo, 
         lifetime: None,
         key: None,
         attrs: Vec::new(),
+        recent_input: None,
     })
 }
 
@@ -982,7 +999,8 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
 /// Build the snapshot extension block: `RESOURCE_STATE` per non-default
 /// resource, the journal head, `RESOURCE_SESSION` per resource with a
 /// reported session, then `SESSION_STATE` per session with a reported
-/// lifetime or key; empty means nothing is written.
+/// lifetime, key, attribute, or recent input target; empty means nothing is
+/// written.
 fn encode_snapshot_extension(
     sessions: &[SessionInfo],
     resources: &[ResourceInfo],
@@ -1021,6 +1039,11 @@ fn encode_snapshot_extension(
                 e.write_field_with(field::session_state::ATTR, |e| {
                     e.write_str(name);
                     e.write_str(value);
+                });
+            }
+            if let Some(recent) = &info.recent_input {
+                e.write_field_with(field::session_state::RECENT_INPUT, |e| {
+                    encode_terminal_id(recent, e);
                 });
             }
         });
@@ -1107,13 +1130,15 @@ fn decode_snapshot_extension(
 }
 
 /// Join one `SESSION_STATE` value onto its session (ignored when none); an
-/// unknown lifetime byte or a zero key reads as not reported.
+/// unknown lifetime byte, a zero key, or a malformed recent input target
+/// reads as not reported.
 fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(), DecodeError> {
     let mut dec = Decoder::new(value);
     let id = SessionId::new(dec.read_u32_be()?);
     let mut lifetime = None;
     let mut key = None;
     let mut attrs = Vec::new();
+    let mut recent_input = None;
     while let Some((field_id, v)) = dec.read_field()? {
         match field_id {
             field::session_state::LIFETIME => {
@@ -1127,6 +1152,9 @@ fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(),
                     attrs.push(pair);
                 }
             }
+            field::session_state::RECENT_INPUT => {
+                recent_input = decode_terminal_id(&mut Decoder::new(v)).ok();
+            }
             _ => {}
         }
     }
@@ -1134,6 +1162,7 @@ fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(),
         info.lifetime = lifetime;
         info.key = key;
         info.attrs = attrs;
+        info.recent_input = recent_input;
     }
     Ok(())
 }

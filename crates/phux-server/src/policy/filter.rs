@@ -239,6 +239,15 @@ pub fn filter_snapshot(
         }
     }
     snapshot.sessions.retain(|session| group(session.id));
+    for session in &mut snapshot.sessions {
+        if session
+            .recent_input
+            .as_ref()
+            .is_some_and(|id| !terminal(id))
+        {
+            session.recent_input = None;
+        }
+    }
     snapshot.windows.retain(|window| group(window.session_id));
     if !snapshot
         .sessions
