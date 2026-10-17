@@ -20,14 +20,14 @@ desktop-install:
 
 [group('desktop')]
 [doc('Check script tooling, qualification guards and the desktop host lock')]
-desktop-check:
+desktop-check: worktree-claim
     cd clients/desktop && bun run check:tooling
     python3 scripts/check-desktop-host-lock.py
     python3 scripts/test-check-desktop-host-lock.py
 
 [group('desktop')]
 [doc('Run the native desktop crate tests (model, painter, input, presentation, launch)')]
-desktop-test: desktop-source
+desktop-test: worktree-claim desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
@@ -37,7 +37,7 @@ desktop-perf-headless profile="test": desktop-source
 
 [group('desktop')]
 [doc('Format check and clippy -D warnings for the native desktop crate')]
-desktop-lint: desktop-source
+desktop-lint: worktree-claim desktop-source
     cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
     cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
 
@@ -58,7 +58,7 @@ desktop-cli:
 
 [group('desktop')]
 [doc('Build the debug GPUI desktop and launch it against this checkout')]
-desktop-app: desktop-host-debug desktop-cli
+desktop-app: worktree-claim desktop-host-debug desktop-cli
     cd clients/desktop && PHUX_BIN="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" PHUX_DESKTOP_BIN="$PWD/native/target/debug/phux-desktop" bun scripts/launch-desktop.ts
 
 [group('desktop')]
@@ -77,7 +77,7 @@ desktop-framework-check: desktop-package desktop-cli
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]
-desktop-native-build: desktop-source
+desktop-native-build: worktree-claim desktop-source
     bash clients/desktop/scripts/build-host.sh --release
 
 [group('desktop')]

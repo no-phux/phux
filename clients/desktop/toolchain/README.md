@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Desktop framework toolchain
@@ -89,5 +89,17 @@ and command line tools are still required.
 
 Sources: <https://crates.io/crates/gpui-pre> (a snapshot of Zed's
 `crates/gpui`, Apache-2.0) and <https://github.com/longbridge/gpui-kit>
-(Apache-2.0). Every resolved dependency keeps its own license; packaging must
-collect the notices of the actual linked graph.
+(Apache-2.0). Every resolved dependency keeps its own license.
+`scripts/notices.ts` writes the notices of the actual crate graph into
+`Phux.app`.
+
+`gpui_util` and `gpui_shared_string` (published as `gpui-pre-util` and
+`gpui-pre-shared-string` 0.3.8) once carried no license in Zed. Their
+Apache-2.0 label now rests on upstream, not on the republisher's manifest.
+Zed [#63573](https://github.com/zed-industries/zed/pull/63573)
+(`ac5af8b9e1`) declared `license = "Apache-2.0"` for both, and each crate
+directory carries `LICENSE-APACHE`. Both packages record
+`zed-rev = 279fe070bb38` in `package.metadata.gpui-pre`. At that revision
+both upstream manifests declare Apache-2.0, and the published sources and
+`LICENSE-APACHE` files are byte-identical to Zed's. A `gpui-pre` bump repeats
+this check for any crate that was not Apache-2.0 upstream at its new pin.

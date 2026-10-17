@@ -34,7 +34,7 @@ const module = await WebAssembly.compile(stripped);
 assert.deepEqual(WebAssembly.Module.imports(module), [], 'engine imports nothing');
 const { exports: e } = await WebAssembly.instantiate(module, {});
 assert.ok(e.memory instanceof WebAssembly.Memory, 'exported memory');
-// The bell callback is installed by growing this table.
+// The bell and snapshot-reader callbacks are installed by growing this table.
 assert.ok(e.__indirect_function_table instanceof WebAssembly.Table, 'exported function table');
 for (const name of [
   'ghostty_wasm_alloc', 'ghostty_wasm_free', 'ghostty_free', 'ghostty_type_json',
@@ -48,6 +48,9 @@ for (const name of [
   'ghostty_render_state_row_get', 'ghostty_render_state_row_cells_new',
   'ghostty_render_state_row_cells_free', 'ghostty_render_state_row_cells_next',
   'ghostty_render_state_row_cells_get', 'ghostty_unicode_codepoint_width',
+  'ghostty_snapshot_encode_alloc', 'ghostty_snapshot_decoder_new', 'ghostty_snapshot_decoder_free',
+  'ghostty_snapshot_decoder_set', 'ghostty_snapshot_decoder_get', 'ghostty_snapshot_decoder_ready',
+  'ghostty_snapshot_decoder_next',
 ]) assert.equal(typeof e[name], 'function', `export ${name}`);
 const jsonPtr = e.ghostty_type_json();
 const jsonBytes = new Uint8Array(e.memory.buffer);
@@ -74,6 +77,7 @@ for (const [name, size, fields] of [
   ['GhosttyFormatterTerminalOptions', 40, { size: 0, emit: 4, unwrap: 8, trim: 9, extra: 12, selection: 36 }],
   ['GhosttyFormatterTerminalExtra', 24, { size: 0, screen: 12 }],
   ['GhosttyFormatterScreenExtra', 12, { size: 0 }],
+  ['GhosttyReader', 8, { read: 0, userdata: 4 }],
 ]) {
   const layout = types[name];
   assert.equal(layout?.size, size, `${name} size`);
@@ -82,7 +86,9 @@ for (const [name, size, fields] of [
   }
 }
 for (const [name, values] of [
-  ['GhosttyResult', { SUCCESS: 0, OUT_OF_SPACE: -3 }],
+  ['GhosttyResult', { SUCCESS: 0, OUT_OF_SPACE: -3, NO_VALUE: -4 }],
+  ['GhosttySnapshotDecoderOption', { MAX_CONTINUATION_BYTES: 0 }],
+  ['GhosttySnapshotDecoderData', { PROGRESS_ROWS: 6, PROGRESS_REMAINING: 7 }],
   ['GhosttyTerminalOption', { BELL: 2, SCROLLBACK_MAX_BYTES: 27, SCROLLBACK_MAX_LINES: 28 }],
   ['GhosttyTerminalData', {
     CURSOR_X: 3, CURSOR_Y: 4, CURSOR_VISIBLE: 7, SCROLLBAR: 9, MOUSE_TRACKING: 11, TITLE: 12,

@@ -31,6 +31,9 @@ pub struct Modal<'a> {
     title: String,
     body: Vec<Line<'a>>,
     wrap: bool,
+    /// Dim text inset into the bottom border: a status at the left and a
+    /// key legend at the right. Empty strings draw nothing.
+    footer: (String, String),
 }
 
 impl<'a> Modal<'a> {
@@ -42,7 +45,17 @@ impl<'a> Modal<'a> {
             title: title.into(),
             body,
             wrap: false,
+            footer: (String::new(), String::new()),
         }
+    }
+
+    /// Inset `status` at the bottom-left and `keys` at the bottom-right of
+    /// the border, both dim. The border row costs nothing extra, so every
+    /// modal can say where the user is and what the keys do.
+    #[must_use]
+    pub fn footer(mut self, status: impl Into<String>, keys: impl Into<String>) -> Self {
+        self.footer = (status.into(), keys.into());
+        self
     }
 
     /// Enable word wrapping of the body (preserving leading whitespace).
@@ -81,6 +94,23 @@ impl<'a> Modal<'a> {
             ))
             .title_alignment(Alignment::Left)
             .padding(Padding::horizontal(MODAL_PAD));
+        let footer_style = Style::default().fg(self.theme.dim);
+        let block = if self.footer.0.is_empty() {
+            block
+        } else {
+            block.title_bottom(
+                Line::from(Span::styled(format!(" {} ", self.footer.0), footer_style))
+                    .left_aligned(),
+            )
+        };
+        let block = if self.footer.1.is_empty() {
+            block
+        } else {
+            block.title_bottom(
+                Line::from(Span::styled(format!(" {} ", self.footer.1), footer_style))
+                    .right_aligned(),
+            )
+        };
 
         let para = Paragraph::new(self.body.clone()).block(block);
         if self.wrap {

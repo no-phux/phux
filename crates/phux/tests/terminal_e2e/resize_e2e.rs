@@ -13,6 +13,8 @@ mod common;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
@@ -24,38 +26,24 @@ const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 /// Poll cadence for the chrome-reservation wait.
 const POLL: Duration = Duration::from_millis(50);
 
-/// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+fn start_server() -> ServerGuard {
+    ServerGuard::builder("resize")
+        // Panes run the server's `$SHELL`; never inherit the runner's.
+        .env("SHELL", "/bin/sh")
+        .start()
 }
 
-impl ServerGuard {
-    fn start() -> Self {
-        Self(
-            common::ServerGuard::builder("resize")
-                // Panes run the server's `$SHELL`; never inherit the runner's.
-                .env("SHELL", "/bin/sh")
-                .start(),
-        )
-    }
-
-    /// The pane's grid as the **pane actor's own libghostty `Terminal`**
-    /// reports it — `GET_SCREEN`, not the registry field `phux resize`
-    /// reads back. That difference is the point of this file.
-    fn pane_size(&self) -> (u64, u64) {
-        let stdout = self.success(&["snapshot", "--json", SESSION]);
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&stdout).expect("snapshot --json must be JSON");
-        (
-            snapshot["cols"].as_u64().expect("snapshot cols"),
-            snapshot["rows"].as_u64().expect("snapshot rows"),
-        )
-    }
+/// The pane's grid as the **pane actor's own libghostty `Terminal`**
+/// reports it — `GET_SCREEN`, not the registry field `phux resize`
+/// reads back. That difference is the point of this file.
+fn pane_size(server: &ServerGuard) -> (u64, u64) {
+    let stdout = server.success(&["snapshot", "--json", SESSION]);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&stdout).expect("snapshot --json must be JSON");
+    (
+        snapshot["cols"].as_u64().expect("snapshot cols"),
+        snapshot["rows"].as_u64().expect("snapshot rows"),
+    )
 }
 
 /// The PTY the attached client in this file's chrome test runs in.
@@ -69,9 +57,9 @@ const ATTACH_DEADLINE: Duration = Duration::from_secs(20);
 fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
     // `ATTACH.viewport` is the outer terminal; the client must resize the
     // pane to the content rect, one row shorter for the status bar.
-    let server = ServerGuard::start();
+    let server = start_server();
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         NO_TTY_DEFAULT,
         "the seeded pane must start at the no-TTY default, or the assertion \
          below could pass without the attach doing anything"
@@ -101,10 +89,10 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
         u64::from(rows) - 2,
     );
     let deadline = Instant::now() + ATTACH_DEADLINE;
-    let mut seen = server.pane_size();
+    let mut seen = pane_size(&server);
     while Instant::now() < deadline && seen != want {
         std::thread::sleep(POLL);
-        seen = server.pane_size();
+        seen = pane_size(&server);
     }
     assert_eq!(
         seen, want,
@@ -122,9 +110,9 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn resize_changes_the_panes_real_grid() {
-    let server = ServerGuard::start();
+    let server = start_server();
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         NO_TTY_DEFAULT,
         "a freshly seeded pane must start at the no-TTY default, or the \
          assertions below could pass without the resize doing anything"
@@ -138,7 +126,7 @@ fn resize_changes_the_panes_real_grid() {
          it without --json"
     );
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         (120, 40),
         "`phux resize` reported success but the pane actor's own grid did \
          not move. The registry `dims` the verb reads back and the \
@@ -151,13 +139,13 @@ fn resize_changes_the_panes_real_grid() {
     // `PageList` reflow, and it is also the direction a caller uses to undo
     // an over-large grid. Prove the verb is not one-way.
     server.success(&["resize", SESSION, "90x30"]);
-    assert_eq!(server.pane_size(), (90, 30));
+    assert_eq!(pane_size(&server), (90, 30));
 }
 
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn resize_json_reports_requested_and_applied() {
-    let server = ServerGuard::start();
+    let server = start_server();
     let stdout = server.success(&["resize", SESSION, "--json", "200x50"]);
     let doc: serde_json::Value = serde_json::from_str(&stdout).expect("resize --json must be JSON");
 
@@ -170,7 +158,7 @@ fn resize_json_reports_requested_and_applied() {
         doc["held"], true,
         "with nobody attached there is no viewport to lose to: {doc}"
     );
-    assert_eq!(server.pane_size(), (200, 50));
+    assert_eq!(pane_size(&server), (200, 50));
 }
 
 /// A rendered snapshot is a read: it attaches to compose the frame but must
@@ -180,7 +168,7 @@ fn resize_json_reports_requested_and_applied() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rendered_snapshot_does_not_resize_the_panes() {
-    let server = ServerGuard::start();
+    let server = start_server();
     server.success(&["resize", SESSION, "140x45"]);
     let rendered = server.success(&[
         "snapshot",
@@ -196,7 +184,7 @@ fn rendered_snapshot_does_not_resize_the_panes() {
         "the composite is the requested size:\n{rendered}"
     );
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         (140, 45),
         "`snapshot --rendered` resized the session's panes: its headless \
          attach cast a window-size vote instead of a zero viewport"
@@ -212,12 +200,12 @@ fn resize_does_not_attach_the_session() {
     // straight back to the default it was just moved off. Resizing twice in
     // a row is what makes a lingering subscription observable — the second
     // call's read-back would show 80x24, not 140x45.
-    let server = ServerGuard::start();
+    let server = start_server();
     server.success(&["resize", SESSION, "140x45"]);
     let stdout = server.success(&["resize", SESSION, "140x45"]);
     assert_eq!(stdout.trim(), "140x45");
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         (140, 45),
         "a previous `phux resize` left a view attached to the session; its \
          80x24 no-TTY viewport is now fighting the size being requested"
@@ -227,7 +215,7 @@ fn resize_does_not_attach_the_session() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn resize_refuses_an_unknown_target_without_touching_any_pane() {
-    let server = ServerGuard::start();
+    let server = start_server();
     server.success(&["resize", SESSION, "110x35"]);
 
     let (code, stdout, stderr) = server.run(&["resize", "no-such-session", "60x20"]);
@@ -241,7 +229,7 @@ fn resize_refuses_an_unknown_target_without_touching_any_pane() {
         "the diagnostic must name the miss: {stderr}"
     );
     assert_eq!(
-        server.pane_size(),
+        pane_size(&server),
         (110, 35),
         "a failed resize must not have moved some other pane"
     );

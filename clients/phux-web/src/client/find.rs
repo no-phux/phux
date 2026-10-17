@@ -134,22 +134,32 @@ pub(super) fn set_label(app: &App, text: &str) {
 }
 
 fn search(app: &Rc<RefCell<App>>, query: &str) {
-    let app = app.borrow();
-    app.run_search(query);
-    app.reveal_current_match();
+    let scrolled = {
+        let app = app.borrow();
+        app.run_search(query);
+        app.reveal_current_match()
+    };
+    if scrolled {
+        super::demand_history(app);
+    }
 }
 
 fn step(app: &Rc<RefCell<App>>, older: bool) {
-    let app = app.borrow();
-    if app.search_stale.get() {
-        let query = app.search.borrow().query().to_owned();
-        app.run_search(&query);
-    }
-    let moved = app.search.borrow_mut().step(older);
-    if moved.is_some() {
+    let scrolled = {
+        let app = app.borrow();
+        if app.search_stale.get() {
+            let query = app.search.borrow().query().to_owned();
+            app.run_search(&query);
+        }
+        if app.search.borrow_mut().step(older).is_none() {
+            return;
+        }
         let label = app.search.borrow().label();
         set_label(&app, &label);
-        app.reveal_current_match();
+        app.reveal_current_match()
+    };
+    if scrolled {
+        super::demand_history(app);
     }
 }
 

@@ -119,17 +119,16 @@ async fn exact_wasm_codec_selects_native_and_renders_live_server() {
     assert!(
         matches!(
             client.selected_profile(),
-            Some(BootstrapProfile::SynthesizedVtRaw)
-                | Some(BootstrapProfile::NativeState {
-                    codec: EngineCodec::LibghosttyCheckpointV2,
-                    ..
-                })
+            Some(BootstrapProfile::NativeState {
+                codec: EngineCodec::LibghosttySnapshotV1,
+                ..
+            })
         ),
         "{}",
         failure_artifact(
             "native",
             &client,
-            "browser did not negotiate a usable bootstrap profile"
+            "browser did not negotiate the official native snapshot"
         )
     );
 }

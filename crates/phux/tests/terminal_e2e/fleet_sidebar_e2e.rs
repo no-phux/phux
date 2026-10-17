@@ -11,6 +11,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::ArrangementDoc;
 use phux_client::layout_ops::layout_key;
@@ -31,84 +32,64 @@ const LAYOUT_DEADLINE: Duration = Duration::from_secs(20);
 const ROSTER_DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+/// The peer's seed pane, read back rather than assumed.
+fn peer_pane(server: &ServerGuard) -> ResourceId {
+    let stdout = server.success(&["snapshot", "--json", PEER]);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&stdout).expect("snapshot JSON for the peer session");
+    let pane = u32::try_from(snapshot["pane"].as_u64().expect("snapshot pane id"))
+        .expect("pane id fits u32");
+    ResourceId::local(pane)
 }
 
-impl ServerGuard {
-    fn start() -> Self {
-        Self(
-            common::ServerGuard::builder("fleet-sidebar")
-                // Panes run the server's `$SHELL`; never inherit the runner's.
-                .env("SHELL", "/bin/sh")
-                .start(),
-        )
-    }
-
-    /// The peer's seed pane, read back rather than assumed.
-    fn peer_pane(&self) -> ResourceId {
-        let stdout = self.success(&["snapshot", "--json", PEER]);
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&stdout).expect("snapshot JSON for the peer session");
-        let pane = u32::try_from(snapshot["pane"].as_u64().expect("snapshot pane id"))
-            .expect("pane id fits u32");
-        ResourceId::local(pane)
-    }
-
-    /// Wait until some session's persisted layout names `pane`; without one
-    /// the peer's histogram is legitimately empty and the test could not tell
-    /// a working sweep from a missing one. Session ids are scanned because no
-    /// JSON surface exposes them.
-    fn wait_for_persisted_layout(&self, pane: &ResourceId) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        let deadline = Instant::now() + LAYOUT_DEADLINE;
-        loop {
-            let found = runtime.block_on(async {
-                let mut conn = Connection::connect(&self.socket)
-                    .await
-                    .expect("connect metadata client");
-                for candidate in 1..=SESSION_ID_SCAN {
-                    let request_id = candidate;
-                    conn.send(&FrameKind::GetMetadata {
-                        request_id,
-                        scope: Scope::Group(GroupId::new(1)),
-                        key: layout_key(SessionId::new(candidate)),
-                    })
-                    .await
-                    .expect("request candidate layout");
-                    if let FrameKind::MetadataValue {
-                        value: Some(bytes), ..
-                    } = conn.recv().await.expect("candidate layout reply")
-                        && let Ok(workspace) = ArrangementDoc::decode_cbor(&bytes)
-                        && workspace
-                            .groups
-                            .iter()
-                            .filter_map(|w| w.state.tree.as_ref())
-                            .flat_map(phux_client::layout::leaves)
-                            .any(|leaf| leaf == *pane)
-                    {
-                        return true;
-                    }
+/// Wait until some session's persisted layout names `pane`; without one
+/// the peer's histogram is legitimately empty and the test could not tell
+/// a working sweep from a missing one. Session ids are scanned because no
+/// JSON surface exposes them.
+fn wait_for_persisted_layout(server: &ServerGuard, pane: &ResourceId) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let deadline = Instant::now() + LAYOUT_DEADLINE;
+    loop {
+        let found = runtime.block_on(async {
+            let mut conn = Connection::connect(&server.socket)
+                .await
+                .expect("connect metadata client");
+            for candidate in 1..=SESSION_ID_SCAN {
+                let request_id = candidate;
+                conn.send(&FrameKind::GetMetadata {
+                    request_id,
+                    scope: Scope::Group(GroupId::new(1)),
+                    key: layout_key(SessionId::new(candidate)),
+                })
+                .await
+                .expect("request candidate layout");
+                if let FrameKind::MetadataValue {
+                    value: Some(bytes), ..
+                } = conn.recv().await.expect("candidate layout reply")
+                    && let Ok(workspace) = ArrangementDoc::decode_cbor(&bytes)
+                    && workspace
+                        .groups
+                        .iter()
+                        .filter_map(|w| w.state.tree.as_ref())
+                        .flat_map(phux_client::layout::leaves)
+                        .any(|leaf| leaf == *pane)
+                {
+                    return true;
                 }
-                false
-            });
-            if found {
-                return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "no session persisted a layout naming {pane:?}"
-            );
-            std::thread::sleep(POLL);
+            false
+        });
+        if found {
+            return;
         }
+        assert!(
+            Instant::now() < deadline,
+            "no session persisted a layout naming {pane:?}"
+        );
+        std::thread::sleep(POLL);
     }
 }
 
@@ -210,14 +191,17 @@ fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
 #[test]
 #[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
 fn deferred_peer_sweep_still_describes_the_spaces_roster() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::builder("fleet-sidebar")
+        // Panes run the server's `$SHELL`; never inherit the runner's.
+        .env("SHELL", "/bin/sh")
+        .start();
     server.success(&["new", "--json", "-s", PEER]);
 
-    let peer_pane = server.peer_pane();
+    let peer_pane = peer_pane(&server);
     let peer_selector = format!("@{}", peer_pane.local_id().expect("local peer pane"));
     // A placed spawn persists a layout under the peer's key.
     server.success(&["spawn", "--target", &peer_selector]);
-    server.wait_for_persisted_layout(&peer_pane);
+    wait_for_persisted_layout(&server, &peer_pane);
 
     // `blocked` renders as `●1` (idle/unknown render nothing).
     server.success(&[

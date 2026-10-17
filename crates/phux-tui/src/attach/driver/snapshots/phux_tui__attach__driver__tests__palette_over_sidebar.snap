@@ -1,5 +1,6 @@
 ---
 source: crates/phux-tui/src/attach/driver/tests.rs
+assertion_line: 1099
 expression: all
 ---
  Agents            ├────────────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ expression: all
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
-                   │╰──────────────────────────────────────────────────────────╯
+                   │╰ 1 of 2 ─────────────────────────── ↑↓ move · ⏎ run · esc ╯
                    │
                    │
                    │

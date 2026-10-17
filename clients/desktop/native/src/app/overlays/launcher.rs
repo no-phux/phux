@@ -22,8 +22,8 @@ use crate::settings::theme::Palette;
 use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
 use super::{
-    Row, Section, Target, command_results, command_sections, corner, move_sections, prepare_goto,
-    query_terms, rank_sections, session_sections, settings_sections,
+    Row, Section, Target, WINDOWS, command_results, command_sections, corner, move_sections,
+    prepare_goto, query_terms, rank_sections, session_sections, settings_sections, window_sections,
 };
 
 struct Header {
@@ -44,9 +44,17 @@ fn results(desk: &mut Desk, query: &str, cx: &Context<Desk>) -> (&'static str, V
             if !query.trim().is_empty() && desk.goto.filter == GotoFilter::All {
                 sections.extend(rank_sections(command_sections(desk, cx), query));
                 sections.extend(rank_sections(settings_sections(), query));
+                sections.extend(rank_sections(
+                    window_sections(desk, cx.entity_id(), cx),
+                    query,
+                ));
             }
             ("Search work, actions and settings…", sections)
         }
+        Modal::Windows => (
+            "Find a window or tab…",
+            rank_sections(window_sections(desk, cx.entity_id(), cx), query),
+        ),
         Modal::Settings => ("Find a setting…", rank_sections(settings_sections(), query)),
         Modal::WindowSession => (
             "Open session…",
@@ -175,10 +183,13 @@ pub(super) fn palette(
         if let Some(label) = section.label {
             group = group.label(label);
         }
+        // Unranked, a window's tabs sit indented under it.
+        let overview = section.label == Some(WINDOWS);
         command = command.group(group.items(section.rows.into_iter().enumerate().map(
             |(row_index, row)| {
                 let active = selected == Some(IndexPath::new(row_index).section(section_index));
-                item(row, &tokens, colors.clone(), active)
+                let nested = overview && matches!(row.target, Target::Window { tab: Some(_), .. });
+                item(row, &tokens, colors.clone(), active, nested)
             },
         )));
     }
@@ -272,13 +283,17 @@ fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>) -> gpui::
         .items_center()
         .gap(px(2.))
         .when(
-            matches!(modal, Modal::Commands | Modal::Goto | Modal::Settings),
+            matches!(
+                modal,
+                Modal::Commands | Modal::Goto | Modal::Settings | Modal::Windows
+            ),
             |modes| {
                 modes.children(
                     [
                         (Modal::Goto, "Work", "palette-mode-goto"),
                         (Modal::Commands, "Actions", "palette-mode-commands"),
                         (Modal::Settings, "Settings", "palette-mode-settings"),
+                        (Modal::Windows, "Windows", "palette-mode-windows"),
                     ]
                     .into_iter()
                     .map(|(choice, label, id)| {
@@ -405,7 +420,13 @@ fn state_filter(filter: GotoFilter, desk: &WeakEntity<Desk>) -> impl IntoElement
     )
 }
 
-fn item(row: Row, tokens: &[&str], colors: Rc<Palette>, selected: bool) -> CommandItem {
+fn item(
+    row: Row,
+    tokens: &[&str],
+    colors: Rc<Palette>,
+    selected: bool,
+    nested: bool,
+) -> CommandItem {
     let destructive = matches!(row.command, Some("terminate" | "kill-session"));
     let title = row.title;
     let highlights = title_matches(&title, tokens);
@@ -430,6 +451,7 @@ fn item(row: Row, tokens: &[&str], colors: Rc<Palette>, selected: bool) -> Comma
             .flex_1()
             .min_w_0()
             .h(px(24.))
+            .when(nested, |row| row.pl(px(16.)))
             .items_center()
             .gap(px(12.))
             .text_size(px(13.))

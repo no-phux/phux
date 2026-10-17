@@ -2,7 +2,11 @@
 //!
 //! - **Log.** `log` records go to stderr and to `~/Library/Logs/phux-desktop.log`
 //!   (`PHUX_DESKTOP_LOG` overrides the path; `RUST_LOG`-style level in
-//!   `PHUX_DESKTOP_LOG_LEVEL`, default `info`).
+//!   `PHUX_DESKTOP_LOG_LEVEL`, default `info`). Every line is [`redact`]ed
+//!   first, and the file rotates to one `.1` backup at [`LOG_CAP`] bytes.
+//! - **Receipt.** `Copy Diagnostics` copies a [`Receipt`]: app and runtime
+//!   versions, server id, connection epoch, host and the last redacted
+//!   warnings. It carries no terminal content.
 //! - **Metrics.** [`crate::perf`] owns the always-on counters and histograms;
 //!   this module adds the window-level rows (`desktop.frame`, `desktop.drain*`)
 //!   and samples everything into `perf.jsonl` once a second when `--evidence`
@@ -18,6 +22,14 @@
 //!
 //! Windows never activate under `--evidence`, so qualification runs do not
 //! steal focus from the person at the machine.
+
+mod log_file;
+mod receipt;
+mod redact;
+
+pub use log_file::{LOG_CAP, LogFile};
+pub use receipt::{Receipt, development_version};
+pub use redact::{REDACTED, redact};
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -52,8 +64,17 @@ pub static TABLE: &[Metric] = &[
 // ── Log ────────────────────────────────────────────────────────────────
 
 struct Logger {
-    file: Mutex<Option<std::fs::File>>,
+    file: Mutex<Option<LogFile>>,
     level: log::LevelFilter,
+}
+
+/// Warnings and errors since launch, for [`recent_errors`].
+static RECENT: log_file::Recent = log_file::Recent::new();
+
+/// The last warnings and errors this process logged, redacted, oldest first.
+#[must_use]
+pub fn recent_errors() -> Vec<String> {
+    RECENT.snapshot()
 }
 
 impl log::Log for Logger {
@@ -69,12 +90,15 @@ impl log::Log for Logger {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let line = format!(
+        let line = redact(&format!(
             "{at} {} {} {}\n",
             record.level(),
             record.target(),
             record.args()
-        );
+        ));
+        if record.level() <= log::Level::Warn {
+            RECENT.note(&line);
+        }
         let _ = std::io::stderr().write_all(line.as_bytes());
         if let Some(file) = self
             .file
@@ -82,7 +106,7 @@ impl log::Log for Logger {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
         {
-            let _ = file.write_all(line.as_bytes());
+            file.write_line(line.as_bytes());
         }
     }
 
@@ -104,16 +128,7 @@ pub fn init_logging() {
         .ok()
         .and_then(|level| level.parse().ok())
         .unwrap_or(log::LevelFilter::Info);
-    let file = log_path().and_then(|path| {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()
-    });
+    let file = log_path().and_then(|path| LogFile::open(path, LOG_CAP).ok());
     static LOGGER: OnceLock<Logger> = OnceLock::new();
     let logger = LOGGER.get_or_init(|| Logger {
         file: Mutex::new(file),

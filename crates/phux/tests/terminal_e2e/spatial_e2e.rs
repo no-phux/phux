@@ -28,19 +28,21 @@ const POLL: Duration = Duration::from_millis(50);
 /// effect of that reconcile, not of the CLI `SET_METADATA` itself.
 const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 
-struct ServerGuard {
+/// A [`common::ServerGuard`] whose `HOME` and XDG directories live in `dir`,
+/// which every client verb here reuses.
+struct IsolatedServer {
     inner: common::ServerGuard,
     dir: tempfile::TempDir,
 }
 
-impl std::ops::Deref for ServerGuard {
+impl std::ops::Deref for IsolatedServer {
     type Target = common::ServerGuard;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl ServerGuard {
+impl IsolatedServer {
     fn start() -> Self {
         let dir = tempfile::tempdir().expect("server tempdir");
         for name in ["home", "config", "state", "runtime"] {
@@ -361,11 +363,11 @@ impl ServerGuard {
 struct AttachedClient(common::PtyAttach);
 
 impl AttachedClient {
-    fn start(server: &ServerGuard) -> Self {
+    fn start(server: &IsolatedServer) -> Self {
         Self::start_named_at_size(server, SESSION, 100, 24)
     }
 
-    fn start_named_at_size(server: &ServerGuard, session: &str, cols: u16, rows: u16) -> Self {
+    fn start_named_at_size(server: &IsolatedServer, session: &str, cols: u16, rows: u16) -> Self {
         let dir = server.dir.path();
         Self(common::PtyAttach::start(
             &server.socket,
@@ -406,7 +408,7 @@ fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
     }
 }
 
-fn assert_tree(server: &ServerGuard, expected: LayoutNode) {
+fn assert_tree(server: &IsolatedServer, expected: LayoutNode) {
     let layout = server.read_layout().expect("persisted layout");
     assert_eq!(layout.groups.len(), 1);
     assert_eq!(layout.groups[0].state.tree, Some(expected));
@@ -415,7 +417,7 @@ fn assert_tree(server: &ServerGuard, expected: LayoutNode) {
 #[test]
 #[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
 fn spatial_cli_persists_topology_and_preserves_attached_focus() {
-    let server = ServerGuard::start();
+    let server = IsolatedServer::start();
     let seed = server.seed_pane();
     server.seed_layout(&seed);
     let mut attached = AttachedClient::start(&server);
@@ -520,7 +522,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     server.wait_for_marker(&second, "FOCUS_AFTER_SWAP");
 }
 
-fn json_created_pane(server: &ServerGuard, session: &str) -> ResourceId {
+fn json_created_pane(server: &IsolatedServer, session: &str) -> ResourceId {
     let created = server.json(&["new", "--json", "-s", session]);
     ResourceId::local(
         u32::try_from(created["terminal_id"].as_u64().expect("created pane id"))
@@ -528,7 +530,7 @@ fn json_created_pane(server: &ServerGuard, session: &str) -> ResourceId {
     )
 }
 
-fn run_in_pane(server: &ServerGuard, pane: &ResourceId, command: &str) -> serde_json::Value {
+fn run_in_pane(server: &IsolatedServer, pane: &ResourceId, command: &str) -> serde_json::Value {
     server.json(&[
         "run",
         "--json",
@@ -550,7 +552,7 @@ fn assert_single_pane_layout(layout: &ArrangementDoc, pane: &ResourceId) {
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
 fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
-    let server = ServerGuard::start();
+    let server = IsolatedServer::start();
     let source = json_created_pane(&server, "headless-source");
     let destination = json_created_pane(&server, "headless-destination");
 
@@ -627,7 +629,7 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
 #[test]
 #[ignore = "spawns a real server and PTY client; run in the e2e lane"]
 fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
-    let server = ServerGuard::start();
+    let server = IsolatedServer::start();
     let pane = json_created_pane(&server, "tiny-headless");
     let mut attached = AttachedClient::start_named_at_size(&server, "tiny-headless", 1, 1);
     server.wait_for_attached("tiny-headless", true);
@@ -643,7 +645,7 @@ fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
 fn malformed_legacy_destination_layout_cannot_break_a_cross_session_move() {
-    let server = ServerGuard::start();
+    let server = IsolatedServer::start();
     let source = json_created_pane(&server, "bad-layout-source");
     let destination = json_created_pane(&server, "bad-layout-destination");
     // The session arrangement is the record (R17): bytes that do not decode

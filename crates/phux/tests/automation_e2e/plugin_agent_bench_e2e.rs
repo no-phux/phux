@@ -8,21 +8,6 @@ use std::process::Stdio;
 
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl ServerGuard {
-    fn start(session: &str) -> Self {
-        Self(common::ServerGuard::builder("ab").session(session).start())
-    }
-}
-
 fn repo_root() -> PathBuf {
     crate::runner::manifest_dir()
         .join("../..")
@@ -55,7 +40,7 @@ fn action_stdout(stdout: &str) -> String {
 #[test]
 #[ignore = "spawns a real phux server; run explicitly when validating agent bench actions."]
 fn agent_bench_launches_lists_and_drives_role_session() {
-    let server = ServerGuard::start("seed");
+    let server = common::ServerGuard::builder("ab").session("seed").start();
     let tmp = tempfile::tempdir().expect("tempdir");
     let repo = repo_root();
     let xdg = repo.join("examples/plugins/agent-tools/config");

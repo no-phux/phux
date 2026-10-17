@@ -95,6 +95,11 @@ pub struct SessionJson {
     /// `null` when the session carries no project identity.
     #[serde(default)]
     pub project: Option<crate::project_identity::SessionProject>,
+    /// The session record's full 26-character persistent key, the text a
+    /// workload `session:<key>` scope names; `null` from a server that
+    /// keeps no organization records.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 /// One resource's row in [`SessionListJson::resources`]: canonical selector,
@@ -116,6 +121,11 @@ pub struct ResourceJson {
     /// How a retained resource's process ended; `null` while it runs.
     #[serde(default)]
     pub exit: Option<ResourceExitJson>,
+    /// The resource record's full 26-character persistent key, the text a
+    /// workload `resource:<key>` scope names; `null` when no organization
+    /// record executes as this resource.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 fn running_lifecycle() -> String {
@@ -297,6 +307,7 @@ mod tests {
                 linked_worktree: true,
                 host: Some("mini".to_owned()),
             }),
+            key: Some("0123456789ABCDEFGHJKMNPQRS".to_owned()),
         }])
         .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
         .with_resources(vec![
@@ -312,6 +323,7 @@ mod tests {
                     exited_at_ms: 10,
                     retained_until_ms: 20,
                 }),
+                key: Some("0123456789ABCDEFGHJKMNPQRT".to_owned()),
             },
             ResourceJson {
                 id: "@9".to_owned(),
@@ -319,6 +331,7 @@ mod tests {
                 parent: Some("@7".to_owned()),
                 lifecycle: "running".to_owned(),
                 exit: None,
+                key: None,
             },
         ])
         .with_hosts(vec![
@@ -363,7 +376,8 @@ mod tests {
                         "id": "github.com/no-phux/phux", "name": "phux",
                         "checkout": "/w/phux-feat", "branch": "feat",
                         "linked_worktree": true, "host": "mini"
-                    }
+                    },
+                    "key": "0123456789ABCDEFGHJKMNPQRS"
                 }],
                 "terminals": ["@7", "@9"],
                 "unreachable": [],
@@ -373,11 +387,12 @@ mod tests {
                         "exit": {
                             "status": 42, "signal": null, "reason": "exited",
                             "exited_at_ms": 10, "retained_until_ms": 20
-                        }
+                        },
+                        "key": "0123456789ABCDEFGHJKMNPQRT"
                     },
                     {
                         "id": "@9", "kind": "agent_session", "parent": "@7",
-                        "lifecycle": "running", "exit": null
+                        "lifecycle": "running", "exit": null, "key": null
                     }
                 ],
                 "hosts": [
@@ -411,6 +426,7 @@ mod tests {
         assert_eq!(old.sessions[0].lifetime, None);
         assert_eq!(old.sessions[0].members, 0);
         assert_eq!(old.sessions[0].exec, ExecCounts::default());
+        assert_eq!(old.sessions[0].key, None);
         assert!(old.terminals.is_empty() && old.unreachable.is_empty());
         assert!(old.resources.is_empty() && old.hosts.is_empty());
         assert!(!old.hosts_complete);
@@ -420,5 +436,6 @@ mod tests {
                 .expect("pre-lifecycle payloads remain deserializable");
         assert_eq!(resource.lifecycle, "running");
         assert!(resource.exit.is_none());
+        assert!(resource.key.is_none());
     }
 }

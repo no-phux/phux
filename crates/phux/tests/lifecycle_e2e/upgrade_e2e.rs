@@ -12,29 +12,20 @@ mod common;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 const SESSION: &str = "work";
 const POLL: Duration = Duration::from_millis(50);
 
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+/// Spawn `phux server` with a seed pane running `seed_command`, then block
+/// until the socket appears.
+fn start_with_seed(seed_command: &str) -> ServerGuard {
+    ServerGuard::builder("upg")
+        .seed_command(seed_command)
+        .start()
 }
 
 impl ServerGuard {
-    /// Spawn `phux server` with a seed pane running `seed_command`, then block
-    /// until the socket appears.
-    fn start_with_seed(seed_command: &str) -> Self {
-        Self(
-            common::ServerGuard::builder("upg")
-                .seed_command(seed_command)
-                .start(),
-        )
-    }
-
     fn status(&self, args: &[&str]) -> i32 {
         self.cmd(args)
             .stdout(Stdio::null())
@@ -91,7 +82,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     // The seed pane prints the marker, then `exec`s a long-lived `sleep` — so
     // the pane's child is a stable, observable process (the shell's pid is
     // preserved across its own exec).
-    let server = ServerGuard::start_with_seed(&format!("printf '{marker}\\n'; exec sleep 600"));
+    let server = start_with_seed(&format!("printf '{marker}\\n'; exec sleep 600"));
     let server_pid = server.pid();
 
     // The pane child (the sleep) must come up, and the marker must reach the
@@ -177,7 +168,7 @@ fn json_of(server: &ServerGuard, args: &[&str]) -> serde_json::Value {
 fn program_title_stays_out_of_the_user_title_across_upgrade() {
     let title = format!("OSC_TITLE_{}", std::process::id());
     let marker = format!("TITLE_READY_{}", std::process::id());
-    let server = ServerGuard::start_with_seed(&format!(
+    let server = start_with_seed(&format!(
         "printf '\\033]2;{title}\\007{marker}\\n'; exec sleep 600"
     ));
     assert_eq!(
@@ -222,7 +213,7 @@ fn program_title_stays_out_of_the_user_title_across_upgrade() {
 #[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
 fn agent_session_and_its_log_survive_graceful_upgrade() {
     let marker = format!("AGENT_LOG_SURVIVES_{}", std::process::id());
-    let server = ServerGuard::start_with_seed("exec sleep 600");
+    let server = start_with_seed("exec sleep 600");
     let server_pid = server.pid();
     assert!(
         poll(Duration::from_secs(10), || server.status(&["ls"]) == 0),
@@ -337,12 +328,10 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
     let dir = tempfile::tempdir().expect("temp dir");
     let trigger = dir.path().join("paint");
     let claude = write_gated_claude(dir.path(), &trigger);
-    let server = ServerGuard(
-        common::ServerGuard::builder("upg")
-            .seed_command(format!("exec '{}'", claude.display()))
-            .env("PHUX_AGENT_STARTUP_GRACE_MS", "200")
-            .start(),
-    );
+    let server = ServerGuard::builder("upg")
+        .seed_command(format!("exec '{}'", claude.display()))
+        .env("PHUX_AGENT_STARTUP_GRACE_MS", "200")
+        .start();
 
     // Armed before the upgrade: the idle screen is identified and published.
     assert!(
@@ -403,7 +392,7 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
 #[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
 fn program_status_and_inheritance_survive_graceful_upgrade() {
     let marker = format!("STATUS_READY_{}", std::process::id());
-    let server = ServerGuard::start_with_seed(&format!(
+    let server = start_with_seed(&format!(
         "printf '\\033]7501;state=idle:app=build\\007'; \
          printf '\\033]7501;id=build/test:state=blocked:kind=question:progress=42:msg=UmVhZHk/\\033\\\\'; \
          printf '{marker}\\n'; \

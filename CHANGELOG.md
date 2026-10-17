@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.91.0](https://github.com/no-phux/phux/compare/v0.90.3...v0.91.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** palette lands on the best match, shows why, and lists both splits ([acfe5fb](https://github.com/no-phux/phux/commit/acfe5fb85d961cc3161da2a0203a330f901a2915))
+* **tui:** scroll mark in the rule, copy-mode key legend, tab names that match the bar ([f46368b](https://github.com/no-phux/phux/commit/f46368b627bba70d6b4c5e9a963fe1512f43acfb))
+
+
+### Bug Fixes
+
+* **tui:** repaint a pane whose viewport a wheel or copy-mode scroll moved ([1641c4d](https://github.com/no-phux/phux/commit/1641c4d6db2b7aa3a03ea5919eb91f9fce8a5c34))
+
 ## [0.90.3](https://github.com/no-phux/phux/compare/v0.90.2...v0.90.3) (2026-10-17)
 
 

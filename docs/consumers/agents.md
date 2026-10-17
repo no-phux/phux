@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-16
+last-reviewed: 2026-10-17
 ---
 
 # The phux agent CLI
@@ -462,14 +462,17 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
                 "completed": 1, "failed": 0, "lost": 0, "abandoned": 0 },
       "project": { "id": "github.com/no-phux/phux", "name": "phux",
                    "checkout": "/src/phux-feat", "branch": "feat",
-                   "linked_worktree": true, "host": "mini" } }
+                   "linked_worktree": true, "host": "mini" },
+      "key": "01K7M3Q4ZB8C9D0E1F2G3H4J5K" }
   ],
   "terminals": ["@3"],
   "resources": [
     { "id": "@3", "kind": "terminal", "parent": null,
-      "lifecycle": "running", "exit": null },
+      "lifecycle": "running", "exit": null,
+      "key": "01K7M3Q4ZB8C9D0E1F2G3H4J5M" },
     { "id": "@9", "kind": "agent_session", "parent": "@3",
-      "lifecycle": "running", "exit": null }
+      "lifecycle": "running", "exit": null,
+      "key": "01K7M3Q4ZB8C9D0E1F2G3H4J5N" }
   ],
   "hosts": [],
   "hosts_complete": true,
@@ -493,7 +496,11 @@ sessions whose `project.id` is equal are one repository, on any machine
 (`id` is the normalized `origin` URL, or `path:<host>:<common git dir>`
 without one); `branch` is the branch at creation and `linked_worktree`
 marks a worktree other than the primary checkout. `phux ls --all --json`
-rows carry it too. `kind` is `terminal`, `agent_session`,
+rows carry it too. `key` on a session or resource row is additive: the
+record's full 26-character persistent key, the text a workload
+`session:<key>` or `resource:<key>` scope names, where every other surface
+prints the shortest unique `^prefix`; `null` from a server that keeps no
+organization records. `kind` is `terminal`, `agent_session`,
 or `unknown`. `sessions` lists this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
 `HOST_SESSIONS`). `host` is `null` for this machine (`local: true`).

@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 /// The seed pane: the one pane every server here starts with.
 const SEED_PANE: &str = "@1";
 
@@ -75,21 +77,7 @@ fn fixture_cast() -> PathBuf {
         .expect("the play fixture must exist")
 }
 
-/// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl ServerGuard {
-    fn start() -> Self {
-        Self(common::ServerGuard::start("play"))
-    }
-
     /// Start a playback (`phux play FILE [TARGET]`) and return its pane.
     fn play(&self, extra: &[&str], cast: &Path, target: Option<&str>) -> String {
         let cast = cast.to_string_lossy().into_owned();
@@ -164,7 +152,7 @@ impl ServerGuard {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn playback_paints_the_recorded_screen_into_a_real_pane() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     // Speed scales deadlines only, so the final screen is the real-time one.
     let pane = server.play(&["--speed", "50"], &demo_cast(), Some(SEED_PANE));
     assert_ne!(pane, SEED_PANE, "playback must create its own pane");
@@ -208,7 +196,7 @@ fn playback_paints_the_recorded_screen_into_a_real_pane() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn the_pane_is_fitted_to_the_recording_and_to_its_resize_events() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     assert_eq!(
         server.size(SEED_PANE),
         Some(NO_TTY_DEFAULT),
@@ -244,7 +232,7 @@ fn the_pane_is_fitted_to_the_recording_and_to_its_resize_events() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn recorded_bytes_reach_the_pane_untranslated() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let pane = server.play(&["--idle-limit", "0.2"], &fixture_cast(), None);
     // Wait on the probe's next row itself: other markers also contain `X`.
     server.wait_for(&pane, "the probe's second row", |server, pane| {
@@ -274,7 +262,7 @@ fn recorded_bytes_reach_the_pane_untranslated() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn an_asciicast_v3_recording_plays_too() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let pane = server.play(&["--speed", "50", "--idle-limit", "0.1"], &v3_cast(), None);
     server.wait_for(&pane, "the v3 header's grid", |server, pane| {
         server.size(pane) == Some(V3_HEADER)
@@ -289,7 +277,7 @@ fn an_asciicast_v3_recording_plays_too() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn no_fit_leaves_the_grid_alone() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let pane = server.play(&["--no-fit", "--idle-limit", "0.2"], &fixture_cast(), None);
     server.wait_for(&pane, "the end of the recording", |server, pane| {
         server.text(pane).contains(MARKER_TWO)
@@ -305,7 +293,7 @@ fn no_fit_leaves_the_grid_alone() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn close_ends_the_pane_when_playback_ends() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let pane = server.play(&["--close", "--idle-limit", "0.2"], &fixture_cast(), None);
     let deadline = Instant::now() + STATE_DEADLINE;
     while Instant::now() < deadline {
@@ -320,7 +308,7 @@ fn close_ends_the_pane_when_playback_ends() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn loop_replays_the_recording_more_than_once() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     // Passes are counted from a `phux rec` observer: one marker per pass.
     let pane = server.play(
         &["--loop", "--speed", "3", "--idle-limit", "0.2"],
@@ -354,7 +342,7 @@ fn loop_replays_the_recording_more_than_once() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn a_file_that_is_not_a_cast_fails_before_any_pane_is_created() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let junk = std::env::temp_dir().join(format!("phux-play-junk-{}.cast", std::process::id()));
     std::fs::write(&junk, b"not an asciicast\n").expect("write junk");
 
@@ -380,7 +368,7 @@ fn a_file_that_is_not_a_cast_fails_before_any_pane_is_created() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn json_names_the_pane_and_the_recording() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("play");
     let cast = fixture_cast();
     let stdout = server.success(&[
         "play",
