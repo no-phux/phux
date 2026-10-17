@@ -56,7 +56,9 @@ jobs:
         with:
           persist-credentials: false
       # The contributor setup desktop-release.yml uses: rustup from the pin,
-      # libghostty's Zig, and the Metal compiler GPUI's shaders need.
+      # libghostty's Zig, and the Metal compiler GPUI's shaders need. This
+      # block and the Bun steps below are copied in the macos and package
+      # jobs and in desktop-release.yml; change all three together.
       - name: Contributor Rust, Zig and Metal setup
         run: |
           set -euo pipefail
@@ -100,7 +102,9 @@ jobs:
         with:
           persist-credentials: false
       # The contributor setup desktop-release.yml uses: rustup from the pin,
-      # libghostty's Zig, and the Metal compiler GPUI's shaders need.
+      # libghostty's Zig, and the Metal compiler GPUI's shaders need. This
+      # block and the Bun steps below are copied in the macos and package
+      # jobs and in desktop-release.yml; change all three together.
       - name: Contributor Rust, Zig and Metal setup
         run: |
           set -euo pipefail
