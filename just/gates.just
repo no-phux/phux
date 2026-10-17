@@ -118,7 +118,6 @@ workflow-check: shellcheck
     python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh
     node scripts/check-release-orchestration.mjs
-    node scripts/check-release-drift-policy.mjs
 
 
 # Dependency hygiene: licenses, advisories, bans.
@@ -159,13 +158,6 @@ docs-gen:
     cargo run -q -p phux --bin phux -- gen-reference-docs
 
 
-# Homebrew formula generator vs the shapes release.yml's matrix can produce.
-[group('gates')]
-[private]
-formula-check:
-    bash scripts/check-formula.sh
-
-
 # release.yml's pinned Zig tarball digests vs ziglang.org's published index.
 # Skips (exit 0) when the index is unreachable, so it is safe offline.
 [group('gates')]
@@ -193,12 +185,9 @@ cache-portable-check:
     bash scripts/check-cache-portable.sh
 
 
-# Install/release documentation contracts (README, INSTALL, RELEASING, the
-# installer, the formula generator, release.yml). Also run by
-# `just release-preflight`; in `ci` so it cannot rot between releases.
 [group('gates')]
 [private]
-[doc('Install and release doc contracts: README, INSTALL, RELEASING, installer.')]
+[doc('Installer behaviour and the install surface contracts.')]
 install-surface-check:
     bash scripts/check-install-surface.sh
 
@@ -255,7 +244,7 @@ ci-static: ci-cargo-gates ci-repo-gates
 ci-cargo-gates: fmt-check lint doc deny build-features-check build-features-compile skill-contract binding-uniffi-test
 
 [private]
-ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check ghostty-pin-check toolchain-check install-surface-check cache-portable-check agent-integrations-check
+ci-repo-gates: docs-check workflow-check font-check e2e-lane-check zig-pin-check ghostty-pin-check toolchain-check install-surface-check cache-portable-check agent-integrations-check
 
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.

@@ -1,0 +1,129 @@
+# Build and package phux + phux-mcp for every CLI target (ADR-0176).
+# Called by release.yml for a stable tag and next-release.yml for green main.
+
+name: build-cli
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to build."
+        required: true
+        type: string
+      id:
+        description: "Archive identity: vX.Y.Z or next.<sha>."
+        required: true
+        type: string
+      channel:
+        description: "stable or next, baked into the binary."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    # Linux legs link against glibc 2.35 inside ubuntu:22.04; macOS has no container.
+    container: ${{ fromJSON(matrix.container) }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: xcode-27
+            container: "null"
+            target: aarch64-apple-darwin
+            host: Darwin/arm64
+          - os: ubuntu-24.04
+            container: '{"image":"ubuntu:22.04"}'
+            target: x86_64-unknown-linux-gnu
+            host: Linux/x86_64
+          - os: ubuntu-24.04-arm
+            container: '{"image":"ubuntu:22.04"}'
+            target: aarch64-unknown-linux-gnu
+            host: Linux/aarch64
+    steps:
+      - name: Verify the native platform and Linux baseline
+        env:
+          HOST: ${{ matrix.host }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = "$HOST"
+          if [[ "$HOST" == Linux/* ]]; then
+            . /etc/os-release
+            test "$ID/$VERSION_ID" = ubuntu/22.04
+            test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          fi
+
+      - name: Install git in the Ubuntu 22.04 container
+        if: runner.os == 'Linux'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
+      # The harness comes from the calling workflow's ref (main); the source
+      # is checked out at `ref` below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Linux 22.04 release userspace
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/setup-linux-release-userspace.sh
+
+      - name: Check out the source
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin "$REF"
+          git checkout --detach FETCH_HEAD
+
+      - name: Check the release version
+        if: inputs.channel == 'stable'
+        env:
+          TAG: ${{ inputs.id }}
+        run: bash scripts/check-release-version.sh "$TAG"
+
+      - name: Install Zig
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal
+
+      # Registry only: release binaries always build target/ from scratch.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-deps
+          cache-targets: "false"
+
+      - name: Build
+        env:
+          PHUX_BUILD_CHANNEL: ${{ inputs.channel }}
+          PHUX_BUILD_SHA: ${{ inputs.channel == 'next' && inputs.ref || '' }}
+        run: bash scripts/build-release-binaries.sh "${{ matrix.target }}"
+
+      - name: Check binary portability
+        run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
+
+      - name: Package
+        env:
+          ID: ${{ inputs.id }}
+          TARGET: ${{ matrix.target }}
+        run: bash scripts/pack-release.sh --id "$ID" --target "$TARGET" --bin-dir target/release --out-dir . --smoke
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            phux-*.tar.gz
+            phux-*.tar.gz.sha256
+          if-no-files-found: error

@@ -1,21 +1,8 @@
-# next channel — coalesced release-profile builds of green main.
-#
-# Trigger: ci.yml succeeded on a push to main, or a manual dispatch.
-# Ownership: this workflow owns the moving `next` prerelease only. It never
-# creates a stable version tag and never touches Homebrew.
-# release-please remains the sole owner of stable tags (ADR-0113).
-#
-# Two products ride the one prerelease on their own publication records:
-# channel.json (phux + phux-mcp, three targets) and desktop-channel.json (the
-# GPUI desktop). Each rebuilds only when its own inputs moved since the SHA its
-# record names, and each publishes on its own success. Clients read neither:
-# the `manifest` job derives channels/next.json from both (ADR-0175).
-#
-# Cost: at most one run in flight. A newer green SHA waits instead of
-# cancelling it, and pending runs coalesce to the newest, so a busy main still
-# ships its tip rather than cancelling every build. Docs-only and
-# already-published SHAs produce nothing. Registry cache is shared with
-# release.yml; target/ is never saved.
+# The next channel: release builds of green main on the moving `next`
+# prerelease, recorded in channels/next.json (ADR-0176). Each product rebuilds
+# only when its inputs changed since the commit next.json names. One run at a
+# time, and a newer commit queues instead of cancelling, so a busy main still
+# ships its tip and the next.json read-modify-write never races.
 
 name: next-release
 
@@ -26,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit to publish (default: the SHA that triggered this run, or github.sha)."
+        description: "Commit to publish (default: the head of main)."
         required: false
         type: string
 
@@ -49,195 +36,71 @@ jobs:
        github.event.workflow_run.head_branch == 'main')
     outputs:
       sha: ${{ steps.select.outputs.sha }}
-      should_build: ${{ steps.decide.outputs.should_build }}
-      desktop_build: ${{ steps.decide.outputs.desktop_build }}
+      phux: ${{ steps.decide.outputs.phux }}
+      desktop: ${{ steps.decide.outputs.desktop }}
     steps:
-      - name: Select SHA
+      - name: Select the commit
         id: select
         env:
-          DISPATCH_SHA: ${{ github.event.inputs.sha }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          FALLBACK_SHA: ${{ github.sha }}
+          SHA: ${{ github.event.inputs.sha || github.event.workflow_run.head_sha || github.sha }}
         run: |
-          set -euo pipefail
-          sha="${DISPATCH_SHA:-${RUN_SHA:-$FALLBACK_SHA}}"
-          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::not a git SHA: ${sha}"
-            exit 1
-          fi
-          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a git SHA: $SHA"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.select.outputs.sha }}
           fetch-depth: 0
 
-      - name: Decide whether to build
+      - name: Decide which products to build
         id: decide
         env:
+          GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.select.outputs.sha }}
         run: |
           set -euo pipefail
-          # decide POINTER KEY...: true when any classifier KEY moved since the
-          # SHA the product's pointer names, or when there is no usable pointer.
-          decide() {
-            local pointer="https://github.com/${GITHUB_REPOSITORY}/releases/download/next/$1"
+          # changed PRODUCT KEY...: whether any classifier KEY moved since the
+          # commit next.json names for PRODUCT.
+          changed() {
+            local product="$1" previous outputs key
             shift
-            local prev="" body outputs key
-            if body="$(curl -fsSL "$pointer" 2>/dev/null)"; then
-              prev="$(printf '%s\n' "$body" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -n 1)"
+            previous="$(python3 scripts/ci/release_manifest.py next-sha "$product")"
+            if [ "$previous" = "$SHA" ]; then
+              echo "$product: already published" >&2; echo false; return
             fi
-            if [ "$prev" = "$SHA" ]; then
-              echo "  already published for ${SHA}" >&2
-              echo false
-              return
+            if [ -z "$previous" ] || ! git cat-file -e "${previous}^{commit}" 2>/dev/null; then
+              echo "$product: no usable previous commit" >&2; echo true; return
             fi
-            if [ -z "$prev" ] || ! git cat-file -e "${prev}^{commit}" 2>/dev/null; then
-              echo "  first publish or previous SHA not in history; building" >&2
-              echo true
-              return
-            fi
-            outputs="$(git diff --name-only "$prev" "$SHA" -- | python3 scripts/ci/classify-changes.py)"
+            outputs="$(git diff --name-only "$previous" "$SHA" -- | python3 scripts/ci/classify-changes.py)"
             for key in "$@"; do
-              # Desktop is a standalone Rust workspace, not a root CI classifier
-              # surface. Include its packaging + embedded installer directly;
-              # shared Rust/toolchain inputs use the classifier keys below.
-              if [ "$key" = desktop_inputs ] && git diff --name-only "$prev" "$SHA" -- \
-                clients/desktop scripts/install-desktop.sh scripts/lib/install-release.sh \
-                scripts/test-install-desktop.py just/desktop.just \
-                .github/workflows/desktop-release.yml .github/workflows/next-release.yml \
-                | grep . >/dev/null; then
-                echo "  desktop inputs since ${prev}; building" >&2
-                echo true
-                return
-              fi
               if grep -qx "${key}=true" <<<"$outputs"; then
-                echo "  ${key} since ${prev}; building" >&2
-                echo true
-                return
+                echo "$product: $key changed" >&2; echo true; return
               fi
             done
-            echo "  no product inputs since ${prev}; skipping" >&2
-            echo false
+            # Desktop is its own workspace, outside the root classifier.
+            if [ "$product" = desktop ] && ! git diff --quiet "$previous" "$SHA" -- \
+                clients/desktop scripts/install.sh just/desktop.just .github/workflows/desktop-release.yml; then
+              echo "$product: desktop inputs changed" >&2; echo true; return
+            fi
+            echo "$product: unchanged" >&2; echo false
           }
-          echo "phux:" >&2
-          phux="$(decide channel.json phux_needed native_needed)"
-          echo "desktop:" >&2
-          desktop="$(decide desktop-channel.json desktop_inputs phux_needed native_needed)"
           {
-            echo "should_build=${phux}"
-            echo "desktop_build=${desktop}"
+            echo "phux=$(changed phux phux_needed native_needed)"
+            echo "desktop=$(changed desktop phux_needed native_needed)"
           } >> "$GITHUB_OUTPUT"
 
   build:
-    name: build ${{ matrix.target }}
     needs: gate
-    if: needs.gate.outputs.should_build == 'true'
-    runs-on: ${{ matrix.os }}
-    # Hosted ubuntu-22.04 labels retire in 2027 (actions/runner-images#14254).
-    # Linux legs keep a native glibc 2.35 userspace via ubuntu:22.04 on the
-    # free 24.04 runners. macOS is JSON null (no container).
-    container: ${{ fromJSON(matrix.container) }}
-    defaults:
-      run:
-        shell: bash
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: xcode-27
-            container: "null"
-            target: aarch64-apple-darwin
-          - os: ubuntu-24.04
-            container: '{"image":"ubuntu:22.04"}'
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            container: '{"image":"ubuntu:22.04"}'
-            target: aarch64-unknown-linux-gnu
-    steps:
-      - name: Verify native release platform and Linux baseline
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          case "$TARGET" in
-            aarch64-apple-darwin) test "$(uname -s)/$(uname -m)" = Darwin/arm64 ;;
-            x86_64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/x86_64 ;;
-            aarch64-unknown-linux-gnu) test "$(uname -s)/$(uname -m)" = Linux/aarch64 ;;
-            *) exit 1 ;;
-          esac
-          if [[ "$TARGET" == *-linux-gnu ]]; then
-            . /etc/os-release
-            test "$ID/$VERSION_ID" = ubuntu/22.04
-            test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
-          fi
-
-      - name: Install git in the Ubuntu 22.04 container
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-
-      - name: Setup Linux 22.04 release userspace
-        if: runner.os == 'Linux'
-        run: bash scripts/ci/setup-linux-release-userspace.sh
-
-      - name: Install Zig
-        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-
-      - name: Install Rust toolchain
-        run: |
-          set -euo pipefail
-          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-          test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: release-deps
-          cache-targets: "false"
-
-      - name: Build release binaries
-        env:
-          PHUX_BUILD_CHANNEL: next
-          PHUX_BUILD_SHA: ${{ needs.gate.outputs.sha }}
-        run: bash scripts/build-release-binaries.sh "${{ matrix.target }}"
-
-      - name: Check binary portability
-        run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
-
-      - name: Package tarball
-        id: package
-        env:
-          SHA: ${{ needs.gate.outputs.sha }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          bash scripts/pack-release.sh \
-            --id "next.${SHA}" \
-            --target "${TARGET}" \
-            --bin-dir target/release \
-            --out-dir . \
-            --smoke
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ matrix.target }}
-          path: |
-            phux-*.tar.gz
-            phux-*.tar.gz.sha256
-          if-no-files-found: error
+    if: needs.gate.outputs.phux == 'true'
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      ref: ${{ needs.gate.outputs.sha }}
+      id: next.${{ needs.gate.outputs.sha }}
+      channel: next
 
   desktop:
-    name: qualify Phux Desktop (macOS arm64)
     needs: gate
-    if: needs.gate.outputs.desktop_build == 'true'
+    if: needs.gate.outputs.desktop == 'true'
     uses: ./.github/workflows/desktop-release.yml
     with:
       tag: next
@@ -245,108 +108,34 @@ jobs:
       sha: ${{ needs.gate.outputs.sha }}
 
   publish:
-    name: publish next channel
+    name: publish next
     needs: [gate, build, desktop]
-    if: >-
-      !cancelled() &&
-      (needs.build.result == 'success' || needs.desktop.result == 'success')
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.desktop.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
 
-      - name: Publish moving next prerelease
+      # Each product publishes on its own success; a failed one keeps its
+      # previous next.json entry.
+      - name: Publish phux
         if: needs.build.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: bash scripts/publish-next-channel.sh "$SHA" dist
+        run: python3 scripts/ci/release_manifest.py next --product phux --sha "$SHA" --dist dist
 
-      - name: Publish Phux Desktop onto the next prerelease
+      - name: Publish desktop
         if: ${{ !cancelled() && needs.desktop.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: |
-          set -euo pipefail
-          archive="phux-desktop-next.${SHA}-macos-arm64.zip"
-          (cd dist && shasum -a 256 -c "$archive.sha256")
-          python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          metadata = json.loads(Path('dist/desktop-channel.json').read_text())
-          archive = f"phux-desktop-next.{os.environ['SHA']}-macos-arm64.zip"
-          assert metadata['schema_version'] == 1 and metadata['product'] == 'desktop' and metadata['channel'] == 'next'
-          assert metadata['sha'] == os.environ['SHA'] and metadata['archive'] == archive
-          assert metadata['sha256'] == hashlib.sha256(Path('dist', archive).read_bytes()).hexdigest()
-          PY
-          previous=""
-          pointer_dir="$(mktemp -d)"
-          trap 'rm -rf "$pointer_dir"' EXIT
-          if gh release view next >/dev/null 2>&1; then
-            if gh release download next --pattern desktop-channel.json --dir "$pointer_dir"; then
-              previous="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha", ""))' "$pointer_dir/desktop-channel.json")"
-            fi
-            gh release upload next "dist/$archive" "dist/$archive.sha256" --clobber
-            # Cosmetic retarget; see scripts/publish-next-channel.sh. A 403
-            # here is the workflows:write refusal, and must not skip the pointer.
-            if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$SHA" -F force=true >/dev/null; then
-              echo "::warning::could not move the next tag to ${SHA}; publishing the pointer anyway"
-            fi
-            if ! gh release edit next --prerelease --latest=false --target "$SHA" --title next; then
-              echo "::warning::could not retarget the next release to ${SHA}; publishing the pointer anyway"
-            fi
-          else
-            gh release create next "dist/$archive" "dist/$archive.sha256" \
-              --prerelease --latest=false --target "$SHA" --title next \
-              --notes 'Moving next channel (green main). Not a stable release.'
-          fi
-          # Publish pointer last; retain current + previous desktop SHA only.
-          gh release upload next dist/desktop-channel.json --clobber
-          # Failed pointer reads and retries after publication cannot establish
-          # the previous revision. Preserve pinned downloads rather than guess.
-          if [[ ! "$previous" =~ ^[0-9a-f]{40}$ ]] || [ "$previous" = "$SHA" ]; then
-            exit 0
-          fi
-          names="$(gh release view next --json assets --jq '.assets[].name')"
-          while IFS= read -r name; do
-            case "$name" in
-              "phux-desktop-next.${SHA}-"*) continue ;;
-              "phux-desktop-next.${previous}-"*) continue ;;
-              phux-desktop-next.*) gh release delete-asset next "$name" --yes ;;
-            esac
-          done <<< "$names"
-
-  # next.json (ADR-0175) is rebuilt from the per-product records above on
-  # every gated run, built or not, so a skipped or failed product leaves the
-  # manifest naming what is actually published.
-  manifest:
-    name: publish next manifest
-    needs: [gate, publish]
-    if: ${{ !cancelled() && needs.gate.result == 'success' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Build and publish next.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # A product that cannot be resolved keeps its published entry and
-        # turns this job red; the other product still publishes.
-        run: python3 scripts/ci/release_manifest.py next --out "$RUNNER_TEMP/next.json" --publish
+        run: python3 scripts/ci/release_manifest.py next --product desktop --sha "$SHA" --dist dist

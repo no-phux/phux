@@ -1,32 +1,15 @@
-# release-please — versions, tags, and draft release notes. Nothing else.
+# Release Please: versions, changelogs, tags, and private drafts. Merging a
+# release PR cuts its tags and drafts; publish.yml ships them on green ci.
 #
-# Every push to main, release-please maintains the release PR. Merging that
-# PR creates the component tags and private draft GitHub releases. publish.yml
-# ships them after ci.yml is green for that exact commit. This file does not
-# build, wait, or publish.
-#
-# App token, not GITHUB_TOKEN. main requires the ci check. Events raised by
-# GITHUB_TOKEN do not trigger workflows, so a release PR opened with
-# GITHUB_TOKEN never gets ci and cannot merge. The same applies to the
-# lockfile commit pushed onto that PR. Both authenticate as the release App.
-#
-# release-please force-pushes the release branch and drops the lockfile commit
-# sync-lockfile added. main does not require checks on the latest push, so that
-# unsynced head is mergeable until sync runs — #1105 merged in that window and
-# left integration drafts that publish will not ship, because ci failed on the
-# unsynced commit. Hold a ready PR as draft in this job, before it exits, and
-# let sync mark it ready only after the lockfile push lands.
-#
-# Do not set last-release-sha. It is a bootstrap pin release-please never
-# ignores, so the changelog grows from that commit forever.
-#
-# Do not set package-name on the root package. include-component-in-tag is
-# false, but package-name still feeds the branch component. A root-only
-# release PR then aborts with no tag (v0.19.0). The manifest and tags are
-# the record of what shipped.
-#
-# crates.io is not wired here. phux-protocol publishes only through
-# publish-crate.yml.
+# Rules this file keeps:
+# - Push as the release App, not GITHUB_TOKEN, whose events never trigger ci,
+#   so a release PR or its lockfile commit would never become mergeable.
+# - Release Please force-pushes the release branch and drops the lockfile
+#   commit, and main does not require checks on the latest push. So a ready
+#   PR is held as draft until sync-lockfile's push lands.
+# - No last-release-sha (the changelog would grow from it forever) and no
+#   package-name on the root package (it feeds the branch component and
+#   aborts root-only releases with no tag).
 
 name: release-please
 
@@ -58,25 +41,9 @@ jobs:
       # nothing was updated, or the hold step did not run.
       held_prs: ${{ steps.hold.outputs.held_prs || '[]' }}
     steps:
-      # Fail closed and loudly if the App is not configured, rather than falling
-      # back to GITHUB_TOKEN and silently opening an unmergeable release PR.
-      - name: Require the release App
-        env:
-          APP_ID: ${{ vars.RELEASE_APP_ID }}
-          APP_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${APP_ID}" ] || [ -z "${APP_KEY}" ]; then
-            echo "::error::RELEASE_APP_ID (variable) and RELEASE_APP_PRIVATE_KEY (secret) must be set. See this workflow's header comment. GITHUB_TOKEN cannot be used: main's ruleset requires ci, and GITHUB_TOKEN-raised events do not trigger workflows, so the release PR would be unmergeable."
-            exit 1
-          fi
-
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          # v3 deprecated `app-id` in favor of `client-id`. The JWT issuer claim
-          # accepts the numeric App ID and the Iv1-style Client ID alike, so the
-          # existing RELEASE_APP_ID variable works unchanged.
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
@@ -152,29 +119,13 @@ jobs:
       matrix:
         pr: ${{ fromJSON(needs.release-please.outputs.prs) }}
     runs-on: ubuntu-24.04
-    # release-please cannot update Cargo.lock, and this is not a config mistake:
-    #
-    #   * Its `rust` strategy is unusable here (see the header of release.yml),
-    #     so we drive the root Cargo.toml with a generic TOML jsonpath updater.
-    #   * Its TOML updater resolves a jsonpath against a parse tree in which
-    #     every scalar is a {start,end,value} tagged object. A filter such as
-    #     `$.package[?(@.name=='phux-protocol')].version` therefore compares an
-    #     object to a string, matches nothing, and SILENTLY no-ops. There is no
-    #     jsonpath that can select the 11 workspace members out of Cargo.lock's
-    #     [[package]] array by name.
-    #   * Comment annotations (`# x-release-please-version`) are not durable in
-    #     Cargo.lock either: cargo rewrites the file and drops them.
-    #
-    # So cargo itself re-resolves the lock. `cargo update --workspace` touches
-    # only the workspace members' own entries and leaves every external pin
-    # alone. It resolves metadata only — no build, so no zig/libghostty needed.
+    # Release Please cannot select workspace members in Cargo.lock (its rust
+    # strategy rejects a virtual workspace, and its TOML jsonpath matches
+    # nothing there), so cargo re-resolves the lock: metadata only, no build.
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          # v3 deprecated `app-id` in favor of `client-id`. The JWT issuer claim
-          # accepts the numeric App ID and the Iv1-style Client ID alike, so the
-          # existing RELEASE_APP_ID variable works unchanged.
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
@@ -182,14 +133,7 @@ jobs:
         with:
           ref: ${{ matrix.pr.headBranchName }}
           fetch-depth: 0
-          # MUST be the App token, not GITHUB_TOKEN. This job pushes a commit that
-          # becomes the release PR's new head; with GITHUB_TOKEN that push raises
-          # no `pull_request: synchronize` event, so ci.yml never runs against the
-          # new head SHA, and `check`/`test` never report on it for the ordinary
-          # merge path. The App's push DOES trigger ci.yml — exactly what we want.
-          # This cannot recurse
-          # into release-please.yml: that is `on: push: branches: [main]`, and this
-          # pushes to the release PR branch.
+          # The App's push triggers ci on the new head; GITHUB_TOKEN's would not.
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
@@ -267,22 +211,13 @@ jobs:
             echo "restored #$PR_NUMBER to ready for review"
           fi
 
-  # A release PR lands itself, always as ONE squash commit — never a rebase or
-  # merge commit. Runs after sync-lockfile, so the head is final and the hold
-  # (if any) is lifted. It discovers open release PRs by branch rather than by
-  # the action's `prs` output, because release-please returns nothing for an
-  # unchanged PR: a carried-over PR must still be undrafted and armed. It also
-  # undrafts the PR, because release-please creates it as a draft
-  # (`draft-pull-request`); the lockfile is synced by now, so that is safe, and
-  # undrafting runs `ci`, which auto-merge then waits for. A PR whose checks are
-  # already green merges immediately. release-please finds the merged PR by
-  # label and branch, so the squash commit is what it tags.
+  # Each open release PR lands as one squash commit once ci is green. PRs are
+  # found by branch, because Release Please returns nothing for an unchanged
+  # one, and undrafted here, after the lockfile is synced.
   auto-merge:
     name: squash auto-merge release PRs
     needs: [release-please, sync-lockfile]
-    # Sync can be skipped (no PR was created or updated) or can fail. Never
-    # undraft onto an unsynced head: only run when sync succeeded or was not
-    # needed.
+    # Never undraft onto an unsynced head.
     if: >-
       always()
       && needs.release-please.result == 'success'
@@ -296,7 +231,6 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          # See release-please.yml's header: never fall back to GITHUB_TOKEN.
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
@@ -322,7 +256,6 @@ jobs:
               continue
             fi
             if [ "$draft" = "true" ]; then
-              # Safe here: sync-lockfile already finished or was not needed.
               echo "#$num is a draft; marking it ready for review"
               gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
             fi

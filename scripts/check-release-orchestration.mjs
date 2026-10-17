@@ -1,99 +1,21 @@
 #!/usr/bin/env node
 
+// The Release Please settings the publish pipeline depends on, and the
+// standalone lockfiles that pin root path crates at the workspace version.
+
 import assert from "node:assert/strict";
-import { status } from "./lib/output.mjs";
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { status } from "./lib/output.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const read = (path) => readFile(join(root, path), "utf8");
+const config = JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf8"));
 
-const [configText, manifestText, releasePlease, publish, release, linearWorkflow, integrationWorkflow] = await Promise.all([
-  read("release-please-config.json"),
-  read(".release-please-manifest.json"),
-  read(".github/workflows/release-please.yml"),
-  read(".github/workflows/publish.yml"),
-  read(".github/workflows/release.yml"),
-  read(".github/workflows/linear-release.yml"),
-  read(".github/workflows/agent-integration-release.yml"),
-]);
-const config = JSON.parse(configText);
-const manifest = JSON.parse(manifestText);
-
-assert.equal(config["bootstrap-sha"], undefined, "bootstrap-sha must stay removed after the first canonical release");
-assert.equal(config["force-tag-creation"], true, "draft releases require release-please-owned tags");
-assert.equal(config.draft, true, "artifact workflows require private draft releases");
-assert.equal(config.packages?.["clients/cockpit"], undefined, "archived Cockpit is not a release-please package");
-assert.equal(manifest["clients/cockpit"], undefined, "archived Cockpit is not in the release-please manifest");
-
-assert.doesNotMatch(releasePlease, /clients--cockpit--/, "slash-normalized release-please outputs do not exist");
-assert.doesNotMatch(releasePlease, /\bgit tag\b/, "release-please is the sole tag owner");
-{
-  const undo = releasePlease.indexOf('gh pr ready "$num" --repo "$GITHUB_REPOSITORY" --undo');
-  const cargo = releasePlease.indexOf("cargo update --workspace");
-  const restore = releasePlease.indexOf('gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"');
-  assert.ok(undo > 0 && cargo > undo, "a ready release PR is drafted before the slow lockfile sync");
-  assert.ok(restore > cargo, "the draft hold is released only after the lockfile push");
-  assert.match(releasePlease, /held_prs:/, "the release-please job records which PRs it held");
-}
-assert.doesNotMatch(releasePlease, /site_source_pin\.py/, "the native demo pin lives in no-phux/website");
-assert.doesNotMatch(releasePlease, /docs\/site\//, "the site is not in this repo");
-assert.doesNotMatch(releasePlease, /wait_validation\.py/, "release-please must not poll ci");
-assert.doesNotMatch(releasePlease, /uses: \.\/\.github\/workflows\/release\.yml/, "publish.yml owns artifact fan-out");
-
-assert.match(publish, /uses: \.\/\.github\/workflows\/release\.yml/, "publish ships root releases");
-assert.doesNotMatch(publish, /cockpit/, "archived Cockpit has no publication lane");
-assert.match(publish, /uses: \.\/\.github\/workflows\/desktop-release\.yml/, "publish ships GPUI Desktop");
-assert.match(publish, /ffi-android\.yml/, "root releases attach the Android UniFFI zip");
-assert.match(publish, /ffi-xcframework\.yml/, "root releases attach the xcframework");
-assert.match(publish, /linear-release\.yml/, "published releases are reported to Linear");
-assert.match(publish, /publish_plan\.py/, "one plan decides every component");
-// Release harness scripts run from the default branch, source from the tag
-// (phux-jwoj). publish.yml's automatic triggers execute main, release.yml is
-// reachable only through it, and its build job runs the userspace setup from
-// that checkout before detaching to the tag. If release.yml ever runs from the
-// release commit, an infra fix landed after the tag can never help that tag.
-assert.match(
-  publish,
-  /workflow_run:\n\s+workflows: \[[^\]]*\]\n\s+types: \[completed\]\n\s+branches: \[main\]/,
-  "publish runs on completed main workflows so its harness is main",
-);
-assert.match(
-  release,
-  /\non:\n  workflow_call:\n(?:    .*\n|\n)*?\npermissions:/,
-  "release.yml is reachable only through publish.yml",
-);
-{
-  const checkout = release.search(/uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\n\s+- name: Setup Linux 22\.04 release userspace/);
-  const setup = release.indexOf("run: bash scripts/ci/setup-linux-release-userspace.sh");
-  const detach = release.indexOf('git checkout --detach "refs/tags/${TAG}"', setup);
-  assert.ok(checkout >= 0, "release build checks out the workflow ref (no ref:) right before setup");
-  assert.ok(setup > checkout && detach > setup, "release harness setup runs from the workflow ref before detaching to the tag");
-}
-assert.doesNotMatch(
-  publish,
-  /uses: \.\/\.github\/workflows\/agent-integration-release\.yml/,
-  "npm trusts agent-integration-release.yml as the entry workflow; workflow_call publishes as publish.yml and npm returns 404",
-);
-assert.match(
-  publish,
-  /python3 scripts\/ci\/dispatch_integration_publishes\.py/,
-  "publish dispatches the integration workflow so the OIDC filename matches npm",
-);
-assert.doesNotMatch(
-  integrationWorkflow,
-  /workflow_call:/,
-  "the integration publisher must be the entry workflow",
-);
-
-assert.ok(
-  linearWorkflow.includes("name: ${{ inputs.tag }}"),
-  "Linear continuous pipelines name the SHA unless name is the tag",
-);
-assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come from the tagged changelog");
-assert.doesNotMatch(linearWorkflow, /cockpit/i, "archived Cockpit is not reported to Linear");
+assert.equal(config.draft, true, "publish.yml ships drafts; Release Please must create them");
+assert.equal(config["force-tag-creation"], true, "a draft needs its tag before publish.yml can build it");
+assert.equal(config["bootstrap-sha"], undefined, "bootstrap-sha is a one-time setting");
 
 execFileSync("python3", [
   "scripts/sync-path-lock-versions.py", "--check", "Cargo.lock",

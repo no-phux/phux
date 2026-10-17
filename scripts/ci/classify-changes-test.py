@@ -105,7 +105,6 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/mbx-export-failed-lane.sh"], set()),
             (["scripts/check-release-orchestration.mjs"], set()),
             (["scripts/ci/test_release_drift.py"], set()),
-            (["scripts/ci/test_next_channel.py"], set()),
             (["docs/SETUP.md", "clients/phux-web/src/lib.rs"], {"web"}),
         ]
         for paths, wanted in cases:

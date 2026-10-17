@@ -7,10 +7,8 @@
 # mints the same Release App token sync-skills.yml uses and sends
 # repository_dispatch type phux-content with this commit's sha.
 #
-# Path-filter so a token is minted only when those inputs change.
-# workflow_dispatch is the manual backstop. A published release moves the
-# landing badge even when the release commit itself did not match the path
-# filter. The site's Monday cron is the backstop if a dispatch is missed.
+# Path-filtered so a token is minted only when those inputs change. The
+# site's own Monday cron catches a missed dispatch and moves the release badge.
 
 name: website-dispatch
 
@@ -26,8 +24,6 @@ on:
       - "scripts/install.sh"
       - "scripts/install-desktop.sh"
       - ".github/workflows/website-dispatch.yml"
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -42,49 +38,18 @@ jobs:
     name: dispatch no-phux/website
     runs-on: ubuntu-24.04
     steps:
-      # Fail closed if the App is not configured. GITHUB_TOKEN cannot
-      # repository_dispatch into no-phux/website.
-      - name: Require the release App
-        env:
-          APP_ID: ${{ vars.RELEASE_APP_ID }}
-          APP_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${APP_ID}" ] || [ -z "${APP_KEY}" ]; then
-            echo "::error::RELEASE_APP_ID (variable) and RELEASE_APP_PRIVATE_KEY (secret) must be set. See this workflow's header comment."
-            exit 1
-          fi
-
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          # v3 deprecated `app-id` in favor of `client-id`. The JWT issuer claim
-          # accepts the numeric App ID and the Iv1-style Client ID alike, so the
-          # existing RELEASE_APP_ID variable works unchanged.
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: no-phux
           repositories: website
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
       - name: Dispatch phux-content
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "release" ]; then
-            # GITHUB_SHA on a release event is the default branch, not the tag.
-            git fetch --quiet origin "refs/tags/${TAG}:refs/tags/${TAG}"
-            sha="$(git rev-parse "${TAG}^{}")"
-          else
-            sha="$(git rev-parse HEAD)"
-          fi
           gh api repos/no-phux/website/dispatches \
             -f event_type=phux-content \
-            -f "client_payload[sha]=${sha}"
+            -f "client_payload[sha]=${GITHUB_SHA}"

@@ -1,22 +1,7 @@
-# linear-release — report a tagged release to the matching Linear pipeline.
-#
-# Linear resolves the issues a release carried from the Linear identifiers and
-# PR references in its commit range, so it needs the full history at the tag,
-# not a shallow clone.
-#
-# Tag -> pipeline:
-#   vX.Y.Z         -> Linear `phux`           (secret LINEAR_RELEASE_ACCESS_KEY)
-#
-# Continuous Linear pipelines name a release after the short SHA unless `name`
-# is set. We always pass the tag as both name and version so Linear shows
-# `v0.36.0`, not `7d0c433`. Notes come from the tagged changelog section, not
-# a mutable GitHub release body.
-#
-# Only published releases are reported. Continuous Linear pipelines complete
-# releases during sync, so a pre-publication "building" sync is not truthful.
-# Synchronize the exact version before updating its stage; update cannot create
-# a missing record. Recovery and retries use the same tagged notes and explicit
-# previous-component-tag scan range, independent of Linear's latest baseline.
+# Report a published vX.Y.Z to the Linear `phux` pipeline. Linear finds the
+# issues a release carried in its commit range, so this needs full history.
+# The tag is both name and version, and the notes come from the tagged
+# changelog, so a retry reports the same release.
 
 name: linear-release
 
@@ -24,13 +9,13 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Published root release tag to report (vX.Y.Z)."
+        description: "Published root release tag (vX.Y.Z)."
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published root release tag to report (vX.Y.Z)."
+        description: "Published root release tag (vX.Y.Z)."
         required: true
         type: string
 
@@ -38,7 +23,6 @@ permissions:
   contents: read
 
 concurrency:
-  # Serialize retries for the same release.
   group: mini-v1-linear-release-${{ inputs.tag }}
   cancel-in-progress: false
 
@@ -47,124 +31,28 @@ jobs:
     name: report ${{ inputs.tag }} to Linear
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: read
     steps:
-      - name: Resolve Linear pipeline from the tag
-        id: meta
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          case "$TAG" in
-            v[0-9]*)
-              echo "component=phux" >> "$GITHUB_OUTPUT"
-              echo "changelog=CHANGELOG.md" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::unsupported Linear tag '${TAG}'; expected vX.Y.Z"
-              exit 1
-              ;;
-          esac
-
-      - name: Require the Linear pipeline access key
-        id: keys
-        env:
-          PHUX_KEY: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          if [ -z "$PHUX_KEY" ]; then
-            echo "::error::LINEAR_RELEASE_ACCESS_KEY is unset."
-            exit 1
-          fi
-
-      # Full history of the default branch, NOT `ref: <tag>`. On the former
-      # Blacksmith runners, fetches used a transparent git mirror; a tag that
-      # release-please had just created through the API was not in it yet:
-      # v0.24.0's `building` report died in checkout with "A branch or tag with
-      # the name 'v0.24.0' could not be found" thirty seconds after the tag was
-      # created, and the `released` update then had nothing to update. The tag
-      # is fetched below, straight from github.com and past the mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: success() && steps.keys.outputs.skip != 'true'
         with:
-          # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
 
-      - name: Require a published GitHub release
-        if: success() && steps.keys.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
-          if [ "$draft" != false ]; then
-            echo "::error::${TAG} is not a public GitHub release; refusing to report it as released."
-            exit 1
-          fi
-
-      - name: Fetch the release tag from GitHub, bypassing the runner git mirror
-        if: success() && steps.keys.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          # System and global git config are where the mirror's url rewrite
-          # lives; disabling both plus naming github.com explicitly means this
-          # fetch cannot be answered from a stale cache. A brief retry covers
-          # GitHub's own propagation of a ref created moments ago.
-          # Reset checkout's persisted headers before adding this credential;
-          # Git otherwise sends both Authorization headers and GitHub rejects it.
-          for attempt in 1 2 3 4 5 6; do
-            if GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-               GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0='' \
-               GIT_CONFIG_KEY_1=http.https://github.com/.extraheader \
-               GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" \
-               git fetch --no-tags "https://github.com/${GITHUB_REPOSITORY}" \
-                 "+refs/tags/${TAG}:refs/tags/${TAG}"; then
-              break
-            fi
-            if [ "$attempt" = 6 ]; then
-              echo "::error::tag ${TAG} not found on github.com after ${attempt} attempts"
-              exit 1
-            fi
-            sleep 10
-          done
-          # Keep the current reporting helper when recovering an older tag
-          # whose source predates it. The changelog still comes from the tag.
-          cp scripts/ci/extract_changelog_section.py "$RUNNER_TEMP/extract-changelog-section.py"
-          git checkout --quiet "refs/tags/${TAG}"
-          echo "checked out ${TAG} at $(git rev-parse HEAD)"
-
-      - name: Write Linear release notes from the tagged changelog
-        if: success() && steps.keys.outputs.skip != 'true'
-        env:
-          TAG: ${{ inputs.tag }}
-          CHANGELOG: ${{ steps.meta.outputs.changelog }}
-        run: |
-          set -euo pipefail
-          python3 "$RUNNER_TEMP/extract-changelog-section.py" \
-            --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
-
-      - name: Resolve the tagged issue scan range
+      - name: Check out the published tag and write its notes
         id: range
-        if: success() && steps.keys.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          pattern='v[0-9]*'
-          # Exclude this tag and unrelated component tags. An explicit base
-          # also establishes the version when a path-filtered range is empty.
-          if ! base="$(git describe --tags --match "$pattern" --abbrev=0 HEAD^ 2>/dev/null)"; then
-            base="$(git rev-list --max-parents=0 HEAD)"
-          fi
-          test -n "$base"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::expected vX.Y.Z, got $TAG"; exit 1; }
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
+          # The extractor comes from main, so an older tag still gets today's helper.
+          cp scripts/ci/extract_changelog_section.py "$RUNNER_TEMP/"
+          git checkout --quiet "refs/tags/$TAG"
+          python3 "$RUNNER_TEMP/extract_changelog_section.py" --tag "$TAG" --changelog CHANGELOG.md --output release-notes.md
+          base="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           echo "base=$base" >> "$GITHUB_OUTPUT"
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: sync
@@ -177,7 +65,6 @@ jobs:
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: update

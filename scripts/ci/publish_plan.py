@@ -38,10 +38,10 @@ def validation_state(runs, sha, workflow):
     return latest["conclusion"]
 
 
+# `vX.Y.Z` is phux; `<component>-vX.Y.Z` is every other release-please package.
 TAG_RE = re.compile(
-    r"^(?:(?P<component>[a-z0-9]+(?:-[a-z0-9]+)*)-)?"
+    r"(?:(?P<component>[a-z0-9]+(?:-[a-z0-9]+)*)-)?"
     r"v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:-alpha\.(?P<alpha>[1-9]\d*))?$"
 )
 CI_WORKFLOW = ".github/workflows/ci.yml"
 PENDING = {"pending", "queued", "in_progress", "waiting", "requested", "missing"}
@@ -50,12 +50,6 @@ PENDING = {"pending", "queued", "in_progress", "waiting", "requested", "missing"
 def parse_tag(tag):
     match = TAG_RE.fullmatch(tag)
     if match is None:
-        return None
-    # Every lane is stable-only. The desktop train was the one prerelease
-    # channel; it graduated to stable, so any component's `-alpha.N` tag is not
-    # a shippable version. Archived Cockpit tags are historical evidence, never
-    # integration candidates (including when reconciliation sees old drafts).
-    if match.group("alpha") is not None or match.group("component") == "cockpit":
         return None
     return {
         "component": match.group("component") or "phux",
@@ -66,13 +60,7 @@ def parse_tag(tag):
 
 
 def lane(component):
-    if component == "phux":
-        return "phux"
-    if component == "cockpit":
-        raise ValueError("Cockpit is archived and has no publication lane")
-    if component == "desktop":
-        return "desktop"
-    return "integration"
+    return component if component in ("phux", "desktop") else "integration"
 
 
 def _partition(releases):
@@ -228,12 +216,11 @@ def _delete_drafts(repository, tags):
         print(f"deleted superseded draft {tag}")
 
 
-def _write_outputs(path, lanes, blocked):
+def _write_outputs(path, lanes):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"phux_tag={lanes['phux']}\n")
         handle.write(f"desktop_tag={lanes['desktop']}\n")
         handle.write(f"integration_tags={json.dumps(lanes['integration'])}\n")
-        handle.write(f"blocked={blocked}\n")
 
 
 def main():
@@ -265,7 +252,7 @@ def main():
     lanes = split_lanes(plan["publish"])
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
-        _write_outputs(output, lanes, plan["blocked"])
+        _write_outputs(output, lanes)
     if plan["wait"]:
         print(f"ci.yml still running for {event_sha}; publish will retry when it finishes")
     elif plan["publish"]:

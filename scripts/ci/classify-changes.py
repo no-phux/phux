@@ -107,9 +107,7 @@ WORKFLOWS = (
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
     "scripts/ci/setup-linux-release-userspace.sh", "scripts/ci/test_runner_policy.py",
     "scripts/ci/mbx-export-failed-lane.sh",
-    "scripts/check-release-orchestration.mjs",
-    "scripts/ci/test_linear_release_workflow.py",
-    "scripts/ci/test_release_drift.py", "scripts/ci/test_next_channel.py",
+    "scripts/ci/test_release_drift.py",
     "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
 ROOT = Path(__file__).resolve().parents[2]

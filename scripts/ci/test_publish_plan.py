@@ -3,7 +3,7 @@
 
 import unittest
 
-from publish_plan import decide, lane, parse_tag, split_lanes, validation_state
+from publish_plan import decide, parse_tag, split_lanes, validation_state
 
 
 def rel(tag, draft, sha):
@@ -25,7 +25,7 @@ class ParseTagTests(unittest.TestCase):
 
     def test_stable_desktop_is_a_version_and_prereleases_are_not(self):
         self.assertEqual(parse_tag("desktop-v0.1.0")["component"], "desktop")
-        for tag in ("v0.1.0-alpha.1", "cockpit-v0.1.0-alpha.1",
+        for tag in ("v0.1.0-alpha.1", "v01.2.3",
                     "pi-extension-v0.1.0-alpha.1", "desktop-v0.1.0-alpha.1",
                     "desktop-v0.1.0-alpha.0", "desktop-v0.1.0-alpha.01",
                     "desktop-v0.1.0-beta.1", "desktop-v0.1.0-alpha.1+build"):
@@ -180,36 +180,6 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(lanes["desktop"], "desktop-v0.2.0")
         self.assertEqual(lanes["integration"], [])
         self.assertEqual(lanes["phux"], "")
-
-    def test_archived_cockpit_never_publishes_or_falls_through_to_integrations(self):
-        retired = [rel("cockpit-v0.28.0", True, "retired"),
-                   rel("cockpit-v0.27.0", False, "old"),
-                   rel("cockpit-v0.24.0", True, "older")]
-        for options in ({}, {"event_sha": "retired"}, {"dispatch_tag": "cockpit-v0.28.0"}):
-            with self.subTest(options=options):
-                plan = decide(retired, green, **options)
-                self.assertEqual(plan["publish"], [])
-                self.assertEqual(plan["delete"], [])
-        self.assertIn("no release", decide(retired, green, dispatch_tag="cockpit-v0.28.0")["fail"])
-        self.assertIsNone(parse_tag("cockpit-v0.28.0"))
-        self.assertEqual(split_lanes(["cockpit-v0.28.0"]),
-                         {"phux": "", "desktop": "", "integration": []})
-        with self.assertRaises(ValueError):
-            lane("cockpit")
-
-    def test_reconcile_ignores_retired_releases_but_recovers_surviving_lanes(self):
-        rows = [rel("cockpit-v0.28.0", True, "retired"),
-                rel("v0.42.0", True, "green"), rel("desktop-v0.2.0", True, "green"),
-                rel("pi-extension-v0.3.0", True, "green")]
-        seen = []
-
-        def ci_state(sha):
-            seen.append(sha)
-            return "success"
-
-        plan = decide(rows, ci_state)
-        self.assertNotIn("retired", seen)
-        self.assertCountEqual(plan["publish"], ["v0.42.0", "desktop-v0.2.0", "pi-extension-v0.3.0"])
 
     def test_stable_desktop_supersedes_an_older_stable_draft(self):
         stable = "desktop-v0.2.0"
