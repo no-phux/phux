@@ -669,9 +669,10 @@ pub struct SidebarPainter {
     /// Window index under a live row drag, painted as the insertion
     /// marker. `None` when no window drag is over this strip.
     drop_at: Option<usize>,
-    /// Strip row where the pane grid's rail meets the separator rule, drawn
-    /// as a tee so the two read as one frame. `None` when no rail is laid.
-    junction: Option<u16>,
+    /// Strip rows where the pane grid's rules (the rail and every horizontal
+    /// divider reaching this side) meet the separator rule, drawn as tees so
+    /// the two read as one frame. Empty when no rule meets it.
+    junctions: Vec<u16>,
 }
 
 /// Open a satellite agent beside the focused pane. `None` when `resource`
@@ -712,7 +713,7 @@ impl SidebarPainter {
             rule: SidebarRule::Trailing,
             agents_share: DEFAULT_AGENTS_SHARE,
             drop_at: None,
-            junction: None,
+            junctions: Vec::new(),
         }
     }
 
@@ -733,12 +734,12 @@ impl SidebarPainter {
         }
     }
 
-    /// Tee the separator rule into the pane grid's rail at strip row `row`
-    /// (`None` clears it). Painters call this with the rail row the content
-    /// layout reserved, beside [`Self::set_rule`].
-    pub fn set_junction(&mut self, row: Option<u16>) {
-        if self.junction != row {
-            self.junction = row;
+    /// Tee the separator rule into the pane grid at strip `rows` (empty
+    /// clears them). Painters call this with the rail row and the rows of the
+    /// horizontal dividers that run into the strip, beside [`Self::set_rule`].
+    pub fn set_junctions(&mut self, rows: &[u16]) {
+        if self.junctions != rows {
+            self.junctions = rows.to_vec();
             self.dirty = true;
         }
     }
@@ -919,7 +920,7 @@ impl SidebarPainter {
         if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
-        let buf = self.compose(rect, self.rule, self.junction);
+        let buf = self.compose(rect, self.rule, &self.junctions);
         let previous = self
             .last
             .as_ref()
@@ -934,8 +935,8 @@ impl SidebarPainter {
     /// Compose the strip into a `rect`-sized buffer at origin `(0, 0)`, the
     /// same compose the VT [`Self::paint`] path uses.
     #[must_use]
-    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
-        self.compose(rect, rule, junction)
+    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule, junctions: &[u16]) -> Buffer {
+        self.compose(rect, rule, junctions)
     }
 
     /// A section header: label left, count on the shared right edge.
@@ -1248,7 +1249,7 @@ impl SidebarPainter {
 
     /// Render the sections + affordances + separator into a fresh
     /// `rect`-sized buffer, row-for-row from [`row_model`].
-    fn compose(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
+    fn compose(&self, rect: Rect, rule: SidebarRule, junctions: &[u16]) -> Buffer {
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
         buf.set_style(
@@ -1272,7 +1273,7 @@ impl SidebarPainter {
             );
         }
         self.paint_selection_bed(&mut buf, rect, rule, &model);
-        paint_separator(&mut buf, rect, rule, &self.theme, junction);
+        paint_separator(&mut buf, rect, rule, &self.theme, junctions);
         self.paint_window_drop_marker(&mut buf, rect, rule);
         buf
     }
@@ -1421,7 +1422,7 @@ fn paint_separator(
     rect: Rect,
     rule: SidebarRule,
     theme: &Theme,
-    junction: Option<u16>,
+    junctions: &[u16],
 ) {
     let sep_x = rule.column(rect.w);
     // The rail runs away from the strip, into the panes: rightward from a
@@ -1432,7 +1433,7 @@ fn paint_separator(
     };
     for y in 0..rect.h {
         if let Some(cell) = buf.cell_mut((sep_x, y)) {
-            cell.set_symbol(if junction == Some(y) { tee } else { "│" });
+            cell.set_symbol(if junctions.contains(&y) { tee } else { "│" });
             cell.set_style(Style::default().fg(theme.border));
         }
     }
@@ -1758,7 +1759,7 @@ mod tests {
             w,
             h: 14,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let painted = paint_to_string(p, rect);
         for row in rows_of(&painted) {
             assert_eq!(display_width(&row), usize::from(w), "w={w}: {row:?}");
@@ -1863,11 +1864,7 @@ mod tests {
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
-        let row = row_text(
-            &p.compose_buffer(rect, SidebarRule::Trailing, None),
-            rect,
-            1,
-        );
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing, &[]), rect, 1);
         assert!(row.contains('◆'), "unreviewed done: {row:?}");
 
         let seen = AgentEntry {
@@ -2123,7 +2120,7 @@ mod tests {
                 .expect("the active window row"),
         )
         .expect("row fits");
-        let b = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let b = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         for y in [0, 1] {
             assert_eq!(b[(0, y)].bg, p.theme.surface);
             assert_eq!(b[(34, y)].bg, p.theme.surface);
@@ -2216,7 +2213,7 @@ mod tests {
             win("scratch", false),
         ]);
         let rect = r(0, 0, 20, 18);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(row_text(&buf, rect, 0).contains(SPACES_HEADER));
         assert!(row_text(&buf, rect, 1).contains("development"));
         assert!(row_text(&buf, rect, 2).starts_with("   ● phux"));
@@ -2238,14 +2235,14 @@ mod tests {
         let model = row_model(p.counts(), rect.h);
         let y0 = window_row_y(&model, 0);
         let y1 = window_row_y(&model, 1);
-        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             !row_reversed(&unmarked, rect, y0) && !row_reversed(&unmarked, rect, y1),
             "no drag, no marker"
         );
         assert!(p.set_drop_index(Some(1)));
         assert!(!p.set_drop_index(Some(1)));
-        let marked = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let marked = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             row_reversed(&marked, rect, y1),
             "drop index 1 must reverse that window row"
@@ -2255,7 +2252,7 @@ mod tests {
             "the other window row stays unmarked"
         );
         assert!(p.set_drop_index(None));
-        let cleared = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let cleared = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             !row_reversed(&cleared, rect, y1),
             "clearing the index must drop the marker"
@@ -2285,7 +2282,7 @@ mod tests {
             agent(1, "scratch", "merge-queue-w5", AgentMetaState::Done),
         ]);
         let rect = r(0, 0, 36, 14);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "the queue tops the strip: {:?}",
@@ -2310,7 +2307,7 @@ mod tests {
             agent(0, "phux", "claude", AgentMetaState::Done),
             agent(1, "scratch", "merge-queue-w5", AgentMetaState::Blocked),
         ]);
-        let changed = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let changed = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(row_text(&changed, rect, 1).contains("claude"));
         assert!(row_text(&changed, rect, 2).contains("merge-queue-w5"));
         assert_eq!(row_text(&buf, rect, 7), row_text(&changed, rect, 7));
@@ -2329,7 +2326,7 @@ mod tests {
             ..agent(0, "edit", "claude", AgentMetaState::Blocked)
         }]);
         let rect = r(0, 0, 36, 14);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let row = row_text(&buf, rect, 1);
         assert!(
             row.contains("phux-feat-auth"),
@@ -2354,11 +2351,7 @@ mod tests {
             ..agent(0, "edit", "reviewer", AgentMetaState::Blocked)
         }]);
         let rect = r(0, 0, 36, 14);
-        let row = row_text(
-            &p.compose_buffer(rect, SidebarRule::Trailing, None),
-            rect,
-            1,
-        );
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing, &[]), rect, 1);
         assert!(row.contains("gpubox"), "host badge: {row:?}");
         assert!(row.contains("reviewer"), "agent name: {row:?}");
         let action = satellite_open_action(&resource).expect("satellite click opens");
@@ -2421,7 +2414,7 @@ mod tests {
         p.set_roster(vec![active_roster()]);
         p.set_needs_you(vec![agent(0, "phux", "claude", AgentMetaState::Working)]);
         let rect = r(0, 0, 24, 12);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "the Agents panel keeps its header when calm: {:?}",
@@ -2502,7 +2495,7 @@ mod tests {
             },
         ]);
         let rect = r(0, 0, 26, 16);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let model = row_model(p.counts(), rect.h);
         let first = model
             .iter()
@@ -2523,7 +2516,7 @@ mod tests {
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let mut out = String::new();
         for y in 0..rect.h {
             let mut row: String = (0..rect.w)
@@ -2589,7 +2582,7 @@ mod tests {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("shell", true)]);
         let rect = r(0, 0, 28, 8);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(
             row_text(&buf, rect, 7).contains(NEW_LABEL),
             "row 7 should hold the new affordance: {:?}",
@@ -2639,7 +2632,7 @@ mod tests {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("build", true)]);
         let local = Rect { x: 0, ..rect };
-        let buf = p.compose_buffer(local, SidebarRule::Leading, None);
+        let buf = p.compose_buffer(local, SidebarRule::Leading, &[]);
         assert_eq!(
             buf.cell((0, 0)).map(ratatui::buffer::Cell::symbol),
             Some("│")
@@ -3018,7 +3011,7 @@ mod tests {
         p.set_needs_you(agents.clone());
         p.set_roster(peers.clone());
         p.set_plugin_sections(sections.clone());
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let c = p.counts();
         for (y, row) in row_model(c, rect.h).iter().enumerate() {
             let y16 = u16::try_from(y).expect("row fits u16");
@@ -3144,7 +3137,7 @@ mod tests {
             .expect("section laid");
         assert!(Some(header) < empty_sessions);
         assert_eq!(model[header + 1], SidebarRow::PluginEmpty(0));
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert!(row_text(&buf, rect, u16::try_from(header).expect("row")).contains("Builds"));
 
         p.set_plugin_sections(vec![plugin_section(
@@ -3189,19 +3182,24 @@ mod tests {
         assert!(short.contains(&SidebarRow::SpacesHeader));
     }
 
-    /// The rail tees into the separator on the pane-facing side, so the
-    /// grid and the strip read as one frame.
+    /// The rail and any divider reaching the strip tee into the separator on
+    /// the pane-facing side, so the grid and the strip read as one frame.
     #[test]
     fn the_rail_junction_tees_into_the_panes() {
         let p = SidebarPainter::new(Theme::default());
         let rect = r(0, 0, 20, 10);
-        let left = p.compose_buffer(rect, SidebarRule::Trailing, Some(1));
+        let left = p.compose_buffer(rect, SidebarRule::Trailing, &[1]);
         assert_eq!(left[(19, 1)].symbol(), "├");
         assert_eq!(left[(19, 2)].symbol(), "│");
-        let right = p.compose_buffer(rect, SidebarRule::Leading, Some(1));
+        let right = p.compose_buffer(rect, SidebarRule::Leading, &[1]);
         assert_eq!(right[(0, 1)].symbol(), "┤");
-        let none = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let none = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         assert_eq!(none[(19, 1)].symbol(), "│");
+        // A horizontal divider reaching the strip tees in too.
+        let both = p.compose_buffer(rect, SidebarRule::Trailing, &[1, 6]);
+        assert_eq!(both[(19, 1)].symbol(), "├");
+        assert_eq!(both[(19, 6)].symbol(), "├");
+        assert_eq!(both[(19, 5)].symbol(), "│");
     }
 
     /// Headers carry their count and every row's secondary text lands on
@@ -3216,7 +3214,7 @@ mod tests {
         p.set_roster(vec![active_roster()]);
         p.set_windows(vec![win_branch("editor", true, "main")]);
         let rect = r(0, 0, 30, 16);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
         let rows: Vec<String> = (0..rect.h).map(|y| row_text(&buf, rect, y)).collect();
         assert!(
             rows[0].starts_with(" Agents") && rows[0].ends_with("2 "),

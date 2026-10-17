@@ -12,6 +12,10 @@
 //! `%d`, so only the printed marker parses. A per-run nonce plus last-match
 //! scanning keeps stale markers out. Assumes a POSIX shell.
 //!
+//! Markers are matched on [`ScreenState::unwrapped_rows`], never raw `lines`:
+//! a sentinel longer than a narrow pane is soft-wrapped across rows and would
+//! otherwise never match (ADR-0077 §2).
+//!
 //! Because this is a typed command line, `run` first checks that a shell is
 //! in the foreground ([`crate::agent_meta::pane_shell_availability`]) and
 //! refuses fail-closed otherwise; `force` opts out.
@@ -101,7 +105,8 @@ pub const SUBMIT_GRACE: Duration = Duration::from_secs(2);
 /// retained row); the poll itself stays the cheap viewport read.
 const CAPTURE_HISTORY: Option<u32> = Some(ROW_WINDOW_ALL);
 
-/// The printed `BEGIN` marker for `nonce` (own row, short, never wraps).
+/// The printed `BEGIN` marker for `nonce` (own logical row; it soft-wraps in a
+/// pane narrower than the marker, so match it on unwrapped rows).
 fn begin_marker(nonce: &str) -> String {
     format!("PHUXrun{nonce}BEGIN")
 }
@@ -268,12 +273,13 @@ async fn poll_for_rc(
             break;
         };
         screen = read?;
-        if let Some((idx, code)) = parse_rc(&screen.lines, nonce) {
+        let rows = screen.unwrapped_rows();
+        if let Some((idx, code)) = parse_rc(&rows, nonce) {
             // Stamped before the capture read, which is not the child's time.
             let duration_ms = phux_perf::duration_ms(start.elapsed());
             let (output, truncated) = capture_span(socket, &pane, nonce, deadline)
                 .await
-                .unwrap_or_else(|| extract_output(&screen.lines, idx, nonce));
+                .unwrap_or_else(|| extract_output(&rows, idx, nonce));
             return Ok(RunOutcome::Completed(RunResult {
                 command: cmd.to_owned(),
                 exit_code: code,
@@ -313,16 +319,9 @@ async fn capture_span(
         ))
         .await?
         .ok()?;
-    let rows = capture_rows(&read);
+    let rows = read.unwrapped_rows();
     let (rc_idx, _) = parse_rc(&rows, nonce)?;
     Some(extract_output(&rows, rc_idx, nonce))
-}
-
-/// A capture read's rows as one stream: retained history, then viewport.
-fn capture_rows(screen: &ScreenState) -> Vec<String> {
-    let mut rows = screen.scrollback.clone();
-    rows.extend_from_slice(&screen.lines);
-    rows
 }
 
 /// The budget ran out before any input was sent.
@@ -506,7 +505,9 @@ mod precondition_tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use phux_core::screen::{CellInfo, CellStyle, CursorState, ScreenState, SemanticContent};
+    use phux_core::screen::{
+        CellInfo, CellStyle, CursorState, ScreenState, SemanticContent, SoftWrap,
+    };
     use phux_protocol::ResourceId;
     use phux_protocol::wire::frame::Scope;
     use tokio::net::UnixListener;
@@ -664,6 +665,43 @@ mod precondition_tests {
         };
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.output, "compiling");
+        assert!(!result.truncated);
+    }
+
+    /// In a pane narrower than the sentinels both markers soft-wrap; the run
+    /// still matches them on the joined rows instead of timing out.
+    #[tokio::test]
+    async fn sentinels_soft_wrapped_in_a_narrow_pane_still_complete() {
+        let begin = format!("PHUXrun{NONCE}BEGIN");
+        let rc = format!("PHUXrun{NONCE}RC=7=END");
+        let (begin_head, begin_tail) = begin.split_at(6);
+        let (rc_head, rc_tail) = rc.split_at(6);
+        let mut narrow = at_prompt(&[begin_head, begin_tail, "out", rc_head, rc_tail]);
+        narrow.cols = 6;
+        narrow.soft_wrap = Some(SoftWrap {
+            lines: vec![0, 3],
+            scrollback: Vec::new(),
+        });
+
+        let outcome = with_server(
+            move || {
+                ScriptSpec::new()
+                    .stored_metadata(
+                        Scope::Resource(pane()),
+                        RESOURCE_PANE_OCCUPANT_KEY,
+                        occupant("zsh", true),
+                    )
+                    .screen(&narrow)
+            },
+            |socket| async move { run_against(&socket, false).await },
+        )
+        .await;
+
+        let RunOutcome::Completed(result) = outcome else {
+            panic!("expected a completed run, got {outcome:?}");
+        };
+        assert_eq!(result.exit_code, 7);
+        assert_eq!(result.output, "out");
         assert!(!result.truncated);
     }
 

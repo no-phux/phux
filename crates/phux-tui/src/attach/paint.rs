@@ -492,28 +492,26 @@ pub(super) fn paint_empty_session<W: super::RenderSink>(
     lines: &[String],
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
-    let ContentLayout {
-        rect: content,
-        rail,
-    } = chrome.content_layout();
+    let content = chrome.content_layout().rect;
     let origin = Some((content.x, content.y));
     let _ = block.write_all(b"\x1b[2J\x1b[H");
     write_centered_lines(&mut block, content, lines);
-    repaint_sidebar_strip(&mut block, chrome, rail);
+    // No grid is drawn here, so the strip's rule has nothing to tee into.
+    repaint_sidebar_strip(&mut block, chrome, &[]);
     let painted = paint_bar_after_pane(&mut block, chrome, None, origin, true);
     let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
-/// Force the sidebar strip to re-emit after a clear wiped its columns. A
-/// no-op without a reservation or a painter.
-fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, rail: Option<u16>) {
+/// Force the sidebar strip to re-emit after a clear wiped its columns, its
+/// rule teed at `junctions`. A no-op without a reservation or a painter.
+fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, junctions: &[u16]) {
     let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) else {
         return;
     };
     painter.invalidate();
     painter.set_rule(sidebar_rule(res.edge));
-    painter.set_junction(rail);
+    painter.set_junctions(junctions);
     let _ = painter.paint(out, sidebar_rect(chrome.viewport, res));
 }
 
@@ -622,7 +620,10 @@ fn paint_full_frame_into<W: Write>(
         |id| super::pane_state::pane_label(kernel, panes_ref, id),
     );
     // The ED2 cleared the strip, so force it to re-emit.
-    repaint_sidebar_strip(out, chrome, rail);
+    let junctions = chrome.sidebar.map_or_else(Vec::new, |res| {
+        sidebar_junctions(rail, content, res.edge, &multi)
+    });
+    repaint_sidebar_strip(out, chrome, &junctions);
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
     let status_bar_painted = paint_bar_after_pane(out, chrome, None, None, true);
@@ -747,7 +748,7 @@ fn paint_chrome_in_place_into<W: Write>(
     }
     if let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) {
         painter.set_rule(sidebar_rule(res.edge));
-        painter.set_junction(rail);
+        painter.set_junctions(&sidebar_junctions(rail, content, res.edge, &multi));
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
@@ -1053,6 +1054,31 @@ pub(super) fn content_layout(
         },
     );
     ContentLayout { rect, rail }
+}
+
+/// Strip rows where the pane grid's rules meet the sidebar's separator: the
+/// rail, plus every horizontal divider that runs into the strip's side of the
+/// pane area. The strip tees each one so the grid and the strip read as one
+/// frame instead of a divider stopping short against a plain `│`.
+pub(super) fn sidebar_junctions(
+    rail: Option<u16>,
+    content: crate::layout::Rect,
+    edge: SidebarEdge,
+    multi: &crate::multi_pane::PaneLayout,
+) -> Vec<u16> {
+    let edge_x = match edge {
+        SidebarEdge::Left => content.x,
+        SidebarEdge::Right => (content.x + content.w).saturating_sub(1),
+    };
+    let dividers = multi
+        .dividers
+        .iter()
+        .filter(|cell| cell.x == edge_x && cell.ch == '─')
+        .map(|cell| cell.y);
+    let mut rows: Vec<u16> = rail.into_iter().chain(dividers).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
 }
 
 /// The strip's separator rule faces the panes: trailing on a left dock,
@@ -1365,6 +1391,50 @@ mod tests {
             "an over-wide strip clamps, no underflow"
         );
         assert_eq!(bar_inset((80, 24), Some(huge)).span(80).1, 0);
+    }
+
+    /// The strip tees the rail and every horizontal divider that runs into
+    /// its side of the pane area; a divider stopping short of it does not.
+    #[test]
+    fn sidebar_junctions_tee_the_rail_and_dividers_reaching_the_strip() {
+        let (a, b, c) = (
+            ResourceId::local(1),
+            ResourceId::local(2),
+            ResourceId::local(3),
+        );
+        // Left column stacked (a over b), c beside it.
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
+                    ratio: 0.5,
+                    left: Box::new(LayoutNode::Leaf(a.clone())),
+                    right: Box::new(LayoutNode::Leaf(b)),
+                }),
+                right: Box::new(LayoutNode::Leaf(c)),
+            }),
+            focus: Some(a),
+        };
+        let viewport = (80, 24);
+        for (res, reaches) in [(LEFT20, true), (RIGHT20, false)] {
+            let ContentLayout { rect, rail } = content_layout(viewport, None, Some(res));
+            let multi = crate::multi_pane::compute_layout_in(&layout, rect, viewport);
+            let rows = sidebar_junctions(rail, rect, res.edge, &multi);
+            let divider_row = multi
+                .dividers
+                .iter()
+                .find(|cell| cell.x == rect.x && cell.ch == '─')
+                .map(|cell| cell.y)
+                .expect("the left column's divider");
+            let want = if reaches {
+                vec![0, divider_row]
+            } else {
+                vec![0]
+            };
+            assert_eq!(rows, want, "{:?}", res.edge);
+        }
     }
 
     /// The strip is full height at its edge; the bar yields exactly its

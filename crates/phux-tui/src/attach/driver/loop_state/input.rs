@@ -14,6 +14,13 @@ struct PriorView {
     sidebar: Option<SidebarReservation>,
     active_window: usize,
     rects: HashMap<ResourceId, crate::layout::Rect>,
+    /// Whether the floating overlay (ADR-0147) was open: it covers panes
+    /// without changing their tiles, so opening or closing it is invisible
+    /// to the rect diff yet leaves its box on screen unless the view clears.
+    floating: bool,
+    /// Whether a modal overlay (palette, picker, prompt) was up. Like the
+    /// floating box it scribbles over pane cells the rect diff cannot see.
+    overlay: bool,
     /// Each drawn pane's history viewport offset, so a batch that scrolled
     /// one (a wheel notch, a copy-mode page) repaints its rows even though
     /// no tile moved.
@@ -36,6 +43,15 @@ struct PriorView {
 /// the new tiling fully covers the old cells: an identical rectangle
 /// multiset, and every pane `pane_paints` (has a slot and a published
 /// replica), so no stale cell can survive the skipped clear.
+///
+/// This rect diff cannot see boxes drawn over unchanged tiles, so the
+/// caller (`SessionLoop::classify_repaint`) overrides it to
+/// [`RepaintLevel::Full`] first when the batch dismissed a modal overlay
+/// (palette, picker, prompt, copy-mode; focus-only palette actions too) or
+/// opened or closed the floating overlay. That trades the Chrome/Panes
+/// no-clear path for a clear that removes the stale box; on a terminal
+/// without DEC 2026 the dismiss can flash, which is the documented "On
+/// dismiss, repaint everything" behavior of `handle_overlay_key`.
 pub(super) fn classify_repaint(
     before: &HashMap<ResourceId, crate::layout::Rect>,
     after: &HashMap<ResourceId, crate::layout::Rect>,
@@ -137,6 +153,8 @@ impl super::SessionLoop {
             zoomed: self.mirror.zoomed.clone(),
             sidebar,
             active_window: self.mirror.workspace.active,
+            floating: crate::attach::floating::floating_pane(&self.mirror.panes).is_some(),
+            overlay: self.overlays.is_active(),
             viewports: self.viewport_offsets(&rects),
             rects,
         };
@@ -187,15 +205,24 @@ impl super::SessionLoop {
     }
 
     /// How much of the view a batch that reported `layout_changed` must
-    /// redraw, from the pre-batch and current tilings. See [`classify_repaint`]
-    /// for the rule; the pane liveness probe reads this loop's slots and
-    /// published grids. Unchanged tiles over a pane whose viewport the batch
-    /// scrolled still repaint that pane's rows ([`RepaintLevel::Rows`]).
+    /// redraw, from the pre-batch and current tilings. A dismissed modal or a
+    /// toggled floating overlay forces [`RepaintLevel::Full`]; otherwise see
+    /// [`classify_repaint`] for the rect-diff rule. The pane liveness probe
+    /// reads this loop's slots and published grids. Unchanged tiles over a
+    /// pane whose viewport the batch scrolled still repaint that pane's rows
+    /// ([`RepaintLevel::Rows`]).
     fn classify_repaint(
         &self,
         prior: &PriorView,
         sidebar: Option<SidebarReservation>,
     ) -> RepaintLevel {
+        // A floating box came or went, or a modal was dismissed, over
+        // unchanged tiles: only a full clear-and-recompose removes the box and
+        // restores the pane cells it covered.
+        let floating = crate::attach::floating::floating_pane(&self.mirror.panes).is_some();
+        if prior.floating != floating || (prior.overlay && !self.overlays.is_active()) {
+            return RepaintLevel::Full;
+        }
         let after = view_rects(
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),

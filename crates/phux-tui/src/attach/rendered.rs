@@ -82,7 +82,8 @@ pub(super) fn compose_full_frame_cells(
     // The strip, shifted to its reserved columns; styled blanks are kept.
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         let rect = sidebar_rect(viewport_dims, res);
-        let strip = painter.compose_buffer(rect, super::paint::sidebar_rule(res.edge), rail);
+        let junctions = super::paint::sidebar_junctions(rail, content, res.edge, &multi);
+        let strip = painter.compose_buffer(rect, super::paint::sidebar_rule(res.edge), &junctions);
         overlay_buffer(&mut frame, &strip, (rect.x, rect.y), false);
     }
 
