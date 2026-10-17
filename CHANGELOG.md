@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.87.0](https://github.com/no-phux/phux/compare/v0.86.1...v0.87.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** stage updates while running and swap after exit ([f81cd3d](https://github.com/no-phux/phux/commit/f81cd3dc9dc3fce430a4840fcc6445e0731b5e00))
+* **release:** publish one release manifest per channel (ADR-0175) ([f4a20d1](https://github.com/no-phux/phux/commit/f4a20d178ccc27996ec180c6c39da5fa2b08d1e2))
+* **update:** discover releases from the channel manifest ([c800b78](https://github.com/no-phux/phux/commit/c800b7816dfb9d98f4b2a3f33aba1d3cef224eae))
+
+
+### Bug Fixes
+
+* **install:** name an oversized manifest the same under every ulimit block size ([51f490a](https://github.com/no-phux/phux/commit/51f490a0131156cdc664644caecb3bc526eec2d7))
+
 ## [0.86.1](https://github.com/no-phux/phux/compare/v0.86.0...v0.86.1) (2026-10-17)
 
 
