@@ -5,6 +5,77 @@
 
 use std::time::{Duration, Instant};
 
+/// A value a skin shift can pass through. Numbers interpolate; names, enums
+/// and switches snap at the halfway point.
+trait Blend: Copy {
+    fn blend(self, to: Self, t: f32) -> Self;
+}
+
+impl Blend for f32 {
+    fn blend(self, to: Self, t: f32) -> Self {
+        if t <= 0. {
+            self
+        } else if t >= 1. {
+            to
+        } else {
+            self + (to - self) * t
+        }
+    }
+}
+
+impl Blend for u32 {
+    fn blend(self, to: Self, t: f32) -> Self {
+        (self as f32).blend(to as f32, t).round() as u32
+    }
+}
+
+impl<T: Blend, const N: usize> Blend for [T; N] {
+    fn blend(self, to: Self, t: f32) -> Self {
+        std::array::from_fn(|index| self[index].blend(to[index], t))
+    }
+}
+
+impl<A: Blend, B: Blend, C: Blend> Blend for (A, B, C) {
+    fn blend(self, to: Self, t: f32) -> Self {
+        (
+            self.0.blend(to.0, t),
+            self.1.blend(to.1, t),
+            self.2.blend(to.2, t),
+        )
+    }
+}
+
+macro_rules! snaps {
+    ($($ty:ty),*) => {$(
+        impl Blend for $ty {
+            fn blend(self, to: Self, t: f32) -> Self {
+                if t >= 0.5 { to } else { self }
+            }
+        }
+    )*};
+}
+
+snaps!(bool, &'static str, Backdrop, TabsWhen);
+
+/// A skin struct that blends field by field.
+macro_rules! blended {
+    ($(#[$meta:meta])* pub struct $name:ident {
+        $($(#[$field_meta:meta])* pub $field:ident: $ty:ty,)*
+    }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub struct $name {
+            $($(#[$field_meta])* pub $field: $ty,)*
+        }
+
+        impl Blend for $name {
+            fn blend(self, to: Self, t: f32) -> Self {
+                Self { $($field: self.$field.blend(to.$field, t),)* }
+            }
+        }
+    };
+}
+
 /// What the window shows behind its sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backdrop {
@@ -36,157 +107,158 @@ pub enum TabsWhen {
     Many,
 }
 
-/// One drop shadow. Alpha is of black.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shadow {
-    pub alpha: [f32; 2],
-    pub y: f32,
-    pub blur: f32,
-    pub spread: f32,
+/// Popover rims and Kit hairlines in every skin, as foreground alpha.
+pub const RIM: [f32; 2] = [0.12, 0.14];
+
+blended! {
+    /// One drop shadow. Alpha is of black.
+    pub struct Shadow {
+        pub alpha: [f32; 2],
+        pub y: f32,
+        pub blur: f32,
+        pub spread: f32,
+    }
 }
 
 impl Shadow {
-    pub const NONE: Self = Self {
-        alpha: [0., 0.],
-        y: 0.,
-        blur: 0.,
-        spread: 0.,
-    };
+    pub const NONE: Self = shadow([0., 0.], 0., 0., 0.);
+}
 
-    fn lerp(&self, to: &Self, t: f32) -> Self {
-        Self {
-            alpha: pair(self.alpha, to.alpha, t),
-            y: mix(self.y, to.y, t),
-            blur: mix(self.blur, to.blur, t),
-            spread: mix(self.spread, to.spread, t),
-        }
+const fn shadow(alpha: [f32; 2], y: f32, blur: f32, spread: f32) -> Shadow {
+    Shadow {
+        alpha,
+        y,
+        blur,
+        spread,
     }
 }
 
-/// Foreground washes laid over the sheet, as alphas of the theme foreground.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Washes {
-    pub hover: f32,
-    pub active: f32,
-    pub border: f32,
-    pub divider: f32,
+blended! {
+    /// Foreground washes laid over the sheet, as alphas of the theme foreground.
+    pub struct Washes {
+        pub hover: f32,
+        pub active: f32,
+        pub border: f32,
+        pub divider: f32,
+    }
 }
 
-/// The sheet and the surfaces on it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Material {
-    pub backdrop: Backdrop,
-    /// Window sheet: the theme background at this alpha.
-    pub sheet_alpha: [f32; 2],
-    /// Light falling from the top edge: foreground alpha at the top.
-    pub sheen: [f32; 2],
-    /// How far down the sheen fades out, in points.
-    pub sheen_height: f32,
-    /// A quiet pane's edge, as foreground alpha. Zero is no edge.
-    pub edge: f32,
-    /// A focused pane's edge, as foreground alpha.
-    pub lit: f32,
-    /// Pane cards: 0 keeps `terminal_opacity`, 1 is solid.
-    pub card_solid: f32,
-    /// Popover and dialog backing: the raised colour at this alpha.
-    pub raised: f32,
-    /// Floating capsule controls: the raised colour at this alpha.
-    pub capsule: f32,
-    /// Popover rim, as foreground alpha.
-    pub rim: [f32; 2],
-    pub washes: Washes,
-    pub pane_shadow: Shadow,
-    /// Popover and dialog cards: a far lift and a near contact shadow.
-    pub popover_shadow: [Shadow; 2],
-    pub capsule_shadow: Shadow,
-    /// The selected tab's lift.
-    pub tab_shadow: Shadow,
+blended! {
+    /// The sheet and the surfaces on it.
+    pub struct Material {
+        pub backdrop: Backdrop,
+        /// Window sheet: the theme background at this alpha.
+        pub sheet_alpha: [f32; 2],
+        /// Light falling from the top edge: foreground alpha at the top.
+        pub sheen: [f32; 2],
+        /// How far down the sheen fades out, in points.
+        pub sheen_height: f32,
+        /// A focused pane's edge, as foreground alpha.
+        pub lit: f32,
+        /// Pane cards: 0 keeps `terminal_opacity`, 1 is solid.
+        pub card_solid: f32,
+        /// Popover and dialog backing: the raised colour at this alpha.
+        pub raised: f32,
+        /// Floating capsule controls: the raised colour at this alpha.
+        pub capsule: f32,
+        pub washes: Washes,
+        pub pane_shadow: Shadow,
+        /// Popover and dialog cards: a far lift and a near contact shadow.
+        pub popover_shadow: [Shadow; 2],
+        pub capsule_shadow: Shadow,
+        /// The selected tab's lift.
+        pub tab_shadow: Shadow,
+    }
 }
 
-/// Corner radii and spacing, in points.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shape {
-    /// Pane cards.
-    pub radius: f32,
-    /// Dialogs, palettes and popover cards.
-    pub card_radius: f32,
-    /// The glass main menu.
-    pub popover_radius: f32,
-    /// Workspace tabs: `[top, side]`.
-    pub tab_radius: [f32; 2],
-    /// Kit controls.
-    pub kit_radius: f32,
-    pub kit_radius_lg: f32,
-    /// Sheet around the pane canvas.
-    pub gutter: f32,
-    /// Sheet between panes, which is also the split's grab area.
-    pub gap: f32,
-    /// A painted split line. Zero lets the gap separate panes.
-    pub divider: f32,
+blended! {
+    /// Corner radii and spacing, in points.
+    pub struct Shape {
+        /// Pane cards.
+        pub radius: f32,
+        /// Dialogs, palettes and popover cards.
+        pub card_radius: f32,
+        /// The glass main menu.
+        pub popover_radius: f32,
+        /// Workspace tabs: `[top, side]`.
+        pub tab_radius: [f32; 2],
+        /// Kit controls.
+        pub kit_radius: f32,
+        pub kit_radius_lg: f32,
+        /// Sheet around the pane canvas.
+        pub gutter: f32,
+        /// Sheet between panes, which is also the split's grab area.
+        pub gap: f32,
+        /// A painted split line. Zero lets the gap separate panes.
+        pub divider: f32,
+    }
 }
 
-/// How much chrome surrounds the panes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Chrome {
-    /// Titlebar height in points.
-    pub titlebar: f32,
-    /// Status bar height in points. Zero hides it.
-    pub status: f32,
-    /// Sidebar presence, 0 (hidden whatever the prefs say) to 1.
-    pub sidebar: f32,
-    pub tabs: TabsWhen,
-    /// Whether the sheet carries its top sheen.
-    pub sheen: bool,
+blended! {
+    /// How much chrome surrounds the panes.
+    pub struct Chrome {
+        /// Titlebar height in points.
+        pub titlebar: f32,
+        /// Status bar height in points. Zero hides it.
+        pub status: f32,
+        /// Sidebar presence, 0 (hidden whatever the prefs say) to 1.
+        pub sidebar: f32,
+        pub tabs: TabsWhen,
+        /// Whether the sheet carries its top sheen.
+        pub sheen: bool,
+    }
 }
 
-/// Spans and springs.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Motion {
-    /// Whether chrome animates at all, beyond the reduced-motion setting.
-    pub enabled: bool,
-    pub pane_enter_ms: u32,
-    pub pane_leave_ms: u32,
-    pub menu_enter_ms: u32,
-    pub menu_exit_ms: u32,
-    /// Menu spring: stiffness, damping, mass.
-    pub spring: (f32, f32, f32),
-    /// Cursor trails such as the laser beam.
-    pub cursor_effects: bool,
-    /// How long a shift into this skin takes.
-    pub shift_ms: u32,
+blended! {
+    /// Spans and springs.
+    pub struct Motion {
+        /// Whether chrome animates at all, beyond the reduced-motion setting.
+        pub enabled: bool,
+        pub pane_enter_ms: u32,
+        pub pane_leave_ms: u32,
+        pub menu_enter_ms: u32,
+        pub menu_exit_ms: u32,
+        /// Menu spring: stiffness, damping, mass.
+        pub spring: (f32, f32, f32),
+        /// Cursor trails such as the laser beam.
+        pub cursor_effects: bool,
+        /// How long a shift into this skin takes.
+        pub shift_ms: u32,
+    }
 }
 
 impl Motion {
-    pub fn pane_enter(&self) -> Duration {
+    pub const fn pane_enter(&self) -> Duration {
         ms(self.pane_enter_ms)
     }
 
-    pub fn pane_leave(&self) -> Duration {
+    pub const fn pane_leave(&self) -> Duration {
         ms(self.pane_leave_ms)
     }
 
-    pub fn menu_enter(&self) -> Duration {
+    pub const fn menu_enter(&self) -> Duration {
         ms(self.menu_enter_ms)
     }
 
-    pub fn menu_exit(&self) -> Duration {
+    pub const fn menu_exit(&self) -> Duration {
         ms(self.menu_exit_ms)
     }
 
-    pub fn shift(&self) -> Duration {
+    pub const fn shift(&self) -> Duration {
         ms(self.shift_ms)
     }
 }
 
-/// One named skin.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Skin {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub material: Material,
-    pub shape: Shape,
-    pub chrome: Chrome,
-    pub motion: Motion,
+blended! {
+    /// One named skin.
+    pub struct Skin {
+        pub id: &'static str,
+        pub name: &'static str,
+        pub material: Material,
+        pub shape: Shape,
+        pub chrome: Chrome,
+        pub motion: Motion,
+    }
 }
 
 /// The default: a sheet of glass with floating, rounded pane cards.
@@ -198,50 +270,23 @@ pub const GLASS: Skin = Skin {
         sheet_alpha: [0.58, 0.44],
         sheen: [0.07, 0.05],
         sheen_height: 220.,
-        edge: 0.,
         lit: 0.22,
         card_solid: 0.,
         raised: 0.97,
         capsule: 0.9,
-        rim: [0.12, 0.14],
         washes: Washes {
             hover: 0.06,
             active: 0.11,
             border: 0.08,
             divider: 0.08,
         },
-        pane_shadow: Shadow {
-            alpha: [0.08, 0.18],
-            y: 4.,
-            blur: 16.,
-            spread: -8.,
-        },
+        pane_shadow: shadow([0.08, 0.18], 4., 16., -8.),
         popover_shadow: [
-            Shadow {
-                alpha: [0.14, 0.42],
-                y: 20.,
-                blur: 64.,
-                spread: -8.,
-            },
-            Shadow {
-                alpha: [0.06, 0.18],
-                y: 2.,
-                blur: 8.,
-                spread: 0.,
-            },
+            shadow([0.14, 0.42], 20., 64., -8.),
+            shadow([0.06, 0.18], 2., 8., 0.),
         ],
-        capsule_shadow: Shadow {
-            alpha: [0.22, 0.22],
-            y: 4.,
-            blur: 14.,
-            spread: -2.,
-        },
-        tab_shadow: Shadow {
-            alpha: [0.05, 0.12],
-            y: 1.,
-            blur: 4.,
-            spread: 0.,
-        },
+        capsule_shadow: shadow([0.22, 0.22], 4., 14., -2.),
+        tab_shadow: shadow([0.05, 0.12], 1., 4., 0.),
     },
     shape: Shape {
         radius: 12.,
@@ -282,20 +327,17 @@ pub const TERMINAL: Skin = Skin {
         sheet_alpha: [1., 1.],
         sheen: [0., 0.],
         sheen_height: 0.,
-        edge: 0.,
         lit: 0.,
         card_solid: 1.,
         raised: 1.,
         capsule: 1.,
-        rim: [0.12, 0.14],
         washes: Washes {
-            hover: 0.06,
-            active: 0.11,
             border: 0.1,
             divider: 0.12,
+            ..GLASS.material.washes
         },
         pane_shadow: Shadow::NONE,
-        popover_shadow: [Shadow::NONE, Shadow::NONE],
+        popover_shadow: [Shadow::NONE; 2],
         capsule_shadow: Shadow::NONE,
         tab_shadow: Shadow::NONE,
     },
@@ -368,92 +410,17 @@ impl Skin {
     /// switches snap at the halfway point.
     #[must_use]
     pub fn lerp(&self, to: &Skin, t: f32) -> Skin {
-        let t = t.clamp(0., 1.);
-        let late = t >= 0.5;
-        let (a, b) = (&self.material, &to.material);
-        let material = Material {
-            backdrop: snap(a.backdrop, b.backdrop, late),
-            sheet_alpha: pair(a.sheet_alpha, b.sheet_alpha, t),
-            sheen: pair(a.sheen, b.sheen, t),
-            sheen_height: mix(a.sheen_height, b.sheen_height, t),
-            edge: mix(a.edge, b.edge, t),
-            lit: mix(a.lit, b.lit, t),
-            card_solid: mix(a.card_solid, b.card_solid, t),
-            raised: mix(a.raised, b.raised, t),
-            capsule: mix(a.capsule, b.capsule, t),
-            rim: pair(a.rim, b.rim, t),
-            washes: Washes {
-                hover: mix(a.washes.hover, b.washes.hover, t),
-                active: mix(a.washes.active, b.washes.active, t),
-                border: mix(a.washes.border, b.washes.border, t),
-                divider: mix(a.washes.divider, b.washes.divider, t),
-            },
-            pane_shadow: a.pane_shadow.lerp(&b.pane_shadow, t),
-            popover_shadow: [
-                a.popover_shadow[0].lerp(&b.popover_shadow[0], t),
-                a.popover_shadow[1].lerp(&b.popover_shadow[1], t),
-            ],
-            capsule_shadow: a.capsule_shadow.lerp(&b.capsule_shadow, t),
-            tab_shadow: a.tab_shadow.lerp(&b.tab_shadow, t),
-        };
-        let (a, b) = (&self.shape, &to.shape);
-        let shape = Shape {
-            radius: mix(a.radius, b.radius, t),
-            card_radius: mix(a.card_radius, b.card_radius, t),
-            popover_radius: mix(a.popover_radius, b.popover_radius, t),
-            tab_radius: pair(a.tab_radius, b.tab_radius, t),
-            kit_radius: mix(a.kit_radius, b.kit_radius, t),
-            kit_radius_lg: mix(a.kit_radius_lg, b.kit_radius_lg, t),
-            gutter: mix(a.gutter, b.gutter, t),
-            gap: mix(a.gap, b.gap, t),
-            divider: mix(a.divider, b.divider, t),
-        };
-        let (a, b) = (&self.chrome, &to.chrome);
-        let chrome = Chrome {
-            titlebar: mix(a.titlebar, b.titlebar, t),
-            status: mix(a.status, b.status, t),
-            sidebar: mix(a.sidebar, b.sidebar, t),
-            tabs: snap(a.tabs, b.tabs, late),
-            sheen: snap(a.sheen, b.sheen, late),
-        };
-        let (a, b) = (&self.motion, &to.motion);
-        let motion = Motion {
-            enabled: snap(a.enabled, b.enabled, late),
-            pane_enter_ms: whole(a.pane_enter_ms, b.pane_enter_ms, t),
-            pane_leave_ms: whole(a.pane_leave_ms, b.pane_leave_ms, t),
-            menu_enter_ms: whole(a.menu_enter_ms, b.menu_enter_ms, t),
-            menu_exit_ms: whole(a.menu_exit_ms, b.menu_exit_ms, t),
-            spring: (
-                mix(a.spring.0, b.spring.0, t),
-                mix(a.spring.1, b.spring.1, t),
-                mix(a.spring.2, b.spring.2, t),
-            ),
-            cursor_effects: snap(a.cursor_effects, b.cursor_effects, late),
-            shift_ms: whole(a.shift_ms, b.shift_ms, t),
-        };
-        Skin {
-            id: snap(self.id, to.id, late),
-            name: snap(self.name, to.name, late),
-            material,
-            shape,
-            chrome,
-            motion,
-        }
+        self.blend(*to, t.clamp(0., 1.))
     }
 
     /// Whether this skin casts any shadow.
     #[must_use]
     pub fn shadows(&self) -> bool {
         let m = &self.material;
-        [
-            m.pane_shadow,
-            m.popover_shadow[0],
-            m.popover_shadow[1],
-            m.capsule_shadow,
-            m.tab_shadow,
-        ]
-        .iter()
-        .any(|shadow| shadow.alpha.iter().any(|alpha| *alpha > 0.))
+        [m.pane_shadow, m.capsule_shadow, m.tab_shadow]
+            .iter()
+            .chain(&m.popover_shadow)
+            .any(|shadow| shadow.alpha.iter().any(|alpha| *alpha > 0.))
     }
 }
 
@@ -493,7 +460,7 @@ impl Shift {
     /// Linear progress, 0 to 1.
     #[must_use]
     pub fn progress(&self, now: Instant) -> f32 {
-        shift_progress(self.start, self.span, now)
+        span_progress(self.start, self.span, now)
     }
 
     #[must_use]
@@ -528,7 +495,7 @@ impl Shift {
 
 /// Linear progress of a span started at `start`, 0 to 1. An empty span is done.
 #[must_use]
-pub fn shift_progress(start: Instant, span: Duration, now: Instant) -> f32 {
+pub fn span_progress(start: Instant, span: Duration, now: Instant) -> f32 {
     if span.is_zero() {
         return 1.;
     }
@@ -544,30 +511,8 @@ fn ease(t: f32) -> f32 {
     }
 }
 
-fn mix(a: f32, b: f32, t: f32) -> f32 {
-    if t <= 0. {
-        a
-    } else if t >= 1. {
-        b
-    } else {
-        a + (b - a) * t
-    }
-}
-
-fn pair(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
-    [mix(a[0], b[0], t), mix(a[1], b[1], t)]
-}
-
-fn whole(a: u32, b: u32, t: f32) -> u32 {
-    mix(a as f32, b as f32, t).round() as u32
-}
-
-fn snap<T>(a: T, b: T, late: bool) -> T {
-    if late { b } else { a }
-}
-
-fn ms(value: u32) -> Duration {
-    Duration::from_millis(u64::from(value))
+const fn ms(value: u32) -> Duration {
+    Duration::from_millis(value as u64)
 }
 
 #[cfg(test)]
@@ -628,12 +573,12 @@ mod tests {
     fn the_shift_clock_runs_from_start_to_span() {
         let start = Instant::now();
         let span = Duration::from_millis(400);
-        assert_eq!(shift_progress(start, span, start), 0.);
-        assert!((shift_progress(start, span, start + span / 4) - 0.25).abs() < 1e-4);
-        assert_eq!(shift_progress(start, span, start + span), 1.);
-        assert_eq!(shift_progress(start, span, start + span * 3), 1.);
-        assert_eq!(shift_progress(start + span, span, start), 0.);
-        assert_eq!(shift_progress(start, Duration::ZERO, start), 1.);
+        assert_eq!(span_progress(start, span, start), 0.);
+        assert!((span_progress(start, span, start + span / 4) - 0.25).abs() < 1e-4);
+        assert_eq!(span_progress(start, span, start + span), 1.);
+        assert_eq!(span_progress(start, span, start + span * 3), 1.);
+        assert_eq!(span_progress(start + span, span, start), 0.);
+        assert_eq!(span_progress(start, Duration::ZERO, start), 1.);
     }
 
     #[test]

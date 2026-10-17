@@ -76,142 +76,113 @@ fn builtins() -> &'static [Theme] {
     &THEMES
 }
 
+/// One row per theme: id, name, appearance, its colours in [`Theme`] field
+/// order, then its ANSI palette.
 fn build_themes() -> Vec<Theme> {
-    vec![
-        theme(
+    [
+        (
             "midnight",
             "phux Midnight",
             "dark",
-            "#0d1017",
-            "#d8dee9",
-            "#12161f",
-            "#7aa2f7",
-            "#c0caf5",
-            "#28406a",
-            "#f7768e",
-            "#e0af68",
-            "#9ece6a",
-            &[
+            [
+                "#0d1017", "#d8dee9", "#12161f", "#7aa2f7", "#c0caf5", "#28406a", "#f7768e",
+                "#e0af68", "#9ece6a",
+            ],
+            [
                 "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff",
                 "#a9b1d6", "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7",
                 "#7dcfff", "#c0caf5",
             ],
         ),
-        theme(
+        (
             "nord",
             "Nord",
             "dark",
-            "#2e3440",
-            "#d8dee9",
-            "#292e39",
-            "#88c0d0",
-            "#eceff4",
-            "#434c5e",
-            "#bf616a",
-            "#ebcb8b",
-            "#a3be8c",
-            &[
+            [
+                "#2e3440", "#d8dee9", "#292e39", "#88c0d0", "#eceff4", "#434c5e", "#bf616a",
+                "#ebcb8b", "#a3be8c",
+            ],
+            [
                 "#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0",
                 "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead",
                 "#8fbcbb", "#eceff4",
             ],
         ),
-        theme(
+        (
             "dracula",
             "Dracula",
             "dark",
-            "#282a36",
-            "#f8f8f2",
-            "#21222c",
-            "#bd93f9",
-            "#f8f8f2",
-            "#44475a",
-            "#ff5555",
-            "#f1fa8c",
-            "#50fa7b",
-            &[
+            [
+                "#282a36", "#f8f8f2", "#21222c", "#bd93f9", "#f8f8f2", "#44475a", "#ff5555",
+                "#f1fa8c", "#50fa7b",
+            ],
+            [
                 "#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd",
                 "#f8f8f2", "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df",
                 "#a4ffff", "#ffffff",
             ],
         ),
-        theme(
+        (
             "mocha",
             "Catppuccin Mocha",
             "dark",
-            "#1e1e2e",
-            "#cdd6f4",
-            "#181825",
-            "#cba6f7",
-            "#f5e0dc",
-            "#45475a",
-            "#f38ba8",
-            "#f9e2af",
-            "#a6e3a1",
-            &[
+            [
+                "#1e1e2e", "#cdd6f4", "#181825", "#cba6f7", "#f5e0dc", "#45475a", "#f38ba8",
+                "#f9e2af", "#a6e3a1",
+            ],
+            [
                 "#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5",
                 "#bac2de", "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7",
                 "#94e2d5", "#a6adc8",
             ],
         ),
-        theme(
+        (
             "latte",
             "Catppuccin Latte",
             "light",
-            "#eff1f5",
-            "#4c4f69",
-            "#e6e9ef",
-            "#8839ef",
-            "#dc8a78",
-            "#ccd0da",
-            "#d20f39",
-            "#df8e1d",
-            "#40a02b",
-            &[
+            [
+                "#eff1f5", "#4c4f69", "#e6e9ef", "#8839ef", "#dc8a78", "#ccd0da", "#d20f39",
+                "#df8e1d", "#40a02b",
+            ],
+            [
                 "#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299",
                 "#acb0be", "#6c6f85", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb",
                 "#179299", "#bcc0cc",
             ],
         ),
     ]
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional row per built-in theme table entry"
-)]
-fn theme(
-    id: &str,
-    name: &str,
-    appearance: &str,
-    background: &str,
-    foreground: &str,
-    surface: &str,
-    accent: &str,
-    cursor: &str,
-    selection: &str,
-    danger: &str,
-    warning: &str,
-    success: &str,
-    palette: &[&str],
-) -> Theme {
-    Theme {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        appearance: appearance.to_owned(),
-        background: background.to_owned(),
-        foreground: foreground.to_owned(),
-        surface: surface.to_owned(),
-        accent: accent.to_owned(),
-        cursor: cursor.to_owned(),
-        selection: selection.to_owned(),
-        danger: danger.to_owned(),
-        warning: warning.to_owned(),
-        success: success.to_owned(),
-        palette: Some(palette.iter().map(|color| (*color).to_owned()).collect()),
-        selection_foreground: None,
-        divider: None,
-    }
+    .into_iter()
+    .map(|(id, name, appearance, colors, palette)| {
+        let [
+            background,
+            foreground,
+            surface,
+            accent,
+            cursor,
+            selection,
+            danger,
+            warning,
+            success,
+        ] = colors.map(str::to_owned);
+        Theme {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            appearance: appearance.to_owned(),
+            background,
+            foreground,
+            surface,
+            accent,
+            cursor,
+            selection,
+            danger,
+            warning,
+            success,
+            palette: Some(palette.map(str::to_owned).to_vec()),
+            selection_foreground: None,
+            divider: None,
+        }
+    })
+    .collect()
 }
 
 /// Built-in id used when a saved theme is unknown.
@@ -309,19 +280,6 @@ fn rgb(hex: &str) -> [u8; 3] {
         (value & 0xff) as u8,
     ]
 }
-
-/// Corner radii, in points.
-pub const RADIUS_PANEL: f32 = 12.0;
-/// Control corner radius.
-pub const RADIUS_CONTROL: f32 = 8.0;
-/// Small corner radius.
-pub const RADIUS_SMALL: f32 = 5.0;
-/// Chrome font sizes.
-pub const UI_FONT: f32 = 12.5;
-/// Small chrome font.
-pub const UI_FONT_SMALL: f32 = 11.0;
-/// Title chrome font.
-pub const UI_FONT_TITLE: f32 = 13.0;
 
 #[cfg(test)]
 mod lookup_tests {

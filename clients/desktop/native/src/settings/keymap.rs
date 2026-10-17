@@ -5,7 +5,6 @@
 //! quick terminal chord.
 
 use super::ghostty::{Bind, GhosttyConfig, Origin};
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// One built-in command the palette and keymap share.
@@ -61,7 +60,7 @@ const CHORD_ONLY: &[&str] = &[
 ];
 
 /// Modifiers as the window reports them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeyChord {
     /// Produced or physical key name.
     pub key: String,
@@ -83,11 +82,7 @@ impl KeyChord {
     pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
-            held: false,
-            cmd: false,
-            alt: false,
-            ctrl: false,
-            shift: false,
+            ..Self::default()
         }
     }
 }
@@ -111,732 +106,128 @@ pub fn builtin_commands() -> &'static [CommandSpec] {
     &COMMANDS
 }
 
-fn catalog() -> Vec<CommandSpec> {
-    let mut commands = vec![
-        spec(
-            "palette",
-            "Command Palette",
-            "General",
-            Some("cmd+shift+p"),
-            "Search and run desktop commands.",
-            &[],
-        ),
-        spec(
-            "goto",
-            "Go To…",
-            "General",
-            Some("cmd+p"),
-            "Find and focus a terminal, agent or tab.",
-            &["switch", "navigate"],
-        ),
-        spec(
-            "settings",
-            "Settings",
-            "General",
-            Some("cmd+,"),
-            "Adjust appearance, key bindings and desktop preferences.",
-            &["preferences", "theme"],
-        ),
-        spec(
-            "new",
-            "New Terminal",
-            "Terminal",
-            Some("cmd+t"),
-            "Open a new terminal in its own tab.",
-            &["shell"],
-        ),
-        spec(
-            "native-agent",
-            "New Agent…",
-            "Terminal",
-            None,
-            "Launch a host-owned ACP agent.",
-            &["agent", "acp"],
-        ),
-        spec(
-            "new-session",
-            "New Session…",
-            "Terminal",
-            Some("cmd+shift+n"),
-            "Create a named session.",
-            &[],
-        ),
-        spec(
-            "rename-session",
-            "Rename Session…",
-            "Terminal",
-            None,
-            "Change the current session's name.",
-            &[],
-        ),
-        spec(
-            "select-session-work",
-            "Select All in Session",
-            "Organization",
-            None,
-            "Select the current session's work for organization.",
-            &[],
-        ),
-        spec(
-            "move-resources",
-            "Move to Session…",
-            "Organization",
-            Some("cmd+shift+m"),
-            "Choose a session for the selected work.",
-            &[],
-        ),
-        spec(
-            "undo-organization",
-            "Undo Organization",
-            "Organization",
-            Some("cmd+alt+z"),
-            "Reverse the last organization change.",
-            &[],
-        ),
-        spec(
-            "organize-everything",
-            "Organize Everything",
-            "Organization",
-            Some("cmd+shift+o"),
-            "Move every pane into the session for its repository or task.",
-            &["tidy", "sort", "group"],
-        ),
-        spec(
-            "undo-organize-everything",
-            "Undo Organize Everything",
-            "Organization",
-            None,
-            "Reverse the last Organize Everything run.",
-            &[],
-        ),
-        spec(
-            "kill-session",
-            "Kill Session…",
-            "Terminal",
-            None,
-            "Confirm termination of a session and its processes.",
-            &["delete"],
-        ),
-        spec(
-            "new-home",
-            "New Terminal in Home Directory",
-            "Terminal",
-            Some("cmd+shift+t"),
-            "Open a new terminal starting in your home directory.",
-            &["shell"],
-        ),
-        spec(
-            "folder",
-            "Open Folder…",
-            "Terminal",
-            Some("cmd+o"),
-            "Choose a folder for a new terminal.",
-            &["directory", "project"],
-        ),
-        spec(
-            "insert-path",
-            "Insert Path…",
-            "Terminal",
-            Some("cmd+shift+i"),
-            "Choose a file or folder path to insert into the terminal.",
-            &[],
-        ),
-        spec(
-            "split-right",
-            "Split Right",
-            "Panes",
-            Some("cmd+d"),
-            "Open a terminal beside the focused pane.",
-            &["vertical"],
-        ),
-        spec(
-            "split-down",
-            "Split Down",
-            "Panes",
-            Some("cmd+shift+d"),
-            "Open a terminal below the focused pane.",
-            &["horizontal"],
-        ),
-        spec(
-            "split-left",
-            "Split Left",
-            "Panes",
-            None,
-            "Open a terminal to the left of the focused pane.",
-            &[],
-        ),
-        spec(
-            "split-up",
-            "Split Up",
-            "Panes",
-            None,
-            "Open a terminal above the focused pane.",
-            &[],
-        ),
-        spec(
-            "view",
-            "Mirror Pane",
-            "Panes",
-            Some("cmd+alt+d"),
-            "Show the focused terminal in another pane.",
-            &["duplicate", "open another view"],
-        ),
-        spec(
-            "close",
-            "Close Pane",
-            "Panes",
-            Some("cmd+w"),
-            "Detach this pane; its terminal keeps running.",
-            &[],
-        ),
-        spec(
-            "close-tab",
-            "Close Tab",
-            "Tabs",
-            Some("cmd+shift+w"),
-            "Detach this tab; its terminals keep running.",
-            &[],
-        ),
-        spec(
-            "zoom",
-            "Zoom Pane",
-            "Panes",
-            Some("cmd+shift+enter"),
-            "Expand the focused pane or restore its splits.",
-            &[],
-        ),
-        spec(
-            "equalize",
-            "Equalize Splits",
-            "Panes",
-            Some("cmd+ctrl+="),
-            "Give the active tab's panes equal space.",
-            &["balance"],
-        ),
-        spec(
-            "pane-left",
-            "Focus Pane Left",
-            "Panes",
-            Some("cmd+alt+left"),
-            "Focus the neighboring pane on the left.",
-            &[],
-        ),
-        spec(
-            "pane-right",
-            "Focus Pane Right",
-            "Panes",
-            Some("cmd+alt+right"),
-            "Focus the neighboring pane on the right.",
-            &[],
-        ),
-        spec(
-            "pane-up",
-            "Focus Pane Up",
-            "Panes",
-            Some("cmd+alt+up"),
-            "Focus the neighboring pane above.",
-            &[],
-        ),
-        spec(
-            "pane-down",
-            "Focus Pane Down",
-            "Panes",
-            Some("cmd+alt+down"),
-            "Focus the neighboring pane below.",
-            &[],
-        ),
-        spec(
-            "pane-next",
-            "Next Pane",
-            "Panes",
-            Some("cmd+]"),
-            "Focus the next pane in the active tab.",
-            &[],
-        ),
-        spec(
-            "pane-prev",
-            "Previous Pane",
-            "Panes",
-            Some("cmd+["),
-            "Focus the previous pane in the active tab.",
-            &[],
-        ),
-        spec(
-            "tab-next",
-            "Next Tab",
-            "Tabs",
-            Some("cmd+shift+]"),
-            "Switch to the next tab.",
-            &[],
-        ),
-        spec(
-            "tab-prev",
-            "Previous Tab",
-            "Tabs",
-            Some("cmd+shift+["),
-            "Switch to the previous tab.",
-            &[],
-        ),
-        spec(
-            "tab-move-left",
-            "Move Tab Left",
-            "Tabs",
-            None,
-            "Move the active tab earlier in the tab bar.",
-            &["reorder"],
-        ),
-        spec(
-            "tab-move-right",
-            "Move Tab Right",
-            "Tabs",
-            None,
-            "Move the active tab later in the tab bar.",
-            &["reorder"],
-        ),
-        spec(
-            "rename",
-            "Rename Tab…",
-            "Tabs",
-            None,
-            "Set a custom name for the active tab.",
-            &[],
-        ),
-        spec(
-            "window",
-            "Move Pane to New Window",
-            "Panes",
-            Some("cmd+alt+n"),
-            "Move the focused terminal into a separate window.",
-            &["detach"],
-        ),
-        spec(
-            "window-next",
-            "Move Pane to Next Window",
-            "Panes",
-            None,
-            "Move the focused terminal into the next open window on the same server.",
-            &["window", "transfer"],
-        ),
-        spec(
-            "find",
-            "Find in Terminal",
-            "Terminal",
-            Some("cmd+f"),
-            "Search the focused terminal's output.",
-            &["search", "scrollback"],
-        ),
-        spec(
-            "find-next",
-            "Find Next",
-            "Terminal",
-            Some("cmd+g"),
-            "Select the next search match.",
-            &[],
-        ),
-        spec(
-            "find-prev",
-            "Find Previous",
-            "Terminal",
-            Some("cmd+shift+g"),
-            "Select the previous search match.",
-            &[],
-        ),
-        spec(
-            "find-selection",
-            "Use Selection for Find",
-            "Terminal",
-            Some("cmd+e"),
-            "Search for the selected terminal text.",
-            &[],
-        ),
-        spec(
-            "find-close",
-            "Close Find",
-            "Terminal",
-            None,
-            "Dismiss the terminal search bar.",
-            &[],
-        ),
-        spec(
-            "follow",
-            "Scroll to Live Output",
-            "Terminal",
-            Some("cmd+l"),
-            "Return to the latest terminal output.",
-            &["bottom"],
-        ),
-        spec(
-            "paste-cwd",
-            "Paste Working Directory",
-            "Terminal",
-            None,
-            "Insert the focused terminal's working directory.",
-            &["cwd", "path"],
-        ),
-        spec(
-            "terminate",
-            "Terminate Terminal Process…",
-            "Terminal",
-            None,
-            "Confirm termination of the focused terminal process.",
-            &["kill"],
-        ),
-        spec(
-            "attention",
-            "Jump to Agent Needing Attention",
-            "Agents",
-            Some("cmd+shift+a"),
-            "Focus the next agent that needs your attention.",
-            &[],
-        ),
-        spec(
-            "sidebar",
-            "Toggle Sidebar",
-            "View",
-            Some("cmd+b"),
-            "Show or hide the navigation sidebar.",
-            &[],
-        ),
-        spec(
-            "plain-terminal",
-            "Toggle Plain Terminal",
-            "View",
-            Some("cmd+ctrl+t"),
-            "Switch between the glass desk and a plain terminal window.",
-            &["skin", "minimal", "ghostty", "chrome", "glass"],
-        ),
-        spec(
-            "tabs-top",
-            "Tabs on Top",
-            "View",
-            None,
-            "Place workspace tabs in the titlebar.",
-            &["layout", "horizontal", "placement"],
-        ),
-        spec(
-            "tabs-side",
-            "Tabs on Side",
-            "View",
-            None,
-            "Place workspace tabs in a scrollable left rail.",
-            &["layout", "vertical", "placement"],
-        ),
-        CommandSpec {
-            aliases: &["cmd+shift+="],
-            ..spec(
-                "font-up",
-                "Increase Font Size",
-                "View",
-                Some("cmd+="),
-                "Make terminal text larger.",
-                &[],
-            )
-        },
-        spec(
-            "font-down",
-            "Decrease Font Size",
-            "View",
-            Some("cmd+-"),
-            "Make terminal text smaller.",
-            &[],
-        ),
-        spec(
-            "font-reset",
-            "Reset Font Size",
-            "View",
-            Some("cmd+0"),
-            "Restore the default terminal text size.",
-            &[],
-        ),
-        spec(
-            "notifications",
-            "Show Inbox & Notifications",
-            "View",
-            None,
-            "Review inbox entries and desktop notices.",
-            &["alerts"],
-        ),
-        spec(
-            "clear-notifications",
-            "Clear Inbox & Notifications",
-            "View",
-            None,
-            "Remove all entries from the notification feed.",
-            &[],
-        ),
-        spec(
-            "resize-left",
-            "Move Divider Left",
-            "Panes",
-            None,
-            "Nudge the focused pane's divider to the left.",
-            &[],
-        ),
-        spec(
-            "resize-right",
-            "Move Divider Right",
-            "Panes",
-            None,
-            "Nudge the focused pane's divider to the right.",
-            &[],
-        ),
-        spec(
-            "resize-up",
-            "Move Divider Up",
-            "Panes",
-            None,
-            "Nudge the focused pane's divider upward.",
-            &[],
-        ),
-        spec(
-            "resize-down",
-            "Move Divider Down",
-            "Panes",
-            None,
-            "Nudge the focused pane's divider downward.",
-            &[],
-        ),
-        spec(
-            "scroll-page-up",
-            "Scroll Page Up",
-            "Terminal",
-            Some("cmd+pageup"),
-            "Scroll terminal output up by one page.",
-            &[],
-        ),
-        spec(
-            "scroll-page-down",
-            "Scroll Page Down",
-            "Terminal",
-            Some("cmd+pagedown"),
-            "Scroll terminal output down by one page.",
-            &[],
-        ),
-        spec(
-            "scroll-top",
-            "Scroll to Top",
-            "Terminal",
-            Some("cmd+home"),
-            "Scroll to the oldest available terminal output.",
-            &[],
-        ),
-        spec(
-            "scroll-bottom",
-            "Scroll to Bottom",
-            "Terminal",
-            Some("cmd+end"),
-            "Return to the latest terminal output.",
-            &[],
-        ),
-        spec(
-            "clear",
-            "Clear Screen",
-            "Terminal",
-            Some("cmd+k"),
-            "Send the clear-screen control to the terminal.",
-            &[],
-        ),
-        spec(
-            "select-all",
-            "Select All",
-            "Terminal",
-            Some("cmd+a"),
-            "Select all available terminal text.",
-            &[],
-        ),
-        spec(
-            "copy",
-            "Copy",
-            "Terminal",
-            None,
-            "Copy the terminal selection to the clipboard.",
-            &[],
-        ),
-        spec(
-            "paste",
-            "Paste",
-            "Terminal",
-            None,
-            "Insert clipboard text into the focused terminal.",
-            &[],
-        ),
-        spec(
-            "paste-selection",
-            "Paste Selection",
-            "Terminal",
-            None,
-            "Insert the selected terminal text as input.",
-            &[],
-        ),
-        spec(
-            "prompt-prev",
-            "Jump to Previous Prompt",
-            "Terminal",
-            Some("cmd+up"),
-            "Scroll to the previous shell prompt marker.",
-            &[],
-        ),
-        spec(
-            "prompt-next",
-            "Jump to Next Prompt",
-            "Terminal",
-            Some("cmd+down"),
-            "Scroll to the next shell prompt marker.",
-            &[],
-        ),
-        spec(
-            "write-file:scrollback:open",
-            "Open Scrollback as a File",
-            "Terminal",
-            None,
-            "Write terminal scrollback to a file and open it.",
-            &["export", "editor"],
-        ),
-        spec(
-            "quick-terminal",
-            "Toggle Quick Terminal",
-            "View",
-            None,
-            "Open or close the quick-terminal window.",
-            &["dropdown", "hotkey"],
-        ),
-        spec(
-            "new-window",
-            "New Window",
-            "View",
-            Some("cmd+n"),
-            "Open another window on a session.",
-            &[],
-        ),
-        spec(
-            "fullscreen",
-            "Toggle Full Screen",
-            "View",
-            Some("cmd+ctrl+f"),
-            "Enter or leave native full-screen mode.",
-            &[],
-        ),
-        spec(
-            "maximize",
-            "Maximize Window",
-            "View",
-            None,
-            "Toggle the native window's zoomed size.",
-            &[],
-        ),
-        spec(
-            "minimize",
-            "Minimize Window",
-            "View",
-            Some("cmd+m"),
-            "Send this window to the Dock.",
-            &["hide"],
-        ),
-        spec(
-            "windows",
-            "Show All Windows…",
-            "View",
-            None,
-            "List every open window with its session, host and tabs, and bring one forward.",
-            &["overview", "switch", "minimized", "tabs"],
-        ),
-        spec(
-            "reload-config",
-            "Reload Ghostty Config",
-            "Ghostty",
-            Some("cmd+shift+,"),
-            "Read the Ghostty configuration again.",
-            &[],
-        ),
-        spec(
-            "import-ghostty",
-            "Use Ghostty Font, Colors and Padding",
-            "Ghostty",
-            None,
-            "Apply Ghostty appearance settings to this window.",
-            &[],
-        ),
-        spec(
-            "reconnect",
-            "Reconnect to Server",
-            "Connection",
-            Some("cmd+shift+r"),
-            "Restart this window's connection to the server.",
-            &[],
-        ),
-        spec(
-            "performance-monitor",
-            "Performance Monitor",
-            "Utilities",
-            None,
-            "Inspect desktop CPU, memory and render timings.",
-            &["telemetry", "cpu", "memory", "rss"],
-        ),
-        spec(
-            "copy-diagnostics",
-            "Copy Diagnostics",
-            "Utilities",
-            None,
-            "Copy app, runtime, server and connection identity with recent errors. No terminal content.",
-            &["support", "debug", "report", "version", "log"],
-        ),
-        spec(
-            "performance-monitor-stop",
-            "Stop Performance Monitoring",
-            "Utilities",
-            None,
-            "Close the performance window and stop its sampler.",
-            &["telemetry", "cpu", "memory", "rss"],
-        ),
-    ];
-    for (id, chord) in [
-        ("tab-1", "cmd+1"),
-        ("tab-2", "cmd+2"),
-        ("tab-3", "cmd+3"),
-        ("tab-4", "cmd+4"),
-        ("tab-5", "cmd+5"),
-        ("tab-6", "cmd+6"),
-        ("tab-7", "cmd+7"),
-        ("tab-8", "cmd+8"),
-        ("tab-9", "cmd+9"),
-    ] {
-        commands.push(spec(
-            id,
-            if id == "tab-9" {
-                "Go to Last Tab"
-            } else {
-                "Go to Tab"
-            },
-            "Tabs",
-            Some(chord),
-            if id == "tab-9" {
-                "Switch to the last tab."
-            } else {
-                "Switch to the tab at this position."
-            },
-            &[],
-        ));
-    }
-    commands
-}
+/// One command per line: id | title | group | chords | description | keywords.
+/// The first chord is primary and the rest are aliases; keywords are
+/// space-separated.
+const CATALOG: &str = "\
+    palette | Command Palette | General | cmd+shift+p | Search and run desktop commands. |
+    goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
+    settings | Settings | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
+    new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
+    native-agent | New Agent… | Terminal |  | Launch a host-owned ACP agent. | agent acp
+    new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
+    rename-session | Rename Session… | Terminal |  | Change the current session's name. |
+    select-session-work | Select All in Session | Organization |  | Select the current session's work for organization. |
+    move-resources | Move to Session… | Organization | cmd+shift+m | Choose a session for the selected work. |
+    undo-organization | Undo Organization | Organization | cmd+alt+z | Reverse the last organization change. |
+    organize-everything | Organize Everything | Organization | cmd+shift+o | Move every pane into the session for its repository or task. | tidy sort group
+    undo-organize-everything | Undo Organize Everything | Organization |  | Reverse the last Organize Everything run. |
+    kill-session | Kill Session… | Terminal |  | Confirm termination of a session and its processes. | delete
+    new-home | New Terminal in Home Directory | Terminal | cmd+shift+t | Open a new terminal starting in your home directory. | shell
+    folder | Open Folder… | Terminal | cmd+o | Choose a folder for a new terminal. | directory project
+    insert-path | Insert Path… | Terminal | cmd+shift+i | Choose a file or folder path to insert into the terminal. |
+    split-right | Split Right | Panes | cmd+d | Open a terminal beside the focused pane. | vertical
+    split-down | Split Down | Panes | cmd+shift+d | Open a terminal below the focused pane. | horizontal
+    split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
+    split-up | Split Up | Panes |  | Open a terminal above the focused pane. |
+    view | Mirror Pane | Panes | cmd+alt+d | Show the focused terminal in another pane. | duplicate open another view
+    close | Close Pane | Panes | cmd+w | Detach this pane; its terminal keeps running. |
+    close-tab | Close Tab | Tabs | cmd+shift+w | Detach this tab; its terminals keep running. |
+    zoom | Zoom Pane | Panes | cmd+shift+enter | Expand the focused pane or restore its splits. |
+    equalize | Equalize Splits | Panes | cmd+ctrl+= | Give the active tab's panes equal space. | balance
+    pane-left | Focus Pane Left | Panes | cmd+alt+left | Focus the neighboring pane on the left. |
+    pane-right | Focus Pane Right | Panes | cmd+alt+right | Focus the neighboring pane on the right. |
+    pane-up | Focus Pane Up | Panes | cmd+alt+up | Focus the neighboring pane above. |
+    pane-down | Focus Pane Down | Panes | cmd+alt+down | Focus the neighboring pane below. |
+    pane-next | Next Pane | Panes | cmd+] | Focus the next pane in the active tab. |
+    pane-prev | Previous Pane | Panes | cmd+[ | Focus the previous pane in the active tab. |
+    tab-next | Next Tab | Tabs | cmd+shift+] | Switch to the next tab. |
+    tab-prev | Previous Tab | Tabs | cmd+shift+[ | Switch to the previous tab. |
+    tab-move-left | Move Tab Left | Tabs |  | Move the active tab earlier in the tab bar. | reorder
+    tab-move-right | Move Tab Right | Tabs |  | Move the active tab later in the tab bar. | reorder
+    rename | Rename Tab… | Tabs |  | Set a custom name for the active tab. |
+    window | Move Pane to New Window | Panes | cmd+alt+n | Move the focused terminal into a separate window. | detach
+    window-next | Move Pane to Next Window | Panes |  | Move the focused terminal into the next open window on the same server. | window transfer
+    find | Find in Terminal | Terminal | cmd+f | Search the focused terminal's output. | search scrollback
+    find-next | Find Next | Terminal | cmd+g | Select the next search match. |
+    find-prev | Find Previous | Terminal | cmd+shift+g | Select the previous search match. |
+    find-selection | Use Selection for Find | Terminal | cmd+e | Search for the selected terminal text. |
+    find-close | Close Find | Terminal |  | Dismiss the terminal search bar. |
+    follow | Scroll to Live Output | Terminal | cmd+l | Return to the latest terminal output. | bottom
+    paste-cwd | Paste Working Directory | Terminal |  | Insert the focused terminal's working directory. | cwd path
+    terminate | Terminate Terminal Process… | Terminal |  | Confirm termination of the focused terminal process. | kill
+    attention | Jump to Agent Needing Attention | Agents | cmd+shift+a | Focus the next agent that needs your attention. |
+    sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
+    plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
+    tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
+    tabs-side | Tabs on Side | View |  | Place workspace tabs in a scrollable left rail. | layout vertical placement
+    font-up | Increase Font Size | View | cmd+= cmd+shift+= | Make terminal text larger. |
+    font-down | Decrease Font Size | View | cmd+- | Make terminal text smaller. |
+    font-reset | Reset Font Size | View | cmd+0 | Restore the default terminal text size. |
+    notifications | Show Inbox & Notifications | View |  | Review inbox entries and desktop notices. | alerts
+    clear-notifications | Clear Inbox & Notifications | View |  | Remove all entries from the notification feed. |
+    resize-left | Move Divider Left | Panes |  | Nudge the focused pane's divider to the left. |
+    resize-right | Move Divider Right | Panes |  | Nudge the focused pane's divider to the right. |
+    resize-up | Move Divider Up | Panes |  | Nudge the focused pane's divider upward. |
+    resize-down | Move Divider Down | Panes |  | Nudge the focused pane's divider downward. |
+    scroll-page-up | Scroll Page Up | Terminal | cmd+pageup | Scroll terminal output up by one page. |
+    scroll-page-down | Scroll Page Down | Terminal | cmd+pagedown | Scroll terminal output down by one page. |
+    scroll-top | Scroll to Top | Terminal | cmd+home | Scroll to the oldest available terminal output. |
+    scroll-bottom | Scroll to Bottom | Terminal | cmd+end | Return to the latest terminal output. |
+    clear | Clear Screen | Terminal | cmd+k | Send the clear-screen control to the terminal. |
+    select-all | Select All | Terminal | cmd+a | Select all available terminal text. |
+    copy | Copy | Terminal |  | Copy the terminal selection to the clipboard. |
+    paste | Paste | Terminal |  | Insert clipboard text into the focused terminal. |
+    paste-selection | Paste Selection | Terminal |  | Insert the selected terminal text as input. |
+    prompt-prev | Jump to Previous Prompt | Terminal | cmd+up | Scroll to the previous shell prompt marker. |
+    prompt-next | Jump to Next Prompt | Terminal | cmd+down | Scroll to the next shell prompt marker. |
+    write-file:scrollback:open | Open Scrollback as a File | Terminal |  | Write terminal scrollback to a file and open it. | export editor
+    quick-terminal | Toggle Quick Terminal | View |  | Open or close the quick-terminal window. | dropdown hotkey
+    new-window | New Window | View | cmd+n | Open another window on a session. |
+    fullscreen | Toggle Full Screen | View | cmd+ctrl+f | Enter or leave native full-screen mode. |
+    maximize | Maximize Window | View |  | Toggle the native window's zoomed size. |
+    minimize | Minimize Window | View | cmd+m | Send this window to the Dock. | hide
+    windows | Show All Windows… | View |  | List every open window with its session, host and tabs, and bring one forward. | overview switch minimized tabs
+    reload-config | Reload Ghostty Config | Ghostty | cmd+shift+, | Read the Ghostty configuration again. |
+    import-ghostty | Use Ghostty Font, Colors and Padding | Ghostty |  | Apply Ghostty appearance settings to this window. |
+    reconnect | Reconnect to Server | Connection | cmd+shift+r | Restart this window's connection to the server. |
+    performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
+    copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log
+    performance-monitor-stop | Stop Performance Monitoring | Utilities |  | Close the performance window and stop its sampler. | telemetry cpu memory rss
+    tab-1 | Go to Tab | Tabs | cmd+1 | Switch to the tab at this position. |
+    tab-2 | Go to Tab | Tabs | cmd+2 | Switch to the tab at this position. |
+    tab-3 | Go to Tab | Tabs | cmd+3 | Switch to the tab at this position. |
+    tab-4 | Go to Tab | Tabs | cmd+4 | Switch to the tab at this position. |
+    tab-5 | Go to Tab | Tabs | cmd+5 | Switch to the tab at this position. |
+    tab-6 | Go to Tab | Tabs | cmd+6 | Switch to the tab at this position. |
+    tab-7 | Go to Tab | Tabs | cmd+7 | Switch to the tab at this position. |
+    tab-8 | Go to Tab | Tabs | cmd+8 | Switch to the tab at this position. |
+    tab-9 | Go to Last Tab | Tabs | cmd+9 | Switch to the last tab. |
+";
 
-fn spec(
-    id: &'static str,
-    title: &'static str,
-    group: &'static str,
-    chord: Option<&'static str>,
-    description: &'static str,
-    keywords: &'static [&'static str],
-) -> CommandSpec {
-    CommandSpec {
-        id,
-        title,
-        description,
-        keywords,
-        group,
-        chord,
-        aliases: &[],
-    }
+fn catalog() -> Vec<CommandSpec> {
+    CATALOG
+        .lines()
+        .map(|line| {
+            let mut fields = line.split('|').map(str::trim);
+            let mut field = || fields.next().expect("a catalog row has six fields");
+            let (id, title, group) = (field(), field(), field());
+            let mut chords = field().split_whitespace();
+            let chord = chords.next();
+            let aliases = chords.collect::<Vec<_>>().leak();
+            let description = field();
+            let keywords = field().split_whitespace().collect::<Vec<_>>().leak();
+            CommandSpec {
+                id,
+                title,
+                description,
+                keywords,
+                group,
+                chord,
+                aliases,
+            }
+        })
+        .collect()
 }
 
 /// Built-in chord to command id, primary chord before aliases.
@@ -1094,9 +485,8 @@ pub fn chord_of(event: &KeyChord) -> String {
     if !event.cmd || event.key.is_empty() || event.held {
         return String::new();
     }
-    let (key, lowered, raw_shifted) = normalize_key(&event.key);
-    let shift = event.shift || key != lowered || raw_shifted;
-    join_chord(true, event.ctrl, event.alt, shift, &key)
+    let (key, shifted) = normalize_key(&event.key);
+    join_chord(true, event.ctrl, event.alt, event.shift || shifted, &key)
 }
 
 /// Any key as a chord. An unmodified printable is typing, not a chord.
@@ -1108,8 +498,8 @@ pub fn key_chord(event: &KeyChord) -> String {
     if event.cmd {
         return chord_of(event);
     }
-    let (key, lowered, raw_shifted) = normalize_key(&event.key);
-    let shift = event.shift || key != lowered || raw_shifted;
+    let (key, shifted) = normalize_key(&event.key);
+    let shift = event.shift || shifted;
     if !event.ctrl && !event.alt && !shift && key.chars().count() == 1 {
         return String::new();
     }
@@ -1130,38 +520,35 @@ pub fn plain_key(key: &str) -> String {
 pub fn display_chord(chord: &str) -> String {
     let parts: Vec<&str> = chord.split('+').collect();
     let key = parts.last().copied().unwrap_or("");
-    let glyphs = HashMap::from([
-        ("cmd", "⌘"),
-        ("ctrl", "⌃"),
-        ("alt", "⌥"),
-        ("shift", "⇧"),
-        ("enter", "↩"),
-        ("up", "↑"),
-        ("down", "↓"),
-        ("left", "←"),
-        ("right", "→"),
-        ("escape", "esc"),
-        ("backspace", "⌫"),
-    ]);
-    let mut shown = String::new();
-    for modifier in ["ctrl", "alt", "shift", "cmd"] {
-        if parts.contains(&modifier) {
-            shown.push_str(glyphs.get(modifier).copied().unwrap_or(modifier));
-        }
-    }
-    let label = glyphs
-        .get(key)
-        .copied()
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            if key.chars().count() == 1 {
-                key.to_uppercase()
-            } else {
-                key.to_owned()
-            }
-        });
+    let mut shown: String = ["ctrl", "alt", "shift", "cmd"]
+        .into_iter()
+        .filter(|modifier| parts.contains(modifier))
+        .map(glyph)
+        .collect();
+    let label = match glyph(key) {
+        same if same != key => same.to_owned(),
+        _ if key.chars().count() == 1 => key.to_uppercase(),
+        _ => key.to_owned(),
+    };
     shown.push_str(&label);
     shown
+}
+
+fn glyph(name: &str) -> &str {
+    match name {
+        "cmd" => "⌘",
+        "ctrl" => "⌃",
+        "alt" => "⌥",
+        "shift" => "⇧",
+        "enter" => "↩",
+        "up" => "↑",
+        "down" => "↓",
+        "left" => "←",
+        "right" => "→",
+        "escape" => "esc",
+        "backspace" => "⌫",
+        other => other,
+    }
 }
 
 /// A dialog, palette, or the focused pane's find bar owns editing keys.
@@ -1180,33 +567,26 @@ pub fn yields_to_text_field(command_id: &str) -> bool {
     command_id == "select-all" || command_id.starts_with("send:")
 }
 
-fn normalize_key(raw: &str) -> (String, String, bool) {
+/// The key with shifted punctuation folded to its base key, and whether the
+/// raw key implied Shift.
+fn normalize_key(raw: &str) -> (String, bool) {
     let lowered = raw.to_lowercase();
     let key = UNSHIFTED
         .iter()
         .find(|(shifted, _)| *shifted == lowered)
-        .map(|(_, plain)| (*plain).to_owned())
-        .unwrap_or_else(|| lowered.clone());
-    let shifted = lowered != raw;
-    (key, lowered, shifted)
+        .map_or_else(|| lowered.clone(), |(_, plain)| (*plain).to_owned());
+    let shifted = key != lowered || lowered != raw;
+    (key, shifted)
 }
 
-fn join_chord(cmd: bool, ctrl: bool, alt: bool, shift: bool, key: &str) -> String {
-    let mut parts = Vec::new();
-    if cmd {
-        parts.push("cmd");
-    }
-    if ctrl {
-        parts.push("ctrl");
-    }
-    if alt {
-        parts.push("alt");
-    }
-    if shift {
-        parts.push("shift");
-    }
-    parts.push(key);
-    parts.join("+")
+/// `cmd+ctrl+alt+shift+key`, with only the modifiers held.
+pub(super) fn join_chord(cmd: bool, ctrl: bool, alt: bool, shift: bool, key: &str) -> String {
+    [(cmd, "cmd"), (ctrl, "ctrl"), (alt, "alt"), (shift, "shift")]
+        .into_iter()
+        .filter_map(|(held, name)| held.then_some(name))
+        .chain([key])
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 #[cfg(test)]
