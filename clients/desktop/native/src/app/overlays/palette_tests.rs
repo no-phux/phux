@@ -612,3 +612,240 @@ fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppCon
     keys(cx, "escape escape cmd-p");
     assert!(!desk.read_with(cx, |desk, _| desk.palette_view.details));
 }
+
+#[gpui::test]
+fn a_remapped_chord_is_the_hint_the_palette_shows(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, |desk, cx| {
+        desk.install_ghostty_for_test("keybind = cmd+alt+z=toggle_split_zoom\n", cx)
+    });
+    render(cx);
+    let remapped = crate::settings::display_chord("cmd+alt+z");
+    let default = crate::settings::display_chord("cmd+shift+enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.shown_chord("zoom")),
+        Some(remapped.clone())
+    );
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "zoom pane");
+    assert_eq!(selected_command(&desk, cx), Some("zoom"));
+    // Debug selectors are looked up by `'static` name.
+    let selector = |chord: &str| -> &'static str {
+        Box::leak(format!("palette-chord:{chord}").into_boxed_str())
+    };
+    assert!(
+        cx.debug_bounds(selector(&remapped)).is_some(),
+        "the highlighted row shows the installed chord"
+    );
+    assert!(
+        cx.debug_bounds(selector(&default)).is_none(),
+        "the built-in default is not shown once remapped"
+    );
+}
+
+#[gpui::test]
+fn destination_pickers_drop_the_global_strip_and_keep_every_route(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    for modal in [Modal::WindowSession, Modal::MoveResources] {
+        open(&desk, &modal, cx);
+        assert!(cx.debug_bounds("palette-panel").is_some());
+        for global in [
+            "palette-mode-goto",
+            "palette-mode-commands",
+            "palette-mode-settings",
+            "palette-filter",
+        ] {
+            assert!(
+                cx.debug_bounds(global).is_none(),
+                "{modal:?} is scoped to its destination, not the {global} hub control"
+            );
+        }
+        keys(cx, "escape");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::None
+        );
+    }
+    // The navigator still reaches every route.
+    keys(cx, "cmd-p");
+    for route in [
+        "palette-mode-goto",
+        "palette-mode-commands",
+        "palette-mode-settings",
+        "palette-filter",
+    ] {
+        assert!(cx.debug_bounds(route).is_some(), "{route} stays reachable");
+    }
+}
+
+/// The element that carries `modal`'s card.
+fn surface(modal: &Modal) -> &'static str {
+    match modal {
+        Modal::NativeLaunch => "native-launch-panel",
+        Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
+            "palette-panel"
+        }
+        _ => "modal-sheet",
+    }
+}
+
+fn open(desk: &Entity<Desk>, modal: &Modal, cx: &mut VisualTestContext) {
+    if *modal == Modal::Path {
+        desk.update(cx, |desk, _| desk.picker = Some(path_picker()));
+    }
+    cx.update(|window, cx| desk.update(cx, |desk, cx| desk.open_modal(modal.clone(), window, cx)));
+    render(cx);
+    assert_eq!(desk.read_with(cx, |desk, _| desk.modal.clone()), *modal);
+}
+
+fn path_picker() -> crate::connection::PickerState {
+    crate::connection::begin_picker(
+        crate::connection::PathTarget {
+            terminal_id: "local:1".into(),
+            placement_id: "place-1".into(),
+            server_id: "a".into(),
+            epoch: "1".into(),
+        },
+        "/repo",
+    )
+}
+
+#[gpui::test]
+fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    let modals = [
+        Modal::Commands,
+        Modal::Rename { tab_id: "t".into() },
+        Modal::Session {
+            create: true,
+            current: String::new(),
+            target: None,
+        },
+        Modal::Session {
+            create: false,
+            current: "work".into(),
+            target: None,
+        },
+        Modal::AddHost,
+        Modal::RemoveHost {
+            name: "mini".into(),
+        },
+        Modal::KillSession {
+            name: "work".into(),
+            session: 1,
+        },
+        Modal::Notifications,
+        Modal::NativeLaunch,
+        Modal::Path,
+    ];
+    let top = cx.update(|window, _| super::sheet_top(window.viewport_size()));
+    for modal in &modals {
+        // Placement: every card starts at the same offset under the titlebar.
+        open(&desk, modal, cx);
+        let card = cx
+            .debug_bounds(surface(modal))
+            .unwrap_or_else(|| panic!("{modal:?} renders its card"));
+        assert_eq!(
+            card.top(),
+            gpui::px(top),
+            "{modal:?} sits at the shared top"
+        );
+        // A click inside the card never dismisses it.
+        cx.simulate_click(
+            card.origin + gpui::point(gpui::px(4.), gpui::px(4.)),
+            gpui::Modifiers::none(),
+        );
+        render(cx);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            *modal,
+            "a click inside {modal:?} keeps it open"
+        );
+        // Escape dismisses and hands the keyboard back.
+        keys(cx, "escape");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::None,
+            "Escape closes {modal:?}"
+        );
+        assert_desk_focus(&desk, cx);
+        // A click outside dismisses the same way.
+        open(&desk, modal, cx);
+        cx.simulate_click(
+            gpui::point(gpui::px(8.), gpui::px(8.)),
+            gpui::Modifiers::none(),
+        );
+        render(cx);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::None,
+            "an outside click closes {modal:?}"
+        );
+        assert_desk_focus(&desk, cx);
+    }
+}
+
+#[gpui::test]
+fn text_dialogs_own_typing_until_dismissed(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    for (modal, slot) in [
+        (Modal::Rename { tab_id: "t".into() }, InputSlot::Rename),
+        (
+            Modal::Session {
+                create: true,
+                current: String::new(),
+                target: None,
+            },
+            InputSlot::SessionName,
+        ),
+        (Modal::AddHost, InputSlot::HostTarget),
+    ] {
+        open(&desk, &modal, cx);
+        type_text(cx, "cedar");
+        desk.read_with(cx, |desk, cx| {
+            let input = desk.input_entity(slot).expect("dialog field");
+            assert_eq!(input.read(cx).value(), "cedar", "{modal:?} owns typing");
+        });
+        keys(cx, "escape");
+        assert_eq!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::None
+        );
+        assert_desk_focus(&desk, cx);
+    }
+}
+
+#[gpui::test]
+fn path_loading_and_failure_read_in_the_results_not_the_footer(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    open(&desk, &Modal::Path, cx);
+    for picker in [
+        crate::connection::start_query(path_picker(), 7, "/repo", ""),
+        crate::connection::PickerState {
+            failure: Some("permission denied".into()),
+            ..path_picker()
+        },
+        path_picker(),
+    ] {
+        desk.update(cx, |desk, cx| {
+            desk.picker = Some(picker);
+            cx.notify();
+        });
+        render(cx);
+        let notice = cx
+            .debug_bounds("path-results-notice")
+            .expect("the state fills the results");
+        let footer = cx.debug_bounds("path-footer").expect("footer");
+        let panel = cx.debug_bounds("modal-sheet").expect("path panel");
+        assert!(
+            notice.bottom() <= footer.top(),
+            "notice sits above the footer"
+        );
+        assert!(notice.top() >= panel.top() && footer.bottom() <= panel.bottom());
+    }
+}

@@ -1,6 +1,8 @@
 //! Palettes, the path picker, dialogs, and the find bar. Lists are the Kit
-//! [`Command`] palette; text entry is Kit [`Input`]. Every modal sits on a
-//! backdrop that closes it on click, and its control takes the keyboard on open.
+//! [`Command`] palette; text entry is Kit [`Input`]. Every modal is a
+//! [`sheet`] on one [`backdrop`]: the same placement, a click outside or
+//! Escape closes it, a click inside never does, and its control takes the
+//! keyboard on open.
 
 use std::rc::Rc;
 
@@ -10,7 +12,7 @@ use gpui::{
     Styled, Subscription, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::command::{Command, CommandItem, CommandState};
+use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use phux_protocol::ResourceId;
@@ -502,6 +504,39 @@ pub(crate) fn path_items(desk: &Desk) -> Vec<PathItem> {
         .collect()
 }
 
+/// Where the path picker says what state it is in. Loading, failure and an
+/// empty answer read in the results; the footer keeps paging status and keys.
+#[derive(Debug, PartialEq, Eq)]
+struct PathPresentation {
+    /// Heads listed rows: why the last insertion failed.
+    heading: Option<String>,
+    /// Fills the results when nothing is listed.
+    empty: String,
+    /// Qualifies listed rows, such as a truncated answer.
+    status: Option<String>,
+}
+
+fn path_presentation(picker: &paths::PickerState, has_rows: bool) -> PathPresentation {
+    let notice = if picker.pending.is_some() {
+        Some("Searching host paths…".to_owned())
+    } else {
+        picker.failure.as_deref().map(paths::display_path)
+    };
+    let message = (!picker.message.is_empty()).then(|| paths::display_path(&picker.message));
+    if has_rows {
+        return PathPresentation {
+            heading: notice,
+            empty: String::new(),
+            status: message,
+        };
+    }
+    PathPresentation {
+        heading: None,
+        empty: notice.or(message).unwrap_or_else(|| "No paths.".to_owned()),
+        status: None,
+    }
+}
+
 pub fn layer(
     desk: &mut Desk,
     colors: &Palette,
@@ -514,7 +549,7 @@ pub fn layer(
         Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
             launcher::palette(desk, colors, window, cx)
         }
-        Modal::Path => path_panel(desk, colors, &look, window, cx),
+        Modal::Path => path_panel(desk, colors, &look, cx),
         Modal::Settings if desk.settings_page.is_some() => {
             super::settings_panel::panel(desk, colors, window, cx)
         }
@@ -552,11 +587,35 @@ pub fn layer(
             |desk, window, cx| desk.confirm_terminate(window, cx),
         ),
     };
-    backdrop(colors, cx, card)
+    backdrop(colors, window, cx, card)
 }
 
-/// A dimmed layer over the window that blocks the terminal and closes the modal on click.
-fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) -> AnyElement {
+/// The gap between a transient surface and the window's edges.
+pub(crate) const SHEET_GUTTER: f32 = 16.;
+
+/// How far below the window top every palette, panel and dialog sits. One
+/// placement for every transient surface, scaled to the window height.
+pub(crate) fn sheet_top(viewport: gpui::Size<gpui::Pixels>) -> f32 {
+    (viewport.height.as_f32() * 0.13).clamp(SHEET_GUTTER, 84.)
+}
+
+/// A modal's card: at most `width` wide, never wider than the window's
+/// gutters allow, and a click inside it never reaches the backdrop.
+pub(crate) fn sheet(look: &Look, width: f32) -> gpui::Div {
+    card(look, width)
+        .debug_selector(|| "modal-sheet".into())
+        .max_w_full()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// A dimmed layer over the window that blocks the terminal, places the modal
+/// at [`sheet_top`], and closes it on a click outside the card.
+fn backdrop(
+    colors: &Palette,
+    window: &Window,
+    cx: &mut Context<Desk>,
+    card: impl IntoElement,
+) -> AnyElement {
     div()
         .id("modal-backdrop")
         .absolute()
@@ -565,6 +624,9 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .flex()
         .flex_col()
         .items_center()
+        .pt(px(sheet_top(window.viewport_size())))
+        .px(px(SHEET_GUTTER))
+        .pb(px(SHEET_GUTTER))
         .bg(from_hex(&colors.backdrop))
         .occlude()
         .on_mouse_down(
@@ -1260,7 +1322,6 @@ fn path_panel(
     desk: &mut Desk,
     colors: &Palette,
     look: &Look,
-    window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let Some(state) = desk.palette_state.clone() else {
@@ -1269,18 +1330,17 @@ fn path_panel(
     let Some(picker) = desk.picker.clone() else {
         return div().into_any_element();
     };
-    // The search field's spinner follows the outstanding host query.
-    let pending = picker.pending.is_some();
-    if state.read(cx).is_loading() != pending {
-        state.update(cx, |state, cx| state.set_loading(pending, window, cx));
-    }
     let items = path_items(desk);
+    let PathPresentation {
+        heading,
+        empty,
+        status,
+    } = path_presentation(&picker, !items.is_empty());
     let targets: Rc<Vec<Target>> = Rc::new(items.iter().cloned().map(Target::Path).collect());
     let desk_handle = cx.weak_entity();
     let confirm_handle = desk_handle.clone();
     let terminal_handle = desk_handle.clone();
     let muted = from_hex(&colors.muted);
-    let message = paths::display_path(&picker.message);
     let rows = items.into_iter().map(move |item| {
         let terminal_handle = terminal_handle.clone();
         let (icon, label, directory) = match &item {
@@ -1334,14 +1394,19 @@ fn path_panel(
         })
     });
     let root = picker.root.clone();
+    let mut group = CommandGroup::new().items(rows);
+    if let Some(heading) = heading {
+        group = group.label(heading);
+    }
     let command = Command::new(&state)
         .filterable(false)
         .bordered(false)
         .placeholder(format!("Search in {root}…"))
         .max_h(px(420.))
-        .items(rows)
+        .group(group)
         .empty(move |_, _, cx| {
             div()
+                .debug_selector(|| "path-results-notice".into())
                 .py(px(36.))
                 .px(px(24.))
                 .w_full()
@@ -1353,10 +1418,11 @@ fn path_panel(
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
-                .child(if pending { "Searching…" } else { "No paths." })
+                .child(empty.clone())
         })
         .footer(move |_, _, _| {
             div()
+                .debug_selector(|| "path-footer".into())
                 .px(px(12.))
                 .py(px(10.))
                 .flex()
@@ -1364,7 +1430,7 @@ fn path_panel(
                 .gap(px(12.))
                 .text_xs()
                 .text_color(muted)
-                .child(div().min_w_0().truncate().child(message.clone()))
+                .child(div().min_w_0().truncate().children(status.clone()))
                 .child(div().flex_shrink_0().child("Tab: open terminal"))
         })
         .on_query(move |query, window, cx| {
@@ -1375,8 +1441,7 @@ fn path_panel(
                 let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
             }
         });
-    card(look, 640.)
-        .mt(px(72.))
+    sheet(look, 640.)
         .overflow_hidden()
         .key_context("PathPicker")
         .child(command)
@@ -1518,8 +1583,7 @@ fn notifications_panel(
         ));
         rows.extend(general_rows);
     }
-    card(look, 460.)
-        .mt(px(60.))
+    sheet(look, 460.)
         .p(px(12.))
         .flex()
         .flex_col()
@@ -1577,8 +1641,7 @@ fn notifications_panel(
 }
 
 fn dialog_card(title: &str, colors: &Palette, look: &Look) -> gpui::Div {
-    card(look, 440.)
-        .mt(px(120.))
+    sheet(look, 440.)
         .p(px(24.))
         .flex()
         .flex_col()
@@ -1778,6 +1841,60 @@ mod tests {
             selection_path(&ids, Some(&GotoId::Pane(target))),
             Some((0, 2))
         );
+    }
+
+    #[test]
+    fn path_state_reads_in_the_results_and_the_footer_keeps_paging() {
+        use super::{PathPresentation, path_presentation};
+        let picker = crate::connection::begin_picker(
+            crate::connection::PathTarget {
+                terminal_id: "local:1".into(),
+                placement_id: "place-1".into(),
+                server_id: "a".into(),
+                epoch: "1".into(),
+            },
+            "/repo",
+        );
+        let empty = |text: &str| PathPresentation {
+            heading: None,
+            empty: text.to_owned(),
+            status: None,
+        };
+        let searching = crate::connection::start_query(picker.clone(), 1, "/repo", "");
+        assert_eq!(
+            path_presentation(&searching, false),
+            empty("Searching host paths…")
+        );
+        let failed = crate::connection::PickerState {
+            failure: Some("permission denied".into()),
+            ..picker.clone()
+        };
+        assert_eq!(
+            path_presentation(&failed, false),
+            empty("permission denied")
+        );
+        assert_eq!(
+            path_presentation(&failed, true),
+            PathPresentation {
+                heading: Some("permission denied".into()),
+                empty: String::new(),
+                status: None,
+            },
+            "a failed insertion heads the rows it left listed"
+        );
+        let warming = crate::connection::PickerState {
+            message: "Host index is warming; search again shortly.".into(),
+            ..picker.clone()
+        };
+        assert_eq!(
+            path_presentation(&warming, false),
+            empty("Host index is warming; search again shortly.")
+        );
+        assert_eq!(
+            path_presentation(&warming, true).status.as_deref(),
+            Some("Host index is warming; search again shortly.")
+        );
+        assert_eq!(path_presentation(&picker, false), empty("No paths."));
     }
 
     #[test]
