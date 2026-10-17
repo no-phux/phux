@@ -31,6 +31,18 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.36.0](https://github.com/no-phux/phux/compare/desktop-v0.35.0...desktop-v0.36.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** make machines discoverable with live state and actions ([ae43ac1](https://github.com/no-phux/phux/commit/ae43ac167c3d17083a369a8042b53c57214c1caf))
+
+
+### Bug Fixes
+
+* **desktop:** add machine Disconnect and tighten machine entry points ([3ad668c](https://github.com/no-phux/phux/commit/3ad668c272f7b0c2edf05c2ff58dd991e8de9648))
+
 ## [0.35.0](https://github.com/no-phux/phux/compare/desktop-v0.34.1...desktop-v0.35.0) (2026-10-17)
 
 
