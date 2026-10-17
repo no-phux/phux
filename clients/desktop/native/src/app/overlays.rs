@@ -581,7 +581,7 @@ pub fn layer(
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, &look, cx),
-        Modal::NativeLaunch => super::native_launch::panel(desk, colors, &look, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, &look, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::KillSession { name, .. } => confirm(

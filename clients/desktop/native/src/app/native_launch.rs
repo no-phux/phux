@@ -10,10 +10,9 @@ use super::color::from_hex;
 use super::desk::{Desk, Modal};
 use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
-use super::overlays::corner;
-use super::skin::{Look, Surface, Surfaced};
+use super::overlays::{card, corner};
+use super::skin::Look;
 use crate::connection::Connection;
-use crate::settings::theme::Palette;
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -252,12 +251,8 @@ fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
         })
 }
 
-pub(crate) fn panel(
-    desk: &Desk,
-    colors: &Palette,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
     let state = &desk.native_launch;
     let busy = state.loading || state.launching.is_some();
     let rows = state.integrations.iter().map(|item| {
@@ -310,20 +305,16 @@ pub(crate) fn panel(
                     }),
             )
     });
-    div()
+    card(look, 560.)
         .debug_selector(|| "native-launch-panel".into())
-        .w(px(560.))
         .max_w_full()
         .max_h(px(620.))
         .p(px(18.))
-        .text_color(look.ink)
-        .surface(look, Surface::Popover)
         // A solid sheet with a tighter corner and the kit's large lift.
         .rounded(corner(look, 12.))
         .bg(from_hex(&colors.raised))
         .border_color(look.border)
         .when(!look.popover_shadow.is_empty(), |panel| panel.shadow_lg())
-        .occlude()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .flex()
         .flex_col()
