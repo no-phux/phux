@@ -35,7 +35,7 @@ use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_rank, fuzzy_score};
 use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
-use crate::render::{ChromeBreakpoints, Theme, clip_text, display_width};
+use crate::render::{ChromeBreakpoints, Theme, clip_left, clip_text, display_width};
 
 /// Columns of the section column: a marker, the longest title
 /// (`Experimental`), a gap, and a two-digit count.
@@ -868,15 +868,16 @@ impl SettingsOverlay {
         {
             lines.push(Line::from(Span::styled(line, dim)));
         }
-        lines.push(self.facts_line(spec));
+        lines.push(self.facts_line(spec, width));
         if let Some(line) = self.outcome_line(spec, width) {
             lines.push(line);
         }
         lines
     }
 
-    /// `default X  ·  origin  ·  applies when`.
-    fn facts_line(&self, spec: &SettingSpec) -> Line<'static> {
+    /// `default X  ·  origin  ·  applies when`, its tail clipped with an
+    /// ellipsis when `width` cannot hold it all.
+    fn facts_line(&self, spec: &SettingSpec, width: usize) -> Line<'static> {
         let dim = Style::default().fg(self.theme.dim);
         let text = Style::default().fg(self.theme.text);
         let default = render_value(self.default_at(spec).as_ref());
@@ -895,9 +896,13 @@ impl SettingsOverlay {
             ));
         }
         facts.push(Span::styled(default, text));
-        facts.push(Span::styled(format!("  \u{b7}  {origin}"), dim));
+        let tail = format!(
+            "  \u{b7}  {origin}  \u{b7}  applies {}",
+            applies_label(spec.applies)
+        );
+        let used: usize = facts.iter().map(|span| display_width(&span.content)).sum();
         facts.push(Span::styled(
-            format!("  \u{b7}  applies {}", applies_label(spec.applies)),
+            clip_text(&tail, width.saturating_sub(used)),
             dim,
         ));
         Line::from(facts)
@@ -941,11 +946,12 @@ impl SettingsOverlay {
         Line::from(Span::styled(clip_text(text, width), style))
     }
 
-    /// The header row: the filter prompt on the left, the file on the right.
+    /// The header row: the filter prompt on the left, the file on the
+    /// right, cut from the left when long so its name stays.
     fn header_row(&self, width: usize) -> Line<'static> {
         let query_text = self.query.clone();
         let prompt_w = 2 + display_width(&query_text) + 1;
-        let path = clip_text(&self.display_path, width.saturating_sub(prompt_w + 2));
+        let path = clip_left(&self.display_path, width.saturating_sub(prompt_w + 2));
         let pad = width.saturating_sub(prompt_w + display_width(&path));
         Line::from(vec![
             Span::styled("> ".to_owned(), Style::default().fg(self.theme.dim)),

@@ -23,6 +23,31 @@ pub use theme::Theme;
 /// status-bar composer so every surface cuts the same way.
 pub const ELLIPSIS: char = phux_config::widget::ELLIPSIS;
 
+/// Clip `text` from the left to at most `max` display cells, led by
+/// [`ELLIPSIS`] when cut, so the tail stays: a path keeps its deepest
+/// directory, a file its name.
+#[must_use]
+pub fn clip_left(text: &str, max: usize) -> String {
+    if display_width(text) <= max {
+        return text.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 1;
+    for ch in text.chars().rev() {
+        let w = cell_width(ch).unwrap_or(0);
+        if used + w > max {
+            break;
+        }
+        used += w;
+        tail.push(ch);
+    }
+    tail.push(ELLIPSIS);
+    tail.into_iter().rev().collect()
+}
+
 /// Clip `s` to at most `max` display cells, marking a cut with [`ELLIPSIS`]
 /// (which replaces the last cell, so the result never exceeds `max`).
 ///
