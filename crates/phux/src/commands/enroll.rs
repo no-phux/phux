@@ -1211,7 +1211,7 @@ pub(crate) fn enroll_with_ticket(
         pins.leaf.map(str::to_owned),
         pins.route.map(str::to_owned),
     )
-    .and_then(|plan| plan.with_authority(&pin))
+    .and_then(|plan| plan.with_authority(quic_target, &pin))
     .map_err(|refusal| format!("{refusal:?}"))?;
     let phux_client::attach::Dial::Quic(dial) = plan.dial else {
         return Err("enrollment needs a quic:// endpoint".to_owned());
@@ -1731,7 +1731,10 @@ pub(crate) fn probe_within(
         cert_fingerprint.map(str::to_owned),
         None,
     )
-    .and_then(|plan| plan.with_identity(identity).with_authority(authority))
+    .and_then(|plan| {
+        plan.with_identity(identity)
+            .with_authority(target, authority)
+    })
     .map_err(|refusal| format!("{refusal:?}"))?;
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {
