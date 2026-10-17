@@ -83,9 +83,13 @@ impl Page {
             Self::Layout => {
                 "sidebar tabs top side background opacity glass blur solid opaque notifications alerts"
             }
-            Self::Keyboard => "option alt keys keybind shortcuts chord input",
+            Self::Keyboard => {
+                "option alt keys keybind shortcuts chord input conflicts duplicate source"
+            }
             Self::Spacing => "line height cell width padding horizontal vertical unfocused dimming",
-            Self::Ghostty => "import reload config ghostty look integration",
+            Self::Ghostty => {
+                "import reload config ghostty look integration skipped malformed unsupported lines"
+            }
             Self::Updates => "version release install update download channel",
             Self::Connections => {
                 "hosts machines remote ssh local add remove retry reconnect status endpoint"
@@ -512,10 +516,10 @@ fn slider_item(
 fn sourced(
     desk: &Desk,
     text: &str,
-    ghostty_key: Option<&str>,
+    ghostty_keys: &[&str],
     field: fn(&DisplayPrefs) -> String,
 ) -> String {
-    let source = settings::display_provenance(&desk.prefs, desk.ghostty(), ghostty_key, field);
+    let source = settings::display_provenance(&desk.prefs, desk.ghostty(), ghostty_keys, field);
     notes([text, &source.label(), source.applies().label()])
 }
 
@@ -532,7 +536,7 @@ fn notes<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
     let mut font = gpui::font(desk.prefs.font_family.clone());
     crate::fonts::resolve(&mut font, cx);
-    let source = sourced(desk, "", Some("font-family"), |prefs| {
+    let source = sourced(desk, "", &["font-family"], |prefs| {
         prefs.font_family.clone()
     });
     if font.family.as_ref() == desk.prefs.font_family {
@@ -551,11 +555,36 @@ fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
     }
 }
 
+/// Line height's source. A Ghostty import resets it to 1 for a font family,
+/// size or cell height, and the cell height (which has no slider) is named here.
+fn line_height_description(desk: &Desk) -> String {
+    let line = sourced(
+        desk,
+        "Row height as a multiple of the font size.",
+        &["adjust-cell-height", "font-size", "font-family"],
+        |prefs| prefs.line_height.to_string(),
+    );
+    if (desk.prefs.cell_height - 1.0).abs() < f64::EPSILON {
+        return line;
+    }
+    let source = settings::display_provenance(
+        &desk.prefs,
+        desk.ghostty(),
+        &["adjust-cell-height"],
+        |prefs| prefs.cell_height.to_string(),
+    );
+    let percent = ((desk.prefs.cell_height - 1.0) * 100.0).round();
+    notes([
+        line.as_str(),
+        &format!("Cell height {percent:+}% ({})", source.label()),
+    ])
+}
+
 /// The theme's source. A Ghostty theme reads the config's colours live, so a
 /// file edit reaches it on reload rather than on a fresh import.
 fn theme_source(desk: &Desk) -> String {
     let source =
-        settings::display_provenance(&desk.prefs, desk.ghostty(), Some("background"), |prefs| {
+        settings::display_provenance(&desk.prefs, desk.ghostty(), &["background"], |prefs| {
             prefs.theme_id.clone()
         });
     let applies = match source {
@@ -673,7 +702,7 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
                 |prefs, value| prefs.font_size = value,
             ),
         )
-        .description(sourced(desk, "Points", Some("font-size"), |prefs| {
+        .description(sourced(desk, "Points", &["font-size"], |prefs| {
             prefs.font_size.to_string()
         })),
     );
@@ -1054,12 +1083,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             handle,
             Knob::LineHeight,
             "Line height",
-            &sourced(
-                desk,
-                "Row height as a multiple of the font size.",
-                None,
-                |prefs| prefs.line_height.to_string(),
-            ),
+            &line_height_description(desk),
         ))
         .items(slider_item(
             desk,
@@ -1069,7 +1093,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             &sourced(
                 desk,
                 "Column width as a percent of the font's advance.",
-                Some("adjust-cell-width"),
+                &["adjust-cell-width"],
                 |prefs| prefs.cell_width.to_string(),
             ),
         ))
@@ -1086,7 +1110,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             .description(sourced(
                 desk,
                 "Points between the pane edge and the text.",
-                Some("window-padding-x"),
+                &["window-padding-x"],
                 |prefs| prefs.padding_x.to_string(),
             )),
         )
@@ -1103,7 +1127,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             .description(sourced(
                 desk,
                 "Points above and below the text.",
-                Some("window-padding-y"),
+                &["window-padding-y"],
                 |prefs| prefs.padding_y.to_string(),
             )),
         );
@@ -1118,7 +1142,7 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             &sourced(
                 desk,
                 "Visibility of panes you are not typing in. 100% disables dimming.",
-                Some("unfocused-split-opacity"),
+                &["unfocused-split-opacity"],
                 |prefs| prefs.unfocused_opacity.to_string(),
             ),
         )))
@@ -1132,7 +1156,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                 .description(sourced(
                     desk,
                     "Off keeps macOS Option characters such as å and ß.",
-                    Some("macos-option-as-alt"),
+                    &["macos-option-as-alt"],
                     |prefs| prefs.option_as_alt.to_string(),
                 )),
         )
@@ -1201,16 +1225,17 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
 }
 
 /// Chords the Ghostty config binds to different actions, each with every
-/// line that binds it. Hidden when there are none.
+/// line that binds it. Hidden when there are none, and while Ghostty
+/// keybinds are off, since then none of those lines apply.
 fn conflicts_group(desk: &Desk) -> Option<SettingGroup> {
+    if !desk.prefs.ghostty_keys {
+        return None;
+    }
     let conflicts = settings::keymap_conflicts(desk.ghostty());
     if conflicts.is_empty() {
         return None;
     }
     let title = |id: &str| {
-        if id.is_empty() {
-            return "Unbind".to_owned();
-        }
         settings::builtin_commands()
             .iter()
             .find(|command| command.id == id)
@@ -1322,14 +1347,39 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             .item(status)
             .item(actions),
     );
-    let diagnostics = &desk.ghostty().diagnostics;
-    if diagnostics.is_empty() {
-        return page;
+    let config = desk.ghostty();
+    let page = match diagnostic_group(
+        &config.diagnostics,
+        "Skipped lines",
+        "These lines could not be read. Every other line still applies.",
+    ) {
+        Some(group) => page.group(group),
+        None => page,
+    };
+    match diagnostic_group(
+        &config.unsupported,
+        "Not used here",
+        "Ghostty accepts these lines; this app cannot represent their values, so it leaves them out.",
+    ) {
+        Some(group) => page.group(group),
+        None => page,
     }
-    page.group(
+}
+
+/// One row per diagnostic: file and line, the line's text, and why it was
+/// left out. `None` when there are none.
+fn diagnostic_group(
+    diagnostics: &[settings::Diagnostic],
+    title: &'static str,
+    description: &'static str,
+) -> Option<SettingGroup> {
+    if diagnostics.is_empty() {
+        return None;
+    }
+    Some(
         SettingGroup::new()
-            .title("Skipped lines")
-            .description("These lines could not be read. Every other line still applies.")
+            .title(title)
+            .description(description)
             .items(diagnostics.iter().map(|diagnostic| {
                 let text = diagnostic.text.clone();
                 SettingItem::new(
@@ -1344,7 +1394,7 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     }),
                 )
                 .description(diagnostic.reason)
-                .keywords(["skipped", "malformed", "invalid", "ghostty"].map(str::to_owned))
+                .keywords(["skipped", "malformed", "unsupported", "ghostty"].map(str::to_owned))
             })),
     )
 }

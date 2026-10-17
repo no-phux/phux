@@ -64,17 +64,21 @@ impl Applies {
     }
 }
 
-/// The source of the value `field` reads from `prefs`. `ghostty_key` names
-/// the Ghostty key that can set it, if any.
+/// The source of the value `field` reads from `prefs`. `ghostty_keys` names
+/// the Ghostty keys that can set it, most specific first; the first one the
+/// config sets is the origin. Line height, for one, is reset by any of
+/// `adjust-cell-height`, `font-size` and `font-family`.
 #[must_use]
 pub fn display_provenance(
     prefs: &DisplayPrefs,
     ghostty: &GhosttyConfig,
-    ghostty_key: Option<&str>,
+    ghostty_keys: &[&str],
     field: fn(&DisplayPrefs) -> String,
 ) -> Provenance {
     let current = field(prefs);
-    if let Some(origin) = ghostty_key.and_then(|key| ghostty.origins.get(key))
+    if let Some(origin) = ghostty_keys
+        .iter()
+        .find_map(|key| ghostty.origins.get(*key))
         && field(&ghostty_prefs(&default_display(), ghostty)) == current
     {
         return Provenance::Ghostty(origin.clone());
@@ -98,12 +102,11 @@ mod tests {
         let size = |prefs: &super::DisplayPrefs| prefs.font_size.to_string();
         let mut prefs = default_display();
         assert_eq!(
-            display_provenance(&prefs, &config, Some("font-size"), size),
+            display_provenance(&prefs, &config, &["font-size"], size),
             Provenance::Default
         );
         prefs.font_size = 15.0;
-        let Provenance::Ghostty(origin) =
-            display_provenance(&prefs, &config, Some("font-size"), size)
+        let Provenance::Ghostty(origin) = display_provenance(&prefs, &config, &["font-size"], size)
         else {
             panic!("font size should come from the Ghostty line");
         };
@@ -111,7 +114,22 @@ mod tests {
         assert_eq!(origin.label(), "line 2");
         prefs.font_size = 18.0;
         assert_eq!(
-            display_provenance(&prefs, &config, Some("font-size"), size),
+            display_provenance(&prefs, &config, &["font-size"], size),
+            Provenance::Desktop
+        );
+        let line_height = |prefs: &super::DisplayPrefs| prefs.line_height.to_string();
+        prefs.line_height = 1.0;
+        let Provenance::Ghostty(origin) = display_provenance(
+            &prefs,
+            &config,
+            &["adjust-cell-height", "font-size", "font-family"],
+            line_height,
+        ) else {
+            panic!("an imported font size resets line height");
+        };
+        assert_eq!(origin.line, 2);
+        assert_eq!(
+            display_provenance(&prefs, &config, &[], line_height),
             Provenance::Desktop
         );
         assert_eq!(Applies::Live.label(), "");
