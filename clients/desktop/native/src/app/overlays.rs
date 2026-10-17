@@ -792,6 +792,14 @@ fn settings_sections() -> Vec<Section> {
     }]
 }
 
+/// Leads the detail of the Go To row this window shows, so the work, terminal
+/// and tab in use stay legible among similar names and hosts.
+const CURRENT: &str = "Current · ";
+
+fn current_mark(current: bool) -> &'static str {
+    if current { CURRENT } else { "" }
+}
+
 fn work_rows(desk: &Desk) -> Vec<Row> {
     desk.work_catalog()
         .into_iter()
@@ -799,8 +807,9 @@ fn work_rows(desk: &Desk) -> Vec<Row> {
             let destination = work.destination;
             let status = if work.online { "" } else { " · offline" };
             let intake = if work.intake { " · Intake" } else { "" };
+            let mark = current_mark(desk.work_is_active(&destination));
             let detail = format!(
-                "{} · {} terminals{intake}{status}",
+                "{mark}{} · {} terminals{intake}{status}",
                 destination.host_label(),
                 work.terminals
             );
@@ -910,7 +919,9 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
     };
     let mut agents = Vec::new();
     let mut terminals = Vec::new();
+    let focused = desk.focused_terminal();
     for pane in link.connection.panes() {
+        let mark = current_mark(focused.as_ref() == Some(&pane.terminal_id));
         let agent = link.connection.agents.get(&pane.terminal_id);
         let title = desk.pane_title(Some(&pane.terminal_id));
         let directory = desk::short_path(pane.cwd.clone());
@@ -936,8 +947,8 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 .unwrap_or_else(|| detail.clone()),
             detail: Some(
                 (match agent.map(|info| info.word()) {
-                    Some(word) if !word.is_empty() => format!("{word} · {detail}"),
-                    _ => detail,
+                    Some(word) if !word.is_empty() => format!("{mark}{word} · {detail}"),
+                    _ => format!("{mark}{detail}"),
                 })
                 .into(),
             ),
@@ -969,7 +980,8 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             if placed.len() < 2 {
                 return None;
             }
-            let detail = format!("Tab {} · {} panes", index + 1, placed.len());
+            let mark = current_mark(tab.id == link.workspace.active_id);
+            let detail = format!("{mark}Tab {} · {} panes", index + 1, placed.len());
             let title = desk::tab_title(desk, tab);
             let panes = placed
                 .into_iter()
@@ -1068,7 +1080,7 @@ fn window_sections(desk: &Desk, current: EntityId, cx: &App) -> Vec<Section> {
             1 => "1 tab".to_owned(),
             count => format!("{count} tabs"),
         };
-        let mark = if here { "Current · " } else { "" };
+        let mark = current_mark(here);
         let target = |tab: Option<String>| Target::Window {
             handle,
             desk: entity.downgrade(),
@@ -1083,7 +1095,7 @@ fn window_sections(desk: &Desk, current: EntityId, cx: &App) -> Vec<Section> {
         let total = shown.tabs.len();
         for (position, (id, title)) in shown.tabs.iter().enumerate() {
             let mark = match (shown.active.as_deref() == Some(id.as_str()), here) {
-                (true, true) => "Current · ",
+                (true, true) => CURRENT,
                 (true, false) => "Shown · ",
                 (false, _) => "",
             };
@@ -1390,13 +1402,15 @@ fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
             .connection
             .revision()
             .wrapping_add(desk.fleet.revision.rotate_left(32)),
-        workspace: workspace_stamp(&link.workspace.tabs),
+        workspace: workspace_stamp(&link.workspace),
     }
 }
 
-fn workspace_stamp(tabs: &[crate::workspace::layout::DeskTab]) -> u64 {
+/// Tab rows and the focused terminal follow the active tab, so it mixes in too.
+fn workspace_stamp(workspace: &crate::workspace::Workspace) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for tab in tabs {
+    hash = mix_bytes(hash, workspace.active_id.as_bytes());
+    for tab in &workspace.tabs {
         hash = mix_bytes(hash, tab.id.as_bytes());
         hash = mix_bytes(hash, tab.focused_id.as_bytes());
         hash = mix_bytes(hash, tab.title.as_deref().unwrap_or("").as_bytes());
