@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.86.1](https://github.com/no-phux/phux/compare/v0.86.0...v0.86.1) (2026-10-17)
+
+
+### Build System
+
+* **deps:** link libghostty-vt-sys's verified prebuilt download ([d5839db](https://github.com/no-phux/phux/commit/d5839db78deb09a58cba4090af4ced592cb43ccf))
+
 ## [0.86.0](https://github.com/no-phux/phux/compare/v0.85.1...v0.86.0) (2026-10-16)
 
 
