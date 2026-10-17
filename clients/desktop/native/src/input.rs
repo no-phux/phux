@@ -1338,7 +1338,10 @@ mod delivery {
         ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
         input::key::{KeyAction, KeyEvent},
         wire::{
-            frame::{AttachTarget, Command, CommandResult, ErrorCode, FrameKind, RolePolicy},
+            frame::{
+                AttachTarget, Command, CommandResult, DetachReason, ErrorCode, FrameKind,
+                RolePolicy,
+            },
             info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
         },
     };
@@ -1957,6 +1960,76 @@ mod delivery {
                 assert!(state.last_error().is_some());
             });
             assert!(client.take_outbound().is_empty(), "no raw paste or upload");
+        });
+    }
+
+    /// Revoked scope: once the server says the connection's authorization
+    /// was revoked, a paste is refused and nothing reaches the wire, even
+    /// before the transport closes.
+    #[gpui::test]
+    fn a_revoked_authorization_refuses_input_and_sends_nothing(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            let _ = client.take_outbound();
+            client
+                .feed(FrameKind::Detached {
+                    reason: Some(DetachReason::AuthorizationRevoked),
+                    message: String::new(),
+                })
+                .expect("detached");
+            let _ = client.take_outbound();
+            input.update(cx, |state, _| {
+                let receipt = state.paste_requested("rm -rf ~\n");
+                assert!(
+                    matches!(receipt, Ok(Some(_))),
+                    "the refusal is a typed receipt: {receipt:?}"
+                );
+                assert_eq!(
+                    state.with_current(true, |_| Ok(())),
+                    Err(super::InputError::NotReady),
+                    "the ended attach admits no input"
+                );
+            });
+            let sent = client.take_outbound();
+            assert!(sent.is_empty(), "revoked input reached the wire: {sent:?}");
+        });
+    }
+
+    /// Teardown race: the window's input outlives its connection (the link
+    /// closed while a paste was on its way). The paste is refused as a stale
+    /// handle; nothing panics and nothing is queued anywhere.
+    #[gpui::test]
+    fn input_that_outlives_its_connection_refuses_without_panicking(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        cx.add_empty_window().update(move |window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            let weak = Arc::downgrade(&client);
+            drop(client);
+            assert!(weak.upgrade().is_none(), "the connection is gone");
+            cx.write_to_clipboard(gpui::ClipboardItem {
+                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+                ))],
+            });
+            input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.paste_requested("late"),
+                    Err(super::InputError::StaleHandle)
+                );
+                // Local: the dropped path pastes as text, refused as stale.
+                assert_eq!(state.paste_command(cx), None);
+                assert_eq!(state.last_error(), Some(&super::InputError::StaleHandle));
+                // Remote: the upload is refused before any bytes are read.
+                state.set_window_remote(Some("mini".into()));
+                let notice = state.paste_command(cx).expect("stale input refuses");
+                assert_eq!(notice.title, crate::attach::PASTE_REFUSED);
+                assert_eq!(state.last_error(), Some(&super::InputError::StaleHandle));
+            });
         });
     }
 

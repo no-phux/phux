@@ -50,8 +50,9 @@ impl LogFile {
         path.with_file_name(name)
     }
 
-    /// Append one line, rotating first when it would pass the cap. A failed
-    /// rotation keeps writing to the open file; logging never stops the app.
+    /// Append one line, rotating first when it would pass the cap. A rotation
+    /// whose rename fails keeps appending to the live file, so nothing logged
+    /// is lost; logging never stops the app.
     pub fn write_line(&mut self, line: &[u8]) {
         let incoming = u64::try_from(line.len()).unwrap_or(u64::MAX);
         if self.len > 0 && self.len.saturating_add(incoming) > self.cap {
@@ -65,20 +66,23 @@ impl LogFile {
         }
     }
 
+    /// Move the live file to the backup and start a new one. Only a rename
+    /// that succeeded may start the new file: truncating after a failed
+    /// rename would wipe the live log with no backup, so that path keeps
+    /// appending to the file it has.
     fn rotate(&mut self) {
-        self.file = None;
-        let _ = std::fs::rename(&self.path, Self::backup_path(&self.path));
-        match OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-        {
+        if std::fs::rename(&self.path, Self::backup_path(&self.path)).is_err() {
+            return;
+        }
+        // The old handle follows the renamed backup; a fresh file takes the name.
+        match append(&self.path) {
             Ok(file) => {
                 self.file = Some(file);
                 self.len = 0;
             }
-            Err(_) => self.file = append(&self.path).ok(),
+            // Writing on through the old handle would grow the backup without
+            // bound; stderr still carries every line.
+            Err(_) => self.file = None,
         }
     }
 }
@@ -182,6 +186,23 @@ mod tests {
                 .len(),
             60
         );
+    }
+
+    #[test]
+    fn a_failed_rotation_keeps_the_live_log() {
+        let path = scratch("stuck");
+        let backup = LogFile::backup_path(&path);
+        // A non-empty directory where the backup goes: the rename must fail.
+        std::fs::create_dir_all(backup.join("occupied")).unwrap();
+        let mut log = LogFile::open(path.clone(), 16).unwrap();
+        log.write_line(b"first line....\n");
+        log.write_line(b"second line...\n");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"first line....\nsecond line...\n",
+            "the live log is never truncated without a backup"
+        );
+        assert!(backup.join("occupied").is_dir());
     }
 
     #[test]

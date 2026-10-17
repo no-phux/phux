@@ -801,8 +801,12 @@ impl Desk {
         self.note_terminal_event(event);
         self.note_operation_event(event);
         self.note_input_event(event);
-        if let Event::Detached { message, .. } = event {
-            self.post(Kind::Error, "Detached", Some(message.clone()));
+        if let Event::Detached { reason, message } = event {
+            self.post(
+                Kind::Error,
+                "Detached",
+                Some(detach_detail(*reason, message)),
+            );
         }
     }
 
@@ -3817,7 +3821,7 @@ impl Desk {
             .map(|tab| format!("{} — phux", tab_title(self, tab)))
             .unwrap_or_else(|| "phux".into());
         let title = match self.remote.as_deref() {
-            Some(host) => format!("{title} · {host}"),
+            Some(host) => format!("{title} · {}", display_title(host)),
             None => title,
         };
         if title != self.window_title {
@@ -4077,7 +4081,7 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{TabGeometry, pane_label, tab_drop_index};
+    use super::{TabGeometry, display_title, pane_label, tab_drop_index};
     use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
@@ -4114,6 +4118,40 @@ mod tests {
         assert_eq!(pane_label(Some(&pane(None, None, None)), group), "logs");
         assert_eq!(pane_label(Some(&pane(None, None, None)), None), "shell");
         assert_eq!(pane_label(None, group), "shell");
+    }
+
+    #[test]
+    fn a_revoked_attach_says_why_without_a_server_message() {
+        use phux_protocol::wire::frame::DetachReason;
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationRevoked), ""),
+            "this connection's authorization was revoked"
+        );
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationExpired), "token aged out"),
+            "this connection's authorization expired: token aged out"
+        );
+        assert!(!super::detach_detail(None, "").is_empty());
+    }
+
+    #[test]
+    fn a_hostile_title_loses_controls_and_bidi_overrides() {
+        // OSC 2 text that tries to forge a filename, smuggle an escape and a
+        // newline, and run on forever.
+        let hostile = format!(
+            "\u{1b}]0;x\u{7}inv\u{202e}fdp.exe\u{2066}\nrm -rf ~\u{7f}{}",
+            "a".repeat(4096)
+        );
+        let clean = display_title(&hostile);
+        assert!(clean.starts_with("]0;xinvfdp.exerm -rf ~a"), "{clean:?}");
+        assert!(clean.chars().all(|ch| !ch.is_control()));
+        assert!(!clean.contains(['\u{202e}', '\u{2066}']));
+        assert_eq!(clean.chars().count(), super::TITLE_CAP);
+        let titled = pane(None, Some(&hostile), Some("/src/phux"));
+        assert_eq!(pane_label(Some(&titled), None), clean);
+        let blank = pane(Some("\u{1b}\u{202e}"), Some("\u{7}"), Some("/src/\u{200f}"));
+        assert_eq!(pane_label(Some(&blank), Some("logs")), "logs");
+        assert_eq!(display_title("مرحبا vim"), "مرحبا vim", "RTL text stays");
     }
 
     #[test]
@@ -4218,26 +4256,67 @@ pub(crate) fn pane_label(
     let Some(pane) = pane else {
         return "shell".into();
     };
-    let named = |text: Option<&str>| {
-        text.map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
+    let named = |text: Option<&str>| text.map(display_title).filter(|text| !text.is_empty());
     named(pane.name.as_deref())
         .or_else(|| named(pane.title.as_deref()))
         .or_else(|| {
-            pane.cwd
-                .as_deref()
-                .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()))
-                .map(str::to_owned)
+            named(
+                pane.cwd
+                    .as_deref()
+                    .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty())),
+            )
         })
         .or_else(|| named(group))
         .unwrap_or_else(|| "shell".into())
 }
 
+/// Why the server ended the attach, in words: a revoked or expired
+/// authorization says so even when the server sent no message.
+fn detach_detail(
+    reason: Option<phux_protocol::wire::frame::DetachReason>,
+    message: &str,
+) -> String {
+    match (reason, message.trim()) {
+        (Some(reason), "") => reason.describe().to_owned(),
+        (Some(reason), extra) => format!("{}: {extra}", reason.describe()),
+        (None, "") => "The server ended the attach without saying why.".to_owned(),
+        (None, extra) => extra.to_owned(),
+    }
+}
+
+/// Longest title, in characters, any chrome surface or the window shows.
+const TITLE_CAP: usize = 256;
+
+/// Program-set text made safe to show: no control characters (an OSC title
+/// cannot smuggle a newline, escape or `DEL` into the window title or a tab)
+/// and no bidi overrides or isolates that would reorder what follows, so a
+/// title cannot pose as another file or host. Trimmed and bounded.
+pub(crate) fn display_title(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|&ch| !ch.is_control() && !is_bidi_control(ch))
+        .take(TITLE_CAP)
+        .collect();
+    clean.trim().to_owned()
+}
+
+/// Explicit direction marks, embeddings, overrides and isolates (the same
+/// set `phux ls` and the TUI drop).
+const fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 pub fn tab_title(desk: &Desk, tab: &crate::workspace::layout::DeskTab) -> String {
-    if let Some(title) = tab.title.as_deref().filter(|title| !title.is_empty()) {
-        return title.to_owned();
+    if let Some(title) = tab
+        .title
+        .as_deref()
+        .map(display_title)
+        .filter(|title| !title.is_empty())
+    {
+        return title;
     }
     let focus = crate::workspace::layout::placements(&tab.root)
         .into_iter()

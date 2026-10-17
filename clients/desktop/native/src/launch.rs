@@ -203,7 +203,7 @@ pub fn main() -> ExitCode {
     let options = match Options::parse(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("{error:#}");
+            eprintln!("{}", diag::redact(&format!("{error:#}")));
             return ExitCode::from(2);
         }
     };
@@ -219,7 +219,7 @@ pub fn main() -> ExitCode {
     let initial_terminal = match options.terminal.as_deref().map(parse_terminal).transpose() {
         Ok(terminal) => terminal,
         Err(error) => {
-            eprintln!("{error:#}");
+            eprintln!("{}", diag::redact(&format!("{error:#}")));
             return ExitCode::from(2);
         }
     };
@@ -245,8 +245,9 @@ pub fn main() -> ExitCode {
             gpui_kit::init(cx);
             diag::install(evidence, cx);
             if let Err(error) = app::open(app_options, cx) {
-                log::error!("could not open the desktop window: {error:#}");
-                eprintln!("could not open the desktop window: {error:#}");
+                let line = format!("could not open the desktop window: {error:#}");
+                log::error!("{line}");
+                eprintln!("{}", diag::redact(&line));
                 cx.quit();
             }
         });
