@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.90.1](https://github.com/no-phux/phux/compare/v0.90.0...v0.90.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **client:** keep the synthesized group name and Terminal-only emptiness ([051ca56](https://github.com/no-phux/phux/commit/051ca56a1970b0658ea1bc0928c762a66ce9331f))
+
+
+### Refactors
+
+* **client:** read session membership from the resource facet, not synthesized windows ([8b0469d](https://github.com/no-phux/phux/commit/8b0469dc60d4b2e809c443c73dc0c926005704f1))
+
 ## [0.90.0](https://github.com/no-phux/phux/compare/v0.89.1...v0.90.0) (2026-10-17)
 
 
