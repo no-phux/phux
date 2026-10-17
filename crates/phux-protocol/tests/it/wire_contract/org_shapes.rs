@@ -790,6 +790,24 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     };
     assert_eq!(decoded.sessions[0].attrs, attrs);
     assert_eq!(decoded.sessions[0].key, Some(key));
+    assert_eq!(decoded.sessions[0].recent_input, None);
+
+    // The recent input target rides the same SESSION_STATE, alone too.
+    let mut recent = base();
+    recent.sessions[0] = recent.sessions[0]
+        .clone()
+        .with_recent_input(Some(ResourceId::local(2)));
+    let frame = state(recent);
+    assert_round_trip(&frame);
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::State(decoded)),
+        ..
+    } = decode(&encode(&frame)).unwrap()
+    else {
+        panic!("state reply");
+    };
+    assert_eq!(decoded.sessions[0].recent_input, Some(ResourceId::local(2)));
+    assert_eq!(decoded.sessions[0].lifetime, None);
 
     // keep_empty is still written as the legacy facet.
     let keep = base();

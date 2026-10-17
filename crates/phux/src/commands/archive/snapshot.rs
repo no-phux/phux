@@ -91,17 +91,23 @@ pub(super) fn archive_from_snapshot(
     )
 }
 
-/// The session's focused pane: the legacy window's active pane when the
-/// snapshot carries one (the only on-wire record of a session's recent
-/// focus), else the snapshot's focused pane when it is in this session, else
-/// the session's first pane.
+/// The session's focused pane: its reported recent input target
+/// (`SESSION_STATE.recent_input`) when it is one of the session's panes,
+/// else the legacy window's active pane (read from any server while legacy
+/// windows exist, and the session's first pane when it has no recent
+/// input; ADR-0161 §9 step 3 removes it), else the snapshot's focused pane
+/// when it is in this session, else the session's first pane.
 fn session_focus(
     snapshot: &SessionSnapshot,
     session: &SessionInfo,
     panes: &[&ResourceInfo],
 ) -> Option<ResourceId> {
     let listed = |id: &ResourceId| panes.iter().any(|pane| pane.id == *id);
-    legacy_focus_hint(snapshot, session)
+    session
+        .recent_input
+        .clone()
+        .filter(listed)
+        .or_else(|| legacy_focus_hint(snapshot, session))
         .or_else(|| {
             (snapshot.focused_session == session.id)
                 .then(|| snapshot.focused_resource.clone())
@@ -758,5 +764,35 @@ mod tests {
         assert_eq!(ops.windows[0].name, "unplaced");
         assert_eq!(pane_cwds(&ops.windows[0]), ["/ops/a", "/ops/b"]);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    /// The session-level recent input target names the focused pane without
+    /// any legacy window.
+    #[test]
+    fn the_reported_recent_input_target_is_the_focused_pane() {
+        let id = SessionId::new(1);
+        let pane = |n, cwd: &str| {
+            ResourceInfo::new(ResourceId::local(n), WindowId::new(0), 80, 24)
+                .with_session(Some(id))
+                .with_cwd(Some(cwd.to_owned()))
+        };
+        let snapshot = SessionSnapshot::new(id, WindowId::new(0), ResourceId::local(3))
+            .with_sessions(vec![
+                SessionInfo::new(id, "ops").with_recent_input(Some(ResourceId::local(4))),
+            ])
+            .with_resources(vec![pane(3, "/ops/a"), pane(4, "/ops/b")]);
+
+        let (archive, _) = archive_from_snapshot(
+            &snapshot,
+            AgentRecords {
+                attached: &HashMap::new(),
+                native: &HashMap::new(),
+            },
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/ops/b"));
     }
 }

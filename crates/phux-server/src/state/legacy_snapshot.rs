@@ -22,6 +22,12 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 
 use super::ServerState;
 
+/// The synthesized window's active pane given the session's `recent`
+/// member: that member, else the first listed one.
+fn active_pane(recent: Option<ResourceId>, members: &[ResourceId]) -> Option<ResourceId> {
+    recent.or_else(|| members.first().copied())
+}
+
 impl ServerState {
     /// A session's Terminal members a legacy client can use, in membership
     /// order.
@@ -36,13 +42,18 @@ impl ServerState {
     /// The synthesized window's active pane: the session's `recent`
     /// member (R14), else its first listed one.
     fn legacy_active_pane(&self, session: SessionId, members: &[ResourceId]) -> Option<ResourceId> {
+        active_pane(self.recent_member(session, members), members)
+    }
+
+    /// The session's `recent` member (R14) when it is one of `members`,
+    /// reported as `SESSION_STATE.recent_input`.
+    fn recent_member(&self, session: SessionId, members: &[ResourceId]) -> Option<ResourceId> {
         self.sessions
             .registry
             .session(session)
             .and_then(|s| s.recent)
             .and_then(|key| self.sessions.registry.resource_id(&key))
             .filter(|p| members.contains(p))
-            .or_else(|| members.first().copied())
     }
 
     /// Whether a legacy client sees `resource`: its engine is live, or its
@@ -97,6 +108,8 @@ impl ServerState {
             let window_wire = (!members.is_empty()).then(|| self.intern_window_wire(sid));
             let created_at_unix_secs =
                 i64::try_from(record.created.as_millis() / 1000).unwrap_or(i64::MAX);
+            let recent = self.recent_member(sid, &members);
+            let recent_input = recent.map(|p| self.intern_terminal_wire(p));
             sessions.push(
                 SessionInfo::new(session_wire, record.name.clone())
                     .with_active_window(window_wire)
@@ -105,14 +118,13 @@ impl ServerState {
                     .with_attached_client_count(attached_counts.get(&sid).copied().unwrap_or(0))
                     .with_lifetime(Some(crate::org_wire::lifetime(record.lifetime)))
                     .with_key(phux_protocol::ids::SessionKey::new(*record.key.as_bytes()))
-                    .with_attrs(crate::org_wire::attrs(&record.attrs)),
+                    .with_attrs(crate::org_wire::attrs(&record.attrs))
+                    .with_recent_input(recent_input),
             );
             let Some(window_wire) = window_wire else {
                 continue;
             };
-            let active = self
-                .legacy_active_pane(sid, &members)
-                .map(|p| self.intern_terminal_wire(p));
+            let active = active_pane(recent, &members).map(|p| self.intern_terminal_wire(p));
             windows.push(
                 WindowInfo::new(window_wire, session_wire, "window-0".to_owned())
                     .with_index(0)

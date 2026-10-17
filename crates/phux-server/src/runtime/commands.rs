@@ -3657,13 +3657,17 @@ fn window_in_session(
 }
 
 /// A satellite session's remembered focused pane, re-tagged for the hub:
-/// the active window's active resource, falling back to the session's
-/// first window and then to that window's first Terminal.
+/// the session's reported recent input target, else (from a satellite that
+/// predates it) the active window's active resource, falling back to the
+/// session's first window and then to that window's first Terminal.
 fn session_active_resource(
     host: &phux_protocol::ids::SatelliteHost,
     sat: &phux_protocol::wire::info::SessionSnapshot,
     session: &phux_protocol::wire::info::SessionInfo,
 ) -> Option<phux_protocol::ids::ResourceId> {
+    if let Some(recent) = &session.recent_input {
+        return retag_satellite_resource_id(host, Some(recent));
+    }
     let window = session
         .active_window
         .and_then(|id| sat.windows.iter().find(|w| w.id == id))
@@ -5492,6 +5496,22 @@ mod host_inventory_tests {
             ]);
         let row = satellite_host_inventory(&SatelliteHost::from("edge"), &sat);
         assert_eq!(row.sessions[0].active_resource, None);
+    }
+
+    /// A satellite that reports the session's recent input target
+    /// (`SESSION_STATE.recent_input`) is read over its legacy window.
+    #[test]
+    fn reported_recent_input_wins_over_the_legacy_window() {
+        let host = SatelliteHost::from("edge");
+        let mut sat = satellite_snapshot();
+        sat.sessions[0] = sat.sessions[0]
+            .clone()
+            .with_recent_input(Some(ResourceId::local(101)));
+        let row = satellite_host_inventory(&host, &sat);
+        assert_eq!(
+            row.sessions[0].active_resource,
+            Some(ResourceId::satellite(host, 101))
+        );
     }
 }
 
