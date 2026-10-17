@@ -906,6 +906,7 @@ pub(crate) fn run_attach_remote_outcome(
     };
     entry.warn_if_renewal_due();
     let credentials = RemoteCredentials {
+        name: Some(entry.name.clone()),
         token,
         cert_fingerprint: entry.cert_fingerprint.clone(),
         authority: entry.authority_pin(),
@@ -1205,6 +1206,7 @@ pub(crate) fn run_attach_quic(
         }
     });
     let credentials = RemoteCredentials {
+        name: None,
         token,
         cert_fingerprint,
         authority,
@@ -1216,6 +1218,9 @@ pub(crate) fn run_attach_quic(
 /// What a remote dial authenticates with: the bearer token, the server pin,
 /// and the workload client identity (`None` reads the environment).
 struct RemoteCredentials {
+    /// The registry entry's name, which labels refusals; `None` for a typed
+    /// target, which then labels them itself.
+    name: Option<String>,
     token: Option<String>,
     cert_fingerprint: Option<String>,
     /// The CA pin beside the leaf pin (ADR-0153); default for a typed
@@ -1236,6 +1241,7 @@ fn run_attach_quic_outcome(
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
     let RemoteCredentials {
+        name,
         token,
         cert_fingerprint,
         authority,
@@ -1246,10 +1252,12 @@ fn run_attach_quic_outcome(
         Err(code) => return RemoteAttachOutcome::terminal(code),
     };
 
+    let label = name.as_deref().unwrap_or(&target);
     let DialPlan { dial, loopback } =
-        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name)
-            .and_then(|plan| plan.with_identity(identity).with_authority(&authority))
-        {
+        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name).and_then(|plan| {
+            plan.with_identity(identity)
+                .with_authority(label, &authority)
+        }) {
             Ok(plan) => plan,
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
@@ -1325,8 +1333,11 @@ impl DialPlan {
     ///
     /// A relay route with no CA pinned for the server behind it (the relay
     /// would read the session), or a half-configured environment identity.
+    /// `name` labels that refusal: the registry entry, else the target as
+    /// typed.
     pub(crate) fn with_authority(
         mut self,
+        name: &str,
         pin: &phux_client_runtime::target::AuthorityPin,
     ) -> Result<Self, DialRefusal> {
         let trust = match &mut self.dial {
@@ -1351,9 +1362,10 @@ impl DialPlan {
                 .map_err(|err| DialRefusal::Malformed(err.to_string()))?,
         };
         let inner = pin.inner(&identity).ok_or_else(|| {
-            DialRefusal::Malformed(phux_client_runtime::dial::unpinned_relay_route(
-                &quic.addr.to_string(),
-                route,
+            DialRefusal::Malformed(format!(
+                "{} (`phux attach --remote NAME --code LINK` with a link from `phux pair \
+                 --relay-route {route}` on the server, or `phux host add ... --ca-fingerprint`)",
+                phux_client_runtime::dial::unpinned_relay_route(name, route),
             ))
         })?;
         quic.inner = Some(inner);
@@ -1523,6 +1535,7 @@ pub(crate) fn run_attach_ws(
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
     let credentials = RemoteCredentials {
+        name: None,
         token,
         cert_fingerprint,
         authority: phux_client_runtime::target::AuthorityPin::default(),
@@ -1539,15 +1552,18 @@ fn run_attach_ws_outcome(
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
     let RemoteCredentials {
+        name,
         token,
         cert_fingerprint,
         authority,
         identity,
     } = credentials;
+    let label = name.unwrap_or_else(|| url.clone());
     let DialPlan { dial, loopback } =
-        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name)
-            .and_then(|plan| plan.with_identity(identity).with_authority(&authority))
-        {
+        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name).and_then(|plan| {
+            plan.with_identity(identity)
+                .with_authority(&label, &authority)
+        }) {
             Ok(plan) => plan,
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
@@ -2454,5 +2470,34 @@ mod tests {
                 .is_err_and(|err| err.contains("missing a host")),
             "got {missing_host:?}"
         );
+    }
+
+    /// A relay route with no CA pinned is refused by the name the caller
+    /// gave (the registry entry), not the dialed address, with the CLI's
+    /// own remedy appended to the runtime's transport-neutral reason.
+    #[test]
+    fn an_unpinned_relay_route_is_refused_by_name_with_the_cli_remedy() {
+        let plan = DialPlan {
+            dial: Dial::Quic(phux_client::attach::QuicDial {
+                addr: "192.0.2.1:4433".parse().expect("addr"),
+                server_name: "studio-route".into(),
+                token: None,
+                trust: CertTrust::Pinned("relay-leaf".into()),
+                identity: Some(phux_dial::TlsClientIdentity::None),
+                inner: None,
+            }),
+            loopback: false,
+        };
+        let pin = phux_client_runtime::target::AuthorityPin {
+            ca: None,
+            route: Some("studio-route".into()),
+        };
+        let Err(DialRefusal::Malformed(refused)) = plan.with_authority("studio", &pin) else {
+            panic!("a relay route without the server's CA must be refused");
+        };
+        assert!(refused.starts_with("studio is reached"), "{refused}");
+        assert!(!refused.contains("192.0.2.1"), "{refused}");
+        assert!(refused.contains("--relay-route studio-route"), "{refused}");
+        assert!(refused.contains("--ca-fingerprint"), "{refused}");
     }
 }

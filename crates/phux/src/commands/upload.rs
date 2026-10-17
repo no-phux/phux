@@ -193,9 +193,13 @@ fn managed_target(dial: Dial) -> Target {
                     })
                     .collect()
             });
-            target.tls_server_name = Some(quic.server_name);
             target.client_identity = quic.identity.unwrap_or(phux_dial::TlsClientIdentity::None);
             if let Some(inner) = quic.inner {
+                // Only a relayed dial carries its server name forward: the
+                // runtime reads any TLS server name as a relay route
+                // (ADR-0180), so a direct dial's endpoint-derived default
+                // (`localhost`, the host) must stay unset and be re-derived.
+                target.tls_server_name = Some(quic.server_name);
                 target.authority.route = Some(inner.server_name);
                 target.client_identity = inner.identity;
                 if let CertTrust::Authority { ca } = inner.trust {
@@ -277,5 +281,32 @@ mod tests {
         assert_eq!(target.authority.ca.as_deref(), Some("server-ca"));
         assert_eq!(target.authority.route.as_deref(), Some("server-route"));
         assert_eq!(target.tls_server_name.as_deref(), Some("relay"));
+    }
+
+    /// A direct QUIC dial must not come back as a relay route: the runtime
+    /// reads any TLS server name as one (ADR-0180) and would refuse the plan
+    /// for want of a CA pin.
+    #[test]
+    fn managed_target_keeps_a_direct_quic_dial_direct() {
+        let target = managed_target(Dial::Quic(QuicDial {
+            addr: "127.0.0.1:8788".parse().unwrap(),
+            server_name: "localhost".into(),
+            token: Some(vec![0, 15, 255]),
+            trust: CertTrust::SkipVerify,
+            identity: Some(TlsClientIdentity::None),
+            inner: None,
+        }));
+        assert_eq!(target.tls_server_name, None);
+        assert_eq!(target.authority.route, None);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let plan = rt.block_on(target.plan()).unwrap();
+        let Dial::Quic(quic) = plan else {
+            panic!("a quic target plans a quic dial");
+        };
+        assert!(quic.inner.is_none());
+        assert_eq!(quic.server_name, "localhost");
     }
 }
