@@ -6,7 +6,7 @@
 
 use gpui::{Font, Hsla, font, rgb};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub font: Font,
     pub font_size: f32,
@@ -85,17 +85,6 @@ impl Settings {
             && self.blink_visible == other.blink_visible
     }
 
-    /// Paint settings, overlays and the input policy are the same, so a
-    /// configure can return without notifying the view.
-    #[must_use]
-    pub fn unchanged(&self, other: &Self) -> bool {
-        self.paints_like(other)
-            && self.cursor_laser == other.cursor_laser
-            && self.option_as_alt == other.option_as_alt
-            && self.size_owner == other.size_owner
-            && self.app_chords == other.app_chords
-    }
-
     /// Clamp metrics the painter cannot use. Non-finite values become the default.
     pub fn sanitize(&mut self) {
         let defaults = Self::default();
@@ -147,21 +136,13 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_covers_paint_and_input_policy() {
+    fn the_laser_never_enters_the_scene() {
         let settings = Settings::default();
-        let mut other = settings.clone();
-        assert!(settings.unchanged(&other));
-        other.app_chords.push("ctrl+tab".into());
-        assert!(!settings.unchanged(&other));
-        other.app_chords.clear();
-        other.cursor_laser = true;
-        assert!(
-            settings.paints_like(&other),
-            "the beam never enters the scene"
-        );
-        assert!(!settings.unchanged(&other));
-        other.cursor_laser = false;
-        other.focused = false;
-        assert!(!settings.unchanged(&other));
+        let other = Settings {
+            cursor_laser: true,
+            ..settings.clone()
+        };
+        assert!(settings.paints_like(&other));
+        assert_ne!(settings, other);
     }
 }

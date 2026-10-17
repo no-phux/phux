@@ -4,7 +4,6 @@
 use super::paint::{self, Observation};
 use crate::input::{InputMetrics, KeyDisposition, TerminalInput};
 use gpui;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn present(
@@ -100,18 +99,16 @@ pub(super) fn on_key_up(
 /// `keystroke` in the shell's chord form, for chords without Command.
 pub(super) fn chord(keystroke: &gpui::Keystroke) -> String {
     let modifiers = &keystroke.modifiers;
-    let mut parts = Vec::with_capacity(4);
-    if modifiers.control {
-        parts.push("ctrl");
-    }
-    if modifiers.alt {
-        parts.push("alt");
-    }
-    if modifiers.shift {
-        parts.push("shift");
-    }
-    parts.push(&keystroke.key);
-    parts.join("+")
+    let held = [
+        (modifiers.control, "ctrl"),
+        (modifiers.alt, "alt"),
+        (modifiers.shift, "shift"),
+    ];
+    held.into_iter()
+        .filter_map(|(down, name)| down.then_some(name))
+        .chain([keystroke.key.as_str()])
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {
@@ -149,8 +146,4 @@ pub(super) fn paint_preedit(
         window,
         cx,
     );
-}
-
-pub(super) fn note_rebind(flag: &Arc<AtomicBool>) -> bool {
-    flag.swap(false, Ordering::AcqRel)
 }

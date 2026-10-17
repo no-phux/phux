@@ -11,9 +11,8 @@ mod laser;
 mod paint;
 pub mod settings;
 
-use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -92,20 +91,15 @@ impl Terminal {
         settings.sanitize();
         crate::fonts::resolve(&mut settings.font, cx);
         let focus = cx.focus_handle();
-        let input = cx.new(|_cx| {
-            crate::input::TerminalInput::new(
-                Arc::downgrade(&client),
-                view,
-                terminal.clone(),
-                focus.clone(),
-                window,
-            )
-        });
-        cx.observe(&input, |_, _, cx| cx.notify()).detach();
-        input.update(cx, |state, _| {
-            state.set_option_as_alt(settings.option_as_alt)
-        });
-        let _input_notices = subscribe_notices(&input, cx);
+        let (input, _input_notices) = bind_input(
+            Arc::downgrade(&client),
+            view,
+            terminal.clone(),
+            focus.clone(),
+            settings.option_as_alt,
+            window,
+            cx,
+        );
         Self {
             element_id: SharedString::from(format!("phux-terminal-{}", view.get())),
             client,
@@ -158,7 +152,7 @@ impl Terminal {
         }
         // A desk refresh passes the same settings on every output frame.
         // Notifying here would acquire and prepare the terminal again.
-        if self.settings.unchanged(&settings) {
+        if self.settings == settings {
             return;
         }
         self.settings = settings;
@@ -173,7 +167,6 @@ impl Terminal {
         action: HostAction,
         cx: &mut Context<Self>,
     ) -> Option<crate::input::InputNotice> {
-        let action = actions::accept(true, action)?;
         actions::run(action, &self.input, cx)
     }
 
@@ -214,28 +207,38 @@ impl Terminal {
     /// A rejected presentation gets a new input entity so an old IME callback
     /// cannot re-arm. The focus handle stays on this view.
     fn rebind_input(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let client = Arc::downgrade(&self.client);
-        let view = self.view;
-        let terminal = self.terminal.clone();
-        let focus = self.focus.clone();
+        let (input, notices) = bind_input(
+            Arc::downgrade(&self.client),
+            self.view,
+            self.terminal.clone(),
+            self.focus.clone(),
+            self.settings.option_as_alt,
+            window,
+            cx,
+        );
         let remote = self.window_remote.clone();
-        self.input =
-            cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
-        self._input_notices = subscribe_notices(&self.input, cx);
-        cx.observe(&self.input, |_, _, cx| cx.notify()).detach();
-        self.input.update(cx, |state, _| {
-            state.set_option_as_alt(self.settings.option_as_alt);
-            state.set_window_remote(remote);
-        });
+        input.update(cx, |state, _| state.set_window_remote(remote));
+        (self.input, self._input_notices) = (input, notices);
     }
 }
 
-fn subscribe_notices(
-    input: &gpui::Entity<crate::input::TerminalInput>,
+/// A new input entity for `view`. The terminal re-renders when it changes
+/// and forwards its notices and uploads as [`TerminalEvent`]s.
+fn bind_input(
+    client: std::sync::Weak<Client>,
+    view: ViewId,
+    terminal: ResourceId,
+    focus: FocusHandle,
+    option_as_alt: bool,
+    window: &Window,
     cx: &mut Context<Terminal>,
-) -> Subscription {
-    cx.subscribe(
-        input,
+) -> (gpui::Entity<crate::input::TerminalInput>, Subscription) {
+    let input =
+        cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
+    input.update(cx, |state, _| state.set_option_as_alt(option_as_alt));
+    cx.observe(&input, |_, _, cx| cx.notify()).detach();
+    let notices = cx.subscribe(
+        &input,
         |_, _, event: &crate::input::InputEvent, cx| match event {
             crate::input::InputEvent::Notice(notice) => cx.emit(TerminalEvent::Notice {
                 title: notice.title,
@@ -248,7 +251,8 @@ fn subscribe_notices(
                 cx.emit(TerminalEvent::ConfirmPaste(paste.clone()));
             }
         },
-    )
+    );
+    (input, notices)
 }
 
 impl Render for Terminal {
@@ -256,13 +260,10 @@ impl Render for Terminal {
         crate::fonts::install(cx);
         crate::fonts::resolve(&mut self.settings.font, cx);
         crate::perf::RENDERS.incr();
-        let rebound = input_host::note_rebind(&self.rebind);
+        let rebound = self.rebind.swap(false, Ordering::AcqRel);
         if rebound {
             self.rebind_input(window, cx);
         }
-        self.input.update(cx, |state, _| {
-            state.set_option_as_alt(self.settings.option_as_alt);
-        });
         let has_focus = self.focus.is_focused(window);
         match focus_step(self.settings.focused, self.was_focused, rebound, has_focus) {
             FocusStep::Focus => self.focus.focus(window, cx),
@@ -289,7 +290,6 @@ impl Render for Terminal {
             .filter(|_| self.laser.active(now))
             .map(|(_, color)| (self.laser, color));
         let epoch = recovery.as_ref().map(Ticket::connection_epoch);
-        let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
         let scene = Rc::clone(&self.scene);
         let observation = Arc::downgrade(&self.observation);
@@ -298,17 +298,13 @@ impl Render for Terminal {
         let rebind = Arc::clone(&self.rebind);
         let view = self.view;
         let this = cx.entity();
-        let down = input.clone();
         let app_chords = self.settings.app_chords.clone();
-        let up = input.clone();
-        let press = input.clone();
-        let movement = input.clone();
-        let release = input.clone();
-        let wheel = input.clone();
-        let element_id = self.element_id.clone();
+        let (down, up, press, movement) =
+            (input.clone(), input.clone(), input.clone(), input.clone());
+        let (release, release_out, wheel) = (input.clone(), input.clone(), input.clone());
 
         div()
-            .id(element_id)
+            .id(self.element_id.clone())
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
@@ -323,8 +319,8 @@ impl Render for Terminal {
                 input_host::on_key_down(&down, event, window, cx);
             })
             .on_key_up(move |event, window, cx| input_host::on_key_up(&up, event, window, cx))
-            .on_mouse_down(MouseButton::Left, {
-                let press = press.clone();
+            .on_mouse_down(
+                MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     // Capture the painted link. The URL opens on release, if
                     // that release is still on the same link.
@@ -339,15 +335,15 @@ impl Render for Terminal {
                         let _ = state.mouse_down(event, window, cx);
                     });
                     cx.stop_propagation();
-                })
-            })
+                }),
+            )
             .on_mouse_move(move |event, window, cx| {
                 movement.update(cx, |state, cx| {
                     let _ = state.mouse_move(event, window, cx);
                 });
             })
-            .on_mouse_up(MouseButton::Left, {
-                let release = release.clone();
+            .on_mouse_up(
+                MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseUpEvent, window, cx| {
                     if let Some(url) = release.update(cx, |state, _| {
                         state.release_link(event.position, event.modifiers.platform)
@@ -364,26 +360,23 @@ impl Render for Terminal {
                         });
                     }
                     cx.emit(TerminalEvent::Activated);
-                })
-            })
+                }),
+            )
             // A drag-select, reported press, or link gesture released outside
             // the pane still ends. The link does not open.
-            .on_mouse_up_out(MouseButton::Left, {
-                let release = release.clone();
-                move |event, window, cx| {
-                    release.update(cx, |state, cx| {
-                        state.cancel_link();
-                        let _ = state.mouse_up(event, window, cx);
-                    });
-                }
+            .on_mouse_up_out(MouseButton::Left, move |event, window, cx| {
+                release_out.update(cx, |state, cx| {
+                    state.cancel_link();
+                    let _ = state.mouse_up(event, window, cx);
+                });
             })
             // Right and middle presses reach mouse-reporting programs (vim mouse=a, tmux).
-            .on_mouse_down(MouseButton::Right, other_press(&press))
-            .on_mouse_down(MouseButton::Middle, other_press(&press))
-            .on_mouse_up(MouseButton::Right, other_release(&release))
-            .on_mouse_up(MouseButton::Middle, other_release(&release))
-            .on_mouse_up_out(MouseButton::Right, other_release(&release))
-            .on_mouse_up_out(MouseButton::Middle, other_release(&release))
+            .on_mouse_down(MouseButton::Right, other_press(&input))
+            .on_mouse_down(MouseButton::Middle, other_press(&input))
+            .on_mouse_up(MouseButton::Right, other_release(&input))
+            .on_mouse_up(MouseButton::Middle, other_release(&input))
+            .on_mouse_up_out(MouseButton::Right, other_release(&input))
+            .on_mouse_up_out(MouseButton::Middle, other_release(&input))
             .on_scroll_wheel(move |event, window, cx| {
                 let handled = wheel.update(cx, |state, cx| state.scroll(event, window, cx).unwrap_or(false));
                 if handled {
@@ -429,7 +422,7 @@ impl Render for Terminal {
                         }
                         if !failed
                             && let Some(frame) = painted_frame.as_ref()
-                            && let Some(ticket) = scheduled.borrow_mut().take()
+                            && let Some(ticket) = recovery
                         {
                             presentation::schedule_recovery(ticket, frame, bounds, window, cx);
                         }
