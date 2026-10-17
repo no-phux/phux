@@ -1,7 +1,12 @@
 ---
 source: crates/phux-tui/src/render/overlay/select_list.rs
+assertion_line: 1281
 expression: "render_to_string(&sl, 100, 30)"
 ---
+
+
+
+
 
 
 
@@ -14,13 +19,4 @@ expression: "render_to_string(&sl, 100, 30)"
                          │ split-pane                               C-a | │
                          │ new-window                               C-a c │
                          │ detach                                   C-a d │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
                          ╰ 1 of 3 ───────────────── ↑↓ move · ⏎ run · esc ╯

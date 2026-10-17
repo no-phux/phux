@@ -26,8 +26,12 @@ use crate::render::Theme;
 /// Blank columns either side of a row's text.
 const PAD: u16 = 1;
 
-/// The narrowest menu box, borders included.
+/// The narrowest menu box, borders included: room for the key legend in the
+/// bottom border.
 const MIN_WIDTH: u16 = 20;
+
+/// The legend inset into the bottom border (every modal carries one).
+const MENU_KEYS: &str = "⏎ run · esc";
 
 /// One row of a [`ContextMenu`].
 #[derive(Debug, Clone)]
@@ -302,7 +306,9 @@ impl RenderOverlay for ContextMenu {
             return;
         }
         let body = self.body_lines(modal_inner_width(self.rect.width));
-        Modal::new(&self.theme, self.title.clone(), body).render_into(self.rect, buf);
+        Modal::new(&self.theme, self.title.clone(), body)
+            .footer("", MENU_KEYS)
+            .render_into(self.rect, buf);
     }
 
     fn bounds(&self, _area: Rect) -> Option<Rect> {

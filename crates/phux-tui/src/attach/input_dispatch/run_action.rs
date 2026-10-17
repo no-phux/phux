@@ -1224,12 +1224,26 @@ pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall
 
 /// phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
 /// the cursor without extending the selection unless Shift is held;
-/// mouse drag can select and copy in one gesture.
-pub(in crate::attach) fn push_copy_mode(ActionCall { ctx, focused, .. }: ActionCall<'_, '_>) {
+/// mouse drag can select and copy in one gesture. The copy cursor starts
+/// where the pane's own cursor was last painted (the prompt, usually), so
+/// the output just above it is a few keystrokes away; a hidden or
+/// scrolled-off cursor starts at the top-left.
+pub(in crate::attach) fn push_copy_mode(
+    ActionCall {
+        ctx,
+        focused,
+        panes,
+        ..
+    }: ActionCall<'_, '_>,
+) {
     let pane_rect = focused_pane_rect(ctx, focused);
+    let (row, col) = focused
+        .and_then(|id| panes.get(id))
+        .and_then(|slot| slot.renderer.last_cursor_local())
+        .unwrap_or((0, 0));
     let overlay = Box::new(crate::render::overlay::CopyModeOverlay::new(
-        0,
-        0,
+        row,
+        col,
         pane_rect.w,
         pane_rect.h,
     ));

@@ -10,17 +10,17 @@ expression: all
                    │
                    │
                    │
+                   │
+                   │
+                   │
                    │╭ command palette ─────────────────────────────────────────╮
                    ││ >                                                        │
-                   ││ detach                                                   │
-                   ││ new-window                                               │
-                   ││                                                          │
- Sessions        1 ││                                                          │
- ○ probe-sess      ││                                                          │
-   ● w1-agent      ││                                                          │
-                   ││                                                          │
-                   ││                                                          │
-                   │╰ 1 of 2 ─────────────────────────── ↑↓ move · ⏎ run · esc ╯
+ Sessions        1 ││ detach                                                   │
+ ○ probe-sess      ││ new-window                                               │
+   ● w1-agent      │╰ 1 of 2 ─────────────────────────── ↑↓ move · ⏎ run · esc ╯
+                   │
+                   │
+                   │
                    │
                    │
                    │
