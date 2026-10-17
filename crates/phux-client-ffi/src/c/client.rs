@@ -41,7 +41,8 @@ use crate::projection::{event as projected_event, grid};
 
 /// One session from the latest snapshot, enriched with its organization
 /// record when the replica holds it. `window_count` is the legacy count the
-/// frozen `PhuxSessionInfo` carries; `PhuxSessionRecord` reads the rest.
+/// frozen `PhuxSessionInfo` carries, derived from the snapshot's session
+/// facets when the server reports them; `PhuxSessionRecord` reads the rest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SessionSummary {
     pub session_id: u32,

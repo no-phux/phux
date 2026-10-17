@@ -6,6 +6,12 @@
 //! and a confirming `GET`), which such a server translates to and from the
 //! arrangement.
 //!
+//! Against an `ORGANIZATION` server the legacy value is still used for a
+//! session without a stored arrangement (one from the legacy surface or an
+//! upgrade), and until the replica is live: no typed command creates an
+//! arrangement, so this is the crate's one remaining reliance on the server's
+//! legacy translation (ADR-0161 section 9).
+//!
 //! An arrangement is presentation only: an empty one means the session's
 //! members are not arranged, never that the session is empty, and no
 //! arrangement is ever synthesized from the catalog.

@@ -76,10 +76,16 @@ impl Catalog {
             .map(|w| (w.id, w.session_id.get()))
             .collect();
         let mut members: HashMap<u32, u32> = HashMap::new();
+        let mut terminals_of: HashMap<u32, u32> = HashMap::new();
         for resource in &snapshot.resources {
             let session = session_of(&owners, resource);
             if session != 0 {
                 *members.entry(session).or_default() += 1;
+            }
+            if resource.kind == ResourceKind::Terminal
+                && let Some(session) = resource.session
+            {
+                *terminals_of.entry(session.get()).or_default() += 1;
             }
         }
         let mut sessions = snapshot
@@ -87,7 +93,8 @@ impl Catalog {
             .into_iter()
             .map(|s| {
                 let count = members.get(&s.id.get()).copied().unwrap_or(0);
-                session_summary(s, selected, count)
+                let terminals = terminals_of.get(&s.id.get()).copied().unwrap_or(0);
+                session_summary(s, selected, count, terminals)
             })
             .collect::<Result<Vec<_>, BridgeError>>()?;
         let mut terminals = snapshot
@@ -133,20 +140,35 @@ impl Catalog {
     }
 }
 
+/// The frozen `PhuxSessionInfo.window_count`: one for a session with a
+/// listed terminal, else zero. A server that reports `SESSION_STATE` (the
+/// lifetime) also reports every terminal's `RESOURCE_SESSION` facet, so the
+/// count is derived here from `terminals`, the session's facet-joined
+/// terminals; only an older server's own legacy count is read.
+fn legacy_window_count(session: &SessionInfo, terminals: u32) -> u16 {
+    if session.lifetime.is_some() {
+        u16::from(terminals > 0)
+    } else {
+        session.window_count
+    }
+}
+
 fn session_summary(
     session: SessionInfo,
     selected: u32,
     snapshot_members: u32,
+    terminals: u32,
 ) -> Result<SessionSummary, BridgeError> {
     text(&session.name)?;
     let keep_empty = session.lifetime.map_or(session.keep_empty, |lifetime| {
         lifetime == SessionLifetime::Persistent
     });
+    let window_count = legacy_window_count(&session, terminals);
     Ok(SessionSummary {
         session_id: session.id.get(),
         name: session.name.into_bytes(),
         created_at_unix_secs: session.created_at_unix_secs,
-        window_count: session.window_count,
+        window_count,
         attached_client_count: session.attached_client_count,
         focused: session.id.get() == selected,
         keep_empty,

@@ -10,6 +10,7 @@ use crate::c::arrangement::{
     PhuxArrangementInfo, PhuxArrangementMutation, phux_client_arrangement_info,
     phux_client_arrangement_mutate,
 };
+use crate::c::client::SessionSummary;
 use crate::c::test_support::{self, attached_frame, feed, feed_bootstrap, hello_ok, new_client};
 use crate::c::{
     PhuxAttachOptions, PhuxOperationResult, PhuxSessionCreateInfo, PhuxSessionInfo,
@@ -707,6 +708,190 @@ fn typed_rename_settles_on_the_commit() {
     );
     assert_eq!(info.status, 2, "RENAMED");
     assert_eq!(h.client().sessions[0].name, b"desk");
+}
+
+/// Whether any frame is the legacy session-name or session-create metadata
+/// surface the server translates (ADR-0161 section 9).
+fn legacy_session_metadata(frames: &[FrameKind]) -> bool {
+    use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_NAME_KEY};
+    frames.iter().any(|frame| match frame {
+        FrameKind::SubscribeMetadata { key, .. } | FrameKind::SetMetadata { key, .. } => {
+            key == SESSION_NAME_KEY || key == SESSION_CREATE_KEY
+        }
+        _ => false,
+    })
+}
+
+fn rename_info(h: &Harness) -> PhuxSessionRenameInfo {
+    let mut info = PhuxSessionRenameInfo {
+        size: mem::size_of::<PhuxSessionRenameInfo>(),
+        version: crate::c::ABI_VERSION,
+        request_id: 0,
+        status: 0,
+        session_id: 0,
+        sessions_revision: 0,
+        message: PhuxBytes::default(),
+    };
+    // SAFETY: the harness owns the live client; the output is initialized.
+    assert_eq!(
+        unsafe { phux_client_session_rename_info(&raw const *h.0, &raw mut info) },
+        PhuxClientResult::Ok
+    );
+    info
+}
+
+#[test]
+fn following_names_subscribes_nothing_and_renames_arrive_through_the_replica() {
+    // Asked before HELLO_OK: the negotiated connection queues no
+    // subscription of the legacy name key.
+    let mut h = Harness(
+        // SAFETY: the fixture returns a uniquely owned heap client.
+        unsafe { Box::from_raw(new_client()) },
+    );
+    // SAFETY: the harness owns the live client; the literal is readable.
+    assert_eq!(
+        unsafe { phux_client_queue_hello(h.ptr(), bytes_out(b"test")) },
+        PhuxClientResult::Ok
+    );
+    let _ = h.take_outgoing();
+    // SAFETY: the harness owns the live client.
+    assert_eq!(
+        unsafe { crate::c::phux_client_follow_session_names(h.ptr()) },
+        PhuxClientResult::Ok
+    );
+    let caps = test_support::caps(&[])
+        .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]));
+    h.feed(&hello_ok(caps, BootstrapProfile::SynthesizedVtRaw));
+    assert!(!legacy_session_metadata(&h.take_outgoing()));
+
+    // Asked on a live, attached client: still nothing.
+    let mut h = attached(None);
+    let _ = h.take_outgoing();
+    // SAFETY: the harness owns the live client.
+    assert_eq!(
+        unsafe { crate::c::phux_client_follow_session_names(h.ptr()) },
+        PhuxClientResult::Ok
+    );
+    assert!(h.take_outgoing().is_empty());
+
+    // Another client's rename reaches the list through the journal.
+    let before = rename_info(&h).sessions_revision;
+    h.feed(&FrameKind::Event {
+        terminal: None,
+        event: phux_protocol::wire::frame::AgentEvent::SessionRenamed {
+            session: work(),
+            name: "desk".to_owned(),
+            revision: Revision::new(6),
+        },
+        stamp: None,
+    });
+    assert_eq!(h.client().sessions[0].name, b"desk");
+    assert_eq!(rename_info(&h).sessions_revision, before + 1);
+
+    // A rename of our own is the typed command alone.
+    // SAFETY: the harness owns the live client; both names are readable.
+    assert_eq!(
+        unsafe { phux_client_rename_session(h.ptr(), 2, bytes_out(b"desk"), bytes_out(b"ship")) },
+        PhuxClientResult::Ok
+    );
+    let frames = h.take_outgoing();
+    assert!(!legacy_session_metadata(&frames));
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        FrameKind::Command {
+            command: Command::SessionRename { .. },
+            ..
+        }
+    )));
+}
+
+#[test]
+fn before_the_records_are_live_create_and_rename_refuse_and_can_be_retried() {
+    let mut h = Harness(
+        // SAFETY: the fixture returns a uniquely owned heap client.
+        unsafe { Box::from_raw(new_client()) },
+    );
+    // SAFETY: the harness owns the live client; the literal is readable.
+    assert_eq!(
+        unsafe { phux_client_queue_hello(h.ptr(), bytes_out(b"test")) },
+        PhuxClientResult::Ok
+    );
+    let caps = test_support::caps(&[phux_protocol::ServerFeature::KeepEmptySessions])
+        .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]));
+    let _ = h.take_outgoing();
+    h.feed(&hello_ok(caps, BootstrapProfile::SynthesizedVtRaw));
+    let (seed, _) = h.command(|command| matches!(command, Command::GetOrganization { .. }));
+    h.0.inner.sessions = vec![SessionSummary {
+        session_id: 1,
+        name: b"work".to_vec(),
+        key: Some(work()),
+        ..SessionSummary::default()
+    }];
+    assert_eq!(org_info(&h).state, 1, "SEEDING");
+
+    // SAFETY: the harness owns the live client; spans are readable.
+    unsafe {
+        assert_eq!(
+            phux_client_rename_session(h.ptr(), 2, bytes_out(b"work"), bytes_out(b"desk")),
+            PhuxClientResult::InvalidState
+        );
+        assert_eq!(
+            phux_client_create_session(h.ptr(), 3, bytes_out(b"notes"), LIFETIME_PERSISTENT),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(h.take_outgoing().is_empty(), "no legacy fallback");
+    assert_eq!(rename_info(&h).status, 0, "nothing was asked");
+
+    h.answer(
+        seed,
+        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page(None)))),
+    );
+    // The same request IDs were not consumed and now carry the typed commands.
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_rename_session(h.ptr(), 2, bytes_out(b"work"), bytes_out(b"desk")),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            phux_client_create_session(h.ptr(), 3, bytes_out(b"notes"), LIFETIME_PERSISTENT),
+            PhuxClientResult::Ok
+        );
+    }
+    let frames = h.take_outgoing();
+    assert!(!legacy_session_metadata(&frames));
+    let typed = |pick: fn(&Command) -> bool| {
+        frames.iter().any(|frame| match frame {
+            FrameKind::Command { command, .. } => pick(command),
+            _ => false,
+        })
+    };
+    assert!(typed(|c| matches!(c, Command::SessionRename { .. })));
+    assert!(typed(|c| matches!(c, Command::SessionCreate { .. })));
+}
+
+#[test]
+fn a_rename_the_records_cannot_carry_is_refused_not_sent_by_the_legacy_key() {
+    let mut h = attached(None);
+    let _ = h.take_outgoing();
+    // A listed session the replica holds no record for.
+    h.0.inner.sessions.push(SessionSummary {
+        session_id: 9,
+        name: b"orphan".to_vec(),
+        ..SessionSummary::default()
+    });
+    // SAFETY: the harness owns the live client; both names are readable.
+    assert_eq!(
+        unsafe {
+            phux_client_rename_session(h.ptr(), 2, bytes_out(b"orphan"), bytes_out(b"found"))
+        },
+        PhuxClientResult::InvalidState
+    );
+    let info = rename_info(&h);
+    assert_eq!((info.request_id, info.status), (2, 3), "REFUSED");
+    assert!(!span(info.message).is_empty());
+    assert!(!legacy_session_metadata(&h.take_outgoing()));
 }
 
 #[test]

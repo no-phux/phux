@@ -334,7 +334,9 @@ typedef struct PhuxResourceId {
 
 /** Borrowed server-owned session summary from the latest ATTACHED snapshot.
  * Frozen at its version 2 layout: window_count is the legacy count (one per
- * non-empty session); read PhuxSessionRecord at the same index for keys,
+ * session with a terminal, else zero), which the client derives from the
+ * snapshot's per-resource session facets when the server reports session
+ * lifetimes; read PhuxSessionRecord at the same index for keys,
  * lifetime, revision, members, and state counts. */
 typedef struct PhuxSessionInfo {
     uint32_t session_id;
@@ -1641,7 +1643,12 @@ PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool
  * (request_id is consumed but not put on the wire): the commit settles it
  * RENAMED, a refusal REFUSED with its sentence, an unresolvable outcome
  * UNKNOWN_OUTCOME. A rename from another client arrives through the
- * organization records and moves sessions_revision the same way. */
+ * organization records and moves sessions_revision the same way. Such a
+ * server is never sent the metadata key: before this client holds its
+ * records (PhuxOrganizationInfo.state not LIVE) a rename that must be sent is
+ * INVALID_STATE and consumes no request_id, and one the records cannot carry
+ * (no record for the session, or the journal refuses the submission) returns
+ * INVALID_STATE and settles REFUSED with the reason. */
 typedef enum PhuxSessionRenameStatus {
     PHUX_SESSION_RENAME_NONE = 0,
     PHUX_SESSION_RENAME_PENDING = 1,
@@ -1679,7 +1686,10 @@ PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxS
  * holds: one typed SESSION_CREATE through the runtime's operation journal. A
  * PERSISTENT session without a directory is created empty; an EPHEMERAL one
  * always launches its first shell (it is never empty). On commit an ordered
- * GET_STATE binds the created key to its live session_id.
+ * GET_STATE binds the created key to its live session_id. Before this client
+ * holds those records (PhuxOrganizationInfo.state not LIVE) the call is
+ * INVALID_STATE and consumes no request_id; retry once LIVE. Such a server is
+ * never sent the metadata operation below.
  *
  * Otherwise: the CLI's nonce-correlated keep-empty metadata operation. Only
  * PERSISTENT is possible there, and a server without KEEP_EMPTY_SESSIONS is
@@ -1716,8 +1726,10 @@ PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t
  * subscription is read-only: it never attaches or sizes anything, and the
  * server delivers METADATA_CHANGED to a client that never attached, so a
  * listing client may follow. Each broadcast renames the session list in
- * place and bumps sessions_revision, as above. Idempotent; INVALID_STATE
- * once DETACHED. */
+ * place and bumps sessions_revision, as above. Against a server that
+ * advertised ORGANIZATION nothing is subscribed: every rename already
+ * arrives through the organization records and moves sessions_revision the
+ * same way. Idempotent; INVALID_STATE once DETACHED. */
 PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
 
 /* ---------------------------------------------------------- organization
