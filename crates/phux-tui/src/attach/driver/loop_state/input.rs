@@ -39,6 +39,15 @@ struct PriorView {
 /// the new tiling fully covers the old cells: an identical rectangle
 /// multiset, and every pane `pane_paints` (has a slot and a published
 /// replica), so no stale cell can survive the skipped clear.
+///
+/// This rect diff cannot see boxes drawn over unchanged tiles, so the
+/// caller (`SessionLoop::classify_repaint`) overrides it to
+/// [`RepaintLevel::Full`] first when the batch dismissed a modal overlay
+/// (palette, picker, prompt, copy-mode; focus-only palette actions too) or
+/// opened or closed the floating overlay. That trades the Chrome/Panes
+/// no-clear path for a clear that removes the stale box; on a terminal
+/// without DEC 2026 the dismiss can flash, which is the documented "On
+/// dismiss, repaint everything" behavior of `handle_overlay_key`.
 pub(super) fn classify_repaint(
     before: &HashMap<ResourceId, crate::layout::Rect>,
     after: &HashMap<ResourceId, crate::layout::Rect>,
@@ -190,9 +199,10 @@ impl super::SessionLoop {
     }
 
     /// How much of the view a batch that reported `layout_changed` must
-    /// redraw, from the pre-batch and current tilings. See [`classify_repaint`]
-    /// for the rule; the pane liveness probe reads this loop's slots and
-    /// published grids.
+    /// redraw, from the pre-batch and current tilings. A dismissed modal or a
+    /// toggled floating overlay forces [`RepaintLevel::Full`]; otherwise see
+    /// [`classify_repaint`] for the rect-diff rule. The pane liveness probe
+    /// reads this loop's slots and published grids.
     fn classify_repaint(
         &self,
         prior: &PriorView,
