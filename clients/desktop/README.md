@@ -6,15 +6,14 @@ Install the GPUI desktop client on Apple-silicon macOS 27 or later:
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-The installer selects only published `desktop-vX.Y.Z` releases,
-verifies the ZIP checksum and app signature, and installs `Phux.app` plus a
-`phux-desktop` launcher. It installs the [phux CLI](https://phux.sh/install)
-first when none is found, but never replaces an existing CLI or stops its
-server.
-Run it again to update; pin or roll back to a published version with
-`sh -s -- --version X.Y.Z` after the pipe. `--applications-dir` and
-`--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
-Apple-notarized**; after verification the installer clears quarantine.
+That is [the phux installer](https://phux.sh/install) with `--desktop`. It
+verifies the ZIP against the channel manifest's digest, checks the app
+signature and bundle identity, and installs `Phux.app` plus a `phux-desktop`
+launcher. It installs the phux CLI first when none is found, but never
+replaces an existing CLI or stops its server. Run it again to update; pin or
+roll back with `sh -s -- --version X.Y.Z` after the pipe. `--applications-dir`
+and `--install-dir` select alternate destinations. Releases are ad-hoc signed,
+**not Apple-notarized**; after verification the installer clears quarantine.
 
 `Phux.app` bundles the `phux-desktop` binary built from `clients/desktop/native`.
 There is no JavaScript bundle and no NAPI addon. Launched from the Dock or

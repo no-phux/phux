@@ -1,6 +1,5 @@
 #!/bin/sh
-# Human status only. Source locally or embed in standalone installers with
-# sync-install-resolver.sh. Keep data, help, and child-tool output untouched.
+# Human status only. Keep data, help, and child-tool output untouched.
 
 phux_color_enabled() {
   [ -z "${NO_COLOR:-}" ] || return 1
