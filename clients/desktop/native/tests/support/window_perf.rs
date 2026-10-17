@@ -184,6 +184,17 @@ fn set_agents(desk: &mut Desk, tick: usize) {
     }
 }
 
+fn retained_matches_scratch(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    name: &str,
+) {
+    let retained = cx
+        .capture_screenshot(window)
+        .expect("retained window pixels");
+    super::hub::assert_retained_matches_scratch(cx, window, &retained, name);
+}
+
 fn settle(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
     for _ in 0..3 {
         cx.run_until_parked();
@@ -272,6 +283,9 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
         draw(&mut cx);
     });
 
+    // The terminal was drawn from its last frame through every agent tick.
+    retained_matches_scratch(&mut cx, window, "window_agents");
+
     let size = cx
         .update_window(window, |_, window, _| window.viewport_size())
         .expect("viewport");
@@ -320,6 +334,9 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
         cx.run_until_parked();
         draw(&mut cx);
     });
+
+    // Output repainted the terminal alone; the desk chrome was retained.
+    retained_matches_scratch(&mut cx, window, "window_stream");
 
     let after = cx.capture_screenshot(window).expect("final window pixels");
     if let Some(dir) = std::env::var_os("PHUX_DESKTOP_UI_EVIDENCE") {
