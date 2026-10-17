@@ -90,6 +90,37 @@ impl super::SessionLoop {
             .await
     }
 
+    /// Read the peer arrangement records a sweep or an `ARRANGEMENT_CHANGED`
+    /// asked for, fold them into the peer caches, and re-sync the peer agent
+    /// watches against them. A failed read keeps the caches as they were.
+    /// `true` when the caches were refreshed and the chrome owes a repaint.
+    pub(super) async fn settle_peer_arrangement_reads(
+        &mut self,
+        conn: &mut Connection,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<bool, AttachError> {
+        use super::super::subscriptions::PeerArrangementReads;
+        let (full, only) = match std::mem::take(&mut self.peers.arrangement_reads_owed) {
+            PeerArrangementReads::Settled => return Ok(false),
+            PeerArrangementReads::All => (true, None),
+            PeerArrangementReads::Sessions(sessions) => (false, Some(sessions)),
+        };
+        let Some(link) = self.arrangement.as_mut() else {
+            return Ok(false);
+        };
+        match link.read_peers(only.as_ref()).await {
+            Ok(reads) => self.peers.apply_arrangement_reads(reads, full),
+            Err(err) => {
+                tracing::warn!(error = %err, "peer arrangement read failed");
+                return Ok(false);
+            }
+        }
+        self.reconcile_peer_agents(conn).await?;
+        self.peers.chrome_dirty = true;
+        repaint.raise_fleet();
+        Ok(true)
+    }
+
     /// Write `document` as the session's arrangement record. `false` when
     /// there is no link (the caller uses the legacy key).
     pub(super) async fn write_arrangement(&mut self, document: &ArrangementDoc) -> bool {

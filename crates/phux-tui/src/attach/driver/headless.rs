@@ -324,27 +324,77 @@ impl HeadlessSession {
     }
 }
 
-/// GET (not SUBSCRIBE) this session's persisted layout; returns the request
-/// id the completion barrier waits on, or `None` with nothing to ask for.
+/// Request id of the layout read the completion barrier waits on.
+const LAYOUT_REQUEST_ID: u32 = 1;
+
+/// Read (never watch) this session's layout. Against an `ORGANIZATION`
+/// server it is the session's arrangement record, read over a second
+/// connection and ingested here as the layout reply; `Ok(None)` then means
+/// nothing is left to wait for. Otherwise this GETs the legacy layout key
+/// and returns the request id the completion barrier waits on, or `None`
+/// with nothing to ask for.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
 async fn request_layout(
     conn: &mut Connection,
+    socket: &Path,
+    session: &mut HeadlessSession,
     subscribe_layout: bool,
     focused_session: Option<SessionId>,
 ) -> Result<Option<u32>, AttachError> {
     if !subscribe_layout {
         return Ok(None);
     }
-    let Some(session) = focused_session else {
+    let Some(session_id) = focused_session else {
         return Ok(None);
     };
-    let req_id = 1;
+    if phux_client::org::supported(conn) {
+        read_arrangement(socket, session, session_id).await?;
+        return Ok(None);
+    }
     conn.send(&FrameKind::GetMetadata {
-        request_id: req_id,
+        request_id: LAYOUT_REQUEST_ID,
         scope: Scope::Group(DEFAULT_GROUP_ID),
-        key: layout_key(session),
+        key: layout_key(session_id),
     })
     .await?;
-    Ok(Some(req_id))
+    Ok(Some(LAYOUT_REQUEST_ID))
+}
+
+/// Read the session's arrangement record over a dedicated connection and
+/// ingest it as the reply the layout GET would carry.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+async fn read_arrangement(
+    socket: &Path,
+    session: &mut HeadlessSession,
+    session_id: SessionId,
+) -> Result<(), AttachError> {
+    let dial = crate::attach::Dial::uds(socket);
+    let link = crate::attach::arrangement_link::ArrangementLink::open(&dial, session_id).await?;
+    let document = match link {
+        Some(mut link) => link
+            .read()
+            .await
+            .map_err(|err| AttachError::Protocol(format!("layout not loaded: {err}")))?,
+        None => None,
+    };
+    let value = document
+        .as_ref()
+        .and_then(crate::attach::input_dispatch::encode_layout_or_log);
+    session.ingest(
+        FrameKind::MetadataValue {
+            request_id: LAYOUT_REQUEST_ID,
+            value,
+        },
+        Some(session_id),
+        Some(LAYOUT_REQUEST_ID),
+    )?;
+    Ok(())
 }
 
 /// Re-attach after the engine asked for a rebootstrap, restarting the
@@ -465,8 +515,14 @@ pub async fn run_headless_rendered(
     let focused_session = outcome.sessions.map(|(_, focused)| focused);
 
     session.request_agent_records(&mut conn).await?;
-    let layout_get_request_id =
-        request_layout(&mut conn, outcome.subscribe_layout, focused_session).await?;
+    let layout_get_request_id = request_layout(
+        &mut conn,
+        socket,
+        &mut session,
+        outcome.subscribe_layout,
+        focused_session,
+    )
+    .await?;
 
     let mut completion = HeadlessCompletion::new(layout_get_request_id);
     let settled = tokio::time::timeout(
@@ -579,11 +635,18 @@ pub async fn record_composited(
     if let Err(err) = session.request_agent_records(&mut conn).await {
         return end_composited(conn, &mut recorder, Err(err)).await;
     }
-    let layout_get_request_id =
-        match request_layout(&mut conn, outcome.subscribe_layout, focused_session).await {
-            Ok(id) => id,
-            Err(err) => return end_composited(conn, &mut recorder, Err(err)).await,
-        };
+    let layout_get_request_id = match request_layout(
+        &mut conn,
+        socket,
+        &mut session,
+        outcome.subscribe_layout,
+        focused_session,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => return end_composited(conn, &mut recorder, Err(err)).await,
+    };
     let mut completion = HeadlessCompletion::new(layout_get_request_id);
 
     let started = Instant::now();
@@ -821,6 +884,78 @@ mod sidebar_tests {
             rows.iter()
                 .any(|row| row.contains(crate::render::chrome::sidebar::AGENTS_EMPTY_LABEL)),
             "{rows:?}"
+        );
+    }
+
+    /// ADR-0161: against an `ORGANIZATION` server the composite's layout is
+    /// the session's arrangement record, never the translated layout key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn headless_layout_is_the_arrangement_record() {
+        use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
+        use phux_protocol::wire::frame::{
+            ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
+            SessionLifetime,
+        };
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let shell = fixture.shell(work);
+        fixture.arrangement(
+            work,
+            WireDoc {
+                groups: vec![ArrangementGroup {
+                    id: [7; 16],
+                    name: Some("build".to_owned()),
+                    tree: ArrangementNode::Leaf(EntryRef {
+                        entry: [1; 16],
+                        target: EntryTarget::Member(shell),
+                    }),
+                }],
+            },
+        );
+        let session_id = fixture.live_session(&work).expect("live session");
+        let pane = fixture.live(&shell).expect("live pane");
+        let mut snapshot = fixture.snapshot();
+        snapshot.focused_session = session_id;
+        snapshot.focused_resource = pane.clone();
+        let dir = tempfile::tempdir().expect("dir");
+        let spec = ScriptSpec::new()
+            .server_features_ext(phux_protocol::ServerFeatureExtSet::with(&[
+                phux_protocol::ServerFeatureExt::Organization,
+            ]))
+            .organization(fixture);
+        let (socket, _server) = serve_one(dir.path(), spec);
+
+        let kernel = SessionKernel::new(
+            GhosttyAdapter::new(phux_protocol::BootstrapLimits::default()),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let chrome = HeadlessChrome {
+            sidebar: None,
+            theme: crate::render::Theme::default(),
+            agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
+            status_bar: None,
+        };
+        let mut session = HeadlessSession::new(kernel, chrome, (80, 24));
+        session
+            .ingest(
+                FrameKind::Attached {
+                    attach_id: 1,
+                    initial_client_id: phux_protocol::ids::ClientId::new(1),
+                    snapshot,
+                },
+                None,
+                None,
+            )
+            .expect("attached");
+        read_arrangement(&socket, &mut session, session_id)
+            .await
+            .expect("arrangement read");
+        let groups = &session.mirror.workspace.groups;
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "build");
+        assert_eq!(
+            crate::layout::leaves(groups[0].state.tree.as_ref().expect("tree")),
+            vec![pane]
         );
     }
 

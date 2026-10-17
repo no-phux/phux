@@ -268,6 +268,11 @@ impl super::SessionLoop {
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
         }
+        // Peer arrangement records a sweep or a peer's change asked for; the
+        // fleet and roster they feed repaint here, not a burst later.
+        if self.settle_peer_arrangement_reads(conn, repaint).await? {
+            self.drain_repaint(out, sidebar, repaint);
+        }
         Ok(Step::Continue)
     }
 
@@ -647,6 +652,12 @@ impl super::SessionLoop {
         // once the burst settles.
         if outcome.arrangement_changed && self.arrangement.is_some() {
             self.arrangement_read_owed = true;
+        }
+        // A peer's arrangement record changed: re-read it for the peer caches.
+        if let Some(session) = outcome.peer_arrangement_changed.take()
+            && self.arrangement.is_some()
+        {
+            self.peers.arrangement_reads_owed.add(session);
         }
         // The server moved a resource into or out of this session: a fresh
         // graph recomputes the members.

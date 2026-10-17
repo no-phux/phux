@@ -84,11 +84,13 @@ fn append_move_destinations(
 /// by name). Current-session windows commit `select-window { index }`; a
 /// peer with a cached layout lists one-step `switch-session { name, window }`
 /// rows, else a single "switch to this session" row. The caller bells when
-/// only headers result.
+/// only headers result. `terminals` counts each session's terminals in the
+/// cached graph (`PeerInputs::terminal_counts`).
 pub(super) fn window_picker_items(
     workspace: &ArrangementDoc,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, ArrangementDoc>,
+    terminals: &HashMap<phux_protocol::ids::SessionId, usize>,
     focused: Option<phux_protocol::ids::SessionId>,
 ) -> Vec<SelectItem> {
     // Order sessions: current first, then the rest alphabetically by name
@@ -114,10 +116,11 @@ pub(super) fn window_picker_items(
             items.extend(foreign_session_window_rows(session, foreign));
         } else {
             // No cached layout for this foreign session; offer a switch.
-            let windows = if session.window_count == 1 {
+            let tabs = session_tab_count(session, terminals);
+            let windows = if tabs == 1 {
                 "1 tab".to_owned()
             } else {
-                format!("{} tabs", session.window_count)
+                format!("{tabs} tabs")
             };
             let args = switch_session_args(&session.name, Some(session.id));
             items.push(
@@ -140,6 +143,22 @@ pub(super) fn window_picker_items(
         items.extend(current_session_window_rows(workspace));
     }
     items
+}
+
+/// How many tabs a peer session with no cached arrangement opens as. A
+/// session with a record key comes from an `ORGANIZATION` server, whose
+/// legacy window count is synthesized: attaching gives each of its
+/// terminals a tab of its own, so the terminal count is the tab count. An
+/// older server reports its windows.
+fn session_tab_count(
+    session: &phux_protocol::wire::info::SessionInfo,
+    terminals: &HashMap<phux_protocol::ids::SessionId, usize>,
+) -> usize {
+    if session.key.is_some() {
+        terminals.get(&session.id).copied().unwrap_or(0)
+    } else {
+        usize::from(session.window_count)
+    }
 }
 
 /// The indented, selectable window rows for the locally-attached session,

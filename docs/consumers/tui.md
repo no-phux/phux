@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # The phux reference TUI
@@ -906,9 +906,11 @@ Hooks are [`../CONFIG.md`](../CONFIG.md) and
 <!-- impl-status: shipped; probe: close-view,KillConfirmOverlay -->
 > **Status: shipped.** `close-view`, the `kill-window` confirm, and the
 > "N running, not arranged" state ship. Against a server that advertises
-> organization, tabs are the session's arrangement record; against an
-> older server they come from the `phux.tui.layout/v1` metadata key and
-> the session's lifetime from its keep-empty mark.
+> organization, tabs are the session's arrangement record, other sessions'
+> tabs in the pickers and fleet are their records too, and a rename is a
+> typed session command; against an older server tabs come from the
+> `phux.tui.layout/v1` metadata key, a rename is a write of the session
+> name key, and the session's lifetime comes from its keep-empty mark.
 
 ## Where to go next
 

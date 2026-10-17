@@ -22,16 +22,23 @@ impl super::SessionLoop {
         .await
     }
 
-    /// Fetch and subscribe each peer session's persisted layout (for the
-    /// picker's one-step rows and the live roster), then the peer agent
-    /// records, serving host, and host inventory. Fire-and-forget.
+    /// Refresh each peer session's arrangement (for the picker's one-step
+    /// rows and the live roster), then the peer agent records, serving host,
+    /// and host inventory. With an arrangement link the records are read
+    /// over it once the burst settles; otherwise each peer's legacy layout
+    /// key is fetched and subscribed, fire-and-forget.
     pub(super) async fn sweep_peer_layouts(
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        self.peers
-            .sweep_layouts(conn, &mut self.next_request_id)
-            .await?;
+        if self.arrangement.is_some() {
+            self.peers.arrangement_reads_owed =
+                super::super::subscriptions::PeerArrangementReads::All;
+        } else {
+            self.peers
+                .sweep_layouts(conn, &mut self.next_request_id)
+                .await?;
+        }
         // Agent watches must not wait for a persisted TUI layout.
         self.reconcile_peer_agents(conn).await?;
         // The fleet's other half. Rides the same deferred
@@ -143,11 +150,16 @@ impl super::SessionLoop {
 
     /// True when a snapshot carries windows or resources not yet adopted.
     /// Empty lists are not a change (inventory replies often omit the graph).
+    /// Windows count only when the resources do not name their sessions: an
+    /// `ORGANIZATION` server's windows are synthesized from the same graph.
     pub(super) fn snapshot_graph_changed(
         &self,
         snapshot: &phux_protocol::wire::info::SessionSnapshot,
     ) -> bool {
-        (!snapshot.windows.is_empty() && self.peers.windows != snapshot.windows)
+        let joins_by_session = snapshot.resources.iter().any(|r| r.session.is_some());
+        (!joins_by_session
+            && !snapshot.windows.is_empty()
+            && self.peers.windows != snapshot.windows)
             || (!snapshot.resources.is_empty() && self.peers.resources != snapshot.resources)
     }
 
@@ -257,6 +269,46 @@ impl super::SessionLoop {
         }
     }
 
+    /// The reply to a `SESSION_RENAME` (ADR-0161): `COMMITTED` applies the
+    /// new name to the status line and the roster; a refusal keeps the
+    /// current name and says why.
+    pub(super) fn settle_org_session_rename(
+        &mut self,
+        result: &CommandResult,
+        repaint: &mut RepaintAccumulator,
+    ) {
+        use phux_client::org::OrgOutcome;
+        let outcome = OrgOutcome::from_result(result);
+        let reason = match &outcome {
+            OrgOutcome::Committed(_) | OrgOutcome::Accepted => None,
+            OrgOutcome::Refused(phux_protocol::wire::frame::Refusal::NotFound) => {
+                Some("the session no longer exists".to_owned())
+            }
+            OrgOutcome::Refused(refusal) => Some(phux_client::org::refusal_sentence(refusal)),
+            OrgOutcome::Error { message, .. } => Some(message.clone()),
+            _ => Some("the server did not confirm the session rename".to_owned()),
+        };
+        if let Some(reason) = reason {
+            self.fail_session_rename(&reason, repaint);
+            return;
+        }
+        let Some(pending) = self.rename_pending.take() else {
+            return;
+        };
+        if let Some(id) = pending.session_id {
+            if let Some(info) = self.peers.sessions.iter_mut().find(|info| info.id == id) {
+                info.name.clone_from(&pending.new_name);
+            }
+            if Some(id) == self.peers.focused_session {
+                self.mirror.session_name.clone_from(&pending.new_name);
+            }
+        }
+        self.apply_stored_project_tag();
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
+        self.note_chrome_change(repaint);
+    }
+
     /// A refused or unanswered rename barrier: keep the current name.
     pub(super) fn fail_session_rename(&mut self, message: &str, repaint: &mut RepaintAccumulator) {
         let pending = self.rename_pending.take();
@@ -312,7 +364,15 @@ impl super::SessionLoop {
                     .as_ref()
                     .is_some_and(|pending| pending.barrier == request_id) =>
             {
-                self.confirm_session_rename(&result, repaint);
+                if self
+                    .rename_pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.organization)
+                {
+                    self.settle_org_session_rename(&result, repaint);
+                } else {
+                    self.confirm_session_rename(&result, repaint);
+                }
                 None
             }
             FrameKind::Error {

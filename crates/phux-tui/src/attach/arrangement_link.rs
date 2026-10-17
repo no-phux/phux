@@ -10,11 +10,20 @@
 //! Change notification still arrives on the attach connection as
 //! `ARRANGEMENT_CHANGED`, which asks the driver to read again.
 //!
+//! The same link reads peer sessions' arrangements for the picker, fleet,
+//! and sidebar caches ([`ArrangementLink::read_peers`]), so the attach never
+//! reads another session's layout through the translated key.
+//!
 //! Against an older server there is no link and the driver keeps the
 //! legacy `phux.tui.layout/v1` metadata key.
 
+use std::collections::{HashMap, HashSet};
+
+use phux_client::layout::wire::{HandleMap, from_protocol};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
-use phux_protocol::ids::SessionId;
+use phux_client::org::{self, OrgError};
+use phux_protocol::ids::{SessionId, SessionKey};
+use phux_protocol::wire::frame::{OrgFilter, Refusal};
 
 use crate::attach::{AttachError, Dial, connection::Connection};
 use crate::layout::ArrangementDoc;
@@ -22,6 +31,10 @@ use crate::layout::ArrangementDoc;
 /// Request ids one operation may use before the next starts: a read fetches
 /// every organization page and the arrangement.
 const REQUEST_ID_STRIDE: u32 = 1024;
+
+/// Where a peer sweep's `ARRANGEMENT_GET`s start, past the inventory pages
+/// the sweep's `GET_ORGANIZATION` may use.
+const PEER_READ_OFFSET: u32 = 64;
 
 /// A dedicated connection editing one session's arrangement record.
 pub(in crate::attach) struct ArrangementLink {
@@ -106,6 +119,67 @@ impl ArrangementLink {
             .write_and_confirm(document)
             .await;
         result.map(|_| ()).map_err(|err| self.settle(err))
+    }
+
+    /// Read the arrangements of every session but the attached one, in
+    /// handle space: one `GET_ORGANIZATION`, then one `ARRANGEMENT_GET` per
+    /// listed session. `only`, when given, limits the reads to those session
+    /// keys. A session with no arrangement, or one this client may not read,
+    /// maps to `None`; a session without a live id is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Transport failures, or a refused inventory read.
+    pub(in crate::attach) async fn read_peers(
+        &mut self,
+        only: Option<&HashSet<SessionKey>>,
+    ) -> Result<HashMap<SessionId, Option<ArrangementDoc>>, LayoutOpsError> {
+        let ours = self.session;
+        let first = self.take_request_ids();
+        let result = Self::read_peers_on(self.connection().await?, ours, only, first).await;
+        // Each read beyond the inventory used one id past the stride's start.
+        self.next_request_id = self
+            .next_request_id
+            .wrapping_add(u32::try_from(result.as_ref().map_or(0, HashMap::len)).unwrap_or(0));
+        result.map_err(|err| self.settle(err))
+    }
+
+    async fn read_peers_on(
+        conn: &mut Connection,
+        ours: SessionId,
+        only: Option<&HashSet<SessionKey>>,
+        first: u32,
+    ) -> Result<HashMap<SessionId, Option<ArrangementDoc>>, LayoutOpsError> {
+        let inventory = org::fetch(conn, OrgFilter::All, first).await?;
+        let mut request_id = first.wrapping_add(PEER_READ_OFFSET);
+        let mut out = HashMap::new();
+        for session in &inventory.sessions {
+            let Some(live) = session.live.filter(|live| *live != ours) else {
+                continue;
+            };
+            if only.is_some_and(|only| !only.contains(&session.key)) {
+                continue;
+            }
+            let Some(key) = session.arrangement else {
+                out.insert(live, None);
+                continue;
+            };
+            request_id = request_id.wrapping_add(1);
+            let document = match org::arrangement(conn, request_id, key).await {
+                Ok(value) => {
+                    let handles = HandleMap::from_pairs(
+                        inventory
+                            .members(&session.key)
+                            .map(|record| (record.key, record.live.clone())),
+                    );
+                    Some(from_protocol(&value.document, &handles).0)
+                }
+                Err(OrgError::Refused(Refusal::NotFound | Refusal::Unauthorized { .. })) => None,
+                Err(err) => return Err(err.into()),
+            };
+            out.insert(live, document);
+        }
+        Ok(out)
     }
 
     async fn connection(&mut self) -> Result<&mut Connection, LayoutOpsError> {

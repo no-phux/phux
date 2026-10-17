@@ -1,7 +1,7 @@
 //! `FrameOutcome` — the follow-up a handled frame asks of the driver —
 //! and the small labeling helpers the handler logs and notices with.
 
-use phux_protocol::ids::{ClientId, ResourceId, SessionId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 use phux_protocol::{BootstrapId, StreamId};
@@ -104,6 +104,9 @@ pub(in crate::attach) struct FrameOutcome {
     /// The attached session's arrangement record changed on the server:
     /// read it again (`ORGANIZATION` servers only).
     pub(in crate::attach) arrangement_changed: bool,
+    /// Another session's arrangement record changed on the server: read it
+    /// again for the peer caches (`ORGANIZATION` servers only).
+    pub(in crate::attach) peer_arrangement_changed: Option<SessionKey>,
     /// The attached session's membership changed on the server: recompute
     /// its members from a fresh inventory.
     pub(in crate::attach) members_dirty: bool,
@@ -146,6 +149,8 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) config_reload: bool,
     /// A `phux.session.name/v1` rename `(current, new)`.
     pub(in crate::attach) session_rename: Option<(String, String)>,
+    /// A `SESSION_RENAMED` event (ADR-0161): the session's key and new name.
+    pub(in crate::attach) session_renamed: Option<(SessionKey, String)>,
     /// A `phux.session.project/v1` write. `Absent` means this frame did not speak.
     pub(in crate::attach) project_tag: ProjectTagFrame,
     /// Transient status-bar notices raised by this frame.

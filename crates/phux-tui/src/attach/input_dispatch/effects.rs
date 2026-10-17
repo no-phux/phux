@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
-use phux_protocol::wire::info::SessionInfo;
 
 use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
@@ -125,16 +124,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         ctx.session_name,
         ctx.peers.focused_session,
     );
-    send_session_rename(
-        effects.rename_session,
-        conn,
-        ctx.session_name,
-        ctx.peers.sessions,
-        ctx.next_request_id,
-        ctx.rename_pending,
-        ctx.rename_notice,
-    )
-    .await?;
+    send_session_rename(effects.rename_session, conn, ctx).await?;
     Ok(layout_changed)
 }
 
@@ -481,52 +471,89 @@ fn is_current_session(
 /// rename-session via the shared [`phux_client::rename`] policy, correlated
 /// by the driver rather than awaited here (a request/response helper would
 /// eat interleaved output). A refusal is parked on `rename_notice`; the
-/// status name changes only once the barrier confirms.
+/// status name changes only once the server confirms.
+///
+/// Against an `ORGANIZATION` server the rename is one `SESSION_RENAME`
+/// naming the attached session's key, settled by its reply. Against an
+/// older server it is a `SET_METADATA` of the translated name key followed
+/// by a `GET_STATE` barrier whose snapshot is the outcome.
+#[allow(
+    clippy::future_not_send,
+    reason = "DispatchCtx holds current-thread state"
+)]
 async fn send_session_rename(
     rename_session: Option<String>,
     conn: &mut Connection,
-    session_name: &str,
-    sessions: &[SessionInfo],
-    next_request_id: &mut u32,
-    rename_pending: &mut Option<PendingSessionRename>,
-    rename_notice: &mut Option<String>,
+    ctx: &mut DispatchCtx<'_>,
 ) -> Result<(), AttachError> {
-    let Some(new_name) = rename_session.filter(|n| n != session_name) else {
+    let Some(new_name) = rename_session.filter(|n| n != ctx.session_name.as_str()) else {
         return Ok(());
     };
-    if rename_pending.is_some() {
+    if ctx.rename_pending.is_some() {
         tracing::warn!("rename-session already in flight; dropping a second request");
         return Ok(());
     }
-    let roster: Vec<_> = sessions
+    let session_name = ctx.session_name.clone();
+    let roster: Vec<_> = ctx
+        .peers
+        .sessions
         .iter()
         .map(|session| phux_client::rename::NamedSession {
             id: session.id,
             name: session.name.as_str(),
         })
         .collect();
-    let session_id = match phux_client::rename::plan_rename(&roster, session_name, &new_name) {
+    let session_id = match phux_client::rename::plan_rename(&roster, &session_name, &new_name) {
         phux_client::rename::RenamePlan::Unchanged { .. } => return Ok(()),
         phux_client::rename::RenamePlan::Refused(refusal) => {
-            *rename_notice = Some(format!("could not rename session to {new_name}: {refusal}"));
+            *ctx.rename_notice = Some(format!("could not rename session to {new_name}: {refusal}"));
             return Ok(());
         }
         phux_client::rename::RenamePlan::Send { session_id } => session_id,
     };
-    let request_id = *next_request_id;
-    *next_request_id = next_request_id.wrapping_add(1);
-    let barrier = *next_request_id;
-    *next_request_id = next_request_id.wrapping_add(1);
+    let session_key = ctx
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .and_then(|session| session.key);
+    if ctx.organization_supported
+        && let Some(key) = session_key
+    {
+        let request_id = ctx.take_request_id();
+        let command = phux_client::rename::org_rename_command(
+            phux_client::org::mint_operation(),
+            key,
+            &new_name,
+        );
+        conn.send(&FrameKind::Command {
+            request_id,
+            command,
+        })
+        .await?;
+        tracing::info!(new_name = %new_name, "rename-session sent as SESSION_RENAME");
+        *ctx.rename_pending = Some(PendingSessionRename {
+            barrier: request_id,
+            session_id: Some(session_id),
+            current: session_name,
+            new_name,
+            organization: true,
+        });
+        return Ok(());
+    }
+    let request_id = ctx.take_request_id();
+    let barrier = ctx.take_request_id();
     let (write, barrier_frame) =
-        phux_client::rename::rename_frames(request_id, barrier, session_name, &new_name);
+        phux_client::rename::rename_frames(request_id, barrier, &session_name, &new_name);
     conn.send(&write).await?;
     conn.send(&barrier_frame).await?;
     tracing::info!(new_name = %new_name, "rename-session sent; waiting for GET_STATE confirmation");
-    *rename_pending = Some(PendingSessionRename {
+    *ctx.rename_pending = Some(PendingSessionRename {
         barrier,
         session_id: Some(session_id),
-        current: session_name.to_owned(),
+        current: session_name,
         new_name,
+        organization: false,
     });
     Ok(())
 }
@@ -637,13 +664,15 @@ pub(super) struct ActionEffects {
     /// ([`crate::attach::hosts::exec_switch_host`]). `(host, session)`.
     pub(super) switch_host: Option<(String, String)>,
     /// rename-session: a committed rename. Carries the new name. The async
-    /// caller ([`apply_action_effects`]) sends a `SET_METADATA` write of
-    /// `SESSION_NAME_KEY` for the *current* session plus a correlated
+    /// caller ([`apply_action_effects`]) sends a `SESSION_RENAME` for the
+    /// *current* session against an `ORGANIZATION` server, else a
+    /// `SET_METADATA` write of `SESSION_NAME_KEY` plus a correlated
     /// `GET_STATE` barrier, and parks [`PendingSessionRename`] so the driver
-    /// can apply or refuse from the snapshot. The local status name stays
-    /// unchanged until that confirmation (or a `METADATA_CHANGED` broadcast)
-    /// so a rejected rename cannot lie. Peers learn the new name from the
-    /// same subscribed broadcast rather than waiting for a re-attach.
+    /// can apply or refuse from the reply. The local status name stays
+    /// unchanged until that confirmation (or the `SESSION_RENAMED` event or
+    /// `METADATA_CHANGED` broadcast) so a rejected rename cannot lie. Peers
+    /// learn the new name from the same event or broadcast rather than
+    /// waiting for a re-attach.
     pub(super) rename_session: Option<String>,
     /// A requested live config reload, run by the driver after the batch.
     pub(super) reload_config: bool,
@@ -694,11 +723,11 @@ pub enum ReattachTarget {
     },
 }
 
-/// An in-flight `rename-session` waiting on its `GET_STATE` barrier
-/// (`SET_METADATA` has no reply).
+/// An in-flight `rename-session` waiting on its `SESSION_RENAME` reply, or
+/// on its `GET_STATE` barrier (`SET_METADATA` has no reply).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::attach) struct PendingSessionRename {
-    /// Request id of the confirming `GET_STATE`.
+    /// Request id of the `SESSION_RENAME`, or of the confirming `GET_STATE`.
     pub barrier: u32,
     /// The attached session's id when the rename was sent, if known.
     pub session_id: Option<SessionId>,
@@ -706,6 +735,9 @@ pub(in crate::attach) struct PendingSessionRename {
     pub current: String,
     /// Requested replacement name.
     pub new_name: String,
+    /// Sent as `SESSION_RENAME` (ADR-0161): the reply is `COMMITTED` or
+    /// `REFUSED`, not a snapshot.
+    pub organization: bool,
 }
 
 /// Encode the workspace for `SET_METADATA`, logging encode failures.

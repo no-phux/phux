@@ -2477,6 +2477,67 @@ fn arrangement_changes_for_this_session_ask_for_a_reread() {
     assert!(!h.send(changed(theirs)).arrangement_changed);
 }
 
+/// Another session's arrangement change asks the driver to re-read that
+/// peer, even before this session's key is known.
+#[test]
+fn a_peer_arrangement_change_asks_for_a_peer_reread() {
+    use phux_protocol::ids::{ArrangementKey, SessionKey};
+    use phux_protocol::wire::frame::ArrangementOwner;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let changed = |session| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::ArrangementChanged {
+            arrangement: ArrangementKey::new([5; 16]).expect("key"),
+            owner: ArrangementOwner::Session(session),
+            revision: None,
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    assert_eq!(
+        h.send(changed(theirs)).peer_arrangement_changed,
+        Some(theirs)
+    );
+    h.mirror.session_key = Some(ours);
+    assert_eq!(
+        h.send(changed(theirs)).peer_arrangement_changed,
+        Some(theirs)
+    );
+    assert_eq!(h.send(changed(ours)).peer_arrangement_changed, None);
+}
+
+/// ADR-0161: `SESSION_RENAMED` renames our status line when it names our
+/// key, and always reports the key and name for the peer roster.
+#[test]
+fn session_renamed_event_renames_by_key() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let renamed = |session, name: &str| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::SessionRenamed {
+            session,
+            name: name.to_owned(),
+            revision: Revision::new(2),
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_name = "work".to_owned();
+    h.mirror.session_key = Some(ours);
+    let outcome = h.send(renamed(theirs, "play"));
+    assert_eq!(
+        h.mirror.session_name, "work",
+        "a peer rename keeps our name"
+    );
+    assert_eq!(outcome.session_renamed, Some((theirs, "play".to_owned())));
+    let outcome = h.send(renamed(ours, "notes"));
+    assert_eq!(h.mirror.session_name, "notes");
+    assert_eq!(outcome.session_renamed, Some((ours, "notes".to_owned())));
+    assert!(outcome.chrome_dirty);
+}
+
 /// A membership change for this session asks the driver for a fresh
 /// inventory; one between two other sessions does not.
 #[test]

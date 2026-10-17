@@ -473,19 +473,34 @@ fn handle_attached<W: crate::attach::RenderSink>(
     })
 }
 
-/// ADR-0105: the focused session holds no windows (zero windows AND a `0`
-/// sentinel focus, so an unset `window_count` does not read as empty).
+/// ADR-0105: the focused session holds nothing (no members AND a focus the
+/// graph does not list, so an unreported count does not read as empty).
+///
+/// A session with a record key comes from an `ORGANIZATION` server, which
+/// joins each resource to its session (ADR-0161 §7): the session is empty
+/// when no resource names it. An older server reports only its window
+/// count.
 fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> bool {
-    let reports_no_windows = snapshot
-        .sessions
-        .iter()
-        .find(|s| s.id == snapshot.focused_session)
-        .is_some_and(phux_protocol::wire::info::SessionInfo::is_empty);
     let focus_is_listed = snapshot
         .resources
         .iter()
         .any(|r| r.id == snapshot.focused_resource);
-    reports_no_windows && !focus_is_listed
+    let Some(focused) = snapshot
+        .sessions
+        .iter()
+        .find(|s| s.id == snapshot.focused_session)
+    else {
+        return false;
+    };
+    let holds_nothing = if focused.key.is_some() {
+        !snapshot.resources.iter().any(|resource| {
+            crate::attach::sidebar_zones::resource_session(resource, &snapshot.windows)
+                == Some(focused.id)
+        })
+    } else {
+        focused.is_empty()
+    };
+    holds_nothing && !focus_is_listed
 }
 
 /// The focused session's Terminal-kind members: the panes the attach
@@ -1765,15 +1780,41 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
     }
 }
 
-/// An organization event (`docs/spec/L1.md` §5.7) about the attached session,
-/// matched by its record key: deletion detaches (R15), a lifetime change
-/// updates what an emptied arrangement does, an arrangement change asks for
-/// a re-read, and a membership change asks for a fresh inventory.
+/// An organization event (`docs/spec/L1.md` §5.7), matched by record key.
+/// A rename of any session renames it in the roster (and on the status line
+/// when it is ours); a peer's arrangement change asks for a re-read of the
+/// peer caches. About the attached session: deletion detaches (R15), a
+/// lifetime change updates what an emptied arrangement does, an arrangement
+/// change asks for a re-read, and a membership change asks for a fresh
+/// inventory.
 fn fold_org_event<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     event: &AgentEvent,
 ) -> FrameOutcome {
-    let Some(ours) = *ctx.session_key else {
+    let ours = *ctx.session_key;
+    match event {
+        AgentEvent::SessionRenamed { session, name, .. } => {
+            if ours == Some(*session) {
+                name.clone_into(ctx.session_name);
+            }
+            return FrameOutcome {
+                session_renamed: Some((*session, name.clone())),
+                chrome_dirty: true,
+                ..FrameOutcome::default()
+            };
+        }
+        AgentEvent::ArrangementChanged {
+            owner: ArrangementOwner::Session(session),
+            ..
+        } if ours != Some(*session) => {
+            return FrameOutcome {
+                peer_arrangement_changed: Some(*session),
+                ..FrameOutcome::default()
+            };
+        }
+        _ => {}
+    }
+    let Some(ours) = ours else {
         return FrameOutcome::default();
     };
     match event {
@@ -2448,5 +2489,55 @@ mod session_name_tests {
             SessionId::new(99),
         );
         assert_eq!(focused_session_name(&snapshot), "");
+    }
+}
+
+#[cfg(test)]
+mod empty_session_tests {
+    use super::focused_session_is_empty;
+    use phux_protocol::ids::{ResourceId, SessionId, SessionKey, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+    fn snapshot(session: SessionInfo, resources: Vec<ResourceInfo>) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
+            .with_sessions(vec![session])
+            .with_resources(resources)
+    }
+
+    /// A keyed session (an `ORGANIZATION` server) is empty when no resource
+    /// names it, whatever its synthesized window count says.
+    #[test]
+    fn a_keyed_session_is_empty_by_its_members_not_its_windows() {
+        let key = SessionKey::new([1; 16]).expect("key");
+        let keyed = SessionInfo::new(SessionId::new(1), "work")
+            .with_window_count(1)
+            .with_key(Some(key));
+        let elsewhere = ResourceInfo::new(ResourceId::local(5), WindowId::new(9), 80, 24)
+            .with_session(Some(SessionId::new(2)));
+        assert!(focused_session_is_empty(&snapshot(
+            keyed.clone(),
+            vec![elsewhere.clone()]
+        )));
+        let member = ResourceInfo::new(ResourceId::local(6), WindowId::new(0), 80, 24)
+            .with_session(Some(SessionId::new(1)));
+        assert!(!focused_session_is_empty(&snapshot(
+            keyed.with_window_count(0),
+            vec![elsewhere, member]
+        )));
+    }
+
+    /// An older server's session is empty by its window count.
+    #[test]
+    fn an_unkeyed_session_is_empty_by_its_window_count() {
+        let empty = SessionInfo::new(SessionId::new(1), "work").with_window_count(0);
+        assert!(focused_session_is_empty(&snapshot(empty, vec![])));
+        let full = SessionInfo::new(SessionId::new(1), "work").with_window_count(1);
+        assert!(!focused_session_is_empty(
+            &snapshot(full, vec![]).with_windows(vec![WindowInfo::new(
+                WindowId::new(1),
+                SessionId::new(1),
+                "w",
+            )])
+        ));
     }
 }

@@ -1657,7 +1657,242 @@ fn parked_rename(state: &mut SessionLoop, new_name: &str) {
         session_id: Some(SessionId::new(1)),
         current: "test".to_owned(),
         new_name: new_name.to_owned(),
+        organization: false,
     });
+}
+
+/// A `SESSION_RENAME` parked against an `ORGANIZATION` server.
+fn parked_org_rename(state: &mut SessionLoop, new_name: &str) {
+    parked_rename(state, new_name);
+    if let Some(pending) = state.rename_pending.as_mut() {
+        pending.organization = true;
+    }
+}
+
+async fn answer_org_rename(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    result: phux_protocol::wire::frame::CommandResult,
+) {
+    let passed = state
+        .intercept_peer_reply(
+            client,
+            FrameKind::CommandResult {
+                request_id: 4242,
+                result,
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none(), "the SESSION_RENAME reply is consumed");
+    assert!(state.rename_pending.is_none());
+}
+
+/// ADR-0161: a committed `SESSION_RENAME` renames the status line and the
+/// roster from its reply alone, with no `GET_STATE` barrier.
+#[tokio::test(flavor = "current_thread")]
+async fn committed_session_rename_applies_the_new_name() {
+    use phux_protocol::ids::{OperationId, Revision};
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed};
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_org_rename(&mut state, "notes");
+    let committed = Committed::new(OperationId::new([3; 16]).unwrap(), Revision::new(2));
+    answer_org_rename(
+        &mut state,
+        &mut client,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(committed))),
+    )
+    .await;
+    assert_eq!(state.mirror.session_name, "notes");
+    let ours = state
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(1))
+        .expect("this session remains");
+    assert_eq!(ours.name, "notes");
+}
+
+/// A refused `SESSION_RENAME` keeps the current name and says why.
+#[tokio::test(flavor = "current_thread")]
+async fn refused_session_rename_keeps_the_current_status_name() {
+    use phux_protocol::wire::frame::{CommandResult, Refusal};
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_org_rename(&mut state, "notes");
+    answer_org_rename(
+        &mut state,
+        &mut client,
+        CommandResult::Refused(Refusal::NameTaken),
+    )
+    .await;
+    assert_eq!(state.mirror.session_name, "test");
+    assert!(
+        state
+            .peers
+            .sessions
+            .iter()
+            .all(|session| session.name != "notes")
+    );
+}
+
+/// ADR-0161: an `ORGANIZATION` attach follows renames and lifetime changes
+/// as events, so it never subscribes to the translated session keys.
+#[tokio::test(flavor = "current_thread")]
+async fn organization_attach_skips_the_translated_session_keys() {
+    use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, SESSION_KEEP_EMPTY_KEY};
+    let (mut state, mut client, mut server, _) = Box::pin(loop_before_drain_ext(
+        ServerFeatureSet::new(),
+        phux_protocol::ServerFeatureExtSet::with(&[phux_protocol::ServerFeatureExt::Organization]),
+    ))
+    .await;
+    state
+        .emit_deferred_bootstrap_outbound(&mut client)
+        .await
+        .unwrap();
+    let sent = frames_sent(&mut client, &mut server).await;
+    let subscribed = |wanted: &str| {
+        sent.iter().any(|frame| {
+            matches!(frame, FrameKind::SubscribeMetadata { scope: Scope::Global, key } if key == wanted)
+        })
+    };
+    assert!(subscribed(CONFIG_RELOAD_KEY), "{sent:?}");
+    assert!(!subscribed(SESSION_NAME_KEY), "{sent:?}");
+    assert!(!subscribed(SESSION_KEEP_EMPTY_KEY), "{sent:?}");
+}
+
+/// ADR-0161: a `SESSION_RENAMED` event renames the peer row its key names.
+#[tokio::test(flavor = "current_thread")]
+async fn session_renamed_event_updates_the_peer_roster_by_key() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let peer = SessionKey::new([2; 16]).unwrap();
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer").with_key(Some(peer)));
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::Event {
+                terminal: None,
+                event: phux_protocol::wire::frame::AgentEvent::SessionRenamed {
+                    session: peer,
+                    name: "notes".to_owned(),
+                    revision: Revision::new(2),
+                },
+                stamp: None,
+            },
+            true,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.mirror.session_name, "test");
+    let names: Vec<&str> = state
+        .peers
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect();
+    assert!(names.contains(&"notes"), "{names:?}");
+}
+
+/// ADR-0161: with an arrangement link, the peer sweep reads each peer's
+/// arrangement record over it instead of the translated layout key, and a
+/// peer's `ARRANGEMENT_CHANGED` re-reads it.
+#[tokio::test(flavor = "current_thread")]
+async fn peer_sweep_reads_arrangement_records_over_the_link() {
+    use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
+    use phux_protocol::wire::frame::{
+        ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
+        SessionLifetime,
+    };
+    let mut fixture = OrgFixture::new();
+    let ours = fixture.session("test", SessionLifetime::Persistent);
+    fixture.shell(ours);
+    let peer = fixture.session("peer", SessionLifetime::Persistent);
+    let shell = fixture.shell(peer);
+    fixture.arrangement(
+        peer,
+        WireDoc {
+            groups: vec![ArrangementGroup {
+                id: [7; 16],
+                name: Some("build".to_owned()),
+                tree: ArrangementNode::Leaf(EntryRef {
+                    entry: [1; 16],
+                    target: EntryTarget::Member(shell),
+                }),
+            }],
+        },
+    );
+    let our_id = fixture.live_session(&ours).unwrap();
+    let peer_id = fixture.live_session(&peer).unwrap();
+    let pane = fixture.live(&shell).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = ScriptSpec::new()
+        .server_features_ext(phux_protocol::ServerFeatureExtSet::with(&[
+            phux_protocol::ServerFeatureExt::Organization,
+        ]))
+        .organization(fixture);
+    let (socket, _org_server) = serve_one(dir.path(), spec);
+
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let _ = frames_sent(&mut client, &mut server).await;
+    state.arrangement = crate::attach::arrangement_link::ArrangementLink::open(
+        &crate::attach::Dial::uds(&socket),
+        our_id,
+    )
+    .await
+    .unwrap();
+    assert!(state.arrangement.is_some());
+    state.peers.focused_session = Some(our_id);
+    state.peers.sessions = vec![
+        SessionInfo::new(our_id, "test").with_key(Some(ours)),
+        SessionInfo::new(peer_id, "peer").with_key(Some(peer)),
+    ];
+    state.sweep_peer_layouts(&mut client).await.unwrap();
+    assert!(
+        state
+            .settle_peer_arrangement_reads(&mut client, &mut RepaintAccumulator::default())
+            .await
+            .unwrap()
+    );
+    let cached = state
+        .peers
+        .foreign_layouts
+        .get(&peer_id)
+        .expect("peer read");
+    assert_eq!(cached.groups[0].name, "build");
+    assert_eq!(
+        crate::layout::leaves(cached.groups[0].state.tree.as_ref().unwrap()),
+        vec![pane]
+    );
+    assert!(!state.peers.foreign_layouts.contains_key(&our_id));
+    let sent = frames_sent(&mut client, &mut server).await;
+    assert!(
+        !sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::GetMetadata { key, .. } | FrameKind::SubscribeMetadata { key, .. }
+                if key.starts_with(phux_client::layout_ops::LAYOUT_KEY)
+        )),
+        "no translated layout key is read: {sent:?}"
+    );
+
+    // A peer's change re-reads only that peer.
+    state.peers.foreign_layouts.clear();
+    state.peers.arrangement_reads_owed.add(peer);
+    assert!(
+        state
+            .settle_peer_arrangement_reads(&mut client, &mut RepaintAccumulator::default())
+            .await
+            .unwrap()
+    );
+    assert!(state.peers.foreign_layouts.contains_key(&peer_id));
 }
 
 #[tokio::test(flavor = "current_thread")]

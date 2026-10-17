@@ -1289,7 +1289,13 @@ fn window_picker_groups_windows_under_their_session() {
             .into_iter()
             .map(|ws| (SessionId::new(2), ws))
             .collect();
-        let items = window_picker_items(&workspace, &sessions, &foreign, Some(SessionId::new(1)));
+        let items = window_picker_items(
+            &workspace,
+            &sessions,
+            &foreign,
+            &HashMap::new(),
+            Some(SessionId::new(1)),
+        );
         assert!(items[0].is_header());
         assert_eq!(items[0].label, "work");
         assert!(!items[1].is_header() && items[1].indented);
@@ -1321,6 +1327,36 @@ fn window_picker_groups_windows_under_their_session() {
         assert_eq!(items[at + 1].secondary.as_deref(), Some("1 pane"));
         assert!(items.iter().all(|i| i.label != "switch to this session"));
     }
+}
+
+/// A peer with no cached arrangement offers one switch row. Its tab count
+/// is the terminal count when the session has a record key (an
+/// `ORGANIZATION` server, whose window count is synthesized), else the
+/// reported window count.
+#[test]
+fn window_picker_counts_tabs_from_terminals_on_an_organization_server() {
+    let workspace = ArrangementDoc::single(tid(1));
+    let mut keyed = sinfo(2, "scratch").with_window_count(1);
+    keyed.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
+    let legacy = sinfo(3, "logs").with_window_count(2);
+    let sessions = [sinfo(1, "work"), keyed, legacy];
+    let terminals = HashMap::from([(SessionId::new(2), 3), (SessionId::new(3), 5)]);
+    let items = window_picker_items(
+        &workspace,
+        &sessions,
+        &HashMap::new(),
+        &terminals,
+        Some(SessionId::new(1)),
+    );
+    let tabs = |header: &str| {
+        let at = items
+            .iter()
+            .position(|i| i.is_header() && i.label == header)
+            .expect("header");
+        items[at + 1].secondary.clone()
+    };
+    assert_eq!(tabs("scratch").as_deref(), Some("3 tabs"));
+    assert_eq!(tabs("logs").as_deref(), Some("2 tabs"));
 }
 
 #[test]
@@ -2597,6 +2633,45 @@ async fn rename_session_does_not_apply_locally_until_confirmed() {
         frames.iter().any(|f| matches!(f, FrameKind::Command { request_id, command: Command::GetState { .. } } if *request_id == pending.barrier)),
         "{frames:?}"
     );
+}
+
+/// ADR-0161: against an `ORGANIZATION` server the rename is one
+/// `SESSION_RENAME` naming the session's key, never a write of the
+/// translated name key, and the status name waits for its reply.
+#[tokio::test(flavor = "current_thread")]
+async fn rename_session_sends_session_rename_on_an_organization_server() {
+    let key = phux_protocol::ids::SessionKey::new([7; 16]).unwrap();
+    let mut f = rename_fixture(&[(1, "work"), (2, "play")]);
+    f.sessions[0].key = Some(key);
+    f.organization_supported = true;
+    let effects = f.run(&act("rename-session", &[("name", "notes".into())]));
+    let frames = f.apply(effects).await;
+    assert_eq!(f.session_name, "work");
+    let pending = f.rename_pending.expect("SESSION_RENAME parked");
+    assert!(pending.organization);
+    assert_eq!(pending.session_id, Some(SessionId::new(1)));
+    assert!(
+        matches!(
+            frames.as_slice(),
+            [FrameKind::Command {
+                request_id,
+                command: Command::SessionRename { session, name, .. },
+            }] if *request_id == pending.barrier && *session == key && name == "notes"
+        ),
+        "{frames:?}"
+    );
+}
+
+/// The shared name policy still refuses before any `SESSION_RENAME`.
+#[tokio::test(flavor = "current_thread")]
+async fn rename_session_refuses_a_taken_name_before_session_rename() {
+    let mut f = rename_fixture(&[(1, "work"), (2, "notes")]);
+    f.sessions[0].key = Some(phux_protocol::ids::SessionKey::new([7; 16]).unwrap());
+    f.organization_supported = true;
+    let effects = f.run(&act("rename-session", &[("name", "notes".into())]));
+    let frames = f.apply(effects).await;
+    assert!(f.rename_pending.is_none());
+    assert!(frames.is_empty(), "{frames:?}");
 }
 
 /// A taken name is refused before anything is written.
