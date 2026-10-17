@@ -50,8 +50,12 @@ pub static CATCH_UP_EXECUTE: Histogram = Histogram::new();
 pub static PROJECT_GRID: Histogram = Histogram::new();
 /// Microseconds publishing a projected frame and reclaiming its predecessor.
 pub static PUBLISH_SWAP: Histogram = Histogram::new();
-/// Previous frames still held by a consumer at the publication swap.
-pub static BUFFER_HELD: Counter = Counter::new();
+/// Projections that started from an empty buffer.
+///
+/// Every frame the presentation retired was still held by a consumer, or
+/// none was retired yet. Steady output under a painter that keeps one frame
+/// leaves it flat.
+pub static BUFFER_FRESH: Counter = Counter::new();
 /// Timed grid projection/publication attempts that failed (setup excluded).
 pub static PROJECT_ERRORS: Counter = Counter::new();
 /// Command send or synchronous response receive failures (owner stopped).
@@ -74,7 +78,7 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("runtime.catch_up_execute", Unit::Micros, &CATCH_UP_EXECUTE),
     Metric::histogram("runtime.project_grid", Unit::Micros, &PROJECT_GRID),
     Metric::histogram("runtime.publish_swap", Unit::Micros, &PUBLISH_SWAP),
-    Metric::counter("runtime.buffer_held", Unit::Count, &BUFFER_HELD),
+    Metric::counter("runtime.buffer_fresh", Unit::Count, &BUFFER_FRESH),
     Metric::counter("runtime.project_errors", Unit::Count, &PROJECT_ERRORS),
     Metric::counter("runtime.request_errors", Unit::Count, &REQUEST_ERRORS),
 ];

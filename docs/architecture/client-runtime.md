@@ -241,8 +241,10 @@ build and test with no Zig toolchain (phux-mobile's headless lane).
 `publication::Publication` holds one slot per terminal. The owner thread
 projects into a back `GridBuffer` (core's `GridProjector`), swaps it out,
 wraps it in an immutable `GridFrame`, and publishes it behind an `Arc`;
-the buffer of the frame it replaced is recycled when no consumer still
-holds it. A consumer:
+the frame it replaced is retired, and a later projection refills the
+buffer of the first retired frame no consumer still holds. A painter that
+keeps the frame it painted until its next paint therefore does not cost an
+allocation per frame. A consumer:
 
 - calls `acquire(terminal)` and keeps the frame as long as it likes; a
   later publish never touches it, and there is no "valid until the next

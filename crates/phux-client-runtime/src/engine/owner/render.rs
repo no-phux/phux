@@ -1,9 +1,43 @@
 //! One terminal-scoped render cache, with independently owned frame buffers.
 
 use super::{
-    Arc, EngineError, GridDamage, GridFrame, Owner, ProjectorSlot, ResourceId, Scrollbar,
-    apply_default_colors, engine_error, frame_colors, monotonic_ms, terminal_defaults,
+    Arc, EngineError, GridBuffer, GridDamage, GridFrame, Owner, ProjectorSlot, ResourceId,
+    Scrollbar, apply_default_colors, engine_error, frame_colors, monotonic_ms, terminal_defaults,
 };
+
+/// Frames a presentation published and has since replaced, kept until every
+/// consumer lets go so a later projection refills their buffers instead of
+/// allocating. A painter holds the frame it painted until it paints the next
+/// one, which is after the publication that replaces it, so the buffer
+/// usually comes back one projection later.
+#[derive(Default)]
+pub(super) struct RetiredFrames(Vec<Arc<GridFrame>>);
+
+impl RetiredFrames {
+    /// Frames kept at once. The oldest goes when a newer one arrives, and
+    /// its buffer is freed by whichever consumer drops it last.
+    const LIMIT: usize = 2;
+
+    fn retire(&mut self, frame: Arc<GridFrame>) {
+        if self.0.len() == Self::LIMIT {
+            self.0.remove(0);
+        }
+        self.0.push(frame);
+    }
+
+    /// The buffer of a retired frame no consumer holds any more. The
+    /// publication table keeps no weak references, so a count of one is this
+    /// list's own.
+    fn reuse(&mut self) -> Option<GridBuffer> {
+        let index = self
+            .0
+            .iter()
+            .position(|frame| Arc::strong_count(frame) == 1)?;
+        Arc::try_unwrap(self.0.remove(index))
+            .ok()
+            .map(|frame| frame.buffer)
+    }
+}
 
 impl Owner {
     /// The sole dirty reader survives every view switch, including failure.
@@ -89,7 +123,14 @@ impl Owner {
                 (true, _) | (_, GridDamage::Clean) => GridDamage::Full,
                 (_, damage) => damage,
             },
-            buffer: self.presentation_mut(id)?.spare.take().unwrap_or_default(),
+            buffer: self
+                .presentation_mut(id)?
+                .retired
+                .reuse()
+                .unwrap_or_else(|| {
+                    crate::perf::BUFFER_FRESH.incr();
+                    GridBuffer::default()
+                }),
         };
         slot.projector.swap_buffer(&mut frame.buffer);
         if full {
@@ -113,10 +154,7 @@ impl Owner {
             None => self.publication.publish(id, frame),
         };
         if let Some(previous) = previous {
-            match Arc::try_unwrap(previous) {
-                Ok(previous) => self.presentation_mut(id)?.spare = Some(previous.buffer),
-                Err(_) => crate::perf::BUFFER_HELD.incr(),
-            }
+            self.presentation_mut(id)?.retired.retire(previous);
         }
         Ok(())
     }
