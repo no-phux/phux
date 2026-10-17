@@ -63,7 +63,7 @@ impl Page {
     pub fn description(self) -> &'static str {
         match self {
             Self::Appearance => "Theme and font",
-            Self::Layout => "Tabs, sidebar, glass and agent alerts",
+            Self::Layout => "Tabs, sidebar, blur, glass and agent alerts",
             Self::Keyboard => "Input behavior and every shortcut",
             Self::Spacing => "Line height, cell width, padding and dimming",
             Self::Ghostty => "Import or reload your Ghostty preferences",
@@ -75,7 +75,9 @@ impl Page {
     pub fn keywords(self) -> &'static str {
         match self {
             Self::Appearance => "theme colors dark light font family size typeface preview",
-            Self::Layout => "sidebar tabs top side background opacity glass notifications alerts",
+            Self::Layout => {
+                "sidebar tabs top side background opacity glass blur solid opaque notifications alerts"
+            }
             Self::Keyboard => "option alt keys keybind shortcuts chord input",
             Self::Spacing => "line height cell width padding horizontal vertical unfocused dimming",
             Self::Ghostty => "import reload config ghostty look integration",
@@ -679,13 +681,38 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             )
             .description(sidebar_chord),
         )
-        .items(slider_item(
-            desk,
-            handle,
-            Knob::Glass,
-            "Background opacity",
-            "Terminal background over the blurred desktop.",
-        ));
+        .item(
+            SettingItem::new(
+                "Blur behind window",
+                switch(
+                    handle,
+                    |prefs| prefs.window_background == settings::WindowBackground::Blur,
+                    |prefs, value| {
+                        prefs.window_background = if value {
+                            settings::WindowBackground::Blur
+                        } else {
+                            settings::WindowBackground::Solid
+                        };
+                    },
+                ),
+            )
+            .description(
+                "Off paints an opaque window, which costs the compositor less on every frame.",
+            ),
+        )
+        .items(
+            (desk.prefs.window_background == settings::WindowBackground::Blur)
+                .then(|| {
+                    slider_item(
+                        desk,
+                        handle,
+                        Knob::Glass,
+                        "Background opacity",
+                        "Terminal background over the blurred desktop.",
+                    )
+                })
+                .flatten(),
+        );
     let notifications = SettingGroup::new().title("Notifications").item(
         SettingItem::new(
             "Agent notifications",

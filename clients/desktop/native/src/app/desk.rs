@@ -21,7 +21,7 @@ use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
-use crate::settings::{self, DisplayPrefs, TabPosition};
+use crate::settings::{self, DisplayPrefs, TabPosition, WindowBackground};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
 use crate::workspace::persist::{self, FileLayoutStore};
@@ -218,6 +218,9 @@ pub struct Desk {
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
     window_title: String,
+    /// The background the platform window has, starting from the one
+    /// [`window_options_background`] opens it with.
+    pub(super) window_background: WindowBackground,
     closed: bool,
     /// Session creates awaiting their outcome, by operation, with the name.
     creates: HashMap<OperationId, String>,
@@ -342,7 +345,7 @@ pub(crate) struct Look {
     /// selected chrome tints the glass instead of covering it.
     pub chrome: crate::settings::theme::Palette,
     /// Every terminal's settings except `focused` and `size_owner`.
-    terminal: TerminalSettings,
+    pub(super) terminal: TerminalSettings,
 }
 
 impl Look {
@@ -370,7 +373,10 @@ impl Look {
             cell_width_scale: prefs.cell_width as f32,
             cell_height_scale: prefs.cell_height as f32,
             foreground: Some(from_hex(&theme.foreground)),
-            background: Some(from_hex(&alpha(&theme.background, prefs.terminal_opacity))),
+            background: Some(from_hex(&alpha(
+                &theme.background,
+                prefs.painted_terminal_opacity(),
+            ))),
             host_fills_background: true,
             cursor: Some(from_hex(&theme.cursor)),
             selection_background: from_hex(&theme.selection),
@@ -533,6 +539,7 @@ impl Desk {
             main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
+            window_background: WindowBackground::default(),
             closed: false,
             creates: HashMap::new(),
             renames: HashMap::new(),
@@ -3673,6 +3680,17 @@ impl Desk {
         }
     }
 
+    /// Give the platform window the background the preferences ask for. A
+    /// solid window is opaque all the way down: the window, its Metal layer
+    /// and the painted sheet, so the compositor neither blurs nor blends it.
+    pub(crate) fn sync_window_background(&mut self, window: &mut Window) {
+        let wanted = self.prefs.window_background;
+        if wanted != self.window_background {
+            window.set_background_appearance(window_options_background(wanted));
+            self.window_background = wanted;
+        }
+    }
+
     /// Reconcile the keyboard after state changed without a window at hand (a
     /// modal or find bar closed by server activity): nothing focused falls back
     /// to the terminal, or to the window so its key bindings keep working.
@@ -3920,6 +3938,18 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
         }
     }
     to
+}
+
+/// The platform background for a window preference. Windows open with the
+/// default and [`Desk::sync_window_background`] moves them to the preference.
+#[must_use]
+pub(crate) fn window_options_background(
+    background: WindowBackground,
+) -> gpui::WindowBackgroundAppearance {
+    match background {
+        WindowBackground::Blur => gpui::WindowBackgroundAppearance::Blurred,
+        WindowBackground::Solid => gpui::WindowBackgroundAppearance::Opaque,
+    }
 }
 
 #[cfg(test)]

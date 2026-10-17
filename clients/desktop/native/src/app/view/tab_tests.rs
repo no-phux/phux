@@ -456,6 +456,39 @@ fn the_look_is_built_once_until_preferences_change(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_solid_window_goes_opaque_live_and_returns_to_blur(cx: &mut TestAppContext) {
+    use crate::settings::WindowBackground;
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    draw(cx);
+    let background = |desk: &Desk| desk.look().terminal.background.expect("background").a;
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.window_background, WindowBackground::Blur);
+        assert!(background(desk) < 1.);
+    });
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(
+            |prefs| prefs.window_background = WindowBackground::Solid,
+            cx,
+        );
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.window_background, WindowBackground::Solid);
+        assert_eq!(background(desk), 1.);
+    });
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(|prefs| prefs.window_background = WindowBackground::Blur, cx);
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.window_background, WindowBackground::Blur);
+        assert!(background(desk) < 1.);
+    });
+}
+
+#[gpui::test]
 fn shown_chords_follow_the_keymap(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (_, desk, _) = fixture(cx);

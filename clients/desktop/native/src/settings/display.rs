@@ -25,6 +25,38 @@ impl TabPosition {
     }
 }
 
+/// What sits behind the window's chrome and panes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum WindowBackground {
+    /// Translucent, over a live blur of the desktop. The compositor re-blurs
+    /// and blends the window on every presented frame.
+    #[default]
+    Blur,
+    /// Opaque theme colors with no blur. The compositor can treat the window
+    /// as an opaque layer and skip blending it with what is behind.
+    Solid,
+}
+
+impl WindowBackground {
+    /// Stable JSON value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blur => "blur",
+            Self::Solid => "solid",
+        }
+    }
+
+    /// Parse the JSON value. Anything unrecognized is the default.
+    #[must_use]
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("solid") => Self::Solid,
+            _ => Self::Blur,
+        }
+    }
+}
+
 /// What the window paints and which chords it keeps.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayPrefs {
@@ -56,8 +88,11 @@ pub struct DisplayPrefs {
     pub padding_y: f64,
     /// Opacity of unfocused panes. `1` is no dimming.
     pub unfocused_opacity: f64,
-    /// Terminal background opacity.
+    /// Terminal background opacity over the blur. A solid window paints
+    /// opaque regardless.
     pub terminal_opacity: f64,
+    /// Blurred translucent window or solid opaque one.
+    pub window_background: WindowBackground,
     /// Whether Ghostty keybinds override the built-in chords.
     pub ghostty_keys: bool,
 }
@@ -81,7 +116,19 @@ pub fn default_display() -> DisplayPrefs {
         padding_y: 6.0,
         unfocused_opacity: 1.0,
         terminal_opacity: 0.92,
+        window_background: WindowBackground::Blur,
         ghostty_keys: true,
+    }
+}
+
+impl DisplayPrefs {
+    /// Terminal background opacity as painted: opaque on a solid window.
+    #[must_use]
+    pub fn painted_terminal_opacity(&self) -> f64 {
+        match self.window_background {
+            WindowBackground::Blur => self.terminal_opacity,
+            WindowBackground::Solid => 1.0,
+        }
     }
 }
 
@@ -156,6 +203,7 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
             0.55,
             1.0,
         ),
+        window_background: display.window_background,
         ghostty_keys: display.ghostty_keys,
     }
 }
@@ -186,6 +234,9 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         padding_y: number(object, "paddingY").unwrap_or(fallback.padding_y),
         unfocused_opacity: number(object, "unfocusedOpacity").unwrap_or(fallback.unfocused_opacity),
         terminal_opacity: number(object, "terminalOpacity").unwrap_or(fallback.terminal_opacity),
+        window_background: WindowBackground::parse(
+            object.get("windowBackground").and_then(Value::as_str),
+        ),
         ghostty_keys: object.get("ghosttyKeys") != Some(&Value::Bool(false)),
     })
 }
@@ -222,6 +273,10 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         num(display.unfocused_opacity),
     );
     object.insert("terminalOpacity".to_owned(), num(display.terminal_opacity));
+    object.insert(
+        "windowBackground".to_owned(),
+        Value::String(display.window_background.as_str().to_owned()),
+    );
     object.insert("ghosttyKeys".to_owned(), Value::Bool(display.ghostty_keys));
     Value::Object(object)
 }
@@ -271,6 +326,49 @@ mod tests {
             assert_eq!(value["tabPosition"], position.as_str());
             assert_eq!(parse_display(&value), prefs);
         }
+    }
+
+    #[test]
+    fn window_background_round_trips_and_defaults_to_blur() {
+        for background in [WindowBackground::Blur, WindowBackground::Solid] {
+            let prefs = DisplayPrefs {
+                window_background: background,
+                terminal_opacity: 0.8,
+                ..default_display()
+            };
+            let value = display_value(&prefs);
+            assert_eq!(value["windowBackground"], background.as_str());
+            assert_eq!(parse_display(&value), prefs);
+        }
+        for value in [
+            None,
+            Some(json!("glass")),
+            Some(json!(1)),
+            Some(json!(null)),
+        ] {
+            let mut display = json!({"terminalOpacity": 0.7});
+            if let Some(value) = value {
+                display["windowBackground"] = value;
+            }
+            let parsed = parse_display(&display);
+            assert_eq!(parsed.window_background, WindowBackground::Blur);
+            assert_eq!(parsed.terminal_opacity, 0.7);
+        }
+    }
+
+    #[test]
+    fn a_solid_window_paints_the_terminal_opaque_and_keeps_the_saved_opacity() {
+        let blur = DisplayPrefs {
+            terminal_opacity: 0.7,
+            ..default_display()
+        };
+        assert_eq!(blur.painted_terminal_opacity(), 0.7);
+        let solid = DisplayPrefs {
+            window_background: WindowBackground::Solid,
+            ..blur
+        };
+        assert_eq!(solid.painted_terminal_opacity(), 1.0);
+        assert_eq!(parse_display(&display_value(&solid)).terminal_opacity, 0.7);
     }
 
     #[test]
