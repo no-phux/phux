@@ -12,7 +12,8 @@
 //! the same ports and state: the window redials it (and, pinned to a home
 //! that is no longer live, refuses to rebind; phux-c2td.17.1), and a fresh
 //! window reopens the same home. Last, a stale pin and a revoked token are
-//! refused with their own reasons.
+//! refused with their own reasons, and the window still attached when the
+//! token is revoked ends on the refusal rather than redialing it forever.
 //!
 //! What this cannot show is a second machine: a routed network with NAT,
 //! loss, and real latency, and a host enrolled over ssh. That run is still
@@ -404,7 +405,6 @@ fn journey(root: &Path) {
     assert_eq!(home_key_of(&window), key, "the same persistent home");
     let terminal = split(&mut window);
     round_trip(&mut window, &terminal, "after-restart-ok");
-    window.close();
 
     // A pin that does not match the host's certificate never attaches.
     let refused = home::open_remote_home("stale").unwrap_err();
@@ -417,6 +417,15 @@ fn journey(root: &Path) {
         "{}",
         String::from_utf8_lossy(&revoked.stderr)
     );
+    // The window still attached redials into the refusal and stops there,
+    // asking for a re-pair, instead of backing off forever.
+    window.reconnect().unwrap();
+    wait(&mut window, "the refusal after the revoke", |window| {
+        window.status.is_terminal()
+    });
+    let refusal = window.error.clone().unwrap_or_default();
+    assert!(refusal.contains("re-pair"), "{refusal}");
+    window.close();
     let refused = home::open_remote_home("mini").unwrap_err();
     assert!(refused.contains("refused the pairing token"), "{refused}");
     let refused = home::open_remote_home("mini-wss").unwrap_err();

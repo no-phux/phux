@@ -430,6 +430,65 @@ fn a_refused_quic_token_is_a_fatal_refusal() {
     });
 }
 
+/// The reconnecting runtime, attached over QUIC, redials after its token is
+/// revoked: the refusal ends the session with a "re-pair" message instead of
+/// walking the backoff ladder forever.
+#[test]
+fn a_revoked_quic_token_ends_an_attached_runtime() {
+    use phux_client_runtime::control::{ControlOptions, Status};
+    use phux_client_runtime::reconnect::Ladder;
+    use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Runtime};
+    use phux_protocol::wire::frame::AttachTarget;
+
+    async fn wait_for(client: &Client, what: &str, done: impl Fn(Status) -> bool) {
+        let deadline = Instant::now() + STEP;
+        while !done(client.status()) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {:?} {:?}",
+                client.status(),
+                client.last_error()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("r.sock");
+        let tokens = tmp.path().join("tokens");
+        let minted = phux_server::auth::mint_token(&tokens).expect("a credential");
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, Some(&tokens)).await;
+        let mut target = Target::quic(addr.to_string());
+        target.name = "mini".to_owned();
+        target.token = Some(minted.secret().to_owned());
+        let options = ClientOptions {
+            control: ControlOptions {
+                client_name: CLIENT.to_owned(),
+                attach: Some(AttachTarget::ByName("main".to_owned())),
+                viewport: (40, 8),
+                ..ControlOptions::default()
+            },
+            connect: ConnectOptions {
+                ladder: Ladder::AGENT_VERB,
+                ..ConnectOptions::default()
+            },
+        };
+        let client = Runtime::connect(target, options).expect("connect");
+        wait_for(&client, "the attach", |status| status == Status::Attached).await;
+
+        phux_server::auth::revoke_credential(&tokens, &minted.id).expect("revoke");
+        client.resync();
+        wait_for(&client, "the refusal", Status::is_terminal).await;
+        assert_eq!(client.status(), Status::Failed);
+        let error = client.last_error().expect("a refusal message");
+        assert!(error.contains("re-pair"), "{error}");
+        client.close();
+        drop(client);
+        stop(shutdown, server).await;
+    });
+}
+
 /// 401 on the upgrade, as a token gate refusing a token answers it.
 async fn refuse_with_401() -> u16 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
