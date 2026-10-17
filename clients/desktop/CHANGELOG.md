@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.32.0](https://github.com/no-phux/phux/compare/desktop-v0.31.0...desktop-v0.32.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** place every modal on one sheet and show path state in results ([#1540](https://github.com/no-phux/phux/issues/1540)) ([0a70866](https://github.com/no-phux/phux/commit/0a70866f854ef028e24fcc2975fd7874802b543c))
+
 ## [0.31.0](https://github.com/no-phux/phux/compare/desktop-v0.30.0...desktop-v0.31.0) (2026-10-17)
 
 
