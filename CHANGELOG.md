@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.98.1](https://github.com/no-phux/phux/compare/v0.98.0...v0.98.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **client-runtime:** end a reconnecting session on a refused QUIC token ([c389e05](https://github.com/no-phux/phux/commit/c389e05cba8c39aeb81cbf87505bf391bfbdadac))
+* **client-runtime:** report a refused QUIC token as a refusal, not a lost connection ([7b48347](https://github.com/no-phux/phux/commit/7b48347e5cca7f509c41b68d788e564f784e46c5))
+
 ## [0.98.0](https://github.com/no-phux/phux/compare/v0.97.0...v0.98.0) (2026-10-17)
 
 
