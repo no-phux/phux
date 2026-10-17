@@ -5,6 +5,9 @@ use crate::workspace::{Workspace, WorkspaceOptions, persist};
 use gpui::{AnyWindowHandle, Entity, Modifiers, TestAppContext, VisualTestContext};
 use gpui_kit::component::Root;
 
+/// The default skin's titlebar, which these layouts paint.
+const TITLEBAR: f32 = crate::settings::skin::GLASS.chrome.titlebar;
+
 fn fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Desk>, PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "phux-tab-layout-{}-{}",
@@ -333,8 +336,9 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
     let hidden = cx.debug_bounds("tab-fixture-h").unwrap();
     assert!(hidden.origin.x > px(800.));
     cx.simulate_event(gpui::ScrollWheelEvent {
-        position: point(px(300.), px(TITLEBAR / 2.)),
-        delta: gpui::ScrollDelta::Pixels(point(px(-420.), px(0.))),
+        // The workspace identity narrows the visible strip, so scroll past it.
+        position: point(px(500.), px(TITLEBAR / 2.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-640.), px(0.))),
         ..Default::default()
     });
     draw(cx);
@@ -438,34 +442,101 @@ fn pane_actions_stay_open_after_the_pointer_leaves_the_capsule(cx: &mut TestAppC
     assert!(desk.read_with(cx, |desk, _| desk.pane_menu_open.is_none()));
 }
 
+#[test]
+fn the_slim_strip_fades_controls_and_shows_tabs_only_when_several() {
+    use crate::settings::skin::{GLASS, TERMINAL};
+    assert_eq!(controls_fit(GLASS.chrome.titlebar), 1.);
+    assert_eq!(controls_fit(TERMINAL.chrome.titlebar), 0.);
+    let mid = controls_fit(GLASS.lerp(&TERMINAL, 0.5).chrome.titlebar);
+    assert!(mid > 0. && mid < 1.);
+    assert_eq!(tab_height(GLASS.chrome.titlebar), 30.);
+    assert!(tab_height(TERMINAL.chrome.titlebar) < TERMINAL.chrome.titlebar);
+    assert!(tabs_shown(&GLASS, 1));
+    assert!(!tabs_shown(&TERMINAL, 1));
+    assert!(tabs_shown(&TERMINAL, 2));
+    assert_eq!(gloss(&GLASS), 1.);
+    assert_eq!(gloss(&TERMINAL), 0.);
+    assert_eq!(row_radius(&GLASS), 6.);
+    assert_eq!(chip_radius(&GLASS), 4.);
+}
+
 #[gpui::test]
-fn the_look_is_built_once_until_preferences_change(cx: &mut TestAppContext) {
+fn the_titlebar_toggle_switches_to_a_plain_terminal_and_back(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(1);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("tab-fixture-a").is_some(),
+        "glass shows one tab"
+    );
+    let toggle = cx
+        .debug_bounds("skin-toggle")
+        .expect("toggle in the titlebar");
+    assert!(toggle.bottom() <= px(TITLEBAR));
+    cx.simulate_click(toggle.center(), Modifiers::none());
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(desk.prefs.plain);
+        assert_eq!(desk.skin().id, "terminal");
+    });
+    assert!(
+        cx.debug_bounds("tab-fixture-a").is_none(),
+        "a plain terminal hides a lone tab"
+    );
+    desk.update(cx, |desk, cx| {
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(2);
+        cx.notify();
+    });
+    draw(cx);
+    let strip = crate::settings::skin::TERMINAL.chrome.titlebar;
+    let tab = cx.debug_bounds("tab-fixture-b").expect("two tabs show");
+    assert!(tab.bottom() <= px(strip));
+    run(&desk, "plain-terminal", cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.prefs.plain);
+        assert_eq!(desk.skin().id, "glass");
+    });
+}
+
+#[gpui::test]
+fn the_paint_is_built_once_until_preferences_change(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (_, desk, _) = fixture(cx);
     desk.update(cx, |desk, cx| {
-        let first = desk.look();
-        assert!(std::rc::Rc::ptr_eq(&first, &desk.look()));
+        let first = desk.paint();
+        assert!(std::rc::Rc::ptr_eq(&first, &desk.paint()));
+        assert!(std::rc::Rc::ptr_eq(&first.look, &desk.look()));
         assert_eq!(first.palette, desk.palette());
         desk.apply_prefs(|prefs| prefs.terminal_opacity = 0.5, cx);
-        let second = desk.look();
+        let second = desk.paint();
         assert!(!std::rc::Rc::ptr_eq(&first, &second));
-        assert!(std::rc::Rc::ptr_eq(&second, &desk.look()));
+        assert!(std::rc::Rc::ptr_eq(&second, &desk.paint()));
         desk.sync_bindings(cx);
-        assert!(!std::rc::Rc::ptr_eq(&second, &desk.look()));
+        assert!(!std::rc::Rc::ptr_eq(&second, &desk.paint()));
     });
 }
 
 #[gpui::test]
 fn a_solid_window_goes_opaque_live_and_returns_to_blur(cx: &mut TestAppContext) {
     use crate::settings::WindowBackground;
+    use crate::settings::skin::Backdrop;
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     draw(cx);
-    let background = |desk: &Desk| desk.look().terminal.background.expect("background").a;
+    let background = |desk: &Desk| desk.paint().terminal.background.expect("background").a;
     desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.window_background, WindowBackground::Blur);
+        assert_eq!(desk.skin().material.backdrop, Backdrop::Glass);
         assert!(background(desk) < 1.);
+        assert!(desk.look().sheet.a < 1.);
     });
     desk.update(cx, |desk, cx| {
         desk.update_prefs(
@@ -475,15 +546,17 @@ fn a_solid_window_goes_opaque_live_and_returns_to_blur(cx: &mut TestAppContext) 
     });
     draw(cx);
     desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.window_background, WindowBackground::Solid);
+        assert_eq!(desk.skin().material.backdrop, Backdrop::Opaque);
+        assert_eq!(desk.skin().id, "glass", "the skin keeps its shape");
         assert_eq!(background(desk), 1.);
+        assert_eq!(desk.look().sheet.a, 1.);
     });
     desk.update(cx, |desk, cx| {
         desk.update_prefs(|prefs| prefs.window_background = WindowBackground::Blur, cx);
     });
     draw(cx);
     desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.window_background, WindowBackground::Blur);
+        assert_eq!(desk.skin().material.backdrop, Backdrop::Glass);
         assert!(background(desk) < 1.);
     });
 }

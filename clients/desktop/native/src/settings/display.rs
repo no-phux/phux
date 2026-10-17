@@ -1,6 +1,7 @@
 //! Persisted display preferences. Field names here are snake_case; the JSON
 //! object uses the existing camelCase keys.
 
+use super::skin::skin_by_id;
 use super::theme::{default_theme_id, themes};
 use serde_json::{Map, Value};
 
@@ -95,6 +96,15 @@ pub struct DisplayPrefs {
     pub window_background: WindowBackground,
     /// Whether Ghostty keybinds override the built-in chords.
     pub ghostty_keys: bool,
+    /// Whether a jumping cursor streaks a laser beam behind it.
+    pub cursor_laser: bool,
+    /// Skin id. Unknown sanitizes to `"glass"`.
+    pub skin_id: String,
+    /// Plain terminal: wear the terminal skin whatever `skin_id` says.
+    pub plain: bool,
+    /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
+    /// motion also turns it off.
+    pub animations: bool,
 }
 
 /// Shipped defaults.
@@ -118,6 +128,10 @@ pub fn default_display() -> DisplayPrefs {
         terminal_opacity: 0.92,
         window_background: WindowBackground::Blur,
         ghostty_keys: true,
+        cursor_laser: true,
+        skin_id: "glass".to_owned(),
+        plain: false,
+        animations: true,
     }
 }
 
@@ -205,6 +219,10 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         ),
         window_background: display.window_background,
         ghostty_keys: display.ghostty_keys,
+        cursor_laser: display.cursor_laser,
+        skin_id: skin_by_id(&display.skin_id).id.to_owned(),
+        plain: display.plain,
+        animations: display.animations,
     }
 }
 
@@ -238,6 +256,10 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
             object.get("windowBackground").and_then(Value::as_str),
         ),
         ghostty_keys: object.get("ghosttyKeys") != Some(&Value::Bool(false)),
+        cursor_laser: object.get("cursorLaser") != Some(&Value::Bool(false)),
+        skin_id: string(object, "skinId").unwrap_or(fallback.skin_id),
+        plain: object.get("plainTerminal") == Some(&Value::Bool(true)),
+        animations: object.get("animations") != Some(&Value::Bool(false)),
     })
 }
 
@@ -278,6 +300,10 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         Value::String(display.window_background.as_str().to_owned()),
     );
     object.insert("ghosttyKeys".to_owned(), Value::Bool(display.ghostty_keys));
+    object.insert("cursorLaser".to_owned(), Value::Bool(display.cursor_laser));
+    object.insert("skinId".to_owned(), Value::String(display.skin_id));
+    object.insert("plainTerminal".to_owned(), Value::Bool(display.plain));
+    object.insert("animations".to_owned(), Value::Bool(display.animations));
     Value::Object(object)
 }
 
@@ -388,5 +414,39 @@ mod tests {
             assert!(!parsed.sidebar_visible);
             assert_eq!(parsed.font_size, 18.);
         }
+    }
+
+    #[test]
+    fn the_laser_cursor_defaults_on_and_round_trips_off() {
+        assert!(parse_display(&json!({})).cursor_laser);
+        let off = DisplayPrefs {
+            cursor_laser: false,
+            ..default_display()
+        };
+        let value = display_value(&off);
+        assert_eq!(value["cursorLaser"], false);
+        assert_eq!(parse_display(&value), off);
+    }
+
+    #[test]
+    fn skin_and_plain_terminal_round_trip_and_unknown_skins_fall_back() {
+        let parsed = parse_display(&json!({}));
+        assert_eq!(parsed.skin_id, "glass");
+        assert!(!parsed.plain);
+        assert!(parsed.animations);
+        let plain = DisplayPrefs {
+            skin_id: "terminal".to_owned(),
+            plain: true,
+            animations: false,
+            ..default_display()
+        };
+        let value = display_value(&plain);
+        assert_eq!(value["skinId"], "terminal");
+        assert_eq!(value["plainTerminal"], true);
+        assert_eq!(value["animations"], false);
+        assert_eq!(parse_display(&value), plain);
+        assert_eq!(parse_display(&json!({"skinId": "neon"})).skin_id, "glass");
+        assert!(!parse_display(&json!({"plainTerminal": "yes"})).plain);
+        assert!(parse_display(&json!({"animations": "no"})).animations);
     }
 }

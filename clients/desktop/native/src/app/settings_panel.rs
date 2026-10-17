@@ -4,8 +4,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, Keystroke, SharedString, Subscription, WeakEntity, Window,
-    div, px,
+    AnyElement, App, Context, Entity, Hsla, Keystroke, SharedString, Subscription, WeakEntity,
+    Window, div, px, relative,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
@@ -20,10 +20,12 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, IndexPath, Sizable
 use phux_client_runtime::control::Status;
 
 use crate::settings::theme::{self, Palette};
-use crate::settings::{self, DisplayPrefs};
+use crate::settings::{self, DisplayPrefs, Skin};
 
+use super::color::from_hex;
 use super::desk::Desk;
 use super::keys::gpui_stroke;
+use super::skin::{Look, Surface, Surfaced};
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
@@ -62,7 +64,7 @@ impl Page {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Theme and font",
+            Self::Appearance => "Theme, font, skin and plain terminal",
             Self::Layout => "Tabs, sidebar, blur, glass and agent alerts",
             Self::Keyboard => "Input behavior and every shortcut",
             Self::Spacing => "Line height, cell width, padding and dimming",
@@ -74,7 +76,10 @@ impl Page {
 
     pub fn keywords(self) -> &'static str {
         match self {
-            Self::Appearance => "theme colors dark light font family size typeface preview",
+            Self::Appearance => {
+                "theme colors dark light font family size typeface skin look glass plain terminal \
+                 animations motion laser cursor"
+            }
             Self::Layout => {
                 "sidebar tabs top side background opacity glass blur solid opaque notifications alerts"
             }
@@ -350,7 +355,10 @@ pub(crate) fn panel(
         Page::Keyboard => keyboard_page(desk, &handle),
         Page::Spacing => advanced_page(desk, &handle),
         Page::Ghostty => ghostty_page(desk, &handle),
-        Page::Updates => super::updates::page(&desk.updates, colors, cx),
+        Page::Updates => {
+            let look = desk.look();
+            super::updates::page(&desk.updates, colors, &look, &desk.prefs.font_family, cx)
+        }
         Page::Connections => connection_page(desk, &handle),
     };
     let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
@@ -364,9 +372,13 @@ pub(crate) fn panel(
         .page(content.title(page.title()));
     let viewport = window.viewport_size();
     let top = (viewport.height.as_f32() * 0.13).clamp(24., 84.);
-    let preferred_height = if page == Page::Appearance { 340. } else { 600. };
-    let height = (viewport.height.as_f32() - top - 24.).clamp(180., preferred_height);
-    super::overlays::card(colors, (viewport.width.as_f32() - 32.).clamp(0., 720.))
+    let height = (viewport.height.as_f32() - top - 24.).clamp(180., 600.);
+    let look = desk.look();
+    div()
+        .w(px((viewport.width.as_f32() - 32.).clamp(0., 720.)))
+        .surface(&look, Surface::Popover)
+        .text_color(look.ink)
+        .occlude()
         .id("settings-panel")
         .debug_selector(|| "settings-panel".into())
         .mt(px(top))
@@ -397,6 +409,22 @@ fn prefs_of(handle: &WeakEntity<Desk>, cx: &App) -> DisplayPrefs {
         .upgrade()
         .map(|desk| desk.read(cx).prefs.clone())
         .unwrap_or_default()
+}
+
+/// The desk's look this frame, or the default skin's before the desk is up.
+fn look_of(handle: &WeakEntity<Desk>, cx: &App) -> std::rc::Rc<Look> {
+    handle.upgrade().map_or_else(
+        || {
+            let prefs = settings::default_display();
+            let colors = theme::palette(&theme::theme_by_id(&prefs.theme_id, &[]));
+            std::rc::Rc::new(Look::of(
+                settings::skin_by_id(&prefs.skin_id),
+                &colors,
+                &prefs,
+            ))
+        },
+        |desk| desk.read(cx).look(),
+    )
 }
 
 fn set_prefs(handle: &WeakEntity<Desk>, cx: &mut App, change: impl FnOnce(&mut DisplayPrefs)) {
@@ -605,6 +633,244 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
         .group(font_group.item(theme_item))
+        .group(look_group(desk, handle))
+}
+
+/// Skin cards, the plain terminal switch, and motion.
+fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
+    let plain_chord = desk
+        .shown_chord("plain-terminal")
+        .map(|chord| format!(" Toggle it with {chord}."))
+        .unwrap_or_default();
+    let cards_handle = handle.clone();
+    let skins = SettingItem::render(move |_, _, cx| skin_cards(&cards_handle, cx))
+        .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]);
+    SettingGroup::new()
+        .title("Look")
+        .item(skins)
+        .item(
+            SettingItem::new(
+                "Plain terminal",
+                switch(handle, |prefs| prefs.plain, |prefs, value| prefs.plain = value),
+            )
+            .description(format!(
+                "Opaque and square, with no sidebar or status bar.{plain_chord}"
+            ))
+            .keywords(["plain", "ghostty", "minimal", "terminal", "skin"]),
+        )
+        .item(
+            SettingItem::new(
+                "Animations",
+                switch(
+                    handle,
+                    |prefs| prefs.animations,
+                    |prefs, value| prefs.animations = value,
+                ),
+            )
+            .description(
+                "Pane folds, skin shifts and the laser cursor. macOS Reduce motion also turns them off.",
+            )
+            .keywords(["motion", "animation", "reduce"]),
+        )
+        .item(
+            SettingItem::new(
+                "Laser cursor",
+                switch(
+                    handle,
+                    |prefs| prefs.cursor_laser,
+                    |prefs, value| prefs.cursor_laser = value,
+                ),
+            )
+            .description("A jumping cursor streaks a beam behind it.")
+            .keywords(["cursor", "laser", "trail"]),
+        )
+}
+
+/// One card per skin, previewed in the current theme. Plain terminal
+/// overrides the pick, so a hint says so and the other cards dim.
+fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
+    let prefs = prefs_of(handle, cx);
+    let colors = handle
+        .upgrade()
+        .map(|desk| desk.read(cx).palette())
+        .unwrap_or_else(|| theme::palette(&theme::theme_by_id(&prefs.theme_id, &[])));
+    let picked = settings::skin_by_id(&prefs.skin_id).id;
+    let writer = handle.clone();
+    let hint = prefs.plain.then(|| {
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(from_hex(&colors.muted))
+                    .child("Plain terminal is on. Your skin returns when it is off."),
+            )
+            .child(
+                Button::new("skin-plain-off")
+                    .label("Turn off")
+                    .xsmall()
+                    .ghost()
+                    .on_click(move |_, _, cx| set_prefs(&writer, cx, |prefs| prefs.plain = false)),
+            )
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .children(hint)
+        .child(
+            div().flex().flex_wrap().gap(px(10.)).children(
+                settings::skins()
+                    .iter()
+                    .map(|skin| skin_card(skin, &colors, &prefs, skin.id == picked, handle)),
+            ),
+        )
+        .into_any_element()
+}
+
+fn skin_card(
+    skin: &'static Skin,
+    colors: &Palette,
+    prefs: &DisplayPrefs,
+    selected: bool,
+    handle: &WeakEntity<Desk>,
+) -> AnyElement {
+    let handle = handle.clone();
+    let ink = from_hex(&colors.theme.foreground);
+    let worn = if prefs.plain {
+        skin.id == settings::skin::TERMINAL.id
+    } else {
+        selected
+    };
+    div()
+        .id(SharedString::from(format!("skin-card-{}", skin.id)))
+        .debug_selector(move || format!("skin-card-{}", skin.id))
+        .w(px(168.))
+        .p(px(4.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(if selected {
+            ink.opacity(0.35)
+        } else {
+            gpui::transparent_black()
+        })
+        .hover(|card| card.bg(ink.opacity(0.04)))
+        .cursor_pointer()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .when(!worn, |card| card.opacity(0.7))
+        .child(skin_preview(skin, colors, prefs))
+        .child(
+            div()
+                .px(px(2.))
+                .pb(px(2.))
+                .text_sm()
+                .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                .child(skin.name),
+        )
+        .on_click(move |_, _, cx| {
+            set_prefs(&handle, cx, |prefs| prefs.skin_id = skin.id.to_owned());
+        })
+        .into_any_element()
+}
+
+/// A window in miniature, painted from the skin's own tokens: sheet,
+/// titlebar, sidebar, gutter, pane cards and status bar.
+fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyElement {
+    const SCALE: f32 = 0.3;
+    let look = Look::of(skin, colors, prefs);
+    let (chrome, shape) = (&skin.chrome, &skin.shape);
+    let scaled = |value: f32| px(value * SCALE);
+    let corner = px(shape.radius * 0.4);
+    let bar = |width: f32, color: Hsla| div().h(px(2.)).w(relative(width)).rounded_full().bg(color);
+    let ink = look.ink.opacity(0.7);
+    let muted = from_hex(&colors.muted);
+    let accent = from_hex(&colors.theme.accent);
+    let pane = |lines: &[(f32, Hsla)]| {
+        div()
+            .flex_1()
+            .h_full()
+            .rounded(corner)
+            .bg(look.card)
+            .flex()
+            .flex_col()
+            .gap(px(3.))
+            .p(px(if shape.gutter > 0. { 4. } else { 3. }))
+            .children(lines.iter().map(|(width, color)| bar(*width, *color)))
+    };
+    let titlebar = div()
+        .h(scaled(chrome.titlebar))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .px(px(5.))
+        .child(
+            div()
+                .flex()
+                .gap(px(2.))
+                .children((0..3).map(|_| div().size(px(3.)).rounded_full().bg(muted))),
+        )
+        .when(chrome.tabs == settings::TabsWhen::Always, |bar| {
+            bar.child(
+                div()
+                    .h(px(6.))
+                    .w(px(28.))
+                    .rounded(scaled(shape.tab_radius[0]))
+                    .bg(look.active),
+            )
+        });
+    let sidebar = (chrome.sidebar > 0.).then(|| {
+        div()
+            .w(px(30. * chrome.sidebar))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .pt(px(2.))
+            .child(bar(0.8, look.active))
+            .child(bar(0.6, look.hover))
+            .child(bar(0.7, look.hover))
+    });
+    let split = (shape.divider > 0.).then(|| div().w(px(shape.divider)).h_full().bg(look.divider));
+    let canvas = div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .gap(scaled(shape.gap))
+        .child(pane(&[(0.5, accent), (0.85, ink), (0.6, muted)]))
+        .children(split)
+        .child(pane(&[(0.7, ink), (0.4, muted), (0.9, ink)]));
+    let body = div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .gap(scaled(shape.gap))
+        .px(scaled(shape.gutter))
+        .pb(scaled(if chrome.status > 0. { 0. } else { shape.gutter }))
+        .children(sidebar)
+        .child(canvas);
+    let status = (chrome.status > 0.).then(|| div().h(scaled(chrome.status)).flex_shrink_0());
+    div()
+        .w_full()
+        .h(px(88.))
+        .rounded(px(6.))
+        .overflow_hidden()
+        .border_1()
+        .border_color(look.border)
+        .bg(look.sheet)
+        .flex()
+        .flex_col()
+        .child(titlebar)
+        .child(body)
+        .children(status)
+        .into_any_element()
 }
 
 fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
@@ -617,13 +883,16 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let tabs_reset = handle.clone();
     let tab_position = SettingField::render(move |_, _, cx| {
         let position = prefs_of(&tabs, cx).tab_position;
-        let ink = cx.theme().foreground;
+        let look = look_of(&tabs, cx);
+        // Track and thumb from the skin's control radius: 10 and 7 on glass.
+        let radius = look.skin.shape.kit_radius;
+        let ink = look.ink;
         div()
             .tab_group()
             .flex()
             .gap(px(3.))
             .p(px(3.))
-            .rounded(px(10.))
+            .rounded(px(radius + 2.))
             .bg(ink.opacity(0.05))
             .children(
                 [
@@ -646,7 +915,7 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                             .small()
                             .ghost()
                             .toggled(selected)
-                            .rounded(px(7.))
+                            .rounded(px((radius - 1.).max(0.)))
                             .bg(ink.opacity(if selected { 0.10 } else { 0. }))
                             .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
                             .on_click(move |_, _, cx| {

@@ -7,6 +7,7 @@
 pub mod display;
 pub mod ghostty;
 pub mod keymap;
+pub mod skin;
 pub mod theme;
 
 pub use display::{
@@ -22,6 +23,7 @@ pub use keymap::{
     default_chords, display_chord, effective_keymap, key_chord, plain_key, quick_terminal_chords,
     register_global_hotkeys, shown_chords, text_field_has_keys, yields_to_text_field,
 };
+pub use skin::{Backdrop, Shift, Skin, TabsWhen, resolved_id, skin_by_id, skins};
 pub use theme::{
     Palette, Theme, default_theme_id, mix, palette, readable_on, theme_by_id, themes, with_alpha,
 };

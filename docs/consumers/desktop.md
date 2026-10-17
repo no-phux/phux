@@ -230,7 +230,9 @@ shipped under their [Open Font License](../../clients/desktop/native/assets/font
 A blurred window is translucent over the desktop, and macOS re-blurs and blends
 it on every frame the terminal presents. Off (`solid`) makes the window, its
 Metal layer, and the painted sheet opaque in theme colors, so the compositor
-does neither; background opacity applies only to a blurred window.
+does neither; background opacity applies only to a blurred window. Solid
+composes with the chosen skin: the skin keeps its shape, chrome, and motion,
+and only its backdrop, sheet, and pane cards turn opaque.
 
 **Terminal spacing** holds line height, cell width, padding, and unfocused-pane dimming.
 Display edits apply live and persist with the window's layout; font selection

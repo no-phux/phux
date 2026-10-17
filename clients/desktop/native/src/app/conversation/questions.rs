@@ -545,7 +545,7 @@ pub(super) fn render(
     view: Option<&NativeView>,
     ready: bool,
     placement: &str,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> Vec<AnyElement> {
     let Some(view) = view else {
@@ -553,7 +553,7 @@ pub(super) fn render(
     };
     view.questions
         .iter()
-        .map(|question| render_question(face, view, ready, question, placement, colors, cx))
+        .map(|question| render_question(face, view, ready, question, placement, look, cx))
         .collect()
 }
 
@@ -563,7 +563,7 @@ fn render_question(
     ready: bool,
     question: &NativeQuestion,
     placement: &str,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let status = face.question_status.get(&question.id);
@@ -576,9 +576,9 @@ fn render_question(
         .flex_col()
         .gap(px(8.))
         .p(px(12.))
-        .rounded(px(8.))
+        .rounded(corner(look, 8.))
         .border_1()
-        .border_color(from_hex(&colors.border))
+        .border_color(look.border)
         .child(
             div()
                 .text_sm()

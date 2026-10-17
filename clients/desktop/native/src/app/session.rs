@@ -734,9 +734,7 @@ impl Desktop {
                 kind: crate::diag::window_kind(),
                 show: true,
                 window_min_size: Some(Size::new(px(640.), px(420.))),
-                window_background: super::desk::window_options_background(
-                    crate::settings::WindowBackground::default(),
-                ),
+                window_background: gpui::WindowBackgroundAppearance::Blurred,
                 app_owns_titlebar_drag: true,
                 ..WindowOptions::default()
             },
@@ -801,6 +799,7 @@ impl Desktop {
             ]),
             Menu::new("View").items([
                 MenuItem::action("Toggle Sidebar", Run::new("sidebar")),
+                MenuItem::action("Toggle Plain Terminal", Run::new("plain-terminal")),
                 MenuItem::action("Command Palette", Run::new("palette")),
                 MenuItem::action("Toggle Quick Terminal", Run::new("quick-terminal")),
             ]),

@@ -3,6 +3,7 @@
 use gpui::{App, Hsla, px, rgb};
 use gpui_kit::component::{Theme, ThemeMode};
 
+use crate::settings::skin::Skin;
 use crate::settings::theme::{Palette, mix};
 
 /// Parse `#RRGGBB` or `#RRGGBBAA`.
@@ -23,8 +24,8 @@ pub fn from_hex(color: &str) -> Hsla {
 }
 
 /// Paint Kit controls (buttons, inputs, palette, settings, switches, sliders)
-/// with the phux palette, in the theme's own light or dark mode.
-pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
+/// with the phux palette, in the theme's own light or dark mode, shaped by the skin.
+pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
     let theme = &colors.theme;
     let mode = if theme.appearance == "light" {
         ThemeMode::Light
@@ -58,9 +59,9 @@ pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
     let warning = from_hex(&theme.warning);
     let on_status = from_hex(&theme.background);
     Theme::update(cx, |state| {
-        state.radius = px(8.);
-        state.radius_lg = px(14.);
-        state.shadow = true;
+        state.radius = px(skin.shape.kit_radius);
+        state.radius_lg = px(skin.shape.kit_radius_lg);
+        state.shadow = skin.shadows();
         let kit = &mut state.colors;
         kit.background = from_hex(&theme.background);
         kit.foreground = fg;

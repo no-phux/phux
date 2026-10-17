@@ -5,30 +5,83 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnimationExt, AnyWindowHandle, Bounds, Context, FocusHandle, FontWeight, Hsla, KeyDownEvent,
-    Keystroke, MouseButton, ScrollHandle, SharedString, SpringAnimation, SpringConfig, SpringState,
-    Subscription, WeakEntity, Window, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, div, point, px, size,
+    AnimationExt, AnyWindowHandle, App, Bounds, Context, FocusHandle, FontWeight, Hsla,
+    KeyDownEvent, Keystroke, MouseButton, ScrollHandle, SharedString, SpringAnimation,
+    SpringConfig, SpringState, Subscription, WeakEntity, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, px, size,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{ActiveTheme, Icon};
 
-use crate::settings::TabPosition;
+#[cfg(any(test, feature = "ui-fixtures"))]
+use crate::settings::skin::GLASS;
+use crate::settings::{Backdrop, Skin, TabPosition};
 
 use super::desk::{Desk, Modal};
 use super::host::RemoteHost;
 use super::keys::gpui_stroke;
 
 const WIDTH: f32 = 316.;
-const RADIUS: f32 = 26.;
 const INSET: f32 = 8.;
 const ROW: f32 = 40.;
 const HEADER: f32 = 68.;
 const HOME_HEIGHT: f32 = HEADER + INSET + ROW * 11. + 16.;
-const ENTER: Duration = Duration::from_millis(150);
-const EXIT: Duration = Duration::from_millis(100);
-const SPRING: SpringConfig = SpringConfig::new(950., 48., 1.);
+
+/// Text and icon ink, as foreground alpha: type hierarchy, not material.
+const ICON: f32 = 0.8;
+const SECONDARY: f32 = 0.55;
+const MUTED: f32 = 0.5;
+const HINT: f32 = 0.45;
+
+/// The skin's menu spring.
+fn spring(skin: &Skin) -> SpringConfig {
+    let (stiffness, damping, mass) = skin.motion.spring;
+    SpringConfig::new(stiffness, damping, mass)
+}
+
+/// How far through `span` `elapsed` is, 0 to 1. An empty span is done.
+fn span_progress(elapsed: Duration, span: Duration) -> f32 {
+    if span.is_zero() {
+        return 1.;
+    }
+    (elapsed.as_secs_f32() / span.as_secs_f32()).clamp(0., 1.)
+}
+
+/// Whether the skin wants the compositor material behind the menu.
+fn wants_glass(skin: &Skin) -> bool {
+    matches!(skin.material.backdrop, Backdrop::Glass | Backdrop::Blur)
+}
+
+/// Foreground washes on the menu, softer than the sheet's because the
+/// material behind already reads as raised. They scale with the skin's
+/// washes; the comments give the Liquid Glass values.
+#[derive(Clone, Copy)]
+struct Washes {
+    /// Hovered or keyboard-selected header: 0.035.
+    quiet: Hsla,
+    /// The header's icon disc: 0.07.
+    disc: Hsla,
+    /// The sliding row selection: 0.085.
+    selection: Hsla,
+    /// The selection's hairline: 0.035.
+    hairline: Hsla,
+    /// A pressed row: 0.13.
+    press: Hsla,
+}
+
+impl Washes {
+    fn of(ink: Hsla, skin: &Skin) -> Self {
+        let washes = skin.material.washes;
+        Self {
+            quiet: ink.opacity(washes.hover * 7. / 12.),
+            disc: ink.opacity(washes.hover * 7. / 6.),
+            selection: ink.opacity(washes.active * 17. / 22.),
+            hairline: ink.opacity(washes.border * 7. / 16.),
+            press: ink.opacity(washes.active * 13. / 11.),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
@@ -89,20 +142,20 @@ impl SurfaceMotion {
         }
     }
 
-    fn advance(&mut self, now: Instant, reduced: bool) -> bool {
+    fn advance(&mut self, now: Instant, reduced: bool, spring: SpringConfig) -> bool {
         let elapsed = now
             .saturating_duration_since(self.last)
             .as_secs_f32()
             .min(0.05);
         self.last = now;
-        if reduced || SPRING.is_settled(self.height, self.target, 0.25) {
+        if reduced || spring.is_settled(self.height, self.target, 0.25) {
             self.height = SpringState {
                 position: self.target,
                 velocity: 0.,
             };
             return false;
         }
-        self.height = SPRING.step(self.height, self.target, elapsed);
+        self.height = spring.step(self.height, self.target, elapsed);
         true
     }
 }
@@ -119,6 +172,7 @@ struct MenuSnapshot {
     hosts: Vec<RemoteHost>,
     chords: Vec<(String, String)>,
     tab_position: TabPosition,
+    skin: Skin,
 }
 
 pub(super) struct GlassMenu {
@@ -138,6 +192,8 @@ pub(super) struct GlassMenu {
     opened: Instant,
     closing: Option<Instant>,
     native_glass: bool,
+    /// The skin painting now, kept in step with the desk while it lives.
+    skin: Skin,
     surface: SurfaceMotion,
     _subscriptions: Vec<Subscription>,
 }
@@ -174,6 +230,7 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
     let hosts = desk.hosts.clone();
     let chords = crate::settings::shown_chords(desk.keymap(), &crate::settings::default_chords());
     let tab_position = desk.prefs.tab_position;
+    let skin = desk.skin();
     let owner = cx.entity();
     let weak = cx.weak_entity();
     let result = cx.open_window(
@@ -201,6 +258,7 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
                         hosts,
                         chords,
                         tab_position,
+                        skin,
                     },
                     Some(MenuOwner {
                         desk: weak,
@@ -241,6 +299,15 @@ pub(super) fn toggle(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk
                             .update(cx, |_, window, _| window.remove_window());
                     },
                 ));
+                // The desk notifies on every frame of a skin shift; follow it.
+                menu._subscriptions
+                    .push(cx.observe(&owner, |menu, desk, cx| {
+                        let skin = desk.read(cx).skin();
+                        if skin != menu.skin {
+                            menu.skin = skin;
+                            cx.notify();
+                        }
+                    }));
                 menu._subscriptions
                     .push(cx.observe_release(&owner, move |_, _, cx| {
                         let _ = AnyWindowHandle::from(handle)
@@ -268,7 +335,11 @@ impl GlassMenu {
         } else {
             WindowAppearance::Light
         };
-        let native_glass = window.set_glass_effect(px(RADIUS), appearance);
+        // Opaque skins paint their own solid surface; only clear ones get
+        // the compositor material.
+        let skin = snapshot.skin;
+        let native_glass = wants_glass(&skin)
+            && window.set_glass_effect(px(skin.shape.popover_radius), appearance);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut menu = Self {
@@ -288,6 +359,7 @@ impl GlassMenu {
             opened: Instant::now(),
             closing: None,
             native_glass,
+            skin,
             surface: SurfaceMotion::new(HOME_HEIGHT.min(max_height)),
             _subscriptions: Vec::new(),
         };
@@ -429,11 +501,12 @@ impl GlassMenu {
         // Occluded panels do not receive display frames. Cleanup must still
         // finish when the user switches Spaces or the app deactivates.
         let handle = window.window_handle();
-        if cx.reduce_motion() {
+        let exit = self.skin.motion.menu_exit();
+        if self.reduced(cx) {
             window.remove_window();
         } else {
             cx.spawn(async move |_, cx| {
-                cx.background_executor().timer(EXIT).await;
+                cx.background_executor().timer(exit).await;
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             })
             .detach();
@@ -580,35 +653,40 @@ impl GlassMenu {
         }
     }
 
+    /// Motion is off: the platform asks for less, or the skin has none.
+    fn reduced(&self, cx: &App) -> bool {
+        cx.reduce_motion() || !self.skin.motion.enabled
+    }
+
     fn opacity(&self, now: Instant, reduced: bool) -> (f32, bool) {
         if reduced {
             return (if self.closing.is_some() { 0. } else { 1. }, false);
         }
+        let motion = &self.skin.motion;
         if let Some(at) = self.closing {
-            let presence =
-                (1. - now.duration_since(at).as_secs_f32() / EXIT.as_secs_f32()).clamp(0., 1.);
+            let presence = 1. - span_progress(now.duration_since(at), motion.menu_exit());
             return (presence * presence, presence > 0.);
         }
-        let progress =
-            (now.duration_since(self.opened).as_secs_f32() / ENTER.as_secs_f32()).clamp(0., 1.);
+        let progress = span_progress(now.duration_since(self.opened), motion.menu_enter());
         (1. - (1. - progress).powi(3), progress < 1.)
     }
 
     /// Called only during render, where GPUI permits animation frame requests.
     fn animate_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let moving = self.surface.advance(now, cx.reduce_motion());
+        let reduced = self.reduced(cx);
+        let moving = self.surface.advance(now, reduced, spring(&self.skin));
         let height = self.surface.height.position;
         if (window.viewport_size().height.as_f32() - height).abs() > 0.5 {
             window.resize(size(px(WIDTH), px(height)));
         }
-        let (alpha, fading) = self.opacity(now, cx.reduce_motion());
+        let (alpha, fading) = self.opacity(now, reduced);
         if self.closing.is_some() && alpha <= 0. {
             window.remove_window();
             return;
         }
         window.set_window_opacity(alpha.max(0.01));
-        if !cx.reduce_motion() && (moving || fading) {
+        if !reduced && (moving || fading) {
             window.request_animation_frame();
         }
     }
@@ -621,7 +699,7 @@ impl GlassMenu {
         }
     }
 
-    fn header(&self, ink: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+    fn header(&self, ink: Hsla, washes: Washes, cx: &mut Context<Self>) -> impl IntoElement {
         let home = self.page == Page::Commands;
         let title: SharedString = match self.page {
             Page::Commands => self
@@ -645,7 +723,7 @@ impl GlassMenu {
             .aria_label(if home { "Switch host" } else { "Back to menu" })
             .aria_selected(self.selected.is_none())
             .when(self.selected.is_none(), |el| {
-                el.aria_active_descendant().bg(ink.opacity(0.035))
+                el.aria_active_descendant().bg(washes.quiet)
             })
             .on_mouse_move(cx.listener(|menu, event: &gpui::MouseMoveEvent, _, cx| {
                 menu.hover_select(None, event.position, cx);
@@ -664,7 +742,7 @@ impl GlassMenu {
                 div()
                     .size(px(34.))
                     .rounded_full()
-                    .bg(ink.opacity(0.07))
+                    .bg(washes.disc)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -687,7 +765,7 @@ impl GlassMenu {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(ink.opacity(0.55))
+                            .text_color(ink.opacity(SECONDARY))
                             .child(detail),
                     ),
             )
@@ -695,31 +773,41 @@ impl GlassMenu {
                 el.child(
                     Icon::new(IconName::ChevronRight)
                         .size(px(14.))
-                        .text_color(ink.opacity(0.5)),
+                        .text_color(ink.opacity(MUTED)),
                 )
             })
-            .hover(move |style| style.bg(ink.opacity(0.035)))
+            .hover(move |style| style.bg(washes.quiet))
     }
 }
 
 impl Render for GlassMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.animate_surface(window, cx);
+        let skin = self.skin;
         let ink = cx.theme().foreground;
+        let washes = Washes::of(ink, &skin);
+        let springs = spring(&skin);
+        let radius = px(skin.shape.popover_radius);
+        let row_radius = px(skin.shape.kit_radius_lg);
         let native = self.native_glass;
+        let surface = if skin.material.backdrop == Backdrop::Opaque {
+            cx.theme().popover.alpha(1.)
+        } else {
+            cx.theme().popover
+        };
         let highlight = self.selected.map(|index| {
             div()
                 .absolute()
                 .left_0()
                 .right_0()
                 .h(px(Self::row_height(&self.entries[index])))
-                .rounded(px(14.))
-                .bg(ink.opacity(0.085))
+                .rounded(row_radius)
+                .bg(washes.selection)
                 .border_1()
-                .border_color(ink.opacity(0.035))
+                .border_color(washes.hairline)
                 .with_spring(
                     "selection",
-                    SpringAnimation::new(SPRING)
+                    SpringAnimation::new(springs)
                         .to(px(self.row_y(index)))
                         .with_epsilon(0.1),
                     |el, y| el.top(y),
@@ -768,11 +856,11 @@ impl Render for GlassMenu {
                     .on_click(cx.listener(move |menu, _, window, cx| {
                         menu.choose(choice.clone(), window, cx)
                     }))
-                    .active(move |style| style.bg(ink.opacity(0.13)).rounded(px(14.)))
+                    .active(move |style| style.bg(washes.press).rounded(row_radius))
                     .child(
                         Icon::new(entry.icon)
                             .size(px(17.))
-                            .text_color(ink.opacity(0.8)),
+                            .text_color(ink.opacity(ICON)),
                     )
                     .child(
                         div()
@@ -785,21 +873,21 @@ impl Render for GlassMenu {
                             .children(entry.detail.clone().map(|detail| {
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(ink.opacity(0.5))
+                                    .text_color(ink.opacity(MUTED))
                                     .truncate()
                                     .child(detail)
                             })),
                     )
                     .children(entry.chord.clone().map(|chord| {
                         div()
-                            .text_color(ink.opacity(0.45))
+                            .text_color(ink.opacity(HINT))
                             .child(Kbd::new(chord).appearance(false))
                     }))
                     .when(matches!(entry.choice, Choice::Page(_)), |el| {
                         el.child(
                             Icon::new(IconName::ChevronRight)
                                 .size(px(13.))
-                                .text_color(ink.opacity(0.45)),
+                                .text_color(ink.opacity(HINT)),
                         )
                     })
                     .when(entry.checked, |el| {
@@ -814,16 +902,16 @@ impl Render for GlassMenu {
             .track_focus(&self.focus)
             .size_full()
             .relative()
-            .rounded(px(RADIUS))
+            .rounded(radius)
             .overflow_hidden()
             .text_size(px(13.))
             .text_color(ink)
             .when(!native, |el| {
-                el.bg(cx.theme().popover).child(
+                el.bg(surface).child(
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(px(RADIUS))
+                        .rounded(radius)
                         .border_1()
                         .border_color(cx.theme().border),
                 )
@@ -840,7 +928,7 @@ impl Render for GlassMenu {
                 }),
             )
             .on_mouse_down_out(cx.listener(|menu, _, window, cx| menu.dismiss(true, window, cx)))
-            .child(self.header(ink, cx))
+            .child(self.header(ink, washes, cx))
             .child(
                 div()
                     .absolute()
@@ -860,7 +948,7 @@ impl Render for GlassMenu {
                             .children(rows)
                             .with_spring(
                                 ("page", self.page_generation),
-                                SpringAnimation::new(SPRING)
+                                SpringAnimation::new(springs)
                                     .to(px(0.))
                                     .from(px(10.))
                                     .with_epsilon(0.1),
@@ -874,6 +962,9 @@ impl Render for GlassMenu {
 /// Standalone presentation of the production component; commands close it.
 #[cfg(feature = "ui-fixtures")]
 pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
+    // `PHUX_GLASS_PREVIEW_SKIN=terminal` previews the opaque skin.
+    let skin =
+        *crate::settings::skin_by_id(&std::env::var("PHUX_GLASS_PREVIEW_SKIN").unwrap_or_default());
     let chords = crate::settings::shown_chords(
         &crate::settings::default_chords(),
         &crate::settings::default_chords(),
@@ -891,7 +982,7 @@ pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
             ..Default::default()
         },
         |window, cx| {
-            window.set_window_title("Liquid Glass menu");
+            window.set_window_title(&format!("{} menu", skin.name));
             cx.new(|cx| {
                 GlassMenu::new(
                     MenuSnapshot {
@@ -908,6 +999,7 @@ pub(super) fn preview(cx: &mut gpui::App) -> anyhow::Result<()> {
                         ],
                         chords,
                         tab_position: TabPosition::Top,
+                        skin,
                     },
                     None,
                     700.,
@@ -947,6 +1039,7 @@ pub(super) fn benchmark(cx: &mut gpui::App) -> anyhow::Result<()> {
                         current: None,
                         hosts: Vec::new(),
                         tab_position: TabPosition::Top,
+                        skin: GLASS,
                         chords: crate::settings::shown_chords(
                             &crate::settings::default_chords(),
                             &crate::settings::default_chords(),
@@ -999,22 +1092,45 @@ mod tests {
                 motion.advance(
                     start + Duration::from_secs_f32(frame as f32 / fps as f32),
                     false,
+                    spring(&GLASS),
                 );
             }
             assert_eq!(motion.height.position, motion.target);
             assert_eq!(motion.height.velocity, 0.);
             assert!(
-                !motion.advance(start + Duration::from_secs(2), false),
+                !motion.advance(start + Duration::from_secs(2), false, spring(&GLASS)),
                 "settled surfaces request no frames"
             );
         }
     }
 
     #[test]
+    fn glass_washes_keep_the_shipped_menu_ink() {
+        let ink = gpui::white();
+        let washes = Washes::of(ink, &GLASS);
+        for (wash, alpha) in [
+            (washes.quiet, 0.035),
+            (washes.disc, 0.07),
+            (washes.selection, 0.085),
+            (washes.hairline, 0.035),
+            (washes.press, 0.13),
+        ] {
+            assert!((wash.a - alpha).abs() < 1e-6, "{} != {alpha}", wash.a);
+        }
+        assert_eq!(GLASS.shape.popover_radius, 26.);
+        assert_eq!(GLASS.motion.menu_enter(), Duration::from_millis(150));
+        assert_eq!(GLASS.motion.menu_exit(), Duration::from_millis(100));
+        assert_eq!(spring(&GLASS), SpringConfig::new(950., 48., 1.));
+        let terminal = crate::settings::skin_by_id("terminal");
+        assert!(wants_glass(&GLASS) && !wants_glass(terminal));
+        assert_eq!(span_progress(Duration::from_millis(5), Duration::ZERO), 1.);
+    }
+
+    #[test]
     fn reduced_motion_resolves_surface_immediately() {
         let mut motion = SurfaceMotion::new(HOME_HEIGHT);
         motion.target = 228.;
-        assert!(!motion.advance(Instant::now(), true));
+        assert!(!motion.advance(Instant::now(), true, spring(&GLASS)));
         assert_eq!(motion.height.position, 228.);
         assert_eq!(motion.height.velocity, 0.);
     }
@@ -1031,6 +1147,7 @@ mod tests {
                             hosts: Vec::new(),
                             chords: Vec::new(),
                             tab_position: TabPosition::Top,
+                            skin: GLASS,
                         },
                         None,
                         700.,
@@ -1046,7 +1163,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         // Simulate a covered window: deliver no further render/display frames.
-        cx.executor().advance_clock(EXIT);
+        cx.executor().advance_clock(GLASS.motion.menu_exit());
         cx.run_until_parked();
         assert!(handle.read_with(cx, |_, _| ()).is_err());
     }
@@ -1070,6 +1187,7 @@ mod tests {
                             MenuSnapshot {
                                 current: None,
                                 tab_position: TabPosition::Top,
+                                skin: GLASS,
                                 chords: crate::settings::shown_chords(
                                     &crate::settings::default_chords(),
                                     &crate::settings::default_chords(),

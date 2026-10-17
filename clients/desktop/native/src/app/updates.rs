@@ -5,6 +5,8 @@ use std::time::Duration;
 use gpui::{Context, Subscription, Task};
 
 use super::color::from_hex;
+use super::overlays::corner;
+use super::skin::Look;
 use crate::settings::theme::Palette;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
 
@@ -66,7 +68,7 @@ enum Tone {
     Bad,
 }
 
-fn pill(text: String, tone: Tone, colors: &Palette) -> gpui::Div {
+fn pill(text: String, tone: Tone, colors: &Palette, look: &Look) -> gpui::Div {
     use gpui::prelude::*;
     use gpui::{div, px};
     let (fg, bg) = match tone {
@@ -79,7 +81,7 @@ fn pill(text: String, tone: Tone, colors: &Palette) -> gpui::Div {
         .flex_shrink_0()
         .px(px(8.))
         .py(px(2.))
-        .rounded(px(10.))
+        .rounded(corner(look, 10.))
         .bg(from_hex(&bg))
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
@@ -96,11 +98,13 @@ fn status_header(
     status: (String, Tone),
     detail: Option<(String, bool)>,
     actions: Vec<gpui::AnyElement>,
-    colors: &Palette,
+    look: &Look,
+    mono: &gpui::SharedString,
 ) -> gpui::AnyElement {
     use gpui::prelude::*;
     use gpui::{div, px};
     let (status, tone) = status;
+    let colors = &look.colors;
 
     div()
         .flex()
@@ -130,12 +134,12 @@ fn status_header(
                                         .text_color(from_hex(&colors.theme.foreground))
                                         .child(title),
                                 )
-                                .child(pill(status, tone, colors)),
+                                .child(pill(status, tone, colors, look)),
                         )
                         .child(
                             div()
                                 .text_xs()
-                                .font_family("monospace")
+                                .font_family(mono.clone())
                                 .text_color(from_hex(&colors.muted))
                                 .child(build),
                         ),
@@ -152,7 +156,7 @@ fn status_header(
                 div()
                     .px(px(10.))
                     .py(px(8.))
-                    .rounded(px(6.))
+                    .rounded(corner(look, 6.))
                     .border_1()
                     .border_color(from_hex(&edge))
                     .bg(from_hex(&colors.hover))
@@ -172,9 +176,12 @@ fn failure(message: &str, prefix: &str) -> Option<String> {
         .map(|line| line.trim().to_owned())
 }
 
+/// The Updates page in a skin, with build strings in the terminal `font`.
 pub(crate) fn page(
     entity: &gpui::Entity<Updater>,
     colors: &Palette,
+    look: &Look,
+    font: &str,
     cx: &gpui::App,
 ) -> gpui_kit::component::setting::SettingPage {
     use gpui::prelude::*;
@@ -233,7 +240,10 @@ pub(crate) fn page(
         .runtime
         .as_ref()
         .and_then(|runtime| runtime.native_command.clone());
-    let (desktop_colors, runtime_colors) = (colors.clone(), colors.clone());
+    let runtime_colors = colors.clone();
+    let (desktop_look, runtime_look) = (look.clone(), look.clone());
+    let mono = gpui::SharedString::from(font.to_owned());
+    let runtime_mono = mono.clone();
     SettingPage::new("Updates")
         .group(SettingGroup::new().title("Desktop")
             .item(SettingItem::render(move |_, _, _| {
@@ -247,13 +257,13 @@ pub(crate) fn page(
                         .on_click(move |_, _, cx| install.update(cx, |updater, cx| updater.desktop_act(cx)))
                         .into_any_element());
                 }
-                status_header("Phux Desktop", build.clone(), desktop_status.clone(), desktop_detail.clone(), actions, &desktop_colors)
+                status_header("Phux Desktop", build.clone(), desktop_status.clone(), desktop_detail.clone(), actions, &desktop_look, &mono)
             }))
             .item(SettingItem::new("Automatic checks", SettingField::switch(
                 move |cx| automatic_read.read(cx).prefs.automatic,
                 move |value, cx| { automatic_write.update(cx, |updater, cx| updater.preferences(|prefs| prefs.automatic = value, cx)); },
             )).description("At launch and every six hours. Nothing downloads or restarts until you click."))
-            .item(channel_item(entity, false, busy, updater.prefs.desktop, colors)))
+            .item(channel_item(entity, false, busy, updater.prefs.desktop, colors, look)))
         .group(SettingGroup::new().title("phux on this Mac")
             .item(SettingItem::render(move |_, _, _| {
                 let install = runtime_install.clone();
@@ -264,7 +274,7 @@ pub(crate) fn page(
                         .into_any_element());
                 }
                 let detail = runtime_failure.clone().map(|failure| (failure, true));
-                let header = status_header("phux CLI & server", runtime_build.clone(), runtime_status.clone(), detail, actions, &runtime_colors);
+                let header = status_header("phux CLI & server", runtime_build.clone(), runtime_status.clone(), detail, actions, &runtime_look, &runtime_mono);
                 match runtime_note.clone() {
                     Some(note) => gpui::div().flex().flex_col().gap(gpui::px(6.)).child(header)
                         .child(gpui::div().text_xs().text_color(from_hex(&runtime_colors.muted)).child(note)).into_any_element(),
@@ -275,7 +285,7 @@ pub(crate) fn page(
                 move |cx| manage_read.read(cx).prefs.manage_runtime,
                 move |value, cx| { manage_write.update(cx, |updater, cx| updater.preferences(|prefs| prefs.manage_runtime = value, cx)); },
             )).description("Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone."))
-            .item(channel_item(entity, true, busy, updater.prefs.runtime, colors)))
+            .item(channel_item(entity, true, busy, updater.prefs.runtime, colors, look)))
 }
 
 /// Stable and Next as one segmented control, beside its title like every other row.
@@ -285,12 +295,16 @@ fn channel_item(
     busy: bool,
     selected: updates::Channel,
     colors: &Palette,
+    look: &Look,
 ) -> gpui_kit::component::setting::SettingItem {
     use gpui::prelude::*;
     use gpui::{div, px};
     use gpui_kit::component::setting::{SettingField, SettingItem};
     let entity = entity.clone();
     let colors = colors.clone();
+    let outer = corner(look, 7.);
+    let inner = corner(look, 5.);
+    let lifts = !look.popover_shadow.is_empty();
     SettingItem::new(
         "Channel",
         SettingField::render(move |_, _, _| {
@@ -298,7 +312,7 @@ fn channel_item(
                 .flex()
                 .p(px(2.))
                 .gap(px(2.))
-                .rounded(px(7.))
+                .rounded(outer)
                 .bg(from_hex(&colors.hover))
                 .children(
                     [updates::Channel::Stable, updates::Channel::Next]
@@ -315,12 +329,12 @@ fn channel_item(
                                 .id(gpui::SharedString::from(id))
                                 .px(px(12.))
                                 .py(px(3.))
-                                .rounded(px(5.))
+                                .rounded(inner)
                                 .text_sm()
                                 .when(on, |segment| {
                                     segment
                                         .bg(from_hex(&colors.raised))
-                                        .shadow_sm()
+                                        .when(lifts, |segment| segment.shadow_sm())
                                         .text_color(from_hex(&colors.theme.foreground))
                                 })
                                 .when(!on, |segment| segment.text_color(from_hex(&colors.muted)))

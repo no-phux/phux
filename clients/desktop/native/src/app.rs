@@ -27,6 +27,7 @@ mod panes;
 mod performance;
 mod session;
 mod settings_panel;
+mod skin;
 mod typed;
 mod updates;
 mod view;

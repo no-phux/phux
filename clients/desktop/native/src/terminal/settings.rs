@@ -28,6 +28,8 @@ pub struct Settings {
     pub focused: bool,
     pub cursor_visible: bool,
     pub blink_visible: bool,
+    /// A jumping cursor streaks a beam behind it ([`super::laser`]).
+    pub cursor_laser: bool,
     pub option_as_alt: bool,
     /// This view proposes the terminal's PTY size from its painted bounds.
     pub size_owner: bool,
@@ -54,6 +56,7 @@ impl Default for Settings {
             focused: true,
             cursor_visible: true,
             blink_visible: true,
+            cursor_laser: false,
             option_as_alt: false,
             size_owner: true,
             app_chords: Vec::new(),
@@ -82,11 +85,12 @@ impl Settings {
             && self.blink_visible == other.blink_visible
     }
 
-    /// Paint settings and the input policy are the same, so a configure can
-    /// return without notifying the view.
+    /// Paint settings, overlays and the input policy are the same, so a
+    /// configure can return without notifying the view.
     #[must_use]
     pub fn unchanged(&self, other: &Self) -> bool {
         self.paints_like(other)
+            && self.cursor_laser == other.cursor_laser
             && self.option_as_alt == other.option_as_alt
             && self.size_owner == other.size_owner
             && self.app_chords == other.app_chords
@@ -150,6 +154,13 @@ mod tests {
         other.app_chords.push("ctrl+tab".into());
         assert!(!settings.unchanged(&other));
         other.app_chords.clear();
+        other.cursor_laser = true;
+        assert!(
+            settings.paints_like(&other),
+            "the beam never enters the scene"
+        );
+        assert!(!settings.unchanged(&other));
+        other.cursor_laser = false;
         other.focused = false;
         assert!(!settings.unchanged(&other));
     }

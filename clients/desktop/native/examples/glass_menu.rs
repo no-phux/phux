@@ -1,4 +1,5 @@
 //! Standalone native material preview; requires no daemon or production state.
+//! `PHUX_GLASS_PREVIEW_SKIN=terminal` previews the opaque skin.
 fn main() {
     gpui_platform::application()
         .with_assets(phux_desktop::assets::Assets)
