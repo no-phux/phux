@@ -889,6 +889,61 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     );
 }
 
+/// A server that reports session facets owes no windows: every join runs
+/// through the facet, and the frozen `window_count` is derived here from the
+/// session's terminals, never read from the server's legacy count.
+#[test]
+fn a_facet_only_snapshot_with_no_windows_joins_and_counts_without_the_window_surface() {
+    let facet = |id: u32, session: u32| {
+        ResourceInfo::new(ResourceId::local(id), WindowId::new(0), 80, 24)
+            .with_session(Some(SessionId::new(session)))
+    };
+    let persistent = Some(phux_protocol::wire::frame::SessionLifetime::Persistent);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "one")
+                .with_lifetime(persistent)
+                .with_window_count(0),
+            SessionInfo::new(SessionId::new(2), "two")
+                .with_lifetime(persistent)
+                .with_window_count(5),
+            SessionInfo::new(SessionId::new(3), "agents").with_lifetime(persistent),
+        ])
+        .with_resources(vec![
+            facet(1, 1),
+            facet(2, 1),
+            facet(7, 3).with_kind(phux_protocol::ResourceKind::AgentSession),
+        ]);
+    assert!(snapshot.windows.is_empty());
+    let catalog = Catalog::from_snapshot(snapshot, 1).unwrap();
+    let joined: Vec<(ResourceId, u32)> = catalog
+        .terminals
+        .iter()
+        .map(|t| (t.id.clone(), t.session))
+        .collect();
+    assert_eq!(
+        joined,
+        [(ResourceId::local(1), 1), (ResourceId::local(2), 1)]
+    );
+    let counts: Vec<(u32, u16, u32)> = catalog
+        .sessions
+        .iter()
+        .map(|s| (s.session_id, s.window_count, s.snapshot_members))
+        .collect();
+    assert_eq!(
+        counts,
+        [(1, 1, 2), (2, 0, 0), (3, 0, 1)],
+        "one per session with a terminal; an agent alone is no window"
+    );
+
+    // A server that predates the facets is the only one whose count is read.
+    let legacy = registry(1, false);
+    let mut legacy_sessions = legacy.sessions.clone();
+    legacy_sessions[1] = legacy_sessions[1].clone().with_window_count(4);
+    let catalog = Catalog::from_snapshot(legacy.with_sessions(legacy_sessions), 1).unwrap();
+    assert_eq!(catalog.sessions[1].window_count, 4);
+}
+
 #[allow(
     clippy::cognitive_complexity,
     reason = "one walk over every layout pin"

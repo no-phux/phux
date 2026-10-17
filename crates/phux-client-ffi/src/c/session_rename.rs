@@ -6,6 +6,11 @@
 //! The first rename subscribes to the key so this client applies every
 //! later rename to its session list; `phux_client_follow_session_names`
 //! subscribes at `HELLO_OK` instead. No attach is needed for either.
+//!
+//! Against a server that advertises `ORGANIZATION` none of that metadata
+//! surface is used (ADR-0161 section 9): a rename is one typed
+//! `SESSION_RENAME`, and every rename reaches the session list through the
+//! organization replica (`organization::changed`).
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"
@@ -256,10 +261,17 @@ fn plan(client: &Client, current: &str, new_name: &str) -> RenamePlan {
     plan_rename(&roster, current, new_name)
 }
 
+/// Whether the negotiated server advertises `ORGANIZATION`, whose renames
+/// arrive through the organization replica rather than the metadata key.
+fn organization_advertised(client: &Client) -> bool {
+    client.control().organization_supported()
+}
+
 /// Subscribe to the rename key once per client. Read-only: it attaches
-/// nothing and sizes nothing.
+/// nothing and sizes nothing. Nothing to do against a server that advertises
+/// `ORGANIZATION`: the replica's records carry every rename.
 fn subscribe(client: &mut Client) -> Result<(), BridgeError> {
-    if client.session_rename.subscribed {
+    if client.session_rename.subscribed || organization_advertised(client) {
         return Ok(());
     }
     client.queue_frame(&FrameKind::SubscribeMetadata {
@@ -294,28 +306,40 @@ fn queue_rename(
     Ok(())
 }
 
-/// Against a server that advertises `ORGANIZATION`, with the session's
-/// record in the replica, rename by the typed `SESSION_RENAME` at the
-/// record's revision. False when the legacy metadata path must carry it.
+/// Against a server that advertises `ORGANIZATION`, rename by the typed
+/// `SESSION_RENAME` at the session record's revision. False only against a
+/// server that does not advertise it, where the legacy metadata path carries
+/// the rename; an `ORGANIZATION` server is never sent the legacy key.
 fn submit_typed(client: &mut Client, session_id: u32, new_name: &str) -> Result<bool, BridgeError> {
-    if !crate::c::organization::live(client) {
+    if !organization_advertised(client) {
         return Ok(false);
     }
-    let Some(key) = client
+    let key = client
         .sessions
         .iter()
         .find(|session| session.session_id == session_id)
         .and_then(|session| session.key)
-    else {
-        return Ok(false);
-    };
-    let submitted = client.control().rename_session(key, new_name);
-    let Ok(operation) = submitted else {
-        return Ok(false);
-    };
+        .ok_or_else(|| BridgeError::state("the organization records do not hold that session"))?;
+    let operation = client
+        .control()
+        .rename_session(key, new_name)
+        .map_err(|error| crate::c::organization::submit_error(&error))?;
     client.session_rename.operation = Some(operation);
     client.process_runtime_events()?;
     Ok(true)
+}
+
+/// Against a server that advertises `ORGANIZATION`, a rename waits for the
+/// replica: until it is live the typed command has no record revision to
+/// name, and the legacy key is never the fallback. Checked before the
+/// request ID is consumed, so the same call can be retried.
+fn ensure_typed_ready(client: &Client) -> Result<(), BridgeError> {
+    if organization_advertised(client) && !client.control().organization().is_live() {
+        return Err(BridgeError::state(
+            "the organization records are not loaded yet; wait for PhuxOrganizationInfo.state LIVE",
+        ));
+    }
+    Ok(())
 }
 
 /// A typed rename resolved. True when `operation` was this client's rename.
@@ -391,8 +415,11 @@ pub unsafe extern "C" fn phux_client_rename_session(
                 "outgoing queue is full; drain outgoing frames before renaming",
             ));
         }
-        client.operations.consume_request_id(request_id);
         let judged = plan(client, current_name, new_name_str);
+        if matches!(judged, RenamePlan::Send { .. }) {
+            ensure_typed_ready(client)?;
+        }
+        client.operations.consume_request_id(request_id);
         let rename = &mut client.session_rename;
         rename.request_id = request_id;
         rename.current = current.to_vec();
@@ -409,8 +436,13 @@ pub unsafe extern "C" fn phux_client_rename_session(
             RenamePlan::Send { session_id } => {
                 rename.session_id = session_id.get();
                 rename.settle(STATUS_PENDING, "");
-                if submit_typed(client, session_id.get(), new_name_str)? {
-                    return Ok(());
+                match submit_typed(client, session_id.get(), new_name_str) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(error) => {
+                        client.session_rename.settle(STATUS_REFUSED, &error.message);
+                        return Err(error);
+                    }
                 }
                 if let Err(error) = queue_rename(client, request_id, current_name, new_name_str) {
                     client.session_rename.settle(STATUS_REFUSED, &error.message);
@@ -425,7 +457,9 @@ pub unsafe extern "C" fn phux_client_rename_session(
 /// Follow renames any client makes, from the start of the connection.
 ///
 /// Subscribes to `phux.session.name/v1` now if `HELLO_OK` has been applied,
-/// else as soon as it is. Once per client; idempotent.
+/// else as soon as it is. Once per client; idempotent. Against a server that
+/// advertises `ORGANIZATION` nothing is subscribed: the organization replica
+/// already applies every rename to the session list.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread.

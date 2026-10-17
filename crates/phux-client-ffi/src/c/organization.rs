@@ -567,7 +567,7 @@ fn ensure_capacity(client: &Client, request_id: u32) -> Result<(), BridgeError> 
     Ok(())
 }
 
-fn submit_error(error: &SubmitError) -> BridgeError {
+pub(crate) fn submit_error(error: &SubmitError) -> BridgeError {
     match error {
         SubmitError::NotAnOperation => {
             BridgeError::state("the organization replica does not hold that record")
