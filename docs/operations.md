@@ -228,8 +228,8 @@ delivered events, including an unapplied suffix after a fatal event;
 `runtime.catch_up_execute` covers deferred projection on acquire.
 `runtime.project_grid` separates projection/prediction from
 `runtime.publish_swap` (slot swap and predecessor reclamation).
-`runtime.buffer_held` counts predecessor frames that a consumer still owns
-and therefore cannot be recycled. `runtime.request_errors` counts owner
+`runtime.buffer_fresh` counts projections that started from an empty buffer
+because every retired frame was still held by a consumer. `runtime.request_errors` counts owner
 channel send/receive failures, not business-operation rejections such as an
 unknown view. `runtime.apply_errors` and `runtime.project_errors` count failed
 apply events and timed projections respectively; projection setup is excluded.

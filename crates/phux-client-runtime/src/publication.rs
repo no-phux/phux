@@ -459,8 +459,8 @@ impl Publication {
     }
 
     /// Publish `frame` for `terminal`, stamping the next generation, and
-    /// hand back the frame it replaced so the publisher can recycle its
-    /// buffer when no consumer still holds it.
+    /// hand back the frame it replaced so the publisher can retire it and
+    /// refill its buffer once no consumer holds it.
     pub(crate) fn publish(
         &self,
         terminal: &ResourceId,

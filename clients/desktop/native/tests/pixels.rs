@@ -863,6 +863,62 @@ fn native_conversation_face_is_rendered() {
     cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
 }
 
+/// Streaming output under a painting terminal refills the buffers of frames
+/// it already painted. The scene, the paint report and the link layer each
+/// keep the last painted frame, so the runtime must not need the frame it
+/// just replaced to be free.
+fn streaming_output_recycles_frame_buffers() {
+    let (client, view) = publish_at(b"ready", 80, 24);
+    let mut cx = gpu();
+    let in_view = Arc::clone(&client);
+    let window = cx
+        .open_window(size(px(960.), px(600.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+        })
+        .expect("offscreen window");
+    let mut seq = 0_u64;
+    let mut tick = |cx: &mut HeadlessAppContext| {
+        seq += 1;
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq,
+                bytes: format!("line {seq}\r\n").into_bytes().into(),
+            })
+            .expect("live output");
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+    };
+    // The first publications start the retired list.
+    for _ in 0..4 {
+        tick(&mut cx);
+    }
+    let published = phux_client_runtime::perf::PUBLISHED.get();
+    let fresh = phux_client_runtime::perf::BUFFER_FRESH.get();
+    for _ in 0..32 {
+        tick(&mut cx);
+    }
+    drop(tick);
+    let published = phux_client_runtime::perf::PUBLISHED.get() - published;
+    assert!(published >= 32, "only {published} publications");
+    assert_eq!(
+        phux_client_runtime::perf::BUFFER_FRESH.get() - fresh,
+        0,
+        "a steady stream must reuse retired buffers"
+    );
+    let painted = window
+        .update(&mut cx, |terminal, _, _| terminal.painted())
+        .expect("painted");
+    assert!(
+        painted.frame.expect("frame").text().contains("line 36"),
+        "the last output must be painted"
+    );
+    drop(cx);
+    drop(client);
+}
+
 fn sparse_output_repaints_a_row_without_disturbing_its_neighbor() {
     let (client, view) = publish(b"hello\r\nworld");
     let mut cx = gpu();
@@ -1191,12 +1247,23 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
         phux_desktop::perf::TABLE,
         phux_desktop::perf::uptime(),
     );
+    let runtime_before = phux_perf::snapshot(
+        "runtime",
+        phux_client_runtime::perf::TABLE,
+        phux_desktop::perf::uptime(),
+    );
     let mut elapsed = Vec::with_capacity(frames);
     for index in 0..frames {
         let started = Instant::now();
         tick(index);
         elapsed.push(started.elapsed().as_secs_f64() * 1_000_000.);
     }
+    let runtime = phux_perf::snapshot(
+        "runtime",
+        phux_client_runtime::perf::TABLE,
+        phux_desktop::perf::uptime(),
+    )
+    .delta(&runtime_before);
     elapsed.sort_by(f64::total_cmp);
     let delta = phux_perf::snapshot(
         "desktop",
@@ -1210,7 +1277,12 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
         phux_perf::MetricValue::Counter(frames as u64),
         "{name}: every measured tick must paint"
     );
-    let histogram = |name| match &delta.metric(name).expect("stage metric").value {
+    let histogram = |name: &str| match &delta
+        .metric(name)
+        .or_else(|| runtime.metric(name))
+        .expect("stage metric")
+        .value
+    {
         phux_perf::MetricValue::Histogram(value) => serde_json::json!({
             "count": value.count,
             "mean_us": value.mean(),
@@ -1219,7 +1291,12 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
         }),
         _ => panic!("{name} is not a histogram"),
     };
-    let counter = |name| match &delta.metric(name).expect("counter metric").value {
+    let counter = |name: &str| match &delta
+        .metric(name)
+        .or_else(|| runtime.metric(name))
+        .expect("counter metric")
+        .value
+    {
         phux_perf::MetricValue::Counter(value) => *value,
         _ => panic!("{name} is not a counter"),
     };
@@ -1243,6 +1320,11 @@ fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
                 "reused": counter("desktop.prepare_reused"),
                 "patched": counter("desktop.prepare_patched"),
                 "shaped_lines": counter("desktop.shaped"),
+            },
+            "runtime": {
+                "project_grid": histogram("runtime.project_grid"),
+                "published": counter("runtime.publish"),
+                "buffer_fresh": counter("runtime.buffer_fresh"),
             },
             "process": delta.process,
         })
@@ -1307,6 +1389,11 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::sparse_output_repaints_a_row_without_disturbing_its_neighbor",
         sparse_output_repaints_a_row_without_disturbing_its_neighbor,
+        false,
+    ),
+    (
+        "terminal::pixels::streaming_output_recycles_frame_buffers",
+        streaming_output_recycles_frame_buffers,
         false,
     ),
     (

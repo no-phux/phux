@@ -1,9 +1,10 @@
 //! View records and scoped installation on the one terminal/dirty reader.
 
+use super::render::RetiredFrames;
 use super::{
     CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
-    EngineDocumentSelection, EngineError, FrameKey, GridBuffer, Owner, PointerGesture, Predictor,
-    ResourceId, Scroll, apply_terminal_selection, engine_error, viewport_scroll,
+    EngineDocumentSelection, EngineError, FrameKey, Owner, PointerGesture, Predictor, ResourceId,
+    Scroll, apply_terminal_selection, engine_error, viewport_scroll,
 };
 use crate::ViewId;
 use crate::engine::views::ViewCommand;
@@ -12,7 +13,7 @@ use phux_client_core::history::HistoryCache;
 
 pub(super) struct Presentation {
     pub(super) predictor: Predictor,
-    pub(super) spare: Option<GridBuffer>,
+    pub(super) retired: RetiredFrames,
     pub(super) viewport: Option<DocumentAnchorId>,
     pub(super) selection: Option<EngineDocumentSelection>,
     pub(super) gesture: Option<PointerGesture>,
@@ -31,7 +32,7 @@ impl Presentation {
     fn new(geometry: CanonicalGeometry) -> Self {
         Self {
             predictor: Predictor::new(geometry.cols, geometry.rows),
-            spare: None,
+            retired: RetiredFrames::default(),
             viewport: None,
             selection: None,
             gesture: None,
@@ -336,9 +337,9 @@ impl Owner {
             let (_, geometry, ..) = self
                 .replica_identity(id)
                 .ok_or_else(|| engine_error("screen changed without a replica"))?;
-            let spare = self.presentation_mut(id)?.spare.take();
+            let retired = std::mem::take(&mut self.presentation_mut(id)?.retired);
             let mut state = Presentation::new(geometry);
-            state.spare = spare;
+            state.retired = retired;
             self.presentations.insert(id.clone(), state);
             self.bump_document_revision(id)?;
         }
