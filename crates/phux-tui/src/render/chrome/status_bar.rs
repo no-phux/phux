@@ -533,7 +533,12 @@ pub struct StatusBarPainter {
     /// The row's bed, from the theme's `surface` slot: the same material
     /// as the sidebar, so the two read as one frame around the panes.
     fill: Color,
+    /// The theme's `accent` slot, the prefix chip's fill.
+    accent: Color,
     prefix: String,
+    /// The resolver is waiting at the prefix: the chip at the right edge
+    /// says so the instant the chord lands, before which-key's delay.
+    prefix_pending: bool,
     /// The focused pane's live cwd for the `cwd` widget (`None` renders
     /// nothing).
     focused_cwd: Option<String>,
@@ -562,7 +567,9 @@ impl std::fmt::Debug for StatusBarPainter {
             .field("attention", &self.attention)
             .field("attention_fg", &self.attention_fg)
             .field("fill", &self.fill)
+            .field("accent", &self.accent)
             .field("prefix", &self.prefix)
+            .field("prefix_pending", &self.prefix_pending)
             .field("focused_cwd", &self.focused_cwd)
             .field("last_exit", &self.last_exit)
             .field("drop_at", &self.drop_at)
@@ -586,7 +593,9 @@ impl StatusBarPainter {
             attention: None,
             attention_fg: Color::Reset,
             fill: Color::Reset,
+            accent: Color::Reset,
             prefix: "C-a".to_owned(),
+            prefix_pending: false,
             focused_cwd: None,
             last_exit: None,
             drop_at: None,
@@ -610,7 +619,9 @@ impl StatusBarPainter {
             attention: None,
             attention_fg: Color::Reset,
             fill: Color::Reset,
+            accent: Color::Reset,
             prefix: "C-a".to_owned(),
+            prefix_pending: false,
             focused_cwd: None,
             last_exit: None,
             drop_at: None,
@@ -772,6 +783,44 @@ impl StatusBarPainter {
             self.fill = color;
             self.invalidate();
         }
+    }
+
+    /// Set the prefix chip's fill from the theme's `accent` slot.
+    pub fn set_accent_color(&mut self, color: Color) {
+        if self.accent != color {
+            self.accent = color;
+            self.invalidate();
+        }
+    }
+
+    /// Show or clear the prefix chip; true when it changed, so the caller
+    /// repaints the row. Nothing under the error line.
+    pub fn set_prefix_pending(&mut self, pending: bool) -> bool {
+        if self.error.is_some() || self.prefix_pending == pending {
+            return false;
+        }
+        self.prefix_pending = pending;
+        self.invalidate();
+        true
+    }
+
+    /// Whether the chip is up, for driver tests.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn prefix_pending_for_test(&self) -> bool {
+        self.prefix_pending
+    }
+
+    /// The chip text while the prefix is pending: the chord, padded.
+    fn prefix_chip(&self) -> Option<String> {
+        self.prefix_pending.then(|| format!(" {} ", self.prefix))
+    }
+
+    /// The fill cell between the widgets and the prefix chip, so the clock
+    /// never runs straight into it; `None` without a chip or room for one.
+    fn prefix_gap(&self, cols: u16) -> Option<u16> {
+        let chip = self.prefix_chip()?;
+        badge_span(&chip, cols, 0).start.checked_sub(1)
     }
 
     /// Cells the attention chip sits in from the right edge: the badge width
@@ -970,6 +1019,16 @@ impl StatusBarPainter {
         if let Some((notice, _)) = &self.notice {
             paint_notice_overlay(out, notice, row_index, x, cols)?;
         }
+        // The pending prefix outranks every other right-edge chip: it is the
+        // one thing the next keystroke depends on.
+        if let Some(chip) = self.prefix_chip() {
+            if let Some(gap) = self.prefix_gap(cols) {
+                let mut blank = Buffer::empty(Rect::new(0, 0, 1, 1));
+                blank.set_style(Rect::new(0, 0, 1, 1), Style::default().bg(self.fill));
+                write_buffer(out, &blank, row_index, x + gap, 1)?;
+            }
+            paint_attention_overlay(out, &chip, row_index, x, cols, 0, self.accent)?;
+        }
         Ok(())
     }
 
@@ -1045,6 +1104,21 @@ impl StatusBarPainter {
         // persistent right-edge chips beneath it.
         if let Some((notice, _)) = &self.notice {
             overlay_notice_into_buffer(&mut buffer, notice, cols);
+        }
+        if let Some(chip) = self.prefix_chip() {
+            if let Some(gap) = self.prefix_gap(cols) {
+                buffer[(gap, 0)].reset();
+                buffer[(gap, 0)].set_bg(self.fill);
+            }
+            overlay_badge_into_buffer(
+                &mut buffer,
+                &chip,
+                cols,
+                0,
+                Style::default()
+                    .fg(self.accent)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            );
         }
         Some((buffer, x, row_index))
     }
@@ -1143,6 +1217,10 @@ impl StatusBarPainter {
                 .as_deref()
                 .is_some_and(|s| badge_span(s, *cols, self.attention_offset()).contains(&col))
             || self.badge_gap(*cols) == Some(col)
+            || self
+                .prefix_chip()
+                .is_some_and(|chip| badge_span(&chip, *cols, 0).contains(&col))
+            || self.prefix_gap(*cols) == Some(col)
         {
             return None;
         }
@@ -1489,6 +1567,32 @@ mod tests {
 
         assert!(p.set_attention(None));
         assert!(!visible(&mut p, 40, 10, "").contains("ASK"));
+    }
+
+    /// The prefix chip sits at the right edge in the accent colour behind a
+    /// one-cell gap, swallows clicks, and goes with the pending state.
+    #[test]
+    fn prefix_chip_rides_the_right_edge_until_cleared() {
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("a", true)]));
+        p.set_accent_color(Color::Rgb(190, 230, 80));
+        assert!(p.set_prefix_pending(true));
+        assert!(!p.set_prefix_pending(true), "already pending");
+        let s = paint(&mut p, BarInset::NONE, 40, 10, "");
+        // " C-a " is five cells: columns 35..40, so CUP to the 36th.
+        assert!(
+            s.contains("\x1b[10;36H") && s.contains("\x1b[38;2;190;230;80m"),
+            "{s:?}"
+        );
+        assert!(strip_csi(&s).contains(" C-a "));
+        assert_eq!(p.prefix_gap(40), Some(34));
+        for col in 34..40 {
+            assert_eq!(p.hit_at(col), None, "the chip and its gap are not a target");
+        }
+
+        assert!(p.set_prefix_pending(false));
+        assert!(!visible(&mut p, 40, 10, "").contains("C-a"));
+        assert!(!p.set_prefix_pending(false), "already clear");
     }
 
     /// Painter-owned focused-pane state feeds the `cwd` and `exit` widgets;

@@ -189,6 +189,20 @@ impl super::SessionLoop {
         Ok(Step::Continue)
     }
 
+    /// Tell the bar whether the resolver is waiting at the prefix; true when
+    /// that flipped since the last batch.
+    fn sync_prefix_chip(&mut self) -> bool {
+        let pending = self
+            .settings
+            .resolver
+            .as_ref()
+            .is_some_and(phux_config::keybind::Resolver::pending_at_prefix);
+        self.settings
+            .status_bar
+            .as_mut()
+            .is_some_and(|bar| bar.set_prefix_pending(pending))
+    }
+
     /// A committed `switch-session` ends this loop before any repaint.
     fn take_session_switch(&mut self) -> Option<Step> {
         let target = self.switch_request.take()?;
@@ -306,6 +320,9 @@ impl super::SessionLoop {
         prior: &PriorView,
         layout_changed: bool,
     ) -> Result<(), AttachError> {
+        // The prefix chip follows the resolver: a bar-only paint when nothing
+        // else in this batch repaints the row.
+        let chip_changed = self.sync_prefix_chip();
         if layout_changed {
             // ADR-0040: an input action may have split/closed panes;
             // keep the agent-metadata watches in step with the set.
@@ -316,6 +333,8 @@ impl super::SessionLoop {
             // whole-screen clear, and only a moved layout clears.
             let level = self.classify_repaint(prior, sidebar);
             self.repaint_view(out, sidebar, level);
+        } else if chip_changed {
+            self.paint_bar_row(out, sidebar);
         }
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);

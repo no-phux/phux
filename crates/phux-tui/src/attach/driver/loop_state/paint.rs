@@ -621,22 +621,29 @@ impl super::SessionLoop {
         if self.overlays.is_active() {
             return;
         }
-        // Restore the cursor to wherever the focused pane left it
-        // so an idle tick doesn't strand the cursor in the bar.
+        tracing::trace!(
+            focused_pane_set = self.mirror.focused_resource.is_some(),
+            "status_tick: repaint bar"
+        );
+        self.paint_bar_row(out, sidebar);
+    }
+
+    /// Paint the bar row and nothing else, then put the cursor back where
+    /// the focused pane left it so the paint never strands it in the bar. A
+    /// frame block opens only if the bar writes, so an unchanged row emits
+    /// nothing. The caller repaints any overlay on top.
+    pub(super) fn paint_bar_row<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) {
         let focused_cursor = self
             .mirror
             .focused_resource
             .as_ref()
             .and_then(|fid| self.mirror.panes.get(fid))
             .and_then(|slot| slot.renderer.last_cursor());
-        tracing::trace!(
-            focused_pane_set = self.mirror.focused_resource.is_some(),
-            has_cursor = focused_cursor.is_some(),
-            "status_tick: repaint bar"
-        );
         let fallback_origin = Some(self.bar_fallback_origin(sidebar));
-        // A frame block opens only if the bar writes, so an unchanged tick
-        // emits nothing.
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
@@ -649,7 +656,7 @@ impl super::SessionLoop {
             &mut chrome,
             focused_cursor,
             fallback_origin,
-            // The tick refreshes what the painter cannot observe (clock, exec).
+            // Refresh what the painter cannot observe (clock, exec).
             crate::render::chrome::status_bar::ComposePolicy::Always,
         );
         self.finish_paint(painted);
