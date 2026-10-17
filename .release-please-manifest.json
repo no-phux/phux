@@ -1,6 +1,6 @@
 {
   ".": "0.86.1",
-  "clients/desktop": "0.25.1",
+  "clients/desktop": "0.26.0",
   "integrations/pi": "0.7.0",
   "integrations/opencode-v2": "0.6.0",
   "integrations/claude": "0.6.0",
