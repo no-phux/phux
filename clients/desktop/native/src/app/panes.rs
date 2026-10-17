@@ -110,11 +110,14 @@ impl Panes {
         }
     }
 
-    /// Ask each placed view of these terminals to paint. The desk chrome stays as it is.
+    /// Ask each placed view of these terminals to paint. The desk chrome stays
+    /// as it is: the views are notified by id, so the desk, which reads each
+    /// terminal entity as it configures it, is not drawn again.
     pub fn notify_terminals(&self, terminals: &[ResourceId], cx: &mut Context<Desk>) {
         for slot in self.by_placement.values() {
             if terminals.iter().any(|id| id == &slot.terminal) {
-                slot.entity.update(cx, |_, cx| cx.notify());
+                let app: &mut gpui::App = cx;
+                app.notify(slot.entity.entity_id());
             }
         }
     }

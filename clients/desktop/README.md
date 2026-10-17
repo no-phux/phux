@@ -201,7 +201,10 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Offline inventory stays visible and cannot be opened until it is refreshed.
-**Settings > Hosts & connections** adds or forgets machines and refreshes inventory.
+**Settings > Hosts & connections** (also **Machines…** from the titlebar machine
+chip, the sidebar, the File menu and the palette) lists This Mac and every saved
+machine with its state, opens, retries, disconnects, adds or forgets machines, and
+refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an
 empty session keeps it empty. Tabs and splits still belong to the selected
 session, not to a new cross-server Workspace record.
@@ -374,6 +377,26 @@ PHUX_DESKTOP_JOURNEY_TEST_BIN="$PWD/target/debug/phux" \
   cargo test --locked --manifest-path clients/desktop/native/Cargo.toml \
   --lib app::session::journey_tests -- --ignored
 ```
+
+Remote attach has its own opt-in acceptance run. It enrolls a second,
+isolated server as a remote host over loopback QUIC and WSS (`phux pair`,
+then `phux host add NAME quic://... --token-file ... --cert-fingerprint ...`)
+and drives the window's connection through it: split, type, rename,
+reconnect, relaunch by persistent key, a host kill and restart, a stale pin,
+and a revoked token, both on the next dial and under a window still attached:
+
+```sh
+cargo build -p phux
+PHUX_DESKTOP_JOURNEY_TEST_BIN="$PWD/target/debug/phux" \
+  cargo test --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --lib connection::remote_acceptance -- --ignored
+```
+
+It does not replace a run against a second machine: a routed network with
+NAT, loss, and real latency, and a host enrolled with `phux host add me@HOST`
+over ssh. Do that by hand after a change to remote attach: register the host,
+open it from the sidebar's Hosts section, split, rename, quit and relaunch,
+and drop the link (sleep the host or cut its network) and bring it back.
 
 `desktop-framework-check` packages `Phux.app` and runs
 

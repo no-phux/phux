@@ -614,6 +614,11 @@ mod negotiated_feature_tests {
     async fn quic_streams_bit_advertised_on_quic_only() {
         async fn negotiate(transport: TransportType, quic_streams: bool) -> bool {
             let state = SharedState::new();
+            // Every transport here, not only the owner's socket, must reach
+            // negotiation: an embedder engine admits them all (ADR-0072).
+            state.with_mut(|s| {
+                s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+            });
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             state.with_mut(|s| {
                 s.set_connection_identity(
@@ -5141,7 +5146,7 @@ mod writer_close_tests {
             server.set_peer_identity(
                 client_id,
                 phux_protocol::policy::PeerIdentity {
-                    uid: 0,
+                    uid: nix::unistd::geteuid().as_raw(),
                     pid: None,
                     exe_path: None,
                     mcp_host_key: None,
@@ -5466,7 +5471,7 @@ mod fatal_preflight_close_tests {
                     server.set_peer_identity(
                         client_id,
                         PeerIdentity {
-                            uid: 0,
+                            uid: nix::unistd::geteuid().as_raw(),
                             pid: None,
                             exe_path: None,
                             mcp_host_key: None,

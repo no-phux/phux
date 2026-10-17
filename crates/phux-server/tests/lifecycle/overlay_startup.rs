@@ -90,13 +90,17 @@ fn server_serves_clients_while_overlay_detection_is_still_running() {
         let dir = TempDir::new().expect("tempdir");
         let socket_path = dir.path().join("phux.sock");
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let cfg = ServerConfig {
+        let mut cfg = ServerConfig {
             socket_path: socket_path.clone(),
             pre_seeded_session: Some("overlay-startup".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..ServerConfig::with_default_socket()
         };
+        // With no mode the server is `local` and never detects an overlay
+        // (ADR-0179); an embedder engine keeps the remote surface in play
+        // without touching workload authority on disk.
+        phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)
                 .overlay_detect(blocking_detect)

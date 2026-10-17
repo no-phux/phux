@@ -885,3 +885,44 @@ fn path_loading_and_failure_read_in_the_results_not_the_footer(cx: &mut TestAppC
     assert!(status.top() >= footer.top() && status.bottom() <= footer.bottom());
     assert!(cx.debug_bounds("path-results-notice").is_none());
 }
+
+#[gpui::test]
+fn machines_are_reachable_from_the_palette_sidebar_and_titlebar(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    let connections = Some(crate::app::settings_panel::Page::Connections);
+
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "add machine");
+    assert_eq!(selected_command(&desk, cx), Some("add-host"));
+    keys(cx, "enter");
+    assert_eq!(modal(&desk, cx), Modal::AddHost);
+    keys(cx, "escape");
+
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "machines…");
+    assert_eq!(selected_command(&desk, cx), Some("machines"));
+    keys(cx, "enter");
+    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        connections
+    );
+    keys(cx, "escape");
+    assert_eq!(modal(&desk, cx), Modal::None);
+
+    click(cx, "sidebar-machines");
+    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        connections
+    );
+    keys(cx, "escape");
+
+    click(cx, "workspace-machines");
+    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        connections
+    );
+}

@@ -252,7 +252,7 @@ The rows below are what remains.
 | Browser resource kind (stage 7) | Designed, not built. Terminal and AgentSession are the only kinds. | [ADR-0160](adr/0160-sessions-own-resources-and-window-is-retired.md) | phux-3q58 |
 | Resources with no PTY: declared producers and feeds | Proposed, not built. A *declared producer* is a program the server launches from owner config as a resource's activation; a *feed* (`FEED` kind) is the resource it fills with snapshots under a *schema*, held in a designated *producers session*. Usage is the first feed. A declared producer is not an agent *provider*, which is the harness an AgentSession reports. Detail: [declared producers](architecture/declared-producers.md). | [ADR-0178](adr/0177-non-terminal-resources-have-declared-producers.md) | phux-0ivk.3 |
 | On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). Server death ends live processes and loses their terminal history; session and resource records survive and `phux restore` starts fresh PTYs, not the lost processes. The `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
-| Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener still admits every connection with the owner's full grant — a warned transitional posture, not the startup error the spec's target table asks for — and a configured CA or registry path with no mode is ignored rather than refused. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
+| Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener or a named CA or registry path refuses to start ([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)); a browser holds no key, so it reaches a `paired` server only with an installed client certificate. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
 
 Scopes, attach roles, and approval gates are shipped: scope enforcement at
 dispatch ([ADR-0116](adr/0116-workload-auth-is-mtls.md)), `VIEWER`/`PRIMARY`
@@ -264,7 +264,7 @@ credentials are built
 amended 2026-10-13): `phux agent start` mints and revokes `INVENTORY`,
 `OBSERVE`, `INPUT`, and `BIND` on the agent's own session, and a cold
 restart clears the in-memory ledger. The remaining authentication
-gap is the transitional posture above.
+gap is the browser's missing key above.
 
 ## Where to go next
 

@@ -105,13 +105,17 @@ async fn spawn_satellite_runtime(
     seed: Option<CommandBuilder>,
 ) -> (u16, oneshot::Sender<()>, ServerTask) {
     let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
+    let mut cfg = ServerConfig {
         socket_path: socket_path.clone(),
         pre_seeded_session: Some("sat-session".to_owned()),
         seed_with_pty: seed.is_some(),
         seed_command: seed,
         ..ServerConfig::with_default_socket()
     };
+    // Federation routing, not authorization: the satellite runs an embedder
+    // engine (ADR-0072) so a certificate-less hub link on loopback is
+    // admitted, which no `phux server` mode does (ADR-0179).
+    phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
     let handle = tokio::task::spawn_local(async move {
         ServerRuntime::new(cfg)
             .listen_ws("127.0.0.1:0".parse().unwrap())

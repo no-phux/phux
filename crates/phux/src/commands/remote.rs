@@ -57,8 +57,7 @@ pub(crate) struct RemoteEntry {
 
 impl RemoteEntry {
     /// The certificate-authority pin beside this entry's leaf pin
-    /// (ADR-0153): the one `known-authorities` holds, else a learner that
-    /// records the one the server presents on the first connection.
+    /// (ADR-0153): the one `known-authorities` holds from pairing, if any.
     pub(crate) fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
         phux_client_runtime::target::AuthorityPin::from_store(
             &config_loader::config_path(),
@@ -221,8 +220,8 @@ pub(crate) fn known_authorities() -> PathBuf {
 }
 
 /// Pin `authority` beside the leaf pin a pairing just registered for `name`.
-/// A failure is a warning: the entry still pins the leaf, and the first
-/// connection learns the authority instead.
+/// A failure is a warning: the entry still pins the leaf, and nothing learns
+/// the authority later (ADR-0179); re-pair to pin it.
 /// For a relayed server, `route` keys the pin beside the relay's leaf.
 pub(crate) fn pin_authority(
     name: &str,

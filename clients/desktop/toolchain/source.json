@@ -1,26 +1,26 @@
 {
   "registry": "https://static.crates.io/crates",
   "crates": {
-    "gpui-pre": {
-      "version": "0.3.8",
-      "sha256": "d7f0bc3ebba070f8981b3f8e905a12f47d27794a30d029e59cdb9edf7a4b3360"
+    "gpui-fast": {
+      "version": "0.1.9",
+      "sha256": "bf786ecd21b484371f34f3ef398f83a7d3362a1f87f624f3d2ba923e92e468ed"
     },
-    "gpui-pre-apple": {
-      "version": "0.3.8",
-      "sha256": "bfdd914311cd12894367c8b9908947bb0c27fd42f8b9a5ff7a0730551a83fa4c"
+    "gpui-fast-apple": {
+      "version": "0.1.9",
+      "sha256": "f0f7e8b94df58e003dbad2a5b21cf6000a928b7a49020b0b68573e514a5a9888"
     },
-    "gpui-pre-macos": {
-      "version": "0.3.8",
-      "sha256": "0d756813ff1cd741a502af60fd18869e0677795936d7349642b41c49f43120c0"
+    "gpui-fast-macos": {
+      "version": "0.1.9",
+      "sha256": "c733dfacfc499748568f8fc0e2e268077259fcd4a2c306257c9dfda7c1a8a5fe"
     }
   },
   "patches": {
-    "patches/0001-drawable-presented.patch": "e9b53eeadc5d47896d68e537fbc7e8de499972878dc4c47e8f260453cddb75a5",
-    "patches/0002-window-capture.patch": "3b6fab72887b91f5f7ebd5a9004e5541ef763ca75d208c8a82fc2452ee6ba5e0",
-    "patches/0003-memory-font-fallback.patch": "22e8e84b03d8c544745bcab8b57e29283a658f78629334ff6aacda1fdd1ce144",
-    "patches/0004-native-glass-surfaces.patch": "5a672d39694b3bb03ab0cbc37a30c08bcef2a0d09e41e256b22ee8214a5691fa",
-    "patches/0005-element-input-key-repeat.patch": "9e199aa833f9aadd97fec305a5e2b239872d389846350118a3a666fdf81461a2",
-    "patches/0006-bulk-glyph-sprites.patch": "1a8869aa8c7c962f5afb951e17ab4a1c9f8e0e6fc81158d178798371b8221d1a",
-    "patches/0007-clearable-native-glass.patch": "0390f9f2d2ea12ec0afee46979c475bed38e2ed19f6466ab9436dcd1f86bfc82"
+    "patches/0001-drawable-presented.patch": "5250384a18d3a88a961c7aca8e7f53f7c0defba5116f959b0c8e2e9fbc5206bf",
+    "patches/0002-window-capture.patch": "e18fdf4688f56f80ee8bc119193d55e11b77450d154c5f41f9a9f0915e11230d",
+    "patches/0003-memory-font-fallback.patch": "def1fa32ac4f26eedaf7913abdc5a834dbb9d5ee94871870b2dde32d892e0d0c",
+    "patches/0004-native-glass-surfaces.patch": "d3a290e43ce908ff746005506237dc670a4011551d289b722b3ebbf8c69841d8",
+    "patches/0005-element-input-key-repeat.patch": "288447b305952cfa6d4e29883ce7f7cac400d91535c145b839cd5de0fcd84ca8",
+    "patches/0006-bulk-glyph-sprites.patch": "9f944c273e31992f974b7de8dd8043c95b7ad80afd08347eb105241ef6f3af6d",
+    "patches/0007-clearable-native-glass.patch": "6598b70cbb608f8aebaf1e07bf281e3be5507bce5f5ac1c92a401033ba9bf3c9"
   }
 }

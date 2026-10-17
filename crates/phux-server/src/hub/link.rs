@@ -2030,6 +2030,11 @@ mod tests {
                     .expect("bind satellite");
                 let port = listener.local_addr().expect("addr").port();
                 let satellite = crate::state::SharedState::new();
+                // The bearer's revocation is under test, not the grant: an
+                // embedder engine admits the link (ADR-0072).
+                satellite.with_mut(|s| {
+                    s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                });
                 let satellite_root = CancellationToken::new();
                 let accept_state = satellite.clone();
                 let accept_root = satellite_root.clone();

@@ -350,6 +350,16 @@ shape at 64 columns: session name and clock give way to a clickable
 adds its host to the supervisory badge (`devbox`, or `devbox down` while
 that satellite is unreachable).
 
+Any widget colour may name a theme slot as `theme.<slot>` (for example
+`fg = "theme.accent"`; the slots are listed under [Theme](#theme)). The
+shipped bar spells its tabs, buttons, session name, and clock that way, so a
+`[theme]` name, file, or override recolours the bar with the rest of the
+chrome. An unknown slot falls back to the terminal default, like an
+unparseable colour. The bar's own chips take theme slots too: the
+supervisory badge rides `accent`, an info notice the `selection_fg` on
+`selection_bg` pair, and a warning notice and the config-error line
+`selection_fg` on `error`.
+
 ### Spacer
 
 A `spacer` widget has no content and absorbs leftover columns. Slack is
@@ -813,7 +823,9 @@ repository matching decides.
 
 `C-a A` (`agent-fleet`) opens a filterable overlay of the attached session's
 panes under session headers, plus satellite agents grouped by agent name.
-Rows show name, kind, state (`●` blocked, `◐` working, `◆` done,
+Rows start with the pane's address (`0:editor.1` under a named tab, `0.1`
+under an unnamed one, the same index the tab bar shows), then name, kind,
+state (`●` blocked, `◐` working, `◆` done,
 `○` idle or unknown), pending-question highlights, and branch or cwd.
 Satellite rows identify the host and open the pane beside the focused one.
 

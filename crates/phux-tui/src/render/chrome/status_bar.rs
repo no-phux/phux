@@ -19,6 +19,8 @@ use ratatui::buffer::{Buffer, Cell as RatatuiCell};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::render::theme::Theme;
+
 /// Where the status bar lives in the outer terminal. Defaults to
 /// [`Self::Top`] per `docs/consumers/tui.md` §8.5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -98,14 +100,14 @@ pub const fn make_context(session_name: &str, now: SystemTime) -> StatusBarConte
     }
 }
 
-/// A config [`CellStyle`] as a ratatui [`Style`]; an unparseable color
-/// degrades to the terminal default with a warning.
-fn to_ratatui_style(style: &CellStyle) -> Style {
+/// A config [`CellStyle`] as a ratatui [`Style`]; an unparseable color or an
+/// unknown `theme.<slot>` degrades to the terminal default with a warning.
+fn to_ratatui_style(style: &CellStyle, theme: &Theme) -> Style {
     let mut s = Style::default();
-    if let Some(fg) = parse_color(style.fg.as_deref()) {
+    if let Some(fg) = parse_color(style.fg.as_deref(), theme) {
         s = s.fg(fg);
     }
-    if let Some(bg) = parse_color(style.bg.as_deref()) {
+    if let Some(bg) = parse_color(style.bg.as_deref(), theme) {
         s = s.bg(bg);
     }
     let mut m = Modifier::empty();
@@ -117,10 +119,21 @@ fn to_ratatui_style(style: &CellStyle) -> Style {
     s.add_modifier(m)
 }
 
-/// Parse a color string (`"red"`, `"#cdd6f4"`, `"12"`) into a ratatui
-/// [`Color`]. `None`/unparseable ⇒ `None` (terminal default).
-fn parse_color(spec: Option<&str>) -> Option<Color> {
+/// Parse a color string (`"red"`, `"#cdd6f4"`, `"12"`, or a theme slot as
+/// `"theme.accent"`) into a ratatui [`Color`]. `None`/unparseable/unknown
+/// slot ⇒ `None` (terminal default).
+fn parse_color(spec: Option<&str>, theme: &Theme) -> Option<Color> {
     let s = spec?;
+    if let Some(slot) = s.strip_prefix("theme.") {
+        let color = theme.slot(slot);
+        if color.is_none() {
+            tracing::warn!(
+                color = s,
+                "unknown theme slot in status-bar color; using default"
+            );
+        }
+        return color;
+    }
     Color::from_str(s).map_or_else(
         |_| {
             tracing::warn!(color = s, "unrecognized status-bar color; using default");
@@ -130,11 +143,14 @@ fn parse_color(spec: Option<&str>) -> Option<Color> {
     )
 }
 
-/// The persistent error strip's style — reverse video + bold,
-/// so the diagnostic reads as an alarm strip rather than blending into
-/// normal chrome.
-fn alarm_style() -> Style {
-    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+/// The persistent error strip's style: bold selection ink on the theme's
+/// `error` slot, so the diagnostic reads as an alarm strip rather than
+/// blending into normal chrome.
+fn alarm_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.selection_fg)
+        .bg(theme.error)
+        .add_modifier(Modifier::BOLD)
 }
 
 /// `message` in a fresh `cols`-wide row buffer, styled `style`, truncated
@@ -207,7 +223,7 @@ fn mark_window_drop(row: &mut [WidgetCell], drop_at: Option<usize>) {
 /// Copy a composed widget row into a ratatui [`Buffer`]. Cells a widget
 /// left without a background take `fill` (`Reset` shows the host's), so the
 /// bar reads as one surface with the sidebar.
-fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) {
+fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color, theme: &Theme) {
     if fill != Color::Reset {
         buffer.set_style(Rect::new(0, 0, cols, 1), Style::default().bg(fill));
     }
@@ -231,7 +247,7 @@ fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) 
         // Carry per-cell style (fg/bg/attrs) across the
         // ratatui boundary; `write_buffer` emits it as SGR.
         if let Some(style) = &cell.style {
-            target.set_style(to_ratatui_style(style));
+            target.set_style(to_ratatui_style(style, theme));
         }
     }
 }
@@ -285,28 +301,6 @@ fn badge_span(badge: &str, cols: u16, right_offset: u16) -> std::ops::Range<u16>
     end - width..end
 }
 
-fn paint_supervisory_overlay<W: Write>(
-    out: &mut W,
-    badge: &str,
-    row_index: u16,
-    x: u16,
-    cols: u16,
-) -> io::Result<()> {
-    if cols == 0 || badge.is_empty() {
-        return Ok(());
-    }
-    let visible: String = badge.chars().take(cols as usize).collect();
-    let start_col = x.saturating_add(badge_span(badge, cols, 0).start);
-    let one_based_row = row_index.saturating_add(1);
-    let one_based_col = start_col.saturating_add(1);
-    // CUP to the chip's left edge, reverse+bold, text, hard reset.
-    write!(
-        out,
-        "\x1b[{one_based_row};{one_based_col}H\x1b[7;1m{visible}\x1b[0m"
-    )?;
-    out.flush()
-}
-
 /// Emit the attention chip just left of the supervisory badge, reverse and
 /// bold in the theme's `attention` color.
 fn paint_attention_overlay<W: Write>(
@@ -341,20 +335,21 @@ fn paint_notice_overlay<W: Write>(
     row_index: u16,
     x: u16,
     cols: u16,
+    theme: &Theme,
 ) -> io::Result<()> {
-    let Some((buffer, start, width)) = notice_buffer(notice, cols) else {
+    let Some((buffer, start, width)) = notice_buffer(notice, cols, theme) else {
         return Ok(());
     };
     write_buffer(out, &buffer, row_index, x.saturating_add(start), width)
 }
 
 /// Build the clipped cells shared by the live toast and rendered snapshots.
-fn notice_buffer(notice: &Notice, cols: u16) -> Option<(Buffer, u16, u16)> {
+fn notice_buffer(notice: &Notice, cols: u16, theme: &Theme) -> Option<(Buffer, u16, u16)> {
     let label = format!(" {} ", notice.text);
     let span = notice_span(notice, cols)?;
     let width = span.end - span.start;
     Some((
-        full_row_buffer(&label, notice.severity.style(), width),
+        full_row_buffer(&label, notice.severity.style(theme), width),
         span.start,
         width,
     ))
@@ -369,8 +364,8 @@ fn notice_span(notice: &Notice, cols: u16) -> Option<std::ops::Range<u16>> {
 }
 
 /// Copy the transient toast into the status snapshot's already-composed row.
-fn overlay_notice_into_buffer(buffer: &mut Buffer, notice: &Notice, cols: u16) {
-    let Some((toast, start, width)) = notice_buffer(notice, cols) else {
+fn overlay_notice_into_buffer(buffer: &mut Buffer, notice: &Notice, cols: u16, theme: &Theme) {
+    let Some((toast, start, width)) = notice_buffer(notice, cols, theme) else {
         return;
     };
     for offset in 0..width {
@@ -435,7 +430,8 @@ impl BarInset {
 /// status tick).
 pub const NOTICE_TTL: Duration = Duration::from_secs(7);
 
-/// A [`Notice`]'s chip style: `Warn` bold, `Info` plain reverse video.
+/// A [`Notice`]'s chip style: `Info` rides the selection pair, `Warn` is
+/// bold selection ink on the theme's `error` slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeSeverity {
     /// Informational lifecycle event (e.g. an input-lease handover).
@@ -447,10 +443,15 @@ pub enum NoticeSeverity {
 
 impl NoticeSeverity {
     /// Full-row style for a notice of this severity.
-    fn style(self) -> Style {
+    fn style(self, theme: &Theme) -> Style {
         match self {
-            Self::Info => Style::default().add_modifier(Modifier::REVERSED),
-            Self::Warn => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            Self::Info => Style::default()
+                .fg(theme.selection_fg)
+                .bg(theme.selection_bg),
+            Self::Warn => Style::default()
+                .fg(theme.selection_fg)
+                .bg(theme.error)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -526,15 +527,11 @@ pub struct StatusBarPainter {
     supervisory: Option<String>,
     /// Agent-attention hint overlaid just left of the badge.
     attention: Option<String>,
-    /// Chip foreground for the attention hint, from the theme's
-    /// `attention` slot (the painter never hardcodes it). Under the chip's
-    /// reverse video the foreground reads as the fill color.
-    attention_fg: Color,
-    /// The row's bed, from the theme's `surface` slot: the same material
-    /// as the sidebar, so the two read as one frame around the panes.
-    fill: Color,
-    /// The theme's `accent` slot, the prefix chip's fill.
-    accent: Color,
+    /// The theme every bar colour resolves through: `surface` is the row's
+    /// bed (the sidebar's material), `attention` the hint chip, `accent` the
+    /// prefix chip and supervisory badge, and `theme.<slot>` widget colours
+    /// name any slot.
+    theme: Theme,
     prefix: String,
     /// The resolver is waiting at the prefix: the chip at the right edge
     /// says so the instant the chord lands, before which-key's delay.
@@ -565,9 +562,7 @@ impl std::fmt::Debug for StatusBarPainter {
             .field("notice", &self.notice)
             .field("supervisory", &self.supervisory)
             .field("attention", &self.attention)
-            .field("attention_fg", &self.attention_fg)
-            .field("fill", &self.fill)
-            .field("accent", &self.accent)
+            .field("theme", &self.theme)
             .field("prefix", &self.prefix)
             .field("prefix_pending", &self.prefix_pending)
             .field("focused_cwd", &self.focused_cwd)
@@ -591,9 +586,7 @@ impl StatusBarPainter {
             notice: None,
             supervisory: None,
             attention: None,
-            attention_fg: Color::Reset,
-            fill: Color::Reset,
-            accent: Color::Reset,
+            theme: Theme::default(),
             prefix: "C-a".to_owned(),
             prefix_pending: false,
             focused_cwd: None,
@@ -617,9 +610,7 @@ impl StatusBarPainter {
             notice: None,
             supervisory: None,
             attention: None,
-            attention_fg: Color::Reset,
-            fill: Color::Reset,
-            accent: Color::Reset,
+            theme: Theme::default(),
             prefix: "C-a".to_owned(),
             prefix_pending: false,
             focused_cwd: None,
@@ -765,30 +756,11 @@ impl StatusBarPainter {
         true
     }
 
-    /// Set the attention chip's foreground from the theme's
-    /// `attention` slot. The driver calls this once at attach; the painter
-    /// itself never hardcodes the color.
-    pub fn set_attention_color(&mut self, color: Color) {
-        if self.attention_fg != color {
-            self.attention_fg = color;
-            self.invalidate();
-        }
-    }
-
-    /// Set the row's bed from the theme's `surface` slot. The driver calls
-    /// this beside [`Self::set_attention_color`]; `Reset` shows the host
-    /// terminal's own background.
-    pub fn set_fill(&mut self, color: Color) {
-        if self.fill != color {
-            self.fill = color;
-            self.invalidate();
-        }
-    }
-
-    /// Set the prefix chip's fill from the theme's `accent` slot.
-    pub fn set_accent_color(&mut self, color: Color) {
-        if self.accent != color {
-            self.accent = color;
+    /// Adopt `theme` for every bar colour; a change invalidates the row
+    /// cache. The driver calls this at attach and on each config reload.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        if self.theme != *theme {
+            self.theme = *theme;
             self.invalidate();
         }
     }
@@ -916,7 +888,7 @@ impl StatusBarPainter {
         }
         let row_index = self.row_index(rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-        fill_buffer(&mut buffer, &new_row, cols, self.fill);
+        fill_buffer(&mut buffer, &new_row, cols, self.theme.surface, &self.theme);
         write_buffer(out, &buffer, row_index, x, cols)?;
         self.paint_row_overlays(out, row_index, x, cols)?;
         self.last_row = Some((x, cols, new_row));
@@ -999,11 +971,14 @@ impl StatusBarPainter {
     ) -> io::Result<()> {
         if let Some(gap) = self.badge_gap(cols) {
             let mut blank = Buffer::empty(Rect::new(0, 0, 1, 1));
-            blank.set_style(Rect::new(0, 0, 1, 1), Style::default().bg(self.fill));
+            blank.set_style(
+                Rect::new(0, 0, 1, 1),
+                Style::default().bg(self.theme.surface),
+            );
             write_buffer(out, &blank, row_index, x + gap, 1)?;
         }
         if let Some(badge) = &self.supervisory {
-            paint_supervisory_overlay(out, badge, row_index, x, cols)?;
+            paint_attention_overlay(out, badge, row_index, x, cols, 0, self.theme.accent)?;
         }
         if let Some(hint) = &self.attention {
             paint_attention_overlay(
@@ -1013,21 +988,24 @@ impl StatusBarPainter {
                 x,
                 cols,
                 self.attention_offset(),
-                self.attention_fg,
+                self.theme.attention,
             )?;
         }
         if let Some((notice, _)) = &self.notice {
-            paint_notice_overlay(out, notice, row_index, x, cols)?;
+            paint_notice_overlay(out, notice, row_index, x, cols, &self.theme)?;
         }
         // The pending prefix outranks every other right-edge chip: it is the
         // one thing the next keystroke depends on.
         if let Some(chip) = self.prefix_chip() {
             if let Some(gap) = self.prefix_gap(cols) {
                 let mut blank = Buffer::empty(Rect::new(0, 0, 1, 1));
-                blank.set_style(Rect::new(0, 0, 1, 1), Style::default().bg(self.fill));
+                blank.set_style(
+                    Rect::new(0, 0, 1, 1),
+                    Style::default().bg(self.theme.surface),
+                );
                 write_buffer(out, &blank, row_index, x + gap, 1)?;
             }
-            paint_attention_overlay(out, &chip, row_index, x, cols, 0, self.accent)?;
+            paint_attention_overlay(out, &chip, row_index, x, cols, 0, self.theme.accent)?;
         }
         Ok(())
     }
@@ -1054,7 +1032,11 @@ impl StatusBarPainter {
             Position::Top => 0,
         };
         if let Some(message) = &self.error {
-            return Some((full_row_buffer(message, alarm_style(), cols), x, row_index));
+            return Some((
+                full_row_buffer(message, alarm_style(&self.theme), cols),
+                x,
+                row_index,
+            ));
         }
         // Match `paint`: the badge only composes onto a non-empty bar row.
         if self.bar.is_empty() && self.windows.is_empty() {
@@ -1070,10 +1052,10 @@ impl StatusBarPainter {
         let mut row = self.bar.render(&ctx.as_widget(), cols);
         mark_window_drop(&mut row, self.drop_at);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-        fill_buffer(&mut buffer, &row, cols, self.fill);
+        fill_buffer(&mut buffer, &row, cols, self.theme.surface, &self.theme);
         if let Some(gap) = self.badge_gap(cols) {
             buffer[(gap, 0)].reset();
-            buffer[(gap, 0)].set_bg(self.fill);
+            buffer[(gap, 0)].set_bg(self.theme.surface);
         }
         // ADR-0033: overlay the supervisory badge into the snapshot buffer so
         // `phux snapshot --rendered` shows the same chip the live paint draws.
@@ -1083,7 +1065,9 @@ impl StatusBarPainter {
                 badge,
                 cols,
                 0,
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                Style::default()
+                    .fg(self.theme.accent)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
         // The attention hint composes left of the badge, themed
@@ -1095,7 +1079,7 @@ impl StatusBarPainter {
                 cols,
                 self.attention_offset(),
                 Style::default()
-                    .fg(self.attention_fg)
+                    .fg(self.theme.attention)
                     .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
@@ -1103,12 +1087,12 @@ impl StatusBarPainter {
         // compact toast over the normal row and temporarily outranks the
         // persistent right-edge chips beneath it.
         if let Some((notice, _)) = &self.notice {
-            overlay_notice_into_buffer(&mut buffer, notice, cols);
+            overlay_notice_into_buffer(&mut buffer, notice, cols, &self.theme);
         }
         if let Some(chip) = self.prefix_chip() {
             if let Some(gap) = self.prefix_gap(cols) {
                 buffer[(gap, 0)].reset();
-                buffer[(gap, 0)].set_bg(self.fill);
+                buffer[(gap, 0)].set_bg(self.theme.surface);
             }
             overlay_badge_into_buffer(
                 &mut buffer,
@@ -1116,7 +1100,7 @@ impl StatusBarPainter {
                 cols,
                 0,
                 Style::default()
-                    .fg(self.accent)
+                    .fg(self.theme.accent)
                     .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
@@ -1135,7 +1119,8 @@ impl StatusBarPainter {
         // valid (if unusual) diagnostic, so default to "" rather than
         // returning early.
         let message = self.error.clone().unwrap_or_default();
-        self.paint_full_row_message(out, &message, alarm_style(), x, cols, rows)
+        let style = alarm_style(&self.theme);
+        self.paint_full_row_message(out, &message, style, x, cols, rows)
     }
 
     /// Paint `message` full-row in `style`, cached like the widget path
@@ -1547,7 +1532,10 @@ mod tests {
         let mut p = windows_bar();
         p.set_windows(wins(&[("a", true)]));
         assert!(visible(&mut p, 40, 10, "").contains("0:a"));
-        p.set_attention_color(Color::Rgb(251, 191, 36));
+        p.set_theme(&Theme {
+            attention: Color::Rgb(251, 191, 36),
+            ..Theme::default()
+        });
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
         assert!(!p.set_attention(Some("[ ASK ]".to_owned())));
         let s = paint(&mut p, BarInset::NONE, 40, 10, "");
@@ -1575,7 +1563,10 @@ mod tests {
     fn prefix_chip_rides_the_right_edge_until_cleared() {
         let mut p = windows_bar();
         p.set_windows(wins(&[("a", true)]));
-        p.set_accent_color(Color::Rgb(190, 230, 80));
+        p.set_theme(&Theme {
+            accent: Color::Rgb(190, 230, 80),
+            ..Theme::default()
+        });
         assert!(p.set_prefix_pending(true));
         assert!(!p.set_prefix_pending(true), "already pending");
         let s = paint(&mut p, BarInset::NONE, 40, 10, "");
@@ -1705,7 +1696,7 @@ mod tests {
         p.set_supervisory(Some("[F]".to_owned()));
         let s = paint(&mut p, BarInset { left: 0, right: 20 }, 40, 10, "");
         assert!(
-            s.contains("\x1b[10;1H") && s.contains("\x1b[10;18H\x1b[7;1m[F]"),
+            s.contains("\x1b[10;1H") && s.contains("\x1b[10;18H\x1b[7;1m\x1b[38;2;190;242;100m[F]"),
             "{s:?}"
         );
         assert_eq!(p.last_row.as_ref().map(|(x, w, _)| (*x, *w)), Some((0, 20)));
@@ -1739,11 +1730,107 @@ mod tests {
         let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
         p.set_windows(wins(&[("zsh", true)]));
         let fill = Color::Rgb(0x17, 0x1b, 0x23);
-        p.set_fill(fill);
+        p.set_theme(&Theme {
+            surface: fill,
+            ..Theme::default()
+        });
         let (buf, _, _) = p
             .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
             .expect("composes");
         assert_eq!(buf[(0, 0)].bg, Color::Rgb(0x29, 0x36, 0x28));
         assert!((10..40).all(|x| buf[(x, 0)].bg == fill));
+    }
+
+    /// A `theme.<slot>` widget colour resolves against the painter's theme;
+    /// an unknown slot degrades to the terminal default.
+    #[test]
+    fn theme_slot_colors_resolve_against_the_theme() {
+        let theme = Theme {
+            accent: Color::Rgb(1, 2, 3),
+            selection_bg: Color::Rgb(4, 5, 6),
+            ..Theme::default()
+        };
+        let style = CellStyle {
+            fg: Some("theme.accent".to_owned()),
+            bg: Some("theme.selection_bg".to_owned()),
+            ..CellStyle::default()
+        };
+        let resolved = to_ratatui_style(&style, &theme);
+        assert_eq!(resolved.fg, Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(resolved.bg, Some(Color::Rgb(4, 5, 6)));
+
+        let unknown = CellStyle {
+            fg: Some("theme.nope".to_owned()),
+            ..CellStyle::default()
+        };
+        assert_eq!(to_ratatui_style(&unknown, &theme).fg, None);
+    }
+
+    /// A window tab styled `theme.accent` follows `set_theme`, in the composed
+    /// buffer.
+    #[test]
+    fn a_themed_tab_follows_set_theme() {
+        let active = toml::Value::Table(toml::value::Table::from_iter([(
+            "fg".to_owned(),
+            toml::Value::String("theme.accent".to_owned()),
+        )]));
+        let cfg = StatusCfg {
+            left: vec![spec("windows", &[("active", active)])],
+            ..StatusCfg::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
+        p.set_windows(wins(&[("zsh", true)]));
+        p.set_theme(&Theme {
+            accent: Color::Rgb(9, 8, 7),
+            ..Theme::default()
+        });
+        let (buf, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+            .expect("composes");
+        assert_eq!(buf[(1, 0)].fg, Color::Rgb(9, 8, 7));
+    }
+
+    /// An Info notice composes in the selection pair, with no reverse video;
+    /// a Warn notice rides the error slot; the live paint agrees.
+    #[test]
+    fn notices_compose_in_theme_colors() {
+        let theme = Theme::default();
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("a", true)]));
+        p.set_theme(&theme);
+        let now = std::time::Instant::now();
+        assert!(p.set_notice(Notice::info("hi"), now));
+        let (buf, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+            .expect("composes");
+        let cell = &buf[(39, 0)];
+        assert_eq!(cell.fg, theme.selection_fg);
+        assert_eq!(cell.bg, theme.selection_bg);
+        assert!(!cell.modifier.contains(Modifier::REVERSED));
+        let live = paint(&mut p, BarInset::NONE, 40, 10, "main");
+        assert!(
+            live.contains("\x1b[38;2;244;247;251;48;2;41;54;40m hi "),
+            "{live:?}"
+        );
+
+        assert!(p.set_notice(Notice::warn("hi"), now));
+        let (buf, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+            .expect("composes");
+        assert_eq!(buf[(39, 0)].bg, theme.error);
+        assert!(buf[(39, 0)].modifier.contains(Modifier::BOLD));
+    }
+
+    /// The config-error line is selection ink on the error slot.
+    #[test]
+    fn the_error_line_rides_the_error_slot() {
+        let theme = Theme::default();
+        let mut p = StatusBarPainter::error_line("bad config");
+        p.set_theme(&theme);
+        let (buf, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+            .expect("composes");
+        assert_eq!(buf[(0, 0)].bg, theme.error);
+        assert_eq!(buf[(0, 0)].fg, theme.selection_fg);
     }
 }

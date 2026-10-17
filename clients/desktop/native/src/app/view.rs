@@ -226,9 +226,27 @@ fn host_chip(host: Option<&str>, online: bool, look: &Look) -> impl IntoElement 
         })
 }
 
-fn workspace_identity(desk: &Desk, look: &Look) -> impl IntoElement {
+/// The active session and machine. Only the machine chip takes clicks (it
+/// lists every machine), so the session name still drags the window.
+fn workspace_identity(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let host = desk.remote.as_deref();
     let full = format!("{} · Runs on {}", desk.session, host.unwrap_or("Local"));
+    let online = desk
+        .link
+        .as_ref()
+        .is_some_and(|link| link.connection.status == Status::Attached);
+    let machines = div()
+        .id("workspace-machines")
+        .debug_selector(|| "workspace-machines".into())
+        .min_w_0()
+        .max_w_full()
+        .occlude()
+        .cursor_pointer()
+        .rounded_full()
+        .hover(|style| style.bg(look.hover))
+        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
+        .tooltip(|window, cx| Tooltip::new("Machines…").build(window, cx))
+        .child(host_chip(host, online, look));
     div()
         .id("workspace-identity")
         .debug_selector(|| "workspace-identity".into())
@@ -248,13 +266,7 @@ fn workspace_identity(desk: &Desk, look: &Look) -> impl IntoElement {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(desk.session.clone()),
         )
-        .child(host_chip(
-            host,
-            desk.link
-                .as_ref()
-                .is_some_and(|link| link.connection.status == Status::Attached),
-            look,
-        ))
+        .child(machines)
         .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
 }
 #[derive(Clone)]
@@ -644,7 +656,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                 div()
                     .flex_shrink_0()
                     .when(fit < 1., |slot| slot.overflow_hidden().opacity(fit))
-                    .child(workspace_identity(desk, look)),
+                    .child(workspace_identity(desk, look, cx)),
             )
         })
         .when(top_tabs, |bar| {
@@ -1147,16 +1159,56 @@ fn session_groups(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyEl
     }
     for (host, error) in desk.fleet.failures() {
         let name = host.as_deref().unwrap_or("Local");
+        let tip = format!("{error} · Click to retry");
         rows.push(
-            muted(look, format!("{name} · unavailable"))
+            muted(look, format!("{name} · unavailable · Retry"))
                 .id(SharedString::from(format!("unavailable-{name}")))
+                .debug_selector({
+                    let selector = format!("unavailable-{name}");
+                    move || selector.clone()
+                })
                 .px(px(10.))
                 .py(px(6.))
-                .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx))
+                .cursor_pointer()
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .on_click(cx.listener(|desk, _, _, cx| desk.retry_fleet(cx)))
                 .into_any_element(),
         );
     }
+    rows.push(machines_row(desk, look, cx));
     rows
+}
+
+/// Every saved machine stays reachable here even with no sessions to list.
+fn machines_row(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let detail = match desk.hosts.len() {
+        0 => "Add one".to_owned(),
+        1 => "1 saved".to_owned(),
+        saved => format!("{saved} saved"),
+    };
+    sidebar_row("sidebar-machines", look)
+        .debug_selector(|| "sidebar-machines".into())
+        .mt(px(8.))
+        .child(row_icon(
+            gpui_kit::component::Icon::new(IconName::Server)
+                .size(px(14.))
+                .text_color(from_hex(&look.chrome.faint)),
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .child("Machines"),
+        )
+        .child(muted(look, detail).flex_shrink_0().text_xs())
+        .tooltip(|window, cx| {
+            Tooltip::new("This Mac and saved machines: open, retry, add or forget")
+                .build(window, cx)
+        })
+        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
+        .into_any_element()
 }
 
 /// A sidebar row: icon slot, label, trailing detail; washed on hover.
@@ -2455,11 +2507,7 @@ fn status_bar(desk: &Desk, height: f32, look: &Look, cx: &mut Context<Desk>) -> 
     let chip = |id: &'static str| div().id(id).rounded(px(radius));
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
-    let scrolled = desk.session_is_attached()
-        && desk
-            .focused_view()
-            .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
-            .is_some_and(|frame| !frame.scrollbar.at_tail());
+    let scrolled = desk.scrolled_back();
     let (pending, waiting) = desk.link.as_ref().map_or((0, 0), |link| {
         let agents = link.connection.agents.values();
         (
@@ -2752,7 +2800,10 @@ pub(super) fn ghost_button(
     Button::new(id).label(label).ghost().small()
 }
 
-/// A chrome icon button that keeps the titlebar from dragging the window when pressed.
+/// A chrome icon button that keeps the titlebar from dragging the window when
+/// pressed. It stops the press rather than occluding: an occluder would hide
+/// the titlebar's own hover, and the slim strip reveals its skin toggle on
+/// that hover, so the toggle would vanish as the pointer reached it.
 fn icon_button(
     id: &'static str,
     icon: IconName,
@@ -2761,10 +2812,12 @@ fn icon_button(
     click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let button = ghost_icon(id, icon, label).small().on_click(click);
-    div().occlude().child(match chord {
-        Some(chord) => button.tooltip(format!("{label}  {chord}")),
-        None => button,
-    })
+    div()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(match chord {
+            Some(chord) => button.tooltip(format!("{label}  {chord}")),
+            None => button,
+        })
 }
 
 /// `chord` as a GPUI keystroke, when it parses.

@@ -1,8 +1,8 @@
 //! Atomic loading of explicitly requested workload authentication.
 //!
-//! Absence is the only way to choose bearer-only authentication. An error in
-//! either half of configured workload authority must disable the listener.
-
+//! `[policy] mode = "paired"` is the only way to require it, and there is no
+//! bearer-only alternative outside it (ADR-0179). An error in either half of
+//! the authority must disable the listener.
 //!
 //! The registry is loaded strictly once, at listener build, and then tracked:
 //! every accepted connection consults its current generation, so
@@ -25,8 +25,8 @@ pub(super) struct WorkloadAuth {
 
 impl WorkloadAuth {
     /// The authority a listener needs under its posture: `None` unless the
-    /// `paired` posture requires workload mTLS (`[policy] mode = "paired"`,
-    /// or `PHUX_WORKLOAD_MTLS` with no mode). It applies even on loopback.
+    /// `paired` posture requires workload mTLS (`[policy] mode = "paired"`).
+    /// It applies even on loopback.
     pub(super) fn for_posture(
         required: bool,
         env: &super::ServerEnv,
@@ -138,7 +138,6 @@ mod tests {
             let tokens = dir.path().join("tokens.json");
             crate::auth::write_test_credential(&tokens, &[0x11; crate::auth::TOKEN_LEN]);
             let env = super::super::ServerEnv {
-                workload_mtls: true,
                 workload_ca: Some(ca),
                 workload_ca_key: Some(dir.path().join("ca-key.pem")),
                 workload_keys: Some(registry),
@@ -153,11 +152,8 @@ mod tests {
                 .build()
                 .unwrap();
             let _entered = runtime.enter();
-            let (listener, slot) = super::super::build_quic_listener_for(
-                "127.0.0.1:0".parse().unwrap(),
-                env.workload_mtls,
-                &env,
-            );
+            let (listener, slot) =
+                super::super::build_quic_listener_for("127.0.0.1:0".parse().unwrap(), true, &env);
             assert!(
                 listener.is_none(),
                 "failed explicit mTLS must never fall back to bearer or anonymous QUIC"

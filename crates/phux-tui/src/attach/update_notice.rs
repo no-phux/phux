@@ -34,17 +34,17 @@ pub struct UpdateNotice {
 
 impl UpdateNotice {
     /// The toast title.
-    #[must_use]
-    pub fn title(&self) -> String {
-        format!("phux {} is available", self.latest)
-    }
+    pub const TITLE: &'static str = "Update";
 
     /// The toast body: where you are, and the one command to move.
     #[must_use]
     pub fn body(&self) -> Vec<String> {
         vec![
-            format!("you have {}", self.current),
-            format!("run `{}`", self.command),
+            format!(
+                "phux {} is available; you have {}.",
+                self.latest, self.current
+            ),
+            format!("Run `{}`.", self.command),
         ]
     }
 
@@ -295,10 +295,13 @@ mod tests {
         assert_eq!(notice.current, "0.45.0+next.b0c6858");
         assert_eq!(notice.latest, "next.d527f26");
         assert_eq!(notice.command, "phux update");
-        assert_eq!(notice.title(), "phux next.d527f26 is available");
+        assert_eq!(UpdateNotice::TITLE, "Update");
         assert_eq!(
             notice.body(),
-            vec!["you have 0.45.0+next.b0c6858", "run `phux update`"]
+            vec![
+                "phux next.d527f26 is available; you have 0.45.0+next.b0c6858.",
+                "Run `phux update`."
+            ]
         );
     }
 

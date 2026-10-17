@@ -31,6 +31,50 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.37.0](https://github.com/no-phux/phux/compare/desktop-v0.36.1...desktop-v0.37.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** render on gpui-fast 0.1.9 with GPUI Kit 0.7.3 ([#1589](https://github.com/no-phux/phux/issues/1589)) ([3f22f89](https://github.com/no-phux/phux/commit/3f22f8913f964d1f9015955767680090d3405ecd))
+
+## [0.36.1](https://github.com/no-phux/phux/compare/desktop-v0.36.0...desktop-v0.36.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **desktop:** keep the plain-terminal toggle clickable in the slim strip ([#1581](https://github.com/no-phux/phux/issues/1581)) ([6736208](https://github.com/no-phux/phux/commit/673620835bd2987a085053db255da3993f469549))
+
+## [0.36.0](https://github.com/no-phux/phux/compare/desktop-v0.35.0...desktop-v0.36.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** make machines discoverable with live state and actions ([ae43ac1](https://github.com/no-phux/phux/commit/ae43ac167c3d17083a369a8042b53c57214c1caf))
+
+
+### Bug Fixes
+
+* **desktop:** add machine Disconnect and tighten machine entry points ([3ad668c](https://github.com/no-phux/phux/commit/3ad668c272f7b0c2edf05c2ff58dd991e8de9648))
+
+## [0.35.0](https://github.com/no-phux/phux/compare/desktop-v0.34.1...desktop-v0.35.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** a server with a remote listener and no `[policy] mode` no longer starts; clients must hold an enrolled certificate and a CA pinned at pairing.
+
+### Features
+
+* **auth:** remove the transitional and legacy authentication paths ([#1577](https://github.com/no-phux/phux/issues/1577)) ([c498229](https://github.com/no-phux/phux/commit/c498229e6eae0bd9bfb24aa5a1d7c5a58cae5b17))
+
+## [0.34.1](https://github.com/no-phux/phux/compare/desktop-v0.34.0...desktop-v0.34.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **client-runtime:** end a reconnecting session on a refused QUIC token ([c389e05](https://github.com/no-phux/phux/commit/c389e05cba8c39aeb81cbf87505bf391bfbdadac))
+
 ## [0.34.0](https://github.com/no-phux/phux/compare/desktop-v0.33.0...desktop-v0.34.0) (2026-10-17)
 
 

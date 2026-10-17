@@ -43,4 +43,4 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `CLICOLOR` | Set to `0` to disable colour in human output unless forced. Otherwise colour follows each destination stream's terminal. |
 | `TERM` | Set to `dumb` to keep human output plain, even when forced. |
 
-Run `phux server --listen 127.0.0.1:8787` to expose a port; see `phux server --help` for the remote and TLS details.
+Run `phux server --listen 127.0.0.1:8787` to expose a port, with `[policy] mode = "paired"` in config.toml; see `phux server --help` for the remote and TLS details.

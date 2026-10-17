@@ -932,8 +932,14 @@ mod tests {
             app: PathBuf::from("/x/Phux.app"),
             release: release("0.3.0", "0.9"),
         });
+        // The loaded preferences come from the user's config; switch away
+        // from whichever channel they hold.
         let mut prefs = updater.prefs.clone();
-        prefs.desktop = updates::Channel::Next;
+        prefs.desktop = if prefs.desktop == updates::Channel::Next {
+            updates::Channel::Stable
+        } else {
+            updates::Channel::Next
+        };
         updater.adopt_preferences(prefs);
         assert!(updater.staged.is_none());
     }

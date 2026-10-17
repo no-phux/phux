@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
+use phux_dial::DialError;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -514,9 +515,10 @@ impl<'a> Pump<'a> {
             .map_err(|error| self.dropped(&error))
     }
 
-    /// A link failure ends this connection; the ladder decides what next.
+    /// A link failure ends this connection; the ladder decides what next,
+    /// except for a refused token, which no redial can satisfy.
     fn dropped(&self, error: &LinkError) -> ConnectionEnd {
-        ConnectionEnd::Dropped(Some(error.describe(self.name)))
+        link_end(self.name, error)
     }
 }
 
@@ -555,6 +557,16 @@ fn is_ping_frame(frame: &[u8]) -> bool {
 async fn wait_for_probe(deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>) {
     if let Some(deadline) = deadline.as_mut() {
         deadline.await;
+    }
+}
+
+/// How a link failure ends the connection: a QUIC close refusing the
+/// bearer token is final, everything else walks the ladder.
+fn link_end(name: &str, error: &LinkError) -> ConnectionEnd {
+    let message = error.describe(name);
+    match error {
+        LinkError::Closed(DialError::AuthRefused(_)) => ConnectionEnd::Refused(message),
+        _ => ConnectionEnd::Dropped(Some(message)),
     }
 }
 
@@ -652,6 +664,26 @@ mod tests {
             types.contains(&TYPE_PING),
             "a probe follows the path change; wrote {types:?}"
         );
+    }
+
+    /// A refused token ends even an attached window; a lost link redials.
+    #[test]
+    fn only_a_refused_token_ends_the_session_from_the_link() {
+        let refused = LinkError::Closed(DialError::AuthRefused("unauthorized".to_owned()));
+        match link_end("mini", &refused) {
+            ConnectionEnd::Refused(message) => assert!(message.contains("re-pair"), "{message}"),
+            other => panic!("a refused token is final, got {other:?}"),
+        }
+        let closed = LinkError::Closed(DialError::Connect("closed by peer".to_owned()));
+        assert!(matches!(
+            link_end("mini", &closed),
+            ConnectionEnd::Dropped(Some(_))
+        ));
+        let lost = LinkError::Read(std::io::ErrorKind::ConnectionReset.into());
+        assert!(matches!(
+            link_end("mini", &lost),
+            ConnectionEnd::Dropped(Some(_))
+        ));
     }
 
     #[tokio::test]

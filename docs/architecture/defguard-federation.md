@@ -117,10 +117,11 @@ workload client certificates as well as outer bearer admission. Normal
 remote enrollment supports those certificates; do not switch a satellite
 or phone to paired policy until its actual client path has been tested with
 that requirement. The current satellite registry carries a bearer and pin,
-not a workload-certificate reference. An owner-controlled, transitional
-bearer-only pilot is therefore not a least-privilege multi-tenant deployment.
-Use dedicated OS accounts/hosts to bound that pilot's blast radius and record
-this limitation before exposing it to other users. Workload client identity
+not a workload-certificate reference; the hub presents a certificate only
+through `PHUX_WORKLOAD_CERT`/`PHUX_WORKLOAD_KEY` in its own environment. A
+satellite with a network listener must run `paired` (no mode refuses to
+start beside one, [ADR-0179](../adr/0179-the-legacy-auth-paths-are-removed.md)),
+so a bearer-only hub link reaches only an `ssh://` satellite. Workload client identity
 on hub-to-satellite links is tracked work `phux-676m` and blocks the
 production gate; VPN setup alone cannot close that gap.
 

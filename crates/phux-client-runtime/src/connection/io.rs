@@ -248,8 +248,11 @@ impl Io {
     pub(crate) fn try_read_frames(&mut self) -> Result<Vec<Bytes>, LinkError> {
         match self {
             Self::Stream {
-                reader, pending, ..
-            } => try_read_stream_frames(reader, pending),
+                reader,
+                pending,
+                quic,
+                ..
+            } => try_read_stream_frames(reader, pending, quic.as_ref()),
             Self::Ws {
                 reader,
                 deferred_error,
@@ -265,7 +268,9 @@ impl Io {
 
     pub(crate) async fn write_frame(&mut self, frame: &[u8]) -> Result<(), LinkError> {
         match self {
-            Self::Stream { writer, .. } => write_all_within_budget(writer.as_mut(), frame).await,
+            Self::Stream { writer, quic, .. } => write_all_within_budget(writer.as_mut(), frame)
+                .await
+                .map_err(|error| refused_or(error, quic.as_ref())),
             Self::Ws { writer, .. } => {
                 budgeted(
                     message_budget(frame.len()),
@@ -280,8 +285,10 @@ impl Io {
     /// Write a batch. A byte stream is one `write_all` of the same bytes in
     /// order (one syscall). WebSocket stays one message per frame.
     pub(crate) async fn write_frames(&mut self, frames: &[Vec<u8>]) -> Result<(), LinkError> {
-        if let Self::Stream { writer, .. } = self {
-            return write_stream_batch(writer.as_mut(), frames).await;
+        if let Self::Stream { writer, quic, .. } = self {
+            return write_stream_batch(writer.as_mut(), frames)
+                .await
+                .map_err(|error| refused_or(error, quic.as_ref()));
         }
         for frame in frames {
             self.write_frame(frame).await?;
@@ -433,7 +440,10 @@ async fn read_stream_frames(
         if !frames.is_empty() {
             return Ok(Some(frames));
         }
-        let read = reader.read_buf(pending).await.map_err(LinkError::Read)?;
+        let read = reader
+            .read_buf(pending)
+            .await
+            .map_err(|error| read_error(error, quic))?;
         if read != 0 {
             continue;
         }
@@ -450,6 +460,7 @@ async fn read_stream_frames(
 fn try_read_stream_frames(
     reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
     pending: &mut BytesMut,
+    quic: Option<&QuicLink>,
 ) -> Result<Vec<Bytes>, LinkError> {
     let frames = take_complete_frames(pending)?;
     if !frames.is_empty() {
@@ -458,7 +469,28 @@ fn try_read_stream_frames(
     match reader.read_buf(pending).now_or_never() {
         None | Some(Ok(0)) => Ok(Vec::new()),
         Some(Ok(_)) => take_complete_frames(pending),
-        Some(Err(error)) => Err(LinkError::Read(error)),
+        Some(Err(error)) => Err(read_error(error, quic)),
+    }
+}
+
+fn read_error(error: std::io::Error, quic: Option<&QuicLink>) -> LinkError {
+    refused_or(LinkError::Read(error), quic)
+}
+
+/// A failed read or write. A QUIC stream sees a connection close as a bare
+/// "connection lost" in either direction; when that close was the server
+/// refusing the bearer token, report the refusal instead, which ends the
+/// session (the driver does not redial it) and words it as "re-pair".
+fn refused_or(error: LinkError, quic: Option<&QuicLink>) -> LinkError {
+    if !matches!(error, LinkError::Read(_) | LinkError::Write(_)) {
+        return error;
+    }
+    match quic
+        .and_then(|link| link.connection.close_reason())
+        .map(|reason| phux_dial::quic::close_error(&reason))
+    {
+        Some(refused @ DialError::AuthRefused(_)) => LinkError::Closed(refused),
+        _ => error,
     }
 }
 

@@ -1,7 +1,7 @@
-diff --git a/gpui-pre-macos/src/events.rs b/gpui-pre-macos/src/events.rs
+diff --git a/gpui-fast-macos/src/events.rs b/gpui-fast-macos/src/events.rs
 index 71bcb10..f049e24 100644
---- a/gpui-pre-macos/src/events.rs
-+++ b/gpui-pre-macos/src/events.rs
+--- a/gpui-fast-macos/src/events.rs
++++ b/gpui-fast-macos/src/events.rs
 @@ -335,6 +335,36 @@ pub(crate) unsafe fn platform_input_from_native(
      }
  }
@@ -129,11 +129,12 @@ index 71bcb10..f049e24 100644
 +        assert_eq!(repeat_text(&initial, "a", F::empty()), None);
 +    }
 +}
-diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 9fc3c95..9650294 100644
---- a/gpui-pre-macos/src/window.rs
-+++ b/gpui-pre-macos/src/window.rs
-@@ -1,6 +1,7 @@
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index 078b406..e37bb87 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -1,7 +1,8 @@
+ // Modified by Longbridge for gpui-fast.
  use crate::{
      BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
 -    TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,
@@ -142,7 +143,7 @@ index 9fc3c95..9650294 100644
      kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
      ns_string, renderer,
  };
-@@ -2846,12 +2847,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
+@@ -2883,12 +2884,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
                  return YES;
              }
  
@@ -158,11 +159,11 @@ index 9fc3c95..9650294 100644
                          return YES;
                      }
                      NO
-diff --git a/gpui-pre/src/app/test_context.rs b/gpui-pre/src/app/test_context.rs
-index e7a8c06..dd059e1 100644
---- a/gpui-pre/src/app/test_context.rs
-+++ b/gpui-pre/src/app/test_context.rs
-@@ -617,7 +617,7 @@ impl TestAppContext {
+diff --git a/gpui-fast/src/app/test_context.rs b/gpui-fast/src/app/test_context.rs
+index 7cc2401..906b155 100644
+--- a/gpui-fast/src/app/test_context.rs
++++ b/gpui-fast/src/app/test_context.rs
+@@ -648,7 +648,7 @@ impl TestAppContext {
      }
  
      /// Returns the `TestWindow` backing the given handle.
@@ -171,11 +172,11 @@ index e7a8c06..dd059e1 100644
          self.app
              .borrow_mut()
              .windows
-diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
-index 4167aa0..4eb1f1e 100644
---- a/gpui-pre/src/input.rs
-+++ b/gpui-pre/src/input.rs
-@@ -128,6 +128,7 @@ pub trait EntityInputHandler: 'static + Sized {
+diff --git a/gpui-fast/src/input.rs b/gpui-fast/src/input.rs
+index ff194b6..239f68f 100644
+--- a/gpui-fast/src/input.rs
++++ b/gpui-fast/src/input.rs
+@@ -129,6 +129,7 @@ pub trait EntityInputHandler: 'static + Sized {
  pub struct ElementInputHandler<V> {
      view: Entity<V>,
      element_bounds: Bounds<Pixels>,
@@ -183,7 +184,7 @@ index 4167aa0..4eb1f1e 100644
  }
  
  impl<V: 'static> ElementInputHandler<V> {
-@@ -138,11 +139,23 @@ impl<V: 'static> ElementInputHandler<V> {
+@@ -139,11 +140,23 @@ impl<V: 'static> ElementInputHandler<V> {
          ElementInputHandler {
              view,
              element_bounds,

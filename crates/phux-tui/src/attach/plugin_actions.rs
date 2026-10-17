@@ -207,8 +207,7 @@ pub(in crate::attach) fn failure_toast(result: &PluginRunResult) -> Option<Toast
     if run_succeeded(result) {
         return None;
     }
-    let title = format!("plugin: {} {} failed", result.plugin_id, result.action_id);
-    let mut lines = Vec::new();
+    let mut lines = vec![format!("{} {}", result.plugin_id, result.action_id)];
     match &result.result {
         Err(message) => lines.push(message.clone()),
         Ok(output) => {
@@ -230,7 +229,7 @@ pub(in crate::attach) fn failure_toast(result: &PluginRunResult) -> Option<Toast
             append_output_tail(&mut lines, "stdout", &output.stdout);
         }
     }
-    Some(Toast::lines(title, lines))
+    Some(Toast::lines("Plugin action failed", lines))
 }
 
 /// Append the tail of a captured stream to `lines`, respecting
@@ -422,7 +421,8 @@ mod tests {
             }),
         };
         let Toast { title, lines } = failure_toast(&result).expect("failure produces a toast");
-        assert!(title.contains("p a failed"), "title was {title}");
+        assert_eq!(title, "Plugin action failed");
+        assert_eq!(lines[0], "p a");
         assert!(lines.iter().any(|l| l.contains("exit code 2")));
         assert!(lines.iter().any(|l| l.contains("boom: file not found")));
     }
@@ -467,7 +467,7 @@ mod tests {
             result: Err("plugin \"p\" is not configured".to_owned()),
         };
         let lines = failure_toast(&result).expect("toast").lines;
-        assert!(lines[0].contains("not configured"));
+        assert!(lines[1].contains("not configured"));
     }
 
     #[test]

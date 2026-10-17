@@ -633,7 +633,6 @@ mod tests {
             let config = phux_dial::tls::client_config_with_identity(
                 &phux_dial::CertTrust::Authority {
                     ca: crate::workload::ca_fingerprint(&paths.ca_cert).unwrap(),
-                    leaf: None,
                 },
                 &phux_dial::TlsClientIdentity::PemFiles {
                     certificate: client_cert,

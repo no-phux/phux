@@ -1418,7 +1418,10 @@ pub(crate) fn run_install(
         }
     };
 
-    if let Err(err) = write_unit_files(manager, &plan, &unit_path) {
+    // The policy first: a unit that could never start is never written.
+    if let Err(err) =
+        settle_policy(&plan).and_then(|()| write_unit_files(manager, &plan, &unit_path))
+    {
         error!("service: {err}");
         return ExitCode::FAILURE;
     }
@@ -1455,6 +1458,94 @@ pub(crate) fn run_install(
 
     report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
+}
+
+/// The listener-address variables a supervised server may inherit from the
+/// environment the install runs in (a systemd user manager can import it).
+const LISTENER_ENV: [&str; 3] = ["PHUX_WS_ADDR", "PHUX_QUIC_ADDR", "PHUX_WT_ADDR"];
+
+/// Whether the installing environment names a listener address the unit's
+/// server could inherit.
+fn inherited_listener_env() -> bool {
+    LISTENER_ENV
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// [`ensure_paired_policy`] against the active `config.toml` and the
+/// installing environment.
+fn settle_policy(plan: &ServicePlan) -> Result<(), String> {
+    ensure_paired_policy(
+        plan,
+        &phux_config::loader::config_path(),
+        inherited_listener_env(),
+    )
+}
+
+/// The remote entry point the supervised server will open, if any: the
+/// unit's own listener, a listener address it inherits, or a configured
+/// `[[connector]]` (the server refuses each with no mode, ADR-0179).
+fn remote_entry_point(
+    plan: &ServicePlan,
+    config: &phux_config::Config,
+    inherited_env: bool,
+) -> Option<&'static str> {
+    if plan.quic.is_some() || plan.listen.is_some() {
+        return Some("--quic/--listen");
+    }
+    if inherited_env {
+        return Some("PHUX_WS_ADDR/PHUX_QUIC_ADDR/PHUX_WT_ADDR");
+    }
+    (!config.connector.is_empty()).then_some("[[connector]]")
+}
+
+/// A unit whose server opens a remote entry point starts only under
+/// `[policy] mode = "paired"` (ADR-0179). With no mode in `config` that is
+/// what the operator asked for by naming one, so write it, and say so;
+/// `local` contradicts it and is refused, leaving the config alone. Nothing
+/// changes for a unit with no remote entry point.
+fn ensure_paired_policy(
+    plan: &ServicePlan,
+    config: &Path,
+    inherited_env: bool,
+) -> Result<(), String> {
+    let loaded = phux_config::loader::load_from(config)
+        .map_err(|err| format!("{}: {err}; run `phux config check`", config.display()));
+    let direct = plan.quic.is_some() || plan.listen.is_some() || inherited_env;
+    let loaded = match loaded {
+        Ok(loaded) => loaded,
+        Err(err) if direct => return Err(err),
+        // No listener of its own and an unreadable config: no connector is
+        // known to settle, and the server reports the config itself.
+        Err(_) => return Ok(()),
+    };
+    let Some(entry) = remote_entry_point(plan, &loaded, inherited_env) else {
+        return Ok(());
+    };
+    match loaded.policy.mode {
+        Some(phux_config::PolicyMode::Paired) => Ok(()),
+        Some(phux_config::PolicyMode::Local) => Err(format!(
+            "{} sets [policy] mode = \"local\", which admits no remote entry point, but the \
+             service would open one ({entry}); set it to \"paired\" (enrolled client \
+             certificates only) or install without it",
+            config.display()
+        )),
+        None => {
+            phux_config::settings::write_edit(
+                config,
+                "policy.mode",
+                phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
+            )
+            .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
+            info!(
+                "service: set [policy] mode = \"paired\" in {} for {entry}: the remote entry \
+                 point serves only clients holding an enrolled certificate (`phux host add`, \
+                 `phux pair --enroll`)",
+                config.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Put the unit in front of the init system without starting it. launchd
@@ -2274,12 +2365,12 @@ mod tests {
     use super::{
         HubEnsure, Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV,
         START_LIMIT_BURST, ServicePlan, SupervisionState, adoption_marker_is_spent, arm_unit,
-        config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from,
-        launchd_policy_lines, modernize_wrapper, reconcile_unit, render_launchd_plist,
-        render_systemd_unit, render_unit, render_wrapper_script, report_policy_reach_with,
-        resolve_plan, rewrite_unit_binary, status_report, systemd_escape, systemd_policy_lines,
-        systemd_quote, systemd_unquote, unit_socket_override, unit_supervises, xml_escape,
-        xml_unescape,
+        config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper,
+        ensure_paired_policy, home_dir_from, launchd_policy_lines, modernize_wrapper,
+        reconcile_unit, render_launchd_plist, render_systemd_unit, render_unit,
+        render_wrapper_script, report_policy_reach_with, resolve_plan, rewrite_unit_binary,
+        status_report, systemd_escape, systemd_policy_lines, systemd_quote, systemd_unquote,
+        unit_socket_override, unit_supervises, xml_escape, xml_unescape,
     };
     use std::path::Path;
     use std::path::PathBuf;
@@ -2520,6 +2611,72 @@ StandardOutput=append:/home/u/.local/state/phux/server.log
 [Install]
 WantedBy=default.target
 ";
+
+    /// A unit with a remote listener writes `paired` where no mode is set,
+    /// keeps an existing `paired`, and refuses `local`; a unit without one
+    /// leaves the config alone (ADR-0179).
+    #[test]
+    fn a_remote_listener_unit_settles_the_policy_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+
+        let mut local_only = plan();
+        local_only.quic = None;
+        local_only.listen = None;
+        ensure_paired_policy(&local_only, &config, false).expect("no listener, nothing to settle");
+        assert!(!config.exists(), "the config is left alone");
+
+        std::fs::write(&config, "[sidebar]\nwidth = 30\n").expect("config");
+        ensure_paired_policy(&plan(), &config, false).expect("an unset mode becomes paired");
+        let written = std::fs::read_to_string(&config).expect("config");
+        assert!(
+            written.contains("width = 30") && written.contains("mode = \"paired\""),
+            "{written}"
+        );
+        ensure_paired_policy(&plan(), &config, false).expect("paired stays");
+        assert_eq!(std::fs::read_to_string(&config).expect("config"), written);
+
+        std::fs::write(&config, "[policy]\nmode = \"local\"\n").expect("config");
+        let refused = ensure_paired_policy(&plan(), &config, false).expect_err("local refuses");
+        assert!(refused.contains("\"local\""), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("config"),
+            "[policy]\nmode = \"local\"\n",
+            "a refused install changes nothing"
+        );
+    }
+
+    /// A relay-only host (`[[connector]]`) or one whose server inherits a
+    /// listener address opens a remote entry point too, so its unit settles
+    /// the mode the same way rather than crash-looping (ADR-0179).
+    #[test]
+    fn a_connector_or_inherited_listener_settles_the_policy_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+        let mut local_only = plan();
+        local_only.quic = None;
+        local_only.listen = None;
+
+        let connector = "[[connector]]\nrelay = \"wss://relay.example:443\"\n";
+        std::fs::write(&config, connector).expect("config");
+        ensure_paired_policy(&local_only, &config, false).expect("a connector becomes paired");
+        let written = std::fs::read_to_string(&config).expect("config");
+        assert!(
+            written.contains("relay.example") && written.contains("mode = \"paired\""),
+            "{written}"
+        );
+
+        std::fs::write(&config, format!("{connector}[policy]\nmode = \"local\"\n"))
+            .expect("config");
+        let refused = ensure_paired_policy(&local_only, &config, false).expect_err("local refuses");
+        assert!(refused.contains("[[connector]]"), "{refused}");
+
+        std::fs::write(&config, "").expect("config");
+        ensure_paired_policy(&local_only, &config, true)
+            .expect("an inherited listener address becomes paired");
+        let written = std::fs::read_to_string(&config).expect("config");
+        assert!(written.contains("mode = \"paired\""), "{written}");
+    }
 
     /// Unwrap a `Patched`, failing loudly on any other outcome.
     fn patched(outcome: Reconcile) -> String {

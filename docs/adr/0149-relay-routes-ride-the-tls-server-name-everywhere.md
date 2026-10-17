@@ -16,6 +16,7 @@ every embedder reach a relay-tunneled server with no new flag.
 
 Status: Accepted
 Date: 2026-10-05
+Superseded in part by [ADR-0180](./0180-the-relay-is-blind.md): Decision 5 (the relay terminates the session) and, on QUIC, Decision 1 (a server name is a relay route, dialed only with the server's CA pinned).
 
 ## Context
 

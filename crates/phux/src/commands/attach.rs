@@ -1168,10 +1168,22 @@ fn resolve_quic_target(
     })
 }
 
+/// A one-off dial's relay route and the CA of the server behind it
+/// (`--tls-server-name`, `--ca-fingerprint`): the dial runs an end-to-end
+/// session to that server inside the relayed stream (ADR-0180).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayHop {
+    /// The route, offered as the outer TLS server name.
+    pub(crate) route: String,
+    /// The server's CA, `sha256:` form. `None` is refused at planning.
+    pub(crate) ca: Option<String>,
+}
+
 /// Attach over QUIC (ADR-0007) to `HOST:PORT`. TLS trust keys on the
 /// resolved address: `--cert-fingerprint` pins the leaf; loopback without a pin
-/// skips verification; routable without a pin is refused. With no session name
-/// each reconnect starts with `Last`.
+/// skips verification; routable without a pin is refused. Through a relay
+/// (`relay`) that pin is the relay's, and the server is verified end to end by
+/// its CA. With no session name each reconnect starts with `Last`.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "clap hands over the owned HOST:PORT value; a &str signature would only push the borrow into lib.rs's dispatch"
@@ -1181,14 +1193,21 @@ pub(crate) fn run_attach_quic(
     target: String,
     token: Option<String>,
     cert_fingerprint: Option<String>,
-    server_name: Option<String>,
+    relay: Option<RelayHop>,
     identity: Option<phux_dial::TlsClientIdentity>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
+    let server_name = relay.as_ref().map(|hop| hop.route.clone());
+    let authority = relay.map_or_else(phux_client_runtime::target::AuthorityPin::default, |hop| {
+        phux_client_runtime::target::AuthorityPin {
+            ca: hop.ca,
+            route: Some(hop.route),
+        }
+    });
     let credentials = RemoteCredentials {
         token,
         cert_fingerprint,
-        authority: phux_client_runtime::target::AuthorityPin::default(),
+        authority,
         identity,
     };
     run_attach_quic_outcome(session, target, credentials, server_name, rec).code
@@ -1228,8 +1247,10 @@ fn run_attach_quic_outcome(
     };
 
     let DialPlan { dial, loopback } =
-        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name) {
-            Ok(plan) => plan.with_identity(identity).with_authority(&authority),
+        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name)
+            .and_then(|plan| plan.with_identity(identity).with_authority(&authority))
+        {
+            Ok(plan) => plan,
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }
@@ -1293,37 +1314,51 @@ impl DialPlan {
         self
     }
 
-    /// Pin the server's certificate authority beside the leaf pin this plan
-    /// was built with (ADR-0153), or learn it on the first handshake while
-    /// none is pinned. A plan with no leaf pin (loopback) is left as it is.
+    /// Pin the server's certificate authority in place of the leaf pin this
+    /// plan was built with (ADR-0153), when pairing recorded one. A plan with
+    /// no leaf pin (loopback) is left as it is. Through a relay route the
+    /// leaf pin stays the relay's and the dial runs an end-to-end session to
+    /// the server inside the stream, presenting the workload identity there
+    /// (ADR-0180).
+    ///
+    /// # Errors
+    ///
+    /// A relay route with no CA pinned for the server behind it (the relay
+    /// would read the session), or a half-configured environment identity.
     pub(crate) fn with_authority(
         mut self,
         pin: &phux_client_runtime::target::AuthorityPin,
-    ) -> Self {
+    ) -> Result<Self, DialRefusal> {
         let trust = match &mut self.dial {
             Dial::Quic(quic) => &mut quic.trust,
             Dial::Ws(ws) => &mut ws.trust,
-            Dial::Uds(_) => return self,
+            Dial::Uds(_) => return Ok(self),
         };
         if let CertTrust::Pinned(leaf) = trust
             && let Some(pinned) = pin.trust(Some(leaf.as_str()))
         {
             *trust = pinned;
         }
-        // Through a relay with the server's CA pinned: the workload identity
-        // goes to the server, end to end, and the relay sees none
-        // (ADR-0154 item 5).
-        if let Dial::Quic(quic) = &mut self.dial {
-            let identity = quic
-                .identity
-                .clone()
-                .unwrap_or(phux_dial::TlsClientIdentity::None);
-            if let Some(inner) = pin.inner(&identity) {
-                quic.inner = Some(inner);
-                quic.identity = Some(phux_dial::TlsClientIdentity::None);
-            }
-        }
-        self
+        let Dial::Quic(quic) = &mut self.dial else {
+            return Ok(self);
+        };
+        let Some(route) = pin.route.as_deref() else {
+            return Ok(self);
+        };
+        let identity = match quic.identity.clone() {
+            Some(identity) => identity,
+            None => phux_dial::tls::client_identity_from_env()
+                .map_err(|err| DialRefusal::Malformed(err.to_string()))?,
+        };
+        let inner = pin.inner(&identity).ok_or_else(|| {
+            DialRefusal::Malformed(phux_client_runtime::dial::unpinned_relay_route(
+                &quic.addr.to_string(),
+                route,
+            ))
+        })?;
+        quic.inner = Some(inner);
+        quic.identity = Some(phux_dial::TlsClientIdentity::None);
+        Ok(self)
     }
 }
 
@@ -1510,8 +1545,10 @@ fn run_attach_ws_outcome(
         identity,
     } = credentials;
     let DialPlan { dial, loopback } =
-        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name) {
-            Ok(plan) => plan.with_identity(identity).with_authority(&authority),
+        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name)
+            .and_then(|plan| plan.with_identity(identity).with_authority(&authority))
+        {
+            Ok(plan) => plan,
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }

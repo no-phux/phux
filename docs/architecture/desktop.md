@@ -32,8 +32,10 @@ GPUI Kit shell / workspace / settings / menus
 `clients/desktop/native` is its own Cargo workspace so GPUI and GPUI Kit do not
 enter every other consumer. The executable is
 `native/target/{debug,release}/phux-desktop`. Framework imports are `gpui`
-(`gpui-pre` 0.3.8), `gpui_platform` (`gpui-pre-platform` 0.3.8), and `gpui_kit`
-0.7.1. A parent-managed pinned GPUI snapshot patch supplies the
+and `gpui_platform` (gpui-fast 0.1.9, a retained-mode GPUI fork, served
+under Kit's `gpui-pre` 0.3.9 names) and `gpui_kit` 0.7.3. Views redraw only
+when something they read changed or they are notified
+(`clients/desktop/toolchain/README.md`). A pinned GPUI patch supplies the
 drawable-presented callback; `on_next_frame`, submitted, and completed do not
 clear a presentation fence.
 

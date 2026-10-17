@@ -16,6 +16,7 @@ test-only spike; no production code or spec bytes change yet.
 Status: Accepted
 Date: 2026-07-15
 See [ADR-0052](./0052-connector-route-identity-and-config.md) for the answers to open questions 1, 4, and 5.
+Superseded in part by [ADR-0180](./0180-the-relay-is-blind.md): Decision 6 (the relay sees plaintext); every relayed session now ends at the server.
 
 ## Context
 

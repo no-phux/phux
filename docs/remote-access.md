@@ -466,13 +466,24 @@ for the trust model and environment settings.
 
 ## Common steps: listen, then pair
 
-Every path below shares the same server-side setup, done once. First the
-server needs a remote listener. On the default profile a host on an overlay
-network already has one: the server binds its overlay address on 8787 (wss)
-and 8788 (QUIC) at startup
+Every path below shares the same server-side setup, done once. The server
+serves remote clients only in `paired` policy mode, so set it in the host's
+`config.toml` first; with no mode a remote listener refuses to start
+([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)):
+
+```toml
+[policy]
+mode = "paired"
+```
+
+`phux service install --quic` (and so `phux host add`) writes that line
+when no mode is set, and refuses a host set to `local`. Then the server
+needs a remote listener. On the default profile a host on an
+overlay network already has one: the server binds its overlay address on
+8787 (wss) and 8788 (QUIC) at startup
 ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
-Otherwise start it on a non-loopback bind — TLS and token auth engage
-automatically:
+Otherwise start it on a non-loopback bind — TLS, token, and client
+certificate checks engage automatically:
 
 ```sh
 phux server --listen 0.0.0.0:8787      # TLS WebSocket (= PHUX_WS_ADDR)
@@ -493,8 +504,9 @@ remote listener, is an error that names the socket and the fix
 ([ADR-0141](adr/0141-pair-mints-only-against-a-live-listener.md)). The server
 re-reads the credential store when it changes, so the token works at the next
 connection attempt with no restart, and revocation applies just as promptly.
-Legacy anonymous token lines require a one-time explicit
-`phux pair --migrate-legacy`. `phux pair` provisions the server
+A store of legacy anonymous token lines is refused: remove it and pair again
+([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)). `phux pair`
+provisions the server
 certificate if none exists yet, issued by the server's workload CA
 ([ADR-0153](adr/0153-clients-pin-the-workload-ca.md)), so the fingerprints
 it prints are the ones the server presents.
@@ -525,8 +537,8 @@ Record the token and the fingerprint; every `phux attach` below uses both. The
 fingerprint is SHA-256, 64 hex digits, optionally colon-separated. The
 authority line appears when the certificate was issued by the workload CA
 (a server provisioned before ADR-0153 keeps its self-signed certificate and
-prints none); `phux host add` and `--code` pin it, and a client holding
-only the leaf fingerprint pins it on its first connection
+prints none); `phux host add` and `--code` pin it. A client holding only the
+leaf fingerprint keeps that pin and learns nothing from a connection
 ([operations](./operations.md#server-identity-and-the-ca-pin)).
 
 Keep the non-secret credential ID for lifecycle operations. Rotation prints a
@@ -596,7 +608,7 @@ A relay link from `phux pair --relay-route ROUTE`
 ([Path D](#path-d-via-a-reference-relay)) has a different shape:
 `quic` is the relay, `sni` is the route the dial offers as its TLS server
 name, `fp` pins the relay, `ca` pins the server (verified end to end inside
-the relayed stream, so the relay forwards only ciphertext; ADR-0154), and
+the relayed stream, so the relay forwards only ciphertext; ADR-0180), and
 there is no `url`. The relay has no WebSocket leg; `--enroll` works through
 it too. An app or CLI that predates `sni` refuses the link because
 `url` is missing, instead of dialing the relay unrouted
@@ -711,8 +723,13 @@ acceptance tests, and capabilities not yet validated in a real VPN lab.
 
 An overlay gives the client a route to the server. A relay instead accepts
 outbound connections from both, so the server's network needs no inbound
-listener. The relay terminates TLS on both connections and sees phux traffic
-in plaintext. Host it on a machine you trust.
+listener. The relay is blind: it routes on the route name and forwards only
+ciphertext, because every consumer runs TLS 1.3 with the server inside the
+relayed stream, verifying the server's certificate authority, and the server
+refuses any consumer that does not
+([ADR-0180](adr/0180-the-relay-is-blind.md)). The relay still sees who
+connects, to which route, when, and how much; whoever runs it can cut the
+route but cannot read or alter a session.
 
 Set up the route end to end:
 
@@ -747,22 +764,30 @@ Set up the route end to end:
    phux attach --remote mini --code '<link>'
    ```
 
-   Or register it by hand with the route as the entry's TLS server name:
+   Or register it by hand with the route as the entry's TLS server name and
+   the server's CA (`ca_fingerprint` in `phux pair --relay-route --json`):
 
    ```sh
    phux host add mini quic://RELAY_HOST:4433 --tls-server-name ROUTE \
-     --cert-fingerprint RELAY_FP --token-file /path/to/SERVER_TOKEN
+     --cert-fingerprint RELAY_FP --ca-fingerprint SERVER_CA \
+     --token-file /path/to/SERVER_TOKEN
    ```
 
    After either one, `phux attach mini`, `phux --remote mini`, and the
    headless verbs (`phux ls --remote mini`) go through the relay. A one-off
    attach that skips the registry still works:
    `phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE
-   --cert-fingerprint RELAY_FP --token SERVER_TOKEN`.
+   --cert-fingerprint RELAY_FP --ca-fingerprint SERVER_CA --token SERVER_TOKEN`.
 
-`RELAY_FP` pins the relay's certificate on both network legs.
-`SERVER_TOKEN` crosses the relay opaquely and is verified by the server;
-the tunnel token only authorizes the connector to claim its enrolled route.
+`RELAY_FP` pins the relay's certificate on both network legs. `SERVER_CA`
+pins the server, end to end: a client refuses to dial a route without it,
+and writes nothing, its token included, until the server inside the relayed
+stream has proved it holds a certificate that CA issued. An entry
+registered before this with only `RELAY_FP` fails with a message naming
+`--ca-fingerprint`; re-register it, or re-pair from a fresh link.
+`SERVER_TOKEN` crosses the relay inside that session and is verified by the
+server; the tunnel token only authorizes the connector to claim its
+enrolled route.
 The connector re-reads its token file on every redial, so rotation is
 `phux relay pair --route ROUTE`, replace the file, then restart either side
 when immediate cutover is required.

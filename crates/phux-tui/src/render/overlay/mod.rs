@@ -398,6 +398,16 @@ impl OverlayState {
         self.stack.pop();
     }
 
+    /// Pop the top overlay when it is a passthrough notice (a job's
+    /// "running" toast), so the job's result replaces it rather than
+    /// stacking on it. The which-key panel is passthrough too but stays: it
+    /// belongs to the pending prefix, not to the job.
+    pub fn dismiss_passthrough_notice(&mut self) {
+        if self.top_is_passthrough() && !self.passthrough_escape_cancels_prefix() {
+            self.stack.pop();
+        }
+    }
+
     /// Dispatch a key to the top overlay (see `settle`).
     pub fn handle_key(&mut self, key: &KeyEvent) -> OverlayOutcome {
         let Some(top) = self.stack.last_mut() else {

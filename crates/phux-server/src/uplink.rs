@@ -182,7 +182,6 @@ pub async fn join(code: &JoinCode, dir: &Path) -> Result<Joined, String> {
         server_name: code.server_name.clone().unwrap_or(host),
         trust: CertTrust::Authority {
             ca: code.ca.clone(),
-            leaf: None,
         },
         inner: None,
     };
@@ -468,7 +467,6 @@ async fn supervise(spec: UplinkSpec, socket: PathBuf, cancel: CancellationToken)
                 token: None,
                 trust: CertTrust::Authority {
                     ca: spec.ca.clone(),
-                    leaf: None,
                 },
                 identity: Some(TlsClientIdentity::PemFiles {
                     certificate: spec.client_cert.clone(),

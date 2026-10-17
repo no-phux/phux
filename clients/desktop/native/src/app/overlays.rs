@@ -368,6 +368,21 @@ impl Desk {
         });
     }
 
+    /// Open Settings directly on `page`, replacing any open modal.
+    pub(crate) fn show_settings_page(
+        &mut self,
+        page: super::settings_panel::Page,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.modal = Modal::Settings;
+        self.settings_page = Some(page);
+        self.mark_prepared();
+        super::settings_panel::prepare(self, window, cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
     /// Run a confirmed palette row. Commands already ran through their [`Run`] action.
     /// A Go To pane or tab is remembered only when that destination is still listed.
     fn pick(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,14 +418,7 @@ impl Desk {
                 self.navigate_work(destination, cx);
                 self.after_command(window, cx);
             }
-            Target::Setting(page) => {
-                self.modal = Modal::Settings;
-                self.settings_page = Some(page);
-                self.mark_prepared();
-                super::settings_panel::prepare(self, window, cx);
-                window.focus(&self.focus, cx);
-                cx.notify();
-            }
+            Target::Setting(page) => self.show_settings_page(page, window, cx),
             Target::Move(key, name) => {
                 let selected = self.organization.selected.clone();
                 self.move_resources_to(selected, key, name, window, cx);

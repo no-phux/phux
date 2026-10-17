@@ -2,15 +2,16 @@
 //! ADR-0125): one grant per connection, minted at HELLO, enforced at every
 //! dispatch.
 //!
-//! [`Authority::Owner`] (all verbs at Global) is minted in the `local` and
-//! transitional postures and for the owner socket in `paired`, so handlers
-//! behave as before. [`Authority::Scoped`] is a workload's registry ceiling,
-//! minted only in `paired` from the live registry, never from bearer scopes.
+//! [`Authority::Owner`] (all verbs at Global) is minted for the owner's
+//! socket in both modes, so its handlers behave as before.
+//! [`Authority::Scoped`] is a workload's registry ceiling, minted only in
+//! `paired` from the live registry, never from bearer scopes. There is no
+//! third mode (ADR-0179): nothing grants a remote peer the owner's authority.
 //!
 //! [`authorize_frame`], [`authorize_command`], and [`authorize_stream_bind`]
 //! share [`enforce`] over [`phux_protocol::kinds`]'s classification.
-//! [`PermissivePolicy`] is the transitional engine, [`ScopedPolicy`] the two
-//! closed modes; `ServerConfig::policy_engine` can override (ADR-0072).
+//! [`ScopedPolicy`] is the engine of both modes; an embedder may inject its
+//! own through `ServerConfig::policy_engine` (ADR-0072).
 
 mod enforce;
 pub mod filter;
@@ -486,26 +487,6 @@ pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// The transitional engine: every connection gets the owner's grant (no
-/// `[policy] mode`).
-#[derive(Debug, Clone, Copy)]
-pub struct PermissivePolicy;
-
-impl PermissivePolicy {
-    /// Shared instance (stateless).
-    pub const INSTANCE: Self = Self;
-}
-
-impl PolicyEngine for PermissivePolicy {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        Box::pin(async move { Ok(ConnectionGrant::owner()) })
-    }
-}
-
 /// The closed-mode engine (§8): the owner socket gets the owner's grant;
 /// `local` refuses everything else; `paired` admits TLS connections with an
 /// active registry credential and mints its ceiling.
@@ -631,77 +612,134 @@ impl PolicyError {
 /// The authorization posture a server starts in (`workload-auth.md` §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyPosture {
-    /// No `[policy] mode`: owner grants for everyone. Remote listeners are
-    /// kept (with a warning) until mTLS covers every transport.
-    Transitional {
-        /// Whether a remote listener or connector is configured, so the
-        /// server warns once at startup.
-        remote_listener: bool,
-    },
-    /// `mode = "local"`: the owner's socket only.
+    /// `mode = "local"`, or no mode and nothing past the owner's socket: the
+    /// owner's socket only.
     Local,
-    /// `mode = "paired"`, or `PHUX_WORKLOAD_MTLS` with no mode: workload
-    /// mTLS on every TLS transport, scoped grants at dispatch.
+    /// `mode = "paired"`: workload mTLS on every TLS transport, scoped
+    /// grants at dispatch.
     Paired,
+    /// No mode, and the embedder injected its own engine through
+    /// `ServerConfig::policy_engine` (ADR-0072): that engine decides every
+    /// HELLO, and listeners do not require a workload certificate. `phux
+    /// server` never injects an engine, so no configuration reaches this.
+    Embedded,
 }
 
 /// A `[policy]` setting the server refuses to start with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PostureError {
-    /// `mode = "local"` beside `PHUX_WORKLOAD_MTLS`.
+    /// `PHUX_WORKLOAD_MTLS` is set. It was the opt-in before `[policy] mode`
+    /// existed and is retired (ADR-0179); a server that still sees it says
+    /// so rather than quietly choosing a mode for it.
     #[error(
-        "[policy] mode = \"local\" conflicts with PHUX_WORKLOAD_MTLS: set mode = \"paired\" or unset PHUX_WORKLOAD_MTLS"
+        "PHUX_WORKLOAD_MTLS is retired: set [policy] mode = \"paired\" in config.toml and unset PHUX_WORKLOAD_MTLS"
     )]
-    LocalWithWorkloadMtls,
+    RetiredWorkloadMtlsEnv,
     /// `mode = "local"` beside a configured remote listener or connector.
     #[error(
         "[policy] mode = \"local\" admits the owner socket only, but a remote listener or relay connector is configured: remove it (--listen, --quic, --webtransport, PHUX_WS_ADDR, PHUX_QUIC_ADDR, PHUX_WT_ADDR, [[connector]]) or set mode = \"paired\""
     )]
     LocalWithRemoteListener,
+    /// No mode beside a configured remote listener or connector: nothing
+    /// would authorize the consumers it admits (ADR-0179 retired the owner
+    /// grant they once got).
+    #[error(
+        "no [policy] mode is set, but a remote listener or relay connector is configured: set [policy] mode = \"paired\" in config.toml to serve enrolled clients, or remove it (--listen, --quic, --webtransport, PHUX_WS_ADDR, PHUX_QUIC_ADDR, PHUX_WT_ADDR, [[connector]])"
+    )]
+    UnsetWithRemoteListener,
     /// No mode beside a configured workload CA or registry location: the
-    /// operator named workload authority but did not choose to enforce it,
-    /// so starting would silently hand remote consumers the owner's grant.
+    /// operator named workload authority but did not choose to enforce it.
     #[error(
         "no [policy] mode is set, but PHUX_WORKLOAD_CA, PHUX_WORKLOAD_CA_KEY, or PHUX_WORKLOAD_KEYS names a workload authority location: set [policy] mode = \"paired\" in config.toml to enforce it, or unset those variables"
     )]
     UnsetWithWorkloadAuthority,
 }
 
+/// What [`PolicyPosture::resolve`] decides from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent startup facts, each named"
+)]
+pub struct PostureInputs {
+    /// `[policy] mode`.
+    pub mode: Option<phux_config::PolicyMode>,
+    /// Whether the retired `PHUX_WORKLOAD_MTLS` is set.
+    pub retired_workload_mtls_env: bool,
+    /// Whether a remote listener or relay connector is configured.
+    pub remote_listener: bool,
+    /// Whether a workload CA or registry location is configured
+    /// (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`).
+    pub workload_authority_configured: bool,
+    /// Whether the embedder injected its own engine (ADR-0072).
+    pub embedder_engine: bool,
+}
+
+/// What [`PolicyPosture::resume_fallback`] decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeFallback {
+    /// The posture the resumed server runs.
+    pub posture: PolicyPosture,
+    /// Why a cold start would have refused.
+    pub refusal: PostureError,
+    /// Whether every remote listener and relay connector stays unbound.
+    pub remote_dropped: bool,
+}
+
 impl PolicyPosture {
-    /// Decide the posture from the configured mode, whether
-    /// `PHUX_WORKLOAD_MTLS` is set, whether a remote listener or relay
-    /// connector is configured, and whether a workload CA or registry
-    /// location is configured (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`,
-    /// `PHUX_WORKLOAD_KEYS`).
+    /// Decide the posture (`docs/spec/workload-auth.md` §8). With no mode
+    /// the server is `local`, and anything that would reach past the owner's
+    /// socket is a startup error rather than a door nothing authorizes.
     ///
     /// # Errors
     ///
-    /// A [`PostureError`] for a `local` mode the rest of the configuration
-    /// contradicts, or for no mode beside a configured workload authority
-    /// location (`docs/spec/workload-auth.md` §8).
-    pub const fn resolve(
-        mode: Option<phux_config::PolicyMode>,
-        workload_mtls_env: bool,
-        remote_listener: bool,
-        workload_authority_configured: bool,
-    ) -> Result<Self, PostureError> {
-        match mode {
+    /// A [`PostureError`] for the retired `PHUX_WORKLOAD_MTLS`, a `local`
+    /// mode the rest of the configuration contradicts, or no mode beside a
+    /// remote entry point or a configured workload authority location.
+    pub const fn resolve(inputs: PostureInputs) -> Result<Self, PostureError> {
+        if inputs.retired_workload_mtls_env {
+            return Err(PostureError::RetiredWorkloadMtlsEnv);
+        }
+        match inputs.mode {
             Some(phux_config::PolicyMode::Paired) => Ok(Self::Paired),
-            Some(phux_config::PolicyMode::Local) => Self::local(workload_mtls_env, remote_listener),
-            None if workload_mtls_env => Ok(Self::Paired),
-            None if workload_authority_configured => Err(PostureError::UnsetWithWorkloadAuthority),
-            None => Ok(Self::Transitional { remote_listener }),
+            Some(phux_config::PolicyMode::Local) if inputs.remote_listener => {
+                Err(PostureError::LocalWithRemoteListener)
+            }
+            None if inputs.embedder_engine => Ok(Self::Embedded),
+            None if inputs.workload_authority_configured => {
+                Err(PostureError::UnsetWithWorkloadAuthority)
+            }
+            None if inputs.remote_listener => Err(PostureError::UnsetWithRemoteListener),
+            Some(phux_config::PolicyMode::Local) | None => Ok(Self::Local),
         }
     }
 
-    const fn local(workload_mtls_env: bool, remote_listener: bool) -> Result<Self, PostureError> {
-        if workload_mtls_env {
-            return Err(PostureError::LocalWithWorkloadMtls);
+    /// The posture a resumed image runs when [`Self::resolve`] refused
+    /// `inputs` with `refusal` (ADR-0032 graceful upgrade).
+    ///
+    /// Exiting there would end every pane the previous image handed over, so
+    /// a resume fails closed instead of failing to start: the retired
+    /// `PHUX_WORKLOAD_MTLS` is reported and ignored, and when the rest still
+    /// refuses, the server runs `local` with every remote entry point left
+    /// unbound. A cold start never takes this path.
+    #[must_use]
+    pub const fn resume_fallback(inputs: PostureInputs, refusal: PostureError) -> ResumeFallback {
+        let without_env = PostureInputs {
+            retired_workload_mtls_env: false,
+            ..inputs
+        };
+        if let Ok(posture) = Self::resolve(without_env) {
+            return ResumeFallback {
+                posture,
+                refusal,
+                remote_dropped: false,
+            };
         }
-        if remote_listener {
-            return Err(PostureError::LocalWithRemoteListener);
+        ResumeFallback {
+            posture: Self::Local,
+            refusal,
+            remote_dropped: inputs.remote_listener,
         }
-        Ok(Self::Local)
     }
 
     /// Whether TLS listeners must require a workload client certificate.
@@ -716,22 +754,22 @@ impl PolicyPosture {
     pub const fn is_local(self) -> bool {
         matches!(self, Self::Local)
     }
+}
 
-    /// Whether every admitted connection holds the owner's grant.
-    #[must_use]
-    pub const fn is_transitional(self) -> bool {
-        matches!(self, Self::Transitional { .. })
-    }
+/// An embedder engine (ADR-0072) for this crate's transport tests: every
+/// connection holds the owner's grant, which no `phux server` mode gives a
+/// remote peer (ADR-0179). Tests of authorization use [`ScopedPolicy`].
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct OwnerForAll;
 
-    /// Whether the server should warn at startup that remote consumers keep
-    /// the owner's grant (the transitional posture with a remote listener).
-    #[must_use]
-    pub const fn warns_remote_owner_grant(self) -> bool {
-        matches!(
-            self,
-            Self::Transitional {
-                remote_listener: true
-            }
-        )
+#[cfg(test)]
+impl PolicyEngine for OwnerForAll {
+    fn authorize_hello<'a>(
+        &'a self,
+        _peer_identity: &'a PeerIdentity,
+        _credential: Option<&'a AuthenticatedCredential>,
+    ) -> GrantFuture<'a> {
+        Box::pin(async { Ok(ConnectionGrant::owner()) })
     }
 }

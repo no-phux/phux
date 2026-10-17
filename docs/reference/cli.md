@@ -960,9 +960,19 @@ Direct dial:
                                   `--quic`/`--ws wss://` address. Requires
                                   `--quic` or `--ws`.
       --tls-server-name <NAME>    TLS server name (SNI) to offer the remote
-                                  listener. QUIC defaults to `localhost`;
-                                  WebSocket defaults to the URL host. Requires
-                                  `--quic` or `--ws`.
+                                  listener. With `--quic` it names a relay
+                                  route: `--quic` is the relay,
+                                  `--cert-fingerprint` its pin, and
+                                  `--ca-fingerprint` is required. WebSocket
+                                  defaults to the URL host. Requires `--quic` or
+                                  `--ws`.
+      --ca-fingerprint <SHA256>   The certificate authority of the server behind
+                                  a relay route (`sha256:` and 64 hex digits,
+                                  the `ca_fingerprint` `phux pair --relay-route`
+                                  prints). The session runs end to end with that
+                                  server inside the relayed stream, so the relay
+                                  sees only ciphertext. Requires `--quic` and
+                                  `--tls-server-name`.
 
 Remote host:
       --remote <[USER@]HOST[:PORT]>  Attach to a phux server on another machine,
@@ -1466,53 +1476,63 @@ Arguments:
               entry's name.
 
 Flags:
-      --role <ROLE>             Which registry the machine lands in: a server
-                                you attach to (`remote`, the default) or a peer
-                                this hub dials for its users.
-                                [possible values: remote, satellite]
-                                (default: remote)
-      --name <NAME>             Local label to register. Defaults to HOST
-                                without any `user@`, or to the host of an
-                                endpoint URI.
-      --endpoint <HOST:PORT>    Register this address instead of the routes
-                                detected on the host: `HOST:PORT` (dialed over
-                                QUIC) or a full `quic://`/`wss://` URI.
-      --quic-port <PORT>        QUIC port to configure on the host and dial.
-                                (default: 8788)
-      --no-service              Start the host's server but skip installing its
-                                service unit. The server will not come back on
-                                its own after a reboot.
-      --ssh-only                Register an `ssh://HOST` entry without
-                                contacting the host at all.
-      --remote-phux <PATH>      The `phux` to run on the host, for when a
-                                non-interactive ssh shell's `PATH` does not find
-                                it (a Homebrew or Nix install).
-                                (default: phux)
-      --token-file <PATH>       Manual form only: absolute path to a file
-                                holding the pairing token minted by `phux pair`
-                                on the other machine.
-      --cert-fingerprint <FP>   Manual form only: the other machine's TLS
-                                certificate SHA-256 fingerprint, as printed by
-                                `phux pair`. Required for `quic://` and
-                                `wss://`.
-      --tls-server-name <NAME>  Manual form, `--role remote` only: the TLS
-                                server name (SNI) every dial offers instead of
-                                the endpoint's host. Through a relay this is the
-                                route: register the relay's `quic://RELAY:PORT`
-                                with the relay's `--cert-fingerprint` and the
-                                server's `--token-file`.
-      --session <NAME>          Session to attach on arrival (`--role remote`
-                                only). Omitted: the remote server's own
-                                last-attach memory decides.
-      --disabled                Register the entry but leave it disabled
-                                (`--role satellite` only).
-      --json                    Emit stable, versioned JSON on stdout instead of
-                                the human view. On failure, stdout stays empty
-                                and stderr carries one JSON error object.
-  -h, --help                    Print help
+      --role <ROLE>              Which registry the machine lands in: a server
+                                 you attach to (`remote`, the default) or a peer
+                                 this hub dials for its users.
+                                 [possible values: remote, satellite]
+                                 (default: remote)
+      --name <NAME>              Local label to register. Defaults to HOST
+                                 without any `user@`, or to the host of an
+                                 endpoint URI.
+      --endpoint <HOST:PORT>     Register this address instead of the routes
+                                 detected on the host: `HOST:PORT` (dialed over
+                                 QUIC) or a full `quic://`/`wss://` URI.
+      --quic-port <PORT>         QUIC port to configure on the host and dial.
+                                 (default: 8788)
+      --no-service               Start the host's server but skip installing its
+                                 service unit. The server will not come back on
+                                 its own after a reboot.
+      --ssh-only                 Register an `ssh://HOST` entry without
+                                 contacting the host at all.
+      --remote-phux <PATH>       The `phux` to run on the host, for when a
+                                 non-interactive ssh shell's `PATH` does not
+                                 find it (a Homebrew or Nix install).
+                                 (default: phux)
+      --token-file <PATH>        Manual form only: absolute path to a file
+                                 holding the pairing token minted by `phux pair`
+                                 on the other machine.
+      --cert-fingerprint <FP>    Manual form only: the other machine's TLS
+                                 certificate SHA-256 fingerprint, as printed by
+                                 `phux pair`. Required for `quic://` and
+                                 `wss://`.
+      --tls-server-name <NAME>   Manual form, `--role remote` only: the TLS
+                                 server name (SNI) every dial offers instead of
+                                 the endpoint's host. Through a relay this is
+                                 the route: register the relay's
+                                 `quic://RELAY:PORT` with the relay's
+                                 `--cert-fingerprint`, the server's
+                                 `--token-file`, and the server's
+                                 `--ca-fingerprint`.
+      --ca-fingerprint <SHA256>  Manual form with `--tls-server-name` on a
+                                 `quic://` endpoint, and required there: the
+                                 certificate authority of the server behind the
+                                 relay route (`sha256:` and 64 hex digits, the
+                                 `ca_fingerprint` `phux pair --relay-route`
+                                 prints). Every dial runs end to end with that
+                                 server inside the relayed stream, so the relay
+                                 sees only ciphertext.
+      --session <NAME>           Session to attach on arrival (`--role remote`
+                                 only). Omitted: the remote server's own
+                                 last-attach memory decides.
+      --disabled                 Register the entry but leave it disabled
+                                 (`--role satellite` only).
+      --json                     Emit stable, versioned JSON on stdout instead
+                                 of the human view. On failure, stdout stays
+                                 empty and stderr carries one JSON error object.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host attach`
@@ -2462,9 +2482,6 @@ Flags:
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
-      --migrate-legacy       Explicitly convert legacy anonymous token lines
-                             before pairing. Conversion preserves each bearer
-                             secret but stores only its verifier.
       --replace-token <HEX>  When minting, revoke any live credential whose
                              bearer matches this hex token first. `phux host
                              add` passes the previously enrolled token so
@@ -3766,16 +3783,18 @@ Flags:
                                   `phux attach <name>` will request.
                                   (default: default)
       --listen <HOST:PORT>        Also accept WebSocket clients on this
-                                  `HOST:PORT` (the UDS stays on). Loopback (e.g.
-                                  `127.0.0.1:8787`) is plaintext for local
-                                  browser dev; any routable address (e.g.
-                                  `0.0.0.0:8787`) auto-provisions TLS and
-                                  requires a `phux pair` token. Overrides
-                                  `$PHUX_WS_ADDR`.
+                                  `HOST:PORT` (the UDS stays on). Needs
+                                  `[policy] mode = "paired"`, without which the
+                                  server refuses to start: every connection then
+                                  presents an enrolled client certificate over
+                                  TLS, and a routable address (e.g.
+                                  `0.0.0.0:8787`) also requires a `phux pair`
+                                  token. Overrides `$PHUX_WS_ADDR`.
       --quic <HOST:PORT>          Also accept QUIC clients on this `HOST:PORT`
-                                  (the UDS stays on). QUIC is always TLS
-                                  1.3-encrypted; a loopback address skips token
-                                  auth (local dev), while any routable address
+                                  (the UDS stays on). Needs `[policy] mode =
+                                  "paired"`: every connection presents an
+                                  enrolled client certificate. QUIC is always
+                                  TLS 1.3-encrypted; a routable address also
                                   requires a `phux pair` token sent as the
                                   stream's opening preamble. Overrides
                                   `$PHUX_QUIC_ADDR`.
@@ -3783,10 +3802,13 @@ Flags:
                                   clients on this `HOST:PORT` (the UDS stays on)
                                   — the browser's door to QUIC-class transport;
                                   the browser client dials it, falling back to
-                                  WebSocket. Always TLS 1.3-encrypted; a
-                                  loopback address skips token auth (local dev),
-                                  while any routable address requires a `phux
-                                  pair` token carried in the CONNECT request
+                                  WebSocket. Needs `[policy] mode = "paired"`,
+                                  under which a session is admitted only through
+                                  an end-to-end TLS session presenting an
+                                  enrolled certificate, which a browser cannot
+                                  open yet. Always TLS 1.3-encrypted; a routable
+                                  address also requires a `phux pair` token
+                                  carried in the CONNECT request
                                   (`Authorization: Bearer` from native
                                   consumers, `?token=<hex>` on the session URL
                                   from browsers). Overrides `$PHUX_WT_ADDR`.
@@ -3794,8 +3816,9 @@ Flags:
                                   matching `[[connector]]` entry exists, its
                                   token file and certificate pin are used;
                                   otherwise only a loopback endpoint is accepted
-                                  for unauthenticated development. Without this
-                                  flag, every configured connector is supervised
+                                  for unauthenticated development. Needs
+                                  `[policy] mode = "paired"`. Without this flag,
+                                  every configured connector is supervised
                                   independently.
       --hub                       Run as a federation hub: consume the
                                   `[[satellites]]` registry from `config.toml`
@@ -3884,7 +3907,9 @@ Flags:
       --quic <HOST:PORT>    Accept QUIC clients on this `HOST:PORT`. A routable
                             address (e.g. `0.0.0.0:8788`) engages TLS and
                             requires a `phux pair` token. Prefer this over
-                            `--listen` where UDP is open.
+                            `--listen` where UDP is open. A remote listener
+                            needs `[policy] mode = "paired"`: with no mode set,
+                            install writes it; `local` is refused.
       --listen <HOST:PORT>  Accept WebSocket clients on this `HOST:PORT`. The
                             fallback for networks that block UDP.
       --restore             Keep a session archive beside the server. The server

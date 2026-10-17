@@ -2,9 +2,10 @@
 //! `docs/spec/workload-auth.md` §7-§8): a denying engine refuses HELLO with
 //! `PermissionDenied` and `DETACHED { AUTHENTICATION_FAILED }` before the
 //! close; the owner socket keeps all six verbs
-//! at Global under both the default and the `paired` engine; `local` mode
-//! beside a remote listener refuses to start. Posture resolution and the
-//! paired engine's remote refusals are unit-tested in `policy::tests`.
+//! at Global under both the default and the `paired` engine; `local` mode,
+//! or no mode at all, beside a remote listener refuses to start (ADR-0179).
+//! Posture resolution and the paired engine's remote refusals are
+//! unit-tested in `policy::tests`.
 
 use std::sync::Arc;
 
@@ -205,6 +206,28 @@ fn local_mode_with_a_remote_listener_refuses_to_start() {
             matches!(
                 started,
                 Err(ServerError::Policy(PostureError::LocalWithRemoteListener))
+            ),
+            "{started:?}"
+        );
+        assert!(!socket_path.exists(), "nothing was bound");
+    });
+}
+
+/// No mode beside a remote listener refuses to start rather than handing
+/// whoever reaches it the owner's grant (ADR-0179).
+#[test]
+fn an_unset_mode_with_a_remote_listener_refuses_to_start() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let started = ServerRuntime::new(cfg(socket_path.clone(), None))
+            .listen_quic("127.0.0.1:0".parse().unwrap())
+            .run_async(async {})
+            .await;
+        assert!(
+            matches!(
+                started,
+                Err(ServerError::Policy(PostureError::UnsetWithRemoteListener))
             ),
             "{started:?}"
         );

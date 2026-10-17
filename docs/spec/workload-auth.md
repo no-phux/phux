@@ -27,7 +27,7 @@ document previously specified; the authorization half stands.)
 > `phux_server::policy` (`ScopedPolicy`, `enforce`); and live revocation
 > (§7) in the server runtime (`revoke_connection`). The owner's socket is a
 > Unix-socket peer whose kernel uid is the serving uid. §6's kind-bearing
-> rows and §8's transitional posture carry their own markers.
+> rows carry their own markers.
 
 ## 1. Profile boundary
 
@@ -88,14 +88,14 @@ replacement.
 > Clients pin the CA at pairing (`phux pair --json` `ca_fingerprint`, the
 > connect link's `ca`) in `known-authorities` beside `config.toml`, keyed
 > by the leaf pin. A changed CA is refused as `authority_changed`, naming
-> both fingerprints, and never retried. Two transitional rules keep pairs
-> made earlier working, informatively: a server whose certificate predates
-> its CA keeps its self-signed leaf (it is never re-issued) and presents no
-> CA, so a client pinning a CA beside that exact leaf accepts the leaf; and
-> a client holding only a leaf pin records the CA its pinned leaf chains to
-> on its first connection. `phux workload authority --rotate` is the
-> rotation: a new CA and a server certificate under it, with no
-> cross-signing, so every client re-pairs.
+> both fingerprints, and never retried. A pin is made at pairing and never
+> learned from a connection, and a CA pin accepts only leaves that CA
+> issued (ADR-0179). A server whose certificate predates its CA keeps its
+> self-signed leaf (it is never re-issued) and presents no CA, so clients
+> reach it by its leaf pin alone and cannot enroll by ticket (§8.2) until
+> its operator rotates. `phux workload authority --rotate` is the rotation:
+> a new CA and a server certificate under it, with no cross-signing, so
+> every client re-pairs.
 
 The CA's key file SHALL persist at `<state-dir>/workload-ca.key` with
 the CA certificate at `<state-dir>/workload-ca.pem`. The containing
@@ -217,10 +217,14 @@ grant before any stateful frame is processed.
   paired QUIC listener does; the bearer preamble then rides inside. The
   server tells the session from a plain bearer preamble by its first byte
   (`0x16` opens a TLS record; a preamble's big-endian length starts
-  `0x00`). Under `paired` a bridged consumer is admitted only this way; the
-  relay forwards ciphertext and learns nothing new
-  ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
-  item 5). The same session, with the same first-byte rule, rides a
+  `0x00`). In every posture a bridged consumer is admitted only this way: a
+  server MUST refuse a relayed stream whose first byte is not `0x16` before
+  reading further, and a client MUST NOT dial a relay route without the
+  server's CA pinned for it, nor write anything before the inner handshake
+  verifies the server. The relay forwards ciphertext and holds no session
+  key ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
+  item 5, [ADR-0180](../adr/0180-the-relay-is-blind.md)). The same session,
+  with the same first-byte rule, rides a
   WebTransport stream (item 6); a WebTransport `CONNECT` still carries the
   bearer, so nothing follows the handshake there.
 
@@ -435,9 +439,8 @@ the same verbs.
 > placed in its Group when it is journaled. An unowned local
 > `SPAWN_RESOURCE` needs `CREATE` on the local host, because its payload
 > `GroupId` is the opaque key only the local host contains (§5.1). The
-> owner's grant (`local`, the §8 transitional posture, and the owner socket
-> under `paired`) admits every frame and filters nothing, leaving the
-> handlers' own checks as its only limit.
+> owner's grant (the owner socket, in either mode) admits every frame and
+> filters nothing, leaving the handlers' own checks as its only limit.
 
 The terminal protocol adds no workload frame and no HELLO workload field:
 HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE
@@ -639,8 +642,8 @@ one `SIGNAL` need is covered only by a held clause.
   decider as actor for `approved` and `denied`, and no actor for `expired`
   and `withdrawn`.
 
-The owner's grant never holds, so a `local` or transitional server never
-holds anything. No grant holds anything unless its registry record spells
+The owner's grant never holds, so a `local` server never holds anything.
+No grant holds anything unless its registry record spells
 `?signal`.
 
 ## 7. Denial, expiry, and live revocation
@@ -749,27 +752,31 @@ non-UDS listener is a startup error. `paired` with missing, malformed, or unsafe
 CA or registry material is a startup error. Runtime corruption after a
 successful start applies the empty-snapshot revocation rule in §7.
 
-<!-- impl-status: partial; probe: PolicyPosture,warns_remote_owner_grant,UnsetWithWorkloadAuthority -->
-> **Status: partial (2026-10-07).** The reference server reads the mode from
-> `[policy] mode`, enforces `local`, `paired`, and their startup errors, and
-> treats `PHUX_WORKLOAD_MTLS` with no mode as `paired`. A CA or registry
-> location named by `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, or
-> `PHUX_WORKLOAD_KEYS` with no mode is a startup error. A registry at the
-> default location is not "configured" in this sense: `phux host add`
-> (§8.1) enrolls into it over ssh before the host opts in to `paired`, so
-> its presence alone refuses nothing. The server keeps one transitional
-> posture the table above does not name: no mode beside a non-UDS listener
-> or relay connector starts, logs a warning once, and gives every admitted
-> connection the owner's full grant, as before enforcement existed. Every
-> remote entry point can now carry a workload certificate under `paired`
-> (QUIC and WSS in their handshakes; relays and WebTransport end to end,
-> ADR-0154), but making that combination a startup error still strands
-> deployed clients that cannot present one yet: phones whose app has not
-> adopted enrollment (§8.2), consumers paired through a relay before relay
-> links carried the server's CA, and browsers (phux-web holds no key). The
-> posture ends, and this marker goes, once those have enrolled. `phux host add` remotes, including Cockpit's,
-> already enroll and present a client certificate (§8.1). Under `local` the
-> server never auto-binds the overlay listener and refuses `OPEN_LISTENER`.
+A server resumed across a graceful upgrade SHALL NOT exit for a mode error:
+the previous process is gone, and exiting would end every terminal it handed
+over. It runs `local` with no non-UDS listener or relay connector bound, and
+reports each listener it left unbound with `disabled_reason:
+"policy_mode_refused"` ([L1.md](./L1.md) §9.1 remote-listeners report). A
+retired-setting error alone is ignored when the rest of the configuration
+resolves.
+
+<!-- impl-status: shipped; probe: PolicyPosture,UnsetWithRemoteListener,UnsetWithWorkloadAuthority,RetiredWorkloadMtlsEnv -->
+> **Status: shipped (ADR-0179).** The reference server reads the mode from
+> `[policy] mode` and enforces `local`, `paired`, and every startup error
+> above. With no mode it is `local`: a remote listener (`--listen`,
+> `--quic`, `--webtransport`, or their environment variables) or a
+> `[[connector]]` refuses to start, as does a CA or registry location named
+> by `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, or `PHUX_WORKLOAD_KEYS`. A
+> registry at the default location is not "configured" in this sense:
+> `phux host add` (§8.1) enrolls into it over ssh before the host opts in to
+> `paired`, so its presence alone refuses nothing. The retired opt-in
+> `PHUX_WORKLOAD_MTLS` refuses to start and names `[policy] mode`. The
+> overlay listener is auto-bound only under `paired`, and `local` refuses
+> `OPEN_LISTENER`. An embedder that injects its own engine through
+> `ServerConfig::policy_engine` (ADR-0072) decides every HELLO itself; `phux
+> server` never does, so no configuration reaches that. A `phux upgrade`
+> into a refused configuration keeps its panes as above and logs the
+> refusal; setting the mode and upgrading again binds the listeners.
 
 TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports
@@ -909,9 +916,11 @@ a wrong version, an out-of-bounds length, truncation, and trailing bytes.
 
 The client generates its key and keeps it: on a phone in the platform
 keystore, signing through the binding for the CSR and every later handshake.
-It dials trusting the server by the link's pins (`ca` when present, ADR-0153)
-and treats the reply as §8.1 step 3 does, and additionally refuses a CA other
-than the pinned one. The private key never appears in the link, the request,
+The link SHALL carry the server's CA (`ca`, ADR-0153), and a client SHALL
+refuse to enroll without it rather than learn the CA from the reply
+(ADR-0179); a server whose certificate no CA issued mints no ticket. The
+client dials trusting the server by that pin, treats the reply as §8.1 step 3
+does, and additionally refuses a CA other than the pinned one. The private key never appears in the link, the request,
 or any log; the ticket is a secret like the bearer token and is shown once.
 
 An unspent ticket may be revoked by its handle (`t-` and eight lowercase

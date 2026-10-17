@@ -12,8 +12,8 @@
 //!   only when the grant may `OBSERVE` its Terminal (or the Terminal's
 //!   parent); an event about no Terminal is server-global and needs Global.
 //!
-//! The owner's grant sees everything, so a `local` or transitional server, and
-//! the owner socket under `paired`, filter nothing.
+//! The owner's grant sees everything, so the owner socket filters nothing in
+//! either mode.
 
 use phux_protocol::ids::{ResourceId as WireResourceId, ResourceKey};
 use phux_protocol::kinds::Verb;

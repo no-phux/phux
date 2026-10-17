@@ -1,7 +1,7 @@
 //! Workload identity through a relay (ADR-0154 item 5): the consumer runs
 //! TLS end to end with the server inside the relayed stream, so its
 //! certificate reaches the server although the relay terminates the outer
-//! TLS. Under `paired` that is the only way in.
+//! TLS. That session is the only way in, in every posture (ADR-0180).
 //!
 //! ```text
 //! consumer ==TLS(relay pin)==> relay <== connector (in server)
@@ -30,7 +30,6 @@ use tokio::time::{sleep, timeout};
 
 const ROUTE: &str = "inner-test";
 const TUNNEL_TOKEN: [u8; 32] = [0x31; 32];
-const CONSUMER_TOKEN: [u8; 32] = [0x42; 32];
 
 struct Topology {
     _dir: TempDir,
@@ -38,6 +37,7 @@ struct Topology {
     relay_pin: String,
     paths: WorkloadPaths,
     authority: String,
+    consumer_token: Vec<u8>,
     stop_server: oneshot::Sender<()>,
     server: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 }
@@ -50,7 +50,9 @@ fn write_token(path: &Path, token: &[u8]) {
 
 impl Topology {
     /// A relay, and behind it a server whose certificate its workload CA
-    /// issued; `paired` puts the server in `paired` policy mode.
+    /// issued; `paired` puts the server in `paired` policy mode, and
+    /// otherwise it runs an embedder engine (ADR-0072), the only way a
+    /// connector serves without `paired` (ADR-0179).
     fn start(paired: bool) -> Self {
         let dir = TempDir::new().expect("tempdir");
         std::fs::set_permissions(
@@ -65,8 +67,7 @@ impl Topology {
         )
         .expect("relay route");
         write_token(&d.join("connector-token"), &TUNNEL_TOKEN);
-        write_token(&d.join("consumer-tokens"), &CONSUMER_TOKEN);
-        phux_server::auth::migrate_legacy_store(&d.join("consumer-tokens")).expect("migrate");
+        let consumer_token = phux_server_testkit::embedder::mint_bearer(&d.join("consumer-tokens"));
         let paths = WorkloadPaths::with_overrides(
             Some(d.join("workload-ca.pem")),
             Some(d.join("workload-ca.key")),
@@ -92,15 +93,15 @@ impl Topology {
             token_file: Some(d.join("connector-token")),
             cert_fingerprint: Some(relay_pin.clone()),
         };
-        let cfg = ServerConfig {
+        let mut cfg = ServerConfig {
             socket_path: d.join("phux.sock"),
+            policy_mode: paired.then_some(phux_config::PolicyMode::Paired),
             env: phux_server::ServerEnv {
                 ws_tokens: Some(d.join("consumer-tokens")),
                 tls_cert: Some(cert),
                 tls_key: Some(key),
                 // Naming the authority without `paired` refuses to start
                 // (workload-auth §8), so only the paired server names it.
-                workload_mtls: paired,
                 workload_ca: paired.then(|| paths.ca_cert.clone()),
                 workload_ca_key: paired.then(|| paths.ca_key.clone()),
                 workload_keys: paired.then(|| paths.registry.clone()),
@@ -108,6 +109,9 @@ impl Topology {
             },
             ..ServerConfig::with_default_socket()
         };
+        if !paired {
+            phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
+        }
         let (stop_server, stopped) = oneshot::channel();
         let server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)
@@ -123,6 +127,7 @@ impl Topology {
             relay_pin,
             paths,
             authority,
+            consumer_token,
             stop_server,
             server,
         }
@@ -132,7 +137,7 @@ impl Topology {
         QuicDial {
             addr: self.relay.addr,
             server_name: ROUTE.to_owned(),
-            token: Some(CONSUMER_TOKEN.to_vec()),
+            token: Some(self.consumer_token.clone()),
             trust: CertTrust::Pinned(self.relay_pin.clone()),
             identity: Some(TlsClientIdentity::None),
             inner,
@@ -149,10 +154,7 @@ impl Topology {
 /// The end-to-end session to the server behind [`ROUTE`], pinning `ca`.
 fn inner(ca: &str, identity: TlsClientIdentity) -> InnerTls {
     InnerTls {
-        trust: CertTrust::Authority {
-            ca: ca.to_owned(),
-            leaf: None,
-        },
+        trust: CertTrust::Authority { ca: ca.to_owned() },
         identity,
         server_name: ROUTE.to_owned(),
     }
@@ -236,16 +238,22 @@ fn ticket(paths: &WorkloadPaths) -> Vec<u8> {
     hex::decode(minted.secret_hex).expect("hex")
 }
 
-/// Outside `paired`, an inner session pinning the server's CA is admitted
-/// beside the plain relayed stream, and a wrong CA is refused by name.
+/// Even under an embedder engine, which admits a bearer alone, the plain
+/// relayed stream is refused (ADR-0180: the relay would read it); an inner
+/// session pinning the server's CA is admitted, and a wrong CA is refused by
+/// name.
 #[test]
 fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(false);
-        let plain = first_answer(&t.plan(None))
-            .await
-            .expect("plain still admitted");
-        assert!(matches!(plain, FrameKind::HelloOk { .. }), "{plain:?}");
+        wait_for_route(&t).await;
+        assert!(
+            !matches!(
+                first_answer(&t.plan(None)).await,
+                Ok(FrameKind::HelloOk { .. })
+            ),
+            "a plain bridged consumer is refused in every posture"
+        );
         let session = inner(&t.authority, TlsClientIdentity::None);
         let answer = first_answer(&t.plan(Some(session)))
             .await

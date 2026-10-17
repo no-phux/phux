@@ -85,11 +85,12 @@ pub(super) fn adopt_config_reload(
             // Keep the old config and surface the failure as a toast.
             tracing::warn!(error = %msg, "config reload failed; keeping previous config");
             overlays.push(Box::new(crate::render::overlay::ToastOverlay::new(
-                "Config reload failed - previous config kept",
+                "Config reload failed",
                 vec![
                     msg,
                     String::new(),
-                    "Fix the file and reload again (run: phux config check)".to_owned(),
+                    "Previous config kept. Fix the file and reload again (run: phux config check)."
+                        .to_owned(),
                 ],
                 &settings.theme,
             )));

@@ -1374,6 +1374,10 @@ mod tests {
                         .with_connection_cap(2);
                 let addr = listener.local_addr().unwrap();
                 let state = crate::state::SharedState::new();
+                // A transport test: an embedder engine admits the peer (ADR-0072).
+                state.with_mut(|s| {
+                    s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                });
                 let root_token = CancellationToken::new();
                 let accept_state = state.clone();
                 let accept_token = root_token.clone();
@@ -1772,6 +1776,10 @@ mod tests {
             .run_until(async {
                 let (listener, addr, token_hex, tokens) = token_listener().await;
                 let state = crate::state::SharedState::new();
+                // A transport test: an embedder engine admits the peer (ADR-0072).
+                state.with_mut(|s| {
+                    s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                });
                 let root_token = CancellationToken::new();
                 crate::runtime::commands::seed_session_with_actor(
                     &state,

@@ -493,11 +493,20 @@ pub(crate) enum Command {
         #[usage(long, value_name = "FP", help_heading = "Direct dial")]
         cert_fingerprint: Option<String>,
 
-        /// TLS server name (SNI) to offer the remote listener. QUIC defaults
-        /// to `localhost`; WebSocket defaults to the URL host. Requires
-        /// `--quic` or `--ws`.
+        /// TLS server name (SNI) to offer the remote listener. With `--quic`
+        /// it names a relay route: `--quic` is the relay, `--cert-fingerprint`
+        /// its pin, and `--ca-fingerprint` is required. WebSocket defaults
+        /// to the URL host. Requires `--quic` or `--ws`.
         #[usage(long, value_name = "NAME", help_heading = "Direct dial")]
         tls_server_name: Option<String>,
+
+        /// The certificate authority of the server behind a relay route
+        /// (`sha256:` and 64 hex digits, the `ca_fingerprint` `phux pair
+        /// --relay-route` prints). The session runs end to end with that
+        /// server inside the relayed stream, so the relay sees only
+        /// ciphertext. Requires `--quic` and `--tls-server-name`.
+        #[usage(long, value_name = "SHA256", help_heading = "Direct dial")]
+        ca_fingerprint: Option<String>,
 
         /// Attach to a phux server on another machine, ssh-style:
         /// `--remote me@mini`. Resolves to a registered host when there is
@@ -642,26 +651,29 @@ pub(crate) enum Command {
         no_seed: bool,
 
         /// Also accept WebSocket clients on this `HOST:PORT` (the UDS stays
-        /// on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local
-        /// browser dev; any routable address (e.g. `0.0.0.0:8787`)
-        /// auto-provisions TLS and requires a `phux pair` token.
+        /// on). Needs `[policy] mode = "paired"`, without which the server
+        /// refuses to start: every connection then presents an enrolled
+        /// client certificate over TLS, and a routable address (e.g.
+        /// `0.0.0.0:8787`) also requires a `phux pair` token.
         /// Overrides `$PHUX_WS_ADDR`.
         #[usage(long, value_name = "HOST:PORT")]
         listen: Option<std::net::SocketAddr>,
 
         /// Also accept QUIC clients on this `HOST:PORT` (the UDS stays on).
-        /// QUIC is always TLS 1.3-encrypted; a loopback address skips token
-        /// auth (local dev), while any routable address requires a `phux pair`
-        /// token sent as the stream's opening preamble.
-        /// Overrides `$PHUX_QUIC_ADDR`.
+        /// Needs `[policy] mode = "paired"`: every connection presents an
+        /// enrolled client certificate. QUIC is always TLS 1.3-encrypted; a
+        /// routable address also requires a `phux pair` token sent as the
+        /// stream's opening preamble. Overrides `$PHUX_QUIC_ADDR`.
         #[usage(long, value_name = "HOST:PORT")]
         quic: Option<std::net::SocketAddr>,
 
         /// Also accept WebTransport (HTTP/3 over QUIC) clients on this
         /// `HOST:PORT` (the UDS stays on) — the browser's door to QUIC-class
         /// transport; the browser client dials it, falling back to WebSocket.
-        /// Always TLS 1.3-encrypted; a loopback address skips token auth
-        /// (local dev), while any routable address requires a `phux pair`
+        /// Needs `[policy] mode = "paired"`, under which a session is
+        /// admitted only through an end-to-end TLS session presenting an
+        /// enrolled certificate, which a browser cannot open yet. Always TLS
+        /// 1.3-encrypted; a routable address also requires a `phux pair`
         /// token carried in the CONNECT request (`Authorization: Bearer`
         /// from native consumers, `?token=<hex>` on the session URL from
         /// browsers). Overrides `$PHUX_WT_ADDR`.
@@ -671,8 +683,9 @@ pub(crate) enum Command {
         /// Dial one relay outbound on `HOST:PORT`. If a matching
         /// `[[connector]]` entry exists, its token file and certificate pin
         /// are used; otherwise only a loopback endpoint is accepted for
-        /// unauthenticated development. Without this flag, every configured
-        /// connector is supervised independently.
+        /// unauthenticated development. Needs `[policy] mode = "paired"`.
+        /// Without this flag, every configured connector is supervised
+        /// independently.
         #[usage(long, value_name = "HOST:PORT")]
         connect: Option<String>,
 
@@ -2466,11 +2479,6 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         #[usage(long, global)]
         json: bool,
 
-        /// Explicitly convert legacy anonymous token lines before pairing.
-        /// Conversion preserves each bearer secret but stores only its verifier.
-        #[usage(long)]
-        migrate_legacy: bool,
-
         /// When minting, revoke any live credential whose bearer matches this
         /// hex token first. `phux host add` passes the previously enrolled
         /// token so re-enrollment does not leave abandoned live credentials.
@@ -2741,7 +2749,9 @@ pub(crate) enum ServiceAction {
     Install {
         /// Accept QUIC clients on this `HOST:PORT`. A routable address
         /// (e.g. `0.0.0.0:8788`) engages TLS and requires a `phux pair`
-        /// token. Prefer this over `--listen` where UDP is open.
+        /// token. Prefer this over `--listen` where UDP is open. A remote
+        /// listener needs `[policy] mode = "paired"`: with no mode set,
+        /// install writes it; `local` is refused.
         // Parsed as `SocketAddr` so a bad address fails here, not at the
         // supervised server's first start.
         #[usage(long, value_name = "HOST:PORT")]

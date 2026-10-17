@@ -36,8 +36,6 @@ pub trait DeviceSigner: Send + Sync {
 pub struct EnrolledDevice {
     /// The issued chain, PEM (public): store it beside the device key.
     pub chain_pem: String,
-    /// The `sha256:` fingerprint of the CA that issued it: pin it.
-    pub authority: String,
     /// What a dial presents from now on.
     pub identity: HeldIdentity,
 }
@@ -91,9 +89,13 @@ pub async fn enroll_target(
         .inner
         .as_ref()
         .map_or(&plan.trust, |inner| &inner.trust);
-    let pinned = match server_trust {
-        CertTrust::Authority { ca, .. } => Some(ca.clone()),
-        _ => None,
+    // The CA is pinned at pairing (the link's `ca`); enrollment never learns
+    // it from the reply (ADR-0179).
+    let CertTrust::Authority { ca: pinned } = server_trust else {
+        return Err(format!(
+            "{name}: enrollment needs the server's certificate authority pinned (the link's \
+             `ca`); pair again with a link `phux pair --enroll` printed"
+        ));
     };
     let key = DeviceKeyData::of(signer.as_ref())?;
     let csr = device_csr(&key, Arc::clone(&signer))?;
@@ -109,16 +111,14 @@ pub async fn enroll_target(
         .map_err(|_| crate::dial::timed_out(name))?
         .map_err(|err| crate::dial::dial_message(name, &err))?;
     let spki = rcgen::PublicKeyData::subject_public_key_info(&key);
-    let chain = check_issued_chain(&chain_pem, &spki, pinned.as_deref())
+    let chain = check_issued_chain(&chain_pem, &spki, Some(pinned.as_str()))
         .map_err(|reason| format!("{name}: the issued certificate was refused: {reason}"))?;
-    let authority = phux_dial::tls::authority_fingerprint(&chain[1]);
     Ok(EnrolledDevice {
         identity: HeldIdentity {
             chain,
             key: Arc::new(DeviceSigningKey(signer)),
         },
         chain_pem,
-        authority,
     })
 }
 

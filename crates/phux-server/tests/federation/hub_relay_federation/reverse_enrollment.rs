@@ -173,10 +173,7 @@ async fn terminal_hello(
         addr: quic,
         server_name: "127.0.0.1".to_owned(),
         token: None,
-        trust: CertTrust::Authority {
-            ca: ca.to_owned(),
-            leaf: None,
-        },
+        trust: CertTrust::Authority { ca: ca.to_owned() },
         identity: Some(identity),
         inner: None,
     };
@@ -350,7 +347,6 @@ fn one_live_credential_per_name_and_unknown_names_are_refused() {
             token: None,
             trust: CertTrust::Authority {
                 ca: stray_code.ca.clone(),
-                leaf: None,
             },
             identity: Some(TlsClientIdentity::PemFiles {
                 certificate: stray.entry.client_cert.clone(),

@@ -14,7 +14,9 @@ fn socket_path(state: &Path) -> PathBuf {
 }
 
 /// A real `phux server` on the test's socket with a secure loopback wss
-/// listener: the bound remote listener a mint requires. Killed on drop.
+/// listener: the bound remote listener a mint requires. It runs `paired`,
+/// the only mode that serves a remote listener (ADR-0179), from a config
+/// beside the state dir. Killed on drop.
 struct Server {
     child: Child,
     socket: PathBuf,
@@ -25,9 +27,12 @@ struct Server {
 impl Server {
     fn start(state: &Path, tokens: Option<&Path>) -> Self {
         let socket = socket_path(state);
+        let config = state.with_file_name("config");
+        crate::paired::write_paired_policy(&config.join("phux/config.toml"));
         let mut command = crate::common::phux_cmd(crate::runner::phux_bin());
         command
             .env("XDG_STATE_HOME", state)
+            .env("XDG_CONFIG_HOME", &config)
             .env("PHUX_TAILSCALE", "phux-test-no-such-overlay-command")
             .env("PHUX_NO_AUTO_LISTEN", "1")
             // The routable path (TLS + bearer token) on loopback.
@@ -356,15 +361,16 @@ fn a_mint_with_no_live_server_mints_nothing() {
     assert!(!out.status.success());
     assert!(!tokens.exists(), "nothing was written to the store");
 
-    // A store that cannot be minted into says so first, in the words
-    // `phux host add` answers by migrating.
+    // A store that cannot be minted into says so first: a legacy one is
+    // refused by name with its remedy, never migrated (ADR-0179).
     std::fs::write(&tokens, format!("{}\n", "ab".repeat(32))).unwrap();
     std::fs::set_permissions(&tokens, std::fs::Permissions::from_mode(0o600)).unwrap();
     let out = phux(&state, Some(&tokens), &["pair", "--json"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
     assert!(
-        stderr.contains("failed to mint token: legacy token store requires explicit migration"),
+        stderr.contains("failed to mint token: unsupported legacy token store")
+            && stderr.contains("remove it"),
         "{stderr}"
     );
 }

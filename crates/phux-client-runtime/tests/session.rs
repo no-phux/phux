@@ -260,15 +260,17 @@ fn a_corked_batch_of_requests_is_answered_in_order() {
 }
 
 /// A server on `socket` that also listens on loopback QUIC; returns the
-/// address the listener bound.
+/// address the listener bound. `tokens` names a bearer store the listener
+/// then requires, as an enrolled host's does.
 async fn quic_server(
     tmp: &TempDir,
     socket: &Path,
+    tokens: Option<&Path>,
 ) -> (oneshot::Sender<()>, ServerTask, SocketAddr) {
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
     phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("self-signed cert");
-    let config = ServerConfig {
+    let mut config = ServerConfig {
         socket_path: socket.to_path_buf(),
         pre_seeded_session: Some("main".to_owned()),
         seed_with_pty: false,
@@ -277,10 +279,15 @@ async fn quic_server(
         env: ServerEnv {
             tls_cert: Some(cert),
             tls_key: Some(key),
+            ws_secure: tokens.is_some(),
+            ws_tokens: tokens.map(Path::to_path_buf),
             ..ServerEnv::default()
         },
         ..ServerConfig::with_default_socket()
     };
+    // A transport test: an embedder engine admits the loopback dial
+    // (ADR-0072); no `phux server` mode does (ADR-0179).
+    phux_server_testkit::embedder::embed_owner_engine(&mut config);
     let (shutdown, stopped) = oneshot::channel::<()>();
     let server = tokio::task::spawn_local(async move {
         ServerRuntime::new(config)
@@ -302,7 +309,7 @@ fn a_quic_session_binds_routes_and_unbinds_terminal_streams() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("q.sock");
-        let (shutdown, server, addr) = quic_server(&tmp, &socket).await;
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, None).await;
         let target = Target::quic(addr.to_string());
         let mut session = Session::connect_target(&target, CLIENT.to_owned(), control_caps())
             .await
@@ -362,13 +369,14 @@ fn a_websocket_session_round_trips() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("w.sock");
-        let config = ServerConfig {
+        let mut config = ServerConfig {
             socket_path: socket.clone(),
             pre_seeded_session: Some("main".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..ServerConfig::with_default_socket()
         };
+        phux_server_testkit::embedder::embed_owner_engine(&mut config);
         let (shutdown, stopped) = oneshot::channel::<()>();
         let server = tokio::task::spawn_local(async move {
             ServerRuntime::new(config)
@@ -401,6 +409,86 @@ fn a_websocket_session_round_trips() {
             }
         }
         session.shutdown().await;
+        stop(shutdown, server).await;
+    });
+}
+
+/// A QUIC listener refusing the bearer token closes the connection with its
+/// auth code after the stream opened. The read that sees it is a refusal the
+/// caller stops on and words as one, not a lost connection it redials.
+#[test]
+fn a_refused_quic_token_is_a_fatal_refusal() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("t.sock");
+        let tokens = tmp.path().join("tokens");
+        phux_server::auth::mint_token(&tokens).expect("a credential the wrong token is not");
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, Some(&tokens)).await;
+        let mut target = Target::quic(addr.to_string());
+        target.token = Some("ab".repeat(32));
+        let refused = Session::connect_target(&target, CLIENT.to_owned(), control_caps()).await;
+        let error = refused.expect_err("an unknown token");
+        assert!(error.is_fatal_refusal(), "{error}");
+        assert!(!error.to_string().contains("connection lost"), "{error}");
+        stop(shutdown, server).await;
+    });
+}
+
+/// The reconnecting runtime, attached over QUIC, redials after its token is
+/// revoked: the refusal ends the session with a "re-pair" message instead of
+/// walking the backoff ladder forever.
+#[test]
+fn a_revoked_quic_token_ends_an_attached_runtime() {
+    use phux_client_runtime::control::{ControlOptions, Status};
+    use phux_client_runtime::reconnect::Ladder;
+    use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Runtime};
+    use phux_protocol::wire::frame::AttachTarget;
+
+    async fn wait_for(client: &Client, what: &str, done: impl Fn(Status) -> bool) {
+        let deadline = Instant::now() + STEP;
+        while !done(client.status()) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {:?} {:?}",
+                client.status(),
+                client.last_error()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("r.sock");
+        let tokens = tmp.path().join("tokens");
+        let minted = phux_server::auth::mint_token(&tokens).expect("a credential");
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, Some(&tokens)).await;
+        let mut target = Target::quic(addr.to_string());
+        target.name = "mini".to_owned();
+        target.token = Some(minted.secret().to_owned());
+        let options = ClientOptions {
+            control: ControlOptions {
+                client_name: CLIENT.to_owned(),
+                attach: Some(AttachTarget::ByName("main".to_owned())),
+                viewport: (40, 8),
+                ..ControlOptions::default()
+            },
+            connect: ConnectOptions {
+                ladder: Ladder::AGENT_VERB,
+                ..ConnectOptions::default()
+            },
+        };
+        let client = Runtime::connect(target, options).expect("connect");
+        wait_for(&client, "the attach", |status| status == Status::Attached).await;
+
+        phux_server::auth::revoke_credential(&tokens, &minted.id).expect("revoke");
+        client.resync();
+        wait_for(&client, "the refusal", Status::is_terminal).await;
+        assert_eq!(client.status(), Status::Failed);
+        let error = client.last_error().expect("a refusal message");
+        assert!(error.contains("re-pair"), "{error}");
+        client.close();
+        drop(client);
         stop(shutdown, server).await;
     });
 }

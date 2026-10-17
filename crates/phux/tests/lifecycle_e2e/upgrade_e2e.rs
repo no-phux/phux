@@ -8,6 +8,10 @@
 
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -435,5 +439,66 @@ fn program_status_and_inheritance_survive_graceful_upgrade() {
                 && shown["program_status"]["active"]["app"].is_null()
         }),
         "replacement of the root must remove inherited app after upgrade"
+    );
+}
+
+/// An upgrade into a configuration a cold start refuses (a remote listener
+/// with no `[policy] mode`, ADR-0179) must not end the panes: the resumed
+/// image keeps the pane's child, serves the owner socket, leaves the
+/// listener unbound, and says why in the listener report.
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn an_upgrade_into_a_refused_policy_keeps_the_panes() {
+    let config = tempfile::TempDir::new().expect("config dir");
+    let config_toml = config.path().join("phux/config.toml");
+    paired::write_paired_policy(&config_toml);
+    let server = ServerGuard::builder("upgpol")
+        .seed_command("exec sleep 600")
+        .env("XDG_CONFIG_HOME", config.path())
+        .start_with(|cmd| {
+            cmd.args(["--quic", listeners::LOOPBACK_ANY_PORT]);
+        });
+    let server_pid = server.pid();
+    // Under `paired` the listener binds.
+    listeners::bound_listener_addr(&server.socket, listeners::RemoteListenerTransport::Quic);
+    let child_pid = {
+        let mut found = None;
+        assert!(
+            poll(Duration::from_secs(10), || {
+                found = child_of(server_pid);
+                found.is_some()
+            }),
+            "the seed pane's child should spawn"
+        );
+        found.unwrap()
+    };
+
+    // The operator's config loses its mode: what every host enrolled before
+    // `paired` existed looks like to this build.
+    std::fs::write(&config_toml, "").expect("drop the mode");
+    assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
+
+    assert!(
+        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+    assert!(alive(server_pid), "the server re-execed in place");
+    assert!(alive(child_pid), "the pane's child survived the upgrade");
+    let report = listeners::listener_report(&server.socket);
+    let slot = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == listeners::RemoteListenerTransport::Quic)
+        .unwrap_or_else(|| panic!("no quic slot in {report:?}"));
+    assert!(!slot.bound, "the refused listener stays unbound: {slot:?}");
+    assert_eq!(
+        slot.disabled_reason,
+        Some(phux_protocol::wire::ListenerDisabledReason::PolicyModeRefused),
+        "{slot:?}"
+    );
+    assert_eq!(
+        slot.addr.as_deref(),
+        Some(listeners::LOOPBACK_ANY_PORT),
+        "{slot:?}"
     );
 }

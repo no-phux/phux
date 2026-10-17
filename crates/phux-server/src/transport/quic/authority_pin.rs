@@ -1,8 +1,7 @@
 //! The server identity the workload CA issues, pinned by a real client over a
 //! real QUIC listener (ADR-0153, `docs/spec/workload-auth.md` §2).
 //!
-//! - A client pinning the CA connects; one pinning only the leaf learns the
-//!   CA on that first authenticated connection.
+//! - A client pinning the CA connects.
 //! - **CA swap.** After `phux workload authority --rotate` the server
 //!   presents a leaf from a new CA: the client pinning the old one is
 //!   refused with an authority change naming both fingerprints, never
@@ -18,10 +17,9 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use phux_dial::{AuthorityLearner, CertTrust, DialError, QuicDial};
+use phux_dial::{CertTrust, DialError, QuicDial};
 
 use super::super::Incoming as _;
 use super::{QuicAdmission, QuicListener};
@@ -119,7 +117,6 @@ async fn a_rotated_authority_is_refused_by_name_until_the_client_re_pairs() {
     let old_leaf = state.leaf();
     let pinned = CertTrust::Authority {
         ca: original.clone(),
-        leaf: Some(old_leaf.clone()),
     };
     let (listener, addr) = state.listener();
     dial(&listener, addr, pinned.clone())
@@ -153,44 +150,14 @@ async fn a_rotated_authority_is_refused_by_name_until_the_client_re_pairs() {
             .is_err(),
         "a stale leaf pin is refused"
     );
-    dial(
-        &listener,
-        addr,
-        CertTrust::Authority {
-            ca: rotated,
-            leaf: None,
-        },
-    )
-    .await
-    .expect("re-paired: the new authority is admitted");
-}
-
-#[tokio::test]
-async fn a_leaf_pinned_client_learns_the_authority_on_its_first_connection() {
-    let state = State::provisioned();
-    let (listener, addr) = state.listener();
-    let learned = Arc::new(Mutex::new(None::<String>));
-    let recorder = {
-        let learned = Arc::clone(&learned);
-        AuthorityLearner::new(move |authority| {
-            *learned.lock().unwrap() = Some(authority.to_owned());
-        })
-    };
-    dial(
-        &listener,
-        addr,
-        CertTrust::PinnedLearning {
-            leaf: state.leaf(),
-            learn: recorder,
-        },
-    )
-    .await
-    .expect("the pinned leaf");
-    assert_eq!(*learned.lock().unwrap(), Some(state.authority()));
+    dial(&listener, addr, CertTrust::Authority { ca: rotated })
+        .await
+        .expect("re-paired: the new authority is admitted");
 }
 
 /// A server whose pair predates ADR-0153 keeps its self-signed leaf: the
-/// existing pin keeps working, and there is no authority to learn.
+/// leaf pin a device already holds keeps working, and a client pinning the
+/// CA is refused rather than falling back to that leaf (ADR-0179).
 #[tokio::test]
 async fn an_existing_self_signed_pair_is_never_re_issued() {
     let state = State::provisioned();
@@ -209,4 +176,9 @@ async fn an_existing_self_signed_pair_is_never_re_issued() {
     dial(&listener, addr, CertTrust::Pinned(legacy_leaf))
         .await
         .expect("the pin a device already holds");
+    let authority = crate::workload::ca_fingerprint(&state.paths.ca_cert).unwrap();
+    match dial(&listener, addr, CertTrust::Authority { ca: authority }).await {
+        Err(DialError::AuthorityChanged(change)) => assert_eq!(change.presented, None),
+        other => panic!("a CA pin never accepts a leaf its CA did not issue, got {other:?}"),
+    }
 }
