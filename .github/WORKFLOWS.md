@@ -10,7 +10,7 @@ the known problems, and the daily health digest live in the private
 
 | Lane | Workflows | Fires on |
 |---|---|---|
-| PR validation | `ci`, `conventional-commits`, `web-check`, `native-setup` | every non-draft pull request, and `main` |
+| PR validation | `ci`, `conventional-commits`, `web-check`, `native-setup`, `desktop-test` | every non-draft pull request, and `main` |
 | Opt-in checks | `stress` (label or dispatch), `mutation` (dispatch) | never automatically |
 | Release train | `release-please`, `publish` and its leaf workflows: `release`, `desktop-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
 | Site publish | `website-dispatch` | `main` pushes that change docs, installers, or product skills; a published release; manual dispatch. phux.sh itself deploys from `no-phux/website`. |
@@ -23,7 +23,7 @@ The ruleset requires two contexts: **`ci`** and **`commitlint`**.
 `ci` is an aggregate job. It depends on every lane inside `ci.yml` and
 applies the skip policy: the classify and workflow-gate jobs must succeed,
 while the product lanes may succeed *or* skip. That is why
-`web-check` and `native-setup` can self-skip without blocking a merge, and
+`web-check`, `native-setup` and `desktop-test` can self-skip without blocking a merge, and
 why adding a new lane means adding it to that aggregate rather than to the
 ruleset. `perf-icount` is one of those lanes: the aggregate fails when it
 fails, and a path-filtered skip is still green. `perf-nightly` is not in
@@ -54,7 +54,7 @@ Its concurrency group includes the commit SHA, so every
 them, and `release-please` refuses to build a tag until it finds a
 successful run at that exact SHA.
 
-`web-check` and `native-setup` use the same SHA-keyed pattern as `ci` on
+`web-check`, `native-setup` and `desktop-test` use the same SHA-keyed pattern as `ci` on
 `main`, so consecutive merges do not cancel each other's validation.
 
 Publishing lanes set `cancel-in-progress: false` so an upload is never

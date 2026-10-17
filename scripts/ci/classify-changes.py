@@ -4,7 +4,9 @@
 `tests/`, `benches/` and `examples/` are not binary inputs, so they do not
 rebuild the browser or native setup.
 Browser workspaces stay separate. Native means the *clean setup assurance*
-lane, not all native Rust. Workflow orchestration is compile-free.
+lane, not all native Rust. Desktop is the GPUI host crate under
+clients/desktop/native: its own Cargo workspace and lock, built against the
+root crates it names by path. Workflow orchestration is compile-free.
 
 `test_filterset` is still the PR rdeps expression for a library change
 (phux-14r7). Empty means the full pool. `unit_mode=narrow` is a different
@@ -18,11 +20,11 @@ import re
 import sys
 import tomllib
 
-SURFACES = ("phux", "web", "web_engine", "integrations", "native")
+SURFACES = ("phux", "web", "web_engine", "integrations", "native", "desktop")
 ALL = set(SURFACES)
 RUST = {"phux"}
 SHARED = RUST | {"web", "native"}
-ZIG = SHARED | {"web_engine"}
+ZIG = SHARED | {"web_engine", "desktop"}
 
 # Documentation that code or a guard reads as an input. Each row leaves the
 # docs-only fast path and routes like its reader: Rust tests byte-compare the
@@ -63,19 +65,30 @@ ROUTES = DOC_INPUTS + (
       "crates/phux-mission/*", "crates/phux-work/*",
       "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
       "crates/portable-pty-adopt/*"), {"web"}),
+    # The desktop host's path-dependency closure, checked against the
+    # manifests by the test. Every other clients/desktop path is unrouted, so
+    # it requests every surface, desktop included.
+    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
+      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
+      "crates/phux-client-runtime/*", "crates/phux-dial/*"), {"desktop"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
-    (("Cargo.toml", "rust-toolchain.toml", ".cargo/*"), SHARED),
+    # Path crates inherit `workspace = true` keys from the root manifest, and
+    # the desktop build reads the root toolchain and Cargo config. Its lock is
+    # its own, so the root Cargo.lock stays off the desktop lane.
+    (("Cargo.toml", "rust-toolchain.toml", ".cargo/*"), SHARED | {"desktop"}),
     (("Cargo.lock",), SHARED),
     # Setup helpers and just/setup.just are the native-setup assurance lane.
     # They do not rebuild the browser or the root Rust graph.
     (("just/setup.just", "scripts/setup-rust.sh", "scripts/doctor.sh",
       "scripts/test-dev-setup.sh", "scripts/native-smoke.sh"), {"native"}),
+    # desktop-test.yml provisions its runner with the same contributor setup.
+    (("scripts/setup-rust.sh",), {"desktop"}),
     ((".config/zig-toolchain.json",), ZIG),
-    # install-zig.sh is how native-setup and web-engine get libghostty's Zig;
-    # the Nix phux lanes use flake.nix's compiler instead.
+    # install-zig.sh is how native-setup, web-engine and desktop get
+    # libghostty's Zig; the Nix phux lanes use flake.nix's compiler instead.
     (("scripts/install-zig.sh", "scripts/lib/dev-toolchain.sh"),
-     {"native", "web_engine"}),
+     {"native", "web_engine", "desktop"}),
     (("flake.nix", "flake.lock"), RUST | {"web"}),
     (("just/gates.just", "just/test.just", "just/build.just"), {"phux"}),
     # Root justfile is imports + `default`. Product recipes live in just/*.just.
@@ -166,7 +179,7 @@ def crate_for(path, packages):
 
 
 NON_LIBRARY = frozenset({"tests", "benches", "examples"})
-DROP_FOR_NON_LIBRARY = frozenset({"web", "web_engine", "native"})
+DROP_FOR_NON_LIBRARY = frozenset({"web", "web_engine", "native", "desktop"})
 
 
 def non_library_kind(path):

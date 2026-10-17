@@ -1,0 +1,67 @@
+# Native desktop host tests: `just desktop-lint` and `just desktop-test` for
+# clients/desktop/native, a GPUI crate that builds only on macOS. It is its
+# own Cargo workspace, so the root lanes never compile it; before this
+# workflow a desktop regression reached main with nothing red (phux-piaf7).
+#
+# The shared classifier routes it (desktop_needed): the crate's root path
+# dependencies, the toolchain inputs, and every unrouted clients/desktop path.
+# Not part of the required `ci` aggregate, like web-check and native-setup.
+# No build cache: a PR may not write one, and a main entry would compete with
+# the release lanes for the 10 GB budget docs/CI.md describes.
+name: desktop-test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Same rule as ci.yml: pull requests are latest-wins, every main SHA keeps
+  # its own run.
+  group: mini-v1-desktop-test-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      desktop_needed: ${{ steps.detect.outputs.desktop_needed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: detect
+        uses: ./.github/actions/classify-changes
+
+  macos:
+    name: desktop lint and test (macOS arm64)
+    needs: changes
+    if: needs.changes.outputs.desktop_needed == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The contributor setup desktop-release.yml uses: rustup from the pin,
+      # libghostty's Zig, and the Metal compiler GPUI's shaders need.
+      - name: Contributor Rust, Zig and Metal setup
+        run: |
+          set -euo pipefail
+          bash scripts/setup-rust.sh native
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          brew install just
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
+      - name: Desktop lint
+        run: just desktop-lint
+      - name: Desktop tests
+        run: just desktop-test

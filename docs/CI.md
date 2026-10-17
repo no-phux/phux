@@ -23,9 +23,12 @@ jobs, 5 of them macOS. Concurrency groups use the `mini-v1-` namespace, and
 
 [`scripts/ci/classify-changes.py`](../scripts/ci/classify-changes.py) owns the
 routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
-requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`, and
-`web-check.yml` read it through `.github/actions/classify-changes`, with no
-outer path filters. Unknown paths, unavailable history, and empty diffs
+requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
+`web-check.yml`, and `desktop-test.yml` read it through
+`.github/actions/classify-changes`, with no outer path filters.
+`desktop_needed` runs `just desktop-lint` and `just desktop-test` on an
+`xcode-27` runner for the desktop host's path crates, the toolchain inputs,
+and unrouted `clients/desktop` paths; it holds no build cache. Unknown paths, unavailable history, and empty diffs
 request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
 unrelated crates. A `tests/`-only diff builds just that test. Pushes to

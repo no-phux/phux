@@ -175,7 +175,7 @@ def only(paths, read_pair):
 def skip_outputs():
     """Classifier-shaped outputs that request no compile lane."""
     surfaces = (
-        "phux", "web", "web_engine", "integrations", "native",
+        "phux", "web", "web_engine", "integrations", "native", "desktop",
     )
     lines = [f"{name}_needed=false" for name in surfaces]
     lines.extend([
