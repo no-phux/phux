@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, FocusHandle, KeyDownEvent, Pixels, Subscription,
@@ -466,13 +466,6 @@ fn directional(id: &str) -> Option<(&str, Direction)> {
 /// The skin display preferences resolve to.
 fn resolved_skin(prefs: &DisplayPrefs) -> &'static Skin {
     settings::skin_by_id(settings::resolved_id(&prefs.skin_id, prefs.plain))
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 impl Desk {
@@ -3416,7 +3409,7 @@ impl Desk {
             .feed
             .peek_expires()
             .map(|at| at.saturating_duration_since(Instant::now()));
-        let now = unix_ms();
+        let now = crate::connection::now_ms();
         let ages = self.link.iter().flat_map(|link| {
             link.connection
                 .agents

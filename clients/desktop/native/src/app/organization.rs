@@ -110,7 +110,7 @@ impl Organization {
         self.undo = None;
         // An organize run survives a reconnect to the same client: the
         // runtime resends its operations under their ids and reports an
-        // outcome for each. Replacing the client abandons it (`adopt_host`).
+        // outcome for each. Replacing the client abandons it (`adopt_work`).
     }
 }
 
