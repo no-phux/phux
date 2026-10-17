@@ -126,12 +126,19 @@ async fn capture_archive(
         &native_launches,
         bridge::resolve_resume_owner,
     );
+    // The organization records (`None` from a server that predates them):
+    // the sessions' arrangements and typed attributes.
+    let records = phux_client::org::fetch_from_socket(socket_path)
+        .await
+        .map_err(|err| {
+            CaptureError::Failed(format!("could not capture session attributes: {err}"))
+        })?;
     // `GET_STATE` never carries split trees, so each session's is read from
     // its arrangement (or, from an older server or under `--projection`, its
     // L3 layout key), best-effort: missing or undecodable falls back to the
     // pane-list projection.
     let (layouts, layout_warnings) =
-        fetch_session_layouts(socket_path, &snapshot, projection).await;
+        fetch_session_layouts(socket_path, &snapshot, projection, records.as_ref()).await;
     let confirmation = phux_client::state::get_state(socket_path)
         .await
         .map_err(CaptureError::NoServer)?
@@ -148,12 +155,7 @@ async fn capture_archive(
     let mut hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
     let mut directories =
         phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
-    if let Some(records) = phux_client::org::fetch_from_socket(socket_path)
-        .await
-        .map_err(|err| {
-            CaptureError::Failed(format!("could not capture session attributes: {err}"))
-        })?
-    {
+    if let Some(records) = records {
         for session in records.sessions {
             for (key, value) in session.attrs {
                 match key.as_str() {
@@ -293,22 +295,29 @@ type SessionLayouts = HashMap<phux_protocol::ids::SessionId, ArrangementDoc>;
 /// registry projection); under an explicit `--projection` the absence is also
 /// a warning, since the key was probably mistyped.
 ///
-/// Against an `ORGANIZATION` server with no `--projection`, each session's
-/// layout is its typed arrangement ([`fetch_session_arrangements`]). The
-/// `phux.tui.layout/v1/<session>` key is read only from an older server; a
-/// named projection is always its own metadata key (ADR-0161 §8).
+/// Against an `ORGANIZATION` server (`records`, its organization) with no
+/// `--projection`, each session's layout is its typed arrangement
+/// ([`fetch_session_arrangements`]). The `phux.tui.layout/v1/<session>` key
+/// is read only from an older server; a named projection is always its own
+/// metadata key (ADR-0161 §8).
 async fn fetch_session_layouts(
     socket_path: &Path,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     projection: Option<&str>,
+    records: Option<&phux_client::org::OrgInventory>,
 ) -> (SessionLayouts, Vec<String>) {
     let mut layouts = HashMap::new();
     let mut warnings = Vec::new();
     let Ok(mut conn) = Connection::connect(socket_path).await else {
         return (layouts, warnings);
     };
-    if projection.is_none() && phux_client::org::supported(&conn) {
-        return fetch_session_arrangements(&mut conn, snapshot).await;
+    if projection.is_none()
+        && let Some(records) = records
+    {
+        return (
+            fetch_session_arrangements(&mut conn, snapshot, records).await,
+            warnings,
+        );
     }
     let prefix = projection.unwrap_or(phux_client::layout_ops::LAYOUT_KEY);
     let mut request_id = 1u32;
@@ -334,26 +343,21 @@ async fn fetch_session_layouts(
     (layouts, warnings)
 }
 
-/// Each listed session's arrangement record (`ArrangementGet`), read as a
-/// client document over its members' live handles, from one organization
-/// read. A session without a record or arrangement is absent from the map;
-/// failing to read the records at all is a warning and an empty map.
+/// Each listed session's arrangement (`ArrangementGet`) that someone has
+/// arranged, read as a client document over its members' live handles in
+/// `inventory`. A session whose arrangement is empty or was never replaced
+/// (still at its first revision: every session gets one at creation, and
+/// adding a pane never touches it) is absent from the map, so it exports as
+/// the registry projection, as it did when only an arranged session had a
+/// layout key. An unreadable arrangement is absent too.
 async fn fetch_session_arrangements(
     conn: &mut Connection,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-) -> (SessionLayouts, Vec<String>) {
+    inventory: &phux_client::org::OrgInventory,
+) -> SessionLayouts {
     use phux_client::layout::wire::{HandleMap, from_protocol};
     let mut layouts = HashMap::new();
-    let inventory = match phux_client::org::fetch(conn, OrgFilter::All, 1).await {
-        Ok(inventory) => inventory,
-        Err(err) => {
-            let warning = format!("archive export: could not read the session arrangements: {err}");
-            return (layouts, vec![warning]);
-        }
-    };
-    // `fetch` takes one request id per page; the arrangement reads start
-    // well clear of them.
-    let mut request_id = ARRANGEMENT_READ_FIRST_ID;
+    let mut request_id = 0u32;
     for session in &snapshot.sessions {
         let Some(record) = inventory.session_by_live(session.id) else {
             continue;
@@ -365,20 +369,31 @@ async fn fetch_session_arrangements(
         let Ok(value) = phux_client::org::arrangement(conn, request_id, key).await else {
             continue;
         };
+        if value.document.groups.is_empty() || value.revision.get() <= 1 {
+            continue;
+        }
         let handles = HandleMap::from_pairs(
             inventory
                 .members(&record.key)
                 .map(|member| (member.key, member.live.clone())),
         );
-        let (document, _binding) = from_protocol(&value.document, &handles);
+        let (mut document, _binding) = from_protocol(&value.document, &handles);
+        // `from_protocol` names an unnamed group by its position; the
+        // archive keeps it unnamed, so an import does not make the name up.
+        for group in &mut document.groups {
+            let unnamed = value
+                .document
+                .groups
+                .iter()
+                .any(|wire| wire.id == group.id && wire.name.is_none());
+            if unnamed {
+                group.name.clear();
+            }
+        }
         layouts.insert(session.id, document);
     }
-    (layouts, Vec::new())
+    layouts
 }
-
-/// First request id [`fetch_session_arrangements`] gives its
-/// `ArrangementGet` reads.
-const ARRANGEMENT_READ_FIRST_ID: u32 = 0x1000;
 
 /// Print the archive's session, host, directory, and project organization.
 /// Does not dial a server. The directory is the focused pane's cwd when the
@@ -1831,21 +1846,53 @@ mod tests {
 
         /// A session with two shells, `a` arranged alone in group "main".
         fn arranged() -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
+            arranged_as(Some("main"), true)
+        }
+
+        /// A session with two shells and a replaced arrangement: `a` alone
+        /// in one group named `name`, or no group at all.
+        fn arranged_as(
+            name: Option<&str>,
+            placed: bool,
+        ) -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
             let mut fixture = OrgFixture::new();
             let work = fixture.session("work", SessionLifetime::Persistent);
             let a = fixture.shell(work);
             let b = fixture.shell(work);
-            fixture.arrangement(
-                work,
-                WireDoc {
-                    groups: vec![ArrangementGroup {
-                        id: [7; 16],
-                        name: Some("main".to_owned()),
-                        tree: member(a, 1),
-                    }],
-                },
-            );
+            let groups = placed
+                .then(|| ArrangementGroup {
+                    id: [7; 16],
+                    name: name.map(str::to_owned),
+                    tree: member(a, 1),
+                })
+                .into_iter()
+                .collect();
+            fixture.arrangement(work, WireDoc { groups });
             (fixture, work, a, b)
+        }
+
+        /// The organization records `fixture` serves, read as an export does.
+        async fn records_of(fixture: OrgFixture) -> phux_client::org::OrgInventory {
+            let (socket, server, _dir) = serve(fixture);
+            let records = phux_client::org::fetch_from_socket(&socket)
+                .await
+                .expect("records")
+                .expect("an ORGANIZATION server");
+            server.await.expect("server");
+            records
+        }
+
+        /// Export's layout read against `fixture`, with every frame sent.
+        async fn export_layouts(
+            fixture: OrgFixture,
+            projection: Option<&str>,
+        ) -> (SessionLayouts, Vec<String>, Vec<FrameKind>) {
+            let snapshot = fixture.snapshot();
+            let records = records_of(fixture.clone()).await;
+            let (socket, server, _dir) = serve(fixture);
+            let (layouts, warnings) =
+                fetch_session_layouts(&socket, &snapshot, projection, Some(&records)).await;
+            (layouts, warnings, server.await.expect("server"))
         }
 
         fn serve(
@@ -1886,10 +1933,8 @@ mod tests {
             let (fixture, work, a, _b) = arranged();
             let session = fixture.live_session(&work).expect("live session");
             let pane_a = fixture.live(&a).expect("live pane");
-            let snapshot = fixture.snapshot();
-            let (socket, server, _dir) = serve(fixture);
 
-            let (layouts, warnings) = fetch_session_layouts(&socket, &snapshot, None).await;
+            let (layouts, warnings, seen) = export_layouts(fixture, None).await;
 
             assert!(warnings.is_empty(), "{warnings:?}");
             let layout = layouts.get(&session).expect("the session's arrangement");
@@ -1899,7 +1944,6 @@ mod tests {
                 phux_client::layout::leaves(layout.groups[0].state.tree.as_ref().expect("tree")),
                 vec![pane_a]
             );
-            let seen = server.await.expect("server");
             assert!(
                 commands(&seen)
                     .iter()
@@ -1914,21 +1958,60 @@ mod tests {
         #[tokio::test]
         async fn export_under_a_projection_reads_its_key() {
             let (fixture, ..) = arranged();
-            let snapshot = fixture.snapshot();
-            let (socket, server, _dir) = serve(fixture);
 
-            let (layouts, warnings) =
-                fetch_session_layouts(&socket, &snapshot, Some("myapp.layout/v1")).await;
+            let (layouts, warnings, seen) = export_layouts(fixture, Some("myapp.layout/v1")).await;
 
             assert!(layouts.is_empty());
             assert_eq!(warnings.len(), 1, "{warnings:?}");
-            let seen = server.await.expect("server");
             assert!(
                 seen.iter()
                     .any(|frame| matches!(frame, FrameKind::GetMetadata { key, .. } if key.starts_with("myapp.layout/v1/"))),
                 "{seen:?}"
             );
             assert!(commands(&seen).is_empty(), "{seen:?}");
+        }
+
+        /// An unnamed group stays unnamed in the archive rather than taking
+        /// its position as a name an import would then keep.
+        #[tokio::test]
+        async fn export_keeps_an_unnamed_group_unnamed() {
+            let (fixture, work, ..) = arranged_as(None, true);
+            let session = fixture.live_session(&work).expect("live session");
+
+            let (layouts, ..) = export_layouts(fixture, None).await;
+
+            let layout = layouts.get(&session).expect("the session's arrangement");
+            assert_eq!(layout.groups[0].name, "");
+        }
+
+        /// Every session has an arrangement from creation; one nobody has
+        /// arranged exports as the one-window projection, with no warning,
+        /// as it did before it had a layout key.
+        #[tokio::test]
+        async fn an_empty_arrangement_exports_as_one_window() {
+            let (fixture, ..) = arranged_as(None, false);
+            let snapshot = fixture.snapshot().with_windows(Vec::new());
+
+            let (layouts, layout_warnings, _seen) = export_layouts(fixture, None).await;
+            let (archive, warnings) = archive_from_snapshot(
+                &snapshot,
+                snapshot::AgentRecords {
+                    attached: &HashMap::new(),
+                    native: &HashMap::new(),
+                },
+                &layouts,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+
+            assert!(layouts.is_empty());
+            assert!(layout_warnings.is_empty(), "{layout_warnings:?}");
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let windows = &archive.sessions[0].windows;
+            assert_eq!(windows.len(), 1);
+            assert_eq!(windows[0].name, "window-0");
+            assert_eq!(windows[0].panes.len(), 2);
         }
 
         #[tokio::test]
