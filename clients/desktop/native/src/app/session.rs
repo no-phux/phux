@@ -442,16 +442,23 @@ impl Desktop {
     }
 
     /// The next open window after `source` that talks to the same server
-    /// (`remote`, `None` for local). The quick window is never a target.
+    /// (`remote`, `None` for local) and can take a moved terminal now. The
+    /// quick window is never a target. The source desk is never read: the
+    /// caller is usually updating it.
     pub(crate) fn next_window(
         &self,
         source: EntityId,
         remote: Option<&str>,
+        cx: &App,
     ) -> Option<(AnyWindowHandle, Entity<Desk>)> {
         let peers: Vec<_> = self
             .windows
             .iter()
-            .map(|opened| (opened.desk.entity_id(), opened.remote.as_deref()))
+            .map(|opened| {
+                let id = opened.desk.entity_id();
+                let ready = id != source && opened.desk.read(cx).accepts_moved_terminal();
+                (id, opened.remote.as_deref(), ready)
+            })
             .collect();
         let index = next_peer(&peers, source, remote)?;
         let opened = &self.windows[index];
@@ -881,20 +888,24 @@ impl Desktop {
     }
 }
 
-/// Index of the first peer after `source` (wrapping) on the same server.
-/// A source that is not listed (the quick window) starts from the front.
+/// Index of the first ready peer after `source` (wrapping) on the same
+/// server. A source that is not listed (the quick window) starts from the
+/// front.
 fn next_peer<T: PartialEq + Copy>(
-    peers: &[(T, Option<&str>)],
+    peers: &[(T, Option<&str>, bool)],
     source: T,
     remote: Option<&str>,
 ) -> Option<usize> {
     let start = peers
         .iter()
-        .position(|(id, _)| *id == source)
+        .position(|(id, ..)| *id == source)
         .map_or(0, |index| index + 1);
     (0..peers.len())
         .map(|step| (start + step) % peers.len())
-        .find(|&index| peers[index].0 != source && peers[index].1 == remote)
+        .find(|&index| {
+            let (id, peer_remote, ready) = peers[index];
+            id != source && peer_remote == remote && ready
+        })
 }
 
 // Explicit Tab shortcuts must outrank the terminal's default traversal masks.
