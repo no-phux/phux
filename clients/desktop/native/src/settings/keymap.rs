@@ -749,6 +749,14 @@ fn catalog() -> Vec<CommandSpec> {
             &["telemetry", "cpu", "memory", "rss"],
         ),
         spec(
+            "copy-diagnostics",
+            "Copy Diagnostics",
+            "Utilities",
+            None,
+            "Copy app, runtime, server and connection identity with recent errors. No terminal content.",
+            &["support", "debug", "report", "version", "log"],
+        ),
+        spec(
             "performance-monitor-stop",
             "Stop Performance Monitoring",
             "Utilities",

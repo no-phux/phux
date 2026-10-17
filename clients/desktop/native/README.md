@@ -71,7 +71,13 @@ resolution failure still opens the window, with the reason shown.
   The view owns its sampler and cancellable task; `telemetry::Sampler` itself
   does no background work. `diag::report()` exposes the existing typed report.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr
-  (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`).
+  (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`). Lines are redacted
+  (URL passwords, labeled tokens and secrets, long opaque runs) before they
+  are written, and the file rotates to one `.1` backup at 8 MiB.
+- **Copy Diagnostics** (palette, Utilities): a JSON receipt of app and runtime
+  versions, server id, connection epoch, host (`local` or the registry name)
+  and the last 20 redacted warnings. It has a closed set of fields and carries
+  no terminal content.
 - **Metrics:** `diag::report_json()` is one `PerfReport` with kernel
   (`kernel.*`), runtime (`runtime.*`), painter (`desktop.acquire`,
   `desktop.prepare`, `desktop.paint`, `desktop.present`, `desktop.key_to_paint`)

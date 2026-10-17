@@ -25,7 +25,9 @@ untargeted work lands in; a server without one opens its most recent session.
 The app never creates a session on its own. `PHUX_SESSION` names a session
 instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
-`~/Library/Logs/phux-desktop.log`.
+`~/Library/Logs/phux-desktop.log` (redacted, rotated at 8 MiB). **Copy
+Diagnostics** in the command palette copies versions, server id, connection
+epoch, host and recent errors for a bug report, without terminal content.
 
 The sidebar shows one **Work** catalog across Local and registered hosts, grouped
 by repository identity when available. Each session has a **Runs on …** host chip
