@@ -9,6 +9,23 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.99.0](https://github.com/no-phux/phux/compare/v0.98.1...v0.99.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** a server with a remote listener and no `[policy] mode` no longer starts; clients must hold an enrolled certificate and a CA pinned at pairing.
+
+### Features
+
+* **auth:** remove the transitional and legacy authentication paths ([#1577](https://github.com/no-phux/phux/issues/1577)) ([c498229](https://github.com/no-phux/phux/commit/c498229e6eae0bd9bfb24aa5a1d7c5a58cae5b17))
+* **desktop:** make machines discoverable with live state and actions ([ae43ac1](https://github.com/no-phux/phux/commit/ae43ac167c3d17083a369a8042b53c57214c1caf))
+
+
+### Bug Fixes
+
+* **desktop:** add machine Disconnect and tighten machine entry points ([3ad668c](https://github.com/no-phux/phux/commit/3ad668c272f7b0c2edf05c2ff58dd991e8de9648))
+
 ## [0.98.1](https://github.com/no-phux/phux/compare/v0.98.0...v0.98.1) (2026-10-17)
 
 
