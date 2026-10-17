@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use gpui::{
     App, AppContext, Context, Entity, EntityId, KeyBinding, Menu, MenuItem, NoAction, Point,
-    SharedString, Size, Subscription, Task, TitlebarOptions, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowId, WindowOptions, px, size,
+    SharedString, Size, Subscription, Task, TitlebarOptions, WindowBounds, WindowHandle, WindowId,
+    WindowOptions, px, size,
 };
 use gpui_kit::component::Root;
 use gpui_kit::{self, AnyWindowHandle};
@@ -734,7 +734,9 @@ impl Desktop {
                 kind: crate::diag::window_kind(),
                 show: true,
                 window_min_size: Some(Size::new(px(640.), px(420.))),
-                window_background: WindowBackgroundAppearance::Blurred,
+                window_background: super::desk::window_options_background(
+                    crate::settings::WindowBackground::default(),
+                ),
                 app_owns_titlebar_drag: true,
                 ..WindowOptions::default()
             },

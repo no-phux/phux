@@ -226,6 +226,12 @@ missing font's Paper Mono substitution. Nerd symbols fall back automatically;
 the main font does not need to change. Font assets and patch attribution are
 shipped under their [Open Font License](../../clients/desktop/native/assets/fonts/JetBrainsMono-OFL.txt).
 
+**Layout** holds **Blur behind window** (`windowBackground`, default `blur`).
+A blurred window is translucent over the desktop, and macOS re-blurs and blends
+it on every frame the terminal presents. Off (`solid`) makes the window, its
+Metal layer, and the painted sheet opaque in theme colors, so the compositor
+does neither; background opacity applies only to a blurred window.
+
 **Terminal spacing** holds line height, cell width, padding, and unfocused-pane dimming.
 Display edits apply live and persist with the window's layout; font selection
 follows resets and Ghostty imports while Settings stays open.

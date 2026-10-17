@@ -32,8 +32,8 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use phux_protocol::{ResourceId, ResourceKind};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
-use crate::settings::TabPosition;
 use crate::settings::theme::Palette;
+use crate::settings::{DisplayPrefs, TabPosition, WindowBackground};
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 
 use super::actions::{OpenPathDirectory, Run};
@@ -63,7 +63,8 @@ const TAB_RAIL: f32 = 212.;
 
 /// Paint values for the glass sheet and the cards on it, from the theme.
 struct Glass {
-    /// The window sheet over the desktop blur.
+    /// The window sheet: translucent over the desktop blur, opaque on a
+    /// solid window.
     sheet: Hsla,
     /// Light falling from the top edge of the sheet.
     sheen: Hsla,
@@ -76,15 +77,21 @@ struct Glass {
 }
 
 impl Glass {
-    fn of(colors: &Palette, terminal_opacity: f64) -> Self {
+    fn of(colors: &Palette, prefs: &DisplayPrefs) -> Self {
         let light = colors.theme.appearance == "light";
         let ink = from_hex(&colors.theme.foreground);
+        let sheet = match prefs.window_background {
+            WindowBackground::Blur => {
+                from_hex(&colors.theme.background).opacity(if light { 0.58 } else { 0.44 })
+            }
+            WindowBackground::Solid => from_hex(&colors.theme.background),
+        };
         Self {
-            sheet: from_hex(&colors.theme.background).opacity(if light { 0.58 } else { 0.44 }),
+            sheet,
             sheen: ink.opacity(if light { 0.07 } else { 0.05 }),
             card: from_hex(&crate::settings::theme::with_alpha(
                 &colors.theme.background,
-                terminal_opacity,
+                prefs.painted_terminal_opacity(),
             )),
             edge: gpui::transparent_black(),
             lit: ink.opacity(0.22),
@@ -307,10 +314,11 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     let _frame = crate::diag::FRAME.timer();
     let look = desk.look();
     let colors = &look.chrome;
-    let glass = Glass::of(colors, desk.prefs.terminal_opacity);
+    let glass = Glass::of(colors, &desk.prefs);
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     desk.set_viewport(window.viewport_size());
     desk.sync_title(window);
+    desk.sync_window_background(window);
     desk.settle_focus(window, cx);
     desk.ensure_clock(cx);
     desk.flush_system(cx);
@@ -2011,7 +2019,7 @@ fn pane_view(
         desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
     let look = desk.look();
     let colors = &look.chrome;
-    let glass = Glass::of(colors, desk.prefs.terminal_opacity);
+    let glass = Glass::of(colors, &desk.prefs);
     let placement_id = placement.id.clone();
     let terminal = placement.terminal_id.clone();
     let view = placement.view_id;

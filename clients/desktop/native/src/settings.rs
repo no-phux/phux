@@ -10,8 +10,8 @@ pub mod keymap;
 pub mod theme;
 
 pub use display::{
-    DisplayPrefs, SIDEBAR_MAX, SIDEBAR_MIN, TabPosition, default_display, display_value,
-    parse_display, sanitize_display,
+    DisplayPrefs, SIDEBAR_MAX, SIDEBAR_MIN, TabPosition, WindowBackground, default_display,
+    display_value, parse_display, sanitize_display,
 };
 pub use ghostty::{
     GhosttyConfig, ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty,
