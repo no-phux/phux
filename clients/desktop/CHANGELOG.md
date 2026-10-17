@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.26.1](https://github.com/no-phux/phux/compare/desktop-v0.26.0...desktop-v0.26.1) (2026-10-17)
+
+
+### Performance
+
+* **desktop:** paint retained glyph sprites per row ([0038778](https://github.com/no-phux/phux/commit/003877827510b6f3373dc99377a90a926b9d57bc))
+
 ## [0.26.0](https://github.com/no-phux/phux/compare/desktop-v0.25.1...desktop-v0.26.0) (2026-10-17)
 
 
