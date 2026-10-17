@@ -17,16 +17,13 @@ use phux_client_runtime::control::{ControlPlane, TerminalResizeOutcome};
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::{
     ResourceId,
-    input::{
-        focus::FocusEvent,
-        key::{KeyAction, KeyEvent, ModSet, PhysicalKey},
-    },
+    input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey},
 };
 use std::{
     collections::BTreeMap,
     ops::Range,
     sync::{
-        Arc, LazyLock, Mutex, Weak,
+        Arc, Mutex, MutexGuard, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -58,10 +55,9 @@ struct PendingFit {
 /// Hiding releases paint state and keeps this input, including a fit timer.
 /// The timer delivers only while the token still matches, so a hidden former
 /// owner cannot resize over the view that has since taken ownership.
-fn fit_claims() -> &'static Mutex<BTreeMap<(usize, ResourceId), u64>> {
-    static CLAIMS: LazyLock<Mutex<BTreeMap<(usize, ResourceId), u64>>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    &CLAIMS
+fn fit_claims() -> MutexGuard<'static, BTreeMap<(usize, ResourceId), u64>> {
+    static CLAIMS: Mutex<BTreeMap<(usize, ResourceId), u64>> = Mutex::new(BTreeMap::new());
+    CLAIMS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn next_fit_token() -> u64 {
@@ -98,6 +94,7 @@ pub struct InputMetrics {
     pub shift: Pixels,
 }
 
+/// Connection and replica a painted frame was admitted under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Identity {
     epoch: u64,
@@ -323,32 +320,11 @@ impl TerminalInput {
         (&self.composition.text, self.composition.selected.clone())
     }
 
-    fn window_active(&self, window: &Window) -> bool {
-        window.is_window_active()
-    }
-
-    /// Call only for a frame actually being painted. This does NOT acknowledge
-    /// an unknown-delivery fence. That authority belongs to the presenter.
-    pub fn presented(
-        &mut self,
-        frame: &Arc<GridFrame>,
-        metrics: InputMetrics,
-    ) -> Result<(), InputError> {
-        let client = self.client()?;
-        let epoch = client.with_control(|control| {
-            let current = self.live_frame(control)?;
-            let epoch = control.connection_epoch();
-            if Identity::of(epoch, frame) != Identity::of(epoch, &current) {
-                return Err(InputError::StalePresentation);
-            }
-            Ok(epoch)
-        })?;
-        self.presented_at(epoch, frame, metrics)
-    }
-
-    /// [`Self::presented`] for a frame the painter already proved current
-    /// under `epoch` in this draw (a presentation ticket), so painting costs
-    /// no second owner round trip. Input itself still revalidates live.
+    /// Call only for a frame actually being painted, which the painter already
+    /// proved current under `epoch` in this draw (a presentation ticket), so
+    /// painting costs no owner round trip. Input itself still revalidates
+    /// live. This does NOT acknowledge an unknown-delivery fence. That
+    /// authority belongs to the presenter.
     pub fn presented_at(
         &mut self,
         epoch: u64,
@@ -367,10 +343,7 @@ impl TerminalInput {
                 Err(InputError::StalePresentation)
             }
             Admit::Accept(identity) => {
-                self.painted_links.present(
-                    link::FrameStamp::new(identity.epoch, frame),
-                    Arc::clone(frame),
-                );
+                self.painted_links.present(identity, Arc::clone(frame));
                 self.identity = Some(identity);
                 self.painted_seq = frame.last_seq;
                 self.key_probe.painted(frame.last_seq);
@@ -407,7 +380,7 @@ impl TerminalInput {
     /// view is still the visible size owner of the generation that armed the
     /// proposal, so a hidden former owner cannot override the focused view.
     pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
-        let active = self.window_active(window);
+        let active = window.is_window_active();
         let reactivated = active && !self.fit_active;
         self.fit_active = active;
         if !owner {
@@ -495,19 +468,13 @@ impl TerminalInput {
     }
 
     fn claim_fit(&self) {
-        let Ok(client) = self.client() else {
-            return;
-        };
-        fit_claims()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(claim_key(&client, &self.terminal), self.fit_token);
+        if let Ok(client) = self.client() {
+            fit_claims().insert(claim_key(&client, &self.terminal), self.fit_token);
+        }
     }
 
     fn claimed_token(&self, client: &Arc<Client>) -> Option<u64> {
         fit_claims()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&claim_key(client, &self.terminal))
             .copied()
     }
@@ -519,9 +486,7 @@ impl TerminalInput {
     }
 
     fn release_fit_claim(&mut self) {
-        let mut claims = fit_claims()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut claims = fit_claims();
         if let Ok(client) = self.client() {
             let key = claim_key(&client, &self.terminal);
             if claims.get(&key) == Some(&self.fit_token) {
@@ -539,14 +504,16 @@ impl TerminalInput {
     fn focused(&self, window: &Window, _: &App) -> bool {
         window.window_handle().window_id() == self.window
             && self.focus.is_focused(window)
-            && self.window_active(window)
+            && window.is_window_active()
     }
 
-    fn current(&self, window: &Window, cx: &App) -> Result<(), InputError> {
+    /// Focused in this window and painting the live frame. `input` also
+    /// requires a terminal that accepts input.
+    fn admit_focused(&self, window: &Window, cx: &App, input: bool) -> Result<(), InputError> {
         if !self.focused(window, cx) {
             return Err(InputError::WrongFocus);
         }
-        self.with_current(false, |_| Ok(()))
+        self.with_current(input, |_| Ok(()))
     }
 
     fn live_frame(&self, control: &ControlPlane) -> Result<std::sync::Arc<GridFrame>, InputError> {
@@ -569,10 +536,9 @@ impl TerminalInput {
 
     fn validate(&self, control: &ControlPlane, input: bool) -> Result<(), InputError> {
         let frame = self.live_frame(control)?;
-        if self.identity != Some(Identity::of(control.connection_epoch(), &frame)) {
-            return Err(InputError::StalePresentation);
-        }
-        if self.dimensions != (frame.cols, frame.rows) {
+        if self.identity != Some(Identity::of(control.connection_epoch(), &frame))
+            || self.dimensions != (frame.cols, frame.rows)
+        {
             return Err(InputError::StalePresentation);
         }
         if input && !input_ready(control, &self.terminal) {
@@ -590,40 +556,6 @@ impl TerminalInput {
         client.with_control(|control| {
             self.validate(control, input)?;
             operation(control)
-        })
-    }
-
-    fn ready(&self, window: &Window, cx: &App) -> Result<(), InputError> {
-        if !self.focused(window, cx) {
-            return Err(InputError::WrongFocus);
-        }
-        self.with_current(true, |_| Ok(()))
-    }
-
-    /// Painter calls on focus/blur and window activation changes. A blur clears
-    /// local IME state even when the remote connection has already disappeared.
-    pub fn focus_changed(
-        &mut self,
-        active: bool,
-        window: &Window,
-        cx: &App,
-    ) -> Result<(), InputError> {
-        if window.window_handle().window_id() != self.window {
-            return Err(InputError::WrongFocus);
-        }
-        if !active {
-            self.cancel();
-        }
-        if active && !self.focused(window, cx) {
-            return Err(InputError::WrongFocus);
-        }
-        let event = if active {
-            FocusEvent::Gained
-        } else {
-            FocusEvent::Lost
-        };
-        self.with_current(true, |control| {
-            queued(control.send_focus(&self.terminal, event))
         })
     }
 
@@ -658,12 +590,8 @@ impl TerminalInput {
             self.key_probe.arm(self.painted_seq);
             return Ok(KeyDisposition::Platform);
         }
-        self.with_current(true, |control| {
-            queued(control.send_key(&self.terminal, event.clone()))
-        })?;
-        let echoed = self.predict_sent(&event);
+        let echoed = self.press(event)?;
         self.key_probe.arm(self.painted_seq);
-        self.pressed.insert(event.key, event);
         if echoed {
             cx.notify();
         }
@@ -689,10 +617,23 @@ impl TerminalInput {
         event.mods.set(ModSet::CAPS_LOCK, window.capslock().on);
         event.consumed_mods = ModSet::empty();
         event.text = None;
-        self.with_current(true, |control| {
-            queued(control.send_key(&self.terminal, event))
-        })?;
+        self.send_key(&event)?;
         Ok(KeyDisposition::Consumed)
+    }
+
+    fn send_key(&self, event: &KeyEvent) -> Result<(), InputError> {
+        self.with_current(true, |control| {
+            queued(control.send_key(&self.terminal, event.clone()))
+        })
+    }
+
+    /// Send a press or repeat, draw its local echo guess, and hold it for the
+    /// release. Returns whether a guess was drawn.
+    fn press(&mut self, event: KeyEvent) -> Result<bool, InputError> {
+        self.send_key(&event)?;
+        let echoed = self.predict_sent(&event);
+        self.pressed.insert(event.key, event);
+        Ok(echoed)
     }
 
     fn commit(
@@ -713,12 +654,7 @@ impl TerminalInput {
         if let Some(mut event) = self.pending_key.take() {
             event.consumed_mods = event.mods & (ModSet::SHIFT | ModSet::ALT);
             event.text = Some(committed);
-            self.with_current(true, |control| {
-                queued(control.send_key(&self.terminal, event.clone()))
-            })?;
-            self.predict_sent(&event);
-            self.pressed.insert(event.key, event);
-            return Ok(());
+            return self.press(event).map(drop);
         }
         self.with_current(true, |control| {
             queued(control.send_text(&self.terminal, &committed))
@@ -733,10 +669,7 @@ impl TerminalInput {
     /// alternate-screen guesses until the application proves it echoes.
     /// A local socket still predicts: it may be the near end of a tunnel.
     fn predict_sent(&self, event: &KeyEvent) -> bool {
-        let Some(text) = echo_guess(event) else {
-            return false;
-        };
-        self.publish_echo(&text)
+        echo_guess(event).is_some_and(|text| self.publish_echo(text))
     }
 
     fn publish_echo(&self, text: &str) -> bool {
@@ -777,7 +710,7 @@ impl TerminalInput {
     /// Like the shell's Paste command it is addressed by placement, and it
     /// is not held a second time.
     pub fn paste_confirmed(&mut self, text: &str) {
-        let result = self.paste_requested(text).map(|_| ());
+        let result = self.paste(text, true).map(drop);
         self.record(result);
     }
 
@@ -796,13 +729,6 @@ impl TerminalInput {
             }));
         }
         held
-    }
-
-    /// The shell's Paste command, addressed to this terminal by placement.
-    /// Keyboard focus may sit in an overlay over it, such as the find bar,
-    /// whose own Command-V pastes into the field instead.
-    pub fn paste_requested(&mut self, text: &str) -> Result<Option<u64>, InputError> {
-        self.paste(text, true)
     }
 
     fn paste(&mut self, text: &str, focused: bool) -> Result<Option<u64>, InputError> {
@@ -919,7 +845,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        self.current(window, cx).ok()?;
+        self.admit_focused(window, cx, false).ok()?;
         let (bytes, adjusted) = self.composition.range(range)?;
         *actual = Some(adjusted);
         Some(self.composition.text[bytes].to_owned())
@@ -931,7 +857,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        self.ready(window, cx).ok()?;
+        self.admit_focused(window, cx, true).ok()?;
         Some(UTF16Selection {
             range: self.composition.selected.clone(),
             reversed: false,
@@ -943,7 +869,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.current(window, cx).ok()?;
+        self.admit_focused(window, cx, false).ok()?;
         (!self.composition.text.is_empty()).then(|| 0..self.composition.len())
     }
 
@@ -977,7 +903,7 @@ impl EntityInputHandler for TerminalInput {
         cx: &mut Context<Self>,
     ) {
         self.pending_key = None;
-        let result = self.ready(window, cx).and_then(|_| {
+        let result = self.admit_focused(window, cx, true).and_then(|_| {
             self.composition
                 .mark(range, text, selected)
                 .then_some(())
@@ -995,7 +921,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.current(window, cx).ok()?;
+        self.admit_focused(window, cx, false).ok()?;
         self.composition.range(range)?;
         // The painter owns cursor geometry. A candidate window is anchored at
         // that cursor; no guessed width for emoji or shaped preedit is exposed.
@@ -1008,7 +934,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
-        self.current(window, cx).ok()?;
+        self.admit_focused(window, cx, false).ok()?;
         self.metrics?.cursor_bounds.contains(&point).then_some(0)
     }
 
@@ -1018,7 +944,7 @@ impl EntityInputHandler for TerminalInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.current(window, cx).is_err() {
+        if self.admit_focused(window, cx, false).is_err() {
             return;
         }
         if let Some((_, range)) = self.composition.range(range) {
@@ -1028,62 +954,54 @@ impl EntityInputHandler for TerminalInput {
     }
 
     fn text_length_utf16(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<usize> {
-        self.current(window, cx).ok()?;
+        self.admit_focused(window, cx, false).ok()?;
         Some(self.composition.len())
     }
 
     fn accepts_text_input(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.ready(window, cx).is_ok()
+        self.admit_focused(window, cx, true).is_ok()
     }
 
     fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
-        match self.clipboard_attach(&item) {
-            Some(crate::attach::PathAttach::Paste(text)) => {
-                let result = self.paste_text(&text, window, cx).map(|_| ());
-                self.record(result);
-            }
-            Some(crate::attach::PathAttach::Upload(batch)) => {
-                let result = self.ready(window, cx);
-                if result.is_ok() {
-                    cx.emit(InputEvent::Upload(batch));
-                } else {
-                    cx.emit(InputEvent::Notice(InputNotice {
-                        title: crate::attach::PASTE_REFUSED,
-                        body: "The terminal is not ready for a file paste. Nothing was uploaded."
-                            .into(),
-                    }));
-                }
-                self.record(result);
-            }
-            Some(crate::attach::PathAttach::Refuse { title, body }) => {
-                cx.emit(InputEvent::Notice(InputNotice { title, body }));
-            }
-            None => {}
+        let focused = self.focused(window, cx);
+        if let Some(notice) = self.paste_item(&item, focused, cx) {
+            cx.emit(InputEvent::Notice(notice));
         }
         cx.notify();
     }
 }
 
 impl TerminalInput {
-    fn clipboard_attach(&self, item: &ClipboardItem) -> Option<crate::attach::PathAttach> {
-        crate::attach::clipboard_for_host(item, &self.host())
-    }
-
-    /// Paste addressed by the shell, not by keyboard focus. A refusal is
+    /// The shell's Paste command, addressed to this terminal by placement.
+    /// Keyboard focus may sit in an overlay over it, such as the find bar,
+    /// whose own Command-V pastes into the field instead. A refusal is
     /// returned so the shell can show it without a nested event.
     pub fn paste_command(&mut self, cx: &mut Context<Self>) -> Option<InputNotice> {
         let item = cx.read_from_clipboard()?;
-        match self.clipboard_attach(&item) {
-            Some(crate::attach::PathAttach::Paste(text)) => {
-                if self.hold_paste(&text, cx) {
+        self.paste_item(&item, true, cx)
+    }
+
+    fn paste_item(
+        &mut self,
+        item: &ClipboardItem,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<InputNotice> {
+        match crate::attach::clipboard_for_host(item, &self.host())? {
+            crate::attach::PathAttach::Paste(text) => {
+                if focused && self.hold_paste(&text, cx) {
                     return None;
                 }
-                let result = self.paste_requested(&text);
-                self.record(result.map(|_| ()));
+                let result = self.paste(&text, focused);
+                self.record(result.map(drop));
                 None
             }
-            Some(crate::attach::PathAttach::Upload(batch)) => {
-                let result = self.with_current(true, |_| Ok(()));
+            crate::attach::PathAttach::Upload(batch) => {
+                let result = if focused {
+                    self.with_current(true, |_| Ok(()))
+                } else {
+                    Err(InputError::WrongFocus)
+                };
                 let notice = result.as_ref().err().map(|_| InputNotice {
                     title: crate::attach::PASTE_REFUSED,
                     body: "The terminal is not ready for a file paste. Nothing was uploaded."
@@ -1095,10 +1013,7 @@ impl TerminalInput {
                 self.record(result);
                 notice
             }
-            Some(crate::attach::PathAttach::Refuse { title, body }) => {
-                Some(InputNotice { title, body })
-            }
-            None => None,
+            crate::attach::PathAttach::Refuse { title, body } => Some(InputNotice { title, body }),
         }
     }
 }
@@ -1107,15 +1022,8 @@ impl TerminalInput {
 fn capacity(metrics: InputMetrics) -> Option<(u16, u16)> {
     let cols = (metrics.bounds.size.width / metrics.cell_width).floor();
     let rows = (metrics.bounds.size.height / metrics.line_height).floor();
-    let fits = cols >= 2.0 && rows >= 1.0;
-    if !fits {
-        return None;
-    }
-    Some((clamp(cols), clamp(rows)))
-}
-
-fn clamp(cells: f32) -> u16 {
-    cells.min(f32::from(u16::MAX)) as u16
+    let clamp = |cells: f32| cells.min(f32::from(u16::MAX)) as u16;
+    (cols >= 2.0 && rows >= 1.0).then(|| (clamp(cols), clamp(rows)))
 }
 
 fn cell_px(metrics: InputMetrics) -> (u16, u16) {
@@ -1144,27 +1052,16 @@ fn pending_fit(
 
 /// The text a key should draw locally, if it is a guess the predictor can own.
 /// Control and super chords are commands. Alt stays: Option types a character.
-fn echo_guess(event: &KeyEvent) -> Option<String> {
-    if !echo_action(event.action) || command_chord(event) {
+fn echo_guess(event: &KeyEvent) -> Option<&str> {
+    let typed = matches!(event.action, KeyAction::Press | KeyAction::Repeat);
+    if !typed || event.mods.intersects(ModSet::CTRL | ModSet::SUPER) {
         return None;
     }
     match event.key {
-        PhysicalKey::Enter => Some("\r".to_owned()),
-        PhysicalKey::Backspace => Some("\u{7f}".to_owned()),
-        _ => nonempty_text(event.text.as_deref()),
+        PhysicalKey::Enter => Some("\r"),
+        PhysicalKey::Backspace => Some("\u{7f}"),
+        _ => event.text.as_deref().filter(|text| !text.is_empty()),
     }
-}
-
-fn echo_action(action: KeyAction) -> bool {
-    matches!(action, KeyAction::Press | KeyAction::Repeat)
-}
-
-fn command_chord(event: &KeyEvent) -> bool {
-    event.mods.intersects(ModSet::CTRL | ModSet::SUPER)
-}
-
-fn nonempty_text(text: Option<&str>) -> Option<String> {
-    text.filter(|text| !text.is_empty()).map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -1177,8 +1074,8 @@ mod tests {
     use gpui::{Bounds, point, px, size};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
-    fn metrics(width: f32, height: f32) -> InputMetrics {
-        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(width), px(height)));
+    pub(super) fn metrics(width: f32, height: f32) -> InputMetrics {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
         InputMetrics {
             bounds,
             cell_width: px(8.),
@@ -1334,15 +1231,15 @@ mod tests {
                 ModSet::empty(),
                 Some("é")
             )),
-            Some("é".to_owned())
+            Some("é")
         );
         assert_eq!(
             echo_guess(&press(PhysicalKey::Enter, ModSet::empty(), None)),
-            Some("\r".to_owned())
+            Some("\r")
         );
         assert_eq!(
             echo_guess(&press(PhysicalKey::Backspace, ModSet::SHIFT, None)),
-            Some("\u{7f}".to_owned())
+            Some("\u{7f}")
         );
         assert_eq!(
             echo_guess(&press(PhysicalKey::C, ModSet::CTRL, Some("c"))),
@@ -1380,16 +1277,10 @@ mod tests {
         );
     }
 
-    /// Blur and occlusion leave the same view as the visible owner.
+    /// Blur and occlusion leave the same view as the visible owner, and
+    /// coming back to it on the armed generation may settle.
     #[test]
-    fn blur_keeps_the_visible_owners_claim() {
-        let armed = generation(1);
-        assert!(admit_delayed_fit(Some(7), 7, armed, Some(armed)));
-    }
-
-    /// Coming back to that owner, still on the armed generation, may settle.
-    #[test]
-    fn returning_the_visible_owner_is_admitted() {
+    fn the_visible_owner_on_its_armed_generation_is_admitted() {
         let armed = generation(4);
         assert!(admit_delayed_fit(Some(7), 7, armed, Some(armed)));
     }
@@ -1408,11 +1299,10 @@ mod tests {
 /// still running, and hiding does not call `fit(false)`.
 #[cfg(test)]
 mod delivery {
-    use super::{FIT_SETTLE, InputMetrics, KeyDisposition, TerminalInput};
+    use super::{FIT_SETTLE, KeyDisposition, TerminalInput, tests::metrics};
     use gpui::{
         AppContext, Bounds, ElementInputHandler, Entity, EntityInputHandler, InputHandler,
         KeyDownEvent, KeyUpEvent, Keystroke, PlatformWindow, TestAppContext, Window, point, px,
-        size,
     };
     use phux_client_runtime::control::{ControlOptions, ControlPlane};
     use phux_client_runtime::{Client, Runtime, ViewId};
@@ -1439,18 +1329,6 @@ mod delivery {
 
     fn terminal() -> ResourceId {
         ResourceId::local(7)
-    }
-
-    fn metrics(width: f32, height: f32) -> InputMetrics {
-        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
-        InputMetrics {
-            bounds,
-            cell_width: px(8.),
-            line_height: px(17.),
-            scale: 1.,
-            cursor_bounds: bounds,
-            shift: px(0.),
-        }
     }
 
     fn session(role: Option<RolePolicy>) -> Arc<Client> {
@@ -1691,6 +1569,40 @@ mod delivery {
         assert_eq!(notified.get(), 3, "a release settles it");
     }
 
+    /// A painted, focused input in an active window.
+    fn with_focused(
+        cx: &mut TestAppContext,
+        test: impl FnOnce(&Client, &Entity<TerminalInput>, &mut Window, &mut gpui::App),
+    ) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = bind(&client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            input.update(cx, |state, cx| state.focus.focus(window, cx));
+            test(&client, &input, window, cx);
+        });
+    }
+
+    fn down(keystroke: &Keystroke, is_held: bool) -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held,
+            prefer_character_input: false,
+        }
+    }
+
+    fn copy_file(cx: &mut gpui::App) {
+        cx.write_to_clipboard(gpui::ClipboardItem {
+            entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
+            ))],
+        });
+    }
+
     #[gpui::test]
     fn wheel_scrolls_the_pane_under_the_pointer_and_repaints(cx: &mut TestAppContext) {
         let lines: String = (0..12).map(|line| format!("line {line}\r\n")).collect();
@@ -1786,15 +1698,7 @@ mod delivery {
 
     #[gpui::test]
     fn printable_key_commits_preserve_repeat_and_release(cx: &mut TestAppContext) {
-        let client = session(None);
-        let view = client.create_view(&terminal()).expect("view");
-        let cx = cx.add_empty_window();
-        cx.update(|window, _| window.activate_window());
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let input = bind(&client, view, window, cx);
-            arm(&input, false, 160., 68., window, cx);
-            input.update(cx, |state, cx| state.focus.focus(window, cx));
+        with_focused(cx, |client, input, window, cx| {
             for (stroke, text) in [("a->a", "a"), ("shift-a->A", "A"), ("space-> ", " ")] {
                 let stroke = Keystroke::parse(stroke).expect("stroke");
                 for (is_held, action) in [
@@ -1803,19 +1707,14 @@ mod delivery {
                     (true, KeyAction::Repeat),
                 ] {
                     input.update(cx, |state, cx| {
-                        let down = KeyDownEvent {
-                            keystroke: stroke.clone(),
-                            is_held,
-                            prefer_character_input: false,
-                        };
                         assert_eq!(
-                            state.key_down(&down, window, cx),
+                            state.key_down(&down(&stroke, is_held), window, cx),
                             Ok(KeyDisposition::Platform)
                         );
                         assert!(client.take_outbound().is_empty(), "wait for platform text");
                         state.replace_text_in_range(None, text, window, cx);
                     });
-                    let events = keys(&client);
+                    let events = keys(client);
                     assert_eq!(events.len(), 1, "one commit per down, no duplicate input");
                     assert_eq!(events[0].action, action);
                     assert_eq!(events[0].text.as_deref(), Some(text));
@@ -1825,7 +1724,7 @@ mod delivery {
                     assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
                     assert!(state.pressed.is_empty());
                 });
-                let events = keys(&client);
+                let events = keys(client);
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].action, KeyAction::Release);
                 assert_eq!(events[0].text, None);
@@ -1835,32 +1734,19 @@ mod delivery {
 
     #[gpui::test]
     fn named_and_control_keys_repeat_without_platform_text(cx: &mut TestAppContext) {
-        let client = session(None);
-        let view = client.create_view(&terminal()).expect("view");
-        let cx = cx.add_empty_window();
-        cx.update(|window, _| window.activate_window());
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let input = bind(&client, view, window, cx);
-            arm(&input, false, 160., 68., window, cx);
+        with_focused(cx, |client, input, window, cx| {
             input.update(cx, |state, cx| {
-                state.focus.focus(window, cx);
                 for stroke in ["left", "backspace", "enter", "ctrl-a"] {
                     let stroke = Keystroke::parse(stroke).expect("stroke");
                     for is_held in [false, true] {
-                        let down = KeyDownEvent {
-                            keystroke: stroke.clone(),
-                            is_held,
-                            prefer_character_input: false,
-                        };
                         assert_eq!(
-                            state.key_down(&down, window, cx),
+                            state.key_down(&down(&stroke, is_held), window, cx),
                             Ok(KeyDisposition::Consumed)
                         );
                     }
                     let up = KeyUpEvent { keystroke: stroke };
                     assert_eq!(state.key_up(&up, window, cx), Ok(KeyDisposition::Consumed));
-                    let events = keys(&client);
+                    let events = keys(client);
                     assert_eq!(
                         events.iter().map(|key| key.action).collect::<Vec<_>>(),
                         vec![KeyAction::Press, KeyAction::Repeat, KeyAction::Release]
@@ -1874,21 +1760,9 @@ mod delivery {
 
     #[gpui::test]
     fn composing_held_keys_stay_local_until_ime_commit(cx: &mut TestAppContext) {
-        let client = session(None);
-        let view = client.create_view(&terminal()).expect("view");
-        let cx = cx.add_empty_window();
-        cx.update(|window, _| window.activate_window());
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let input = bind(&client, view, window, cx);
-            arm(&input, false, 160., 68., window, cx);
+        with_focused(cx, |client, input, window, cx| {
             input.update(cx, |state, cx| {
-                state.focus.focus(window, cx);
-                let mut down = KeyDownEvent {
-                    keystroke: Keystroke::parse("e->e").expect("stroke"),
-                    is_held: false,
-                    prefer_character_input: false,
-                };
+                let mut down = down(&Keystroke::parse("e->e").expect("stroke"), false);
                 assert_eq!(
                     state.key_down(&down, window, cx),
                     Ok(KeyDisposition::Platform)
@@ -1906,7 +1780,7 @@ mod delivery {
                     "preedit must not reach the PTY"
                 );
                 state.replace_text_in_range(None, "漢", window, cx);
-                let events = keys(&client);
+                let events = keys(client);
                 assert_eq!(events.len(), 1);
                 assert_eq!(
                     events[0].action,
@@ -2025,11 +1899,7 @@ mod delivery {
         let view = client.create_view(&terminal()).expect("view");
         cx.add_empty_window().update(|window, cx| {
             let input = bind(&client, view, window, cx);
-            cx.write_to_clipboard(gpui::ClipboardItem {
-                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
-                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
-                ))],
-            });
+            copy_file(cx);
             input.update(cx, |state, cx| {
                 state.set_window_remote(Some("mini".into()));
                 let notice = state.paste_command(cx).expect("unpainted input refuses");
@@ -2069,7 +1939,7 @@ mod delivery {
                 .expect("detached");
             let _ = client.take_outbound();
             input.update(cx, |state, _| {
-                let receipt = state.paste_requested("rm -rf ~\n");
+                let receipt = state.paste("rm -rf ~\n", true);
                 assert!(
                     matches!(receipt, Ok(Some(_))),
                     "the refusal is a typed receipt: {receipt:?}"
@@ -2105,7 +1975,7 @@ mod delivery {
             });
             input.update(cx, |state, cx| {
                 assert_eq!(
-                    state.paste_requested("late"),
+                    state.paste("late", true),
                     Err(super::InputError::StaleHandle)
                 );
                 // Local: the dropped path pastes as text, refused as stale.
@@ -2127,11 +1997,7 @@ mod delivery {
         cx.add_empty_window().update(|window, cx| {
             let input = bind(&client, view, window, cx);
             arm(&input, false, 160., 68., window, cx);
-            cx.write_to_clipboard(gpui::ClipboardItem {
-                entries: vec![gpui::ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
-                    vec![std::path::PathBuf::from("/tmp/source.txt")].into(),
-                ))],
-            });
+            copy_file(cx);
             input.update(cx, |state, cx| {
                 state.set_window_remote(Some("mini".into()));
                 let notice = state.paste_command(cx).expect("viewer refuses");

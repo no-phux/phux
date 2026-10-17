@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 use phux_client_runtime::publication::GridFrame;
 
+use super::Identity;
+
 const SCHEMES: &[&str] = &[
     "https://", "http://", "file://", "mailto:", "ssh://", "ftp://",
 ];
@@ -92,15 +94,14 @@ fn allowed(uri: &str) -> bool {
     SCHEMES.iter().any(|scheme| uri.starts_with(scheme))
 }
 
-/// Schemes a click may hand to the system, besides a `file://` URL that
-/// [`admit_url`] still has to accept.
-const OPENABLE: &[&str] = &["https://", "http://", "mailto:", "ssh://", "ftp://"];
-
 /// How many symlinks one click will follow. Linux's `MAXSYMLINKS`.
 const MAX_SYMLINKS: usize = 40;
 
 /// Title when a click does not open.
 pub(crate) const LINK_REFUSED: &str = "Link not opened";
+
+const ANOTHER_MACHINE: &str = "This file link names another machine, so it was not opened.";
+const PROGRAM: &str = "This file is an app or a program, so it was not opened.";
 
 /// Whether a clicked link may be handed to the system.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,22 +122,25 @@ pub(crate) enum LinkAdmit {
 /// either. Other schemes already allowed by [`link_in`] still open.
 #[must_use]
 pub(crate) fn admit_url(url: &str, host: &crate::attach::TerminalHost) -> LinkAdmit {
-    if OPENABLE.iter().any(|scheme| url.starts_with(scheme)) {
+    if allowed(url) && !url.starts_with("file://") {
         return LinkAdmit::Open;
     }
     let Some((authority, path)) = file_url(url) else {
         return refuse("This link was not opened.");
     };
     if let crate::attach::TerminalHost::Remote { label } = host {
-        return refuse(&remote_file_body(label.as_deref()));
+        let from = label.as_deref().unwrap_or("another machine");
+        return refuse(&format!(
+            "This file link came from {from}. It was not opened on this Mac."
+        ));
     }
-    if !local_authority(&authority) {
-        return refuse("This file link names another machine, so it was not opened.");
+    if !(authority.is_empty() || authority.eq_ignore_ascii_case("localhost")) {
+        return refuse(ANOTHER_MACHINE);
     }
     let Some(path) = decoded_path(&path) else {
         return refuse("This file link was not opened.");
     };
-    admit_launch(Path::new(&path))
+    admit_path(Path::new(&path))
 }
 
 /// Whether a path this app is about to hand to the default application may
@@ -146,16 +150,9 @@ pub(crate) fn admit_url(url: &str, host: &crate::attach::TerminalHost) -> LinkAd
 /// keeps a different path from launching.
 #[must_use]
 pub(crate) fn admit_path(path: &Path) -> LinkAdmit {
-    admit_launch(path)
-}
-
-fn admit_launch(path: &Path) -> LinkAdmit {
     match launch_block(path) {
-        LaunchBlock::Open => LinkAdmit::Open,
-        LaunchBlock::Remote => {
-            refuse("This file link names another machine, so it was not opened.")
-        }
-        LaunchBlock::Program => refuse("This file is an app or a program, so it was not opened."),
+        Ok(()) => LinkAdmit::Open,
+        Err(body) => refuse(body),
     }
 }
 
@@ -163,13 +160,6 @@ fn refuse(body: &str) -> LinkAdmit {
     LinkAdmit::Refuse {
         title: LINK_REFUSED,
         body: body.to_owned(),
-    }
-}
-
-fn remote_file_body(label: Option<&str>) -> String {
-    match label {
-        Some(name) => format!("This file link came from {name}. It was not opened on this Mac."),
-        None => "This file link came from another machine. It was not opened on this Mac.".into(),
     }
 }
 
@@ -190,10 +180,6 @@ fn file_url(url: &str) -> Option<(String, String)> {
     } else {
         Some((percent_decode(rest)?, "/".to_owned()))
     }
-}
-
-fn local_authority(authority: &str) -> bool {
-    authority.is_empty() || authority.eq_ignore_ascii_case("localhost")
 }
 
 /// Absolute path with query and fragment removed. `None` when decoding fails
@@ -225,55 +211,44 @@ fn percent_decode(raw: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-enum LaunchBlock {
-    Open,
-    /// The path names another machine (`//server`, `/net`, a symlink there).
-    Remote,
-    /// An app bundle, a known launcher extension, an executable, or a loop.
-    Program,
-}
-
-fn launch_block(path: &Path) -> LaunchBlock {
+/// The refusal body when `path` must not launch: it names another machine
+/// (`//server`, `/net`, a symlink there), or it is an app bundle, a known
+/// launcher extension, an executable, or a symlink loop.
+fn launch_block(path: &Path) -> Result<(), &'static str> {
     // `//server/share` is a UNC path. Lexical normalization collapses the
     // extra slash, so this has to be read from the path as given.
     if path_starts_with_unc(path) {
-        return LaunchBlock::Remote;
+        return Err(ANOTHER_MACHINE);
     }
     let mut current = lexical_normal(path);
     for _ in 0..MAX_SYMLINKS {
         if is_automount(&current) {
-            return LaunchBlock::Remote;
+            return Err(ANOTHER_MACHINE);
         }
         if is_bundle(&current) || launches_by_extension(&current) {
-            return LaunchBlock::Program;
+            return Err(PROGRAM);
         }
         let Ok(meta) = std::fs::symlink_metadata(&current) else {
-            return LaunchBlock::Open;
+            return Ok(());
         };
-        if meta.file_type().is_symlink() {
-            let Ok(target) = std::fs::read_link(&current) else {
-                return LaunchBlock::Program;
-            };
-            if path_starts_with_unc(&target) {
-                return LaunchBlock::Remote;
-            }
-            current = if target.is_absolute() {
-                lexical_normal(&target)
+        if !meta.file_type().is_symlink() {
+            return if is_executable(&meta) {
+                Err(PROGRAM)
             } else {
-                match current.parent() {
-                    Some(parent) => lexical_normal(&parent.join(target)),
-                    None => return LaunchBlock::Program,
-                }
+                Ok(())
             };
-            continue;
         }
-        return if meta.is_file() && is_executable(&meta) {
-            LaunchBlock::Program
+        let target = std::fs::read_link(&current).map_err(|_| PROGRAM)?;
+        if path_starts_with_unc(&target) {
+            return Err(ANOTHER_MACHINE);
+        }
+        current = if target.is_absolute() {
+            lexical_normal(&target)
         } else {
-            LaunchBlock::Open
+            lexical_normal(&current.parent().ok_or(PROGRAM)?.join(target))
         };
     }
-    LaunchBlock::Program
+    Err(PROGRAM)
 }
 
 fn lexical_normal(path: &Path) -> PathBuf {
@@ -335,65 +310,30 @@ fn is_executable(_: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Connection and replica the painted frame was admitted under.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct FrameStamp {
-    epoch: u64,
-    stream: u64,
-    bootstrap: u64,
-}
-
-impl FrameStamp {
-    pub(super) fn new(epoch: u64, frame: &GridFrame) -> Self {
-        Self {
-            epoch,
-            stream: frame.stream_id,
-            bootstrap: frame.bootstrap_id,
-        }
-    }
-}
-
-/// The link a Command-press read, and the viewport it was painted in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CapturedLink {
-    url: String,
-    stamp: FrameStamp,
-    cols: u16,
-    rows: u16,
-    offset: u64,
-}
-
-impl CapturedLink {
-    fn same_view(&self, stamp: FrameStamp, frame: &GridFrame) -> bool {
-        self.stamp == stamp
-            && self.cols == frame.cols
-            && self.rows == frame.rows
-            && self.offset == frame.scrollbar.offset
-    }
-}
+/// Connection, replica and viewport a link was read in: `(identity, cols,
+/// rows, scroll offset)`.
+type Viewport = (Identity, u16, u16, u64);
 
 /// Link identity for one view, read only from frames the painter admitted.
 #[derive(Default)]
 pub(super) struct PaintedLinks {
-    frame: Option<Arc<GridFrame>>,
-    stamp: Option<FrameStamp>,
-    press: Option<CapturedLink>,
+    painted: Option<(Identity, Arc<GridFrame>)>,
+    /// The link a Command-press read, and the viewport it was painted in.
+    press: Option<(String, Viewport)>,
 }
 
 impl PaintedLinks {
     /// Remember the frame just painted. A held press stays held until release
     /// so pointer motion cannot fall through into application mouse reporting;
     /// the release compares this frame with the one the press captured.
-    pub(super) fn present(&mut self, stamp: FrameStamp, frame: Arc<GridFrame>) {
-        self.stamp = Some(stamp);
-        self.frame = Some(frame);
+    pub(super) fn present(&mut self, stamp: Identity, frame: Arc<GridFrame>) {
+        self.painted = Some((stamp, frame));
     }
 
     /// Drop the painted frame and any press. A replaced connection calls this
     /// so a click cannot open the previous target.
     pub(super) fn forget(&mut self) {
-        self.frame = None;
-        self.stamp = None;
+        self.painted = None;
         self.press = None;
     }
 
@@ -405,50 +345,33 @@ impl PaintedLinks {
         self.press.is_some()
     }
 
-    /// The link on the painted frame. A newer, unpainted publication is not
-    /// consulted.
-    pub(super) fn link_at(&self, row: u16, col: u16) -> Option<String> {
-        link_in(self.frame.as_ref()?, row, col)
+    /// The link under `(row, col)` on the painted frame, and its viewport. A
+    /// newer, unpainted publication is not consulted.
+    fn read(&self, row: u16, col: u16) -> Option<(String, Viewport)> {
+        let (stamp, frame) = self.painted.as_ref()?;
+        let viewport = (*stamp, frame.cols, frame.rows, frame.scrollbar.offset);
+        Some((link_in(frame, row, col)?, viewport))
     }
 
     /// Capture the painted link under `(row, col)`.
     pub(super) fn press(&mut self, row: u16, col: u16) -> bool {
-        self.press = None;
-        let (Some(frame), Some(stamp)) = (self.frame.as_ref(), self.stamp) else {
-            return false;
-        };
-        let Some(url) = link_in(frame, row, col) else {
-            return false;
-        };
-        self.press = Some(CapturedLink {
-            url,
-            stamp,
-            cols: frame.cols,
-            rows: frame.rows,
-            offset: frame.scrollbar.offset,
-        });
-        true
+        self.press = self.read(row, col);
+        self.press.is_some()
     }
 
     /// The URL to open when `(row, col)` is still the pressed link on the
-    /// current painted frame. Any other release ends the gesture.
+    /// current painted frame, in the same viewport. Any other release ends
+    /// the gesture.
     pub(super) fn release(&mut self, row: u16, col: u16) -> Option<String> {
         let pressed = self.press.take()?;
-        self.matches(&pressed, row, col).then_some(pressed.url)
-    }
-
-    fn matches(&self, pressed: &CapturedLink, row: u16, col: u16) -> bool {
-        let (Some(frame), Some(stamp)) = (self.frame.as_ref(), self.stamp) else {
-            return false;
-        };
-        pressed.same_view(stamp, frame) && link_in(frame, row, col).as_ref() == Some(&pressed.url)
+        (self.read(row, col).as_ref() == Some(&pressed)).then_some(pressed.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameStamp, LINK_REFUSED, LinkAdmit, PaintedLinks, admit_path, admit_url, allowed, link_in,
+        Identity, LINK_REFUSED, LinkAdmit, PaintedLinks, admit_path, admit_url, allowed, link_in,
         url_around,
     };
     use phux_client_core::grid::{Cell, CellMetadata, GridBuffer, GridDamage};
@@ -505,7 +428,7 @@ mod tests {
         let replaced = osc8_frame("https://b.example", 2);
         let mut links = hold(&pressed);
         assert!(links.press(0, 0));
-        links.present(FrameStamp::new(1, &replaced), replaced.clone());
+        links.present(Identity::of(1, &replaced), replaced.clone());
         assert_eq!(
             link_in(&replaced, 0, 0).as_deref(),
             Some("https://b.example")
@@ -519,7 +442,7 @@ mod tests {
         let spun = text_frame(&["https://a.example / ", "https://b.example   "], 2, 0);
         let mut links = hold(&painted);
         assert!(links.press(0, 4));
-        links.present(FrameStamp::new(1, &spun), spun.clone());
+        links.present(Identity::of(1, &spun), spun.clone());
         assert_eq!(link_in(&spun, 1, 0).as_deref(), Some("https://b.example"));
         assert_eq!(links.release(0, 10).as_deref(), Some("https://a.example"));
     }
@@ -545,13 +468,13 @@ mod tests {
         let scrolled = text_frame(&["https://a.example"], 2, 4);
         let mut links = hold(&top);
         assert!(links.press(0, 4));
-        links.present(FrameStamp::new(1, &scrolled), scrolled);
+        links.present(Identity::of(1, &scrolled), scrolled);
         assert_eq!(links.release(0, 4), None);
 
         let resized = text_frame(&["https://a.example!!"], 3, 0);
         let mut links = hold(&top);
         assert!(links.press(0, 4));
-        links.present(FrameStamp::new(1, &resized), resized);
+        links.present(Identity::of(1, &resized), resized);
         assert_eq!(links.release(0, 4), None);
     }
 
@@ -561,12 +484,12 @@ mod tests {
         let mut links = hold(&painted);
         assert!(links.press(0, 4));
         let replaced = text_frame_at(&["https://a.example"], 9, 0, 4);
-        links.present(FrameStamp::new(1, &replaced), replaced);
+        links.present(Identity::of(1, &replaced), replaced);
         assert_eq!(links.release(0, 4), None);
 
         let mut links = hold(&painted);
         assert!(links.press(0, 4));
-        links.present(FrameStamp::new(2, &painted), Arc::clone(&painted));
+        links.present(Identity::of(2, &painted), Arc::clone(&painted));
         assert_eq!(links.release(0, 4), None);
 
         let mut links = hold(&painted);
@@ -578,7 +501,7 @@ mod tests {
         assert!(links.press(0, 4));
         links.forget();
         assert_eq!(links.release(0, 4), None);
-        assert_eq!(links.link_at(0, 4), None);
+        assert!(!links.press(0, 4), "a forgotten frame has no link");
     }
 
     #[test]
@@ -724,7 +647,7 @@ mod tests {
 
     fn hold(frame: &Arc<GridFrame>) -> PaintedLinks {
         let mut links = PaintedLinks::default();
-        links.present(FrameStamp::new(1, frame), Arc::clone(frame));
+        links.present(Identity::of(1, frame), Arc::clone(frame));
         links
     }
 
