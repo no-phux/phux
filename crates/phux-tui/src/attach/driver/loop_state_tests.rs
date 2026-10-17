@@ -3144,6 +3144,83 @@ async fn a_wheel_scroll_paints_the_history_rows_without_clearing() {
     drop(server);
 }
 
+/// A prefix press paints its chip on the bar in the same batch, before
+/// which-key's delay and without a frame to the pane; the key that
+/// completes the chord takes it down again.
+#[tokio::test(flavor = "current_thread")]
+async fn the_prefix_press_shows_its_chip_on_the_bar_until_the_chord_completes() {
+    use phux_config::keybind::parse_chord;
+
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
+        .expect("shipped defaults parse");
+    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    state.viewport_dims = (80, 24);
+
+    let a = ResourceId::local(1);
+    let (kernel, _effects, panes) =
+        crate::attach::pane_state::published_test_state(&[(&a, 80, 22, b"")]);
+    state.mirror.engine_kernel = kernel;
+    state.mirror.panes = panes;
+    state.mirror.workspace = ArrangementDoc::single(a.clone());
+    state.mirror.focused_resource = Some(a.clone());
+    state.layout_read_complete = true;
+    drop(frames_sent(&mut client, &mut server).await);
+    let sidebar = state.sidebar();
+    state.repaint_view(&mut out, sidebar, RepaintLevel::Full);
+
+    let press = |spec: &str| {
+        let chord = parse_chord(spec).expect("chord");
+        InputEvent::Key(KeyEvent {
+            action: KeyAction::Press,
+            key: chord.key,
+            mods: chord.modifiers,
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: None,
+            unshifted_codepoint: None,
+        })
+    };
+    out.clear();
+    state
+        .dispatch_batch(&mut client, &mut out, sidebar, vec![press("C-a")])
+        .await
+        .expect("dispatch");
+    let painted = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        painted.contains(" C-a "),
+        "the prefix press paints the chip: {painted:?}"
+    );
+    assert!(
+        frames_sent(&mut client, &mut server).await.is_empty(),
+        "the prefix itself reaches no pane"
+    );
+
+    // `C-a d` would detach; `C-a z` zooms the one pane, a layout change
+    // that repaints the chrome, so the chip must be gone from that paint.
+    out.clear();
+    state
+        .dispatch_batch(&mut client, &mut out, sidebar, vec![press("z")])
+        .await
+        .expect("dispatch");
+    let painted = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        !painted.contains(" C-a "),
+        "the completed chord clears the chip: {painted:?}"
+    );
+    assert!(
+        state
+            .settings
+            .status_bar
+            .as_ref()
+            .is_some_and(|bar| !bar.prefix_pending_for_test()),
+        "the painter no longer holds the chip"
+    );
+    drop(client);
+    drop(server);
+}
+
 /// ADR-0172: the one job arm toasts a result and, for a job that changed
 /// the session graph, asks for a fresh host inventory; a quiet finish shows
 /// and sends nothing.
