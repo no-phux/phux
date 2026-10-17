@@ -1,7 +1,10 @@
-# Native desktop host tests: `just desktop-lint` and `just desktop-test` for
-# clients/desktop/native, a GPUI crate that builds only on macOS. It is its
-# own Cargo workspace, so the root lanes never compile it; before this
-# workflow a desktop regression reached main with nothing red (phux-piaf7).
+# Native desktop host lanes for clients/desktop/native, a GPUI crate that
+# builds only on macOS. It is its own Cargo workspace, so the root lanes never
+# compile it; before this workflow a desktop regression reached main with
+# nothing red (phux-piaf7). `macos` runs `just desktop-lint`,
+# `just desktop-test` and the headless perf budget on that test build;
+# `package` builds Phux.app and runs the packaged smoke against an isolated
+# same-checkout server. Real-GPU qualification stays manual (docs/CI.md).
 #
 # The shared classifier routes it (desktop_needed): the crate's root path
 # dependencies, the toolchain inputs, the root files it embeds, this file,
@@ -53,7 +56,9 @@ jobs:
         with:
           persist-credentials: false
       # The contributor setup desktop-release.yml uses: rustup from the pin,
-      # libghostty's Zig, and the Metal compiler GPUI's shaders need.
+      # libghostty's Zig, and the Metal compiler GPUI's shaders need. This
+      # block and the Bun steps below are copied in the macos and package
+      # jobs and in desktop-release.yml; change all three together.
       - name: Contributor Rust, Zig and Metal setup
         run: |
           set -euo pipefail
@@ -62,7 +67,78 @@ jobs:
           brew install just
           xcodebuild -downloadComponent MetalToolchain
           xcrun metal --version
+      - name: Select Bun
+        id: bun
+        run: |
+          python3 -c 'import json; print("version=" + json.load(open("clients/desktop/package.json"))["engines"]["bun"])' >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.bun.outputs.version }}
       - name: Desktop lint
         run: just desktop-lint
       - name: Desktop tests
         run: just desktop-test
+      # Same test build as above; scene/runtime counters are exact budgets,
+      # times and RSS are loose ceilings (clients/desktop/scripts/perf-budget.ts).
+      - name: Desktop headless perf budget
+        run: just desktop-perf-budget "$RUNNER_TEMP/desktop-perf"
+      - name: Retain headless perf samples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-perf-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-perf
+          if-no-files-found: warn
+          retention-days: 14
+
+  package:
+    name: desktop package and smoke (macOS arm64)
+    needs: changes
+    if: needs.changes.outputs.desktop_needed == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The contributor setup desktop-release.yml uses: rustup from the pin,
+      # libghostty's Zig, and the Metal compiler GPUI's shaders need. This
+      # block and the Bun steps below are copied in the macos and package
+      # jobs and in desktop-release.yml; change all three together.
+      - name: Contributor Rust, Zig and Metal setup
+        run: |
+          set -euo pipefail
+          bash scripts/setup-rust.sh native
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          brew install just
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
+      - name: Select Bun
+        id: bun
+        run: |
+          python3 -c 'import json; print("version=" + json.load(open("clients/desktop/package.json"))["engines"]["bun"])' >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.bun.outputs.version }}
+      - name: Build the same-checkout CLI and Phux.app
+        run: |
+          set -euo pipefail
+          cargo build --locked -p phux
+          just desktop-package
+      # Hosted runners have only a virtual display, which never confirms a
+      # presented drawable; the evidence records `submitted` instead.
+      - name: Packaged app smoke
+        run: >-
+          bun clients/desktop/scripts/smoke-app.ts
+          --app clients/desktop/dist/app/Phux.app
+          --phux target/debug/phux
+          --output "$RUNNER_TEMP/desktop-evidence"
+          --allow-unconfirmed-present
+      - name: Retain packaged runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-smoke-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-evidence
+          if-no-files-found: warn
+          retention-days: 14

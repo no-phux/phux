@@ -93,3 +93,10 @@ desktop-package: desktop-native-build
 [doc('Build Phux.app and install it to /Applications; it opens your Intake session')]
 desktop-install-app: desktop-native-build
     cd clients/desktop && bun scripts/package-app.ts --install
+
+[group('desktop')]
+[doc('Run the headless GPUI benchmark and fail on scene, time or RSS budget regressions')]
+desktop-perf-budget output="clients/desktop/native/target/perf-headless": desktop-source
+    mkdir -p "{{output}}"
+    cargo test --locked --manifest-path clients/desktop/native/Cargo.toml --test pixels -- --headless-perf > "{{output}}/headless.jsonl"
+    bun clients/desktop/scripts/perf-budget.ts "{{output}}/headless.jsonl"

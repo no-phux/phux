@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-16
+last-reviewed: 2026-10-17
 ---
 
 # CI
@@ -26,12 +26,21 @@ routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
 `.github/actions/classify-changes`, with no outer path filters.
-`desktop_needed` runs `just desktop-lint` and `just desktop-test` on an
-`xcode-27` runner for the desktop host's path crates, the toolchain inputs,
-the root files the crate embeds, its own workflow, and unrouted
-`clients/desktop` paths. It holds no build cache, so each run is a cold GPUI
-and libghostty build on one of the 5 macOS slots it shares with the release
-lanes; a burst of core-crate merges to `main` can queue a release behind it.
+`desktop_needed` runs two `xcode-27` jobs for the desktop host's path crates,
+the toolchain inputs, the root files the crate embeds, its own workflow, and
+unrouted `clients/desktop` paths. `macos` runs `just desktop-lint`,
+`just desktop-test`, and `just desktop-perf-budget` on the same test build:
+the headless GPUI benchmark's scene and runtime counters must match
+`clients/desktop/scripts/perf-budget.ts` exactly, and its tick and RSS
+ceilings catch only gross regressions. `package` builds the debug CLI and
+`just desktop-package`, then runs `smoke-app.ts` with
+`--allow-unconfirmed-present` and uploads the evidence directory. Neither job
+holds a build cache, so each run is two cold GPUI and libghostty builds on the
+5 macOS slots shared with the release lanes; a burst of core-crate merges to
+`main` can queue a release behind them. A hosted virtual display never
+confirms a presented drawable, so real-GPU qualification stays manual:
+`just desktop-native-test` on an Apple silicon Mac with a graphical login
+requires `confirmed` presentation.
 Unknown paths, unavailable history, and empty diffs
 request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
