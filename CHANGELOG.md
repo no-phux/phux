@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.95.1](https://github.com/no-phux/phux/compare/v0.95.0...v0.95.1) (2026-10-17)
+
+
+### Documentation
+
+* **adr:** propose declared producers with usage as the first feed ([#1564](https://github.com/no-phux/phux/issues/1564)) ([d16a7af](https://github.com/no-phux/phux/commit/d16a7afe799dfda6d3f22e7ca333507fa97d51a1))
+* **vision:** describe a shared distributed computing environment ([2a7ea15](https://github.com/no-phux/phux/commit/2a7ea1584a525936ae2715288a7577706b101378))
+
 ## [0.95.0](https://github.com/no-phux/phux/compare/v0.94.2...v0.95.0) (2026-10-17)
 
 
