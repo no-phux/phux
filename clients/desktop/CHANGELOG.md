@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.28.1](https://github.com/no-phux/phux/compare/desktop-v0.28.0...desktop-v0.28.1) (2026-10-17)
+
+
+### Documentation
+
+* **desktop:** describe press as a bare key-down without IME insertion ([a4389f9](https://github.com/no-phux/phux/commit/a4389f95db5a5ff514521ef8563f508dfa494883))
+
 ## [0.28.0](https://github.com/no-phux/phux/compare/desktop-v0.27.3...desktop-v0.28.0) (2026-10-17)
 
 
