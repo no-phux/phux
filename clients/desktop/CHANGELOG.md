@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.27.1](https://github.com/no-phux/phux/compare/desktop-v0.27.0...desktop-v0.27.1) (2026-10-17)
+
+
+### Performance
+
+* **runtime:** refill retired frame buffers a consumer has released ([82024cb](https://github.com/no-phux/phux/commit/82024cb91b0884212daf9d7ec3eeb4075a8c8a08))
+
 ## [0.27.0](https://github.com/no-phux/phux/compare/desktop-v0.26.1...desktop-v0.27.0) (2026-10-17)
 
 
