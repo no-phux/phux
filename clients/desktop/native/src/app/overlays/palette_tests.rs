@@ -647,9 +647,9 @@ fn open(desk: &Entity<Desk>, modal: &Modal, cx: &mut VisualTestContext) {
     assert_eq!(desk.read_with(cx, |desk, _| desk.modal.clone()), *modal);
 }
 
-fn path_picker() -> crate::connection::PickerState {
-    crate::connection::begin_picker(
-        crate::connection::PathTarget {
+fn path_picker() -> crate::connection::path::PickerState {
+    crate::connection::path::begin_picker(
+        crate::connection::path::PathTarget {
             terminal_id: "local:1".into(),
             placement_id: "place-1".into(),
             server_id: "a".into(),
@@ -822,18 +822,18 @@ fn path_loading_and_failure_read_in_the_results_not_the_footer(cx: &mut TestAppC
     };
     for (picker, text) in [
         (
-            crate::connection::start_query(path_picker(), 7, "/repo", ""),
+            crate::connection::path::start_query(path_picker(), 7, "/repo", ""),
             "Searching host paths…",
         ),
         (
-            crate::connection::PickerState {
+            crate::connection::path::PickerState {
                 failure: Some("permission denied".into()),
                 ..path_picker()
             },
             "permission denied",
         ),
         (
-            crate::connection::PickerState {
+            crate::connection::path::PickerState {
                 message: "Host index is warming; search again shortly.".into(),
                 ..path_picker()
             },
@@ -867,8 +867,8 @@ fn path_loading_and_failure_read_in_the_results_not_the_footer(cx: &mut TestAppC
     }
     // Listed rows keep paging status in the footer.
     desk.update(cx, |desk, cx| {
-        desk.picker = Some(crate::connection::PickerState {
-            rows: vec![crate::connection::PathRow {
+        desk.picker = Some(crate::connection::path::PickerState {
+            rows: vec![crate::connection::path::PathRow {
                 path: "/repo/a".into(),
                 kind: "file".into(),
             }],

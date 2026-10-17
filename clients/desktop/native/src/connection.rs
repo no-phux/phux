@@ -9,19 +9,14 @@ pub mod org;
 pub mod path;
 pub mod transcript;
 
-pub use path::{
-    PathRow, PathTarget, PickerState, accept_path_answer, begin_picker, can_offer_path_picker,
-    directory_for_terminal, display_path, host_for_terminal, prepared_insertion, same_target,
-    shell_quote_path, start_query,
-};
-
+use phux_client_core::session::agent_stream::AgentPublication;
 pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
-use phux_client_runtime::control::{ControlOptions, SessionRecovery};
 use phux_client_runtime::control::{
-    DeliveryOutcome, Event, FileUploadReceipt, OrganizationReplica, PaneDescriptor, PathAnswer,
-    ServerInfo, SpawnRequest, Status, Topology, mint_operation,
+    AgentSessionInfo, ControlOptions, ControlPlane, DeliveryOutcome, Event, FileUploadReceipt,
+    OrganizationReplica, PaneDescriptor, PathAnswer, ServerInfo, SessionDescriptor,
+    SessionRecovery, SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -61,10 +56,16 @@ impl AgentInfo {
         self.attention == AgentAttention::High
     }
 
-    /// What a person reads for the state.
+    /// What a person reads for the state. An undeclared state reads as nothing.
     #[must_use]
     pub fn word(&self) -> &'static str {
-        state_word(self.state)
+        match self.state {
+            AgentState::Blocked => "needs you",
+            AgentState::Done => "finished",
+            AgentState::Working => "working",
+            AgentState::Idle => "idle",
+            AgentState::Unknown => "",
+        }
     }
 
     /// Declared working.
@@ -83,18 +84,6 @@ impl AgentInfo {
     #[must_use]
     pub fn finished(&self) -> bool {
         self.state == AgentState::Done
-    }
-}
-
-/// What a person reads for an agent state. An undeclared state reads as nothing.
-#[must_use]
-pub fn state_word(state: AgentState) -> &'static str {
-    match state {
-        AgentState::Blocked => "needs you",
-        AgentState::Done => "finished",
-        AgentState::Working => "working",
-        AgentState::Idle => "idle",
-        AgentState::Unknown => "",
     }
 }
 
@@ -201,17 +190,22 @@ pub struct Connection {
     file_uploads: Vec<FileUploadReceipt>,
     wake_rx: async_channel::Receiver<()>,
     revision: u64,
-    paint_clock: u64,
-    every_terminal: u64,
-    paint: HashMap<ResourceId, u64>,
+}
+
+/// The home session: by its persistent key when one is known, else by name.
+pub(crate) fn home_entry<'a>(
+    topology: &'a Topology,
+    name: &str,
+    key: Option<SessionKey>,
+) -> Option<&'a SessionDescriptor> {
+    match key {
+        Some(key) => topology.session_keyed(&key),
+        None => topology.session_named(name),
+    }
 }
 
 pub(crate) fn sync_home_name(topology: &Topology, name: &mut String, key: &mut Option<SessionKey>) {
-    let home = match *key {
-        Some(key) => topology.session_keyed(&key),
-        None => topology.session_named(name),
-    };
-    if let Some(home) = home {
+    if let Some(home) = home_entry(topology, name, *key) {
         *key = home.key;
         name.clone_from(&home.name);
     }
@@ -261,18 +255,6 @@ fn remote_target(host: &str) -> anyhow::Result<Target> {
     Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))
 }
 
-fn browsing_options() -> ControlOptions {
-    ControlOptions {
-        client_name: "phux-desktop-catalog".to_owned(),
-        viewport: (0, 0),
-        attach: None,
-        attach_role: None,
-        auto_attach_foreign_spawns: false,
-        subscribe_agent_sessions: false,
-        ..ControlOptions::default()
-    }
-}
-
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
@@ -291,17 +273,12 @@ impl Connection {
     }
 
     /// Attach `session` on a host from the remote registry.
-    pub fn connect_remote(host: &str, session: String) -> anyhow::Result<Self> {
-        Self::connect_remote_with_key(host, session, None)
-    }
-
     pub(crate) fn connect_remote_with_key(
         host: &str,
         session: String,
         key: Option<SessionKey>,
     ) -> anyhow::Result<Self> {
-        let target = remote_target(host)?;
-        Self::connect_target(target, session, key)
+        Self::connect_target(remote_target(host)?, session, key)
     }
 
     fn connect_target(
@@ -344,7 +321,18 @@ impl Connection {
             Some(host) => remote_target(host)?,
             None => Target::uds(socket.to_path_buf()),
         };
-        let client = open_client(target, browsing_options())?;
+        let client = open_client(
+            target,
+            ControlOptions {
+                client_name: "phux-desktop-catalog".to_owned(),
+                viewport: (0, 0),
+                attach: None,
+                attach_role: None,
+                auto_attach_foreign_spawns: false,
+                subscribe_agent_sessions: false,
+                ..ControlOptions::default()
+            },
+        )?;
         let mut connection = Self::from_client(client, String::new());
         connection.browsing = true;
         Ok(connection)
@@ -386,9 +374,6 @@ impl Connection {
             file_uploads: Vec::new(),
             wake_rx,
             revision: 0,
-            paint_clock: 0,
-            every_terminal: 0,
-            paint: HashMap::new(),
         }
     }
 
@@ -417,21 +402,18 @@ impl Connection {
         self.path_answers.extend(self.client.take_path_answers());
         self.file_uploads
             .extend(self.client.take_file_upload_receipts());
-        let changed = observation.events.iter().any(structural);
+        let changed = observation.events.iter().any(Event::changes_session_graph);
         let was = self.status;
-        self.observe_epoch(&observation.events);
+        if self.pinned_home && observation.events.iter().any(starts_connection) {
+            self.key_bootstrap_pending = true;
+            self.pinned_verified_epoch = None;
+        }
+        self.status = observation.status;
+        if observation.last_error.is_some() {
+            self.error = observation.last_error;
+        }
         if changed {
-            self.apply_snapshot(
-                observation.status,
-                observation.last_error.clone(),
-                observation.topology.clone(),
-                observation.connection_epoch,
-            );
-        } else {
-            self.status = observation.status;
-            if observation.last_error.is_some() {
-                self.error = observation.last_error;
-            }
+            self.apply_snapshot(observation.topology, observation.connection_epoch);
         }
         // A successful (re)attach leaves no failure to show.
         if self.status == Status::Attached && was != Status::Attached {
@@ -442,19 +424,8 @@ impl Connection {
         if changed && !self.browsing {
             self.follow_arrangements(&observation.events);
         }
-        self.invalidate_paint(&observation.events);
         self.revision = self.revision.saturating_add(1);
         observation.events
-    }
-
-    fn observe_epoch(&mut self, events: &[Event]) {
-        if !self.pinned_home {
-            return;
-        }
-        if events.iter().any(starts_connection) {
-            self.key_bootstrap_pending = true;
-            self.pinned_verified_epoch = None;
-        }
     }
 
     /// Path answers stashed by [`Self::drain`] since the last take.
@@ -521,15 +492,7 @@ impl Connection {
     /// Attached home session, following its persistent identity through renames.
     #[must_use]
     pub fn home_session(&self) -> Option<u32> {
-        self.topology
-            .as_ref()?
-            .sessions
-            .iter()
-            .find(|session| match self.home_key {
-                Some(key) => session.key == Some(key),
-                None => session.name == self.session,
-            })
-            .map(|session| session.id)
+        home_entry(self.topology.as_ref()?, &self.session, self.home_key).map(|session| session.id)
     }
 
     pub(crate) const fn home_key(&self) -> Option<SessionKey> {
@@ -598,16 +561,8 @@ impl Connection {
     ///
     /// A sentence when the journal refuses the submission.
     pub fn create_session(&self, name: &str, directory: &str) -> Result<OperationId, String> {
-        let mut launch = LaunchSpec::new(Vec::new());
-        launch.cwd = Some(directory.to_owned());
         self.client
-            .submit_organization(Command::SessionCreate {
-                operation: mint_operation(),
-                name: name.to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(launch)),
-            })
+            .submit_organization(session_create(name, Some(directory.to_owned())))
             .map_err(|error| error.to_string())
     }
 
@@ -687,14 +642,6 @@ impl Connection {
         names
     }
 
-    /// Whether `PATH_QUERY` was advertised.
-    #[must_use]
-    pub fn has_path_query(&self) -> bool {
-        self.server
-            .as_ref()
-            .is_some_and(|server| server.has_ext(phux_protocol::caps::ServerFeatureExt::PathQuery))
-    }
-
     /// Hex server incarnation.
     #[must_use]
     pub fn server_id(&self) -> Option<String> {
@@ -715,13 +662,6 @@ impl Connection {
         self.revision
     }
 
-    /// Paint clock for one terminal. A background flood does not bump every pane.
-    #[must_use]
-    pub fn paint_revision(&self, id: &ResourceId) -> u64 {
-        self.every_terminal
-            .max(self.paint.get(id).copied().unwrap_or(0))
-    }
-
     /// Attach session name.
     #[must_use]
     pub fn session_name(&self) -> &str {
@@ -740,27 +680,14 @@ impl Connection {
         self.client.path_query(root, query, recursive, host)
     }
 
-    fn apply_snapshot(
-        &mut self,
-        status: Status,
-        error: Option<String>,
-        topology: Option<Topology>,
-        epoch: u64,
-    ) {
-        self.status = status;
-        if error.is_some() {
-            self.error = error;
-        }
-        self.known.clear();
-        if let Some(topology) = &topology {
-            for pane in &topology.panes {
-                self.known.insert(pane.terminal_id.clone());
-            }
-        }
+    fn apply_snapshot(&mut self, topology: Option<Topology>, epoch: u64) {
+        self.known = topology
+            .iter()
+            .flat_map(|topology| &topology.panes)
+            .map(|pane| pane.terminal_id.clone())
+            .collect();
         // Once the topology lists a spawn, the admission has done its job.
         self.admitted.retain(|id| !self.known.contains(id));
-        self.paint
-            .retain(|id, _| self.known.contains(id) || self.admitted.contains(id));
         if let Some(server) = self.client.server() {
             let next = ConnectionIdentity {
                 server_id: status::server_id(&server),
@@ -775,10 +702,7 @@ impl Connection {
                 self.conversation_heads.clear();
             }
             if self.identity.as_ref() != Some(&next) {
-                self.agents.clear();
-                self.project_tag = None;
-                self.projects.clear();
-                self.directories.clear();
+                self.forget_session_metadata();
             }
             self.identity = Some(next);
             self.server = Some(server);
@@ -879,116 +803,54 @@ impl Connection {
             .as_ref()
             .is_some_and(|identity| identity.connection_epoch == epoch);
         for (index, event) in events.iter().enumerate() {
-            if starts_connection(event) {
-                self.agents.clear();
-                self.project_tag = None;
-                self.projects.clear();
-                self.directories.clear();
-                // A new boundary can reuse ids; never trust an old admission.
-                self.admitted.clear();
-            }
-            if let Event::ServerError { message, .. } = event {
-                self.error = Some(message.clone());
-            }
-            if let Event::ApprovalDecision {
-                id,
-                decision,
-                outcome,
-            } = event
-            {
-                self.approval_outcomes.push(ApprovalOutcome {
+            let live = same_identity && boundary.is_none_or(|boundary| index > boundary);
+            match event {
+                _ if starts_connection(event) => {
+                    self.forget_session_metadata();
+                    // A new boundary can reuse ids; never trust an old admission.
+                    self.admitted.clear();
+                }
+                Event::ServerError { message, .. } => self.error = Some(message.clone()),
+                Event::ApprovalDecision {
+                    id,
+                    decision,
+                    outcome,
+                } => self.approval_outcomes.push(ApprovalOutcome {
                     id: *id,
                     decision: *decision,
                     outcome: outcome.clone(),
-                });
-            }
-            if let Event::AgentMetadata { terminal_id, value } = event {
-                let after_boundary = boundary.is_none_or(|boundary| index > boundary);
-                if same_identity && after_boundary {
+                }),
+                Event::AgentMetadata { terminal_id, value } if live => {
                     self.agents_noted |=
                         note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
                 }
-            }
-            let after_boundary = boundary.is_none_or(|boundary| index > boundary);
-            if same_identity && after_boundary {
-                match event {
-                    Event::AgentPublication {
-                        publication,
-                        session,
-                    } => {
-                        if let Some(parent) = session.parent.as_ref()
-                            && self.known.contains(parent)
-                        {
-                            let resource = &publication.resource_id;
-                            let native = self.client.with_control(|control| {
-                                control
-                                    .engine()
-                                    .and_then(|engine| engine.native_agent_view(resource))
-                            });
-                            if !self.conversations.contains_key(resource)
-                                && let Some(conversation) =
-                                    transcript::Conversation::new(publication, session, epoch)
-                            {
-                                self.conversations.insert(resource.clone(), conversation);
-                            }
-                            if let Some(conversation) = self.conversations.get_mut(resource)
-                                && !conversation.closed
-                                && &conversation.parent == parent
-                            {
-                                conversation.apply(publication, session, epoch);
-                                // Losing a projection is not a cutover to PTY input,
-                                // nor permission to keep old ACP controls interactive.
-                                if let Some(native) = native {
-                                    conversation.native = Some(native);
-                                } else if let Some(native) = conversation.native.as_mut() {
-                                    native.connected = false;
-                                }
-                            }
-                            if let Some(conversation) = self.conversations.get(resource)
-                                && !conversation.closed
-                                && &conversation.parent == parent
-                            {
-                                let current = self.conversation_heads.get(parent);
-                                let newer = current.is_none_or(|head| {
-                                    head == resource
-                                        || self.conversations.get(head).is_none_or(|head| {
-                                            conversation.last_activity_ms > head.last_activity_ms
-                                                || (head.closed
-                                                    && conversation.last_activity_ms
-                                                        == head.last_activity_ms)
-                                        })
-                                });
-                                if newer {
-                                    self.conversation_heads
-                                        .insert(parent.clone(), resource.clone());
-                                }
-                            }
-                        }
+                Event::AgentPublication {
+                    publication,
+                    session,
+                } if live => self.publish(publication, session, epoch),
+                Event::AgentSessionClosed { terminal_id, .. } if live => {
+                    if let Some(conversation) = self.conversations.get_mut(terminal_id) {
+                        conversation.closed = true;
+                        conversation.revision = conversation.revision.saturating_add(1);
                     }
-                    Event::AgentSessionClosed { terminal_id, .. } => {
-                        if let Some(conversation) = self.conversations.get_mut(terminal_id) {
-                            conversation.closed = true;
-                            conversation.revision = conversation.revision.saturating_add(1);
-                        }
-                    }
-                    _ => {}
                 }
-            }
-            if let Event::SessionProject { name, project } = event {
-                note_project(&mut self.project_tag, name, project.as_deref());
-            }
-            if let Some(id) = own_spawn(event) {
-                // Our own spawn is live the moment the server answers it; the
-                // topology refresh that lists it is a later round trip.
-                self.admitted.insert(id.clone());
-            }
-            if let Event::TerminalClosed { terminal_id, .. } = event {
-                self.agents.remove(terminal_id);
-                self.paint.remove(terminal_id);
-                self.admitted.remove(terminal_id);
-                self.conversation_heads.remove(terminal_id);
-                self.conversations
-                    .retain(|_, conversation| &conversation.parent != terminal_id);
+                Event::SessionProject { name, project } => {
+                    note_project(&mut self.project_tag, name, project.as_deref());
+                }
+                Event::TerminalClosed { terminal_id, .. } => {
+                    self.agents.remove(terminal_id);
+                    self.admitted.remove(terminal_id);
+                    self.conversation_heads.remove(terminal_id);
+                    self.conversations
+                        .retain(|_, conversation| &conversation.parent != terminal_id);
+                }
+                _ => {
+                    if let Some(id) = own_spawn(event) {
+                        // Our own spawn is live the moment the server answers it; the
+                        // topology refresh that lists it is a later round trip.
+                        self.admitted.insert(id.clone());
+                    }
+                }
             }
         }
         self.conversations.retain(|resource, conversation| {
@@ -1000,13 +862,68 @@ impl Connection {
         {
             self.approvals = self.client.approvals();
         }
-        if events.iter().any(structural)
-            || events
-                .iter()
-                .any(|event| matches!(event, Event::SessionProject { .. }))
-        {
+        if events.iter().any(|event| {
+            event.changes_session_graph() || matches!(event, Event::SessionProject { .. })
+        }) {
             self.rebuild_projects();
         }
+    }
+
+    /// Fold one committed publication into its conversation and keep the most
+    /// recently active open stream as its terminal's head.
+    fn publish(&mut self, publication: &AgentPublication, session: &AgentSessionInfo, epoch: u64) {
+        let Some(parent) = session
+            .parent
+            .as_ref()
+            .filter(|parent| self.known.contains(*parent))
+        else {
+            return;
+        };
+        let resource = &publication.resource_id;
+        let native = self.client.with_control(|control| {
+            control
+                .engine()
+                .and_then(|engine| engine.native_agent_view(resource))
+        });
+        if !self.conversations.contains_key(resource)
+            && let Some(conversation) = transcript::Conversation::new(publication, session, epoch)
+        {
+            self.conversations.insert(resource.clone(), conversation);
+        }
+        let Some(conversation) = self
+            .conversations
+            .get_mut(resource)
+            .filter(|conversation| !conversation.closed && &conversation.parent == parent)
+        else {
+            return;
+        };
+        conversation.apply(publication, session, epoch);
+        // Losing a projection is not a cutover to PTY input,
+        // nor permission to keep old ACP controls interactive.
+        if let Some(native) = native {
+            conversation.native = Some(native);
+        } else if let Some(native) = conversation.native.as_mut() {
+            native.connected = false;
+        }
+        let activity = conversation.last_activity_ms;
+        let newer = self.conversation_heads.get(parent).is_none_or(|head| {
+            head == resource
+                || self.conversations.get(head).is_none_or(|head| {
+                    activity > head.last_activity_ms
+                        || (head.closed && activity == head.last_activity_ms)
+                })
+        });
+        if newer {
+            self.conversation_heads
+                .insert(parent.clone(), resource.clone());
+        }
+    }
+
+    fn forget_session_metadata(&mut self) {
+        self.agents.clear();
+        self.project_tag = None;
+        self.projects.clear();
+        self.directories.clear();
     }
 
     fn rebuild_projects(&mut self) {
@@ -1039,32 +956,18 @@ impl Connection {
             }
         }
     }
+}
 
-    fn invalidate_paint(&mut self, events: &[Event]) {
-        let mut output = HashSet::new();
-        let mut all = events.is_empty();
-        for event in events {
-            match event {
-                Event::TerminalChanged { terminal_id } => {
-                    output.insert(terminal_id.clone());
-                }
-                Event::AgentMetadata { .. }
-                | Event::SessionProject { .. }
-                | Event::ApprovalsChanged
-                | Event::ApprovalDecision { .. } => {}
-                _ => all = true,
-            }
-        }
-        if !all && output.is_empty() {
-            return;
-        }
-        self.paint_clock = self.paint_clock.saturating_add(1);
-        if all {
-            self.every_terminal = self.paint_clock;
-        }
-        for id in output {
-            self.paint.insert(id, self.paint_clock);
-        }
+/// `SESSION_CREATE` for a persistent session whose first terminal starts in `cwd`.
+pub(crate) fn session_create(name: &str, cwd: Option<String>) -> Command {
+    let mut launch = LaunchSpec::new(Vec::new());
+    launch.cwd = cwd;
+    Command::SessionCreate {
+        operation: mint_operation(),
+        name: name.to_owned(),
+        lifetime: SessionLifetime::Persistent,
+        attrs: Vec::new(),
+        launch: Some(Box::new(launch)),
     }
 }
 
@@ -1094,28 +997,21 @@ fn note_agent(
     if folded.name.is_empty() {
         return agents.remove(terminal).is_some();
     }
-    let (state, attention) = (folded.state, folded.attention);
-    let previous = agents
-        .get(terminal)
-        .map(|info| (info.state, info.attention, info.changed_at_ms));
-    let changed = previous
-        .as_ref()
-        .is_none_or(|(previous_state, previous_attention, _)| {
-            *previous_state != state || *previous_attention != attention
-        });
-    let changed_at_ms = if changed {
-        now
-    } else {
-        previous.map(|(_, _, at)| at).unwrap_or(now)
+    let previous = agents.get(terminal);
+    let changed_at_ms = match previous {
+        Some(info) if (info.state, info.attention) == (folded.state, folded.attention) => {
+            info.changed_at_ms
+        }
+        _ => now,
     };
     let next = AgentInfo {
         name: folded.name,
         kind: folded.kind,
-        state,
-        attention,
+        state: folded.state,
+        attention: folded.attention,
         changed_at_ms,
     };
-    if agents.get(terminal) == Some(&next) {
+    if previous == Some(&next) {
         return false;
     }
     agents.insert(terminal.clone(), next);
@@ -1127,12 +1023,6 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// An event that can change topology, status, or the server snapshot.
-#[must_use]
-pub fn structural(event: &Event) -> bool {
-    event.changes_session_graph()
 }
 
 /// The session just became attached. The desk paints every placed terminal once.
@@ -1156,7 +1046,7 @@ pub fn paint_wake(event: &Event) -> bool {
 pub fn refused_input(event: &Event) -> Option<String> {
     match event {
         Event::InputDelivery {
-            outcome: phux_client_runtime::control::DeliveryOutcome::Refused,
+            outcome: DeliveryOutcome::Refused,
             message,
             ..
         } => Some(if message.is_empty() {
@@ -1182,23 +1072,19 @@ pub fn starts_connection(event: &Event) -> bool {
 const MAX_ARGS: usize = 256;
 const MAX_TEXT: usize = 64 * 1024;
 
-fn queue_spawn(
-    control: &mut phux_client_runtime::control::ControlPlane,
-    mut request: SpawnRequest,
-) -> Result<u32, CommandError> {
-    if !control.handshake_ready() {
-        return Err(command(
-            "NotNegotiated",
+fn queue_spawn(control: &mut ControlPlane, mut request: SpawnRequest) -> Result<u32, CommandError> {
+    let not_connected = |reason| {
+        command(
+            reason,
             "Not connected",
             "Wait for the server, or reconnect with ⌘R.",
-        ));
+        )
+    };
+    if !control.handshake_ready() {
+        return Err(not_connected("NotNegotiated"));
     }
     if control.status() != Status::Attached {
-        return Err(command(
-            "NotAttached",
-            "Not connected",
-            "Wait for the server, or reconnect with ⌘R.",
-        ));
+        return Err(not_connected("NotAttached"));
     }
     if control
         .options()
@@ -1215,24 +1101,11 @@ fn queue_spawn(
     let target = request
         .session_id
         .or(control.attached_session())
-        .ok_or_else(|| {
-            command(
-                "InvalidSessionId",
-                "Not connected",
-                "Wait for the server, or reconnect with ⌘R.",
-            )
-        })?;
-    if control.topology().is_none() {
-        return Err(command(
-            "TopologyUnavailable",
-            "Not connected",
-            "Wait for the server, or reconnect with ⌘R.",
-        ));
-    }
-    let known = control
-        .topology()
-        .is_some_and(|topology| topology.sessions.iter().any(|session| session.id == target));
-    if !known {
+        .ok_or_else(|| not_connected("InvalidSessionId"))?;
+    let Some(topology) = control.topology() else {
+        return Err(not_connected("TopologyUnavailable"));
+    };
+    if !topology.sessions.iter().any(|session| session.id == target) {
         return Err(command(
             "SessionNotFound",
             "Not connected",
@@ -1244,9 +1117,8 @@ fn queue_spawn(
             .server()
             .is_some_and(|server| server.has(ServerFeature::SpawnInitialSize))
     {
-        return Err(command(
+        return Err(cannot_spawn(
             "UnsupportedSpawnInitialSize",
-            "Could not start a terminal",
             "This server does not accept an initial size.",
         ));
     }
@@ -1255,55 +1127,39 @@ fn queue_spawn(
 }
 
 fn queue_termination(
-    control: &mut phux_client_runtime::control::ControlPlane,
+    control: &mut ControlPlane,
     identity: &ConnectionIdentity,
     id: &ResourceId,
 ) -> Result<u32, CommandError> {
-    if !control.handshake_ready() {
-        return Err(command(
-            "NotNegotiated",
-            "Terminate refused",
-            "Not connected.",
-        ));
-    }
-    let server_id = control.server().map(status::server_id);
+    let refused = |reason, body| command(reason, "Terminate refused", body);
+    let server_id = control
+        .server()
+        .map(status::server_id)
+        .filter(|_| control.handshake_ready());
     let Some(server_id) = server_id else {
-        return Err(command(
-            "NotNegotiated",
-            "Terminate refused",
-            "Not connected.",
-        ));
+        return Err(refused("NotNegotiated", "Not connected."));
     };
     if identity.connection_epoch != control.connection_epoch() || identity.server_id != server_id {
-        return Err(command(
+        return Err(refused(
             "StaleConnectionIdentity",
-            "Terminate refused",
             "The connection changed; try again.",
         ));
     }
     if control.status() != Status::Attached {
-        return Err(command(
-            "NotAttached",
-            "Terminate refused",
-            "Not connected.",
-        ));
+        return Err(refused("NotAttached", "Not connected."));
     }
     if matches!(id, ResourceId::Satellite { .. }) {
-        return Err(command(
+        return Err(refused(
             "UnsupportedSatelliteTermination",
-            "Terminate refused",
             "Satellite terminals cannot be terminated from this window.",
         ));
     }
-    let known = control
+    if control
         .topology()
-        .is_some_and(|topology| topology.panes.iter().any(|pane| &pane.terminal_id == id));
-    if !known {
-        return Err(command(
-            "TerminalNotFound",
-            "Terminate refused",
-            "That terminal is gone.",
-        ));
+        .and_then(|topology| topology.pane(id))
+        .is_none()
+    {
+        return Err(refused("TerminalNotFound", "That terminal is gone."));
     }
     Ok(control.kill_terminal(id))
 }
@@ -1312,11 +1168,7 @@ fn validate_spawn(request: &SpawnRequest) -> Result<(), CommandError> {
     let mut total = 0_usize;
     if let Some(argv) = &request.command {
         if argv.is_empty() || argv.len() > MAX_ARGS || argv[0].is_empty() {
-            return Err(command(
-                "InvalidSpawnCommand",
-                "Could not start a terminal",
-                "Invalid command.",
-            ));
+            return Err(cannot_spawn("InvalidSpawnCommand", "Invalid command."));
         }
         for arg in argv {
             count_text(&mut total, arg)?;
@@ -1324,30 +1176,22 @@ fn validate_spawn(request: &SpawnRequest) -> Result<(), CommandError> {
     }
     if let Some(cwd) = &request.cwd {
         if cwd.is_empty() {
-            return Err(command(
+            return Err(cannot_spawn(
                 "InvalidSpawnDirectory",
-                "Could not start a terminal",
                 "A new session needs the focused directory or a chosen folder.",
             ));
         }
         count_text(&mut total, cwd)?;
     }
     if let Some(env) = &request.env {
+        let invalid = || cannot_spawn("InvalidSpawnEnvironment", "Invalid environment.");
         if env.len() > MAX_ARGS {
-            return Err(command(
-                "InvalidSpawnEnvironment",
-                "Could not start a terminal",
-                "Invalid environment.",
-            ));
+            return Err(invalid());
         }
         let mut names = HashSet::new();
         for (name, value) in env {
             if name.is_empty() || name.contains('=') || !names.insert(name) {
-                return Err(command(
-                    "InvalidSpawnEnvironment",
-                    "Could not start a terminal",
-                    "Invalid environment.",
-                ));
+                return Err(invalid());
             }
             count_text(&mut total, name)?;
             count_text(&mut total, value)?;
@@ -1358,14 +1202,17 @@ fn validate_spawn(request: &SpawnRequest) -> Result<(), CommandError> {
 
 fn count_text(total: &mut usize, text: &str) -> Result<(), CommandError> {
     if text.contains('\0') || text.len() > MAX_TEXT.saturating_sub(*total) {
-        return Err(command(
+        return Err(cannot_spawn(
             "InvalidSpawnText",
-            "Could not start a terminal",
             "The request is too large.",
         ));
     }
     *total += text.len();
     Ok(())
+}
+
+fn cannot_spawn(reason: &'static str, body: &str) -> CommandError {
+    command(reason, "Could not start a terminal", body)
 }
 
 fn command(reason: &'static str, title: &'static str, body: &str) -> CommandError {
@@ -1390,8 +1237,7 @@ pub fn parse_terminal(value: &str) -> Option<ResourceId> {
 
 /// The terminal id of a spawn this window owns and may place before the
 /// post-spawn topology refresh lists it. A refused spawn names none.
-#[must_use]
-pub fn own_spawn(event: &Event) -> Option<&ResourceId> {
+fn own_spawn(event: &Event) -> Option<&ResourceId> {
     match event {
         Event::TerminalSpawned {
             terminal_id: Some(id),
@@ -1443,7 +1289,7 @@ mod authority_tests;
 
 #[cfg(test)]
 mod paint_wake_tests {
-    use super::{own_spawn, paint_wake, session_attached, structural};
+    use super::{own_spawn, paint_wake, session_attached};
     use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
     use phux_protocol::ResourceId;
 
@@ -1453,7 +1299,7 @@ mod paint_wake_tests {
         assert!(paint_wake(&Event::TerminalChanged {
             terminal_id: terminal_id.clone(),
         }));
-        assert!(!structural(&Event::TerminalChanged { terminal_id }));
+        assert!(!Event::TerminalChanged { terminal_id }.changes_session_graph());
         assert!(paint_wake(&Event::InputDelivery {
             delivery_id: 1,
             outcome: DeliveryOutcome::Delivered,
@@ -1466,7 +1312,7 @@ mod paint_wake_tests {
             code: None,
             message: String::new(),
         }));
-        assert!(structural(&Event::TopologyChanged));
+        assert!(Event::TopologyChanged.changes_session_graph());
         assert!(!paint_wake(&Event::TopologyChanged));
         assert!(session_attached(&Event::StatusChanged(Status::Attached)));
         assert!(!session_attached(&Event::StatusChanged(Status::Connecting)));

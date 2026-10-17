@@ -185,12 +185,7 @@ fn kind_name(kind: PathMatchKind) -> &'static str {
 /// Same pane, placement, server, and epoch.
 #[must_use]
 pub fn same_target(target: &PathTarget, current: Option<&PathTarget>) -> bool {
-    current.is_some_and(|current| {
-        current.terminal_id == target.terminal_id
-            && current.placement_id == target.placement_id
-            && current.server_id == target.server_id
-            && current.epoch == target.epoch
-    })
+    current == Some(target)
 }
 
 /// A quoted path ready to paste, or `None` when admission fails.
@@ -205,13 +200,11 @@ pub fn prepared_insertion(
     ready: bool,
 ) -> Option<String> {
     let state = state?;
-    if state.pending.is_some() || !ready || !same_target(&state.target, current) {
-        return None;
-    }
-    if !state.rows.iter().any(|row| row.path == path) {
-        return None;
-    }
-    shell_quote_path(path)
+    let admitted = state.pending.is_none()
+        && ready
+        && same_target(&state.target, current)
+        && state.rows.iter().any(|row| row.path == path);
+    admitted.then(|| shell_quote_path(path)).flatten()
 }
 
 /// A single POSIX-shell word. Not a command, and not a line ending in Enter.
@@ -226,15 +219,15 @@ pub fn shell_quote_path(path: &str) -> Option<String> {
 /// Host text as the picker shows it. Controls are escaped, never rendered raw.
 #[must_use]
 pub fn display_path(path: &str) -> String {
-    let mut shown = String::new();
-    for character in path.chars() {
-        if is_terminal_control(character) {
-            shown.push_str(&format!("\\u{{{:x}}}", character as u32));
-        } else {
-            shown.push(character);
-        }
-    }
-    shown
+    path.chars()
+        .map(|character| {
+            if is_terminal_control(character) {
+                format!("\\u{{{:x}}}", character as u32)
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
 }
 
 fn is_terminal_control(character: char) -> bool {
@@ -276,6 +269,21 @@ mod tests {
             placement_id: "place-1".into(),
             server_id: "a".into(),
             epoch: "3".into(),
+        }
+    }
+
+    fn answer(request_id: u32, path: &str) -> PathAnswer {
+        PathAnswer {
+            request_id,
+            root: "/host".into(),
+            parent: None,
+            rows: vec![PathMatch {
+                path: path.into(),
+                kind: PathMatchKind::File,
+            }],
+            status: Some(PathSearchStatus::Complete),
+            failure: None,
+            message: String::new(),
         }
     }
 
@@ -368,39 +376,13 @@ mod tests {
     fn stale_replies_and_replaced_targets_do_not_insert() {
         let searching = start_query(begin_picker(target(), "~"), 10, "/repo", "main");
         assert_eq!(searching.root, "/repo");
-        let stale = PathAnswer {
-            request_id: 9,
-            root: "/host".into(),
-            parent: None,
-            rows: vec![PathMatch {
-                path: "/host/old".into(),
-                kind: PathMatchKind::File,
-            }],
-            status: Some(PathSearchStatus::Complete),
-            failure: None,
-            message: String::new(),
-        };
         assert_eq!(
-            accept_path_answer(Some(searching.clone()), &stale)
+            accept_path_answer(Some(searching.clone()), &answer(9, "/host/old"))
                 .unwrap()
                 .query,
             "main"
         );
-        let found = accept_path_answer(
-            Some(searching),
-            &PathAnswer {
-                request_id: 10,
-                root: "/host".into(),
-                parent: None,
-                rows: vec![PathMatch {
-                    path: "/host/it's here".into(),
-                    kind: PathMatchKind::File,
-                }],
-                status: Some(PathSearchStatus::Complete),
-                failure: None,
-                message: String::new(),
-            },
-        );
+        let found = accept_path_answer(Some(searching), &answer(10, "/host/it's here"));
         assert_eq!(
             prepared_insertion(found.as_ref(), "/host/it's here", Some(&target()), true).as_deref(),
             Some("'/host/it'\"'\"'s here'")

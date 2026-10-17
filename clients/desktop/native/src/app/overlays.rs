@@ -2042,8 +2042,8 @@ mod tests {
     #[test]
     fn path_state_reads_in_the_results_and_the_footer_keeps_paging() {
         use super::{PathPresentation, path_presentation};
-        let picker = crate::connection::begin_picker(
-            crate::connection::PathTarget {
+        let picker = crate::connection::path::begin_picker(
+            crate::connection::path::PathTarget {
                 terminal_id: "local:1".into(),
                 placement_id: "place-1".into(),
                 server_id: "a".into(),
@@ -2056,12 +2056,12 @@ mod tests {
             empty: text.to_owned(),
             status: None,
         };
-        let searching = crate::connection::start_query(picker.clone(), 1, "/repo", "");
+        let searching = crate::connection::path::start_query(picker.clone(), 1, "/repo", "");
         assert_eq!(
             path_presentation(&searching, false),
             empty("Searching host paths…")
         );
-        let failed = crate::connection::PickerState {
+        let failed = crate::connection::path::PickerState {
             failure: Some("permission denied".into()),
             ..picker.clone()
         };
@@ -2078,7 +2078,7 @@ mod tests {
             },
             "a failed insertion heads the rows it left listed"
         );
-        let warming = crate::connection::PickerState {
+        let warming = crate::connection::path::PickerState {
             message: "Host index is warming; search again shortly.".into(),
             ..picker.clone()
         };

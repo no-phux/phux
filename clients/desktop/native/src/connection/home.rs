@@ -15,13 +15,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
-use phux_client_runtime::control::{ControlOptions, Event, Status, Topology, mint_operation};
+use phux_client_runtime::control::{ControlOptions, Event, Status, Topology};
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{OperationId, SessionKey};
-use phux_protocol::wire::frame::{Command, LaunchSpec, SessionLifetime};
 
 use super::org::outcome_sentence;
+use super::{home_entry, session_create};
 
 /// How long the browsing connection may take to name the session.
 const WAIT: Duration = Duration::from_secs(8);
@@ -62,8 +62,7 @@ pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>)
 
 /// The Intake session's name: from the topology when it lists the Intake, else
 /// from the organization replica's record.
-#[must_use]
-pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
+fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
     let key = topology.inbox?;
     if let Some(session) = topology.session_keyed(&key) {
         return Some(session.name.clone());
@@ -84,10 +83,7 @@ pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 /// A sentence for the window when the server cannot be read, the create is
 /// refused, or there is nothing to open.
 pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<String, String> {
-    let probe = Probe::connect(Target::uds(socket.to_path_buf()))?;
-    let result = probe.resolve(phux, socket, requested);
-    probe.client.close();
-    result
+    Probe::connect(Target::uds(socket.to_path_buf()))?.resolve(phux, socket, requested)
 }
 
 /// The session a window on registered host `name` opens: its Intake, else its
@@ -98,19 +94,15 @@ pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<
 /// A sentence for the notification when the host is not registered, cannot
 /// be reached, or has nothing to open.
 pub fn open_remote_home(name: &str) -> Result<String, String> {
-    let target = Target::resolve(name, None)?;
-    let probe = Probe::connect(target)?;
-    let result = probe.ready().and_then(|topology| {
-        let inbox = inbox_name(&probe.client, &topology);
-        match choose(None, &topology, inbox.as_deref()) {
-            Home::Existing(name) => Ok(name),
-            Home::Missing(_) | Home::Nothing => Err(format!(
-                "{name} has no sessions yet. Run `phux attach {name}` once to start one."
-            )),
-        }
-    });
-    probe.client.close();
-    result
+    let probe = Probe::connect(Target::resolve(name, None)?)?;
+    let topology = probe.ready()?;
+    let inbox = inbox_name(&probe.client, &topology);
+    match choose(None, &topology, inbox.as_deref()) {
+        Home::Existing(name) => Ok(name),
+        Home::Missing(_) | Home::Nothing => Err(format!(
+            "{name} has no sessions yet. Run `phux attach {name}` once to start one."
+        )),
+    }
 }
 
 /// Reconnect to an existing home only. A persistent key wins over a reused name.
@@ -135,17 +127,13 @@ fn existing_target_home(
     name: &str,
     key: Option<SessionKey>,
 ) -> Result<String, String> {
-    let probe = Probe::connect(target)?;
-    let result = probe.ready().and_then(|topology| {
-        let session = match key {
-            Some(key) => topology.session_keyed(&key),
-            None => topology.session_named(name),
-        };
-        session.map(|session| session.name.clone()).ok_or_else(||
-            "The home session no longer exists. Open an existing session or create a new one explicitly.".to_owned())
-    });
-    probe.client.close();
-    result
+    let topology = Probe::connect(target)?.ready()?;
+    home_entry(&topology, name, key)
+        .map(|session| session.name.clone())
+        .ok_or_else(|| {
+            "The home session no longer exists. Open an existing session or create a new one explicitly."
+                .to_owned()
+        })
 }
 
 struct Wake(SyncSender<()>);
@@ -156,10 +144,17 @@ impl Listener for Wake {
     }
 }
 
+/// A browsing client that closes when dropped.
 struct Probe {
     client: Client,
     wake: Receiver<()>,
     deadline: Instant,
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        self.client.close();
+    }
 }
 
 impl Probe {
@@ -240,19 +235,11 @@ impl Probe {
     }
 
     fn create(&self, name: &str) -> Result<(), String> {
-        let mut launch = LaunchSpec::new(Vec::new());
-        launch.cwd = std::env::var("HOME").ok().filter(|home| !home.is_empty());
-        let operation = self
-            .client
-            .submit_organization(Command::SessionCreate {
-                operation: mint_operation(),
-                name: name.to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(launch)),
-            })
-            .map_err(|error| format!("Could not create session {name:?}: {error}"))?;
-        self.await_operation(operation)
+        let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+        self.client
+            .submit_organization(session_create(name, home))
+            .map_err(|error| error.to_string())
+            .and_then(|operation| self.await_operation(operation))
             .map_err(|why| format!("Could not create session {name:?}: {why}"))
     }
 
@@ -287,10 +274,7 @@ impl Probe {
         if left.is_zero() {
             return Err(timeout.to_owned());
         }
-        match self.wake.recv_timeout(left) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(timeout.to_owned()),
-        }
+        self.wake.recv_timeout(left).map_err(|_| timeout.to_owned())
     }
 }
 
@@ -326,6 +310,9 @@ mod tests {
     use phux_client_core::layout::wire::HandleMap;
     use phux_client_runtime::control::SessionDescriptor;
     use phux_protocol::ResourceId;
+    use phux_protocol::wire::frame::SessionLifetime;
+
+    use crate::connection::{designated_intake_session, sync_home_name};
 
     fn session(id: u32, name: &str, created: i64) -> SessionDescriptor {
         SessionDescriptor {
@@ -371,18 +358,18 @@ mod tests {
 
     #[test]
     fn home_identity_follows_renames_without_retargeting_to_the_old_name() {
-        let home_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
-        let other_key = phux_protocol::ids::SessionKey::new([2; 16]).unwrap();
+        let home_key = SessionKey::new([1; 16]).unwrap();
+        let other_key = SessionKey::new([2; 16]).unwrap();
         let mut home = session(1, "Intake", 10);
         home.key = Some(home_key);
         let mut name = "Intake".to_owned();
         let mut key = None;
-        crate::connection::sync_home_name(&topology(vec![home.clone()]), &mut name, &mut key);
+        sync_home_name(&topology(vec![home.clone()]), &mut name, &mut key);
         assert_eq!(key, Some(home_key));
         home.name = "Unorganized".to_owned();
         let mut other = session(2, "Intake", 11);
         other.key = Some(other_key);
-        crate::connection::sync_home_name(&topology(vec![other, home]), &mut name, &mut key);
+        sync_home_name(&topology(vec![other, home]), &mut name, &mut key);
         assert_eq!(name, "Unorganized");
         assert_eq!(key, Some(home_key));
     }
@@ -390,29 +377,29 @@ mod tests {
     #[test]
     fn a_missing_home_key_does_not_adopt_a_different_session_with_the_old_name() {
         let mut replacement = session(2, "Intake", 11);
-        replacement.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
-        let home_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        replacement.key = Some(SessionKey::new([2; 16]).unwrap());
+        let home_key = SessionKey::new([1; 16]).unwrap();
         let mut key = Some(home_key);
         let mut name = "Intake".to_owned();
-        crate::connection::sync_home_name(&topology(vec![replacement]), &mut name, &mut key);
+        sync_home_name(&topology(vec![replacement]), &mut name, &mut key);
         assert_eq!(key, Some(home_key));
     }
 
     #[test]
     fn intake_kill_protection_follows_the_designated_key_not_names_or_import_flags() {
-        let intake_key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let intake_key = SessionKey::new([1; 16]).unwrap();
         let mut intake = session(1, "Renamed intake", 10);
         intake.key = Some(intake_key);
         let mut imported = session(2, "Intake", 11);
-        imported.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
+        imported.key = Some(SessionKey::new([2; 16]).unwrap());
         imported.awaiting_organization = true;
         let mut graph = topology(vec![intake, imported]);
         graph.inbox = Some(intake_key);
-        assert!(crate::connection::designated_intake_session(&graph, 1));
-        assert!(!crate::connection::designated_intake_session(&graph, 2));
-        assert!(!crate::connection::designated_intake_session(&graph, 3));
+        assert!(designated_intake_session(&graph, 1));
+        assert!(!designated_intake_session(&graph, 2));
+        assert!(!designated_intake_session(&graph, 3));
         graph.inbox = None;
-        assert!(!crate::connection::designated_intake_session(&graph, 1));
+        assert!(!designated_intake_session(&graph, 1));
     }
 
     #[test]
