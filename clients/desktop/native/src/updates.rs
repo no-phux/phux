@@ -1,13 +1,16 @@
 //! Release checks and explicit updates (ADR-0175, ADR-0176). A check reads one
 //! channel manifest; an update stages a verified bundle beside the app while it
 //! runs and a detached helper swaps it in only after this process has exited.
-//! No downloaded code runs during a check.
+//! No downloaded code runs during a check. Before staging, the manifest's
+//! digest must equal the one a release key signed (ADR-0177); the installer
+//! then holds the archive to that digest.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 pub use phux_client_runtime::release::Channel;
+use phux_client_runtime::release::signature::{self, RELEASE_KEYS};
 use phux_client_runtime::release::{self, Build, MANIFEST_CURL_ARGS, Product, Version};
 use serde_json::{Value, json};
 
@@ -351,19 +354,75 @@ fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
 /// Download, verify and unpack `target` into the staging directory with the
 /// shipped installer. Nothing outside the staging directory changes.
 pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
-    stage_with(bundle, target, |_| {})
+    stage_with(
+        bundle,
+        target,
+        |target| check_signed(target, RELEASE_KEYS, fetch),
+        |_| {},
+    )
 }
 
-/// [`stage`], with `configure` adjusting the installer's command (tests point
-/// its downloads at a fixture).
+/// One small release file over HTTPS, bounded like a manifest fetch.
+fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
+    let result = Command::new("/usr/bin/curl")
+        .args(MANIFEST_CURL_ARGS)
+        .arg(url)
+        .output()
+        .context("Could not start updater command")?;
+    if !result.status.success() {
+        bail!("{}", failure_message(&result.stderr));
+    }
+    Ok(result.stdout)
+}
+
+/// Require that a release key signed exactly the digest the manifest
+/// publishes for `target` (ADR-0177). The manifest is unsigned, so its digest
+/// alone would let a host that rewrites release assets vouch for any archive.
+/// A missing or foreign signature refuses: an unsigned release is never
+/// staged.
+fn check_signed(
+    target: &Release,
+    keys: &[&str],
+    fetch: impl Fn(&str) -> anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let build = target
+        .build()
+        .context("No release version to verify for the Desktop update")?;
+    let asset = release::asset(Product::Desktop, &build, TARGET);
+    let sidecar = fetch(&asset.sidecar_url())
+        .with_context(|| format!("Could not download the checksum for {}", asset.name))?;
+    let minisig = fetch(&asset.signature_url()).with_context(|| {
+        format!(
+            "No signature for {} could be downloaded; an unsigned release is never installed",
+            asset.name
+        )
+    })?;
+    let signed = signature::signed_digest(&sidecar, &minisig, &asset.name, keys)?;
+    if signed != target.sha256 {
+        bail!(
+            "The {} manifest publishes {} for {}, but the signed checksum is {signed}. \
+             Nothing was installed.",
+            target.channel.as_str(),
+            target.sha256,
+            asset.name
+        );
+    }
+    Ok(())
+}
+
+/// [`stage`], with `signed` deciding whether the target's digest is trusted
+/// and `configure` adjusting the installer's command (tests point its
+/// downloads at a fixture).
 fn stage_with(
     bundle: &Path,
     target: &Release,
+    signed: impl FnOnce(&Release) -> anyhow::Result<()>,
     configure: impl FnOnce(&mut Command),
 ) -> anyhow::Result<PathBuf> {
     if !release::is_lower_hex(&target.sha256, 64) {
         bail!("No verified digest for the Desktop update");
     }
+    signed(target)?;
     let mut command = stage_command(bundle, target)?;
     configure(&mut command);
     let text = run_bounded(
@@ -1003,8 +1062,19 @@ mod tests {
             target
         }
 
+        /// Stage `target` with the signature gate passed; the gate itself is
+        /// exercised by the `check_signed` tests and
+        /// [`an_unsigned_digest_is_refused_before_the_installer_runs`].
         fn stage(&self, target: &Release) -> anyhow::Result<PathBuf> {
-            stage_with(&self.bundle, target, |command| {
+            self.stage_gated(target, |_| Ok(()))
+        }
+
+        fn stage_gated(
+            &self,
+            target: &Release,
+            signed: impl FnOnce(&Release) -> anyhow::Result<()>,
+        ) -> anyhow::Result<PathBuf> {
+            stage_with(&self.bundle, target, signed, |command| {
                 let bin = self.root.join("bin");
                 command.env("FIXTURE", &self.root).env(
                     "PATH",
@@ -1016,7 +1086,12 @@ mod tests {
         /// Staging `target` fails with `message`, leaves the installed app
         /// untouched and stages nothing.
         fn assert_refused(self, target: &Release, message: &str) {
-            let error = format!("{:#}", self.stage(target).unwrap_err());
+            let error = self.stage(target).unwrap_err();
+            self.assert_left_alone(&error, message);
+        }
+
+        fn assert_left_alone(self, error: &anyhow::Error, message: &str) {
+            let error = format!("{error:#}");
             assert!(error.contains(message), "{error}");
             assert_eq!(
                 std::fs::read_to_string(self.bundle.join("Contents/marker")).unwrap(),
@@ -1026,6 +1101,72 @@ mod tests {
             assert!(!staged.exists());
             std::fs::remove_dir_all(self.root).unwrap();
         }
+    }
+
+    /// A throwaway minisign key (not a release key) and its signature over
+    /// the golden stable manifest's Desktop checksum, made with the minisign
+    /// CLI.
+    const FIXTURE_KEY: &str = "RWQSnC835onn6wYhJSMsOtOnBQzqog7tkuPsxUYn++QJQkTWfVA9xo8k";
+    const FIXTURE_SIDECAR: &[u8] = include_bytes!("testdata/stable.sha256");
+    const FIXTURE_MINISIG: &[u8] = include_bytes!("testdata/stable.sha256.minisig");
+    const FIXTURE_ASSET: &str = "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-macos-arm64.zip";
+
+    /// Serves the fixture sidecar and, unless `signed` is false, its
+    /// signature; anything else is a 404.
+    fn fixture_fetch(signed: bool) -> impl Fn(&str) -> anyhow::Result<Vec<u8>> {
+        move |url| {
+            if url == format!("{FIXTURE_ASSET}.sha256") {
+                Ok(FIXTURE_SIDECAR.to_vec())
+            } else if signed && url == format!("{FIXTURE_ASSET}.sha256.minisig") {
+                Ok(FIXTURE_MINISIG.to_vec())
+            } else {
+                bail!("curl: (22) The requested URL returned error: 404")
+            }
+        }
+    }
+
+    #[test]
+    fn a_signed_digest_that_matches_the_manifest_is_trusted() {
+        let target = manifest_release(STABLE, Channel::Stable).unwrap();
+        check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap();
+    }
+
+    #[test]
+    fn a_forged_manifest_digest_is_refused() {
+        let mut target = manifest_release(STABLE, Channel::Stable).unwrap();
+        target.sha256 = "e".repeat(64);
+        let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("but the signed checksum is"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_foreign_signature_is_refused() {
+        let target = manifest_release(STABLE, Channel::Stable).unwrap();
+        let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(false)).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("an unsigned release is never installed"),
+            "{error:#}"
+        );
+        // The shipped keys do not trust the fixture key.
+        let error = check_signed(&target, RELEASE_KEYS, fixture_fetch(true)).unwrap_err();
+        assert!(format!("{error:#}").contains("does not trust"), "{error:#}");
+    }
+
+    /// The archive matches the manifest, but the manifest's digest is not the
+    /// signed one: the installer never runs and nothing is staged.
+    #[test]
+    fn an_unsigned_digest_is_refused_before_the_installer_runs() {
+        let network = Network::new("stage-unsigned");
+        let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+        let error = network
+            .stage_gated(&target, |target| {
+                check_signed(target, &[FIXTURE_KEY], fixture_fetch(true))
+            })
+            .unwrap_err();
+        network.assert_left_alone(&error, "but the signed checksum is");
     }
 
     #[test]

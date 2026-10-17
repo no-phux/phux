@@ -1,80 +1,22 @@
-//! The release signature: the independent trust root `phux update` checks
-//! before it believes any digest (ADR-0177).
-//!
-//! CI signs every artifact's `.sha256` sidecar with minisign and publishes
-//! `<asset>.sha256.minisig` beside it. This binary embeds the public keys it
-//! accepts, so a host that can rewrite release assets but does not hold the
-//! signing key cannot produce a checksum this verifier accepts.
+//! The release signature `phux update` checks before it believes any digest
+//! (ADR-0177). The verifier and the embedded keys live in
+//! `phux_client_runtime::release::signature`, shared with Desktop's updater;
+//! this module maps a refusal onto [`UpdateError::Signature`].
 
-use minisign_verify::{Error as MinisignError, PublicKey, Signature};
+pub(crate) use phux_client_runtime::release::signature::RELEASE_KEYS;
 
 use super::UpdateError;
-use super::apply;
-
-/// The keys a release signature may come from: the key CI signs with now,
-/// then the next key, held offline until a rotation (ADR-0177). The key id
-/// in each signature picks the key. `scripts/install.sh` embeds the same
-/// list as `RELEASE_KEYS`; a test keeps them in step.
-pub(crate) const RELEASE_KEYS: &[&str] = &[
-    // Key id 9F105950F46456C9: current.
-    "RWTJVmT0UFkQn2Zw1mG2cIcm5O/9kLuffefLpHw3vwhWAxgn/gcsoxiX",
-    // Key id B9E437599627DC6A: next.
-    "RWRq3CeWWTfkuYUoONcL0LsC/L3BYav/SIeHRPDMauxHAZnrUd+UoYU1",
-];
 
 /// The digest `sidecar` publishes for `archive`, once `minisig` proves one of
-/// `keys` signed exactly these bytes. Fails closed: an unparsable signature,
-/// a key no embedded key matches, or a sidecar that does not name `archive`
-/// all refuse.
+/// `keys` signed exactly these bytes. Fails closed.
 pub(crate) fn signed_digest(
     sidecar: &[u8],
     minisig: &[u8],
     archive: &str,
     keys: &[&str],
 ) -> Result<String, UpdateError> {
-    let refuse = |why: String| {
-        UpdateError::Signature(format!("the checksum for {archive} is not trusted: {why}"))
-    };
-    let text =
-        std::str::from_utf8(minisig).map_err(|_| refuse("its signature is not text".to_owned()))?;
-    let signature = Signature::decode(text)
-        .map_err(|err| refuse(format!("its signature is malformed ({err})")))?;
-    verify(sidecar, &signature, keys).map_err(refuse)?;
-
-    // Signed bytes bind the name too, so a signed sidecar for another
-    // release cannot vouch for this one.
-    let sidecar = std::str::from_utf8(sidecar)
-        .map_err(|_| refuse("the signed checksum is not text".to_owned()))?;
-    let named = sidecar
-        .split_whitespace()
-        .nth(1)
-        .map(|name| name.strip_prefix('*').unwrap_or(name));
-    if named != Some(archive) {
-        return Err(refuse("the signed checksum does not name it".to_owned()));
-    }
-    apply::expected_digest(sidecar, archive)
-}
-
-/// Whether one of `keys` made `signature` over `message`.
-fn verify(message: &[u8], signature: &Signature, keys: &[&str]) -> Result<(), String> {
-    let mut wrong_key = true;
-    for key in keys {
-        let key = PublicKey::from_base64(key)
-            .map_err(|err| format!("an embedded release key is malformed ({err})"))?;
-        // Legacy (non-prehashed) signatures are refused: CI never makes them.
-        match key.verify(message, signature, false) {
-            Ok(()) => return Ok(()),
-            Err(MinisignError::UnexpectedKeyId) => {}
-            Err(_) => wrong_key = false,
-        }
-    }
-    Err(if wrong_key {
-        "it is signed by a key this phux does not trust; a phux this old may \
-         need reinstalling with the installer"
-            .to_owned()
-    } else {
-        "its signature does not verify".to_owned()
-    })
+    phux_client_runtime::release::signature::signed_digest(sidecar, minisig, archive, keys)
+        .map_err(|err| UpdateError::Signature(err.to_string()))
 }
 
 #[cfg(test)]
@@ -206,6 +148,36 @@ pub(crate) mod tests {
         }
     }
 
+    /// `sha256sum -b`'s `*` marker and an uppercase digest parse; a signed
+    /// sidecar whose first field is not a 64-hex digest does not.
+    #[test]
+    fn the_signed_sidecar_format_is_parsed_strictly() {
+        let key = TestKey::new(1);
+        let keys = [key.public()];
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        for body in [
+            format!("{} *{ARCHIVE}\n", "ab".repeat(32)),
+            format!("{}  {ARCHIVE}\n", "AB".repeat(32)),
+        ] {
+            let sig = key.sign(body.as_bytes());
+            let digest = signed_digest(body.as_bytes(), sig.as_bytes(), ARCHIVE, &keys);
+            assert_eq!(digest.unwrap(), "ab".repeat(32));
+        }
+        for body in [
+            format!("{}  {ARCHIVE}\n", "z".repeat(64)),
+            format!("{}  {ARCHIVE}\n", "a".repeat(63)),
+        ] {
+            let sig = key.sign(body.as_bytes());
+            let message = reason(signed_digest(
+                body.as_bytes(),
+                sig.as_bytes(),
+                ARCHIVE,
+                &keys,
+            ));
+            assert!(message.contains("64-character hex digest"), "{message}");
+        }
+    }
+
     /// A signed sidecar for another artifact, or one naming nothing, cannot
     /// vouch for this archive.
     #[test]
@@ -226,23 +198,6 @@ pub(crate) mod tests {
                 &[&key.public()],
             ));
             assert!(message.contains("does not name it"), "{message}");
-        }
-    }
-
-    /// Signatures the real minisign CLI made with each real release key over
-    /// a fixed message: the CLI's format interoperates with this verifier,
-    /// and each embedded key has a secret half that signs.
-    #[test]
-    fn each_embedded_key_verifies_a_minisign_cli_signature() {
-        let sidecar = format!("{}  {ARCHIVE}\n", "0".repeat(64));
-        for (key, sig) in RELEASE_KEYS.iter().zip([
-            include_str!("testdata/release-key-check.sha256.minisig"),
-            include_str!("testdata/next-key-check.sha256.minisig"),
-        ]) {
-            assert_eq!(
-                signed_digest(sidecar.as_bytes(), sig.as_bytes(), ARCHIVE, &[key]).unwrap(),
-                "0".repeat(64)
-            );
         }
     }
 

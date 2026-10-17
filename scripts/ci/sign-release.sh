@@ -37,7 +37,8 @@ for sidecar in "$@"; do
     -t "phux release checksum: $(basename "$sidecar")" </dev/null >/dev/null
   verified=0
   for key in $keys; do
-    if minisign -V -q -P "$key" -m "$sidecar" -x "$sidecar.minisig" >/dev/null 2>&1; then
+    # -H: prehashed only, the rule phux update and install.sh enforce.
+    if minisign -V -H -q -P "$key" -m "$sidecar" -x "$sidecar.minisig" >/dev/null 2>&1; then
       verified=1
       break
     fi

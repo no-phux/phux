@@ -78,34 +78,6 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     })
 }
 
-/// Read the expected digest out of a `.sha256` sidecar (`"<64 hex>  <archive>"`,
-/// the `sha256sum` format). A sidecar naming a different artifact is refused.
-pub(crate) fn expected_digest(sidecar: &str, archive: &str) -> Result<String, UpdateError> {
-    let line = sidecar
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| UpdateError::Checksum("the .sha256 sidecar was empty".to_owned()))?;
-    let mut fields = line.split_whitespace();
-    let digest = fields
-        .next()
-        .ok_or_else(|| UpdateError::Checksum("the .sha256 sidecar had no digest".to_owned()))?;
-    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(UpdateError::Checksum(format!(
-            "the .sha256 sidecar did not start with a 64-character hex digest (got `{digest}`)"
-        )));
-    }
-    // `sha256sum -b` prefixes the name with `*`; `shasum -a 256` does not.
-    if let Some(named) = fields.next() {
-        let named = named.strip_prefix('*').unwrap_or(named);
-        if named != archive {
-            return Err(UpdateError::Checksum(format!(
-                "the .sha256 sidecar is for `{named}`, not `{archive}`"
-            )));
-        }
-    }
-    Ok(digest.to_ascii_lowercase())
-}
-
 /// Verify `archive` against a published digest (the channel manifest's, or a
 /// sidecar's), returning it. This is the trust anchor: everything downstream
 /// runs only on `Ok`.
@@ -965,9 +937,8 @@ mod tests {
 
     use super::{
         BACKUP_DIR, InstallCheckpoint, PREPARING_DIR, RollbackCheckpoint, Staging, TRANSACTION_DIR,
-        UpdateError, UpdateLock, expected_digest, replace_binaries,
-        replace_binaries_with_checkpoint, rollback, rollback_with_checkpoint, sha256_file,
-        unpack_verified, verify_digest,
+        UpdateError, UpdateLock, replace_binaries, replace_binaries_with_checkpoint, rollback,
+        rollback_with_checkpoint, sha256_file, unpack_verified, verify_digest,
     };
 
     /// The SHA-256 of the empty input, the standard published vector.
@@ -987,35 +958,6 @@ mod tests {
             sha256_file(&abc).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-    }
-
-    /// The release workflow's sidecar format (with or without `sha256sum -b`'s
-    /// marker, or digest-only) parses; malformed or crossed sidecars do not.
-    #[test]
-    fn sidecar_parsing_accepts_the_release_format_and_refuses_the_rest() {
-        let archive = "phux-v1.0.0-x.tar.gz";
-        let digest = "a".repeat(64);
-        for sidecar in [
-            format!("{digest}  {archive}\n"),
-            format!("{digest} *{archive}\n"),
-            digest.clone(),
-        ] {
-            assert_eq!(expected_digest(&sidecar, archive).unwrap(), digest);
-        }
-        for (sidecar, why) in [
-            (String::new(), "empty"),
-            (format!("not-a-digest  {archive}"), "short"),
-            (format!("{}  x.tar.gz", "z".repeat(64)), "non-hex"),
-            (
-                format!("{digest}  phux-v9.9.9-other.tar.gz"),
-                "names another artifact",
-            ),
-        ] {
-            assert!(
-                expected_digest(&sidecar, archive).is_err(),
-                "sidecar should be refused ({why})"
-            );
-        }
     }
 
     /// The gate: a tampered archive is refused, loudly, with both digests.

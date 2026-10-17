@@ -194,7 +194,7 @@ printf 'signature\n' > "$SERVED/$archive.sha256.minisig"
 : > "$CALLS"
 TEST_PATH="$SIG_PATH" install_to "$TMP/signed" >/dev/null 2>"$TMP/err" || fail "signed install: $(cat "$TMP/err")"
 grep -Fq "$archive.sha256.minisig" "$CALLS" || fail "a signed install must fetch the signature"
-grep -Fq "minisign -V -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked against the release key"
+grep -Fq "minisign -V -H -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked, prehashed only, against the release key"
 MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
 mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
@@ -204,11 +204,20 @@ mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$diges
 rm "$SERVED/$archive.sha256.minisig"
 TEST_PATH="$SIG_PATH" refused 'an unsigned release is never installed' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
-PHUX_REQUIRE_SIGNATURE=1 refused 'PHUX_REQUIRE_SIGNATURE is set but minisign is not on PATH' \
+PHUX_REQUIRE_SIGNATURE=1 refused 'PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH' \
+  --os linux --arch x86_64 --install-dir "$TMP/badsig"
+# Only 1 and 0 mean anything; another value refuses rather than guessing.
+PHUX_REQUIRE_SIGNATURE=false refused 'PHUX_REQUIRE_SIGNATURE must be 1' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
 [[ ! -e $TMP/badsig/phux ]] || fail "a refused signature installed"
 
-if real="$(command -v minisign)"; then
+# CI sets PHUX_TEST_REAL_MINISIGN=1 and provides minisign, so these
+# real-signature checks never silently skip there.
+real="$(command -v minisign || true)"
+if [[ -z $real && ${PHUX_TEST_REAL_MINISIGN:-0} == 1 ]]; then
+  fail "PHUX_TEST_REAL_MINISIGN=1 but minisign is not on PATH"
+fi
+if [[ -n $real ]]; then
   mkdir -p "$TMP/real-sig-bin" "$TMP/keys"
   ln -s "$real" "$TMP/real-sig-bin/minisign"
   minisign -G -W -p "$TMP/keys/test.pub" -s "$TMP/keys/test.key" >/dev/null

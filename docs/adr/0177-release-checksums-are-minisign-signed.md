@@ -8,12 +8,14 @@ last-reviewed: 2026-10-17
 
 **TL;DR.** CI signs every release asset's `.sha256` sidecar with one minisign
 key held as the `PHUX_MINISIGN_SECRET_KEY` Actions secret and publishes
-`<asset>.sha256.minisig`. `phux update` embeds the public keys, verifies the
-signature before it trusts any digest, and refuses a missing or foreign one.
-Rotation is a key id plus a pre-published next key.
+`<asset>.sha256.minisig`. `phux update` and Desktop's updater embed the
+public keys, verify the signature before they trust any digest, and refuse a
+missing or foreign one; `phux update` also refuses an unpinned stable
+downgrade. Rotation is a key id plus a pre-published next key.
 
 Status: Accepted
 Date: 2026-10-17
+Supersedes in part: [ADR-0074](./0074-self-update-trust-boundary.md) decision 1, [ADR-0176](./0176-the-release-pipeline.md) decision 3
 
 ## Context
 
@@ -43,8 +45,9 @@ cannot pass.
    `next-release.yml`, where `release_manifest.py` refuses an unsigned build.
    The macOS build host never sees the key.
 3. **Clients embed the public keys.** `RELEASE_KEYS` in
-   `crates/phux/src/commands/update/signature.rs` and in `scripts/install.sh`
-   (a unit test keeps them equal) lists the current key, then the next:
+   `crates/phux-client-runtime/src/release/signature.rs`, which `phux update`
+   and Desktop share, and in `scripts/install.sh` (a unit test keeps them
+   equal) lists the current key, then the next:
 
    | role | key id | public key |
    |---|---|---|
@@ -59,13 +62,29 @@ cannot pass.
    that is missing, malformed, made by an unknown key, or invalid refuses
    with `update_signature_invalid` and installs nothing. A `--version` pin
    is checked the same way, so it no longer trusts its sidecar unsigned.
-5. **The installer verifies when it can.** `scripts/install.sh` checks the
-   same signature when `minisign` is on `PATH`, refusing on any failure, and
-   otherwise says it checked only the SHA-256. `PHUX_REQUIRE_SIGNATURE=1`
-   makes a missing `minisign` a refusal.
+   Without a pin, a stable manifest that names a release older than the
+   installed one is refused with `update_downgrade_refused` before anything
+   is fetched; a downgrade takes `--version`.
+5. **Desktop verifies in-process; the installer verifies when it can.**
+   Desktop's updater fetches the sidecar and its signature, verifies them
+   with the shared check, and requires the signed digest to equal the
+   manifest's before it runs the bundled installer with that digest, so a
+   GUI launch whose `PATH` has no `minisign` still fails closed.
+   `scripts/install.sh` checks the same signature (prehashed only) when
+   `minisign` is on `PATH`, refusing on any failure, and otherwise says it
+   checked only the SHA-256. `PHUX_REQUIRE_SIGNATURE=1` makes a missing
+   `minisign` a refusal; any value other than `0` or `1` refuses. The
+   fail-open default for an interactive `curl | sh` is an accepted
+   exception to "fail closed": that script arrives from the same host as the
+   assets, so a host able to forge assets can also strip the check, and
+   requiring a tool most machines lack would block first installs for no
+   gain. Every updater path verifies without depending on `PATH`.
 6. **Rotation is a key id and a next key.** Each signature carries its
    key id, and a client accepts any key in `RELEASE_KEYS`. The next key's
-   secret is generated with the current one and kept offline. To rotate,
+   secret is generated with the current one and then held encrypted (a
+   minisign password, or a password manager or hardware store) on no machine
+   that holds the current key, so one compromised workstation cannot leak
+   both. To rotate,
    set the Actions secret to the next key: every binary built since this
    ADR already trusts it, so nothing else has to change first. A later
    release then ships `RELEASE_KEYS = [new current, freshly generated
@@ -94,13 +113,14 @@ The key is an Actions secret, so anyone who can run a workflow with secrets
 on this repository can sign. That is a smaller set than anyone who can write
 a release asset, and the repository's ruleset governs it, but it is not an
 offline key. The channel manifest stays unsigned: a host that rewrites it can
-name an older, genuinely signed release, which `phux update` would install.
+name an older, genuinely signed release. `phux update` refuses that on stable
+without a pin and Desktop offers only a newer stable build, but next has no
+order between commits, so a rewritten `next.json` can still name an older
+signed next build.
 Releases published before this ADR have no signature, so a pin to one is
 refused; the installer without `minisign` still installs it. `curl | sh`
 without `minisign` gains nothing, and with it gains only as much as the
-script it downloaded from the same host. Desktop's in-app updater relies on
-its bundled installer, so it checks the signature only where `minisign` is
-installed.
+script it downloaded from the same host.
 
 ## Alternatives
 

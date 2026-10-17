@@ -110,6 +110,9 @@ pub(crate) mod codes {
     /// from a key this binary does not embed, or it disagreed with the
     /// channel manifest (ADR-0177). Nothing was unpacked or installed.
     pub(crate) const UPDATE_SIGNATURE_INVALID: &str = "update_signature_invalid";
+    /// The channel manifest named a stable release older than the installed
+    /// one without a `--version` pin (ADR-0177). Nothing was downloaded.
+    pub(crate) const UPDATE_DOWNGRADE_REFUSED: &str = "update_downgrade_refused";
     /// The verified archive did not contain what a phux release tarball
     /// contains.
     pub(crate) const UPDATE_ARCHIVE_REJECTED: &str = "update_archive_rejected";

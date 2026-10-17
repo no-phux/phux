@@ -64,6 +64,10 @@ pub(crate) enum UpdateError {
     /// binary does not embed, or did not verify; or the signed digest and
     /// the channel manifest disagree.
     Signature(String),
+    /// The channel manifest names a stable release older than the installed
+    /// one and no `--version` pin asked for it. A rewritten manifest must not
+    /// roll a user back to a genuinely signed, older release (ADR-0177).
+    Downgrade(String),
     /// The published digest and the downloaded bytes disagree. The one
     /// failure this whole module exists to produce.
     ChecksumMismatch {
@@ -90,6 +94,7 @@ impl std::fmt::Display for UpdateError {
             | Self::Fetch(message)
             | Self::Checksum(message)
             | Self::Signature(message)
+            | Self::Downgrade(message)
             | Self::Archive(message)
             | Self::Install(message)
             | Self::NoBackup(message) => f.write_str(message),
@@ -115,6 +120,7 @@ impl UpdateError {
             Self::Fetch(_) => codes::UPDATE_FETCH_FAILED,
             Self::Checksum(_) => codes::UPDATE_CHECKSUM_INVALID,
             Self::Signature(_) => codes::UPDATE_SIGNATURE_INVALID,
+            Self::Downgrade(_) => codes::UPDATE_DOWNGRADE_REFUSED,
             Self::ChecksumMismatch { .. } => codes::UPDATE_CHECKSUM_MISMATCH,
             Self::Archive(_) => codes::UPDATE_ARCHIVE_REJECTED,
             Self::Install(_) => codes::UPDATE_INSTALL_FAILED,
@@ -153,6 +159,9 @@ impl UpdateError {
             Self::Signature(_) => "nothing was installed. Re-run in a minute in case a \
                  release is still uploading; if it fails again, do not install this \
                  artifact by hand — report it at https://github.com/no-phux/phux/issues"
+                .to_owned(),
+            Self::Downgrade(_) => "nothing was installed. To go back on purpose, pin the \
+                 release: `phux update --version <tag>`"
                 .to_owned(),
             Self::Archive(_) => "nothing was installed. Re-run to download again; a repeat \
                  failure means the published artifact is malformed"
@@ -719,6 +728,7 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     let action = if opts.check {
         Action::Checked
     } else if plan.changes_version {
+        refuse_unpinned_downgrade(&plan, pin.is_some())?;
         return install_release(opts, env, plan);
     } else {
         Action::UpToDate
@@ -732,6 +742,23 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
         backup: None,
         handoff: None,
     })
+}
+
+/// Only a `--version` pin moves a stable install to an older release. The
+/// manifest is unsigned, so a host that rewrites it could otherwise name an
+/// older, genuinely signed release with a known flaw and roll every
+/// `phux update` back to it (ADR-0177).
+fn refuse_unpinned_downgrade(plan: &Plan, pinned: bool) -> Result<(), UpdateError> {
+    if pinned || plan.update_available {
+        return Ok(());
+    }
+    Err(UpdateError::Downgrade(format!(
+        "the {} release manifest names {}, which is older than the installed {}; \
+         refusing to downgrade without a `--version` pin",
+        plan.channel.as_str(),
+        plan.target.tag(),
+        plan.current
+    )))
 }
 
 /// Download, verify, and (unless `--dry-run`) replace.
@@ -1553,6 +1580,32 @@ mod tests {
         publish(&mut fake, scratch.path(), "v9.9.9");
         fake.name(Channel::Stable, "9.9.9", &"c".repeat(40), &"f".repeat(64));
         signature_refusal(&refused(&fake, &bin), "the signed checksum is");
+    }
+
+    /// A stable manifest rewritten to name an older, genuinely signed release
+    /// does not roll a plain `phux update` back: nothing is fetched or
+    /// installed. A `--version` pin to the same release still installs it.
+    #[test]
+    fn a_manifest_naming_an_older_signed_release_needs_a_pin() {
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
+        let mut fake = FakeReleases::new("v0.0.1");
+        publish(&mut fake, scratch.path(), "v0.0.1");
+
+        let err = refused(&fake, &bin);
+        assert!(matches!(err, UpdateError::Downgrade(_)), "{err:?}");
+        assert_eq!(err.code(), "update_downgrade_refused");
+        assert!(err.to_string().contains("v0.0.1"), "{err}");
+        assert!(err.remedy().contains("--version"), "{}", err.remedy());
+        assert!(fake.downloads.borrow().is_empty());
+
+        let pinned = UpdateOpts {
+            tag: Some("v0.0.1".to_owned()),
+            ..opts()
+        };
+        let outcome = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &pinned).unwrap();
+        assert_eq!(outcome.action, Action::Installed);
+        assert_eq!(fs::read(bin.join("phux")).unwrap(), b"phux v0.0.1");
     }
 
     /// A pin to a release the manifest does not name is verified against that

@@ -5,7 +5,10 @@
 //! never read from the network, so a manifest vouches for an asset only
 //! through its digest. `scripts/ci/release_manifest.py` writes the manifest
 //! and `scripts/install.sh` derives the same names; the golden manifests in
-//! `scripts/fixtures/release-manifest/` keep all three in step.
+//! `scripts/fixtures/release-manifest/` keep all three in step. A digest is
+//! trusted only once [`signature`] verifies that a release key signed it.
+
+pub mod signature;
 
 use std::fmt;
 

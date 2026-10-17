@@ -81,6 +81,12 @@ sha2 = "0.11"
 # phux-dial and phux-server at these specs.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 rustls.workspace = true
+# Release checksums are trusted only once a release key signed them
+# (ADR-0177). `phux update` and Desktop's updater both verify through
+# `release::signature`, so the key list and the check exist once. The
+# minisign author's verify-only crate: no dependencies of its own, no C, and
+# already locked by the `phux` crate at this spec.
+minisign-verify = "0.3"
 # TRANSCRIBE returns the protocol's open-shaped JSON command value.
 serde_json.workspace = true
 # The server-held approval record (ADR-0128) is parsed once, here, for the

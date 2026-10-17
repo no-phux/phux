@@ -88,8 +88,9 @@ and fails unless the signature verifies against `RELEASE_KEYS` in
 `scripts/install.sh`. It runs in `release.yml`, in the Linux `sign` job of
 `desktop-release.yml` (which publishes the Desktop draft), and in
 `next-release.yml`. A missing secret fails the release instead of shipping it
-unsigned. The owner keeps both secret keys offline; ADR-0177 decision 6 is the
-rotation procedure.
+unsigned. The next key's secret is held encrypted off any machine that holds
+the current one; ADR-0177 decision 6 is the custody rule and the rotation
+procedure.
 
 ## Manifests
 

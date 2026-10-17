@@ -161,8 +161,12 @@ base="https://github.com/no-phux/phux/releases/download/${tag}"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz.sha256"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz.sha256.minisig"
-minisign -V -P RWTJVmT0UFkQn2Zw1mG2cIcm5O/9kLuffefLpHw3vwhWAxgn/gcsoxiX \
-  -m "phux-${tag}-${target}.tar.gz.sha256"
+# Trust any key in RELEASE_KEYS in scripts/install.sh; one of them verifies.
+keys="$(curl -fsSL https://raw.githubusercontent.com/no-phux/phux/main/scripts/install.sh \
+  | sed -n "s/^RELEASE_KEYS='\(.*\)'$/\1/p")"
+for key in $keys; do
+  minisign -V -H -P "$key" -m "phux-${tag}-${target}.tar.gz.sha256" && break
+done
 shasum -a 256 -c "phux-${tag}-${target}.tar.gz.sha256"
 tar -xzf "phux-${tag}-${target}.tar.gz"
 ```
@@ -201,8 +205,12 @@ graceful-upgrade, the `phux upgrade` path. The previous pair stays in
 `.phux-update-backup/` beside the binaries for `--rollback`. The trust
 boundary is [ADR-0074](adr/0074-self-update-trust-boundary.md), with the
 signature from [ADR-0177](adr/0177-release-checksums-are-minisign-signed.md).
-The installer checks the same signature when `minisign` is on `PATH`;
-`PHUX_REQUIRE_SIGNATURE=1` makes it refuse without one.
+A stable manifest naming a release older than the installed one is refused
+(`update_downgrade_refused`); a downgrade takes `--version`. Phux Desktop
+verifies the same signature in-process before it stages an update. The
+installer checks the signature when `minisign` is on `PATH`;
+`PHUX_REQUIRE_SIGNATURE=1` makes it refuse without one (`0`, the default,
+falls back to the SHA-256 alone).
 
 It writes only to direct installs: the binary's resolved path must be in
 `$PHUX_INSTALL_DIR`, `~/.local/bin`, `~/bin`, `/usr/local/bin`, or

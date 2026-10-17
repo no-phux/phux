@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-16
+last-reviewed: 2026-10-17
 ---
 
 # Module structure
@@ -271,7 +271,9 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   `Runtime::connect`, and the one-shot `session::Session` that verbs ride
   (ADR-0171). Rust API only. `release.rs` is the release model `phux update`
   and Desktop share: channels, builds, the one asset name derivation, and
-  the channel manifest parser (ADR-0176). `control/organization.rs` is the
+  the channel manifest parser (ADR-0176); `release/signature.rs` holds the
+  embedded release keys and the minisign check both updaters run before
+  they trust a digest (ADR-0177). `control/organization.rs` is the
   organization replica: seeded by paged `GetOrganization`, advanced by
   journal events in sequence, refetched on a gap; it retries pending
   operations with the same operation id after reconnect, reports the

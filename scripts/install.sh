@@ -7,7 +7,7 @@ set -eu
 RELEASES=https://github.com/no-phux/phux/releases/download
 # minisign keys a release checksum may be signed by (ADR-0177): current
 # (9F105950F46456C9), then next (B9E437599627DC6A). One line, kept equal to
-# RELEASE_KEYS in crates/phux/src/commands/update/signature.rs by a test.
+# RELEASE_KEYS in crates/phux-client-runtime/src/release/signature.rs by a test.
 RELEASE_KEYS='RWTJVmT0UFkQn2Zw1mG2cIcm5O/9kLuffefLpHw3vwhWAxgn/gcsoxiX RWRq3CeWWTfkuYUoONcL0LsC/L3BYav/SIeHRPDMauxHAZnrUd+UoYU1'
 
 phux_message() (
@@ -50,7 +50,8 @@ the CLI only when none is found.
   --help                          Show this help.
 
 With minisign on PATH, the release checksum's signature is verified against
-the phux release keys; set PHUX_REQUIRE_SIGNATURE=1 to refuse without it.
+the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
+without that check (0, the default, falls back to the SHA-256 alone).
 EOF
 }
 
@@ -192,10 +193,11 @@ name_asset() {
   [ "$1/$channel" != desktop/stable ] || sidecar_url="${RELEASES}/${release}/SHA256SUMS"
 }
 
-# Whether a release key signed SIDECAR with SIGNATURE.
+# Whether a release key signed SIDECAR with SIGNATURE. -H accepts only the
+# prehashed signatures CI makes, the same rule phux update enforces.
 signed_by_release_key() {
   for key in $RELEASE_KEYS; do
-    minisign -V -q -P "$key" -m "$1" -x "$2" >/dev/null 2>&1 && return 0
+    minisign -V -H -q -P "$key" -m "$1" -x "$2" >/dev/null 2>&1 && return 0
   done
   return 1
 }
@@ -203,13 +205,16 @@ signed_by_release_key() {
 # With minisign on PATH, the asset's signed sidecar is the trust root: it
 # must verify against RELEASE_KEYS and agree with the expected digest, or
 # supply it. Without minisign the SHA-256 alone is checked, unless
-# PHUX_REQUIRE_SIGNATURE=1 makes that a refusal.
+# PHUX_REQUIRE_SIGNATURE=1 makes that a refusal (ADR-0177 decision 5).
 verify_signature() {
+  case "${PHUX_REQUIRE_SIGNATURE:-0}" in
+    0 | 1) ;;
+    *) die "PHUX_REQUIRE_SIGNATURE must be 1 (require a signature) or 0; nothing was installed" ;;
+  esac
   if ! command -v minisign >/dev/null 2>&1; then
-    case "${PHUX_REQUIRE_SIGNATURE:-0}" in
-      0 | '') phux_message info "minisign not found; checking the SHA-256 without its release signature" ;;
-      *) die "PHUX_REQUIRE_SIGNATURE is set but minisign is not on PATH; nothing was installed" ;;
-    esac
+    [ "${PHUX_REQUIRE_SIGNATURE:-0}" = 0 ] \
+      || die "PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH; nothing was installed"
+    phux_message info "minisign not found; checking the SHA-256 without its release signature"
     return 0
   fi
   download "${asset_url}.sha256" "${work}/signed.sha256" \

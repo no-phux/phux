@@ -106,15 +106,6 @@ toml_edit.workspace = true
 # fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
 # RustCrypto reference implementation, pure-safe Rust, no C deps.
 sha2 = "0.11"
-# `phux update` checks the minisign signature CI makes over each release
-# checksum before it trusts the digest (ADR-0177), so a host that can rewrite
-# release assets but not hold the signing key cannot vouch for an archive.
-# `minisign-verify` is the minisign author's verify-only crate: no
-# dependencies of its own, no C, one new row in Cargo.lock. The alternatives
-# were a signer-capable stack (ed25519-dalek, curve25519-dalek, blake2) for a
-# path that only verifies, or minisign's prehashed format by hand over
-# `ring`, which has no BLAKE2b.
-minisign-verify = "0.3"
 # `phux status` renders the server's up-since wall-clock timestamp. Already a
 # workspace dependency (protocol/server/config); no new third-party row
 # enters the lockfile.
