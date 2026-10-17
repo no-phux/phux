@@ -9,6 +9,7 @@ import {
   layoutScope,
   productionSocketReason,
 } from "../../scripts/host.ts";
+import { renderNotices, shippedCrates } from "../../scripts/notices.ts";
 import { infoPlist, packageVersion } from "../../scripts/package-app.ts";
 
 const png = Buffer.from([
@@ -135,4 +136,60 @@ test("the app plist identifies the GPUI host and a stable release version", () =
   expect(infoPlist("0.1.0", "abc", "next")).toContain(
     "<key>PhuxDesktopChannel</key><string>next</string>",
   );
+});
+
+function metadata(packages: { id: string; license?: string; source?: string | null }[]): string {
+  const deps = (id: string, kind: string | null) => ({ pkg: id, dep_kinds: [{ kind }] });
+  return JSON.stringify({
+    packages: packages.map((pkg) => ({
+      id: pkg.id,
+      name: pkg.id,
+      version: "1.0.0",
+      license: pkg.license ?? null,
+      license_file: null,
+      repository: null,
+      source:
+        pkg.source === undefined
+          ? "registry+https://github.com/rust-lang/crates.io-index"
+          : pkg.source,
+      manifest_path: `/nonexistent/${pkg.id}/Cargo.toml`,
+    })),
+    resolve: {
+      root: "phux-desktop",
+      nodes: [
+        {
+          id: "phux-desktop",
+          deps: [deps("lib", null), deps("gen", "build"), deps("fixture", "dev")],
+        },
+        { id: "lib", deps: [deps("leaf", null)] },
+        { id: "gen", deps: [] },
+        { id: "leaf", deps: [] },
+        { id: "fixture", deps: [] },
+      ],
+    },
+  });
+}
+
+test("the third-party notice covers every shipped crate and refuses an unlicensed one", () => {
+  const graph = [
+    { id: "phux-desktop", license: "Apache-2.0", source: null },
+    { id: "lib", license: "MIT OR Apache-2.0" },
+    { id: "gen", license: "MIT" },
+    { id: "leaf", license: "Zlib" },
+    { id: "fixture" },
+  ];
+  const crates = shippedCrates(metadata(graph));
+  expect(crates.map((crate) => crate.name)).toEqual(["gen", "leaf", "lib", "phux-desktop"]);
+  const shared = "MIT License\n\nCopyright (c) example";
+  const notice = renderNotices(
+    crates,
+    (crate) => new Map(crate.name === "leaf" ? [] : [["LICENSE-MIT", shared]]),
+  );
+  expect(notice).toContain("lib  1.0.0  MIT OR Apache-2.0");
+  expect(notice).toContain("leaf  1.0.0  Zlib");
+  expect(notice).not.toContain("phux-desktop  1.0.0");
+  expect(notice.split(shared)).toHaveLength(2);
+  expect(notice).toContain("gen 1.0.0 (LICENSE-MIT)\nlib 1.0.0 (LICENSE-MIT)");
+  graph[3] = { id: "leaf" };
+  expect(() => shippedCrates(metadata(graph))).toThrow(/no declared license.*leaf 1\.0\.0/);
 });

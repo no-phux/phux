@@ -1,8 +1,9 @@
 /**
  * Build `Phux.app`: the release GPUI executable, embedded-font license and
- * font files, an icon rendered from packaging/AppIcon.svg, and an ad-hoc
- * signature. The executable is the Rust binary. There is no JS bundle and
- * no native addon.
+ * font files, the repository LICENSE and NOTICE with a third-party notice
+ * generated from the desktop's Cargo graph, an icon rendered from
+ * packaging/AppIcon.svg, and an ad-hoc signature. The executable is the Rust
+ * binary. There is no JS bundle and no native addon.
  *
  * Usage: bun scripts/package-app.ts [--install]
  */
@@ -10,6 +11,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { desktopBinary, desktopRoot, repoRoot } from "./host.ts";
+import { renderNotices, shippedCrates } from "./notices.ts";
 
 const root = desktopRoot;
 const repo = repoRoot;
@@ -41,6 +43,10 @@ if (import.meta.main) {
   ]) {
     cpSync(join(fonts, name), join(contents, "Resources/fonts", name));
   }
+  for (const name of ["LICENSE", "NOTICE"]) {
+    cpSync(join(repo, name), join(contents, "Resources", name));
+  }
+  writeFileSync(join(contents, "Resources/THIRD-PARTY-NOTICES.txt"), thirdPartyNotices());
   renderIcon(join(contents, "Resources/AppIcon.icns"));
   const version = packageVersion(readFileSync(join(root, "package.json"), "utf8"));
   const sha = run(["git", "-C", repo, "rev-parse", "HEAD"]).trim();
@@ -107,6 +113,22 @@ export function infoPlist(
 </dict>
 </plist>
 `;
+}
+
+/** Fails when any shipped crate declares no license. */
+function thirdPartyNotices(): string {
+  const metadata = run([
+    "cargo",
+    "metadata",
+    "--locked",
+    "--format-version",
+    "1",
+    "--filter-platform",
+    "aarch64-apple-darwin",
+    "--manifest-path",
+    resolve(root, "native/Cargo.toml"),
+  ]);
+  return renderNotices(shippedCrates(metadata));
 }
 
 function renderIcon(output: string): void {
