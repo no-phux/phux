@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-05
+last-reviewed: 2026-10-17
 ---
 
 # Contributing to phux
@@ -278,6 +278,12 @@ If your change conflicts with these, open a [Discussion] before a PR.
    `df -h` before a wide wave all the same.
 4. **Integrate with rebase + ff-only merge**, then remove the worktree and
    branch.
+5. **One session per worktree at a time.** Build and test recipes lease the
+   worktree to the agent session that runs them and refuse another session
+   (exit 3). An orchestrator that runs several sessions in turn in one
+   worktree (implement, then fix) ends each with `just worktree-release`, or
+   starts the next with `PHUX_WORKTREE_TAKEOVER=1`; AGENTS.md
+   "Worktree Isolation" has the rule.
 
 Shared registries are where disjoint-file merges bite: two branches can claim
 the same ADR number or spec version with no textual conflict. Two registries

@@ -34,12 +34,17 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
   update `main`, fast-forward verified work, push, remove finished worktrees.
 - Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
   your work in a new worktree instead.
-- One agent session per worktree. `just ci`, `check`, `test`, `install-dev`,
-  `desktop-test` and `desktop-app` lease the worktree to the running session
-  (`PHUX_WORKTREE_OWNER`, else the harness session id) and refuse another
-  live session's run with exit 3; a lease idle for 6h is taken over, and
-  `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. Human shells
-  and CI are never checked. See `scripts/lib/worktree-owner.sh`.
+- One agent session per worktree. Every just recipe that builds, tests or
+  formats the tree (`ci`, `check`, `test`, `crate-check`/`core-check`, `lint`,
+  `e2e`, the desktop and integration gates, ...) leases the worktree to the
+  running session (`PHUX_WORKTREE_OWNER`, else the harness session id) and
+  refuses another live session's run with exit 3. `ci`, `test` and `e2e` also
+  fail with exit 3 when HEAD moved or the lease changed hands mid-run. Hand a
+  worktree on with `just worktree-release`; a lease idle for 6h is taken over,
+  and `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. Human
+  shells and CI are never checked. The guard detects a shared worktree at the
+  next guarded run; it does not stop raw `git` or editor use, so isolation is
+  still yours to keep. See `scripts/lib/worktree-owner.sh`.
 
 ## Never touch the installed phux
 

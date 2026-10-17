@@ -20,7 +20,7 @@ desktop-install:
 
 [group('desktop')]
 [doc('Check script tooling, qualification guards and the desktop host lock')]
-desktop-check:
+desktop-check: worktree-claim
     cd clients/desktop && bun run check:tooling
     python3 scripts/check-desktop-host-lock.py
     python3 scripts/test-check-desktop-host-lock.py
@@ -37,7 +37,7 @@ desktop-perf-headless profile="test": desktop-source
 
 [group('desktop')]
 [doc('Format check and clippy -D warnings for the native desktop crate')]
-desktop-lint: desktop-source
+desktop-lint: worktree-claim desktop-source
     cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
     cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
 
@@ -77,7 +77,7 @@ desktop-framework-check: desktop-package desktop-cli
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]
-desktop-native-build: desktop-source
+desktop-native-build: worktree-claim desktop-source
     bash clients/desktop/scripts/build-host.sh --release
 
 [group('desktop')]
