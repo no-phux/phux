@@ -1081,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_manifest_for_another_bundle_identity_is_refused() {
+    fn an_archive_for_another_bundle_identity_is_refused() {
         let network = Network::new("stage-identity");
         let target = network.checked(&network.publish("dev.example.other", |_| {}));
         network.assert_refused(&target, "not Phux Desktop");
