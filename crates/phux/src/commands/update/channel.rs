@@ -1,47 +1,42 @@
-//! Release channel: `stable` (vX.Y.Z) or `next` (green main).
+//! Which release channel an install follows, and how it is remembered.
 
 use std::fs;
 use std::path::Path;
+
+use phux_client_runtime::release::{Build, Channel, Version};
 
 use super::UpdateError;
 use super::source::Install;
 
 /// Persisted beside the binaries so the next `phux update` stays on the
-/// rail the user opted into, even when `--channel` is omitted.
+/// channel the user opted into, even when `--channel` is omitted.
 pub(crate) const CHANNEL_FILE: &str = ".phux-channel";
 
-/// The two rails `phux update` follows.
+/// The `--channel` flag. Its own type only because the derive must live in
+/// this crate; it converts straight to [`Channel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, usage::ValueEnum)]
-pub(crate) enum Channel {
-    /// `vX.Y.Z` GitHub releases, named by `channels/stable.json`.
+pub(crate) enum ChannelArg {
+    /// `vX.Y.Z` releases, named by `channels/stable.json`.
     #[usage(alias = "latest")]
     Stable,
-    /// Moving prerelease of green `main`.
+    /// The moving prerelease of green `main`.
     Next,
 }
 
-impl Channel {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Stable => "stable",
-            Self::Next => "next",
+impl From<ChannelArg> for Channel {
+    fn from(arg: ChannelArg) -> Self {
+        match arg {
+            ChannelArg::Stable => Self::Stable,
+            ChannelArg::Next => Self::Next,
         }
     }
+}
 
-    pub(crate) fn parse(text: &str) -> Option<Self> {
-        match text {
-            "stable" | "latest" => Some(Self::Stable),
-            "next" => Some(Self::Next),
-            _ => None,
-        }
-    }
-
-    /// The channel this binary was compiled as.
-    pub(crate) fn from_build() -> Self {
-        match option_env!("PHUX_BUILD_CHANNEL") {
-            Some("next") => Self::Next,
-            _ => Self::Stable,
-        }
+/// The channel this binary was compiled as.
+pub(crate) fn of_build() -> Channel {
+    match option_env!("PHUX_BUILD_CHANNEL") {
+        Some("next") => Channel::Next,
+        _ => Channel::Stable,
     }
 }
 
@@ -54,17 +49,23 @@ pub(crate) const fn build_sha() -> Option<&'static str> {
 }
 
 /// `--channel` wins; then `<bindir>/.phux-channel`; then the baked-in
-/// channel so a next binary stays on next after the first install.
+/// channel, so a next binary stays on next after its first install.
 pub(crate) fn resolve(explicit: Option<Channel>, install: &Install) -> Channel {
-    if let Some(channel) = explicit {
-        return channel;
-    }
-    if let Some(dir) = install.bin_dir()
-        && let Some(channel) = read_file(dir)
+    explicit
+        .or_else(|| install.bin_dir().and_then(read_file))
+        .unwrap_or_else(of_build)
+}
+
+/// The build `install` holds now, on the channel it last installed from.
+pub(crate) fn installed(install: &Install, version: Version) -> Build {
+    match install
+        .bin_dir()
+        .and_then(read_file)
+        .unwrap_or_else(of_build)
     {
-        return channel;
+        Channel::Stable => Build::Stable(version),
+        Channel::Next => Build::Next(build_sha().unwrap_or_default().to_owned()),
     }
-    Channel::from_build()
 }
 
 pub(crate) fn read_file(bin_dir: &Path) -> Option<Channel> {
@@ -73,14 +74,11 @@ pub(crate) fn read_file(bin_dir: &Path) -> Option<Channel> {
 }
 
 pub(crate) fn persist(bin_dir: &Path, channel: Channel) -> Result<(), UpdateError> {
-    fs::write(
-        bin_dir.join(CHANNEL_FILE),
-        format!("{}\n", channel.as_str()),
-    )
-    .map_err(|err| {
+    let path = bin_dir.join(CHANNEL_FILE);
+    fs::write(&path, format!("{}\n", channel.as_str())).map_err(|err| {
         UpdateError::Install(format!(
             "could not record the update channel in {}: {err}",
-            bin_dir.join(CHANNEL_FILE).display()
+            path.display()
         ))
     })
 }
@@ -88,10 +86,7 @@ pub(crate) fn persist(bin_dir: &Path, channel: Channel) -> Result<(), UpdateErro
 /// Human identity: `0.32.0` on stable, `0.32.0+next.abc1234` on next.
 pub(crate) fn display(version: &str, channel: Channel, sha: Option<&str>) -> String {
     match (channel, sha) {
-        (Channel::Next, Some(sha)) => {
-            let short = if sha.len() >= 7 { &sha[..7] } else { sha };
-            format!("{version}+next.{short}")
-        }
+        (Channel::Next, Some(sha)) => format!("{version}+next.{}", &sha[..sha.len().min(7)]),
         (Channel::Next, None) => format!("{version}+next"),
         (Channel::Stable, _) => version.to_owned(),
     }
@@ -100,50 +95,28 @@ pub(crate) fn display(version: &str, channel: Channel, sha: Option<&str>) -> Str
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::{Channel, display, persist, read_file, resolve};
+    use phux_client_runtime::release::Channel;
+
+    use super::{display, persist, read_file, resolve};
     use crate::commands::update::source::{Install, InstallSource};
 
     #[test]
-    fn parse_accepts_only_the_closed_vocabulary() {
-        assert_eq!(Channel::parse("stable"), Some(Channel::Stable));
-        assert_eq!(Channel::parse("latest"), Some(Channel::Stable));
-        assert_eq!(Channel::parse("next"), Some(Channel::Next));
-        assert_eq!(Channel::parse("nightly"), None);
-        assert_eq!(Channel::parse(""), None);
-    }
-
-    #[test]
-    fn persist_round_trips_through_the_bindir_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "phux-channel-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        persist(&dir, Channel::Next).unwrap();
-        assert_eq!(read_file(&dir), Some(Channel::Next));
-        persist(&dir, Channel::Stable).unwrap();
-        assert_eq!(read_file(&dir), Some(Channel::Stable));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn explicit_flag_beats_the_bindir_file() {
+    fn the_flag_beats_the_file_and_the_file_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
         let install = Install {
             source: InstallSource::DirectRelease,
-            executable: std::path::PathBuf::from("/home/ada/.local/bin/phux"),
+            executable: dir.path().join("phux"),
             nixos: false,
             unknown_reason: None,
         };
-        assert_eq!(resolve(Some(Channel::Next), &install), Channel::Next);
+        persist(dir.path(), Channel::Next).unwrap();
+        assert_eq!(read_file(dir.path()), Some(Channel::Next));
+        assert_eq!(resolve(None, &install), Channel::Next);
         assert_eq!(resolve(Some(Channel::Stable), &install), Channel::Stable);
     }
 
     #[test]
-    fn display_keeps_stable_as_plain_semver() {
+    fn next_builds_display_their_short_sha() {
         assert_eq!(
             display("0.32.0", Channel::Stable, Some("deadbeef")),
             "0.32.0"

@@ -1453,7 +1453,7 @@ pub(crate) enum Command {
     Channel {
         /// Channel to follow. Omit to report the current rail without changing it.
         #[usage(value_enum, value_name = "CHANNEL")]
-        channel: Option<update::channel::Channel>,
+        channel: Option<update::channel::ChannelArg>,
 
         #[usage(flatten)]
         json: JsonOpt,

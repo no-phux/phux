@@ -1,41 +1,26 @@
-//! Release checks and explicit updates (ADR-0175). A check reads one channel
-//! manifest; an update stages a verified bundle beside the app while it runs and
-//! a detached helper swaps it in only after this process has exited. No
-//! downloaded code runs during a check.
+//! Release checks and explicit updates (ADR-0175, ADR-0176). A check reads one
+//! channel manifest; an update stages a verified bundle beside the app while it
+//! runs and a detached helper swaps it in only after this process has exited.
+//! No downloaded code runs during a check.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+pub use phux_client_runtime::release::Channel;
+use phux_client_runtime::release::{self, Build, MANIFEST_CURL_ARGS, Product, Version};
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Channel {
-    #[default]
-    Stable,
-    Next,
+/// A channel's name in the Updates page.
+pub const fn channel_label(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Stable => "Stable",
+        Channel::Next => "Next",
+    }
 }
 
-impl Channel {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Stable => "stable",
-            Self::Next => "next",
-        }
-    }
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Stable => "Stable",
-            Self::Next => "Next",
-        }
-    }
-    fn parse(value: &Value) -> Self {
-        if value == "next" {
-            Self::Next
-        } else {
-            Self::Stable
-        }
-    }
+fn channel_of(value: &Value) -> Channel {
+    value.as_str().and_then(Channel::parse).unwrap_or_default()
 }
 
 #[derive(Clone, Debug)]
@@ -61,8 +46,8 @@ impl Preferences {
     pub fn from_value(value: &Value) -> Self {
         Self {
             automatic: value["automatic"].as_bool().unwrap_or(true),
-            desktop: Channel::parse(&value["desktop"]),
-            runtime: Channel::parse(&value["runtime"]),
+            desktop: channel_of(&value["desktop"]),
+            runtime: channel_of(&value["runtime"]),
             manage_runtime: value["manage_runtime"].as_bool().unwrap_or(false),
         }
     }
@@ -83,8 +68,8 @@ impl Preferences {
         std::fs::write(
             &staged,
             serde_json::to_vec_pretty(&json!({
-                "automatic": self.automatic, "desktop": self.desktop.name(),
-                "runtime": self.runtime.name(), "manage_runtime": self.manage_runtime,
+                "automatic": self.automatic, "desktop": self.desktop.as_str(),
+                "runtime": self.runtime.as_str(), "manage_runtime": self.manage_runtime,
             }))?,
         )?;
         std::fs::rename(staged, path)?;
@@ -101,9 +86,6 @@ fn config_path() -> PathBuf {
     base.join("phux-desktop/updates.json")
 }
 
-/// Where release manifests are published; the channel name completes the URL.
-const MANIFESTS: &str = "https://github.com/no-phux/phux/releases/download/channels";
-const DOWNLOADS: &str = "https://github.com/no-phux/phux/releases/download";
 const TARGET: &str = "aarch64-apple-darwin";
 /// Beside the installed app, so the post-exit swap is a same-volume rename.
 const STAGING_DIR: &str = ".phux-desktop-update";
@@ -121,6 +103,16 @@ pub struct Release {
     pub sha256: String,
     /// The wire `major.minor` this build links.
     pub protocol: String,
+}
+
+impl Release {
+    /// The build this release is, or `None` for an unversioned bundle.
+    fn build(&self) -> Option<Build> {
+        match self.channel {
+            Channel::Stable => Version::parse(&self.version).map(Build::Stable),
+            Channel::Next => Some(Build::Next(self.revision.clone())),
+        }
+    }
 }
 
 /// The wire protocol this desktop links.
@@ -159,135 +151,50 @@ pub fn installed_release(bundle: &Path) -> anyhow::Result<Release> {
     })
 }
 
-fn fetch(url: &str) -> anyhow::Result<Value> {
-    let text = output(Command::new("/usr/bin/curl").args([
-        "--fail",
-        "--silent",
-        "--show-error",
-        "--location",
-        "--proto",
-        "=https",
-        "--connect-timeout",
-        "10",
-        "--max-time",
-        "30",
-        "--max-filesize",
-        "1048576",
-        url,
-    ]))?;
-    serde_json::from_str(&text).context("Invalid release manifest")
-}
-
-fn strict_version(version: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = version.split('.');
-    let number = |part: &str| {
-        let value: u64 = part.parse().ok()?;
-        (part == value.to_string()).then_some(value)
-    };
-    let parsed = (
-        number(parts.next()?)?,
-        number(parts.next()?)?,
-        number(parts.next()?)?,
-    );
-    parts.next().is_none().then_some(parsed)
-}
-
-fn lower_hex(text: &str, len: usize) -> bool {
-    text.len() == len
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-/// `major.minor`, decimal without leading zeroes.
-fn protocol_shaped(text: &str) -> bool {
-    let mut parts = text.split('.');
-    let number = |part: Option<&str>| {
-        part.is_some_and(|part| part.parse::<u64>().is_ok_and(|n| part == n.to_string()))
-    };
-    number(parts.next()) && number(parts.next()) && parts.next().is_none()
-}
-
-fn field<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
-    value[key]
-        .as_str()
-        .with_context(|| format!("Desktop manifest entry has no {key}"))
-}
-
 fn not_published(channel: Channel) -> anyhow::Error {
     anyhow::anyhow!(
         "No Desktop {} build is published yet. Check again later.",
-        channel.label()
+        channel_label(channel)
     )
 }
 
 pub fn latest(channel: Channel) -> anyhow::Result<Release> {
-    let manifest = fetch(&format!("{MANIFESTS}/{}.json", channel.name())).map_err(|error| {
+    let body = output(
+        Command::new("/usr/bin/curl")
+            .args(MANIFEST_CURL_ARGS)
+            .arg(release::manifest_url(channel)),
+    )
+    .map_err(|error| {
         if error.to_string().contains("returned error: 404") {
             not_published(channel)
         } else {
             error
         }
     })?;
-    manifest_release(&manifest, channel)
+    manifest_release(&body, channel)
 }
 
-/// The desktop entry of a channel manifest, validated per ADR-0175 decision 3:
-/// every name and URL must equal what this client derives itself.
-pub fn manifest_release(manifest: &Value, channel: Channel) -> anyhow::Result<Release> {
-    if manifest["schema_version"] != 1 || manifest["channel"] != channel.name() {
-        bail!("Invalid {} release manifest", channel.label());
-    }
-    let desktop = &manifest["products"]["desktop"];
-    if desktop.is_null() {
-        return Err(not_published(channel));
-    }
-    let version = field(desktop, "version")?;
-    let revision = field(desktop, "sha")?;
-    let protocol = field(desktop, "protocol")?;
-    if strict_version(version).is_none() || !lower_hex(revision, 40) {
-        bail!("Invalid Desktop version or revision in the manifest");
-    }
-    if !protocol_shaped(protocol) || !protocol_shaped(field(desktop, "minimum_macos")?) {
-        bail!("Invalid Desktop protocol or minimum macOS in the manifest");
-    }
-    let release = match channel {
-        Channel::Stable => format!("desktop-v{version}"),
-        Channel::Next => "next".to_owned(),
-    };
-    let name = match channel {
-        Channel::Stable => format!("phux-desktop-{version}-macos-arm64.zip"),
-        Channel::Next => format!("phux-desktop-next.{revision}-macos-arm64.zip"),
-    };
-    let artifact = &desktop["artifacts"][TARGET];
-    let expected_url = format!("{DOWNLOADS}/{release}/{name}");
-    if field(desktop, "release")? != release
-        || field(artifact, "name")? != name
-        || field(artifact, "url")? != expected_url
-    {
-        bail!("Desktop manifest names an artifact this client does not derive");
-    }
-    let sha256 = field(artifact, "sha256")?;
-    if !lower_hex(sha256, 64) {
-        bail!("Invalid Desktop archive digest in the manifest");
-    }
+/// The desktop entry of a channel manifest.
+pub fn manifest_release(body: &str, channel: Channel) -> anyhow::Result<Release> {
+    let entry = release::parse(body, channel, Product::Desktop, TARGET)?
+        .ok_or_else(|| not_published(channel))?;
     Ok(Release {
-        version: version.into(),
-        revision: revision.into(),
+        version: entry.version.to_string(),
+        revision: entry.sha,
         channel,
-        sha256: sha256.into(),
-        protocol: protocol.into(),
+        sha256: entry.sha256,
+        protocol: entry.protocol,
     })
 }
 
+/// Whether `target` updates `current`; an unversioned bundle always updates.
 pub fn available(current: &Release, target: &Release) -> bool {
-    if current.channel != target.channel {
-        return true;
-    }
-    if target.channel == Channel::Next {
-        return current.revision != target.revision;
-    }
-    strict_version(&target.version) > strict_version(&current.version)
+    let Some(target) = target.build() else {
+        return false;
+    };
+    current
+        .build()
+        .is_none_or(|current| release::is_newer(&current, &target))
 }
 
 #[derive(Clone, Debug)]
@@ -305,7 +212,7 @@ pub struct RuntimeRelease {
 
 pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRelease> {
     let text = run_bounded(
-        Command::new(phux).args(["update", "--check", "--channel", channel.name(), "--json"]),
+        Command::new(phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
         None,
         CHECK_TIMEOUT,
         "phux release check timed out. Nothing was installed; try Check now again.",
@@ -371,7 +278,7 @@ pub fn runtime_install(
         Command::new(phux).arg("--socket").arg(socket).args([
             "update",
             "--channel",
-            channel.name(),
+            channel.as_str(),
             "--json",
         ]),
         None,
@@ -430,9 +337,9 @@ fn lock_file(bundle: &Path) -> anyhow::Result<PathBuf> {
 fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
     let mut command = Command::new("/bin/sh");
     command
-        .args(["-s", "--", "--stage-dir"])
+        .args(["-s", "--", "--desktop", "--stage-dir"])
         .arg(staging_dir(bundle)?)
-        .args(["--channel", target.channel.name()]);
+        .args(["--channel", target.channel.as_str()]);
     match target.channel {
         Channel::Stable => command.args(["--version", &target.version]),
         Channel::Next => command.args(["--revision", &target.revision]),
@@ -444,12 +351,12 @@ fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
 /// Download, verify and unpack `target` into the staging directory with the
 /// shipped installer. Nothing outside the staging directory changes.
 pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
-    if !lower_hex(&target.sha256, 64) {
+    if !release::is_lower_hex(&target.sha256, 64) {
         bail!("No verified digest for the Desktop update");
     }
     let text = run_bounded(
         &mut stage_command(bundle, target)?,
-        Some(include_bytes!("../../../../scripts/install-desktop.sh")),
+        Some(include_bytes!("../../../../scripts/install.sh")),
         STAGE_TIMEOUT,
         "Desktop update download timed out after 15 minutes. Nothing was installed.",
     )?;
@@ -707,10 +614,6 @@ mod tests {
     const STABLE: &str = include_str!("../../../../scripts/fixtures/release-manifest/stable.json");
     const NEXT: &str = include_str!("../../../../scripts/fixtures/release-manifest/next.json");
 
-    fn manifest(text: &str) -> Value {
-        serde_json::from_str(text).unwrap()
-    }
-
     fn scratch(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -734,62 +637,24 @@ mod tests {
 
     #[test]
     fn golden_manifests_name_the_desktop_release() {
-        let stable = manifest_release(&manifest(STABLE), Channel::Stable).unwrap();
+        let stable = manifest_release(STABLE, Channel::Stable).unwrap();
         assert_eq!(stable.version, "1.2.3");
         assert_eq!(stable.revision, "b".repeat(40));
         assert_eq!(stable.sha256, "d".repeat(64));
         assert_eq!(stable.protocol, "0.9");
-        let next = manifest_release(&manifest(NEXT), Channel::Next).unwrap();
+        let next = manifest_release(NEXT, Channel::Next).unwrap();
         assert_eq!(next.channel, Channel::Next);
-        assert_eq!(next.revision, "b".repeat(40));
-    }
-
-    #[test]
-    fn a_manifest_for_another_channel_is_refused() {
-        assert!(manifest_release(&manifest(STABLE), Channel::Next).is_err());
-        assert!(manifest_release(&manifest(NEXT), Channel::Stable).is_err());
-    }
-
-    #[test]
-    fn every_invalid_manifest_field_is_refused() {
-        let desktop = "/products/desktop";
-        let artifact = "/products/desktop/artifacts/aarch64-apple-darwin";
-        let cases: [(&str, &str, Value); 12] = [
-            ("", "schema_version", json!(2)),
-            (desktop, "version", json!("01.2.3")),
-            (desktop, "version", json!("1.2.3-alpha.1")),
-            (desktop, "sha", json!("B".repeat(40))),
-            (desktop, "sha", json!("../evil")),
-            (desktop, "protocol", json!("0.09")),
-            (desktop, "minimum_macos", json!("latest")),
-            (desktop, "release", json!("desktop-v9.9.9")),
-            (artifact, "name", json!("other.zip")),
-            (
-                artifact,
-                "url",
-                json!("https://evil.example/phux-desktop-1.2.3-macos-arm64.zip"),
-            ),
-            (artifact, "sha256", json!("D".repeat(64))),
-            (artifact, "sha256", json!("d".repeat(63))),
-        ];
-        for (pointer, key, value) in cases {
-            let mut document = manifest(STABLE);
-            document.pointer_mut(pointer).unwrap()[key] = value.clone();
-            assert!(
-                manifest_release(&document, Channel::Stable).is_err(),
-                "{pointer}/{key} = {value} should be refused"
-            );
-        }
+        assert!(manifest_release(STABLE, Channel::Next).is_err());
     }
 
     #[test]
     fn a_channel_without_desktop_reads_as_unpublished() {
-        let mut document = manifest(NEXT);
+        let mut document: Value = serde_json::from_str(NEXT).unwrap();
         document["products"]
             .as_object_mut()
             .unwrap()
             .remove("desktop");
-        let error = manifest_release(&document, Channel::Next).unwrap_err();
+        let error = manifest_release(&document.to_string(), Channel::Next).unwrap_err();
         assert_eq!(
             error.to_string(),
             "No Desktop Next build is published yet. Check again later."
@@ -858,6 +723,7 @@ mod tests {
             [
                 "-s",
                 "--",
+                "--desktop",
                 "--stage-dir",
                 "/Applications/.phux-desktop-update",
                 "--channel",

@@ -207,7 +207,7 @@ pub(crate) fn page(
             format!(
                 "{} · {} · {}",
                 release.version,
-                release.channel.name(),
+                release.channel.as_str(),
                 release.revision.chars().take(8).collect::<String>()
             )
         });
@@ -309,7 +309,7 @@ fn channel_item(
                             let id = format!(
                                 "{}-{}",
                                 if runtime { "runtime" } else { "desktop" },
-                                channel.name()
+                                channel.as_str()
                             );
                             div()
                                 .id(gpui::SharedString::from(id))
