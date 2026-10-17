@@ -9,6 +9,16 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.96.0](https://github.com/no-phux/phux/compare/v0.95.1...v0.96.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** frame a floating pane in the modal tones ([ea6c25d](https://github.com/no-phux/phux/commit/ea6c25d578f3d5007bf5e0ae69fd0b8121b4004d))
+* **tui:** pickers sized to their rows, copy mode at the prompt, menus with legends ([a2056a2](https://github.com/no-phux/phux/commit/a2056a25d4721796b148d3cd82306855f8d30587))
+* **tui:** show the pending prefix as a chip on the bar ([c70f790](https://github.com/no-phux/phux/commit/c70f790cd18ab78d4efdb409df319ac6d5deea1c))
+* **update:** verify minisign-signed release checksums before trusting them ([#1565](https://github.com/no-phux/phux/issues/1565)) ([a4c92ce](https://github.com/no-phux/phux/commit/a4c92ced74c862c028239428304d6316adb03adc))
+
 ## [0.95.1](https://github.com/no-phux/phux/compare/v0.95.0...v0.95.1) (2026-10-17)
 
 
