@@ -81,8 +81,17 @@ the line, and a colour, face or faint change is another `TextRun` of it. The
 line is kept only when every character became one glyph from the cell fonts;
 otherwise its ASCII stretches are shaped again as lines and every other cell
 alone. Wide cells and graphemes of several characters are shaped alone.
-Glyphs are painted directly from the shaped runs, so a run costs no GPUI layer
-of its own. Cell backgrounds, a solid cursor and glyphs share one GPUI paint
+When a row is shaped, its glyphs are resolved against the window's sprite
+atlas (`Window::resolve_glyph`, toolchain patch 0006) and kept with the scene
+as one sprite list per row. Painting a row is then one
+`Window::paint_glyph_sprites` call: no shaping, rasterizing or atlas lookup,
+and one GPUI paint operation for the whole row. A scroll moves a kept row's
+sprites by whole device pixels instead of resolving them again, and the
+sub-row `shift` is the same kind of offset. The sprites are valid while
+`Window::glyph_raster` is unchanged (window, atlas generation, scale factor,
+subpixel inputs); any change rebuilds the scene. A window without a retaining
+atlas, a resolve error, and a faint colour emoji paint glyph by glyph from the
+shaped line instead. Neither path costs a GPUI layer per run. Cell backgrounds, a solid cursor and glyphs share one GPUI paint
 layer (GPUI draws a layer's quads before its sprites); decorations,
 procedural blocks and the other cursors share a second layer above it.
 Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).

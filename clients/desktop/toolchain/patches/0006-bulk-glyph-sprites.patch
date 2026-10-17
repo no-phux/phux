@@ -1,0 +1,454 @@
+diff --git a/gpui-pre-apple/src/metal_atlas.rs b/gpui-pre-apple/src/metal_atlas.rs
+index a635bc4..19f9962 100644
+--- a/gpui-pre-apple/src/metal_atlas.rs
++++ b/gpui-pre-apple/src/metal_atlas.rs
+@@ -49,6 +49,10 @@ impl PlatformAtlas for MetalAtlas {
+     fn remove(&self, key: &AtlasKey) {
+         self.0.lock().remove(key);
+     }
++
++    fn generation(&self) -> Option<u64> {
++        Some(self.0.lock().generation())
++    }
+ }
+ 
+ impl AtlasBackend for MetalAtlasTextures {
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 21e03c1..ac87416 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1732,6 +1732,14 @@ pub trait PlatformAtlas {
+     ) -> Result<Option<AtlasTile>>;
+     fn remove(&self, key: &AtlasKey);
+ 
++    /// A count that changes whenever a tile this atlas handed out may have
++    /// been freed. While it holds, every tile returned so far still holds the
++    /// pixels it was created with, so a caller may keep tiles across frames.
++    /// `None` means the atlas makes no such promise.
++    fn generation(&self) -> Option<u64> {
++        None
++    }
++
+     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+     fn contains(&self, _key: &AtlasKey) -> bool {
+         false
+@@ -1753,6 +1761,8 @@ pub trait AtlasBackend {
+ #[doc(hidden)]
+ pub struct AtlasState<Backend> {
+     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
++    /// Advanced whenever a tile is freed; see [`PlatformAtlas::generation`].
++    generation: u64,
+     pub backend: Backend,
+ }
+ 
+@@ -1760,6 +1770,7 @@ impl<Backend> AtlasState<Backend> {
+     pub fn new(backend: Backend) -> Self {
+         Self {
+             tiles_by_key: FxHashMap::default(),
++            generation: 0,
+             backend,
+         }
+     }
+@@ -1768,8 +1779,13 @@ impl<Backend> AtlasState<Backend> {
+         self.tiles_by_key.contains_key(key)
+     }
+ 
++    pub fn generation(&self) -> u64 {
++        self.generation
++    }
++
+     pub fn clear(&mut self, reset_backend: impl FnOnce(&mut Backend)) {
+         self.tiles_by_key.clear();
++        self.generation += 1;
+         reset_backend(&mut self.backend);
+     }
+ }
+@@ -1804,6 +1820,7 @@ impl<Backend: AtlasBackend> AtlasState<Backend> {
+ 
+     pub fn remove(&mut self, key: &AtlasKey) {
+         if let Some(tile) = self.tiles_by_key.remove(key) {
++            self.generation += 1;
+             self.backend.remove(tile);
+         }
+     }
+@@ -1862,6 +1879,10 @@ impl PlatformAtlas for HeadlessAtlas {
+         self.0.lock().remove(key);
+     }
+ 
++    fn generation(&self) -> Option<u64> {
++        Some(self.0.lock().generation())
++    }
++
+     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+     fn contains(&self, key: &AtlasKey) -> bool {
+         self.0.lock().contains(key)
+diff --git a/gpui-pre/src/scene.rs b/gpui-pre/src/scene.rs
+index 160587a..b9d2fe2 100644
+--- a/gpui-pre/src/scene.rs
++++ b/gpui-pre/src/scene.rs
+@@ -13,6 +13,7 @@ use std::{
+     iter::Peekable,
+     ops::{Add, Range, Sub},
+     slice,
++    sync::Arc,
+ };
+ 
+ #[allow(non_camel_case_types, unused)]
+@@ -138,10 +139,79 @@ impl Scene {
+             .push(PaintOperation::Primitive(primitive));
+     }
+ 
++    /// Insert `sprites` moved by `offset`, each clipped to its own clip and
++    /// to `content_mask`, with `opacity` applied. Inside a layer every sprite
++    /// takes the layer's draw order, so the whole slice is one paint
++    /// operation and a vector extension per sprite kind.
++    pub(crate) fn insert_glyph_sprites(
++        &mut self,
++        sprites: &Arc<[GlyphSprite]>,
++        offset: Point<ScaledPixels>,
++        content_mask: ContentMask<ScaledPixels>,
++        opacity: f32,
++    ) {
++        let Some(&order) = self.layer_stack.last() else {
++            for sprite in sprites.iter() {
++                self.insert_primitive(sprite.primitive(offset, &content_mask, opacity));
++            }
++            return;
++        };
++        for sprite in sprites.iter() {
++            let bounds = sprite.bounds + offset;
++            let clip = (sprite.clip + offset).intersect(&content_mask.bounds);
++            if bounds.intersect(&clip).is_empty() {
++                continue;
++            }
++            let content_mask = ContentMask { bounds: clip };
++            match sprite.kind {
++                GlyphSpriteKind::Monochrome => self.monochrome_sprites.push(MonochromeSprite {
++                    order,
++                    pad: 0,
++                    bounds,
++                    content_mask,
++                    color: sprite.color.opacity(opacity),
++                    tile: sprite.tile,
++                    transformation: TransformationMatrix::unit(),
++                }),
++                GlyphSpriteKind::Subpixel => self.subpixel_sprites.push(SubpixelSprite {
++                    order,
++                    pad: 0,
++                    bounds,
++                    content_mask,
++                    color: sprite.color.opacity(opacity),
++                    tile: sprite.tile,
++                    transformation: TransformationMatrix::unit(),
++                }),
++                GlyphSpriteKind::Polychrome => self.polychrome_sprites.push(PolychromeSprite {
++                    order,
++                    pad: 0,
++                    grayscale: false.into(),
++                    opacity,
++                    bounds,
++                    content_mask,
++                    corner_radii: Corners::default(),
++                    tile: sprite.tile,
++                }),
++            }
++        }
++        self.paint_operations.push(PaintOperation::GlyphSprites {
++            sprites: Arc::clone(sprites),
++            offset,
++            content_mask,
++            opacity,
++        });
++    }
++
+     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+         for operation in &prev_scene.paint_operations[range] {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
++                PaintOperation::GlyphSprites {
++                    sprites,
++                    offset,
++                    content_mask,
++                    opacity,
++                } => self.insert_glyph_sprites(sprites, *offset, *content_mask, *opacity),
+                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                 PaintOperation::EndLayer => self.pop_layer(),
+             }
+@@ -153,12 +223,15 @@ impl Scene {
+         self.quads.sort_by_key(|quad| quad.order);
+         self.paths.sort_by_key(|path| path.order);
+         self.underlines.sort_by_key(|underline| underline.order);
++        // Sprites batch by texture, so within one draw order only the texture
++        // is a key. The stable sort keeps paint order inside a texture, and a
++        // layer's sprites from one texture are a single presorted run.
+         self.monochrome_sprites
+-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
++            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+         self.subpixel_sprites
+-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
++            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+         self.polychrome_sprites
+-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
++            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
+         self.surfaces.sort_by_key(|surface| surface.order);
+     }
+ 
+@@ -213,10 +286,100 @@ pub(crate) enum PrimitiveKind {
+ 
+ pub(crate) enum PaintOperation {
+     Primitive(Primitive),
++    GlyphSprites {
++        sprites: Arc<[GlyphSprite]>,
++        offset: Point<ScaledPixels>,
++        content_mask: ContentMask<ScaledPixels>,
++        opacity: f32,
++    },
+     StartLayer(Bounds<ScaledPixels>),
+     EndLayer,
+ }
+ 
++/// A glyph already resolved against one window's sprite atlas, in device
++/// pixels, so it can be painted on later frames without shaping,
++/// rasterizing or an atlas lookup. Made by
++/// [`Window::resolve_glyph`](crate::Window::resolve_glyph) and painted by
++/// [`Window::paint_glyph_sprites`](crate::Window::paint_glyph_sprites); valid
++/// while [`Window::glyph_raster`](crate::Window::glyph_raster) is unchanged.
++#[derive(Clone, Copy, Debug)]
++pub struct GlyphSprite {
++    kind: GlyphSpriteKind,
++    bounds: Bounds<ScaledPixels>,
++    /// The glyph's own clip, intersected with the content mask at paint time.
++    clip: Bounds<ScaledPixels>,
++    /// Monochrome and subpixel colour, before element opacity.
++    color: Hsla,
++    tile: AtlasTile,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum GlyphSpriteKind {
++    Monochrome,
++    Subpixel,
++    Polychrome,
++}
++
++impl GlyphSprite {
++    pub(crate) fn new(
++        kind: GlyphSpriteKind,
++        bounds: Bounds<ScaledPixels>,
++        clip: Bounds<ScaledPixels>,
++        color: Hsla,
++        tile: AtlasTile,
++    ) -> Self {
++        Self {
++            kind,
++            bounds,
++            clip,
++            color,
++            tile,
++        }
++    }
++
++    fn primitive(
++        &self,
++        offset: Point<ScaledPixels>,
++        content_mask: &ContentMask<ScaledPixels>,
++        opacity: f32,
++    ) -> Primitive {
++        let bounds = self.bounds + offset;
++        let content_mask = ContentMask {
++            bounds: (self.clip + offset).intersect(&content_mask.bounds),
++        };
++        match self.kind {
++            GlyphSpriteKind::Monochrome => Primitive::MonochromeSprite(MonochromeSprite {
++                order: 0,
++                pad: 0,
++                bounds,
++                content_mask,
++                color: self.color.opacity(opacity),
++                tile: self.tile,
++                transformation: TransformationMatrix::unit(),
++            }),
++            GlyphSpriteKind::Subpixel => Primitive::SubpixelSprite(SubpixelSprite {
++                order: 0,
++                pad: 0,
++                bounds,
++                content_mask,
++                color: self.color.opacity(opacity),
++                tile: self.tile,
++                transformation: TransformationMatrix::unit(),
++            }),
++            GlyphSpriteKind::Polychrome => Primitive::PolychromeSprite(PolychromeSprite {
++                order: 0,
++                pad: 0,
++                grayscale: false.into(),
++                opacity,
++                bounds,
++                content_mask,
++                corner_radii: Corners::default(),
++                tile: self.tile,
++            }),
++        }
++    }
++}
++
+ #[derive(Clone)]
+ #[expect(missing_docs)]
+ pub enum Primitive {
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index c0c056f..4800ab5 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -4,6 +4,7 @@ use crate::DebugFrameOverlayMode;
+ use crate::Inspector;
+ #[cfg(feature = "profiler")]
+ use crate::profiler;
++use crate::scene::{GlyphSprite, GlyphSpriteKind};
+ use crate::{
+     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
+     AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+@@ -2206,6 +2207,17 @@ pub struct DispatchEventResult {
+     pub default_prevented: bool,
+ }
+ 
++/// The inputs a [`GlyphSprite`] was rasterized under; see [`Window::glyph_raster`].
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub struct GlyphRaster {
++    window: WindowId,
++    atlas_generation: u64,
++    scale_factor: f32,
++    opaque: bool,
++    subpixel_supported: bool,
++    text_rendering_mode: TextRenderingMode,
++}
++
+ /// Indicates which region of the window is visible. Content falling outside of this mask will not be
+ /// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
+ /// to leave room to support more complex shapes in the future.
+@@ -4883,6 +4895,127 @@ impl Window {
+         Ok(())
+     }
+ 
++    /// What glyphs resolved by [`Self::resolve_glyph`] depend on: this window's
++    /// sprite atlas and its generation, the scale factor, and the subpixel
++    /// rendering inputs. Retained [`GlyphSprite`]s stay valid while this value
++    /// is unchanged. `None` when the atlas cannot promise that its tiles
++    /// persist, in which case glyphs must be painted with [`Self::paint_glyph`].
++    pub fn glyph_raster(&self) -> Option<GlyphRaster> {
++        Some(GlyphRaster {
++            window: self.handle.window_id(),
++            atlas_generation: self.sprite_atlas.generation()?,
++            scale_factor: self.scale_factor(),
++            opaque: self.platform_window.background_appearance()
++                == WindowBackgroundAppearance::Opaque,
++            subpixel_supported: self.platform_window.is_subpixel_rendering_supported(),
++            text_rendering_mode: self.text_rendering_mode.get(),
++        })
++    }
++
++    /// Rasterize one glyph into the sprite atlas, as [`Self::paint_glyph`]
++    /// (or [`Self::paint_emoji`] when `is_emoji`) would at `origin`, without
++    /// painting it. The sprite is clipped to `clip` and, when painted, to the
++    /// content mask current at that time. `None` for a glyph with no ink.
++    pub fn resolve_glyph(
++        &self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++        is_emoji: bool,
++        clip: Bounds<Pixels>,
++    ) -> Result<Option<GlyphSprite>> {
++        let scale_factor = self.scale_factor();
++        let glyph_origin = origin.scale(scale_factor);
++        let (params, integer_origin, kind) = if is_emoji {
++            let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
++            let params = RenderGlyphParams {
++                font_id,
++                glyph_id,
++                font_size,
++                subpixel_variant: Default::default(),
++                scale_factor,
++                is_emoji: true,
++                subpixel_rendering: false,
++                dilation: 0,
++            };
++            (params, integer_origin, GlyphSpriteKind::Polychrome)
++        } else {
++            let quantized_origin = Point::new(
++                round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
++                    / SUBPIXEL_VARIANTS_X as f32,
++                round_half_toward_zero(glyph_origin.y.0 * SUBPIXEL_VARIANTS_Y as f32)
++                    / SUBPIXEL_VARIANTS_Y as f32,
++            );
++            let subpixel_variant = Point::new(
++                (quantized_origin.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
++                (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
++            );
++            let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
++            let params = RenderGlyphParams {
++                font_id,
++                glyph_id,
++                font_size,
++                subpixel_variant,
++                scale_factor,
++                is_emoji: false,
++                subpixel_rendering,
++                dilation: self.text_system().glyph_dilation_for_color(color),
++            };
++            let kind = if subpixel_rendering {
++                GlyphSpriteKind::Subpixel
++            } else {
++                GlyphSpriteKind::Monochrome
++            };
++            (
++                params,
++                quantized_origin.map(|c| ScaledPixels(c.trunc())),
++                kind,
++            )
++        };
++        let raster_bounds = self.text_system().raster_bounds(&params)?;
++        if raster_bounds.is_zero() {
++            return Ok(None);
++        }
++        let tile = self
++            .sprite_atlas
++            .get_or_insert_with(params.clone().into(), &mut || {
++                let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
++                Ok(Some((size, Cow::Owned(bytes))))
++            })?
++            .expect("Callback above only errors or returns Some");
++        let bounds = Bounds {
++            origin: integer_origin + raster_bounds.origin.map(Into::into),
++            size: tile.bounds.size.map(Into::into),
++        };
++        Ok(Some(GlyphSprite::new(
++            kind,
++            bounds,
++            self.cover_bounds(clip),
++            color,
++            tile,
++        )))
++    }
++
++    /// Paint glyphs resolved by [`Self::resolve_glyph`], moved by `offset`
++    /// (rounded to whole device pixels so each glyph keeps its rasterization),
++    /// at the current z-index, content mask and element opacity. Inside a
++    /// paint layer the whole slice costs one scene operation. The caller must
++    /// have resolved the sprites under the current [`Self::glyph_raster`].
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    pub fn paint_glyph_sprites(&mut self, sprites: &Arc<[GlyphSprite]>, offset: Point<Pixels>) {
++        self.invalidator.debug_assert_paint();
++        let scale_factor = self.scale_factor();
++        let offset = offset.map(|c| ScaledPixels((c.0 * scale_factor).round()));
++        let content_mask = self.snapped_content_mask();
++        let opacity = self.element_opacity();
++        self.next_frame
++            .scene
++            .insert_glyph_sprites(sprites, offset, content_mask, opacity);
++    }
++
+     fn should_use_subpixel_rendering(&self, font_id: FontId, font_size: Pixels) -> bool {
+         if self.platform_window.background_appearance() != WindowBackgroundAppearance::Opaque {
+             return false;
