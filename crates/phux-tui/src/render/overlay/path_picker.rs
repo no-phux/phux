@@ -24,12 +24,36 @@ impl PathPicker {
     /// Open a host-backed picker rooted at a directory (empty means home).
     #[must_use]
     pub fn new(root: String, theme: &Theme) -> Self {
-        let title = format!("Insert path: {}", if root.is_empty() { "~" } else { &root });
+        let home = std::env::var("HOME").ok();
+        let status = home_to_tilde(&root, home.as_deref());
         Self {
             root,
-            list: SelectList::new(title, vec![SelectItem::header("Searching host…")], theme)
-                .without_vi_navigation(),
+            list: SelectList::new(
+                "Insert path",
+                vec![SelectItem::header("Searching host…")],
+                theme,
+            )
+            .with_footer_status(status)
+            .without_vi_navigation(),
         }
+    }
+}
+
+/// `root` as the shell shows it: `home` becomes `~`; empty means home.
+fn home_to_tilde(root: &str, home: Option<&str>) -> String {
+    if root.is_empty() {
+        return "~".to_owned();
+    }
+    let Some(home) = home
+        .map(|h| h.trim_end_matches('/'))
+        .filter(|h| !h.is_empty())
+    else {
+        return root.to_owned();
+    };
+    match root.strip_prefix(home) {
+        Some("") => "~".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => root.to_owned(),
     }
 }
 
@@ -161,6 +185,31 @@ mod tests {
     use super::*;
     use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
     use phux_protocol::wire::frame::{PathResults, PathRow};
+
+    #[test]
+    fn footer_status_shortens_home_and_keeps_the_deepest_directory() {
+        assert_eq!(home_to_tilde("/Users/p", Some("/Users/p")), "~");
+        assert_eq!(home_to_tilde("/Users/p/src/x", Some("/Users/p")), "~/src/x");
+        assert_eq!(
+            home_to_tilde("/Users/pat/x", Some("/Users/p")),
+            "/Users/pat/x"
+        );
+        assert_eq!(home_to_tilde("", Some("/Users/p")), "~");
+
+        let long = "/private/tmp/claude-501/-Users-phall-workspace-phux/deepest";
+        let picker = PathPicker::new(long.to_owned(), &Theme::default());
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        picker.render(area, &mut buf);
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(text.contains("Insert path"));
+        assert!(text.contains('…') && text.contains("deepest"), "{text}");
+        assert!(!text.contains("Insert path:"));
+    }
 
     #[test]
     fn browse_rows_insert_and_navigate_without_spawning() {

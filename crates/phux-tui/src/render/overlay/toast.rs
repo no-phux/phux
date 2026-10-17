@@ -151,12 +151,12 @@ mod tests {
     #[test]
     fn renders_title_and_body() {
         let toast = ToastOverlay::new(
-            "plugin: p a failed",
+            "Plugin action failed",
             vec!["exit code 2".to_owned(), "boom".to_owned()],
             &Theme::default(),
         );
         let text = render_to_string(&toast, 80, 24);
-        assert!(text.contains("plugin: p a failed"), "title:\n{text}");
+        assert!(text.contains("Plugin action failed"), "title:\n{text}");
         assert!(text.contains("exit code 2"), "body line 1:\n{text}");
         assert!(text.contains("boom"), "body line 2:\n{text}");
         assert!(

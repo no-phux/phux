@@ -60,7 +60,7 @@ pub fn journal_summary(judge: JudgeKind, journal: &Journal, failures: usize) -> 
     if failures > 0 {
         parts.push(count(failures, "step", "failed"));
     }
-    format!("organize ({}): {}", judge.as_str(), parts.join(", "))
+    format!("{} ({}).", parts.join(", "), judge.as_str())
 }
 
 #[cfg(test)]
@@ -74,7 +74,7 @@ mod tests {
         let mut journal = Journal::new();
         assert_eq!(
             journal_summary(JudgeKind::Jev, &journal, 0),
-            "organize (jev): 0 panes moved"
+            "0 panes moved (jev)."
         );
         journal.created.push(CreatedSession {
             key: skey(1),
@@ -82,7 +82,7 @@ mod tests {
         });
         assert_eq!(
             journal_summary(JudgeKind::Heuristic, &journal, 1),
-            "organize (heuristic): 0 panes moved, 1 session created, 1 step failed"
+            "0 panes moved, 1 session created, 1 step failed (heuristic)."
         );
     }
 }

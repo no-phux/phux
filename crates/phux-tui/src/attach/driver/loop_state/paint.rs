@@ -771,7 +771,7 @@ impl super::SessionLoop {
         };
         self.update_poll_ticks = 0;
         self.overlays.push(Box::new(ToastOverlay::new(
-            notice.title(),
+            crate::attach::update_notice::UpdateNotice::TITLE,
             notice.body(),
             &self.settings.theme,
         )));

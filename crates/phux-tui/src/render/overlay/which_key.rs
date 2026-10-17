@@ -522,7 +522,9 @@ impl RenderOverlay for WhichKeyOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = self.bounds(area).unwrap_or(area);
         let body = self.grid_lines(&self.grid(area));
-        Modal::new(&self.theme, self.prefix.clone(), body).render_into(modal_area, buf);
+        Modal::new(&self.theme, self.prefix.clone(), body)
+            .footer("", "esc cancel")
+            .render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
@@ -826,6 +828,7 @@ mod tests {
         for header in ["Pane", "Tab", "Session", "phux"] {
             assert!(text.contains(header), "{header} missing:\n{text}");
         }
+        assert!(text.contains("esc cancel"), "legend missing:\n{text}");
     }
 
     /// The shipped prefix table lays out one group per column on a roomy
