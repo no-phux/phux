@@ -58,6 +58,9 @@ history page (or FINISH) and call `next_checked(rows)`. A truncated, corrupt,
 or mismatched unit fails closed and leaves the READY terminal intact.
 `tests/fixtures/server-snapshot-v1.bin` is a server capture, regenerated with
 `PHUX_BLESS_WEB_FIXTURE=1 cargo nextest run -p phux-server browser_snapshot_fixture`.
+GHOSTSNP bytes and page splits follow the encoding host's page layout, so that
+test compares the decoded terminal, not the bytes; a capture blessed on macOS
+or Linux passes on both.
 
 ## The engine artifact (build dependency)
 
