@@ -200,6 +200,11 @@ received it. Acknowledged actions distinguish **Delivered**, **Refused**, and
 authoritative output has actually been presented; it never triggers blind
 replay by the UI. An offscreen acquired frame is not that evidence.
 
+Linux currently reports submitted frames, not confirmed compositor presentation.
+If an acknowledged write becomes **Unknown**, its input fence therefore stays
+set even after fresh output arrives. Inspect the terminal before quitting and
+relaunching the app; never retry the uncertain command automatically.
+
 Shell integration (OSC 133) marks a terminal as running a command from its
 start to its finish. The connection's shell events say so first; before any
 (a command started before a reconnect or before the window attached), the

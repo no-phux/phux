@@ -500,7 +500,12 @@ fn stage_with(
         "Desktop update download timed out after 15 minutes. Nothing was installed.",
     )?;
     let staged = staged_path(&text, &staging_dir(bundle)?)?;
-    let built = installed_release(&staged)?;
+    verify_staged_release(&staged, target)?;
+    Ok(staged)
+}
+
+fn verify_staged_release(staged: &Path, target: &Release) -> anyhow::Result<()> {
+    let built = installed_release(staged)?;
     let matches = match target.channel {
         Channel::Stable => built.version == target.version,
         Channel::Next => built.revision == target.revision,
@@ -508,7 +513,7 @@ fn stage_with(
     if !matches || built.channel != target.channel {
         bail!("The staged Desktop bundle is not the release that was checked");
     }
-    Ok(staged)
+    Ok(())
 }
 
 /// The installer's final `staged: <dir>/Phux.app` line, which must name our

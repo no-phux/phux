@@ -190,6 +190,14 @@ function serverPid(): unknown {
   return status.pid;
 }
 
+function visibleWindowContains(window: string, expected: string): boolean {
+  const image = join(evidence, "x11-window.png");
+  run(["import", "-window", window, image]);
+  const text = run(["tesseract", image, "stdout", "--psm", "11", "-l", "eng"]);
+  writeFileSync(join(evidence, "x11-window.ocr.txt"), text);
+  return text.includes(expected);
+}
+
 async function nativeInput(app: Bun.Subprocess): Promise<void> {
   const window = run(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid)])
     .trim()
@@ -201,6 +209,8 @@ async function nativeInput(app: Bun.Subprocess): Promise<void> {
   );
   run(["xdotool", "windowactivate", "--sync", window]);
   run(["xdotool", "mousemove", "--window", window, "800", "500", "click", "1"]);
+  // Native scene capture alone cannot prove the swapchain reached X11.
+  await until("visible X11 terminal output", () => visibleWindowContains(window, marker), app);
   // The observed marker does not occur in the typed command, so shell echo
   // cannot satisfy the check without actual native key delivery and Return.
   run(["xdotool", "type", "--clearmodifiers", "--delay", "30", "printf '%s%s\\n' PHUX NATIVEKEYS"]);
@@ -303,6 +313,7 @@ try {
     scenarios: [
       "smoke-exit",
       "launch",
+      "X11 window screenshot and OCR",
       "native keyboard",
       "clipboard paste",
       "shifted Meta bytes",

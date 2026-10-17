@@ -26,7 +26,8 @@ routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
 `.github/actions/classify-changes`, with no outer path filters.
-`desktop_needed` runs two `xcode-27` jobs for the desktop host's path crates,
+`desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
+jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
 unrouted `clients/desktop` paths. `macos` runs `just desktop-lint`,
 `just desktop-test`, and `just desktop-perf-budget` on the same test build:
@@ -41,6 +42,14 @@ holds a build cache, so each run is two cold GPUI and libghostty builds on the
 confirms a presented drawable, so real-GPU qualification stays manual:
 `just desktop-native-test` on an Apple silicon Mac with a graphical login
 requires `confirmed` presentation.
+The Linux jobs run the native test/lint gates, build and extract the portable
+package, then run `smoke-linux.ts` under Xvfb/lavapipe with an isolated server.
+Native frame capture and an independent X11 window screenshot with OCR,
+keyboard delivery, clipboard paste, shifted Meta bytes, window identity and
+app-crash session survival are checked separately.
+Submitted receipts never count as confirmed physical-display presentation.
+Wayland compositor, physical GPU, IME and screen-reader qualification are not
+implied by this software-renderer lane.
 Unknown paths, unavailable history, and empty diffs
 request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips

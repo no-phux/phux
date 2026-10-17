@@ -117,6 +117,8 @@ test("qualification refuses installed CLI paths and production sockets", () => {
   const home = "/Users/example";
   expect(installedPhuxCandidates(home)[0]).toBe(`${home}/.local/bin/phux`);
   expect(isInstalledPhux("/opt/homebrew/bin/phux", home)).toBe(true);
+  expect(isInstalledPhux("/usr/bin/phux", home)).toBe(true);
+  expect(isInstalledPhux("/bin/phux", home)).toBe(true);
   expect(
     productionSocketReason("/tmp/phux-example/phux.sock", {
       USER: "example",

@@ -149,7 +149,8 @@ versions after any version-bearing change.
   `clients/desktop/scripts/smoke-app.ts` against an isolated server built from
   the same checkout, and the installer transaction tests must pass. Linux
   archives run `clients/desktop/scripts/smoke-linux.ts` under Xvfb/lavapipe,
-  checking native submitted-frame evidence, Tesseract OCR and shell/server
+  checking native submitted-frame evidence, independent X11 window capture,
+  Tesseract OCR and shell/server
   survival across app termination. A submitted receipt is never represented
   as confirmed physical-display presentation.
 - The mobile FFI workflows build the commit their run names, key concurrency
