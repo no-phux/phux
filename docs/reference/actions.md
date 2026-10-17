@@ -58,6 +58,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `window-picker` | Tab |  | Pick a tab from all sessions (grouped) |
 | `session-picker` | Session |  | Browse sessions and live host availability |
 | `agent-fleet` | phux |  | Every agent, its state, and whether it needs you |
+| `agents-filter` | phux | `scope` (`all`, `session`, `attention`, or `next`), `host` (`all`, `here`, a satellite name, or `next`); both optional | Narrow the sidebar's Agents panel: every agent, this session's, or the ones that need you, on one machine or all of them. Bare, steps to the next scope |
 | `focus-pane` | — | `window` (window index), `pane` (DFS leaf ordinal) | Focus a pane by window index and DFS leaf ordinal |
 | `next-attention` | Pane |  | Jump to the next pane waiting for an answer |
 | `return-from-attention` | Pane |  | Return to where attention navigation started |

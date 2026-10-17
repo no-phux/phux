@@ -130,6 +130,21 @@ impl super::SessionLoop {
         self.peers.chrome_dirty = true;
     }
 
+    /// Apply an `agents-filter` to the sidebar's Agents panel and save it for
+    /// the next attach; true when the panel's filter moved.
+    pub(super) fn apply_agents_filter(
+        &mut self,
+        request: &crate::render::chrome::sidebar::FilterRequest,
+    ) -> bool {
+        let hosts = self.sidebar_painter.agent_hosts();
+        let filter = request.apply(self.sidebar_painter.agent_filter(), &hosts);
+        if !self.sidebar_painter.set_agent_filter(filter) {
+            return false;
+        }
+        crate::attach::agent_filter_state::save(self.sidebar_painter.agent_filter());
+        true
+    }
+
     /// Replace the session list and rejoin the stored project tag.
     pub(super) fn adopt_listed_sessions(
         &mut self,

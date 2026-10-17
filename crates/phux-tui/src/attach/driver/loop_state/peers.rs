@@ -221,7 +221,15 @@ impl super::SessionLoop {
         self.refresh_chrome();
         // Overlays (copy mode) must adopt the focused pane's new rect.
         self.sync_overlays(sidebar);
-        if !self.overlays.is_active() {
+        if self.overlays.is_active() {
+            return;
+        }
+        // A replaced layout that tiles exactly what the glass shows (a pane's
+        // re-bootstrap after a resize, an echo of our own write) redraws in
+        // place: an `ED2` there only flashes the screen.
+        if self.painted_view.as_ref() == Some(&self.view_key(sidebar)) {
+            repaint.raise_panes();
+        } else {
             repaint.raise_full();
         }
     }

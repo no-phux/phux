@@ -291,26 +291,26 @@ pub fn switch_args(host: &str, session: &str) -> Vec<String> {
     args
 }
 
-/// Become `phux attach` against `host`'s `session`.
+/// Set on the `phux attach` that [`exec_switch_host`] execs: the outer
+/// terminal is still on the alt screen with the previous frame up, so the
+/// successor paints over it instead of re-entering (and clearing) it.
+pub const ALT_SCREEN_HANDOFF_ENV: &str = "PHUX_ALT_SCREEN_HANDOFF";
+
+/// Become `phux attach` against `host`'s `session`, telling it the alt
+/// screen is handed over ([`ALT_SCREEN_HANDOFF_ENV`]).
 ///
-/// The caller (the attach driver) has already restored the terminal, so a
-/// failed exec leaves a usable shell with the reason printed. On success
-/// this never returns: the new process owns the terminal and draws its own
-/// first frame.
-#[allow(
-    clippy::print_stderr,
-    reason = "the TUI has already handed the terminal back; a failed exec \
-              reports on the cooked terminal, like a detach explanation"
-)]
-pub fn exec_switch_host(host: &str, session: &str) -> ! {
+/// The caller (the attach driver) has already restored termios and the input
+/// modes but left the alt screen up with the last frame on it. Returns only
+/// when the exec failed; the caller then still owns the alt screen.
+#[must_use]
+pub fn exec_switch_host(host: &str, session: &str) -> std::io::Error {
     use std::os::unix::process::CommandExt;
 
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("phux"));
-    let err = std::process::Command::new(&exe)
+    std::process::Command::new(&exe)
         .args(switch_args(host, session))
-        .exec();
-    eprintln!("phux: could not switch to {session} on {host}: {err}");
-    std::process::exit(1);
+        .env(ALT_SCREEN_HANDOFF_ENV, "1")
+        .exec()
 }
 
 #[cfg(test)]

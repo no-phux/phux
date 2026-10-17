@@ -83,8 +83,8 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     initial_notice: Option<Notice>,
     // A one-step cross-session pick, resolved on the first layout reconcile.
     initial_pick: EntryPick,
-    // Sidebar state carried from the previous entry (`None` on first attach).
-    carried_sidebar: Option<super::entry::CarriedSidebar>,
+    // What a session switch carries in (`None` on first attach).
+    carried: Option<super::entry::SwitchCarry>,
     // ADR-0053 replay journal (remote dials only).
     input_replay: Option<
         std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
@@ -105,7 +105,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         wants_state_sync,
         onboarding_claim,
         initial_pick,
-        carried_sidebar,
+        carried.as_ref().map(|carry| carry.sidebar),
     )?;
     session.set_control_dial(control_dial.clone());
     session.set_jobs(crate::attach::jobs::Jobs::process());
@@ -114,6 +114,12 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     session.set_input_replay(input_replay);
     session.set_orphan_kills(orphan_kills);
     session.set_review(review);
+    // A switch keeps the previous session's frame up until this one's view
+    // is ready, and seeds the sidebar with what the last entry knew.
+    if let Some(carry) = carried {
+        session.seed_carried_peers(carry.peers);
+        session.hold_paint_for_switch();
+    }
     let _exec_runners = spawn_exec_feed_runners(session.exec_feeds());
     if let Some(exit) = session
         .bootstrap(conn, out, initial_attached, initial_notice)

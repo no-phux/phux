@@ -201,6 +201,7 @@ impl super::SessionLoop {
             },
             orphan_kills: self.orphans_for_switch(),
             review: std::mem::take(&mut self.review),
+            peers: self.peers_for_switch(),
         }))
     }
 
@@ -341,8 +342,7 @@ impl super::SessionLoop {
             return;
         };
         let _ = conn.send(&FrameKind::Detach).await;
-        super::super::terminal::restore_terminal_for_handoff();
-        crate::attach::hosts::exec_switch_host(&host, &session);
+        super::super::terminal::hand_off_to_host(&host, &session);
     }
 
     /// Build the dispatch context and run the batch through the resolver,
@@ -422,6 +422,7 @@ impl super::SessionLoop {
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
             project_toggle_request: &mut self.project_toggle_request,
+            agents_filter_request: &mut self.agents_filter_request,
             agent_meta: &self.mirror.agent_meta.records,
             vcs: &mut self.vcs,
             input_replay: self.input_replay.as_deref(),
@@ -437,10 +438,7 @@ impl super::SessionLoop {
         )
         .await?;
         self.focus_history = ctx.focus_history;
-        if let Some(key) = self.project_toggle_request.take() {
-            self.toggle_project_group(key);
-            layout_changed = true;
-        }
+        layout_changed |= self.apply_sidebar_requests();
         if std::mem::take(&mut self.arrangement_write_owed) {
             self.broadcast_layout(conn).await?;
         }
@@ -453,6 +451,21 @@ impl super::SessionLoop {
             layout_changed |= self.show_notices([Notice::warn(line)]);
         }
         Ok(layout_changed)
+    }
+
+    /// Apply the sidebar-only requests a batch dispatched (a project group
+    /// toggle, an Agents filter change); true when the strip changed.
+    fn apply_sidebar_requests(&mut self) -> bool {
+        let toggled = self
+            .project_toggle_request
+            .take()
+            .map(|key| self.toggle_project_group(key))
+            .is_some();
+        let filtered = self
+            .agents_filter_request
+            .take()
+            .is_some_and(|request| self.apply_agents_filter(&request));
+        toggled || filtered
     }
 
     /// Adopt the outer terminal's new size: tell the server, reflow every
@@ -484,8 +497,11 @@ impl super::SessionLoop {
         }
         self.size_workspace_panes(conn, sidebar).await?;
         // Clear rather than repaint stale pre-resize mirrors; the server's
-        // resync snapshot repopulates at the new size.
-        let _ = out.write_all(b"\x1b[2J\x1b[H");
+        // resync snapshot repopulates at the new size. A held switch keeps
+        // the old frame up instead: its release clears and paints whole.
+        if !self.paint_held() {
+            let _ = out.write_all(b"\x1b[2J\x1b[H");
+        }
         crate::attach::pane_state::invalidate_all_fronts(&mut self.mirror.panes);
         // A pointer-pinned overlay (context menu) is stale now: drop it before
         // the repaint so it cannot capture keys invisibly.

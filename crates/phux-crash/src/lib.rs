@@ -43,6 +43,21 @@ pub fn enable_terminal_escape_restore() {
     handler::enable_terminal_escape_restore();
 }
 
+/// Write `leave` to stdout if SIGINT, SIGTERM, or SIGHUP kills the process
+/// before [`disarm_interrupt_leave`], then die by that signal as usual.
+///
+/// For a process that inherited terminal state it must hand back (an alt
+/// screen another process left up) before it has its own signal arms.
+/// No-op on non-Unix targets.
+pub fn arm_interrupt_leave(leave: &'static [u8]) {
+    handler::arm_interrupt_leave(leave);
+}
+
+/// Stop owing the bytes [`arm_interrupt_leave`] armed.
+pub fn disarm_interrupt_leave() {
+    handler::disarm_interrupt_leave();
+}
+
 /// Downgrade the SIGSEGV/SIGBUS/SIGABRT handlers to termios-only restoration.
 /// Call when TUI modes are disabled.
 pub fn disable_terminal_escape_restore() {

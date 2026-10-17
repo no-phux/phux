@@ -118,6 +118,9 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     if effects.toggle_project.is_some() {
         *ctx.project_toggle_request = effects.toggle_project;
     }
+    if effects.agents_filter.is_some() {
+        *ctx.agents_filter_request = effects.agents_filter;
+    }
     record_reattach_request(
         effects.reattach,
         ctx.switch_request,
@@ -616,6 +619,8 @@ pub(super) struct ActionEffects {
     pub(super) toggle_sidebar: bool,
     /// ADR-0168: a project group key whose sidebar collapse to flip.
     pub(super) toggle_project: Option<String>,
+    /// An `agents-filter` change for the sidebar's Agents panel.
+    pub(super) agents_filter: Option<crate::render::chrome::sidebar::FilterRequest>,
     /// The new focused pane, already applied to the active window.
     pub(super) set_focus: Option<ResourceId>,
     /// `true` ⇒ emit `SET_METADATA` carrying the new layout envelope.

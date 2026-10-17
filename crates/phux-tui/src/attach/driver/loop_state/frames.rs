@@ -29,6 +29,8 @@ impl super::SessionLoop {
             FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id.clone()),
             _ => None,
         };
+        // A held switch defers every pane paint to the hold's release.
+        let defer_paint = defer_paint || self.paint_held();
         let env = FrameEnv {
             focused_session: self.peers.focused_session,
             status_bar: self.settings.status_bar.as_mut(),
