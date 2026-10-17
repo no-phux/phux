@@ -268,11 +268,9 @@ impl super::SessionLoop {
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
         }
-        // Peer arrangement records a sweep or a peer's change asked for; the
-        // fleet and roster they feed repaint here, not a burst later.
-        if self.settle_peer_arrangement_reads(conn, repaint).await? {
-            self.drain_repaint(out, sidebar, repaint);
-        }
+        // Hand the peer arrangement reads this burst owes to the reader; the
+        // answer arrives on its own `select!` arm.
+        self.request_peer_arrangement_reads();
         Ok(Step::Continue)
     }
 
@@ -655,9 +653,22 @@ impl super::SessionLoop {
         }
         // A peer's arrangement record changed: re-read it for the peer caches.
         if let Some(session) = outcome.peer_arrangement_changed.take()
-            && self.arrangement.is_some()
+            && self.peer_reader.is_some()
         {
             self.peers.arrangement_reads_owed.add(session);
+        }
+        // Organization events were lost: re-read every arrangement and the
+        // session list (names, membership) rather than trust the caches.
+        if outcome.organization_resync {
+            if self.arrangement.is_some() {
+                self.arrangement_read_owed = true;
+            }
+            if self.peer_reader.is_some() {
+                self.peers
+                    .arrangement_reads_owed
+                    .merge(crate::attach::peer_arrangements::PeerReads::All);
+            }
+            self.request_host_inventory(conn).await?;
         }
         // The server moved a resource into or out of this session: a fresh
         // graph recomputes the members.

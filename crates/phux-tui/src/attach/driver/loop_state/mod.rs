@@ -355,6 +355,11 @@ pub(super) struct SessionLoop {
     /// The attached session's arrangement record over a dedicated control
     /// connection; `None` keeps the legacy `phux.tui.layout/v1` key.
     arrangement: Option<crate::attach::arrangement_link::ArrangementLink>,
+    /// Reads peer sessions' arrangement records off the loop; present with
+    /// [`Self::arrangement`].
+    peer_reader: Option<crate::attach::peer_arrangements::PeerReader>,
+    /// A failed peer read holds the next one back until then.
+    peer_read_retry_at: Option<tokio::time::Instant>,
     /// Read the arrangement record and adopt it once this burst settles: the
     /// attach's first read, or an `ARRANGEMENT_CHANGED` for this session.
     arrangement_read_owed: bool,
@@ -622,6 +627,8 @@ impl SessionLoop {
                 .server_features_ext
                 .contains(phux_protocol::ServerFeatureExt::Organization),
             arrangement: None,
+            peer_reader: None,
+            peer_read_retry_at: None,
             arrangement_read_owed: false,
             arrangement_write_owed: false,
             acknowledged_input_supported: server_features

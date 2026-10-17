@@ -473,13 +473,14 @@ fn handle_attached<W: crate::attach::RenderSink>(
     })
 }
 
-/// ADR-0105: the focused session holds nothing (no members AND a focus the
-/// graph does not list, so an unreported count does not read as empty).
+/// ADR-0105: the focused session holds no terminals (none listed AND a focus
+/// the graph does not list, so an unreported count does not read as empty).
 ///
-/// A session with a record key comes from an `ORGANIZATION` server, which
-/// joins each resource to its session (ADR-0161 §7): the session is empty
-/// when no resource names it. An older server reports only its window
-/// count.
+/// A server that reports each resource's session (some local resource
+/// carries the `session` facet, ADR-0161 §7; the rule of
+/// `phux_client::resource::reports_sessions`) synthesizes its windows: the
+/// session is empty when no Terminal names it, as its synthesized window
+/// count would say. An older server reports only its window count.
 fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> bool {
     let focus_is_listed = snapshot
         .resources
@@ -492,11 +493,14 @@ fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapsho
     else {
         return false;
     };
-    let holds_nothing = if focused.key.is_some() {
-        !snapshot.resources.iter().any(|resource| {
-            crate::attach::sidebar_zones::resource_session(resource, &snapshot.windows)
-                == Some(focused.id)
-        })
+    let reports_sessions = snapshot
+        .resources
+        .iter()
+        .any(|info| info.id.is_local() && info.session.is_some());
+    let holds_nothing = if reports_sessions {
+        phux_client::resource::terminals_in(snapshot, focused.id)
+            .next()
+            .is_none()
     } else {
         focused.is_empty()
     };
@@ -1812,6 +1816,13 @@ fn fold_org_event<W: crate::attach::RenderSink>(
                 ..FrameOutcome::default()
             };
         }
+        // A gap may have swallowed renames and arrangement changes.
+        AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. } => {
+            return FrameOutcome {
+                organization_resync: true,
+                ..FrameOutcome::default()
+            };
+        }
         _ => {}
     }
     let Some(ours) = ours else {
@@ -2504,25 +2515,33 @@ mod empty_session_tests {
             .with_resources(resources)
     }
 
-    /// A keyed session (an `ORGANIZATION` server) is empty when no resource
-    /// names it, whatever its synthesized window count says.
+    /// From a server that reports resource sessions, a session is empty
+    /// when no Terminal names it, whatever its synthesized window count says;
+    /// an `AgentSession` alone does not make it non-empty.
     #[test]
-    fn a_keyed_session_is_empty_by_its_members_not_its_windows() {
-        let key = SessionKey::new([1; 16]).expect("key");
-        let keyed = SessionInfo::new(SessionId::new(1), "work")
+    fn a_reporting_server_counts_terminal_members_not_windows() {
+        use phux_protocol::ResourceKind;
+        let session = SessionInfo::new(SessionId::new(1), "work")
             .with_window_count(1)
-            .with_key(Some(key));
+            .with_key(Some(SessionKey::new([1; 16]).expect("key")));
         let elsewhere = ResourceInfo::new(ResourceId::local(5), WindowId::new(9), 80, 24)
             .with_session(Some(SessionId::new(2)));
         assert!(focused_session_is_empty(&snapshot(
-            keyed.clone(),
+            session.clone(),
             vec![elsewhere.clone()]
+        )));
+        let mut agent = ResourceInfo::new(ResourceId::local(7), WindowId::new(0), 0, 0)
+            .with_session(Some(SessionId::new(1)));
+        agent.kind = ResourceKind::AgentSession;
+        assert!(focused_session_is_empty(&snapshot(
+            session.clone(),
+            vec![elsewhere.clone(), agent.clone()]
         )));
         let member = ResourceInfo::new(ResourceId::local(6), WindowId::new(0), 80, 24)
             .with_session(Some(SessionId::new(1)));
         assert!(!focused_session_is_empty(&snapshot(
-            keyed.with_window_count(0),
-            vec![elsewhere, member]
+            session.with_window_count(0),
+            vec![elsewhere, agent, member]
         )));
     }
 

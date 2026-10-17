@@ -214,9 +214,12 @@ impl super::SessionLoop {
                 Ok(Step::Continue)
             }
 
-            // A background job (ADR-0172) finished: toast its result and
-            // refresh what it changed.
-            done = self.jobs.next() => self.on_job_done(conn, out, sidebar, done).await,
+            // Off-loop work finished: a background job (ADR-0172) toasts its
+            // result and refreshes what it changed; a peer arrangement read
+            // (ADR-0161) folds into the peer caches.
+            done = next_off_loop(&self.jobs, self.peer_reader.as_mut()) => {
+                self.on_off_loop(conn, out, sidebar, done).await
+            }
 
             // ADR-0140: the hosts provider answered. Only a changed answer
             // repaints; the chrome drain is the same one a session-graph
@@ -251,6 +254,20 @@ impl super::SessionLoop {
         result
     }
 
+    /// Off-loop work finished: hand it to its own handler.
+    async fn on_off_loop<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        done: OffLoop,
+    ) -> Result<Step, AttachError> {
+        match done {
+            OffLoop::Job(done) => self.on_job_done(conn, out, sidebar, done).await,
+            OffLoop::PeerReads(done) => self.on_peer_reads_done(conn, out, sidebar, done).await,
+        }
+    }
+
     /// SIGWINCH: resize the view, then keep looping.
     async fn on_sigwinch<W: crate::attach::RenderSink>(
         &mut self,
@@ -278,6 +295,26 @@ impl super::SessionLoop {
         } else {
             self.esc_deadline = None;
         }
+    }
+}
+
+/// Work that finished off the attach loop.
+enum OffLoop {
+    /// A background job (ADR-0172).
+    Job(crate::attach::jobs::JobDone),
+    /// A peer arrangement read (ADR-0161).
+    PeerReads(crate::attach::peer_arrangements::PeerReadDone),
+}
+
+/// The next finished job or peer arrangement read, jobs first.
+async fn next_off_loop(
+    jobs: &crate::attach::jobs::Jobs,
+    peers: Option<&mut crate::attach::peer_arrangements::PeerReader>,
+) -> OffLoop {
+    tokio::select! {
+        biased;
+        done = jobs.next() => OffLoop::Job(done),
+        done = crate::attach::peer_arrangements::next_done(peers) => OffLoop::PeerReads(done),
     }
 }
 

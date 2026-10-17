@@ -1293,7 +1293,7 @@ fn window_picker_groups_windows_under_their_session() {
             &workspace,
             &sessions,
             &foreign,
-            &HashMap::new(),
+            None,
             Some(SessionId::new(1)),
         );
         assert!(items[0].is_header());
@@ -1329,34 +1329,39 @@ fn window_picker_groups_windows_under_their_session() {
     }
 }
 
-/// A peer with no cached arrangement offers one switch row. Its tab count
-/// is the terminal count when the session has a record key (an
-/// `ORGANIZATION` server, whose window count is synthesized), else the
-/// reported window count.
+/// A peer with no cached arrangement offers one switch row. When the graph
+/// reports resource sessions (an `ORGANIZATION` server, whose window count
+/// is synthesized) its tab count is its terminal count, and a peer the graph
+/// lists no terminal for opens empty; before such a graph is cached, or
+/// from an older server, it is the reported window count.
 #[test]
-fn window_picker_counts_tabs_from_terminals_on_an_organization_server() {
+fn window_picker_counts_tabs_from_terminals_when_the_graph_reports_sessions() {
     let workspace = ArrangementDoc::single(tid(1));
-    let mut keyed = sinfo(2, "scratch").with_window_count(1);
-    keyed.key = Some(phux_protocol::ids::SessionKey::new([2; 16]).unwrap());
-    let legacy = sinfo(3, "logs").with_window_count(2);
-    let sessions = [sinfo(1, "work"), keyed, legacy];
-    let terminals = HashMap::from([(SessionId::new(2), 3), (SessionId::new(3), 5)]);
-    let items = window_picker_items(
-        &workspace,
-        &sessions,
-        &HashMap::new(),
-        &terminals,
-        Some(SessionId::new(1)),
-    );
-    let tabs = |header: &str| {
-        let at = items
-            .iter()
-            .position(|i| i.is_header() && i.label == header)
-            .expect("header");
-        items[at + 1].secondary.clone()
+    let sessions = [
+        sinfo(1, "work"),
+        sinfo(2, "scratch").with_window_count(1),
+        sinfo(3, "logs").with_window_count(2),
+        sinfo(4, "idle").with_window_count(0),
+    ];
+    let terminals = HashMap::from([(SessionId::new(2), 3), (SessionId::new(3), 1)]);
+    let labels = |terminals: Option<&HashMap<SessionId, usize>>| {
+        let items = window_picker_items(
+            &workspace,
+            &sessions,
+            &HashMap::new(),
+            terminals,
+            Some(SessionId::new(1)),
+        );
+        ["scratch", "logs", "idle"].map(|header| {
+            let at = items
+                .iter()
+                .position(|i| i.is_header() && i.label == header)
+                .expect("header");
+            items[at + 1].secondary.clone().unwrap_or_default()
+        })
     };
-    assert_eq!(tabs("scratch").as_deref(), Some("3 tabs"));
-    assert_eq!(tabs("logs").as_deref(), Some("2 tabs"));
+    assert_eq!(labels(Some(&terminals)), ["3 tabs", "1 tab", "0 tabs"]);
+    assert_eq!(labels(None), ["1 tab", "2 tabs", "0 tabs"]);
 }
 
 #[test]

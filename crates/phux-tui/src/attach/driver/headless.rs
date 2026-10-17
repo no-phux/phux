@@ -228,6 +228,24 @@ impl HeadlessSession {
         handle_server_frame(&mut self.mirror, env, &mut self.sink, frame)
     }
 
+    /// Ingest an arrangement read as the reply the layout GET would carry.
+    fn ingest_layout(
+        &mut self,
+        document: Option<&crate::layout::ArrangementDoc>,
+        session_id: SessionId,
+    ) -> Result<(), AttachError> {
+        let value = document.and_then(crate::attach::input_dispatch::encode_layout_or_log);
+        self.ingest(
+            FrameKind::MetadataValue {
+                request_id: LAYOUT_REQUEST_ID,
+                value,
+            },
+            Some(session_id),
+            Some(LAYOUT_REQUEST_ID),
+        )?;
+        Ok(())
+    }
+
     /// ADR-0040: one `phux.agent/v1` GET per pane (no SUBSCRIBE), with request
     /// ids far above the layout GET's so the replies cannot collide.
     #[allow(
@@ -329,8 +347,9 @@ const LAYOUT_REQUEST_ID: u32 = 1;
 
 /// Read (never watch) this session's layout. Against an `ORGANIZATION`
 /// server it is the session's arrangement record, read over a second
-/// connection and ingested here as the layout reply; `Ok(None)` then means
-/// nothing is left to wait for. Otherwise this GETs the legacy layout key
+/// connection within [`ATTACH_READY_DEADLINE`] and ingested here as the
+/// layout reply; `Ok(None)` then means nothing is left to wait for. When
+/// that read fails, or against an older server, this GETs the layout key
 /// and returns the request id the completion barrier waits on, or `None`
 /// with nothing to ask for.
 #[allow(
@@ -351,8 +370,19 @@ async fn request_layout(
         return Ok(None);
     };
     if phux_client::org::supported(conn) {
-        read_arrangement(socket, session, session_id).await?;
-        return Ok(None);
+        let read =
+            tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
+                .await
+                .unwrap_or_else(|_| Err("timed out".to_owned()));
+        match read {
+            Ok(document) => {
+                session.ingest_layout(document.as_ref(), session_id)?;
+                return Ok(None);
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "arrangement read failed; using the layout key");
+            }
+        }
     }
     conn.send(&FrameKind::GetMetadata {
         request_id: LAYOUT_REQUEST_ID,
@@ -363,38 +393,20 @@ async fn request_layout(
     Ok(Some(LAYOUT_REQUEST_ID))
 }
 
-/// Read the session's arrangement record over a dedicated connection and
-/// ingest it as the reply the layout GET would carry.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
+/// Read the session's arrangement record over a dedicated connection:
+/// `None` when the session has none yet.
 async fn read_arrangement(
     socket: &Path,
-    session: &mut HeadlessSession,
     session_id: SessionId,
-) -> Result<(), AttachError> {
+) -> Result<Option<crate::layout::ArrangementDoc>, String> {
     let dial = crate::attach::Dial::uds(socket);
-    let link = crate::attach::arrangement_link::ArrangementLink::open(&dial, session_id).await?;
-    let document = match link {
-        Some(mut link) => link
-            .read()
-            .await
-            .map_err(|err| AttachError::Protocol(format!("layout not loaded: {err}")))?,
-        None => None,
+    let link = crate::attach::arrangement_link::ArrangementLink::open(&dial, session_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let Some(mut link) = link else {
+        return Err("the server no longer advertises ORGANIZATION".to_owned());
     };
-    let value = document
-        .as_ref()
-        .and_then(crate::attach::input_dispatch::encode_layout_or_log);
-    session.ingest(
-        FrameKind::MetadataValue {
-            request_id: LAYOUT_REQUEST_ID,
-            value,
-        },
-        Some(session_id),
-        Some(LAYOUT_REQUEST_ID),
-    )?;
-    Ok(())
+    link.read().await.map_err(|err| err.to_string())
 }
 
 /// Re-attach after the engine asked for a rebootstrap, restarting the
@@ -947,9 +959,12 @@ mod sidebar_tests {
                 None,
             )
             .expect("attached");
-        read_arrangement(&socket, &mut session, session_id)
+        let document = read_arrangement(&socket, session_id)
             .await
             .expect("arrangement read");
+        session
+            .ingest_layout(document.as_ref(), session_id)
+            .expect("ingest");
         let groups = &session.mirror.workspace.groups;
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "build");

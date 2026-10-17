@@ -1238,7 +1238,10 @@ pub(in crate::attach) fn push_window_picker(ActionCall { ctx, effects, .. }: Act
         ctx.workspace,
         ctx.peers.sessions,
         ctx.peers.foreign_layouts,
-        &ctx.peers.terminal_counts(),
+        ctx.peers
+            .reports_sessions()
+            .then(|| ctx.peers.terminal_counts())
+            .as_ref(),
         ctx.peers.focused_session,
     );
     if items.iter().all(SelectItem::is_header) {
