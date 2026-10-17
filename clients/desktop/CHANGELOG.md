@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.31.0](https://github.com/no-phux/phux/compare/desktop-v0.30.0...desktop-v0.31.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** confirm multi-line pastes into running commands and alert on background finishes ([#1541](https://github.com/no-phux/phux/issues/1541)) ([7b098eb](https://github.com/no-phux/phux/commit/7b098eb4e8b9b71ae00d8987247b42d2f620dc33))
+
 ## [0.30.0](https://github.com/no-phux/phux/compare/desktop-v0.29.0...desktop-v0.30.0) (2026-10-17)
 
 
