@@ -24,6 +24,9 @@ pub(super) struct ApprovalWatch {
     watching: bool,
     /// In-flight `LIST_METADATA { Global }`.
     listing: Option<u32>,
+    /// A gap arrived while `listing` was in flight: that listing may predate
+    /// events the gap dropped, so list once more when it lands.
+    relist: bool,
     /// In-flight record reads, by request id.
     reads: HashMap<u32, ApprovalId>,
     /// In-flight decisions, by the request id of their confirming read.
@@ -123,6 +126,7 @@ impl ControlPlane {
     pub(super) fn approvals_connection_ended(&mut self) {
         let watch = &mut self.approvals;
         watch.listing = None;
+        watch.relist = false;
         watch.reads.clear();
         watch.decide_ids.clear();
         let unconfirmed: Vec<InFlight> =
@@ -145,6 +149,7 @@ impl ControlPlane {
             return;
         }
         if self.approvals.listing.is_some() {
+            self.approvals.relist = true;
             return;
         }
         let request_id = self.next_request_id();
@@ -153,6 +158,13 @@ impl ControlPlane {
             request_id,
             scope: Scope::Global,
         });
+    }
+
+    /// Send the listing a gap asked for while another was in flight.
+    fn relist_after_gap(&mut self) {
+        if std::mem::take(&mut self.approvals.relist) {
+            self.list_approvals();
+        }
     }
 
     fn read_approval(&mut self, id: ApprovalId) {
@@ -200,6 +212,7 @@ impl ControlPlane {
             {
                 self.approvals.listing = None;
                 self.listed_approvals(&keys);
+                self.relist_after_gap();
                 None
             }
             FrameKind::MetadataValue { request_id, value }
@@ -232,6 +245,7 @@ impl ControlPlane {
         if self.approvals.listing == Some(request_id) {
             self.approvals.listing = None;
             tracing::debug!(?code, message, "approval listing refused");
+            self.relist_after_gap();
             return true;
         }
         if self.approvals.reads.remove(&request_id).is_some() {

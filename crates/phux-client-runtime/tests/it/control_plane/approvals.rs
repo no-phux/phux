@@ -193,6 +193,39 @@ fn a_gap_relists_and_drops_what_is_no_longer_listed() {
     assert_eq!(left, vec![id(2).to_string()]);
 }
 
+#[test]
+fn a_gap_during_a_listing_lists_once_more_when_it_lands() {
+    let mut plane = watching(&[]);
+    let gap = AgentEvent::SourceGap { dropped: 3 };
+    event(&mut plane, gap.clone());
+    let first = list_id(&outbound(&mut plane));
+    event(&mut plane, gap.clone());
+    event(&mut plane, gap);
+    assert!(
+        outbound(&mut plane).is_empty(),
+        "one listing in flight at a time"
+    );
+    plane
+        .feed(FrameKind::MetadataKeys {
+            request_id: first,
+            keys: Vec::new(),
+        })
+        .unwrap();
+    let sent = outbound(&mut plane);
+    let second = list_id(&sent);
+    assert_ne!(second, first);
+    assert_eq!(sent.len(), 1, "the gaps fold into one more listing");
+    plane
+        .feed(FrameKind::MetadataKeys {
+            request_id: second,
+            keys: vec![id(3).record_key()],
+        })
+        .unwrap();
+    let sent = reads(&outbound(&mut plane));
+    assert_eq!(sent.len(), 1, "no listing after the follow-up lands");
+    assert_eq!(sent[0].1, id(3).record_key());
+}
+
 /// Decide `id` and return the decision and confirming-read request ids.
 fn decide(plane: &mut ControlPlane, id: ApprovalId) -> (u32, u32) {
     assert!(plane.decide_approval(id, Decision::Approve));
