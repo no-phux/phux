@@ -150,6 +150,11 @@ struct Resolved {
 }
 
 fn resolve(options: &Options) -> Resolved {
+    resolve_with(options, find_phux(options.phux.clone()))
+}
+
+/// [`resolve`] with the CLI already found, or `None` when none is installed.
+fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
     let explicit_socket = options
         .socket
         .clone()
@@ -159,7 +164,7 @@ fn resolve(options: &Options) -> Resolved {
             .ok()
             .filter(|name| !name.is_empty())
     });
-    let Some(phux) = find_phux(options.phux.clone()) else {
+    let Some(phux) = phux else {
         return Resolved {
             socket: explicit_socket.unwrap_or_default(),
             session: requested.unwrap_or_default(),
@@ -305,5 +310,47 @@ mod tests {
             parse(&["-psn_0_12345"]).expect("finder arg"),
             Options::default()
         );
+    }
+
+    /// The CLI is a separate prerequisite: without one the window opens on an
+    /// explicit install instruction, and nothing else is attempted.
+    #[test]
+    fn a_missing_cli_opens_on_the_install_instruction() {
+        let options = Options {
+            socket: Some("/tmp/phux-desktop-missing-cli.sock".into()),
+            session: Some("w".into()),
+            ..Options::default()
+        };
+        let resolved = resolve_with(&options, None);
+        assert_eq!(
+            resolved.error.as_deref(),
+            Some(
+                "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
+            )
+        );
+        assert_eq!(resolved.phux, Path::new("phux"));
+        assert_eq!(resolved.session, "w");
+        assert_eq!(
+            resolved.socket,
+            Path::new("/tmp/phux-desktop-missing-cli.sock")
+        );
+    }
+
+    /// An explicit `--phux` that is not there names the path it could not run.
+    #[test]
+    fn a_missing_explicit_cli_names_its_path() {
+        let missing = PathBuf::from("/nonexistent/phux-desktop-test/phux");
+        let options = Options {
+            socket: Some("/tmp/phux-desktop-missing-cli.sock".into()),
+            phux: Some(missing.clone()),
+            ..Options::default()
+        };
+        let resolved = resolve(&options);
+        let error = resolved.error.expect("a startup error");
+        assert!(
+            error.contains("could not run /nonexistent/phux-desktop-test/phux"),
+            "{error}"
+        );
+        assert_eq!(resolved.phux, missing);
     }
 }

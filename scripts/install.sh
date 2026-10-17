@@ -187,7 +187,8 @@ name_asset() {
 
 # Download PRODUCT's asset for TARGET into the work directory and verify it.
 fetch_verified() {
-  download "$asset_url" "${work}/${asset_name}"
+  download "$asset_url" "${work}/${asset_name}" \
+    || die "could not download ${asset_name}; nothing was installed"
   if [ -z "$build_sha256" ]; then
     download "$sidecar_url" "${work}/sidecar"
     build_sha256="$(sidecar_digest "${work}/sidecar" "$asset_name")"
