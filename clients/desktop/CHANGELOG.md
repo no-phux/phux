@@ -31,6 +31,18 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.32.1](https://github.com/no-phux/phux/compare/desktop-v0.32.0...desktop-v0.32.1) (2026-10-17)
+
+
+### Performance
+
+* **desktop:** move the fringe with a history scroll and budget wheel steps ([#1558](https://github.com/no-phux/phux/issues/1558)) ([8cf3b4b](https://github.com/no-phux/phux/commit/8cf3b4bc464feabafad333f7401b9c2a296d81a0))
+
+
+### Refactors
+
+* **desktop:** fold the desktop app into shared helpers, net -3,040 lines ([#1559](https://github.com/no-phux/phux/issues/1559)) ([592f1b8](https://github.com/no-phux/phux/commit/592f1b82cbf1a09c05a5fa8cea567f99c92c2251))
+
 ## [0.32.0](https://github.com/no-phux/phux/compare/desktop-v0.31.0...desktop-v0.32.0) (2026-10-17)
 
 
