@@ -187,7 +187,8 @@ pub struct RuntimeFlags {
     pub wt_addr: Option<SocketAddr>,
     /// `--connect HOST:PORT`; `[[connector]]` entries are re-read from disk.
     pub connect: Option<String>,
-    /// `--hub`; the satellite registry is re-read and re-validated.
+    /// `--hub`; the satellite registry is re-read and re-validated. Also set
+    /// at upgrade time when a reload doorbell promoted the server to a hub.
     pub hub: bool,
     /// `--exit-after-idle`, rounded up to whole seconds (never 0), so a
     /// resumed server is never more eager to exit than its predecessor.

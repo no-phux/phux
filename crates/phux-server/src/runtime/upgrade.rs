@@ -351,7 +351,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                 .map(|(listener_fd, path, flags)| UpgradeContext {
                     listener_fd,
                     socket_path: path.to_path_buf(),
-                    flags,
+                    flags: served_flags(flags, s.hub_has_links()),
                     tree_identity: s
                         .assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default()),
                     pane_senders: s
@@ -363,6 +363,15 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                 })
         })
         .ok_or(UpgradeError::NoContext)
+}
+
+/// The flags the resumed image must serve: the builder's, plus `--hub` when
+/// a config-reload doorbell promoted this server into a hub after boot
+/// (phux-lpn7.3), so the re-exec keeps dialing its satellites instead of
+/// waiting for the next doorbell.
+const fn served_flags(mut flags: RuntimeFlags, promoted_hub: bool) -> RuntimeFlags {
+    flags.hub |= promoted_hub;
+    flags
 }
 
 /// Own the listener identity before awaiting actors. The duplicate, not a
@@ -937,6 +946,32 @@ mod tests {
             ..RuntimeFlags::default()
         };
         assert_eq!(args_as_strings(sub_second)[5..], ["--exit-after-idle", "1"]);
+    }
+
+    /// A server the doorbell promoted into a hub re-execs with `--hub`; one
+    /// that never grew links keeps its builder flags.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_promoted_hub_resumes_with_hub() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                state.with_mut(|s| {
+                    s.set_upgrade_context(
+                        3,
+                        PathBuf::from("/run/phux/phux.sock"),
+                        RuntimeFlags::default(),
+                    );
+                    s.arm_hub_reload(None, cancel.clone());
+                });
+                let hub = |state: &SharedState| capture_upgrade_context(state).unwrap().flags.hub;
+                assert!(!hub(&state));
+                assert!(state.with_mut(|s| s.hub_ensure_links(std::ffi::OsString::from("ssh"))));
+                assert!(hub(&state));
+                cancel.cancel();
+            })
+            .await;
     }
 
     #[test]
