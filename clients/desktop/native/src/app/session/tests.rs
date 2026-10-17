@@ -150,6 +150,60 @@ fn performance_monitor_starts_stops_and_reopens_live_without_a_launch_flag(
     assert!(!desktop.read_with(cx, |desktop, _| desktop.performance_is_open()));
 }
 
+#[gpui::test]
+fn copy_diagnostics_puts_a_redacted_identity_receipt_on_the_clipboard(cx: &mut TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-diagnostics-window-{}", std::process::id()));
+    let main = desktop.update(cx, |desktop, cx| {
+        desktop
+            .launch(
+                crate::app::AppOptions {
+                    socket: path.join("isolated.sock"),
+                    session: String::new(),
+                    phux: path.join("not-installed-phux"),
+                    layout_path: path.join("layout.json"),
+                    fresh: false,
+                    initial_terminal: None,
+                    quick: false,
+                    dev_telemetry: false,
+                    startup_error: Some("Isolated window fixture".into()),
+                },
+                cx,
+            )
+            .unwrap()
+    });
+    cx.run_until_parked();
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string("terminal selection".into()));
+    main.update(cx, |_, window, cx| {
+        window.dispatch_action(Box::new(Run::new("copy-diagnostics")), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let text = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("receipt on the clipboard");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("receipt is JSON");
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut expected = crate::diag::Receipt::FIELDS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+    assert_eq!(value["host"], "local");
+    assert_eq!(value["appProtocol"], crate::updates::own_protocol());
+    assert!(value["appVersion"].as_str().is_some_and(|v| !v.is_empty()));
+    assert!(!text.contains("terminal selection"));
+}
+
 struct FocusFixture {
     terminal: FocusHandle,
     keys: Vec<String>,

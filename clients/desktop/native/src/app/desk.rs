@@ -1197,6 +1197,7 @@ impl Desk {
             "reload-config" => self.reload_ghostty(cx),
             "import-ghostty" => self.import_ghostty(cx),
             "reconnect" => self.reconnect(cx),
+            "copy-diagnostics" => self.copy_diagnostics(cx),
             "performance-monitor" | "performance-monitor-stop" => {
                 // Opening/closing windows must wait until this desk's window lease ends.
                 let desktop = self.desktop.clone();
