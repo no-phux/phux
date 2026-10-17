@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.95.0](https://github.com/no-phux/phux/compare/v0.94.2...v0.95.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** swap sessions in one frame, add tab/session buttons, filter the Agents panel ([#1560](https://github.com/no-phux/phux/issues/1560)) ([a045303](https://github.com/no-phux/phux/commit/a045303edfe8052430a7a90d900970ba0bbd8d4a))
+
 ## [0.94.2](https://github.com/no-phux/phux/compare/v0.94.1...v0.94.2) (2026-10-17)
 
 
