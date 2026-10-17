@@ -55,6 +55,11 @@ const DETAIL_ROWS_COMPACT: u16 = 2;
 /// borders, the query line and its blank, and the rule above the detail
 /// panel.
 const FIXED_ROWS: u16 = 5;
+
+/// The key legend inset into the bottom border while browsing.
+const SETTINGS_KEYS: &str = "⏎ edit · ←→ step · tab section · del reset · esc";
+/// The legend while the value editor is open.
+const EDITOR_KEYS: &str = "⏎ save · esc cancel";
 /// Width of the origin badge column, including its leading gap.
 const BADGE_COLS: usize = 9;
 
@@ -965,6 +970,15 @@ impl SettingsOverlay {
         ])
     }
 
+    /// The bottom-left border text: the selection's place in the rows
+    /// (`3 of 12`), or the section's row count with nothing selected.
+    fn footer_status(&self, rows: usize) -> String {
+        if rows == 0 {
+            return String::new();
+        }
+        format!("{} of {rows}", self.selected.min(rows - 1) + 1)
+    }
+
     /// The `list_height` list rows: the section column (two-column layout)
     /// beside the optional section header and the windowed setting rows.
     fn list_rows(
@@ -1378,7 +1392,16 @@ impl RenderOverlay for SettingsOverlay {
         }
         lines.extend(detail_lines);
 
-        Modal::new(&self.theme, "Settings", lines).render_into(modal, buf);
+        Modal::new(&self.theme, "Settings", lines)
+            .footer(
+                self.footer_status(specs.len()),
+                if self.editor.is_some() {
+                    EDITOR_KEYS
+                } else {
+                    SETTINGS_KEYS
+                },
+            )
+            .render_into(modal, buf);
 
         // Scrollbar over the setting rows only.
         let list_top = modal.y.saturating_add(3);

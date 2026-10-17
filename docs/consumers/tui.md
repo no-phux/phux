@@ -239,6 +239,9 @@ is live. `show-help` remains an alias of `command-palette`.
 
 ### Which-key
 
+The instant the prefix lands, the status bar's right edge shows it as a
+chip (`C-a`) in the accent colour, so you can see the chord is armed before
+the panel below has decided to appear; the chip clears with the next key.
 Pause after the prefix to see a panel of live continuations, grouped under
 Pane, Tab, Session, and phux. Each row reads as the action's palette title.
 Keys bound to the same action share a row, a directional family shares one
@@ -606,7 +609,9 @@ the foreground-on-background ratio.
 
 ## Copy-mode
 
-`C-a [` enters copy-mode on the focused pane. Selection and scrolling are
+`C-a [` enters copy-mode on the focused pane, the copy cursor starting on
+the pane's own cursor (the prompt, usually), so the output just above it is
+a few keystrokes away. Selection and scrolling are
 client-local, using this client's libghostty engine. Copying extracts text
 from its `Terminal` and writes it to the host clipboard via OSC 52; selection
 sends nothing over the wire
@@ -685,7 +690,10 @@ says where you are (`3 of 61`) and what the keys do.
 Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
 PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
 and hostable `[[panes]]` appear under Plugin. Every picker and prompt
-shares this frame, so its key legend sits in the same place.
+shares this frame, so its key legend sits in the same place, and the frame
+is only as tall as its rows need, up to half the viewport (a two-tab picker
+is a five-row box, not a screen); a live list never shrinks while it is
+up.
 
 <!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
 > **Status: shipped.** Every manifest `placement` opens a real server-side
@@ -758,7 +766,9 @@ writes running state: `C-a b` toggling the sidebar does not touch the
 file; editing `sidebar.enabled` here does.
 
 Enter or Space toggles a bool or opens the inline editor. Left / Right
-cycle a choice or step an integer. Del or `C-r` removes your override.
+cycle a choice or step an integer. Del or `C-r` removes your override. The
+bottom border says which row of the section you are on and repeats these
+keys.
 `C-z` undoes the last edit made on this page. A refused edit names its
 reason and leaves the file alone. Composite settings (widget lists,
 binding tables, hooks, plugin and host registries) stay in the file; the
@@ -845,10 +855,10 @@ this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
 Right-click opens a menu for the pane, the tab, or the session,
-listing the actions that apply. The pane menu lists **hide (keeps
-running)** and **kill** as separate rows. The session menu includes
+listing the actions that apply. The pane menu lists **Hide (keeps
+running)** and **Kill** as separate rows. The session menu includes
 sessions, agents, settings, and commands. Each row commits the same action a
-keybinding would. An inner program with mouse tracking on keeps every
+keybinding would, under the title the palette uses for it. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
 path. A terminal resize closes the menu; other overlays reflow.
 

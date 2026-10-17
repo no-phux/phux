@@ -1,5 +1,6 @@
 ---
 source: crates/phux-tui/src/render/overlay/settings.rs
+assertion_line: 2005
 expression: "render_text(&page, 100, 30)"
 ---
 
@@ -26,4 +27,4 @@ expression: "render_text(&page, 100, 30)"
                │ leaving the terminal its columns. 0 sizes the strip to one quarter │
                │ default 20  ·  set in your config  ·  applies next attach          │
                │                                                                    │
-               ╰────────────────────────────────────────────────────────────────────╯
+               ╰ 2 of 6 ────────── ⏎ edit · ←→ step · tab section · del reset · esc ╯

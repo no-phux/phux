@@ -173,6 +173,10 @@ pub struct SelectList {
     scroll: Cell<usize>,
     /// Viewport rows at the last paint, for page moves (0 before the first).
     page: Cell<usize>,
+    /// The tallest box painted so far: a list sized to its rows never
+    /// shrinks while it is up, so a live list whose refresh brings fewer
+    /// rows (a path search between keystrokes) keeps its frame still.
+    tallest: Cell<u16>,
     /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
@@ -227,6 +231,7 @@ impl SelectList {
             session_management: false,
             scroll: Cell::new(0),
             page: Cell::new(0),
+            tallest: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
         };
         // Grouped pickers open on a header; start on the first selectable row.
@@ -427,9 +432,24 @@ impl SelectList {
         self.snap_to_selectable(indices);
     }
 
-    /// The modal rect: half the viewport, min 30x10 (see `centered_panel`).
-    fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 5, 30, 10, bp)
+    /// The modal rect: a box just tall enough for every row, up to half the
+    /// viewport (min 30 wide; see `centered_panel`), centered. A compact
+    /// viewport takes the full height either way. The box never shrinks
+    /// below the tallest one this list has painted.
+    fn modal_area(&self, outer: Rect) -> Rect {
+        let bp = self.breakpoints;
+        let roomy = centered_panel(outer, 5, 30, 10, bp);
+        if bp.is_row_starved(outer.height) {
+            return roomy;
+        }
+        let rows = u16::try_from(self.items.len().max(1)).unwrap_or(u16::MAX);
+        let fit = rows
+            .saturating_add(CHROME_ROWS)
+            .max(self.tallest.get())
+            .min(roomy.height);
+        self.tallest.set(fit);
+        let slack = roomy.height - fit;
+        Rect::new(roomy.x, roomy.y + slack / 2, roomy.width, fit)
     }
 
     /// Rows available to the list inside `modal_area`.
@@ -631,7 +651,7 @@ fn session_management_command(item: &SelectItem) -> OverlayCommand {
 
 impl RenderOverlay for SelectList {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let modal_area = Self::modal_area(area, self.breakpoints);
+        let modal_area = self.modal_area(area);
         let indices = self.filtered_indices();
         let inner_width = modal_inner_width(modal_area.width);
 
@@ -658,7 +678,7 @@ impl RenderOverlay for SelectList {
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        Some(Self::modal_area(area, self.breakpoints))
+        Some(self.modal_area(area))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -1187,7 +1207,7 @@ mod tests {
     fn scrollbar_spans_the_list_rows_and_spares_the_border() {
         let sl = long_list(40);
         let area = Rect::new(0, 0, 40, 16);
-        let modal = SelectList::modal_area(area, ChromeBreakpoints::default());
+        let modal = sl.modal_area(area);
         let buf = render_buf(&sl, 40, 16);
         let right = modal.x + modal.width - 1;
         let bottom = modal.y + modal.height - 1;
@@ -1249,15 +1269,29 @@ mod tests {
     }
 
     /// Above the compact breakpoint the picker floats: a centered box with
-    /// panes visible around it, not a screen.
+    /// panes visible around it, not a screen, and only as tall as its rows
+    /// need (three rows: the query line, the rows, and the two borders).
     #[test]
     fn roomy_viewport_render_still_floats() {
         let sl = sample();
         let area = Rect::new(0, 0, 100, 30);
         let bounds = sl.bounds(area).expect("bounded");
-        assert_eq!((bounds.width, bounds.height), (50, 15));
+        assert_eq!((bounds.width, bounds.height), (50, 6));
         assert!(bounds.x > 0 && bounds.y > 0);
         insta::assert_snapshot!(render_to_string(&sl, 100, 30));
+    }
+
+    /// A long list stops at half the viewport and scrolls; a list that
+    /// refreshes to fewer rows keeps the box it had.
+    #[test]
+    fn box_height_caps_at_half_and_never_shrinks() {
+        let area = Rect::new(0, 0, 100, 30);
+        let long = long_list(40);
+        assert_eq!(long.bounds(area).expect("bounded").height, 15);
+        let mut live = long_list(8).with_live_key("agent-fleet");
+        assert_eq!(live.bounds(area).expect("bounded").height, 11);
+        assert!(live.refresh_items("agent-fleet", &[SelectItem::header("Searching…")]));
+        assert_eq!(live.bounds(area).expect("bounded").height, 11);
     }
 
     #[test]

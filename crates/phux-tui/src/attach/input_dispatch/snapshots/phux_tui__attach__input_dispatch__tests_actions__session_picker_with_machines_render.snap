@@ -1,8 +1,11 @@
 ---
 source: crates/phux-tui/src/attach/input_dispatch/tests_actions.rs
-assertion_line: 2516
+assertion_line: 2517
 expression: text
 ---
+
+
+
 
 
 
@@ -31,11 +34,4 @@ expression: text
                          │ spare                                          │
                          │ xps - unreachable                              │
                          │ + New session…                          create │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
-                         │                                                │
                          ╰ 1 of 7 ───────────────── ↑↓ move · ⏎ run · esc ╯
