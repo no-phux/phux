@@ -440,6 +440,20 @@ which-key-delay-ms = 400
 # token-file = "/home/me/.local/state/phux/connectors/relay.token"
 # cert-fingerprint = "AB:CD:..."
 
+# Uplinks make this server a satellite of a hub that cannot dial it (a
+# sandbox behind NAT, ADR-0180): the server dials the hub and serves the
+# hub's streams over that one connection, so it needs no listener. `phux
+# host join CODE` (the code comes from `phux host ticket NAME` on the hub)
+# enrolls a key it keeps and writes the entry; edit by hand only to disable
+# one. The key stays in an owner-only file, never inline.
+#
+# [[uplink]]
+# name = "sandbox"
+# hub = "hub.example:8788"
+# ca-fingerprint = "sha256:..."
+# client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
+# client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
+
 # Remote phux servers this machine attaches TO (ADR-0055): `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
 # you never retype them. `phux host add me@mini` writes an entry for you

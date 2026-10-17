@@ -41,6 +41,14 @@ pub const QUIC_RELAY_ALPN: &[u8] = b"phux-relay/1";
 /// phux frame, so it MUST never equal [`QUIC_ALPN`].
 pub const ENROLL_ALPN: &[u8] = b"phux-enroll/1";
 
+/// ALPN protocol id for a satellite's outbound link to its hub.
+///
+/// See `docs/spec/workload-auth.md` §8.3 and ADR-0180. The satellite dials
+/// and presents its satellite credential; the hub then opens bidirectional
+/// streams, each one phux connection with the hub as the client. It MUST
+/// never equal any other phux ALPN: the ALPN alone decides the role.
+pub const SATELLITE_ALPN: &[u8] = b"phux-satellite/1";
+
 /// Transport classification for peer identity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub enum TransportType {
@@ -71,6 +79,10 @@ mod tests {
         assert_eq!(ENROLL_ALPN, b"phux-enroll/1");
         assert_ne!(ENROLL_ALPN, QUIC_ALPN);
         assert_ne!(ENROLL_ALPN, QUIC_RELAY_ALPN);
+        assert_eq!(SATELLITE_ALPN, b"phux-satellite/1");
+        for other in [QUIC_ALPN, QUIC_RELAY_ALPN, ENROLL_ALPN] {
+            assert_ne!(SATELLITE_ALPN, other);
+        }
         assert_ne!(
             QUIC_ALPN, QUIC_RELAY_ALPN,
             "the relay connector leg must never reuse the consumer ALPN \

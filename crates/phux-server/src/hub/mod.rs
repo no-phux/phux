@@ -6,8 +6,11 @@
 //! dials and supervises each satellite; [`relay`] routes frames over the
 //! links, rewriting ids to the satellite's `Local` space and back. A
 //! non-hub server never reads the registry ([`resolve_hub_table`]); a hub
-//! re-reads it on the config-reload doorbell (`reload_satellites`).
+//! re-reads it on the config-reload doorbell (`reload_satellites`). An
+//! `inbound://` satellite is never dialed: it dials the hub, and its link
+//! supervisor adopts the connection (`hub::adopt`, ADR-0180).
 
+pub(crate) mod adopt;
 pub mod link;
 pub(crate) mod metadata_mirror;
 pub mod operation_fence;
@@ -52,7 +55,13 @@ pub enum SatelliteTarget {
         /// SSH port (`-p`); `None` defers to ssh's own config.
         port: Option<u16>,
     },
+    /// `inbound://` — the satellite dials this hub with the credential a
+    /// `phux host ticket` enrolled (ADR-0180); the hub never dials it.
+    Inbound,
 }
+
+/// The endpoint of an `inbound://` satellite, exactly.
+pub const INBOUND_ENDPOINT: &str = "inbound://";
 
 impl core::fmt::Display for SatelliteTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -75,6 +84,7 @@ impl core::fmt::Display for SatelliteTarget {
                 }
                 Ok(())
             }
+            Self::Inbound => f.write_str(INBOUND_ENDPOINT),
         }
     }
 }
@@ -341,9 +351,13 @@ pub fn resolve_hub_table(
 /// Parse one endpoint URI into a [`SatelliteTarget`] by scheme (not a full
 /// URL parser).
 fn parse_endpoint(endpoint: &str) -> Result<SatelliteTarget, String> {
+    if endpoint == INBOUND_ENDPOINT {
+        return Ok(SatelliteTarget::Inbound);
+    }
     let Some((scheme, rest)) = endpoint.split_once("://") else {
         return Err(
-            "missing '<scheme>://' prefix (expected quic://, ws://, wss://, or ssh://)".to_owned(),
+            "missing '<scheme>://' prefix (expected quic://, ws://, wss://, ssh://, or inbound://)"
+                .to_owned(),
         );
     };
     if scheme.is_empty() {
@@ -394,7 +408,7 @@ fn parse_endpoint(endpoint: &str) -> Result<SatelliteTarget, String> {
         }
         "ssh" => parse_ssh_authority(rest),
         other => Err(format!(
-            "unsupported scheme {other:?} (expected quic://, ws://, wss://, or ssh://)"
+            "unsupported scheme {other:?} (expected quic://, ws://, wss://, ssh://, or inbound://)"
         )),
     }
 }
@@ -554,6 +568,14 @@ mod tests {
                 url: "wss://host:8787/phux".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn inbound_is_exactly_the_bare_scheme() {
+        assert_eq!(parse_endpoint("inbound://"), Ok(SatelliteTarget::Inbound));
+        for endpoint in ["inbound://host", "inbound:", "inbound://:1"] {
+            assert!(parse_endpoint(endpoint).is_err(), "{endpoint}");
+        }
     }
 
     #[test]
@@ -789,6 +811,7 @@ mod tests {
             "ssh://devbox",
             "ssh://me@devbox:2222",
             "ssh://[::1]:2222",
+            "inbound://",
         ] {
             assert_eq!(
                 parse_endpoint(endpoint).unwrap().to_string(),

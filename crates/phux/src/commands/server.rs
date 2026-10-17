@@ -439,6 +439,11 @@ pub(crate) fn run_server(
         phux_server::hooks::HookCatalog::from_config(&config, &config_loader::config_path());
 
     let satellites = config.satellites;
+    let uplinks = config.uplink;
+    if let Err(err) = phux_server::uplink::plan_uplinks(&uplinks) {
+        error!("server failed: {err}");
+        return ExitCode::FAILURE;
+    }
 
     let configured_connectors = config.connector;
     let connector_entries = select_connectors(configured_connectors, connect.as_deref());
@@ -493,6 +498,15 @@ pub(crate) fn run_server(
             .map(|config| config.satellites)
             .map_err(|err| err.to_string())
     }));
+    // Satellite uplinks (ADR-0180): `phux host join` writes `[[uplink]]` and
+    // rings the doorbell, which starts the new uplink without a restart.
+    server = server
+        .uplinks(uplinks)
+        .uplink_reload(phux_server::uplink::UplinkSource::new(|| {
+            config_loader::load()
+                .map(|config| config.uplink)
+                .map_err(|err| err.to_string())
+        }));
     // Hub mode (ADR-0007): the runtime validates the satellite registry
     // before it accepts clients.
     if hub {

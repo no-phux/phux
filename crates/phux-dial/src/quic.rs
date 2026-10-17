@@ -221,11 +221,46 @@ pub(crate) async fn dial_relayed(
     Ok((endpoint, conn, stream))
 }
 
+/// Handshake only, offering `alpn`, and open no stream.
+///
+/// For a leg whose peer opens the streams (a satellite's link to its hub,
+/// ADR-0180). Presents [`QuicDial::identity`]; [`QuicDial::token`] is not
+/// sent, since there is no stream to carry it.
+///
+/// # Errors
+///
+/// As [`dial`].
+pub async fn connect_with_alpn(
+    d: &QuicDial,
+    alpn: &[u8],
+) -> Result<(quinn::Endpoint, quinn::Connection), DialError> {
+    handshake(d, alpn, d.identity.as_ref()).await
+}
+
 async fn dial_inner(
     d: &QuicDial,
     alpn: &[u8],
     identity: Option<&TlsClientIdentity>,
 ) -> Result<QuicConnection, DialError> {
+    let (endpoint, conn) = handshake(d, alpn, identity).await?;
+    let (mut send, recv) = conn
+        .open_bi()
+        .await
+        .map_err(|err| DialError::Connect(format!("open QUIC stream: {err}")))?;
+
+    if let Some(token) = &d.token {
+        write_preamble(&conn, &mut send, token).await?;
+    }
+
+    Ok((endpoint, conn, send, recv))
+}
+
+/// Bind a client endpoint and complete the QUIC handshake under `alpn`.
+async fn handshake(
+    d: &QuicDial,
+    alpn: &[u8],
+    identity: Option<&TlsClientIdentity>,
+) -> Result<(quinn::Endpoint, quinn::Connection), DialError> {
     if d.inner.is_some() {
         return Err(DialError::Connect(
             "a dial with an end-to-end session inside the stream goes through dial_stream"
@@ -255,17 +290,7 @@ async fn dial_inner(
         .map_err(|err| {
             crate::tls::authority_refusal(&refusal).unwrap_or_else(|| handshake_error(d.addr, &err))
         })?;
-
-    let (mut send, recv) = conn
-        .open_bi()
-        .await
-        .map_err(|err| DialError::Connect(format!("open QUIC stream: {err}")))?;
-
-    if let Some(token) = &d.token {
-        write_preamble(&conn, &mut send, token).await?;
-    }
-
-    Ok((endpoint, conn, send, recv))
+    Ok((endpoint, conn))
 }
 
 /// Classify a failed handshake like [`close_error`], naming the address.

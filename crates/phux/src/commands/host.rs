@@ -67,6 +67,8 @@ use super::remote_target::{QuicUpgrade, RemoteTarget, endpoint_host, upgrade_to_
 use super::satellite as satellite_registry;
 use super::service;
 
+mod inbound;
+
 /// Which machine registry a `phux host` operation applies to: the flag names
 /// the trust direction, the verb stays one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -316,6 +318,55 @@ pub(crate) enum HostAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
+
+    /// Mint a one-time code a machine this hub cannot reach joins with.
+    ///
+    /// For a sandbox or VM behind NAT, with no listener the hub could dial.
+    /// Registers NAME as an `inbound://` satellite and prints a join code
+    /// carrying this hub's QUIC address, the CA it is pinned by, and a
+    /// single-use ticket. On that machine, `phux host join CODE` enrolls a
+    /// key it keeps and dials out to this hub, which adopts the connection
+    /// as NAME's link. The hub must run `[policy] mode = "paired"`. Revoke an
+    /// unused code with `phux workload revoke t-…`, and the joined machine
+    /// with `phux host rm NAME`.
+    Ticket {
+        /// Satellite name: how this hub addresses the machine's terminals.
+        name: String,
+
+        /// `HOST:PORT` the satellite dials. Omitted: this server's live QUIC
+        /// listener, as `phux pair` advertises it.
+        #[usage(long, value_name = "HOST:PORT")]
+        hub: Option<String>,
+
+        /// Minutes the code stays redeemable.
+        #[usage(
+            long,
+            default = "10",
+            default_value_t = 10,
+            validate = "int(value) >= 1 && int(value) <= 1440",
+            validate_error = "must be between 1 and 1440 minutes",
+            value_name = "MINUTES"
+        )]
+        expires_in: i64,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Join a hub as a satellite with the code `phux host ticket` printed.
+    ///
+    /// Generates a key here (it never leaves this machine), enrolls it with
+    /// the code's single-use ticket, records an `[[uplink]]` entry, and asks
+    /// the running server to dial the hub. The server keeps that connection
+    /// up, redialing after any drop, and needs no listener of its own: the
+    /// hub reaches this machine's terminals through it.
+    Join {
+        /// The `phux://satellite?...` code from the hub.
+        code: String,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
 }
 
 pub(crate) fn run_host(action: &HostAction) -> ExitCode {
@@ -343,6 +394,13 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
         HostAction::Attach { name } => run_attach(name),
         HostAction::Enable { name, json } => run_enabled(name, true, json.json),
         HostAction::Disable { name, json } => run_enabled(name, false, json.json),
+        HostAction::Ticket {
+            name,
+            hub,
+            expires_in,
+            json,
+        } => inbound::run_ticket(name, hub.as_deref(), *expires_in, json.json),
+        HostAction::Join { code, json } => inbound::run_join(code, json.json),
     }
 }
 
@@ -1402,6 +1460,10 @@ fn auth_display(endpoint: &str, has_token: bool, has_pin: bool) -> &'static str 
     if endpoint.trim().starts_with("ssh://") {
         return "ssh";
     }
+    if endpoint.trim() == phux_server::hub::INBOUND_ENDPOINT {
+        // The satellite dials in with the credential its ticket enrolled.
+        return "cert";
+    }
     match (has_token, has_pin) {
         (true, true) => "token+pin",
         (false, true) => "pin",
@@ -2110,6 +2172,11 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     if let Err(err) = removed {
         return json_err::emit(json, &registry_failure(err), 1);
     }
+    // A satellite that dialed in holds a credential this hub issued; removing
+    // it revokes that credential too (ADR-0180).
+    let revoked = (resolved == HostRole::Satellite)
+        .then(|| inbound::revoke_satellite(name))
+        .flatten();
     let reload = (resolved == HostRole::Satellite).then(reload_local_hub);
 
     if json {
@@ -2118,11 +2185,17 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
             "removed": { "name": name, "role": resolved.as_str() },
         });
         add_hub_reload(&mut doc, reload.as_ref());
+        if let Some(revoked) = revoked {
+            doc["revoked_credentials"] = serde_json::json!(revoked);
+        }
         return crate::output::json(&doc);
     }
     outln!("Removed {} {name:?}.", resolved.as_str());
     if let Some(reload) = &reload {
         outln!("  {}", reload.describe());
+    }
+    if let Some(revoked) = revoked.filter(|revoked| *revoked > 0) {
+        outln!("  revoked its satellite credential ({revoked})");
     }
     if let Some(path) = token_file {
         outln!("Its token file is still at {}.", path.display());
@@ -2502,6 +2575,7 @@ mod tests {
         assert_eq!(auth_display("wss://mini:8787", false, true), "pin");
         assert_eq!(auth_display("quic://mini:8788", true, false), "token");
         assert_eq!(auth_display("wss://mini:8787", false, false), "none");
+        assert_eq!(auth_display("inbound://", false, false), "cert");
     }
 
     /// The table carries the five pinned columns; STATE is `-` for remotes

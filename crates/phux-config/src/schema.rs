@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     connector::ConnectorConfigEntry, plugin::PluginConfigEntry, project::ProjectConfigEntry,
-    remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
+    remote::RemoteConfigEntry, satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
 };
 
 /// Top-level config (`docs/consumers/tui.md` §4.2).
@@ -39,6 +39,9 @@ pub struct Config {
     pub satellites: Vec<SatelliteConfigEntry>,
     /// Outbound relay links this server supervises (ADR-0052).
     pub connector: Vec<ConnectorConfigEntry>,
+    /// Hubs this server dials out to as a satellite (ADR-0180), written by
+    /// `phux host join`.
+    pub uplink: Vec<UplinkConfigEntry>,
     /// Remote servers this machine attaches to (ADR-0055), written by
     /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,

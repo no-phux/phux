@@ -285,11 +285,14 @@ pub(crate) fn quic_server_config_with_client_ca(
     client_ca: Option<&CertificateDer<'static>>,
     enrollment: bool,
 ) -> Result<ServerConfig, TlsError> {
+    use phux_protocol::policy::{ENROLL_ALPN, SATELLITE_ALPN};
     let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Requested);
-    let alpns: &[&[u8]] = if enrollment {
-        &[QUIC_ALPN, phux_protocol::policy::ENROLL_ALPN]
-    } else {
-        &[QUIC_ALPN]
+    // The satellite ALPN admits by workload certificate alone (ADR-0180), so
+    // only a listener that verifies them offers it.
+    let alpns: &[&[u8]] = match (enrollment, client_ca.is_some()) {
+        (true, true) => &[QUIC_ALPN, ENROLL_ALPN, SATELLITE_ALPN],
+        (true, false) => &[QUIC_ALPN, ENROLL_ALPN],
+        (false, _) => &[QUIC_ALPN],
     };
     server_config(cert_path, key_path, auth, true, alpns)
 }

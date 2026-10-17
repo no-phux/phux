@@ -117,7 +117,9 @@ src/
   agent_detect/, agent_state.rs, agent_asked.rs
                   — detector (ADR-0046), SET_METADATA arbitration, ask ingress
   hooks.rs        — event-hook dispatcher, argv-only
-  hub/            — federation: satellite links, relay, operation fence
+  hub/            — federation: satellite links, relay, operation fence,
+                    adoption of satellites that dial in (ADR-0180)
+  uplink.rs       — this server as a satellite dialing out to a hub
   transport.rs, transport/ — UDS, WebSocket, QUIC, TLS, WebTransport
   upgrade/        — graceful re-exec and PTY handoff (ADR-0032)
   policy.rs, policy/ — per-connection grant and the dispatch guard
@@ -235,7 +237,7 @@ src/
   instance.rs     — profiles and build kind; socket.rs, production.rs — the
                     dev-never-reaches-production guards (operations.md)
   keybind.rs      — keybind parser and trie resolver
-  connector.rs, remote.rs, satellite.rs — machine-registry schema
+  connector.rs, remote.rs, satellite.rs, uplink.rs — machine-registry schema
   plugin.rs, plugin/ — plugin manifests: load, link, validate, version
   integration.rs, distro.rs, scaffold.rs
   settings/       — scalar-settings catalogue and comment-preserving writer (ADR-0101)

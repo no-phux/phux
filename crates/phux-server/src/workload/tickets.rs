@@ -7,6 +7,10 @@
 //! is issued, so two devices racing one ticket enroll at most one key. The
 //! file sits beside the registry and obeys its rules (owner-only, no-follow,
 //! locked atomic replacement).
+//!
+//! A satellite ticket (`phux host ticket`, ADR-0180) names the satellite the
+//! credential it enrolls will be; the ticket, never the requester, decides
+//! that role. An unspent ticket can be revoked (`phux workload revoke t-…`).
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +60,13 @@ struct TicketRecord {
     expires_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     used_at: Option<i64>,
+    /// When it was revoked unspent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revoked_at: Option<i64>,
+    /// The satellite name a satellite ticket enrolls (ADR-0180); `None` for
+    /// a device ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    satellite: Option<String>,
 }
 
 /// A freshly minted ticket. The secret is shown once and never stored.
@@ -87,6 +98,8 @@ pub struct Redeemed {
     pub scopes: Vec<String>,
     /// The credential's absolute expiry (Unix seconds).
     pub credential_expires_at: i64,
+    /// The satellite it enrolls, for a satellite ticket.
+    pub satellite: Option<String>,
 }
 
 /// The tickets store beside the registry at `registry`.
@@ -107,6 +120,38 @@ pub fn mint_ticket(
     ticket_seconds: i64,
 ) -> Result<MintedTicket, WorkloadError> {
     validate_scopes(&scopes)?;
+    mint(path, scopes, None, credential_seconds, ticket_seconds)
+}
+
+/// Mint a ticket that enrolls satellite `name` (ADR-0180) into the store at
+/// `path`. The credential it enrolls carries no scope ceiling.
+///
+/// # Errors
+///
+/// An invalid name, a non-positive lifetime, or a store failure.
+pub fn mint_satellite_ticket(
+    path: &Path,
+    name: &str,
+    credential_seconds: i64,
+    ticket_seconds: i64,
+) -> Result<MintedTicket, WorkloadError> {
+    super::validate_satellite_name(name)?;
+    mint(
+        path,
+        Vec::new(),
+        Some(name.to_owned()),
+        credential_seconds,
+        ticket_seconds,
+    )
+}
+
+fn mint(
+    path: &Path,
+    scopes: Vec<String>,
+    satellite: Option<String>,
+    credential_seconds: i64,
+    ticket_seconds: i64,
+) -> Result<MintedTicket, WorkloadError> {
     if credential_seconds <= 0
         || credential_seconds > super::MAX_EXPIRY_SECONDS
         || ticket_seconds <= 0
@@ -125,6 +170,8 @@ pub fn mint_ticket(
         credential_seconds,
         expires_at: now.saturating_add(ticket_seconds),
         used_at: None,
+        revoked_at: None,
+        satellite,
     };
     let minted = MintedTicket {
         id: record.id.clone(),
@@ -135,7 +182,10 @@ pub fn mint_ticket(
     store::with_lock(path, |held| {
         let mut file = load(path)?;
         file.tickets.retain(|ticket| {
-            let spent = ticket.used_at.unwrap_or(ticket.expires_at);
+            let spent = ticket
+                .used_at
+                .or(ticket.revoked_at)
+                .unwrap_or(ticket.expires_at);
             spent.saturating_add(KEEP_SPENT_SECONDS) > now
         });
         file.tickets.push(record);
@@ -173,7 +223,7 @@ pub fn redeem_ticket(path: &Path, secret: &[u8]) -> Result<Redeemed, WorkloadErr
         let refused = || WorkloadError::NotFound("enrollment ticket".to_owned());
         let index = found.ok_or_else(refused)?;
         let ticket = &mut file.tickets[index];
-        if ticket.used_at.is_some() || ticket.expires_at <= now {
+        if ticket.used_at.is_some() || ticket.revoked_at.is_some() || ticket.expires_at <= now {
             return Err(refused());
         }
         ticket.used_at = Some(now);
@@ -181,9 +231,44 @@ pub fn redeem_ticket(path: &Path, secret: &[u8]) -> Result<Redeemed, WorkloadErr
             id: ticket.id.clone(),
             scopes: ticket.scopes.clone(),
             credential_expires_at: now.saturating_add(ticket.credential_seconds),
+            satellite: ticket.satellite.clone(),
         };
         commit(path, &file, held)?;
         Ok(redeemed)
+    })
+}
+
+/// Whether `id` spells a ticket handle (`t-` and eight lowercase hex digits),
+/// as `phux workload revoke` tells one from a credential id.
+#[must_use]
+pub fn is_ticket_id(id: &str) -> bool {
+    id.strip_prefix("t-").is_some_and(|hex| {
+        hex.len() == 8 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Revoke the unspent ticket with handle `id`: it is refused from now on,
+/// like a consumed one. `Ok(false)` when it was already spent, expired, or
+/// revoked (nothing is written).
+///
+/// # Errors
+///
+/// [`WorkloadError::NotFound`] for an unknown handle, or a store failure.
+pub fn revoke_ticket(path: &Path, id: &str) -> Result<bool, WorkloadError> {
+    let now = Utc::now().timestamp();
+    store::with_lock(path, |held| {
+        let mut file = load(path)?;
+        let ticket = file
+            .tickets
+            .iter_mut()
+            .find(|ticket| ticket.id == id)
+            .ok_or_else(|| WorkloadError::NotFound(id.to_owned()))?;
+        if ticket.used_at.is_some() || ticket.revoked_at.is_some() || ticket.expires_at <= now {
+            return Ok(false);
+        }
+        ticket.revoked_at = Some(now);
+        commit(path, &file, held)?;
+        Ok(true)
     })
 }
 
@@ -196,6 +281,8 @@ pub struct TicketEnrollment {
     pub credential: String,
     /// The issued chain, PEM: the client certificate, then the CA.
     pub chain_pem: String,
+    /// The satellite the credential is, for a satellite ticket.
+    pub satellite: Option<String>,
 }
 
 /// Enroll the key `csr_der` certifies, authorized by the ticket `secret`.
@@ -221,19 +308,32 @@ pub fn enroll_with_ticket(
         .issued_chain_pem()
         .ok_or(WorkloadError::MalformedAuthority("a CSR issued no chain"))?
         .to_owned();
-    // A ticket is how a person pairs a phone or desktop: its credential is
-    // a human principal (ADR-0163 §6), whatever ceiling the ticket carries.
-    let registered = prepared.commit_replacing(
-        &paths.registry,
-        redeemed.scopes,
-        redeemed.credential_expires_at,
-        None,
-        Some(super::EnrolledFor::Human),
-    )?;
+    let registered = if let Some(name) = &redeemed.satellite {
+        // The ticket names the role: a satellite credential, admitted only on
+        // the satellite ALPN (ADR-0180).
+        super::WorkloadRegistry::register_satellite(
+            &paths.registry,
+            prepared.public_key(),
+            name,
+            redeemed.credential_expires_at,
+        )?
+    } else {
+        // A device ticket is how a person pairs a phone or desktop: its
+        // credential is a human principal (ADR-0163 §6), whatever ceiling the
+        // ticket carries.
+        prepared.commit_replacing(
+            &paths.registry,
+            redeemed.scopes,
+            redeemed.credential_expires_at,
+            None,
+            Some(super::EnrolledFor::Human),
+        )?
+    };
     Ok(TicketEnrollment {
         ticket: redeemed.id,
         credential: registered.id,
         chain_pem,
+        satellite: redeemed.satellite,
     })
 }
 
@@ -343,6 +443,47 @@ mod tests {
                 .count()
         });
         assert_eq!(winners, 1);
+    }
+
+    #[test]
+    fn a_revoked_ticket_is_refused_and_a_spent_one_is_not_revoked() {
+        let (_dir, path) = store();
+        let minted = mint_satellite_ticket(&path, "sandbox", 3600, 600).unwrap();
+        assert!(is_ticket_id(&minted.id), "{}", minted.id);
+        assert!(revoke_ticket(&path, &minted.id).unwrap());
+        assert!(!revoke_ticket(&path, &minted.id).unwrap(), "idempotent");
+        let secret = hex::decode(&minted.secret_hex).unwrap();
+        assert!(matches!(
+            redeem_ticket(&path, &secret),
+            Err(WorkloadError::NotFound(_))
+        ));
+
+        let spent = mint_satellite_ticket(&path, "sandbox", 3600, 600).unwrap();
+        let redeemed = redeem_ticket(&path, &hex::decode(&spent.secret_hex).unwrap()).unwrap();
+        assert_eq!(redeemed.satellite.as_deref(), Some("sandbox"));
+        assert!(redeemed.scopes.is_empty());
+        assert!(!revoke_ticket(&path, &spent.id).unwrap());
+        assert!(matches!(
+            revoke_ticket(&path, "t-00000000"),
+            Err(WorkloadError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn satellite_tickets_refuse_bad_names_and_ticket_ids_are_strict() {
+        let (_dir, path) = store();
+        for name in ["", "a/b", "a:b", "tab\there"] {
+            assert!(
+                mint_satellite_ticket(&path, name, 3600, 600).is_err(),
+                "{name:?}"
+            );
+        }
+        for id in ["t-0123abcd", "t-ffffffff"] {
+            assert!(is_ticket_id(id), "{id}");
+        }
+        for id in ["t-0123ABCD", "t-0123abc", "sha256:00", "t-0123abcde"] {
+            assert!(!is_ticket_id(id), "{id}");
+        }
     }
 
     #[test]

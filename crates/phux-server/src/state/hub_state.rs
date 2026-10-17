@@ -24,6 +24,9 @@ pub(super) struct HubState {
         phux_protocol::ids::SatelliteHost,
         phux_protocol::caps::ServerFeatureSet,
     )>,
+    /// Where the QUIC listener hands satellites that dial in (ADR-0180); it
+    /// accepts none until an `inbound://` link registers.
+    adopter: crate::hub::adopt::SatelliteAdopter,
 }
 
 impl Default for HubState {
@@ -35,7 +38,7 @@ impl Default for HubState {
 impl HubState {
     /// Build the off-hub state: no table, no relays.
     #[must_use]
-    pub(super) const fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             table: None,
             relays: None,
@@ -43,7 +46,13 @@ impl HubState {
             source: None,
             cancel: None,
             satellite_features: Vec::new(),
+            adopter: crate::hub::adopt::SatelliteAdopter::default(),
         }
+    }
+
+    /// The adopter every link supervisor and the QUIC listener share.
+    pub(super) fn adopter(&self) -> crate::hub::adopt::SatelliteAdopter {
+        self.adopter.clone()
     }
 
     /// Install the running link supervisors and the registry source a reload
@@ -94,7 +103,12 @@ impl HubState {
             return false;
         };
         let relays = crate::hub::relay::HubRelays::default();
-        let links = crate::hub::link::HubLinks::new(relays.clone(), &cancel, ssh_program);
+        let links = crate::hub::link::HubLinks::new(
+            relays.clone(),
+            &cancel,
+            ssh_program,
+            self.adopter.clone(),
+        );
         self.relays = Some(relays);
         if self.table.is_none() {
             self.table = Some(empty);

@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Remote access
@@ -366,6 +366,41 @@ in place when the reload doorbell finds the new enabled satellite: it is not
 restarted, keeps its panes, and keeps hub mode across `phux upgrade`. The
 patched unit makes the next cold start a hub as well. `--no-service` skips
 installing the *remote* unit only; the local `--hub` ensure still runs.
+
+### A satellite the hub cannot reach: `phux host ticket` and `join`
+
+A sandbox or VM behind NAT has no address the hub can dial and often no ssh.
+It joins by dialing out instead
+([ADR-0180](adr/0180-satellites-enroll-and-dial-out-to-the-hub.md)). The hub
+must run `[policy] mode = "paired"` with a QUIC listener the sandbox can
+reach.
+
+```sh
+# On the hub:
+phux host ticket sandbox            # or --hub HOST:PORT to name the address
+# On the sandbox, with its server running:
+phux host join 'phux://satellite?hub=...&ca=...&name=sandbox&enroll=...'
+```
+
+`host ticket` registers `sandbox` as an `inbound://` satellite and prints a
+join code. The code holds the hub's address, the CA it is pinned by, and a
+single-use ticket that expires in ten minutes (`--expires-in`). `host join`
+generates a key on the sandbox, enrolls it with the ticket, and stores it
+owner-only under the state dir's `uplinks/`. It then records an
+`[[uplink]]` entry and signals the running server, which dials the hub and
+keeps that connection up. After a drop it redials with backoff. The sandbox
+needs no listener. The hub reaches its terminals over the connection the
+sandbox opened, with the authority an `ssh://` hub has.
+
+- A code works once. `phux workload revoke t-…` on the hub withdraws an
+  unused one.
+- `phux host disable sandbox` drops the link and refuses the sandbox until
+  re-enabled. `phux host rm sandbox` also revokes its credential;
+  `phux workload revoke sha256:…` does that alone and ends a live link
+  within a second.
+- Joining again with a new code replaces the sandbox's credential. The hub
+  revokes the old one in the same write.
+- A satellite credential cannot attach to the hub as a client.
 
 ## A fleet that sees itself: registrations are one-way
 

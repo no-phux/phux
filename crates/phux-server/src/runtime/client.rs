@@ -3708,6 +3708,7 @@ pub(crate) fn handle_set_metadata(
     // writer's read-back barrier also covers the reload.
     if config_reload {
         crate::hub::reload_satellites(state);
+        crate::uplink::reload_uplinks(state);
     }
 }
 

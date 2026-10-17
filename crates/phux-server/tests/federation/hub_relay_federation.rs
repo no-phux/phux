@@ -42,6 +42,7 @@ mod live_reload;
 mod mixed_window;
 mod path_query;
 mod retain_on_exit;
+mod reverse_enrollment;
 mod satellite_spawn;
 
 /// Per-step hang guard (the hub link dials with backoff).
