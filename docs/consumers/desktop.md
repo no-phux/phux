@@ -213,7 +213,7 @@ The tab strip keeps New Terminal and the notification bell.
 Local and registered remote hosts open concurrently with host-qualified
 identity, through the shared registry and dialer; auth refusal, expiry,
 version mismatch, and offline inventory are distinct states. Settings show
-effective value, default, source, and when an edit applies. Native menus, Dock, dialogs, drops,
+effective value, source, and when an edit applies. Native menus, Dock, dialogs, drops,
 clipboard, notifications, scale, appearance, reduced motion, high contrast,
 and screen-reader navigation are in scope; titles, links, and dropped paths
 never become implicit command execution.
@@ -241,9 +241,13 @@ Each setting and shortcut names its source: the default, a saved desktop
 preference, or the Ghostty file and line that sets it. A Ghostty-sourced value
 says when a file edit reaches it: binds and the Ghostty theme on **Reload
 config**, seeded preferences on **Use Ghostty look**. **Keyboard & shortcuts**
-lists any chord the Ghostty config binds to different actions, with every
-line; the last line wins. **Ghostty integration** lists lines it skipped as
-malformed or out of range, by file and line; every other line still applies.
+lists any chord the Ghostty config binds to different actions while Ghostty
+keybinds are on, with every line; the last line wins, and an `unbind` resets
+the chord rather than conflicting. **Ghostty integration** lists malformed
+lines by file and line, and separately lists valid Ghostty lines whose values
+this app cannot represent (palette slots above 15, named colours, pixel cell
+adjustments, values outside its range); every other line still applies, and
+only malformed lines post a notice on reload.
 The desktop reads Ghostty's config and does not write it; it does not use the
 `phux-config` catalogue.
 

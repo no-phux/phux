@@ -925,31 +925,44 @@ pub struct KeyConflict {
 }
 
 /// Chords the Ghostty config binds to different actions, in first-bind order.
-/// Repeating the same action is not a conflict.
+/// Repeating the same action is not a conflict. An `unbind` is deliberate, so
+/// it is never a conflict itself and it drops the binds before it: only binds
+/// after a chord's last unbind can conflict.
 #[must_use]
 pub fn keymap_conflicts(config: &GhosttyConfig) -> Vec<KeyConflict> {
-    let mut conflicts: Vec<KeyConflict> = Vec::new();
+    let mut chords: Vec<&str> = Vec::new();
     for bind in &config.binds {
-        if conflicts
-            .iter()
-            .any(|conflict| conflict.chord == bind.chord)
-        {
-            continue;
-        }
-        let binds: Vec<Bind> = config
-            .binds
-            .iter()
-            .filter(|other| other.chord == bind.chord)
-            .cloned()
-            .collect();
-        if binds.iter().any(|other| other.command != bind.command) {
-            conflicts.push(KeyConflict {
-                chord: bind.chord.clone(),
-                binds,
-            });
+        if !chords.contains(&bind.chord.as_str()) {
+            chords.push(&bind.chord);
         }
     }
-    conflicts
+    chords
+        .into_iter()
+        .filter_map(|chord| {
+            let binds = live_binds(config, chord);
+            let first = binds.first()?;
+            binds
+                .iter()
+                .any(|other| other.command != first.command)
+                .then(|| KeyConflict {
+                    chord: chord.to_owned(),
+                    binds,
+                })
+        })
+        .collect()
+}
+
+/// Binds of `chord` after its last unbind, in config order.
+fn live_binds(config: &GhosttyConfig, chord: &str) -> Vec<Bind> {
+    let mut binds = Vec::new();
+    for bind in config.binds.iter().filter(|bind| bind.chord == chord) {
+        if bind.command.is_empty() {
+            binds.clear();
+        } else {
+            binds.push(bind.clone());
+        }
+    }
+    binds
 }
 
 /// Where a keymap entry came from.
@@ -1228,6 +1241,30 @@ mod tests {
             chord_source(&config, true, "cmd+t", "new"),
             ChordSource::BuiltIn
         );
+    }
+
+    #[test]
+    fn an_unbind_is_not_a_conflict() {
+        let config = parse_ghostty(
+            "keybind = super+d=new_split:right\n\
+             keybind = super+d=unbind\n\
+             keybind = super+k=clear_screen\n\
+             keybind = super+k=unbind\n\
+             keybind = super+k=new_tab\n\
+             keybind = super+j=new_tab\n\
+             keybind = super+j=unbind\n\
+             keybind = super+j=clear_screen\n\
+             keybind = super+j=new_split:down\n",
+        );
+        let conflicts = keymap_conflicts(&config);
+        let chords: Vec<&str> = conflicts.iter().map(|c| c.chord.as_str()).collect();
+        assert_eq!(chords, vec!["cmd+j"], "an unbind resets the chord");
+        let lines: Vec<usize> = conflicts[0]
+            .binds
+            .iter()
+            .map(|bind| bind.origin.line)
+            .collect();
+        assert_eq!(lines, vec![8, 9]);
     }
 
     #[test]

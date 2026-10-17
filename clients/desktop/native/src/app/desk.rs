@@ -1771,28 +1771,27 @@ impl Desk {
     }
 
     pub(crate) fn reload_ghostty(&mut self, cx: &mut Context<Self>) {
-        let text = settings::read_ghostty_sources();
-        self.ghostty_found = text.is_some();
-        self.ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
+        let sources = settings::read_ghostty_sources();
+        self.apply_ghostty_sources(sources.as_deref(), cx);
+    }
+
+    /// Adopt freshly read Ghostty files (`None` when there are none): rebind,
+    /// drop the cached paint so the Ghostty theme follows, and post a notice
+    /// for a missing config or skipped lines. Reload config runs this on what
+    /// it reads from disk.
+    pub fn apply_ghostty_sources(
+        &mut self,
+        sources: Option<&[settings::GhosttySource]>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ghostty_found = sources.is_some();
+        self.ghostty = settings::parse_ghostty_sources(sources.unwrap_or_default());
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
-        if text.is_none() {
+        if sources.is_none() {
             self.post(Kind::Refusal, "No Ghostty config found", None);
         }
-        if let Some(first) = self.ghostty.diagnostics.first() {
-            let skipped = self.ghostty.diagnostics.len();
-            let body = format!(
-                "{}: {} ({}). Settings > Ghostty integration lists {}.",
-                first.origin.label(),
-                first.text,
-                first.reason,
-                if skipped == 1 { "it" } else { "all of them" },
-            );
-            let title = if skipped == 1 {
-                "Skipped 1 Ghostty config line".to_owned()
-            } else {
-                format!("Skipped {skipped} Ghostty config lines")
-            };
+        if let Some((title, body)) = settings::skipped_lines_notice(&self.ghostty) {
             self.post(Kind::Refusal, &title, Some(body));
         }
         cx.notify();
