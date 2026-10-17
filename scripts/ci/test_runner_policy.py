@@ -205,11 +205,10 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("needs: [check, test-build, uniffi, perf-icount]", prune)
         self.assertIn("actions: write", prune)
         self.assertIn("keep_newest check linux-arm64-mbx-phux-check-", prune)
-        self.assertIn("drop_all test-mbx linux-arm64-mbx-phux-test-", prune)
-        for lane in ("test", "uniffi"):
-            self.assertIn(f"keep_newest {lane}-deps v0-rust-phux-{lane}-Linux-", prune)
-        # The run jobs restore no cache; their former entries go.
-        for lane in ("test-integration", "e2e"):
+        self.assertIn("keep_newest test linux-arm64-mbx-phux-test-", prune)
+        self.assertIn("keep_newest uniffi-deps v0-rust-phux-uniffi-Linux-", prune)
+        # The test build moved to mbx and the run jobs restore no cache.
+        for lane in ("test", "test-integration", "e2e"):
             self.assertIn(f"drop_all {lane}-deps v0-rust-phux-{lane}-Linux-", prune)
         self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
         self.assertIn("drop_all sccache sccache", prune)
@@ -243,11 +242,11 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_test_lanes_compile_once_and_run_from_the_archive(self):
         """The test profile compiles once; the run jobs only execute.
 
-        Run 38503810705 spent 6m 28s unpacking a 6.1 GB mbx archive (27.8 GiB
-        on disk), so the test build restores only third-party artifacts. Run
-        38982580303 then compiled the workspace crates three times in
-        parallel lanes (4m 52s, 3m 38s, 2m 21s); one archive build serves the
-        unit halves and e2e, which restore no build cache.
+        Run 38982580303 compiled the workspace crates three times in parallel
+        lanes (4m 52s, 3m 38s, 2m 21s); one archive build serves the unit
+        halves and e2e, which restore no build cache. Without debuginfo or
+        incremental state the test build's mbx store is about 0.7 GB, not
+        the 6.1 GB that run 38503810705 spent 6m 28s unpacking.
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
         self.assertIn("default: mbx", lane)
@@ -256,11 +255,14 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("shared-key: phux-${{ inputs.cache-lane }}", lane)
         self.assertIn('cache-on-failure: "true"', lane)
         ci = (WORKFLOWS / "ci.yml").read_text()
-        # The test build and uniffi compile; the three run jobs do not.
-        self.assertEqual(ci.count("          build-cache: deps\n"), 2)
+        # uniffi keeps the dependency cache; the three run jobs restore none.
+        self.assertEqual(ci.count("          build-cache: deps\n"), 1)
         self.assertEqual(ci.count("          build-cache: none\n"), 3)
         build = ci.split("\n  test-build:\n", 1)[1].split("\n  test:\n", 1)[0]
         self.assertIn("cache-lane: test\n", build)
+        self.assertNotIn("build-cache:", build)
+        self.assertIn('CARGO_INCREMENTAL: "0"', build)
+        self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', build)
         self.assertIn("just test-archive", build)
         self.assertIn("uses: actions/upload-artifact@", build)
         self.assertIn("compression-level: 0", build)
@@ -299,9 +301,9 @@ class RunnerPolicyTests(unittest.TestCase):
             "github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' "
             "&& steps.mbx-fail-export.outputs.exported == 'true'"
         )
-        # check and icount; the test lanes' rust-cache saves on failure itself.
-        self.assertEqual(ci.count(save_if), 2)
-        self.assertEqual(ci.count("bash scripts/ci/mbx-export-failed-lane.sh"), 2)
+        # check, test build, and icount; uniffi's rust-cache saves on failure itself.
+        self.assertEqual(ci.count(save_if), 3)
+        self.assertEqual(ci.count("bash scripts/ci/mbx-export-failed-lane.sh"), 3)
         self.assertNotIn("save-on-pull-request", ci)
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
         self.assertIn("value: ${{ steps.mbx-env.outputs.cache_key }}", lane)

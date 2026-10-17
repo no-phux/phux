@@ -44,19 +44,21 @@ jobs:
     # workflow_dispatch always runs; a pull_request fires this lane
     # only when tagged with the `stress` label.
     if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'stress' }}
-    # Match ci.yml's standard ARM runner and its test profile.
+    # Match ci.yml's standard ARM runner and its test build settings.
     runs-on: ubuntu-24.04-arm
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Shared lane setup. This builds integration tests in the test
-      # profile, so it restores ci.yml's `test` build dependency cache
-      # instead of writing another copy.
+      # profile, so it restores ci.yml's `test build` mbx store, with the
+      # same build settings, instead of writing another copy.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: test
-          build-cache: deps
       # Timed + junit-instrumented like ci.yml's lanes (ADR-0082): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
       # the 2-core runner is this suite's known failure mode.
