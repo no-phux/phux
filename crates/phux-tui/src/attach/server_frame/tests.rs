@@ -2507,24 +2507,28 @@ fn a_peer_arrangement_change_asks_for_a_peer_reread() {
     assert_eq!(h.send(changed(ours)).peer_arrangement_changed, None);
 }
 
-/// A journal or source gap may have swallowed renames and arrangement
-/// changes: the driver re-reads instead of trusting its caches.
+/// A journal gap may have swallowed renames and arrangement changes: the
+/// driver re-reads instead of trusting its caches. One pane's source gap
+/// says nothing about organization and resyncs nothing.
 #[test]
-fn an_event_gap_asks_for_an_organization_resync() {
+fn a_journal_gap_asks_for_an_organization_resync() {
     let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
-    for event in [
-        AgentEvent::JournalGap {
-            first_missing: 3,
-            last_missing: 9,
-        },
-        AgentEvent::SourceGap { dropped: 2 },
+    for (event, resync) in [
+        (
+            AgentEvent::JournalGap {
+                first_missing: 3,
+                last_missing: 9,
+            },
+            true,
+        ),
+        (AgentEvent::SourceGap { dropped: 2 }, false),
     ] {
         let outcome = h.send(FrameKind::Event {
-            terminal: None,
+            terminal: Some(tid(1)),
             event,
             stamp: None,
         });
-        assert!(outcome.organization_resync);
+        assert_eq!(outcome.organization_resync, resync);
     }
 }
 

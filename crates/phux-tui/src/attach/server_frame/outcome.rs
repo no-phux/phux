@@ -107,7 +107,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// Another session's arrangement record changed on the server: read it
     /// again for the peer caches (`ORGANIZATION` servers only).
     pub(in crate::attach) peer_arrangement_changed: Option<SessionKey>,
-    /// Journaled events were lost (`JOURNAL_GAP` / `SOURCE_GAP`): re-read
+    /// Journaled events were lost (`JOURNAL_GAP`): re-read
     /// the arrangements and the session list instead of trusting the caches.
     pub(in crate::attach) organization_resync: bool,
     /// The attached session's membership changed on the server: recompute

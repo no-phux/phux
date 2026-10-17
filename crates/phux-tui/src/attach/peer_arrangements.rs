@@ -8,7 +8,10 @@
 //! on, so a [`PeerReader`] task owns its own unsubscribed connection on the
 //! attach's dial: the driver queues what it owes ([`PeerReads`]), the task
 //! coalesces queued requests into one read, and the answer comes back on a
-//! channel the driver's `select!` polls.
+//! channel the driver's `select!` polls. A read that fails or exceeds
+//! [`READ_TIMEOUT`] drops the connection and is retried by the task after
+//! [`RETRY_DELAY`], with whatever was queued meanwhile; the driver keeps
+//! its caches until an answer arrives.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,6 +31,13 @@ const REQUEST_ID_STRIDE: u32 = 4096;
 
 /// Where a read's `ARRANGEMENT_GET`s start, past its inventory pages.
 const ARRANGEMENT_GET_OFFSET: u32 = 64;
+
+/// The longest one read may take before its connection is dropped and the
+/// read retried.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a failed read waits before the task retries it.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which peer arrangement records are owed a read.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -70,11 +80,11 @@ impl PeerReads {
 /// One finished read: what was asked, and what it found.
 #[derive(Debug)]
 pub(in crate::attach) struct PeerReadDone {
-    /// The reads this answer covers; owed again if it failed.
+    /// The reads this answer covers.
     pub(in crate::attach) asked: PeerReads,
     /// Each read peer's arrangement in handle space, `None` when it has none
-    /// (or this client may not read it); or why the read failed.
-    pub(in crate::attach) reads: Result<HashMap<SessionId, Option<ArrangementDoc>>, String>,
+    /// (or this client may not read it).
+    pub(in crate::attach) reads: HashMap<SessionId, Option<ArrangementDoc>>,
 }
 
 /// The background task reading peer arrangements, and its two channels.
@@ -101,9 +111,14 @@ impl PeerReader {
     /// Start the reader for every session but `ours`, dialing `dial` on its
     /// first read.
     pub(in crate::attach) fn spawn(dial: Dial, ours: SessionId) -> Self {
+        Self::spawn_with_retry(dial, ours, RETRY_DELAY)
+    }
+
+    /// [`Self::spawn`], retrying a failed read after `retry`.
+    fn spawn_with_retry(dial: Dial, ours: SessionId, retry: std::time::Duration) -> Self {
         let (requests, request_rx) = mpsc::unbounded_channel();
         let (done_tx, done) = mpsc::unbounded_channel();
-        let task = tokio::spawn(run(dial, ours, request_rx, done_tx));
+        let task = tokio::spawn(run(dial, ours, retry, request_rx, done_tx));
         Self {
             requests,
             done,
@@ -138,26 +153,48 @@ pub(in crate::attach) async fn next_done(reader: Option<&mut PeerReader>) -> Pee
 async fn run(
     dial: Dial,
     ours: SessionId,
+    retry: std::time::Duration,
     mut requests: mpsc::UnboundedReceiver<PeerReads>,
     done: mpsc::UnboundedSender<PeerReadDone>,
 ) {
     let mut conn: Option<Connection> = None;
     let mut first_request_id: u32 = 1;
     while let Some(mut asked) = requests.recv().await {
-        // Everything queued while the last read ran is answered by one read.
-        while let Ok(more) = requests.try_recv() {
-            asked.merge(more);
-        }
-        let only = match &asked {
-            PeerReads::Settled => continue,
-            PeerReads::All => None,
-            PeerReads::Sessions(sessions) => Some(sessions.clone()),
-        };
-        let first = first_request_id;
-        first_request_id = first_request_id.wrapping_add(REQUEST_ID_STRIDE);
-        let reads = read_on(&dial, &mut conn, ours, only.as_ref(), first).await;
-        if done.send(PeerReadDone { asked, reads }).is_err() {
-            return;
+        loop {
+            // Everything queued while the last read ran (or waited to retry)
+            // is answered by one read.
+            while let Ok(more) = requests.try_recv() {
+                asked.merge(more);
+            }
+            let only = match &asked {
+                PeerReads::Settled => break,
+                PeerReads::All => None,
+                PeerReads::Sessions(sessions) => Some(sessions.clone()),
+            };
+            let first = first_request_id;
+            first_request_id = first_request_id.wrapping_add(REQUEST_ID_STRIDE);
+            let read = tokio::time::timeout(
+                READ_TIMEOUT,
+                read_on(&dial, &mut conn, ours, only.as_ref(), first),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                // A wedged connection: the retry dials afresh.
+                conn = None;
+                Err("timed out".to_owned())
+            });
+            match read {
+                Ok(reads) => {
+                    if done.send(PeerReadDone { asked, reads }).is_err() {
+                        return;
+                    }
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "peer arrangement read failed; retrying");
+                    tokio::time::sleep(retry).await;
+                }
+            }
         }
     }
 }
@@ -253,6 +290,34 @@ mod tests {
 
     fn key(byte: u8) -> SessionKey {
         SessionKey::new([byte; 16]).unwrap()
+    }
+
+    /// A read that fails (no server yet) is retried by the task itself, with
+    /// no further request or frame burst from the driver.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_read_is_retried_without_another_request() {
+        use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("phux.sock");
+        let mut reader = PeerReader::spawn_with_retry(
+            Dial::uds(&socket),
+            SessionId::new(1),
+            std::time::Duration::from_millis(50),
+        );
+        reader.request(PeerReads::All);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let spec = ScriptSpec::new()
+            .server_features_ext(phux_protocol::ServerFeatureExtSet::with(&[
+                phux_protocol::ServerFeatureExt::Organization,
+            ]))
+            .organization(OrgFixture::new());
+        let (bound, _server) = serve_one(dir.path(), spec);
+        assert_eq!(bound, socket);
+        let done = tokio::time::timeout(std::time::Duration::from_secs(5), reader.next())
+            .await
+            .expect("the retry answered");
+        assert_eq!(done.asked, PeerReads::All);
+        assert!(done.reads.is_empty());
     }
 
     #[test]
