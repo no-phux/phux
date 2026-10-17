@@ -81,11 +81,8 @@ impl Topology {
             .expect("issued by the CA");
 
         let relay = RelayHarness::start(RelayConfig {
-            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            cert_path: d.join("relay-cert.pem"),
-            key_path: d.join("relay-key.pem"),
-            tokens_path: d.join("relay-tokens"),
             max_conns: 16,
+            ..phux_relay::config_in(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), d)
         });
         let relay_pin = cert_fingerprint(&d.join("relay-cert.pem")).expect("relay pin");
         let connector = ConnectorConfigEntry {

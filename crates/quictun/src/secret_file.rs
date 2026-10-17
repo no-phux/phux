@@ -47,7 +47,7 @@ impl SecretFile {
     }
 
     /// Whether a root-owned file is accepted from a non-root process: an
-    /// operator's key under `/etc` is root's; phux's own stores never are.
+    /// operator's key under `/etc` is root's; the relay's own stores never are.
     const fn admits_root_owner(self) -> bool {
         matches!(self, Self::PrivateKey)
     }

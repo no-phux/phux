@@ -9,20 +9,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use phux_dial::quic::is_tunnel_cid;
-use phux_dial::window::{SendWindow, TrackedSend};
-use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::registry::TunnelRegistry;
-use crate::splice::{Tee, splice};
-use crate::tokens::{CachedRouteTokens, RouteTokenStore};
-use crate::{
-    AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, RelayError, tls,
+use crate::Protocol;
+use crate::relay::registry::TunnelRegistry;
+use crate::relay::splice::{Tee, splice};
+use crate::relay::tokens::{CachedRouteTokens, RouteTokenStore};
+use crate::relay::{RelayError, tls};
+use crate::tunnel::{
+    AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, read_preamble,
 };
+use crate::window::{SendWindow, TrackedSend};
 
 /// Default connection cap (`--max-conns`). Over-cap connections complete
-/// their handshake and are closed with [`crate::OVER_CAP_CODE`].
+/// their handshake and are closed with [`crate::tunnel::OVER_CAP_CODE`].
 pub const DEFAULT_MAX_CONNS: usize = 64;
 
 /// Handshakes in flight per connection slot. A handshake takes no connection
@@ -45,14 +45,11 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// shorten it via [`RelayRuntime::with_handshakes_per_source`].
 pub const DEFAULT_HANDSHAKES_PER_SOURCE: usize = 16;
 
-/// QUIC idle timeout, matching the server listener and phux-dial.
+/// QUIC idle timeout, matching [`crate::connect`]'s.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Keep-alive interval, well under [`IDLE_TIMEOUT`].
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
-
-/// Auth-preamble size bound, mirroring the server QUIC listener's.
-const MAX_TOKEN_PREAMBLE: usize = 256;
 
 /// How long a connector has to present its stream-0 auth preamble; bounds a
 /// slow-loris on the tunnel leg. Tests shorten it via
@@ -67,17 +64,17 @@ const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
-/// Per-stream receive window a connector tunnel grants the server: one
-/// stream per bridged consumer.
+/// Per-stream receive window a tunnel grants the service: one stream per
+/// bridged consumer.
 ///
 /// Credit the relay has granted but not forwarded is lag. Held small, a slow
-/// consumer blocks the server's writer quickly so its output pump resyncs the
-/// consumer instead of queueing seconds of output. Only tagged tunnels get it
-/// (see [`phux_dial::quic::TUNNEL_CID_PREFIX`]): consumers keep quinn's
-/// defaults so uploads stay fast, and untagged legacy tunnels are logged.
-/// Being per stream, one stalled consumer never holds back another.
+/// consumer blocks the service's writer quickly, so an interactive service
+/// can drop or coalesce output instead of queueing seconds of it. Only
+/// tagged tunnels get it (see [`Protocol::cid_tag`]): consumers keep quinn's
+/// defaults so uploads stay fast, and untagged tunnels are logged. Being per
+/// stream, one stalled consumer never holds back another.
 ///
-/// This caps each consumer at one window per server-to-relay round trip
+/// This caps each consumer at one window per service-to-relay round trip
 /// (about 5 Mbit/s at 100 ms); 64 KiB was measured to carry realistic floods
 /// without resyncs where 16 and 32 KiB did not.
 const TUNNEL_STREAM_RECEIVE_WINDOW: u32 = 64 * 1024;
@@ -110,21 +107,8 @@ pub struct RelayConfig {
     pub tokens_path: PathBuf,
     /// Connection cap; see [`DEFAULT_MAX_CONNS`].
     pub max_conns: usize,
-}
-
-impl RelayConfig {
-    /// A config listening on `listen` with the fixed XDG state-dir paths
-    /// and the default connection cap.
-    #[must_use]
-    pub fn new(listen: SocketAddr) -> Self {
-        Self {
-            listen,
-            cert_path: crate::default_relay_cert_path(),
-            key_path: crate::default_relay_key_path(),
-            tokens_path: crate::default_relay_tokens_path(),
-            max_conns: DEFAULT_MAX_CONNS,
-        }
-    }
+    /// The ALPNs and connection-ID tag this relay serves.
+    pub protocol: Protocol,
 }
 
 /// The relay's run loop: [`Self::run_async`], or [`Self::bind`] then
@@ -174,7 +158,7 @@ impl RelayRuntime {
 
     /// Append every byte the relay forwards between a consumer and its
     /// tunnel, in both directions, as it forwards it. This is everything a
-    /// relay operator could record of a bridged session (ADR-0180); it does
+    /// relay operator could record of a bridged session; it does
     /// not change what is forwarded.
     #[must_use]
     pub fn with_observed_consumer_bytes(mut self, observed: Arc<Mutex<Vec<u8>>>) -> Self {
@@ -200,8 +184,8 @@ impl RelayRuntime {
 
     /// Run the relay until `shutdown` resolves or the endpoint closes.
     ///
-    /// The token store is re-read whenever it changed, so `phux relay pair`
-    /// and line deletion take effect without a restart.
+    /// The token store is re-read whenever it changed, so minting a route
+    /// and deleting a line take effect without a restart.
     pub async fn run_async(self, shutdown: impl Future<Output = ()>) -> Result<(), RelayError> {
         self.bind()?.serve(shutdown).await
     }
@@ -211,14 +195,19 @@ impl RelayRuntime {
     /// Must be called within a tokio runtime context.
     pub fn bind(self) -> Result<BoundRelay, RelayError> {
         let config = self.config;
+        config.protocol.validate().map_err(RelayError::Protocol)?;
         let preamble_deadline = self.preamble_deadline;
         // Fail-fast validation load; per-connection lookups re-read it
         // whenever the file changes.
         let store = RouteTokenStore::load(&config.tokens_path)?;
         let tokens = Arc::new(CachedRouteTokens::new(config.tokens_path.clone()));
         tls::ensure_self_signed(&config.cert_path, &config.key_path)?;
-        let tls_config =
-            tls::server_config(&config.cert_path, &config.key_path, Arc::clone(&tokens))?;
+        let tls_config = tls::server_config(
+            &config.cert_path,
+            &config.key_path,
+            &config.protocol,
+            Arc::clone(&tokens),
+        )?;
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|err| RelayError::Rustls(rustls::Error::General(err.to_string())))?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -231,7 +220,10 @@ impl RelayRuntime {
         let local_addr = endpoint.local_addr()?;
         Ok(BoundRelay {
             endpoint,
-            tunnel_config: Arc::new(tunnel_config),
+            legs: Arc::new(Legs {
+                tunnel_config: Arc::new(tunnel_config),
+                protocol: config.protocol,
+            }),
             local_addr,
             routes: store.len(),
             tokens,
@@ -243,14 +235,21 @@ impl RelayRuntime {
     }
 }
 
+/// What tells a connection's leg and picks its flow control.
+#[derive(Debug)]
+struct Legs {
+    /// The server config a tagged tunnel is accepted with: the endpoint's
+    /// crypto plus [`TUNNEL_STREAM_RECEIVE_WINDOW`].
+    tunnel_config: Arc<quinn::ServerConfig>,
+    protocol: Protocol,
+}
+
 /// A relay whose endpoint is bound but not yet serving — the output of
 /// [`RelayRuntime::bind`], consumed by [`Self::serve`].
 #[derive(Debug)]
 pub struct BoundRelay {
     endpoint: quinn::Endpoint,
-    /// The server config a tagged tunnel is accepted with: the endpoint's
-    /// crypto plus [`TUNNEL_STREAM_RECEIVE_WINDOW`].
-    tunnel_config: Arc<quinn::ServerConfig>,
+    legs: Arc<Legs>,
     local_addr: SocketAddr,
     routes: usize,
     tokens: Arc<CachedRouteTokens>,
@@ -296,7 +295,7 @@ impl BoundRelay {
                     };
                     tokio::spawn(handle_connection(
                         admitted,
-                        Arc::clone(&self.tunnel_config),
+                        Arc::clone(&self.legs),
                         registry.clone(),
                         Arc::clone(&self.tokens),
                         self.preamble_deadline,
@@ -421,14 +420,14 @@ fn admit_handshake(
 }
 
 /// Drive one accepted connection to its leg by negotiated ALPN, never by
-/// what it sends (ADR-0051 invariant 7). The handshake runs under its own
+/// what it sends. The handshake runs under its own
 /// slot and deadline; the connection slot is taken only once it completes
 /// and is held throughout, and the source share until the leg's admission
 /// step (preamble or first stream) ends. The flow-control config is chosen
 /// first from the connection-ID tag.
 async fn handle_connection(
     admitted: AdmittedHandshake,
-    tunnel_config: Arc<quinn::ServerConfig>,
+    legs: Arc<Legs>,
     registry: TunnelRegistry<quinn::Connection>,
     tokens: Arc<CachedRouteTokens>,
     preamble_deadline: Duration,
@@ -440,9 +439,9 @@ async fn handle_connection(
         handshake: handshake_permit,
         source,
     } = admitted;
-    let tagged = is_tunnel_cid(&incoming.orig_dst_cid());
+    let tagged = legs.protocol.cid_tag.matches(&incoming.orig_dst_cid());
     let connecting = if tagged {
-        incoming.accept_with(tunnel_config)
+        incoming.accept_with(Arc::clone(&legs.tunnel_config))
     } else {
         incoming.accept()
     };
@@ -471,7 +470,7 @@ async fn handle_connection(
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unreadable handshake data");
         return;
     };
-    if alpn == QUIC_RELAY_ALPN {
+    if alpn == legs.protocol.tunnel_alpn {
         let leg = TunnelLeg {
             bounded: tagged,
             tokens: &tokens,
@@ -479,7 +478,7 @@ async fn handle_connection(
             source,
         };
         admit_tunnel(conn, leg, &registry).await;
-    } else if alpn == QUIC_ALPN {
+    } else if legs.protocol.is_consumer_alpn(&alpn) {
         note_consumer_sni(observers.consumer_sni.as_ref(), server_name.as_deref());
         bridge_consumer(
             conn,
@@ -608,7 +607,7 @@ async fn admit_tunnel(
 
 /// Bridge one consumer's first stream onto a fresh stream over its route's
 /// live tunnel. What crosses is the consumer's end-to-end TLS session with
-/// the server, ciphertext the relay holds no key for (ADR-0180); `observed`
+/// the service, ciphertext the relay holds no key for; `observed`
 /// records it for tests.
 async fn bridge_consumer(
     conn: quinn::Connection,
@@ -681,36 +680,20 @@ async fn bridge_consumer(
     tracing::debug!(route = %route, %remote, refused_streams, "consumer bridge ended");
 }
 
-/// Read one length-prefixed auth preamble (`len: u32 BE` + raw token),
-/// bounded by [`MAX_TOKEN_PREAMBLE`]; `None` on a short read or oversize.
-async fn read_preamble(recv: &mut quinn::RecvStream) -> Option<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await.ok()?;
-    let len = usize::try_from(u32::from_be_bytes(len_buf)).ok()?;
-    if len > MAX_TOKEN_PREAMBLE {
-        return None;
-    }
-    let mut token = vec![0u8; len];
-    recv.read_exact(&mut token).await.ok()?;
-    Some(token)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn config_in(dir: &std::path::Path) -> RelayConfig {
+        let protocol = Protocol::new(b"t/1", b"c/1", crate::CidTag(*b"test"));
+        RelayConfig::in_dir("127.0.0.1:0".parse().unwrap(), dir, protocol)
+    }
+
     #[tokio::test]
     async fn run_async_fails_fast_on_a_malformed_token_store() {
         let dir = tempfile::tempdir().unwrap();
-        let tokens = dir.path().join("relay-tokens");
-        std::fs::write(&tokens, "broken\n").unwrap();
-        let config = RelayConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            cert_path: dir.path().join("relay-cert.pem"),
-            key_path: dir.path().join("relay-key.pem"),
-            tokens_path: tokens,
-            max_conns: DEFAULT_MAX_CONNS,
-        };
+        let config = config_in(dir.path());
+        std::fs::write(&config.tokens_path, "broken\n").unwrap();
         let result = RelayRuntime::new(config)
             .run_async(std::future::ready(()))
             .await;
@@ -721,17 +704,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_refuses_a_protocol_that_cannot_tell_its_legs_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config_in(dir.path());
+        config.protocol.consumer_alpns.push(b"t/1".to_vec());
+        let result = RelayRuntime::new(config).bind();
+        assert!(matches!(result, Err(RelayError::Protocol(_))), "{result:?}");
+    }
+
+    #[tokio::test]
     async fn run_async_starts_provisions_and_shuts_down_cleanly() {
         let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("relay-cert.pem");
-        let key = dir.path().join("relay-key.pem");
-        let config = RelayConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            cert_path: cert.clone(),
-            key_path: key.clone(),
-            tokens_path: dir.path().join("relay-tokens"),
-            max_conns: DEFAULT_MAX_CONNS,
-        };
+        let config = config_in(dir.path());
+        let (cert, key) = (config.cert_path.clone(), config.key_path.clone());
         // Immediate shutdown: the endpoint binds, then drains and returns.
         RelayRuntime::new(config)
             .run_async(std::future::ready(()))

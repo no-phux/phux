@@ -1,8 +1,8 @@
 //! Live connector-tunnel registry, keyed by route name.
 //!
-//! Claim policy is **last-writer-wins** (ADR-0052): a redialing connector is
+//! Claim policy is **last-writer-wins**: a redialing connector is
 //! never locked out by a half-dead incumbent, so a new claim closes the old
-//! tunnel with [`crate::RECLAIMED_CODE`]; the warn log is the operator's
+//! tunnel with [`crate::tunnel::RECLAIMED_CODE`]; the warn log is the operator's
 //! theft-detection surface. Each claim gets a monotonic epoch so a replaced
 //! tunnel's cleanup can never evict its successor.
 
@@ -20,7 +20,7 @@ pub(crate) trait TunnelHandle: Clone {
 impl TunnelHandle for quinn::Connection {
     fn close_reclaimed(&self) {
         self.close(
-            crate::RECLAIMED_CODE.into(),
+            crate::tunnel::RECLAIMED_CODE.into(),
             b"superseded by a newer tunnel claim",
         );
     }
@@ -60,7 +60,7 @@ impl<C: TunnelHandle> TunnelRegistry<C> {
 
     /// Register `conn` as the live tunnel for `route`, returning the
     /// claim's epoch. Last-writer-wins: an existing entry is replaced and
-    /// its connection closed with [`crate::RECLAIMED_CODE`].
+    /// its connection closed with [`crate::tunnel::RECLAIMED_CODE`].
     pub(crate) fn claim(&self, route: &str, conn: C) -> u64 {
         let mut inner = self.lock();
         let epoch = inner.next_epoch;

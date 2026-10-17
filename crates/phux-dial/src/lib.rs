@@ -3,23 +3,25 @@
 //! Consumers and the federation hub establish QUIC and WebSocket connections
 //! the same way: TLS 1.3 with the server's self-signed leaf pinned by SHA-256
 //! fingerprint (or a loopback skip), plus an ADR-0031 bearer token. This crate
-//! stops at the byte stream; framing stays with the callers. It also owns the
-//! congestion-tracked QUIC send window ([`window`]) every phux writer shares.
+//! stops at the byte stream; framing stays with the callers. The
+//! congestion-tracked QUIC send window ([`window`]) every phux writer shares,
+//! and with `provision` the [`cert`] and [`secret_file`] modules, are
+//! `quictun`'s, re-exported so phux names them in one place.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
 #[cfg(feature = "provision")]
-pub mod cert;
+pub use quictun::cert;
 pub mod enroll;
 pub mod quic;
 #[cfg(feature = "provision")]
-pub mod secret_file;
+pub use quictun::secret_file;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tls;
-pub mod window;
+pub use quictun::window;
 pub mod ws;
 
 pub use quic::QuicDial;
