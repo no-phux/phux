@@ -1288,6 +1288,9 @@ mod deterministic_dial {
 mod authority_tests;
 
 #[cfg(test)]
+mod remote_acceptance;
+
+#[cfg(test)]
 mod paint_wake_tests {
     use super::{own_spawn, paint_wake, session_attached};
     use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
