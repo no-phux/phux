@@ -380,7 +380,7 @@ isolated server as a remote host over loopback QUIC and WSS (`phux pair`,
 then `phux host add NAME quic://... --token-file ... --cert-fingerprint ...`)
 and drives the window's connection through it: split, type, rename,
 reconnect, relaunch by persistent key, a host kill and restart, a stale pin,
-and a revoked token:
+and a revoked token, both on the next dial and under a window still attached:
 
 ```sh
 cargo build -p phux

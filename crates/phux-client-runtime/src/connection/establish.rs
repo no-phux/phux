@@ -49,6 +49,9 @@ impl DialFailure {
             Self::Remote(error) if is_fatal_refusal(&error) => {
                 ConnectionEnd::Refused(dial_message(name, &error))
             }
+            Self::Closed(error @ DialError::AuthRefused(_)) => {
+                ConnectionEnd::Refused(dial_message(name, &error))
+            }
             Self::Remote(error) | Self::Closed(error) => {
                 ConnectionEnd::Dropped(Some(dial_message(name, &error)))
             }
@@ -157,8 +160,11 @@ mod tests {
             unreachable.end("mini"),
             ConnectionEnd::Dropped(Some(_))
         ));
-        // A close as the link came up stays retryable whatever its reason.
-        let closed = DialFailure::Closed(DialError::AuthRefused("unauthorized".to_owned()));
+        // A close as the link came up ends the session only when it refused
+        // the token; any other close reason stays retryable.
+        let refused = DialFailure::Closed(DialError::AuthRefused("unauthorized".to_owned()));
+        assert!(matches!(refused.end("mini"), ConnectionEnd::Refused(_)));
+        let closed = DialFailure::Closed(DialError::Connect("closed by peer".to_owned()));
         assert!(matches!(
             closed.end("mini"),
             ConnectionEnd::Dropped(Some(_))
