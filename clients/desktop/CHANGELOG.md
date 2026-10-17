@@ -31,6 +31,18 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.34.0](https://github.com/no-phux/phux/compare/desktop-v0.33.0...desktop-v0.34.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** mark the current work, terminal and tab in Go To ([#1569](https://github.com/no-phux/phux/issues/1569)) ([2db361c](https://github.com/no-phux/phux/commit/2db361cde3cc43c7e53e3eaac07446887e88aee7))
+
+
+### Bug Fixes
+
+* **desktop:** name every menu command by its catalog title ([#1568](https://github.com/no-phux/phux/issues/1568)) ([cbc0342](https://github.com/no-phux/phux/commit/cbc0342dec4ada0353b7e0b8c8173f815ecb8e51))
+
 ## [0.33.0](https://github.com/no-phux/phux/compare/desktop-v0.32.1...desktop-v0.33.0) (2026-10-17)
 
 
