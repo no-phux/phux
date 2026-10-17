@@ -410,6 +410,14 @@ fn catalog() -> Vec<CommandSpec> {
             &["detach"],
         ),
         spec(
+            "window-next",
+            "Move Pane to Next Window",
+            "Panes",
+            None,
+            "Move the focused terminal into the next open window on the same server.",
+            &["window", "transfer"],
+        ),
+        spec(
             "find",
             "Find in Terminal",
             "Terminal",

@@ -441,6 +441,23 @@ impl Desktop {
         let _ = self.open_window(request, true, false, cx);
     }
 
+    /// The next open window after `source` that talks to the same server
+    /// (`remote`, `None` for local). The quick window is never a target.
+    pub(crate) fn next_window(
+        &self,
+        source: EntityId,
+        remote: Option<&str>,
+    ) -> Option<(AnyWindowHandle, Entity<Desk>)> {
+        let peers: Vec<_> = self
+            .windows
+            .iter()
+            .map(|opened| (opened.desk.entity_id(), opened.remote.as_deref()))
+            .collect();
+        let index = next_peer(&peers, source, remote)?;
+        let opened = &self.windows[index];
+        Some((opened.handle, opened.desk.clone()))
+    }
+
     /// Show registered host `name`: raise its window, or find the session to
     /// open there off the main thread and open one. `done` hears the refusal.
     pub fn open_host(
@@ -883,6 +900,22 @@ impl Desktop {
             }
         }));
     }
+}
+
+/// Index of the first peer after `source` (wrapping) on the same server.
+/// A source that is not listed (the quick window) starts from the front.
+fn next_peer<T: PartialEq + Copy>(
+    peers: &[(T, Option<&str>)],
+    source: T,
+    remote: Option<&str>,
+) -> Option<usize> {
+    let start = peers
+        .iter()
+        .position(|(id, _)| *id == source)
+        .map_or(0, |index| index + 1);
+    (0..peers.len())
+        .map(|step| (start + step) % peers.len())
+        .find(|&index| peers[index].0 != source && peers[index].1 == remote)
 }
 
 // Explicit Tab shortcuts must outrank the terminal's default traversal masks.

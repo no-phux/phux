@@ -33,6 +33,21 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
     });
 }
 
+#[test]
+fn next_window_cycles_same_server_peers_and_never_picks_the_source() {
+    use super::next_peer;
+    let peers = [(1, None), (2, Some("mini")), (3, None), (4, None)];
+    assert_eq!(next_peer(&peers, 1, None), Some(2));
+    assert_eq!(next_peer(&peers, 3, None), Some(3));
+    assert_eq!(next_peer(&peers, 4, None), Some(0));
+    // Another authority's window is never a target.
+    assert_eq!(next_peer(&peers, 1, Some("mini")), Some(1));
+    assert_eq!(next_peer(&peers, 2, Some("mini")), None);
+    // An unlisted source (the quick window) starts at the front.
+    assert_eq!(next_peer(&peers, 9, None), Some(0));
+    assert_eq!(next_peer::<u8>(&[], 1, None), None);
+}
+
 #[gpui::test]
 fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut TestAppContext) {
     // The role check does not need a server. A missing socket still makes

@@ -1166,6 +1166,7 @@ impl Desk {
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),
             "window" => self.move_to_window(cx),
+            "window-next" => self.move_to_next_window(cx),
             "find" => self.open_find(window, cx),
             "find-next" => self.step_find(1, window, cx),
             "find-prev" => self.step_find(-1, window, cx),
@@ -1829,6 +1830,45 @@ impl Desk {
         let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
             desktop.open_moved(session, terminal, remote, cx);
+        });
+    }
+
+    /// Move the focused placement into the next open window on the same
+    /// server. Only this window's view is released; the terminal (same
+    /// `ResourceId`, same process) is shown by the target's own client.
+    fn move_to_next_window(&mut self, cx: &mut Context<Self>) {
+        let Some(terminal) = self
+            .focused_placement()
+            .and_then(|placement| placement.terminal_id.clone())
+        else {
+            return;
+        };
+        let target = self
+            .desktop
+            .read(cx)
+            .next_window(cx.entity_id(), self.remote.as_deref());
+        let Some((handle, desk)) = target else {
+            self.post(
+                Kind::Refusal,
+                "No other window",
+                Some("Open another window on this server, or use Move Pane to New Window.".into()),
+            );
+            cx.notify();
+            return;
+        };
+        let placement = self
+            .focused_placement()
+            .map(|placement| placement.id.clone());
+        self.workspace_call(|link| {
+            link.workspace
+                .close_pane(&link.connection, placement.as_deref())
+        });
+        cx.notify();
+        // Deferred: the target is another window, updated outside this one.
+        cx.defer(move |cx| {
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            desk.update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
         });
     }
 

@@ -38,7 +38,8 @@ use std::collections::{HashMap, HashSet};
 pub struct WorkspaceOptions {
     /// Open a fresh terminal instead of the session's home pane.
     pub fresh: bool,
-    /// Show this existing terminal. Used by Move Pane to New Window.
+    /// Show this existing terminal. Used by Move Pane to New Window; Move Pane
+    /// to Next Window reveals it in an open window instead.
     pub initial_terminal: Option<ResourceId>,
 }
 
@@ -1230,6 +1231,104 @@ mod home_tests {
         assert!(!workspace.awaiting_output(&[event(4)]));
         workspace.unresolved.clear();
         assert!(!workspace.awaiting_output(&[event(3)]));
+    }
+
+    fn offline() -> (crate::connection::DeterministicDial, Connection) {
+        let dial = crate::connection::DeterministicDial::arm();
+        let connection =
+            Connection::connect_with_key("/isolated-workspace.sock".into(), "main".into(), None)
+                .unwrap();
+        (dial, connection)
+    }
+
+    fn one_pane_tab(tab: &str, terminal: u32) -> Tab {
+        let placement = LeafPlacement {
+            id: format!("{tab}-place"),
+            terminal_id: Some(ResourceId::local(terminal)),
+            terminal_label: terminal_label(&ResourceId::local(terminal)),
+            view_id: None,
+        };
+        Tab {
+            id: tab.into(),
+            title: None,
+            focused_id: placement.id.clone(),
+            zoomed_id: None,
+            root: leaf(placement),
+        }
+    }
+
+    fn split_of(tab: &str) -> Destination {
+        Destination::Split {
+            tab_id: tab.into(),
+            target_id: format!("{tab}-place"),
+            axis: SplitAxis::Row,
+            before: false,
+        }
+    }
+
+    /// Mirror of [`Workspace::settle`] for one reply, without a live server.
+    fn reply(workspace: &mut Workspace, connection: &Connection, request: u32, terminal: u32) {
+        let terminal = ResourceId::local(terminal);
+        workspace.answered(request, Some(&terminal), None);
+        let label = terminal_label(&terminal);
+        let destination = workspace.awaiting.remove(&label).unwrap();
+        workspace.land(connection, &label, destination);
+    }
+
+    fn leaves(tab: &Tab) -> Vec<String> {
+        placements(&tab.root)
+            .into_iter()
+            .map(|placement| placement.terminal_label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn pending_split_lands_in_its_original_tab_not_the_later_focus() {
+        let (_dial, connection) = offline();
+        let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
+        workspace.active_id = "a".into();
+        workspace.spawns.insert(7, split_of("a"));
+        workspace.select_tab("b");
+        reply(&mut workspace, &connection, 7, 9);
+        assert_eq!(leaves(&workspace.tabs[0]), ["local:1", "local:9"]);
+        assert_eq!(leaves(&workspace.tabs[1]), ["local:2"]);
+        assert_eq!(workspace.active_id, "a");
+    }
+
+    #[test]
+    fn closing_a_pending_split_destination_never_splits_the_focused_pane() {
+        let (_dial, connection) = offline();
+        let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
+        workspace.active_id = "a".into();
+        workspace.spawns.insert(7, split_of("a"));
+        workspace.close_tab(&connection, "a");
+        assert_eq!(workspace.active_id, "b");
+        reply(&mut workspace, &connection, 7, 9);
+        // The surviving focused tab is untouched; the orphan gets its own tab
+        // instead of being lost (its process is already running).
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(leaves(&workspace.tabs[0]), ["local:2"]);
+        assert_eq!(leaves(&workspace.tabs[1]), ["local:9"]);
+        assert_eq!(workspace.pending(), 0);
+    }
+
+    #[test]
+    fn refused_split_restores_the_previous_layout_and_focus() {
+        let (_dial, connection) = offline();
+        let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
+        workspace.active_id = "b".into();
+        let before = workspace.snapshot();
+        workspace.spawns.insert(7, split_of("b"));
+        workspace.answered(7, None, Some("refused"));
+        workspace.settle(&connection);
+        assert_eq!(workspace.snapshot(), before);
+        assert_eq!(workspace.pending(), 0);
+        let notices = workspace.take_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].title, "Could not start a terminal");
     }
 
     #[test]

@@ -121,7 +121,10 @@ nothing; assigning an existing terminal to a project never restarts it.
 
 Create, rename, reorder, split, resize, and move placements using keyboard or
 pointer. Dragging a placement between tabs or windows preserves its view and
-process. Minimum-size layouts remain operable; cancellation restores the
+process. **Move Pane to New Window** and **Move Pane to Next Window** (the next
+open window on the same server) move the focused placement without restarting
+its terminal: the source releases its view and the target shows the same
+terminal. Minimum-size layouts remain operable; cancellation restores the
 previous layout and focus. A pending spawn belongs to its original destination:
 closing that destination before the reply cannot insert it into whichever pane
 happens to be focused later.
