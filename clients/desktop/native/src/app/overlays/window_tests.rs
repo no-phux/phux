@@ -8,10 +8,10 @@ use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status, To
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
-use super::{Section, Target, WINDOWS, goto_sections, window_sections};
+use super::{Section, Target, WINDOWS, goto_sections, prepare_goto, window_sections};
 use crate::app::desk::Link;
 use crate::app::{AppOptions, Desk, Desktop, Modal};
-use crate::connection::{Connection, DeterministicDial};
+use crate::connection::{AgentAttention, AgentInfo, AgentState, Connection, DeterministicDial};
 use crate::workspace::layout::{Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::{Workspace, WorkspaceOptions, persist};
 
@@ -439,11 +439,10 @@ fn session(byte: u8, name: &str) -> SessionDescriptor {
     }
 }
 
-/// Go To names the work, terminal and tab this window shows among look-alikes:
-/// two sessions whose names share a prefix and two tabs with the same title.
-#[gpui::test]
-fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContext) {
-    let _dial = DeterministicDial::arm();
+/// A desk showing session "api" beside "api-old", with two tabs titled
+/// "build". Tab "b" is active and shows terminal 4; terminal 2, focused in tab
+/// "a", runs a working agent.
+fn look_alike_desk(cx: &mut TestAppContext) -> Entity<Desk> {
     let fixture = fixture(cx);
     let desk = fixture.first.1.clone();
     let socket = desk.read_with(cx, |desk, _| desk.socket.clone());
@@ -461,6 +460,16 @@ fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContex
         inbox: None,
         handles: HandleMap::default(),
     });
+    connection.agents.insert(
+        ResourceId::local(2),
+        AgentInfo {
+            name: "claude".into(),
+            kind: Some("claude".into()),
+            state: AgentState::Working,
+            attention: AgentAttention::Normal,
+            changed_at_ms: 0,
+        },
+    );
     desk.update(cx, |desk, _| {
         let mut workspace = Workspace::new("api".into(), WorkspaceOptions::default());
         workspace.tabs = vec![
@@ -474,22 +483,38 @@ fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContex
             workspace,
         });
     });
-    let sections = desk.read_with(cx, |desk, _| goto_sections(desk));
-    let current: Vec<(&str, String, String)> = sections
+    desk
+}
+
+type Marked = Vec<(&'static str, String, String)>;
+
+/// (category, title, detail) for every row whose detail carries the Current
+/// mark. A typed search ranks rows into one unlabeled section, so the row's
+/// category names its kind rather than the section label.
+fn current_rows(sections: &[Section]) -> Marked {
+    sections
         .iter()
-        .flat_map(|section| {
-            section.rows.iter().map(move |row| {
-                (
-                    section.label.unwrap_or_default(),
-                    row.title.to_string(),
-                    row.detail.as_deref().unwrap_or_default().to_owned(),
-                )
-            })
+        .flat_map(|section| &section.rows)
+        .map(|row| {
+            (
+                row.category,
+                row.title.to_string(),
+                row.detail.as_deref().unwrap_or_default().to_owned(),
+            )
         })
         .filter(|(_, _, detail)| detail.starts_with("Current · "))
-        .collect();
+        .collect()
+}
+
+/// Go To names the work, terminal and tab this window shows among look-alikes:
+/// two sessions whose names share a prefix and two tabs with the same title.
+#[gpui::test]
+fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let desk = look_alike_desk(cx);
+    let sections = desk.read_with(cx, |desk, _| goto_sections(desk));
     assert_eq!(
-        current,
+        current_rows(&sections),
         vec![
             ("Work", "api".into(), "Current · Local · 4 terminals".into()),
             ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
@@ -497,4 +522,53 @@ fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContex
         ],
         "exactly one work, terminal and tab is marked"
     );
+}
+
+/// Types "current" into the palette's cached search: the marked rows it ranks,
+/// sorted by category, and how many rows it ranks in all.
+fn search_current(desk: &Entity<Desk>, cx: &mut TestAppContext) -> (Marked, usize) {
+    desk.update(cx, |desk, _| {
+        prepare_goto(desk, "current");
+        let ranked = desk.goto_search.ranked();
+        let rows = ranked.iter().map(|section| section.rows.len()).sum();
+        let mut marked = current_rows(ranked);
+        marked.sort();
+        (marked, rows)
+    })
+}
+
+/// The palette renders from the cached search, and a tab switch runs no drain:
+/// the Current marks still follow the active tab, and typing "current" finds
+/// exactly the marked rows, an agent row included.
+#[gpui::test]
+fn goto_current_follows_a_tab_switch_through_the_search_cache(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let desk = look_alike_desk(cx);
+    let (before, rows) = search_current(&desk, cx);
+    assert_eq!(
+        before,
+        vec![
+            ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
+            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+        ]
+    );
+    assert_eq!(rows, before.len(), "\"current\" finds only the marked rows");
+
+    desk.update(cx, |desk, _| desk.select_tab("a"));
+    let (after, rows) = search_current(&desk, cx);
+    assert_eq!(
+        after,
+        vec![
+            (
+                "Agents",
+                "claude — zsh 2".into(),
+                "Current · working · api · /repo".into()
+            ),
+            ("Tabs", "build".into(), "Current · Tab 1 · 2 panes".into()),
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+        ],
+        "the marks move to tab a and its focused agent terminal"
+    );
+    assert_eq!(rows, after.len(), "\"current\" finds only the marked rows");
 }

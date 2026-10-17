@@ -1402,13 +1402,15 @@ fn search_revision(desk: &Desk) -> goto_search::SearchRevision {
             .connection
             .revision()
             .wrapping_add(desk.fleet.revision.rotate_left(32)),
-        workspace: workspace_stamp(&link.workspace.tabs),
+        workspace: workspace_stamp(&link.workspace),
     }
 }
 
-fn workspace_stamp(tabs: &[crate::workspace::layout::DeskTab]) -> u64 {
+/// Tab rows and the focused terminal follow the active tab, so it mixes in too.
+fn workspace_stamp(workspace: &crate::workspace::Workspace) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for tab in tabs {
+    hash = mix_bytes(hash, workspace.active_id.as_bytes());
+    for tab in &workspace.tabs {
         hash = mix_bytes(hash, tab.id.as_bytes());
         hash = mix_bytes(hash, tab.focused_id.as_bytes());
         hash = mix_bytes(hash, tab.title.as_deref().unwrap_or("").as_bytes());
