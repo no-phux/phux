@@ -152,9 +152,18 @@ pub(crate) struct AddOpts {
     /// Manual form, `--role remote` only: the TLS server name (SNI) every
     /// dial offers instead of the endpoint's host. Through a relay this is
     /// the route: register the relay's `quic://RELAY:PORT` with the relay's
-    /// `--cert-fingerprint` and the server's `--token-file`.
+    /// `--cert-fingerprint`, the server's `--token-file`, and the server's
+    /// `--ca-fingerprint`.
     #[usage(long, value_name = "NAME")]
     pub(crate) tls_server_name: Option<String>,
+
+    /// Manual form with `--tls-server-name` on a `quic://` endpoint, and
+    /// required there: the certificate authority of the server behind the
+    /// relay route (`sha256:` and 64 hex digits, the `ca_fingerprint` `phux
+    /// pair --relay-route` prints). Every dial runs end to end with that
+    /// server inside the relayed stream, so the relay sees only ciphertext.
+    #[usage(long, value_name = "SHA256")]
+    pub(crate) ca_fingerprint: Option<String>,
 
     /// Session to attach on arrival (`--role remote` only). Omitted: the
     /// remote server's own last-attach memory decides.
@@ -492,10 +501,11 @@ impl AddMode {
             if opts.token_file.is_some()
                 || opts.cert_fingerprint.is_some()
                 || opts.tls_server_name.is_some()
+                || opts.ca_fingerprint.is_some()
             {
                 return Err(CliError::new(
                     codes::REGISTRY,
-                    "--token-file, --cert-fingerprint, and --tls-server-name belong to the manual form, which registers an endpoint you already hold credentials for",
+                    "--token-file, --cert-fingerprint, --tls-server-name, and --ca-fingerprint belong to the manual form, which registers an endpoint you already hold credentials for",
                     format!(
                         "pass the endpoint too (`phux host add {target} quic://HOST:PORT --token-file PATH --cert-fingerprint FP`), \
                          or drop them and let `phux host add {target}` pair over ssh"
@@ -553,6 +563,9 @@ fn run_add(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> ExitCode {
         );
         return json_err::emit(json, &err, 2);
     }
+    if let Err(err) = relay_route_authority(endpoint.unwrap_or(target), opts) {
+        return json_err::emit(json, &err, 2);
+    }
     match AddMode::classify(target, endpoint, opts) {
         Err(err) => json_err::emit(json, &err, 2),
         Ok(AddMode::Manual { name, endpoint }) => run_add_manual(&name, &endpoint, opts),
@@ -574,6 +587,14 @@ fn run_add_manual(name: &str, endpoint: &str, opts: &AddOpts) -> ExitCode {
         .map_err(reject_entry)
         .and_then(|new| {
             remote::add_or_update(&new).map_err(registry_failure)?;
+            // The server's CA, keyed by the relay's pin and the route: what a
+            // relay link's `ca` records (ADR-0180).
+            remote::pin_authority(
+                &new.name,
+                new.cert_fingerprint.as_deref(),
+                new.tls_server_name.as_deref(),
+                relay_route_authority(endpoint, opts)?.as_deref(),
+            );
             Ok(HostRow::from_new_remote(new))
         }),
         HostRole::Satellite => satellite_registry::NewSatellite::new(
@@ -607,6 +628,41 @@ fn run_add_manual(name: &str, endpoint: &str, opts: &AddOpts) -> ExitCode {
         None,
         &EnrollmentReport::new(CertificateStatus::Skipped),
     )
+}
+
+/// The server CA a manual relay-route registration pins (ADR-0180): required
+/// with `--tls-server-name` on a `quic://` endpoint, since the relay would
+/// otherwise read the session, and refused anywhere else.
+fn relay_route_authority(endpoint: &str, opts: &AddOpts) -> Result<Option<String>, CliError> {
+    let relayed = opts.tls_server_name.is_some() && endpoint.starts_with("quic://");
+    let Some(pin) = opts.ca_fingerprint.as_deref() else {
+        if relayed {
+            return Err(CliError::new(
+                codes::REGISTRY,
+                "a relay route needs the certificate authority of the server behind it: \
+                 every dial runs end to end with that server, so the relay never reads it",
+                "pass --ca-fingerprint (the `ca_fingerprint` `phux pair --relay-route` prints), \
+                 or register from the relay link with `phux attach --remote NAME --code LINK`",
+            ));
+        }
+        return Ok(None);
+    };
+    if !relayed || opts.role != HostRole::Remote {
+        return Err(CliError::new(
+            codes::REGISTRY,
+            "--ca-fingerprint names the server behind a relay route",
+            "pass it with --tls-server-name and the relay's quic:// endpoint (`--role remote`)",
+        ));
+    }
+    phux_config::known_authorities::canonical_authority(pin)
+        .map(Some)
+        .ok_or_else(|| {
+            CliError::new(
+                codes::REGISTRY,
+                format!("--ca-fingerprint {pin:?} is not a CA pin"),
+                "pass sha256: and 64 hex digits, as `phux pair --relay-route` prints it",
+            )
+        })
 }
 
 /// A rejected field (bad endpoint scheme, missing pin, sigil name): the
@@ -2136,8 +2192,9 @@ mod tests {
 
     use super::{
         AddMode, AddOpts, HostRole, HostRow, Route, add_failure_error, auth_display,
-        edit_host_field_at, empty_state, finish_enroll_in, keeps_credentials, render_table,
-        resolve_host_role, resolve_rm_role, role_flag_mismatch, sort_rows,
+        edit_host_field_at, empty_state, finish_enroll_in, keeps_credentials,
+        relay_route_authority, render_table, resolve_host_role, resolve_rm_role,
+        role_flag_mismatch, sort_rows,
     };
     use crate::commands::JsonOpt;
     use crate::commands::enroll::EnrollFailure;
@@ -2217,10 +2274,38 @@ mod tests {
             token_file: None,
             cert_fingerprint: None,
             tls_server_name: None,
+            ca_fingerprint: None,
             session: None,
             disabled: false,
             json: JsonOpt { json: false },
         }
+    }
+
+    /// ADR-0180: a manual relay route needs the server's CA, which is
+    /// canonicalized; a CA anywhere but beside a QUIC relay route is refused.
+    #[test]
+    fn a_manual_relay_route_requires_the_servers_authority() {
+        let relay = "quic://relay.example:4433";
+        let mut routed = opts();
+        routed.tls_server_name = Some("mini-route".to_owned());
+        let err = relay_route_authority(relay, &routed).expect_err("no CA");
+        assert!(err.remedy.contains("--ca-fingerprint"), "{}", err.remedy);
+
+        routed.ca_fingerprint = Some(format!("sha256:{}", "AB:".repeat(31) + "AB"));
+        assert_eq!(
+            relay_route_authority(relay, &routed).expect("pinned"),
+            Some(format!("sha256:{}", "ab".repeat(32)))
+        );
+        routed.ca_fingerprint = Some("sha256:nope".to_owned());
+        assert!(relay_route_authority(relay, &routed).is_err());
+
+        let mut direct = opts();
+        assert_eq!(relay_route_authority(relay, &direct).expect("direct"), None);
+        direct.ca_fingerprint = Some(format!("sha256:{}", "ab".repeat(32)));
+        assert!(
+            relay_route_authority(relay, &direct).is_err(),
+            "a CA without a route"
+        );
     }
 
     /// A flag paired with the role it does not apply to is refused with a

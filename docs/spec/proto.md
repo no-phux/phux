@@ -135,12 +135,13 @@ frames. One relay endpoint serves both legs; the negotiated ALPN alone
 - **Consumer leg** — ALPN `phux-quic/1`, routed by TLS SNI to the
   enrolled route of the same name. An unknown or absent SNI is refused
   at the TLS layer (the certificate resolver declines; no phux-shaped
-  error). The relay blind-splices the consumer's stream to the tunnel,
-  including the consumer's own §10 bearer preamble — end-to-end
-  authentication stays between consumer and server. A consumer that pins
-  the server's CA runs TLS 1.3 with the server inside that stream and
-  sends its preamble inside it ([workload-auth.md](./workload-auth.md) §3);
-  the relay forwards the ciphertext unchanged.
+  error). The relay blind-splices the consumer's stream to the tunnel.
+  The consumer runs TLS 1.3 with the server inside that stream, pinning
+  the server's CA, and sends its §10 bearer preamble and every frame
+  inside it ([workload-auth.md](./workload-auth.md) §3); the relay
+  forwards the ciphertext unchanged and holds no key for it. A server
+  refuses a relayed stream that does not open with a TLS handshake record
+  ([ADR-0180]).
 
 A relay refuses with these QUIC application close codes:
 
@@ -157,6 +158,7 @@ adds no frame, field, tag, or error code to the protocol.
 
 [ADR-0051]: ../../docs/adr/0051-outbound-dial-out-connector-transport.md
 [ADR-0057]: ../../docs/adr/0057-minimal-reference-relay.md
+[ADR-0180]: ../../docs/adr/0180-the-relay-is-blind.md
 
 ### 4.2 QUIC multi-stream (`QUIC_STREAMS`)
 

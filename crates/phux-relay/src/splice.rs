@@ -1,10 +1,45 @@
 //! The relay's entire data path: two opaque byte pumps.
 //!
 //! Read, forward, nothing else: no frame decoding, so ADR-0051 invariants 1
-//! and 5 hold by construction. Consumer bearer preambles cross as opaque
-//! bytes.
+//! and 5 hold by construction. What crosses is each consumer's end-to-end
+//! TLS session with the server (ADR-0180): ciphertext to the relay.
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
+
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+
+/// A reader that appends what it yields to `sink`, when there is one: the
+/// relay's tap for tests, a plain pass-through in production.
+pub(crate) struct Tee<R> {
+    inner: R,
+    sink: Option<Arc<Mutex<Vec<u8>>>>,
+}
+
+impl<R> Tee<R> {
+    pub(crate) const fn new(inner: R, sink: Option<Arc<Mutex<Vec<u8>>>>) -> Self {
+        Self { inner, sink }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Tee<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let (Poll::Ready(Ok(())), Some(sink)) = (&polled, &this.sink) {
+            sink.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(&buf.filled()[before..]);
+        }
+        polled
+    }
+}
 
 /// Splice `a_recv -> b_send` and `b_recv -> a_send` concurrently until
 /// EITHER direction finishes; that direction's writer is shut down
@@ -60,6 +95,17 @@ mod tests {
 
         drop(consumer);
         bridge.await.unwrap();
+    }
+
+    /// A tee forwards exactly what it reads and records the same bytes.
+    #[tokio::test]
+    async fn a_tee_records_what_it_forwards() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mut tee = Tee::new(&b"ciphertext"[..], Some(Arc::clone(&sink)));
+        let mut read = Vec::new();
+        tee.read_to_end(&mut read).await.unwrap();
+        assert_eq!(read, b"ciphertext");
+        assert_eq!(*sink.lock().unwrap(), b"ciphertext");
     }
 
     /// Whichever side half-closes first, its last bytes and FIN reach the

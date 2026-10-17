@@ -297,6 +297,71 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// By hand: the link's credentials through `host add --tls-server-name`
+/// with the server's `--ca-fingerprint` (ADR-0180: a relay route without it
+/// is refused, since the relay would read the session), and a certificate
+/// enrolled on the server host. Registers `routed` and `unrouted`.
+fn register_by_hand(topology: &Topology, token: &str, authority: &str) -> Home {
+    let manual = Home::new();
+    std::fs::create_dir_all(manual.path().join("config/phux")).expect("config dir");
+    let enrolled = paired::enroll_client(manual.path(), |args, stdin| {
+        paired::output_with_stdin(topology.server_home.command(args), stdin)
+    });
+    let token_file = manual.secret_file("mini.token", token);
+    let endpoint = format!("quic://{}", topology.relay_addr);
+    let token_path = token_file.display().to_string();
+    let add_args = |name: &'static str, route: Option<&'static str>, ca: bool| {
+        let mut args = vec![
+            "host",
+            "add",
+            name,
+            endpoint.as_str(),
+            "--cert-fingerprint",
+            topology.relay_fp.as_str(),
+            "--token-file",
+            token_path.as_str(),
+        ];
+        if let Some(route) = route {
+            args.extend(["--tls-server-name", route]);
+        }
+        if ca {
+            args.extend(["--ca-fingerprint", authority]);
+        }
+        manual.phux(&args)
+    };
+    let add = |name, route, ca| {
+        let out = add_args(name, route, ca);
+        assert!(out.status.success(), "host add {name}: {}", stderr(&out));
+    };
+    let blind = add_args("routed", Some(ROUTE), false);
+    assert!(
+        !blind.status.success() && stderr(&blind).contains("--ca-fingerprint"),
+        "a relay route without the server's CA must be refused: {}",
+        stderr(&blind)
+    );
+    add("routed", Some(ROUTE), true);
+    add("unrouted", None, false);
+    let known = std::fs::read_to_string(manual.path().join("config/phux/known-authorities"))
+        .expect("known-authorities");
+    assert!(
+        known.contains(&format!("@{ROUTE} {authority}")),
+        "--ca-fingerprint pins by route: {known}"
+    );
+    let show = manual.phux(&["host", "show", "routed", "--json"]);
+    assert!(show.status.success(), "host show: {}", stderr(&show));
+    let shown: serde_json::Value = serde_json::from_slice(&show.stdout).expect("show --json");
+    assert_eq!(shown["host"]["tls_server_name"], ROUTE);
+    // `host add` with an explicit endpoint enrolls nothing; name the
+    // certificate in the entry, as `host add` over ssh would.
+    let config = manual.config();
+    manual.write_config(&config.replacen(
+        "name = \"routed\"\n",
+        &format!("name = \"routed\"\n{}", enrolled.remote_lines()),
+        1,
+    ));
+    manual
+}
+
 /// `phux pair --relay-route` mints a link that dials the relay with the route
 /// as SNI; `attach --remote --code` registers it as a routed entry; and the
 /// session verbs reach the server through the real relay. The manual form,
@@ -348,55 +413,7 @@ fn a_relay_route_attaches_from_a_link_and_from_the_registry() {
     let listed = list_over_relay(&linked, "mini");
     assert!(listed["sessions"].is_array(), "{listed}");
 
-    // By hand: the same credentials through `host add --tls-server-name`,
-    // a certificate enrolled on the server host, and the server's CA pinned
-    // for the route as pairing would (a connection never learns it).
-    let manual = Home::new();
-    std::fs::create_dir_all(manual.path().join("config/phux")).expect("config dir");
-    let enrolled = paired::enroll_client(manual.path(), |args, stdin| {
-        paired::output_with_stdin(topology.server_home.command(args), stdin)
-    });
-    phux_config::known_authorities::record(
-        &manual.path().join("config/phux/known-authorities"),
-        &topology.relay_fp,
-        Some(ROUTE),
-        authority,
-    )
-    .expect("pin the server's CA for the route");
-    let token_file = manual.secret_file("mini.token", &token);
-    let endpoint = format!("quic://{}", topology.relay_addr);
-    let token_path = token_file.display().to_string();
-    let add = |name: &str, route: Option<&str>| {
-        let mut args = vec![
-            "host",
-            "add",
-            name,
-            endpoint.as_str(),
-            "--cert-fingerprint",
-            topology.relay_fp.as_str(),
-            "--token-file",
-            token_path.as_str(),
-        ];
-        if let Some(route) = route {
-            args.extend(["--tls-server-name", route]);
-        }
-        let out = manual.phux(&args);
-        assert!(out.status.success(), "host add {name}: {}", stderr(&out));
-    };
-    add("routed", Some(ROUTE));
-    add("unrouted", None);
-    let show = manual.phux(&["host", "show", "routed", "--json"]);
-    assert!(show.status.success(), "host show: {}", stderr(&show));
-    let shown: serde_json::Value = serde_json::from_slice(&show.stdout).expect("show --json");
-    assert_eq!(shown["host"]["tls_server_name"], ROUTE);
-    // `host add` with an explicit endpoint enrolls nothing; name the
-    // certificate in the entry, as `host add` over ssh would.
-    let config = manual.config();
-    manual.write_config(&config.replacen(
-        "name = \"routed\"\n",
-        &format!("name = \"routed\"\n{}", enrolled.remote_lines()),
-        1,
-    ));
+    let manual = register_by_hand(&topology, &token, authority);
     let listed = list_over_relay(&manual, "routed");
     assert!(listed["sessions"].is_array(), "{listed}");
 

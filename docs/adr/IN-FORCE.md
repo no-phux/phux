@@ -122,6 +122,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
+- [0180](./0180-the-relay-is-blind.md) A relay routes on the route alone and forwards ciphertext: every relayed consumer runs TLS 1.3 to the server inside its stream, pinning the server's CA; the connector refuses anything else and clients refuse to dial a route without that pin.
 - [0179](./0179-the-legacy-auth-paths-are-removed.md) `local` and `paired` are the only modes: no mode beside a remote listener refuses to start, `PHUX_WORKLOAD_MTLS` and the legacy token-store migration are retired, and a CA pin is made at pairing, never learned.
 - [0163](./0163-actors-and-delegated-agent-grants.md) Every change names its principal and on-behalf-of human; `ORGANIZE` and `TERMINATE` join the scope verbs under schema 2; agents act through delegated grants, and a human's takeover always wins the lease.
 - [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) A device without ssh enrolls a key it keeps with a single-use `phux pair --enroll` ticket over the QUIC listener's `phux-enroll/1` ALPN; relays and WebTransport carry the identity in an end-to-end TLS session inside their stream.

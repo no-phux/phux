@@ -1251,26 +1251,17 @@ fn spawn_connector_supervisors(
     };
     let paired = state.with(crate::state::ServerState::workload_mtls_required);
     let env = state.with(crate::state::ServerState::server_env);
-    let inner = connector_inner_tls(paired, &env);
-    if paired && inner.is_none() {
-        // Fail closed: under `paired` a bridged consumer is admitted only by
-        // the certificate its inner session presents.
-        error!(
-            "relay connectors disabled: the end-to-end TLS they need under `paired` could not be built"
-        );
+    let Some(inner) = connector_inner_tls(paired, &env) else {
+        // Fail closed in every posture: a bridged consumer is admitted only
+        // inside its end-to-end session, so the relay never reads it
+        // (ADR-0180).
+        error!("relay connectors disabled: the end-to-end TLS they need could not be built");
         return;
-    }
-    crate::connector::spawn_connectors(
-        specs,
-        tokens,
-        inner.as_ref(),
-        state,
-        input_lane,
-        root_token,
-    );
+    };
+    crate::connector::spawn_connectors(specs, tokens, &inner, state, input_lane, root_token);
 }
 
-/// The end-to-end TLS session bridged consumers may run (ADR-0154 item 5):
+/// The end-to-end TLS session every bridged consumer runs (ADR-0180):
 /// the server's own certificate and, under `paired`, the workload CA and
 /// registry it requires a certificate from. `None`, after logging, when it
 /// cannot be built.

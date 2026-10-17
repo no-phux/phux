@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Remote access
@@ -573,7 +573,7 @@ A relay link from `phux pair --relay-route ROUTE`
 ([Path D](#path-d-via-a-reference-relay)) has a different shape:
 `quic` is the relay, `sni` is the route the dial offers as its TLS server
 name, `fp` pins the relay, `ca` pins the server (verified end to end inside
-the relayed stream, so the relay forwards only ciphertext; ADR-0154), and
+the relayed stream, so the relay forwards only ciphertext; ADR-0180), and
 there is no `url`. The relay has no WebSocket leg; `--enroll` works through
 it too. An app or CLI that predates `sni` refuses the link because
 `url` is missing, instead of dialing the relay unrouted
@@ -688,8 +688,13 @@ acceptance tests, and capabilities not yet validated in a real VPN lab.
 
 An overlay gives the client a route to the server. A relay instead accepts
 outbound connections from both, so the server's network needs no inbound
-listener. The relay terminates TLS on both connections and sees phux traffic
-in plaintext. Host it on a machine you trust.
+listener. The relay is blind: it routes on the route name and forwards only
+ciphertext, because every consumer runs TLS 1.3 with the server inside the
+relayed stream, verifying the server's certificate authority, and the server
+refuses any consumer that does not
+([ADR-0180](adr/0180-the-relay-is-blind.md)). The relay still sees who
+connects, to which route, when, and how much; whoever runs it can cut the
+route but cannot read or alter a session.
 
 Set up the route end to end:
 
@@ -724,22 +729,30 @@ Set up the route end to end:
    phux attach --remote mini --code '<link>'
    ```
 
-   Or register it by hand with the route as the entry's TLS server name:
+   Or register it by hand with the route as the entry's TLS server name and
+   the server's CA (`ca_fingerprint` in `phux pair --relay-route --json`):
 
    ```sh
    phux host add mini quic://RELAY_HOST:4433 --tls-server-name ROUTE \
-     --cert-fingerprint RELAY_FP --token-file /path/to/SERVER_TOKEN
+     --cert-fingerprint RELAY_FP --ca-fingerprint SERVER_CA \
+     --token-file /path/to/SERVER_TOKEN
    ```
 
    After either one, `phux attach mini`, `phux --remote mini`, and the
    headless verbs (`phux ls --remote mini`) go through the relay. A one-off
    attach that skips the registry still works:
    `phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE
-   --cert-fingerprint RELAY_FP --token SERVER_TOKEN`.
+   --cert-fingerprint RELAY_FP --ca-fingerprint SERVER_CA --token SERVER_TOKEN`.
 
-`RELAY_FP` pins the relay's certificate on both network legs.
-`SERVER_TOKEN` crosses the relay opaquely and is verified by the server;
-the tunnel token only authorizes the connector to claim its enrolled route.
+`RELAY_FP` pins the relay's certificate on both network legs. `SERVER_CA`
+pins the server, end to end: a client refuses to dial a route without it,
+and writes nothing, its token included, until the server inside the relayed
+stream has proved it holds a certificate that CA issued. An entry
+registered before this with only `RELAY_FP` fails with a message naming
+`--ca-fingerprint`; re-register it, or re-pair from a fresh link.
+`SERVER_TOKEN` crosses the relay inside that session and is verified by the
+server; the tunnel token only authorizes the connector to claim its
+enrolled route.
 The connector re-reads its token file on every redial, so rotation is
 `phux relay pair --route ROUTE`, replace the file, then restart either side
 when immediate cutover is required.

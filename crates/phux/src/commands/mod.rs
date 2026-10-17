@@ -493,11 +493,20 @@ pub(crate) enum Command {
         #[usage(long, value_name = "FP", help_heading = "Direct dial")]
         cert_fingerprint: Option<String>,
 
-        /// TLS server name (SNI) to offer the remote listener. QUIC defaults
-        /// to `localhost`; WebSocket defaults to the URL host. Requires
-        /// `--quic` or `--ws`.
+        /// TLS server name (SNI) to offer the remote listener. With `--quic`
+        /// it names a relay route: `--quic` is the relay, `--cert-fingerprint`
+        /// its pin, and `--ca-fingerprint` is required. WebSocket defaults
+        /// to the URL host. Requires `--quic` or `--ws`.
         #[usage(long, value_name = "NAME", help_heading = "Direct dial")]
         tls_server_name: Option<String>,
+
+        /// The certificate authority of the server behind a relay route
+        /// (`sha256:` and 64 hex digits, the `ca_fingerprint` `phux pair
+        /// --relay-route` prints). The session runs end to end with that
+        /// server inside the relayed stream, so the relay sees only
+        /// ciphertext. Requires `--quic` and `--tls-server-name`.
+        #[usage(long, value_name = "SHA256", help_heading = "Direct dial")]
+        ca_fingerprint: Option<String>,
 
         /// Attach to a phux server on another machine, ssh-style:
         /// `--remote me@mini`. Resolves to a registered host when there is

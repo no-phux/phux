@@ -348,10 +348,18 @@ impl ResolvesClientCert for NoteCertRequest {
     }
 }
 
-/// Optional client identity for paired mTLS endpoints. Both variables are
-/// required; a half-configured identity fails rather than silently dialing
-/// unauthenticated.
-fn client_identity_from_env() -> Result<TlsClientIdentity, DialError> {
+/// Optional client identity for paired mTLS endpoints, from the environment.
+///
+/// Both variables are required; a half-configured identity fails rather than
+/// silently dialing unauthenticated. Public so a relayed dial, whose
+/// end-to-end session takes an explicit identity, presents the same one a
+/// direct dial would.
+///
+/// # Errors
+///
+/// [`DialError::Connect`] for a half-configured identity, or one
+/// `PHUX_REQUIRE_PAIRED` requires and the environment does not name.
+pub fn client_identity_from_env() -> Result<TlsClientIdentity, DialError> {
     identity_from(
         std::env::var_os("PHUX_WORKLOAD_CERT").map(PathBuf::from),
         std::env::var_os("PHUX_WORKLOAD_KEY").map(PathBuf::from),

@@ -76,7 +76,7 @@ pub async fn plan_quic_with_token(
         Some(token) => Some(parse_token_hex(&token).map_err(|_| bad_token(resolved))?),
         None => None,
     };
-    let inner = resolved.authority.inner(&resolved.client_identity);
+    let inner = relayed_session(resolved)?;
     Ok(QuicDial {
         addr,
         server_name: resolved
@@ -95,6 +95,37 @@ pub async fn plan_quic_with_token(
         }),
         inner,
     })
+}
+
+/// The end-to-end session a relayed dial runs to the server (ADR-0180), or
+/// `None` for a direct one. A QUIC dial that offers a TLS server name goes
+/// through a relay route, and it is refused without the server's CA pinned
+/// for that route: the plain relayed stream would be read by the relay.
+fn relayed_session(resolved: &Resolved) -> Result<Option<phux_dial::quic::InnerTls>, String> {
+    let route = resolved
+        .authority
+        .route
+        .as_deref()
+        .or(resolved.tls_server_name.as_deref());
+    let Some(route) = route else {
+        return Ok(None);
+    };
+    resolved
+        .authority
+        .inner(&resolved.client_identity)
+        .map(Some)
+        .ok_or_else(|| unpinned_relay_route(&resolved.name, route))
+}
+
+/// Why a relay route without the server's CA is not dialed, and the fix.
+#[must_use]
+pub fn unpinned_relay_route(name: &str, route: &str) -> String {
+    format!(
+        "{name} is reached through relay route {route:?}, but no certificate authority is \
+         pinned for the server behind it, so the relay could read the session; re-pair from \
+         a relay link (`phux pair --relay-route {route}` on the server), or register it with \
+         the server's `--ca-fingerprint`"
+    )
 }
 
 /// Split `HOST:PORT` and resolve it to its first address, as the CLI's
@@ -446,11 +477,30 @@ mod tests {
         routed.transport = Transport::Quic("127.0.0.1:4433".to_owned());
         routed.token_file = None;
         routed.tls_server_name = Some("mini-route".to_owned());
+        routed.authority.route = Some("mini-route".to_owned());
+        // ADR-0180: no server CA for the route, no dial; the relay would
+        // read the stream.
+        let refused = runtime
+            .block_on(plan_quic(&routed, "127.0.0.1:4433"))
+            .expect_err("a relay route without the server's CA");
+        assert!(
+            refused.contains("mini-route") && refused.contains("--ca-fingerprint"),
+            "{refused}"
+        );
+
+        let ca = format!("sha256:{}", "c".repeat(64));
+        routed.authority.ca = Some(ca.clone());
         let quic = runtime
             .block_on(plan_quic(&routed, "127.0.0.1:4433"))
             .expect("routed quic plan");
         assert_eq!(quic.server_name, "mini-route");
+        // The outer leg pins the relay and presents nothing; the server's CA
+        // is verified inside the end-to-end session.
         assert_eq!(quic.trust, CertTrust::Pinned(pin));
+        assert_eq!(quic.identity, Some(phux_dial::TlsClientIdentity::None));
+        let inner = quic.inner.expect("an end-to-end session");
+        assert_eq!(inner.trust, CertTrust::Authority { ca });
+        assert_eq!(inner.server_name, "mini-route");
 
         let ws = plan_ws(&routed, "ws://127.0.0.1:8787", None).expect("routed ws plan");
         assert_eq!(ws.tls_server_name.as_deref(), Some("mini-route"));

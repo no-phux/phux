@@ -213,10 +213,14 @@ grant before any stateful frame is processed.
   paired QUIC listener does; the bearer preamble then rides inside. The
   server tells the session from a plain bearer preamble by its first byte
   (`0x16` opens a TLS record; a preamble's big-endian length starts
-  `0x00`). Under `paired` a bridged consumer is admitted only this way; the
-  relay forwards ciphertext and learns nothing new
-  ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
-  item 5). The same session, with the same first-byte rule, rides a
+  `0x00`). In every posture a bridged consumer is admitted only this way: a
+  server MUST refuse a relayed stream whose first byte is not `0x16` before
+  reading further, and a client MUST NOT dial a relay route without the
+  server's CA pinned for it, nor write anything before the inner handshake
+  verifies the server. The relay forwards ciphertext and holds no session
+  key ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
+  item 5, [ADR-0180](../adr/0180-the-relay-is-blind.md)). The same session,
+  with the same first-byte rule, rides a
   WebTransport stream (item 6); a WebTransport `CONNECT` still carries the
   bearer, so nothing follows the handshake there.
 
