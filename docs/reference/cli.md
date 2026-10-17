@@ -4818,10 +4818,13 @@ Flags:
       --scope <VERBS@SELECTOR>   Scope ceiling as
                                  `<verb>[,<verb>...]@<selector>`, where a verb
                                  is inventory, observe, create, bind, input,
-                                 signal, or `*`, and a selector is global, host,
-                                 host:NAME, group:ID, terminal:ID, or
-                                 terminal:HOST/ID. Repeatable; at least one is
-                                 required.
+                                 signal, organize, terminate, or `*`, and a
+                                 selector is global, host, host:NAME,
+                                 session:KEY, or resource:KEY (a record's full
+                                 26-character key; session and Terminal ids
+                                 restart with the server, so group:ID and
+                                 terminal:ID are refused). Repeatable; at least
+                                 one is required.
       --expires-in <SECONDS>     Seconds until the credential expires (at most
                                  20 years).
                                  (default: 7776000)

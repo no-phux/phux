@@ -1103,10 +1103,11 @@ and any connection may read its own.
 Under `local` and `paired` the owner socket means the serving user's uid: a
 peer running as another user, root included (`sudo phux ...`), is refused at
 HELLO. Without a mode this is unchanged, and such a peer is admitted as
-before. Registry scopes name `global`, `host`, or `host:<name>` only:
-session and Terminal ids restart with the server, so `phux workload
-add-key` refuses `group:` and `terminal:` selectors until stable identities
-exist.
+before. Registry scopes name `global`, `host`, `host:<name>`, or one
+record by its persistent key: `session:<key>` or `resource:<key>`. Session
+and Terminal ids restart with the server, so `phux workload add-key`
+refuses `group:` and `terminal:` selectors; a record key names the same
+session or resource across restarts and relaunches.
 
 #### On-demand listeners (`phux attach --ssh`)
 

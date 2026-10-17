@@ -274,13 +274,17 @@ HOST_SATELLITE(host)           = 0x01 || 0x01 || V16(host)
 GROUP(group_id)                = 0x02 || U32(group_id)
 TERMINAL_LOCAL(id)             = 0x03 || 0x00 || U32(id)
 TERMINAL_SATELLITE(host, id)   = 0x03 || 0x01 || V16(host) || U32(id)
+SESSION(key)                   = 0x04 || key[16]
+RESOURCE(key)                  = 0x05 || key[16]
 ```
 
 `host` is 1..=255 UTF-8 bytes, contains no NUL or Unicode control scalar, and is
 compared byte-for-byte without case folding or normalization. It is the exact
 federation host key carried by `ResourceId::Satellite`, not an address resolved
-from DNS. Unknown tags, subtype tags, zero-length hosts, and trailing selector
-bytes are malformed.
+from DNS. `key` is a local organization record's persistent `SessionKey` or
+`ResourceKey` ([L1.md](./L1.md) §5.7.1): 16 bytes, never all zero, random at
+create and never reused. Unknown tags, subtype tags, zero-length hosts, an
+all-zero key, and trailing selector bytes are malformed.
 
 `TerminalScopeSet` canonical bytes are:
 
@@ -303,8 +307,17 @@ A selector denotes resource subjects at enforcement time:
 
 - `GLOBAL` contains every subject;
 - a Host contains that host, its groups, and its Terminals;
-- a Group contains that group and its current Terminal members; and
-- a Terminal contains only that exact Terminal.
+- a Group contains that group and its current Terminal members;
+- a Session contains the local session whose record carries that key, and
+  its current Terminal members: the Group of that session, named by key;
+- a Terminal contains only that exact Terminal; and
+- a Resource contains only the local resource whose record carries that key,
+  under whichever activation is current.
+
+A key that no live record carries contains nothing. A key and a wire id may
+name the same session or Terminal, so for overlap and §7 containment a
+keyed selector is treated like the id selector of its kind, never as equal
+to it.
 
 The local server owns local Groups. A satellite host selector never contains a
 Group in the hub's local L3 store.
@@ -354,9 +367,12 @@ spelled `?signal`: the grant carries `SIGNAL`, but it is *held*, and every
 `SIGNAL` command it admits waits for a decision (§6.1, ADR-0128). `?` on any
 other verb is refused, and `signal,?signal` repeats a verb. A selector is `global`,
 `host` (the serving host), `host:<name>`, `group:<id>`, `terminal:<id>`, or
-`terminal:<host>/<id>`. An `<id>` is a canonical unsigned 32-bit decimal (no
-sign, no leading zero), a `<host>` obeys the rules above, and the last `/`
-splits a satellite Terminal's host from its id.
+`terminal:<host>/<id>`, `session:<key>`, or `resource:<key>`. An `<id>` is a
+canonical unsigned 32-bit decimal (no sign, no leading zero), a `<host>` obeys
+the rules above, and the last `/` splits a satellite Terminal's host from its
+id. A `<key>` is the key's full text form ([L1.md](./L1.md) §5.7.1), written
+lowercase: 26 base32 digits, never a shortened prefix and never uppercase, so
+each key has one spelling.
 
 In the reference server a Group is a session and `group:<id>` names its wire
 session id, the one `ATTACHED` reports. `GroupId`, the `SPAWN_RESOURCE`
@@ -377,10 +393,13 @@ selector. The reference server's session and Terminal ids restart at 1
 with every server process, so an id written into the registry would come
 to name a different session or Terminal after a restart. `phux workload
 add-key` refuses them, and a registry file holding one is malformed (the
-empty snapshot of §7). Persisted ceilings name `global`, `host`, or
-`host:<name>` until stable identities exist, which is future work. The
-selectors stay valid in the canonical encoding above, for a requested
-attenuation that lives only as long as its connection.
+empty snapshot of §7). The selectors stay valid in the canonical encoding
+above, for a requested attenuation that lives only as long as its
+connection. A persisted ceiling narrower than a host names the record
+instead: `session:<key>` or `resource:<key>`. A record key survives a
+restart, an upgrade, and a relaunch, and is never reused, so the grant
+reaches the same session or resource for as long as the record exists and
+nothing once it is deleted.
 
 HELLO carries no scope request, so the requested set is the ceiling. With
 no requested attenuation the server mints one clause `(g, g, verbs)` per

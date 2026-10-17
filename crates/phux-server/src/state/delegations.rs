@@ -68,7 +68,8 @@ impl ServerState {
         }) {
             return Err(DelegationError::Widens(verb));
         }
-        let group = self.idspace.intern_session(session).get();
+        let id = self.idspace.intern_session(session).get();
+        let group = crate::policy::GroupPoint::with_id(self, session, id);
         if let Some(verb) = Verb::ALL
             .into_iter()
             .find(|verb| request.verbs.contains(*verb) && !grant.admits_session(*verb, group))
@@ -88,7 +89,7 @@ impl ServerState {
         let credential = DelegatedCredential {
             id: crate::delegation::mint_id()?,
             session,
-            group,
+            group: id,
             verbs: request.verbs,
             on_behalf_of: grant.answering_principal().clone(),
             delegator: grant.principal().clone(),

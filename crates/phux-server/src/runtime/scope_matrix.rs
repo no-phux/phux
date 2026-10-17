@@ -7,7 +7,7 @@
 //! every test passes only if the grant came from the engine instead.
 //!
 //! Two engines mint the grant. The `paired` [`ScopedPolicy`] reads a real
-//! registry file, which may hold only `global` and `host` selectors
+//! registry file, which may not hold `group:` or `terminal:` selectors
 //! (§5.1: session and Terminal ids restart with the server). Group and
 //! Terminal grants, which a future HELLO-requested attenuation carries, are
 //! minted by a fixed engine so the guard's handling of them stays covered.

@@ -15,13 +15,15 @@
 //! The owner's grant sees everything, so a `local` or transitional server, and
 //! the owner socket under `paired`, filter nothing.
 
-use phux_protocol::ids::ResourceId as WireResourceId;
+use phux_protocol::ids::{ResourceId as WireResourceId, ResourceKey};
 use phux_protocol::kinds::Verb;
 use phux_protocol::scope::EffectiveScopeSet;
 use phux_protocol::wire::info::SessionSnapshot;
 
-use super::enforce::{Located, Point, TerminalPoint, contains, group_of, local_point};
-use super::{Authority, ConnectionGrant};
+use super::enforce::{
+    Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
+};
+use super::{Authority, ConnectionGrant, GroupPoint};
 use crate::state::{ClientId, ServerState};
 
 /// What one connection's grant lets it see.
@@ -80,14 +82,22 @@ pub fn event_filter(grant: Option<&ConnectionGrant>) -> Option<EffectiveScopeSet
 /// so delivery and replay judge it without the state lock.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventSubject {
-    /// The wire session id holding the event's Terminal (or its parent) when
-    /// the event was recorded; `None` when it was in no window.
-    pub group: Option<u32>,
+    /// The session holding the event's Terminal (or its parent) when the
+    /// event was recorded; `None` when it was in no window.
+    pub group: Option<GroupPoint>,
+    /// The record key of the event's local Terminal when it was recorded.
+    pub terminal_key: Option<ResourceKey>,
+    /// The record key of that Terminal's local parent when it was recorded.
+    pub parent_key: Option<ResourceKey>,
 }
 
 impl EventSubject {
-    /// An event not yet placed: in no Group.
-    pub const UNPLACED: Self = Self { group: None };
+    /// An event not yet placed: in no Group, naming no record.
+    pub const UNPLACED: Self = Self {
+        group: None,
+        terminal_key: None,
+        parent_key: None,
+    };
 
     /// Stamp the event about `terminal` (widened to `parent`) under `s`.
     #[must_use]
@@ -104,7 +114,16 @@ impl EventSubject {
                 s.terminal_from_wire(wire)
                     .and_then(|core| group_of(s, core))
             });
-        Self { group }
+        let key = |wire: Option<&WireResourceId>| {
+            wire.filter(|wire| wire.is_local())
+                .and_then(|wire| s.terminal_from_wire(wire))
+                .and_then(|core| resource_key_of(s, core))
+        };
+        Self {
+            group,
+            terminal_key: key(terminal),
+            parent_key: key(parent),
+        }
     }
 }
 
@@ -121,16 +140,19 @@ pub fn observes_event(
     let Some(terminal) = terminal else {
         return covers(effective, Verb::Observe, &Point::Global);
     };
-    let point = |wire: &WireResourceId, parent: Option<Box<TerminalPoint>>| TerminalPoint {
+    let point = |wire: &WireResourceId,
+                 key: Option<ResourceKey>,
+                 parent: Option<Box<TerminalPoint>>| TerminalPoint {
         at: located(wire),
         group: wire.is_local().then_some(subject.group).flatten(),
+        key: wire.is_local().then_some(key).flatten(),
         parent,
     };
-    let parent = parent.map(|wire| Box::new(point(wire, None)));
+    let parent = parent.map(|wire| Box::new(point(wire, subject.parent_key, None)));
     covers(
         effective,
         Verb::Observe,
-        &Point::Terminal(point(terminal, parent)),
+        &Point::Terminal(point(terminal, subject.terminal_key, parent)),
     )
 }
 
@@ -150,10 +172,7 @@ pub fn admits_session(
     verb: Verb,
     session: phux_core::ids::SessionId,
 ) -> bool {
-    let point = s
-        .idspace
-        .session_wire(session)
-        .map_or(Point::LocalHost, |wire| Point::Group(wire.get()));
+    let point = GroupPoint::of(s, session).map_or(Point::LocalHost, Point::Group);
     View::of(s.connection_grant(client)).admits(verb, &point)
 }
 
@@ -199,7 +218,9 @@ pub fn filter_snapshot(
     if matches!(view, View::All) {
         return snapshot;
     }
-    let group = |id: u32| view.admits(verb, &Point::Group(id));
+    let group = |id: phux_protocol::ids::SessionId| {
+        view.admits(verb, &Point::Group(GroupPoint::of_wire(s, id)))
+    };
     let terminal =
         |id: &WireResourceId| view.admits(verb, &Point::Terminal(TerminalPoint::of(s, id)));
     snapshot.resources.retain(|resource| terminal(&resource.id));
@@ -217,10 +238,8 @@ pub fn filter_snapshot(
             resource.parent = None;
         }
     }
-    snapshot.sessions.retain(|session| group(session.id.get()));
-    snapshot
-        .windows
-        .retain(|window| group(window.session_id.get()));
+    snapshot.sessions.retain(|session| group(session.id));
+    snapshot.windows.retain(|window| group(window.session_id));
     if !snapshot
         .sessions
         .iter()
