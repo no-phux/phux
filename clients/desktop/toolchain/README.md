@@ -6,17 +6,20 @@ last-reviewed: 2026-10-17
 
 # Desktop framework toolchain
 
-**TL;DR.** The desktop builds against GPUI Kit 0.7.1 and the exact GPUI
-snapshot it was released with, `gpui-pre` 0.3.8. Three of those crates carry
-reviewed local patches. `source.json` pins each crates.io archive and each
-patch by SHA-256; `bootstrap.py` materializes the patched copies under
-`gpui/` (ignored build state), and `native/Cargo.toml` points
-`[patch.crates-io]` at them.
+**TL;DR.** The desktop builds against GPUI Kit 0.7.3 on
+[gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.9, a GPUI fork with
+retained views, layout and text measurement, at the Zed revision of the
+`gpui-pre` 0.3.9 snapshot Kit pins. Kit's `gpui-pre` crates are served by
+small compatibility crates in `compat/` that re-export gpui-fast. Three
+gpui-fast crates carry reviewed local patches. `source.json` pins each
+crates.io archive and each patch by SHA-256; `bootstrap.py` materializes the
+patched copies under `gpui/` (ignored build state), and `native/Cargo.toml`
+points `[patch.crates-io]` at them and at `compat/`.
 
 ## Bootstrap
 
 `just desktop-source` runs `python3 clients/desktop/toolchain/bootstrap.py`.
-It downloads `gpui-pre`, `gpui-pre-apple` and `gpui-pre-macos` from
+It downloads `gpui-fast`, `gpui-fast-apple` and `gpui-fast-macos` from
 crates.io (cached under `clients/desktop/.cache/crates`), verifies them,
 applies `patches/` in order, and moves the result to `gpui/`. The output is a
 pure function of the pins. An existing `gpui/` is verified against a fresh
@@ -25,6 +28,27 @@ edits stay in place for inspection. `--check` verifies without writing.
 
 Every other crate in the graph, including Kit itself, resolves from
 crates.io through `native/Cargo.lock`, built `--locked`.
+
+## gpui-fast and Kit
+
+GPUI Kit depends on GPUI through `gpui-pre`, `gpui-pre-macros`,
+`gpui-pre-platform` and `gpui-pre-web` at the exact version it pins. Cargo's
+`[patch]` replaces a package only with one of the same name and a matching
+version, so `compat/` holds one crate per name at that version, each
+re-exporting the published gpui-fast crate of the same library name
+(`pub use gpui_fast::*`) and forwarding its features. They are adapted from
+gpui-fast's own `compat/` directory, which depends on gpui-fast by path; these
+depend on the crates.io release. The support crates gpui-fast itself uses
+(`gpui-pre-util`, `gpui-pre-sum-tree`, `gpui-pre-collections` and the rest)
+are the genuine 0.3.9 snapshot crates, shared with Kit.
+
+gpui-fast redraws a view only when something it read changed: an entity or
+global it read, a `ListState` or `ScrollHandle` it tracked, the pointer, its
+bounds or hover, or a `cx.notify()`. The window's root view is retained like
+any other. State outside those (a runtime frame, an `Arc<Mutex<_>>`, the
+clock) must notify the entity that renders it. Running with
+`GPUI_VIEW_RETENTION=0` draws every view from scratch each frame, which rules
+retention in or out when something looks stale.
 
 ## Changing the framework
 
@@ -71,13 +95,16 @@ has its own render tree, so its animation does not redraw the terminal.
 GPUI offscreen captures omit native compositor effects. Inspect the live
 window for material QA; a scene-only pixel fixture proves layout, not glass.
 
-## Upgrading GPUI Kit
+## Upgrading GPUI Kit or gpui-fast
 
-Kit pins its GPUI snapshot exactly. Bump `gpui-kit`, `gpui-pre` and
-`gpui-pre-platform` together in `native/Cargo.toml`, update the three
-archive pins in `source.json` to the snapshot Kit names, re-run `--edit`, and
-resolve whatever the patches no longer apply to. Then `cargo update` the
-host lock and run the desktop gates.
+Kit pins its GPUI snapshot exactly, and a gpui-fast release names the
+snapshot crates it builds on (`gpui-pre-util` and siblings, `=0.3.x`). Move
+them together: bump `gpui-kit`, `gpui-pre` and `gpui-pre-platform` in
+`native/Cargo.toml` and the version of every crate in `compat/` to the
+snapshot Kit names, the gpui-fast requirement in `compat/` to a release built
+on that snapshot, and the three archive pins in `source.json` to that
+release. Re-run `--edit`, resolve whatever the patches no longer apply to,
+`--export`, then `cargo update` the host lock and run the desktop gates.
 
 ## macOS prerequisites
 
@@ -87,19 +114,21 @@ and command line tools are still required.
 
 ## Provenance and redistribution
 
-Sources: <https://crates.io/crates/gpui-pre> (a snapshot of Zed's
-`crates/gpui`, Apache-2.0) and <https://github.com/longbridge/gpui-kit>
-(Apache-2.0). Every resolved dependency keeps its own license.
+Sources: <https://crates.io/crates/gpui-fast> (Longbridge's fork of Zed's
+`crates/gpui`, Apache-2.0, from <https://github.com/longbridge/gpui-fast>),
+<https://crates.io/crates/gpui-pre> (the snapshot crates gpui-fast and Kit
+share, Apache-2.0) and <https://github.com/longbridge/gpui-kit>
+(Apache-2.0). `compat/` is adapted from gpui-fast's `compat/` (Apache-2.0).
+Every resolved dependency keeps its own license.
 `scripts/notices.ts` writes the notices of the actual crate graph into
 `Phux.app`.
 
 `gpui_util` and `gpui_shared_string` (published as `gpui-pre-util` and
-`gpui-pre-shared-string` 0.3.8) once carried no license in Zed. Their
+`gpui-pre-shared-string` 0.3.9) once carried no license in Zed. Their
 Apache-2.0 label now rests on upstream, not on the republisher's manifest.
 Zed [#63573](https://github.com/zed-industries/zed/pull/63573)
 (`ac5af8b9e1`) declared `license = "Apache-2.0"` for both, and each crate
 directory carries `LICENSE-APACHE`. Both packages record
-`zed-rev = 279fe070bb38` in `package.metadata.gpui-pre`. At that revision
-both upstream manifests declare Apache-2.0, and the published sources and
-`LICENSE-APACHE` files are byte-identical to Zed's. A `gpui-pre` bump repeats
+`zed-rev = 93d745668805` in `package.metadata.gpui-pre`, a revision after
+that change, where both upstream manifests declare Apache-2.0. A `gpui-pre` bump repeats
 this check for any crate that was not Apache-2.0 upstream at its new pin.

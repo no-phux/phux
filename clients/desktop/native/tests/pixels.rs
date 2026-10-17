@@ -888,6 +888,9 @@ fn streaming_output_recycles_frame_buffers() {
                 bytes: format!("line {seq}\r\n").into_bytes().into(),
             })
             .expect("live output");
+        // The desk notifies a terminal its runtime changed; the view is
+        // otherwise drawn from the last frame.
+        window.update(cx, |_, _, cx| cx.notify()).expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
@@ -1186,7 +1189,13 @@ fn headless_perf() {
         .capture_screenshot(window.into())
         .expect("initial pixels");
 
+    // Each tick notifies the terminal, as the desk does for a terminal whose
+    // runtime published; without it GPUI draws the view from its last frame.
+    // A tick with no new output measures the painter's scene reuse.
     let mut draw = || {
+        window
+            .update(&mut cx, |_, _, cx| cx.notify())
+            .expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };
@@ -1271,7 +1280,13 @@ fn headless_perf_wide() {
     let before = cx
         .capture_screenshot(window.into())
         .expect("initial pixels");
+    // Each tick notifies the terminal, as the desk does for a terminal whose
+    // runtime published; without it GPUI draws the view from its last frame.
+    // A tick with no new output measures the painter's scene reuse.
     let mut draw = || {
+        window
+            .update(&mut cx, |_, _, cx| cx.notify())
+            .expect("notify");
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .expect("draw");
     };

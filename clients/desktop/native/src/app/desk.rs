@@ -197,6 +197,8 @@ pub struct Desk {
     pub(crate) tab_geometry: Rc<RefCell<TabGeometry>>,
     viewport: gpui::Size<gpui::Pixels>,
     _wake: Option<Task<()>>,
+    /// Runtime state the desk chrome shows, as of the last activity drain.
+    runtime_chrome: RuntimeChrome,
     _clock: Option<Task<()>>,
     /// When the armed clock wakes.
     clock_at: Option<Instant>,
@@ -329,6 +331,16 @@ fn tab_coordinate(position: TabPosition, x: f32, y: f32) -> f32 {
         TabPosition::Top => x,
         TabPosition::Side => y,
     }
+}
+
+/// What the chrome shows of runtime state that changes in paint-only batches:
+/// the "scrolled back" status chip and the "typing may not have arrived" pill.
+/// Terminal views are notified alone for output, so a drain compares this and
+/// notifies the desk only when it changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RuntimeChrome {
+    scrolled_back: bool,
+    fenced: Vec<ResourceId>,
 }
 
 /// Terminal damage, delivered input, and agent metadata that repeated every
@@ -565,6 +577,7 @@ impl Desk {
             tab_geometry: Rc::default(),
             viewport: gpui::size(gpui::px(1320.), gpui::px(840.)),
             _wake: None,
+            runtime_chrome: RuntimeChrome::default(),
             _clock: None,
             clock_at: None,
             _subs: Vec::new(),
@@ -735,6 +748,9 @@ impl Desk {
             self.finish_uploads(uploads);
         }
         let conversation_changed = self.conversation_receipts(&events);
+        let chrome = self.read_runtime_chrome();
+        let chrome_changed = chrome != self.runtime_chrome;
+        self.runtime_chrome = chrome;
         // Notify cached terminals even for mixed agent/PTY batches, but keep
         // the last frame while disconnected instead of reacquiring a view.
         if self.session_is_attached() {
@@ -758,7 +774,7 @@ impl Desk {
             && !conversation_changed
             && !awaiting_output
         {
-            if had_uploads {
+            if had_uploads || chrome_changed {
                 cx.notify();
             }
             return;
@@ -3222,6 +3238,31 @@ impl Desk {
         let client = self.client()?;
         let bytes = client.engine()?.view_selection_text(view).ok()?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The focused pane's view is scrolled back from live output.
+    pub(crate) fn scrolled_back(&self) -> bool {
+        self.session_is_attached()
+            && self
+                .focused_view()
+                .and_then(|view| self.client().and_then(|client| client.acquire_view(view)))
+                .is_some_and(|frame| !frame.scrollbar.at_tail())
+    }
+
+    /// The runtime state the chrome renders without an event of its own:
+    /// terminal output and input receipts change it in paint-only batches.
+    fn read_runtime_chrome(&self) -> RuntimeChrome {
+        let fenced = self.link.as_ref().map_or_else(Vec::new, |link| {
+            self.placements()
+                .filter_map(|placement| placement.terminal_id.as_ref())
+                .filter(|id| link.connection.fenced(id))
+                .cloned()
+                .collect()
+        });
+        RuntimeChrome {
+            scrolled_back: self.scrolled_back(),
+            fenced,
+        }
     }
 
     pub(crate) fn focused_view(&self) -> Option<phux_client_runtime::ViewId> {

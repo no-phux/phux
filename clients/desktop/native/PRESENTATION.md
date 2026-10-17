@@ -48,7 +48,7 @@ clear the fence.
 ## Platform receipt
 
 `toolchain/patches/0001-drawable-presented.patch` adds `Window::on_drawable_presented`
-and `Window::native_visibility` to gpui-pre 0.3.8. Paint-time callbacks are bound
+and `Window::native_visibility` to gpui-fast. Paint-time callbacks are bound
 to that submission's scene. The terminal schedules recovery only for a
 successful, unclipped paint of the ticket's frame; the callback rechecks
 visibility and bounds, then `Ticket::acknowledge` revalidates on the control

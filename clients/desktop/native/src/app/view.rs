@@ -2507,11 +2507,7 @@ fn status_bar(desk: &Desk, height: f32, look: &Look, cx: &mut Context<Desk>) -> 
     let chip = |id: &'static str| div().id(id).rounded(px(radius));
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
-    let scrolled = desk.session_is_attached()
-        && desk
-            .focused_view()
-            .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
-            .is_some_and(|frame| !frame.scrollbar.at_tail());
+    let scrolled = desk.scrolled_back();
     let (pending, waiting) = desk.link.as_ref().map_or((0, 0), |link| {
         let agents = link.connection.agents.values();
         (

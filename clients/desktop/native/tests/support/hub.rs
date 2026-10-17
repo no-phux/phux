@@ -198,6 +198,7 @@ fn draw(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle) {
 fn save(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle, name: &str) {
     let image = cx.capture_screenshot(window).expect("native hub pixels");
     assert!(image.width() >= 720 && image.height() >= 480);
+    assert_retained_matches_scratch(cx, window, &image, name);
     if let Some(dir) = std::env::var_os("PHUX_DESKTOP_UI_EVIDENCE") {
         let dir = std::path::PathBuf::from(dir);
         assert!(
@@ -207,4 +208,45 @@ fn save(cx: &mut gpui::HeadlessAppContext, window: gpui::AnyWindowHandle, name: 
         std::fs::create_dir_all(&dir).unwrap();
         image.save(dir.join(format!("{name}.png"))).unwrap();
     }
+}
+
+/// GPUI draws a view again from its last frame while nothing it read
+/// changed. State a view renders without being notified of it would show
+/// stale here: the retained frame must equal one drawn from scratch.
+fn assert_retained_matches_scratch(
+    cx: &mut gpui::HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    retained: &image::RgbaImage,
+    name: &str,
+) {
+    let set = |cx: &mut gpui::HeadlessAppContext, enabled: bool| {
+        cx.update_window(window, |_, window, _| window.set_view_retention(enabled))
+            .unwrap();
+        draw(cx, window);
+    };
+    set(cx, false);
+    let scratch = cx.capture_screenshot(window).expect("scratch pixels");
+    set(cx, true);
+    assert_eq!(retained.dimensions(), scratch.dimensions());
+    let differing = retained
+        .pixels()
+        .zip(scratch.pixels())
+        .filter(|(left, right)| left != right)
+        .count();
+    if differing != 0 {
+        let dir = std::env::temp_dir();
+        retained
+            .save(dir.join(format!("{name}-retained.png")))
+            .unwrap();
+        scratch
+            .save(dir.join(format!("{name}-scratch.png")))
+            .unwrap();
+    }
+    assert_eq!(
+        differing,
+        0,
+        "{name}: the retained frame differs from a scratch frame in {differing} pixels \
+         (both saved under {})",
+        std::env::temp_dir().display()
+    );
 }

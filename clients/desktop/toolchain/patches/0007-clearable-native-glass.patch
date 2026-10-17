@@ -1,8 +1,8 @@
-diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 9650294..ccbcbe6 100644
---- a/gpui-pre-macos/src/window.rs
-+++ b/gpui-pre-macos/src/window.rs
-@@ -26,11 +26,11 @@ use cocoa::{
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index e37bb87..a1b4f33 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -28,11 +28,11 @@ use cocoa::{
  use dispatch2::DispatchQueue;
  use gpui::{
      AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload,
@@ -18,7 +18,7 @@ index 9650294..ccbcbe6 100644
      WindowBounds, WindowControlArea, WindowKind, WindowParams, WindowVisibility, point, px, size,
  };
  use image::RgbaImage;
-@@ -1904,7 +1904,7 @@ impl PlatformWindow for MacWindow {
+@@ -1918,7 +1918,7 @@ impl PlatformWindow for MacWindow {
                      NSView::removeFromSuperview(blur_view);
                      this.blurred_view = None;
                  }
@@ -27,7 +27,7 @@ index 9650294..ccbcbe6 100644
                  let content_view = this.native_window.contentView();
                  let frame = NSView::bounds(content_view);
                  let mut blur_view: id = msg_send![BLURRED_VIEW_CLASS, alloc];
-@@ -1926,14 +1926,17 @@ impl PlatformWindow for MacWindow {
+@@ -1940,14 +1940,17 @@ impl PlatformWindow for MacWindow {
          let Some(class) = Class::get("NSGlassEffectView") else {
              return false;
          };
@@ -47,7 +47,7 @@ index 9650294..ccbcbe6 100644
              )
          };
          // SAFETY: this method runs on the main thread and the window owns these
-@@ -1948,6 +1951,7 @@ impl PlatformWindow for MacWindow {
+@@ -1962,6 +1965,7 @@ impl PlatformWindow for MacWindow {
              };
              let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
              let _: () = msg_send![native_window, setAppearance: appearance];
@@ -55,7 +55,7 @@ index 9650294..ccbcbe6 100644
              if let Some(glass) = existing {
                  let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
                  return true;
-@@ -1970,14 +1974,64 @@ impl PlatformWindow for MacWindow {
+@@ -1984,14 +1988,64 @@ impl PlatformWindow for MacWindow {
              // Moving through a detached contentView can clear first responder.
              native_window.makeFirstResponder_(native);
              let _: () = msg_send![native, release];
@@ -123,11 +123,11 @@ index 9650294..ccbcbe6 100644
      fn set_window_opacity(&self, opacity: f32) {
          // SAFETY: the native window is alive for this call; UI methods
          // are called on the main thread and the alpha argument is a scalar.
-diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 21e03c1..8184038 100644
---- a/gpui-pre/src/platform.rs
-+++ b/gpui-pre/src/platform.rs
-@@ -1216,6 +1216,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
+index 44f5bf0..246953c 100644
+--- a/gpui-fast/src/platform.rs
++++ b/gpui-fast/src/platform.rs
+@@ -1266,6 +1266,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn set_glass_effect(&self, _corner_radius: Pixels, _appearance: WindowAppearance) -> bool {
          false
      }
@@ -141,11 +141,11 @@ index 21e03c1..8184038 100644
      /// Changes native window opacity, including its compositor material.
      fn set_window_opacity(&self, _opacity: f32) {}
      fn minimize(&self);
-diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index c0c056f..fd2092c 100644
---- a/gpui-pre/src/window.rs
-+++ b/gpui-pre/src/window.rs
-@@ -3025,6 +3025,18 @@ impl Window {
+diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
+index 44e90ce..52a5e8d 100644
+--- a/gpui-fast/src/window.rs
++++ b/gpui-fast/src/window.rs
+@@ -3182,6 +3182,18 @@ impl Window {
              .set_glass_effect(corner_radius, appearance)
      }
  
