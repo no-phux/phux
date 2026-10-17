@@ -1,0 +1,410 @@
+//! Duplicate placements of one terminal over the real embedded runtime.
+//!
+//! Each placement owns a runtime view: scroll, search and pin stay in that
+//! view, output reaches every view, and closing one placement leaves the
+//! other attached with its process alive.
+
+use super::*;
+use crate::connection::DeterministicDial;
+use phux_client_runtime::control::ControlPlane;
+use phux_client_runtime::engine::Scroll;
+use phux_protocol::{
+    PROTOCOL_VERSION,
+    caps::{
+        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+        ServerFeatureSet,
+    },
+    ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+    wire::{
+        frame::{Command, FrameKind},
+        info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
+    },
+};
+
+use std::sync::Arc;
+
+const SESSION: &str = "views";
+
+fn terminal() -> ResourceId {
+    ResourceId::local(7)
+}
+
+fn stream() -> StreamId {
+    StreamId::new(1).unwrap()
+}
+
+fn bootstrap() -> BootstrapId {
+    BootstrapId::new(1).unwrap()
+}
+
+/// A connection attached to one 20x4 terminal with two lines of history.
+fn attached() -> Connection {
+    let mut connection = Connection::connect("/views.sock".into(), SESSION.into()).unwrap();
+    let client = Arc::clone(&connection.client);
+    client.with_control(ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+            server_id: vec![1; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .unwrap();
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .expect("attach request");
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), SESSION)])
+        .with_windows(vec![WindowInfo::new(
+            WindowId::new(1),
+            SessionId::new(1),
+            "shell",
+        )])
+        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
+    for frame in [
+        FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        },
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            chunk_seq: 0,
+            payload: b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive"
+                .to_vec()
+                .into(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            history_cursor: None,
+        },
+        FrameKind::AttachReady { attach_id },
+    ] {
+        client.feed(frame).unwrap();
+    }
+    connection.drain();
+    let _ = client.take_outbound();
+    assert_eq!(connection.status, Status::Attached);
+    assert!(connection.ready(&terminal()), "fixture terminal is ready");
+    connection
+}
+
+/// A workspace showing the session's home terminal in one placement.
+fn opened(connection: &mut Connection) -> Workspace {
+    let mut workspace = Workspace::new(SESSION.into(), WorkspaceOptions::default());
+    workspace.restore(None);
+    let events = connection.drain();
+    workspace.handle(&events, connection);
+    workspace.settle(connection);
+    assert_eq!(leaves(&workspace).len(), 1, "home terminal opened");
+    workspace
+}
+
+fn output(connection: &mut Connection, seq: u64, bytes: &[u8]) {
+    connection
+        .client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            seq,
+            bytes: bytes.to_vec().into(),
+        })
+        .unwrap();
+    connection.drain();
+}
+
+fn leaves(workspace: &Workspace) -> Vec<LeafPlacement> {
+    workspace
+        .tabs
+        .iter()
+        .flat_map(|tab| placements(&tab.root).into_iter().cloned())
+        .collect()
+}
+
+fn view(placement: &LeafPlacement) -> ViewId {
+    placement.view_id.expect("placement owns a view")
+}
+
+fn frame(
+    connection: &Connection,
+    view: ViewId,
+) -> Arc<phux_client_runtime::publication::GridFrame> {
+    connection.client.acquire_view(view).expect("view frame")
+}
+
+fn rows(connection: &Connection, view: ViewId) -> Vec<String> {
+    let frame = frame(connection, view);
+    (0..frame.rows).map(|row| frame.row_text(row)).collect()
+}
+
+/// Frames that would detach the terminal from this client or end its process.
+fn releases_terminal(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::Command {
+            command: Command::DetachResource { .. }
+                | Command::KillResource { .. }
+                | Command::KillResources { .. }
+                | Command::KillResourceIf { .. }
+                | Command::ResourceTerminate { .. }
+                | Command::SignalTerminal { .. }
+                | Command::CloseTabResources { .. }
+                | Command::DetachClients { .. },
+            ..
+        }
+    )
+}
+
+/// Placement, view, and terminal of a duplicated home pane.
+fn duplicated(connection: &mut Connection) -> (Workspace, LeafPlacement, LeafPlacement) {
+    let mut workspace = opened(connection);
+    let original = workspace.focused().cloned().unwrap();
+    workspace.duplicate_view(connection);
+    let mirror = workspace.focused().cloned().unwrap();
+    (workspace, original, mirror)
+}
+
+#[test]
+fn duplicate_view_adds_a_placement_with_its_own_view_of_the_same_terminal() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (workspace, original, mirror) = duplicated(&mut connection);
+    let all = leaves(&workspace);
+    assert_eq!(all.len(), 2, "one tab, two placements");
+    assert_eq!(workspace.tabs.len(), 1);
+    assert_ne!(mirror.id, original.id, "a new placement");
+    assert_ne!(
+        view(&mirror),
+        view(&original),
+        "a duplicate never shares the original's ViewId"
+    );
+    assert_eq!(mirror.terminal_id, Some(terminal()));
+    assert_eq!(original.terminal_id, Some(terminal()));
+    assert_eq!(mirror.terminal_label, original.terminal_label);
+    assert_eq!(workspace.views_of(&terminal()), 2);
+    assert_eq!(
+        rows(&connection, view(&mirror)),
+        rows(&connection, view(&original))
+    );
+}
+
+#[test]
+fn scroll_search_and_pin_stay_in_one_view_while_output_reaches_both() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (_workspace, original, mirror) = duplicated(&mut connection);
+    let (left, right) = (view(&original), view(&mirror));
+    let tail = rows(&connection, right);
+    assert_eq!(tail, ["two", "three", "four", "five"]);
+    let right_generation = frame(&connection, right).generation;
+
+    connection.client.scroll_view(left, Scroll::Top).unwrap();
+    assert_eq!(
+        rows(&connection, left)[0],
+        "zero",
+        "the scrolled view moved"
+    );
+    assert_eq!(rows(&connection, right), tail, "the other view did not");
+    assert_eq!(
+        connection.client.view_generation(right),
+        Some(right_generation),
+        "scrolling one view never republishes the other"
+    );
+
+    connection.client.follow_live_view(left).unwrap();
+    let engine = connection.client.engine().unwrap();
+    let found = engine.search_view(left, "one".into(), true).unwrap();
+    assert_eq!(found.len(), 1);
+    connection
+        .client
+        .pin_viewport_view(left, found[0].start)
+        .unwrap();
+    assert_eq!(
+        rows(&connection, left)[0],
+        "one",
+        "pinned to the search hit"
+    );
+    assert_eq!(rows(&connection, right), tail);
+    assert_eq!(
+        connection.client.view_generation(right),
+        Some(right_generation),
+        "search and pin in one view never republish the other"
+    );
+
+    output(&mut connection, 1, b"\r\nsix");
+    let (left_frame, right_frame) = (frame(&connection, left), frame(&connection, right));
+    assert_eq!(left_frame.last_seq, 1, "output reached the pinned view");
+    assert_eq!(right_frame.last_seq, 1, "output reached the tailing view");
+    assert_eq!(rows(&connection, right), ["three", "four", "five", "six"]);
+    assert_eq!(
+        rows(&connection, left)[0],
+        "one",
+        "the pinned view stays put"
+    );
+
+    connection.client.follow_live_view(left).unwrap();
+    assert_eq!(rows(&connection, left), rows(&connection, right));
+}
+
+#[test]
+fn closing_one_placement_keeps_the_other_attached_and_the_process_alive() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (mut workspace, original, mirror) = duplicated(&mut connection);
+    let _ = connection.client.take_outbound();
+
+    workspace.close_pane(&connection, Some(&mirror.id));
+
+    let sent: Vec<FrameKind> = connection
+        .client
+        .take_outbound()
+        .iter()
+        .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+        .collect();
+    assert!(
+        !sent.iter().any(releases_terminal),
+        "closing a duplicate must not detach or end the terminal: {sent:?}"
+    );
+    assert!(
+        connection.client.acquire_view(view(&mirror)).is_none(),
+        "the closed placement's view is released"
+    );
+    let remaining = leaves(&workspace);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, original.id);
+    assert_eq!(
+        workspace.focused().map(|leaf| leaf.id.clone()),
+        Some(original.id.clone())
+    );
+    assert_eq!(workspace.views_of(&terminal()), 1);
+    assert!(connection.ready(&terminal()), "terminal still attached");
+
+    output(&mut connection, 1, b"\r\nsix");
+    assert_eq!(connection.status, Status::Attached);
+    assert_eq!(
+        rows(&connection, view(&original)),
+        ["three", "four", "five", "six"],
+        "the surviving view keeps receiving output"
+    );
+}
+
+#[test]
+fn saved_duplicate_placements_restore_as_two_views_of_the_same_terminal() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (workspace, original, mirror) = duplicated(&mut connection);
+    let display = crate::settings::default_display();
+    let saved = snapshot_layout(&workspace, &connection, &display).expect("layout");
+    assert_eq!(saved.server_id, "01".repeat(16));
+    let saved = parse_layout(&layout_value(&saved)).expect("round trip");
+
+    let mut restored = Workspace::new(SESSION.into(), WorkspaceOptions::default());
+    restored.restore(Some(saved));
+    restored.handle(&[], &connection);
+    restored.settle(&connection);
+
+    assert!(restored.restored());
+    assert_eq!(restored.server_id(), workspace.server_id());
+    let after = leaves(&restored);
+    assert_eq!(
+        after
+            .iter()
+            .map(|leaf| leaf.id.as_str())
+            .collect::<Vec<_>>(),
+        [original.id.as_str(), mirror.id.as_str()],
+        "both placements return; duplicate terminals are not collapsed"
+    );
+    assert!(
+        after
+            .iter()
+            .all(|leaf| leaf.terminal_id == Some(terminal()))
+    );
+    let views: HashSet<ViewId> = after.iter().map(view).collect();
+    assert_eq!(views.len(), 2, "each restored placement owns its own view");
+    assert!(!views.contains(&view(&original)) && !views.contains(&view(&mirror)));
+    assert_eq!(
+        restored.focused().map(|leaf| leaf.id.clone()),
+        Some(mirror.id.clone()),
+        "focus returns to the same duplicate placement"
+    );
+}
+
+#[test]
+fn reveal_focuses_an_existing_placement_and_never_duplicates_it() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (mut workspace, original, mirror) = duplicated(&mut connection);
+    assert_eq!(
+        workspace.focused().map(|leaf| leaf.id.clone()),
+        Some(mirror.id.clone())
+    );
+
+    assert!(workspace.reveal(&original.terminal_label));
+    assert_eq!(
+        workspace.focused().map(|leaf| leaf.id.clone()),
+        Some(original.id.clone()),
+        "reveal focuses the first existing placement"
+    );
+    assert_eq!(leaves(&workspace).len(), 2, "reveal never adds a placement");
+
+    let pane = connection.pane(&terminal()).cloned().unwrap();
+    workspace.open(&connection, &pane);
+    let after = leaves(&workspace);
+    assert_eq!(after.len(), 2, "opening a shown terminal reveals it");
+    assert_eq!(
+        after.iter().map(view).collect::<Vec<_>>(),
+        [view(&original), view(&mirror)],
+        "reveal keeps the existing views"
+    );
+    assert!(!workspace.reveal(&terminal_label(&ResourceId::local(99))));
+}
+
+#[test]
+fn exactly_one_visible_duplicate_proposes_the_pty_size_and_focus_moves_it() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let (mut workspace, original, mirror) = duplicated(&mut connection);
+    let owners = |workspace: &Workspace| -> Vec<String> {
+        leaves(workspace)
+            .iter()
+            .filter(|leaf| workspace.size_owner(leaf))
+            .map(|leaf| leaf.id.clone())
+            .collect()
+    };
+    assert_eq!(
+        owners(&workspace),
+        [mirror.id.as_str()],
+        "the new view owns size"
+    );
+    let tab = workspace.active_id.clone();
+    workspace.focus_placement(&tab, &original.id);
+    assert_eq!(
+        owners(&workspace),
+        [original.id.as_str()],
+        "focus hands it back"
+    );
+}
