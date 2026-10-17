@@ -112,6 +112,7 @@ workflow-check: shellcheck
     bash scripts/test-dev-setup.sh
     python3 -B scripts/test-output.py
     bash scripts/test-demo-pi-setup.sh
+    bash scripts/lib/worktree-owner_test.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs
     bash scripts/ci/check-classify-changes.sh
@@ -223,12 +224,20 @@ agent-integrations-check:
     bash scripts/ci/agent-integrations.sh
 
 
+# Lease this worktree to the running agent session, or refuse (exit 3) when
+# another live session holds it (AGENTS.md "Worktree Isolation"). Human shells
+# and CI are never checked. The agent-facing entrypoints depend on it.
+[private]
+worktree-claim:
+    @bash scripts/worktree-claim.sh
+
+
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
 # Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
-ci: ci-static test
+ci: worktree-claim ci-static test
     @. ./scripts/lib/output.sh; phux_ok "root validation passed"
 
 

@@ -26,7 +26,7 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 # instead of Cargo target flags.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
-test:
+test: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     part="${PHUX_UNIT_PART:-all}"

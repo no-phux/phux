@@ -3,7 +3,7 @@
 
 # Quick type-check across the workspace.
 [group('build')]
-check:
+check: worktree-claim
     cargo check --workspace --all-targets
 
 
@@ -36,7 +36,7 @@ build-release:
 # build already uses the `dev` profile so it cannot steal that server.
 [group('build')]
 [doc('Build and atomically install the developer binaries into Cargo bin dir.')]
-install-dev:
+install-dev: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build -p phux -p phux-mcp
