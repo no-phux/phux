@@ -397,6 +397,7 @@ pub(crate) fn on_event(client: &mut Client, event: Event) -> Option<Event> {
             None
         }
         Event::OrganizationUnavailable { message } => {
+            crate::c::arrangement::organization_unavailable(client, &message);
             client.org.message = message.into_bytes();
             client.org.bump();
             None

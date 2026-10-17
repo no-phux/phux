@@ -16,9 +16,11 @@ use crate::layout::ArrangementDoc;
 
 impl super::SessionLoop {
     /// Open the arrangement link for `session` when the server advertises
-    /// `ORGANIZATION` and a control dial exists. `true` when the link is up
-    /// and owes its first read; `false` keeps the legacy key.
-    pub(super) async fn open_arrangement_link(&mut self, session: SessionId) -> bool {
+    /// `ORGANIZATION` and a control dial exists. `true` when the link is set
+    /// and owes its first read; `false` keeps the legacy key. The link
+    /// connects on that read, so a control connection that cannot open is a
+    /// failed read (reported, retried on the next one), never the legacy key.
+    pub(super) fn open_arrangement_link(&mut self, session: SessionId) -> bool {
         self.arrangement = None;
         self.peer_reader = None;
         if !self.organization_supported {
@@ -27,23 +29,14 @@ impl super::SessionLoop {
         let Some(dial) = self.control_dial.as_deref() else {
             return false;
         };
-        match ArrangementLink::open(dial, session).await {
-            Ok(Some(link)) => {
-                self.arrangement = Some(link);
-                // Peers' records are read off the loop on their own connection.
-                self.peer_reader = Some(crate::attach::peer_arrangements::PeerReader::spawn(
-                    dial.clone(),
-                    session,
-                ));
-                self.arrangement_read_owed = true;
-                true
-            }
-            Ok(None) => false,
-            Err(err) => {
-                tracing::warn!(error = %err, "arrangement link failed; using the layout key");
-                false
-            }
-        }
+        self.arrangement = Some(ArrangementLink::lazy(dial.clone(), session));
+        // Peers' records are read off the loop on their own connection.
+        self.peer_reader = Some(crate::attach::peer_arrangements::PeerReader::spawn(
+            dial.clone(),
+            session,
+        ));
+        self.arrangement_read_owed = true;
+        true
     }
 
     /// Read the arrangement record when a read is owed and adopt it through
@@ -82,7 +75,9 @@ impl super::SessionLoop {
                     vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
                 );
-                // The first read still has to release the write fence.
+                // The first read still has to release the input fence; the
+                // link stays unloaded, so the frame handler neither heals
+                // nor writes, and nothing is saved until a read succeeds.
                 let Some(request_id) = first else {
                     return Ok(None);
                 };
@@ -127,11 +122,21 @@ impl super::SessionLoop {
     }
 
     /// Write `document` as the session's arrangement record. `false` when
-    /// there is no link (the caller uses the legacy key).
+    /// there is no link (the caller uses the legacy key). Until a read of
+    /// the record has succeeded nothing is written, since a compare-and-swap
+    /// against a record this client never saw would replace it whole: the
+    /// edit is reported unsaved and the read is owed again.
     pub(super) async fn write_arrangement(&mut self, document: &ArrangementDoc) -> bool {
         let Some(link) = self.arrangement.as_mut() else {
             return false;
         };
+        if !link.loaded() {
+            self.arrangement_read_owed = true;
+            self.show_notices([Notice::warn(
+                "layout not saved: the stored layout is not loaded yet".to_owned(),
+            )]);
+            return true;
+        }
         if let Err(err) = link.write(document).await {
             tracing::warn!(error = %err, "arrangement write failed");
             self.show_notices([Notice::warn(format!("layout not saved: {err}"))]);

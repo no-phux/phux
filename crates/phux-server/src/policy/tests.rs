@@ -2474,6 +2474,74 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     assert_eq!(owner, whole);
 }
 
+/// `SESSION_STATE.recent_input` names the session's recent input target
+/// (R14) and is withheld when the grant does not cover that Terminal.
+#[test]
+fn a_snapshot_reports_the_recent_input_target_the_grant_covers() {
+    let mut world = world();
+    let alpha_session = world.alpha_session;
+    let whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    assert!(
+        whole.sessions.iter().all(|s| s.recent_input.is_none()),
+        "no input yet: nothing recent, no first-member fallback"
+    );
+
+    let _ = world
+        .state
+        .registry_mut()
+        .set_recent(alpha_session, Some(world.alpha_core));
+    let g = world.alpha_group;
+    let group = filtered(
+        &mut world,
+        &[&format!("bind,observe@group:{g}")],
+        Verb::Observe,
+    );
+    assert_eq!(group.sessions[0].recent_input, Some(world.alpha.clone()));
+
+    // A recent target outside the grant is not disclosed.
+    let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    for session in &mut whole.sessions {
+        session.recent_input = Some(world.beta.clone());
+    }
+    let seen = super::filter::filter_snapshot(&world.state, CLIENT, Verb::Observe, whole);
+    assert_eq!(seen.sessions.len(), 1);
+    assert_eq!(seen.sessions[0].recent_input, None);
+}
+
+/// `SESSION_STATE.recent_input` follows membership: once the recent
+/// Terminal moves to another session (ADR-0056) neither session reports it,
+/// since the destination never took input there.
+#[test]
+fn a_moved_recent_input_target_is_reported_by_neither_session() {
+    let mut world = world();
+    let (alpha_session, beta_session) = (world.alpha_session, world.beta_session);
+    let _ = world
+        .state
+        .registry_mut()
+        .set_recent(alpha_session, Some(world.alpha_core));
+    let before = world.state.build_session_snapshot(alpha_session).unwrap();
+    let alpha_wire = world.state.idspace.session_wire(alpha_session);
+    assert_eq!(
+        before
+            .sessions
+            .iter()
+            .find(|s| Some(s.id) == alpha_wire)
+            .and_then(|s| s.recent_input.clone()),
+        Some(world.alpha.clone())
+    );
+
+    world
+        .state
+        .move_resource_to(world.alpha_core, beta_session, &phux_core::Actor::owner())
+        .unwrap();
+    let after = world.state.build_session_snapshot(beta_session).unwrap();
+    assert!(
+        after.sessions.iter().all(|s| s.recent_input.is_none()),
+        "{:?}",
+        after.sessions
+    );
+}
+
 /// The Bell events a server-wide subscription holding `scopes` receives,
 /// after one Bell each on `alpha`, `beta`, no Terminal, and a child of
 /// `alpha`, in that order.

@@ -634,6 +634,9 @@ pub mod session_state {
     pub const KEY: u32 = 2;
     /// One descriptive attribute, `str key || str value`; repeated.
     pub const ATTR: u32 = 3;
+    /// The session's most recent input target (`ResourceId`, R14); absent =
+    /// none reported.
+    pub const RECENT_INPUT: u32 = 4;
 }
 
 /// Fields of every organization body (`docs/spec/L1.md` §5.7).

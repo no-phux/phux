@@ -27,6 +27,61 @@ use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
 use super::notifications::SystemTag;
 
+/// A divider in a [`MENU_BAR`] menu.
+const MENU_SEPARATOR: &str = "-";
+
+/// The menu bar after the app menu: each menu's catalog ids, in order.
+/// AppKit appends its own list of open windows to the menu named "Window".
+const MENU_BAR: &[(&str, &[&str])] = &[
+    (
+        "File",
+        &[
+            "new",
+            "native-agent",
+            "new-session",
+            "new-window",
+            "folder",
+            MENU_SEPARATOR,
+            "close",
+            "close-tab",
+        ],
+    ),
+    (
+        "Edit",
+        &["copy", "paste", "select-all", MENU_SEPARATOR, "find"],
+    ),
+    (
+        "View",
+        &[
+            "palette",
+            "goto",
+            MENU_SEPARATOR,
+            "sidebar",
+            "plain-terminal",
+            "quick-terminal",
+            MENU_SEPARATOR,
+            "font-up",
+            "font-down",
+            "font-reset",
+        ],
+    ),
+    (
+        "Terminal",
+        &[
+            "split-right",
+            "split-down",
+            "view",
+            "zoom",
+            MENU_SEPARATOR,
+            "clear",
+            "attention",
+            MENU_SEPARATOR,
+            "terminate",
+        ],
+    ),
+    ("Window", &["minimize", "windows"]),
+];
+
 struct Opened {
     handle: AnyWindowHandle,
     desk: Entity<Desk>,
@@ -787,54 +842,27 @@ impl Desktop {
         Ok(handle)
     }
 
-    /// Menu items name [`Run`] actions; the platform menu shows each one's bound
-    /// chord. The palette holds the rest of the catalog.
+    /// Menu items name [`Run`] actions by their catalog titles; the platform
+    /// menu shows each one's bound chord. The palette holds the rest of the
+    /// catalog.
     fn publish_menus(&self, cx: &mut App) {
-        let menus = vec![
-            Menu::new("Phux").items([
-                MenuItem::action("Settings…", Run::new("settings")),
-                MenuItem::separator(),
-                MenuItem::action("Quit Phux", Quit),
-            ]),
-            Menu::new("File").items([
-                MenuItem::action("New Terminal", Run::new("new")),
-                MenuItem::action("New Agent…", Run::new("native-agent")),
-                MenuItem::action("New Session…", Run::new("new-session")),
-                MenuItem::action("New Window", Run::new("new-window")),
-                MenuItem::action("Open Folder…", Run::new("folder")),
-                MenuItem::separator(),
-                MenuItem::action("Close Pane", Run::new("close")),
-                MenuItem::action("Close Tab", Run::new("close-tab")),
-            ]),
-            Menu::new("Edit").items([
-                MenuItem::action("Copy", Run::new("copy")),
-                MenuItem::action("Paste", Run::new("paste")),
-                MenuItem::action("Select All", Run::new("select-all")),
-                MenuItem::action("Find…", Run::new("find")),
-            ]),
-            Menu::new("View").items([
-                MenuItem::action("Toggle Sidebar", Run::new("sidebar")),
-                MenuItem::action("Toggle Plain Terminal", Run::new("plain-terminal")),
-                MenuItem::action("Command Palette", Run::new("palette")),
-                MenuItem::action("Toggle Quick Terminal", Run::new("quick-terminal")),
-            ]),
-            Menu::new("Terminal").items([
-                MenuItem::action("Split Right", Run::new("split-right")),
-                MenuItem::action("Split Down", Run::new("split-down")),
-                MenuItem::action("Mirror Pane", Run::new("view")),
-                MenuItem::action("Zoom Pane", Run::new("zoom")),
-                MenuItem::separator(),
-                MenuItem::action("Clear Screen", Run::new("clear")),
-                MenuItem::action("Jump to Agent Needing Attention", Run::new("attention")),
-                MenuItem::separator(),
-                MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
-            ]),
-            // AppKit appends its own list of open windows to the menu named "Window".
-            Menu::new("Window").items([
-                MenuItem::action("Minimize", Run::new("minimize")),
-                MenuItem::action("Show All Windows…", Run::new("windows")),
-            ]),
-        ];
+        let item = |id: &str| -> MenuItem {
+            if id == MENU_SEPARATOR {
+                MenuItem::separator()
+            } else {
+                MenuItem::action(super::actions::title(id), Run::new(id))
+            }
+        };
+        let mut menus = vec![Menu::new("Phux").items([
+            item("settings"),
+            MenuItem::separator(),
+            MenuItem::action("Quit Phux", Quit),
+        ])];
+        menus.extend(
+            MENU_BAR
+                .iter()
+                .map(|(name, ids)| Menu::new(*name).items(ids.iter().map(|id| item(id)))),
+        );
         cx.set_menus(menus);
     }
 

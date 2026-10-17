@@ -14,7 +14,9 @@
 //! [`crate::attach::peer_arrangements`].
 //!
 //! Against an older server there is no link and the driver keeps the
-//! legacy `phux.tui.layout/v1` metadata key.
+//! legacy `phux.tui.layout/v1` metadata key. Against an `ORGANIZATION` server
+//! the driver never uses that key: a link that cannot connect reports the
+//! failure and connects again on the next operation.
 
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
 use phux_protocol::ids::SessionId;
@@ -32,6 +34,9 @@ pub(in crate::attach) struct ArrangementLink {
     session: SessionId,
     conn: Option<Connection>,
     next_request_id: u32,
+    /// Whether a read has succeeded: until one has, the client holds no
+    /// copy of the stored arrangement to write over, so it must not write.
+    loaded: bool,
 }
 
 impl std::fmt::Debug for ArrangementLink {
@@ -39,6 +44,7 @@ impl std::fmt::Debug for ArrangementLink {
         f.debug_struct("ArrangementLink")
             .field("session", &self.session)
             .field("connected", &self.conn.is_some())
+            .field("loaded", &self.loaded)
             .finish_non_exhaustive()
     }
 }
@@ -63,7 +69,29 @@ impl ArrangementLink {
             session,
             conn: Some(conn),
             next_request_id: 1,
+            loaded: false,
         }))
+    }
+
+    /// A link for `session` on `dial` against a server already known to
+    /// advertise `ORGANIZATION`. It connects on first use and reconnects
+    /// after a transport failure, so a dial that fails now never sends the
+    /// caller back to the legacy key.
+    pub(in crate::attach) const fn lazy(dial: Dial, session: SessionId) -> Self {
+        Self {
+            dial,
+            session,
+            conn: None,
+            next_request_id: 1,
+            loaded: false,
+        }
+    }
+
+    /// Whether a read has succeeded on this link. A read that failed is
+    /// "not loaded", never "absent": the stored arrangement may hold groups
+    /// this client has not seen, so nothing may be written until it has.
+    pub(in crate::attach) const fn loaded(&self) -> bool {
+        self.loaded
     }
 
     /// The session this link edits.
@@ -72,7 +100,7 @@ impl ArrangementLink {
     }
 
     /// Read the session's arrangement in handle space; `Ok(None)` when the
-    /// session has none yet.
+    /// server lists the session without one.
     ///
     /// # Errors
     ///
@@ -85,16 +113,18 @@ impl ArrangementLink {
         let result = LayoutOps::new(self.connection().await?, session, first)
             .read()
             .await;
-        match result {
-            Ok(document) => Ok(Some(document)),
-            Err(LayoutOpsError::MissingLayout) => Ok(None),
-            Err(err) => Err(self.settle(err)),
-        }
+        let read = match result {
+            Ok(document) => Some(document),
+            Err(LayoutOpsError::MissingLayout) => None,
+            Err(err) => return Err(self.settle(err)),
+        };
+        self.loaded = true;
+        Ok(read)
     }
 
     /// Replace the session's arrangement with `document`: a compare-and-swap
     /// against the revision just read, retried on conflict, so the write
-    /// lands whole. A session with no arrangement yet is seeded.
+    /// lands whole.
     ///
     /// # Errors
     ///

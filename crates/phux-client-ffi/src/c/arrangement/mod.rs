@@ -1,16 +1,16 @@
 //! The attached session's shared arrangement, over `GET_STATE` for the
 //! catalog and one of two documents: the session's stored arrangement
 //! (`ARRANGEMENT_GET` and compare-and-swap `ARRANGEMENT_REPLACE`) when the
-//! server advertises `ORGANIZATION` and the session has one, else the legacy
+//! server advertises `ORGANIZATION`, else the legacy
 //! `phux.tui.layout/v1/<session-id>` metadata value (last-write-wins `SET`
-//! and a confirming `GET`), which such a server translates to and from the
-//! arrangement.
+//! and a confirming `GET`) of an older server.
 //!
-//! Against an `ORGANIZATION` server the legacy value is still used for a
-//! session without a stored arrangement (one from the legacy surface or an
-//! upgrade), and until the replica is live: no typed command creates an
-//! arrangement, so this is the crate's one remaining reliance on the server's
-//! legacy translation (ADR-0161 section 9).
+//! An `ORGANIZATION` server gives every session an arrangement (SPEC L2
+//! section 2.2), so the legacy value is never read or written there: a read
+//! that starts while the replica is seeding, or before it lists the session,
+//! waits for the arrangement and fails if the replica becomes unavailable; a
+//! read against a failed replica, or a session listed without an
+//! arrangement, fails at once.
 //!
 //! An arrangement is presentation only: an empty one means the session's
 //! members are not arranged, never that the session is empty, and no
@@ -63,6 +63,9 @@ pub const PHUX_ARRANGEMENT_BACKEND_ORGANIZATION: u32 = 2;
 enum Backend {
     Legacy,
     Organization(ArrangementKey),
+    /// An `ORGANIZATION` server whose replica does not name the session's
+    /// arrangement yet: nothing is queued until it does.
+    Awaiting,
 }
 
 struct Pending {
@@ -201,7 +204,7 @@ impl SharedArrangement {
     /// The stored arrangement's key, when the publication came from one.
     const fn stored_key(&self) -> Option<ArrangementKey> {
         match self.backend {
-            Backend::Legacy => None,
+            Backend::Legacy | Backend::Awaiting => None,
             Backend::Organization(key) => Some(key),
         }
     }
@@ -218,7 +221,7 @@ impl SharedArrangement {
         }
         match self.backend {
             Backend::Legacy => PHUX_ARRANGEMENT_BACKEND_LEGACY,
-            Backend::Organization(_) => PHUX_ARRANGEMENT_BACKEND_ORGANIZATION,
+            Backend::Organization(_) | Backend::Awaiting => PHUX_ARRANGEMENT_BACKEND_ORGANIZATION,
         }
     }
 
@@ -292,10 +295,108 @@ fn stored_arrangement(client: &Client) -> Option<ArrangementKey> {
     client.control().organization().session(&key)?.arrangement
 }
 
+/// The document a read goes to: the stored arrangement on an
+/// `ORGANIZATION` server, else the legacy value.
+///
+/// A read waits for the replica only while something will end the wait: a
+/// seed in flight (it ends in `OrganizationChanged` or
+/// `OrganizationUnavailable`), or a live replica that does not list the
+/// session yet (its journal event will). A replica that is neither live nor
+/// seeding, or a live one listing the session with no arrangement, fails the
+/// read now, so a pending read can never block later transactions forever.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the control guard lives exactly as long as the replica borrow it lends"
+)]
+fn read_backend(client: &Client) -> Result<Backend, BridgeError> {
+    if !crate::c::organization::supported(client) {
+        return Ok(Backend::Legacy);
+    }
+    if let Some(key) = stored_arrangement(client) {
+        return Ok(Backend::Organization(key));
+    }
+    let selected = selected_key(client);
+    let (live, listed, seeding) = {
+        let control = client.control();
+        let replica = control.organization();
+        let listed = selected.is_some_and(|key| replica.session(&key).is_some());
+        (replica.is_live(), listed, replica.seeding())
+    };
+    match (live, listed, seeding) {
+        (true, true, _) => Err(BridgeError::state("the session has no arrangement")),
+        (true, false, _) | (false, _, true) => Ok(Backend::Awaiting),
+        (false, _, false) => Err(BridgeError::state(
+            "the organization records could not be read; call phux_client_organization_refresh",
+        )),
+    }
+}
+
+/// Queue the reads of a transaction: the document first, then the registry
+/// (pruning against an older registry could falsely retire newly created
+/// leaves). An awaited document queues nothing yet.
+fn queue_reads(
+    client: &mut Client,
+    backend: Backend,
+    metadata_id: u32,
+    state_id: u32,
+) -> Result<(), BridgeError> {
+    match backend {
+        Backend::Awaiting => return Ok(()),
+        Backend::Legacy => {
+            client.queue_frame(&metadata_frame(metadata_id, client.arrangement.selected))?;
+        }
+        Backend::Organization(arrangement) => client.queue_frame(&FrameKind::Command {
+            request_id: metadata_id,
+            command: Command::ArrangementGet { arrangement },
+        })?,
+    }
+    client.queue_frame(&state_frame(state_id))
+}
+
+/// A read waiting for the replica to name the session's arrangement: start
+/// it once the replica does.
+fn resume_awaited_read(client: &mut Client) -> Result<(), BridgeError> {
+    let Some(pending) = client.arrangement.pending.as_ref() else {
+        return Ok(());
+    };
+    if pending.backend != Backend::Awaiting {
+        return Ok(());
+    }
+    let (metadata_id, state_id) = (pending.metadata_id, pending.state_id);
+    let backend = read_backend(client)?;
+    if backend == Backend::Awaiting {
+        return Ok(());
+    }
+    let state_id = state_id.ok_or_else(|| BridgeError::state("missing arrangement registry"))?;
+    queue_reads(client, backend, metadata_id, state_id)?;
+    if let Some(pending) = client.arrangement.pending.as_mut() {
+        pending.backend = backend;
+    }
+    Ok(())
+}
+
+/// The replica could not be read: a read still waiting for it to name the
+/// session's arrangement fails rather than falling back to the legacy value.
+pub(crate) fn organization_unavailable(client: &mut Client, message: &str) {
+    let awaiting = client
+        .arrangement
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.backend == Backend::Awaiting);
+    if awaiting && !crate::c::organization::live(client) {
+        client.arrangement.fail(&BridgeError::state(format!(
+            "the session's arrangement is unavailable: {message}"
+        )));
+    }
+}
+
 /// The replica changed: follow the selected session's stored arrangement,
-/// and read it again when it moved past the publication, appeared, or went
-/// away.
+/// start a read that was waiting for it, and read it again when it moved
+/// past the publication, appeared, or went away.
 pub(crate) fn organization_changed(client: &mut Client) {
+    if let Err(error) = resume_awaited_read(client) {
+        client.arrangement.fail(&error);
+    }
     let ws = &client.arrangement;
     if ws.selected == 0 || ws.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE {
         return;
@@ -327,6 +428,9 @@ pub(crate) fn organization_changed(client: &mut Client) {
         _ => true,
     };
     if stale && let Err(error) = start_read(client, 0, None) {
+        // The stored arrangement went away: stop following it, so the next
+        // change does not fail the same read again.
+        client.arrangement.backend = Backend::Awaiting;
         client.arrangement.fail(&error);
     }
 }
@@ -358,10 +462,15 @@ pub(super) enum Proposal {
     ),
 }
 
-/// Encode `next` for the publication's backend.
+/// Encode `next` for the publication's backend. An `ORGANIZATION` server's
+/// arrangement is only ever written by compare-and-swap, so an edit before
+/// it was read is refused.
 pub(super) fn propose(client: &Client, next: ArrangementDoc) -> Result<Proposal, BridgeError> {
     match client.arrangement.backend {
-        Backend::Legacy => {
+        Backend::Legacy | Backend::Awaiting if crate::c::organization::supported(client) => Err(
+            BridgeError::state("the session's arrangement is not loaded yet"),
+        ),
+        Backend::Legacy | Backend::Awaiting => {
             let bytes = next
                 .encode_topology_cbor()
                 .map_err(|e| BridgeError::invalid(e.to_string()))?;
@@ -395,14 +504,14 @@ pub(super) fn start_read(
         return Err(BridgeError::state("outgoing queue full"));
     }
     // A write goes to the document the publication came from; a read goes to
-    // the stored arrangement whenever the session has one.
+    // the stored arrangement on an `ORGANIZATION` server.
     let backend = match &proposed {
         Some(Proposal::Legacy(..)) => Backend::Legacy,
         Some(Proposal::Stored(..)) => client
             .arrangement
             .stored_key()
-            .map_or(Backend::Legacy, Backend::Organization),
-        None => stored_arrangement(client).map_or(Backend::Legacy, Backend::Organization),
+            .map_or(Backend::Awaiting, Backend::Organization),
+        None => read_backend(client)?,
     };
     let state_id = client.arrangement.reserve_internal()?;
     let metadata_id = client.arrangement.reserve_internal()?;
@@ -438,19 +547,8 @@ pub(super) fn start_read(
             Some(doc)
         }
     };
-    // Read the document before the registry: pruning against an older
-    // registry could falsely retire newly created leaves. A write is queued
-    // first, so the read sees it.
-    match backend {
-        Backend::Legacy => {
-            client.queue_frame(&metadata_frame(metadata_id, client.arrangement.selected))?;
-        }
-        Backend::Organization(arrangement) => client.queue_frame(&FrameKind::Command {
-            request_id: metadata_id,
-            command: Command::ArrangementGet { arrangement },
-        })?,
-    }
-    client.queue_frame(&state_frame(state_id))?;
+    // A write is queued first, so the read sees it.
+    queue_reads(client, backend, metadata_id, state_id)?;
     client.arrangement.begin(Pending {
         request,
         state_id: Some(state_id),
@@ -586,7 +684,7 @@ fn receive_metadata(client: &mut Client, id: u32, bytes: Option<&[u8]>) -> Resul
     let Some(pending) = client.arrangement.pending.as_ref() else {
         return Ok(());
     };
-    if pending.metadata_id != id || matches!(pending.backend, Backend::Organization(_)) {
+    if pending.metadata_id != id || pending.backend != Backend::Legacy {
         return reject_owned_reply(&client.arrangement, id);
     }
     if pending.metadata.is_some() {
@@ -701,8 +799,10 @@ fn complete_snapshot(client: &mut Client, pending: Pending) -> Result<(), Bridge
         ),
     };
     let backend = match (pending.backend, read.key) {
-        (Backend::Organization(_), Some(key)) => Backend::Organization(key),
-        _ => Backend::Legacy,
+        (Backend::Legacy, _) => Backend::Legacy,
+        (Backend::Organization(_) | Backend::Awaiting, Some(key)) => Backend::Organization(key),
+        // The stored arrangement went away: wait for the replica to name one.
+        (Backend::Organization(_) | Backend::Awaiting, None) => Backend::Awaiting,
     };
     publish(client, catalog, read.doc, read.stored)?;
     let ws = &mut client.arrangement;

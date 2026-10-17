@@ -630,10 +630,17 @@ impl ServerState {
         }
         fresh.restore_counters(blob);
         let instance = fresh.instance_id();
-        let (org, keyed, imported) = match &blob.org {
+        let (mut org, keyed, imported) = match &blob.org {
             Some(carried) => merge_carried(self.org(), self.org.loaded, carried, blob, instance)?,
             None => import_tree(self.org(), blob, instance)?,
         };
+        // Every session has an arrangement (SPEC L2 §2.2); a carried session
+        // written before that rule gets its missing one now, and the store
+        // learns it below.
+        let arranged_now = org.sessions().any(|s| s.arrangement.is_none());
+        if arranged_now {
+            super::org::ensure_arrangements(&mut org);
+        }
         fresh.sessions.registry = phux_core::Registry::new(org);
         fresh.bind_session_wires(blob, &keyed)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, wire_pane)?;
@@ -644,7 +651,7 @@ impl ServerState {
                 Some(crate::org_store::LIVE_IMPORT_MIGRATION),
                 super::now_stamp(),
             )?;
-        } else if !self.org.loaded {
+        } else if !self.org.loaded || arranged_now {
             self.org
                 .store
                 .import(fresh.org(), None, super::now_stamp())?;
@@ -2274,10 +2281,13 @@ mod tests {
                 assert_eq!(kept.key, kept_key);
                 assert_eq!(kept.revision, kept_revision);
                 assert!(resumed.session_by_name("carried").is_none());
-                assert!(
-                    resumed.session_by_name("arrived").is_some(),
-                    "a carried session the store lacks is added"
-                );
+                let arrived = resumed
+                    .session_by_name("arrived")
+                    .expect("a carried session the store lacks is added")
+                    .clone();
+                let arrangement = arrived
+                    .arrangement
+                    .expect("a carried session without an arrangement gets one");
                 drop(resumed);
 
                 let mut store = SqliteOrgStore::open(&path).unwrap();
@@ -2289,6 +2299,20 @@ mod tests {
                     .expect("store row");
                 assert_eq!(row.name, "kept");
                 assert_eq!(row.revision, kept_revision);
+                assert!(
+                    stored
+                        .sessions
+                        .iter()
+                        .any(|session| session.key == arrived.key
+                            && session.arrangement == Some(arrangement)),
+                    "the store learns the added session and its arrangement"
+                );
+                assert!(
+                    stored
+                        .arrangements
+                        .iter()
+                        .any(|stored| stored.key == arrangement)
+                );
                 assert!(
                     stored
                         .sessions

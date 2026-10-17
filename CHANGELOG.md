@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.97.0](https://github.com/no-phux/phux/compare/v0.96.0...v0.97.0) (2026-10-17)
+
+
+### Features
+
+* **org:** seed every session's arrangement by ARRANGEMENT_REPLACE, never the layout key ([#1573](https://github.com/no-phux/phux/issues/1573)) ([90fd047](https://github.com/no-phux/phux/commit/90fd047242afbd11e39cab80eea5ee7fbadb7e73))
+
 ## [0.96.0](https://github.com/no-phux/phux/compare/v0.95.1...v0.96.0) (2026-10-17)
 
 

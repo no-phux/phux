@@ -18,6 +18,7 @@ use gpui_kit::component::{ActiveTheme, Icon};
 use crate::settings::skin::GLASS;
 use crate::settings::{Backdrop, Skin, TabPosition};
 
+use super::actions::builtin;
 use super::desk::{Desk, Modal};
 use super::host::RemoteHost;
 use super::view::keystroke;
@@ -48,13 +49,6 @@ fn span_progress(elapsed: Duration, span: Duration) -> f32 {
         return 1.;
     }
     (elapsed.as_secs_f32() / span.as_secs_f32()).clamp(0., 1.)
-}
-
-/// The catalogued command `id`.
-fn builtin(id: &str) -> Option<&'static crate::settings::CommandSpec> {
-    crate::settings::builtin_commands()
-        .iter()
-        .find(|command| command.id == id)
 }
 
 /// Whether the skin wants the compositor material behind the menu.
@@ -409,8 +403,7 @@ impl GlassMenu {
     }
 
     fn command(&self, id: &'static str, icon: IconName) -> Entry {
-        let spec = builtin(id).expect("menu command catalogue");
-        let mut entry = Entry::new(spec.title, icon, Choice::Command(id));
+        let mut entry = Entry::new(super::actions::title(id), icon, Choice::Command(id));
         entry.chord = self
             .chords
             .iter()
@@ -431,13 +424,13 @@ impl GlassMenu {
                     Entry {
                         gap: true,
                         ..Entry::new(
-                            "Pane layout",
+                            "Pane Layout",
                             IconName::PanelsTopLeft,
                             Choice::Page(Page::Panes),
                         )
                     },
                     Entry::new(
-                        "Tab placement",
+                        "Tab Placement",
                         IconName::PanelLeft,
                         Choice::Page(Page::Tabs),
                     ),
@@ -481,7 +474,7 @@ impl GlassMenu {
                     entry.checked = self.current.as_ref() == Some(&host.name);
                     entry
                 }));
-                let mut add = Entry::new("Add host…", IconName::Plus, Choice::AddHost);
+                let mut add = Entry::new("Add Host…", IconName::Plus, Choice::AddHost);
                 add.gap = true;
                 entries.push(add);
                 entries
@@ -713,9 +706,9 @@ impl GlassMenu {
                     .into(),
                 "Switch host",
             ),
-            Page::Panes => ("Pane layout".into(), "Split or duplicate this terminal"),
-            Page::Tabs => ("Tab placement".into(), "Choose top or side workspace tabs"),
-            Page::Hosts => ("Switch host".into(), "Local and saved hosts"),
+            Page::Panes => ("Pane Layout".into(), "Split or duplicate this terminal"),
+            Page::Tabs => ("Tab Placement".into(), "Choose top or side workspace tabs"),
+            Page::Hosts => ("Switch Host".into(), "Local and saved hosts"),
         };
         let icon = match (home, self.current.is_some()) {
             (true, true) => IconName::Server,

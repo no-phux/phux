@@ -3,12 +3,16 @@
 
 use gpui::{AnyWindowHandle, Entity, TestAppContext, VisualTestContext};
 use gpui_kit::component::Root;
+use phux_client_core::layout::wire::HandleMap;
+use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status, Topology};
+use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionKey;
 
-use super::{Section, Target, WINDOWS, window_sections};
+use super::{Section, Target, WINDOWS, goto_sections, prepare_goto, window_sections};
 use crate::app::desk::Link;
 use crate::app::{AppOptions, Desk, Desktop, Modal};
-use crate::connection::{Connection, DeterministicDial};
-use crate::workspace::layout::{DeskTab, LayoutNode, Placement};
+use crate::connection::{AgentAttention, AgentInfo, AgentState, Connection, DeterministicDial};
+use crate::workspace::layout::{Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::{Workspace, WorkspaceOptions, persist};
 
 struct Fixture {
@@ -372,4 +376,199 @@ fn native_window_menu_and_palette_share_the_overview_command(cx: &mut TestAppCon
         first.read_with(cx, |desk, _| desk.modal.clone()),
         Modal::None
     );
+}
+
+fn placement(id: &str, terminal: u32) -> LayoutNode {
+    LayoutNode::Leaf {
+        placement: Placement {
+            id: id.into(),
+            terminal_id: Some(ResourceId::local(terminal)),
+            terminal_label: String::new(),
+            view_id: None,
+        },
+    }
+}
+
+fn split_tab(id: &str, title: &str, panes: [(&str, u32); 2]) -> DeskTab {
+    DeskTab {
+        id: id.into(),
+        title: Some(title.into()),
+        root: LayoutNode::Split {
+            id: format!("{id}-split"),
+            axis: Axis::Row,
+            ratio: 0.5,
+            first: Box::new(placement(panes[0].0, panes[0].1)),
+            second: Box::new(placement(panes[1].0, panes[1].1)),
+        },
+        focused_id: panes[1].0.into(),
+        zoomed_id: None,
+    }
+}
+
+fn pane(terminal: u32) -> PaneDescriptor {
+    PaneDescriptor {
+        terminal_id: ResourceId::local(terminal),
+        session_id: 1,
+        session_name: "api".into(),
+        cols: 80,
+        rows: 24,
+        title: Some(format!("zsh {terminal}")),
+        cwd: Some("/repo".into()),
+        is_focused: false,
+        key: None,
+        revision: None,
+        name: None,
+        activation: None,
+        exec: None,
+    }
+}
+
+fn session(byte: u8, name: &str) -> SessionDescriptor {
+    SessionDescriptor {
+        id: u32::from(byte),
+        name: name.into(),
+        attached_client_count: 0,
+        keep_empty: true,
+        created_at_unix_secs: 0,
+        key: SessionKey::new([byte; 16]),
+        lifetime: None,
+        revision: None,
+        members: 0,
+        arrangement: None,
+        awaiting_organization: false,
+    }
+}
+
+/// A desk showing session "api" beside "api-old", with two tabs titled
+/// "build". Tab "b" is active and shows terminal 4; terminal 2, focused in tab
+/// "a", runs a working agent.
+fn look_alike_desk(cx: &mut TestAppContext) -> Entity<Desk> {
+    let fixture = fixture(cx);
+    let desk = fixture.first.1.clone();
+    let socket = desk.read_with(cx, |desk, _| desk.socket.clone());
+    let sessions = vec![session(1, "api"), session(2, "api-old")];
+    let mut connection =
+        Connection::connect_with_key(socket, "api".into(), sessions[0].key).unwrap();
+    connection.status = Status::Attached;
+    connection.topology = Some(Topology {
+        focused_session: 1,
+        focused_pane: ResourceId::local(4),
+        sessions,
+        panes: (1..=4).map(pane).collect(),
+        agent_sessions: Vec::new(),
+        authority: None,
+        inbox: None,
+        handles: HandleMap::default(),
+    });
+    connection.agents.insert(
+        ResourceId::local(2),
+        AgentInfo {
+            name: "claude".into(),
+            kind: Some("claude".into()),
+            state: AgentState::Working,
+            attention: AgentAttention::Normal,
+            changed_at_ms: 0,
+        },
+    );
+    desk.update(cx, |desk, _| {
+        let mut workspace = Workspace::new("api".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![
+            split_tab("a", "build", [("a1", 1), ("a2", 2)]),
+            split_tab("b", "build", [("b1", 3), ("b2", 4)]),
+        ];
+        workspace.active_id = "b".into();
+        desk.session = "api".into();
+        desk.link = Some(Link {
+            connection,
+            workspace,
+        });
+    });
+    desk
+}
+
+type Marked = Vec<(&'static str, String, String)>;
+
+/// (category, title, detail) for every row whose detail carries the Current
+/// mark. A typed search ranks rows into one unlabeled section, so the row's
+/// category names its kind rather than the section label.
+fn current_rows(sections: &[Section]) -> Marked {
+    sections
+        .iter()
+        .flat_map(|section| &section.rows)
+        .map(|row| {
+            (
+                row.category,
+                row.title.to_string(),
+                row.detail.as_deref().unwrap_or_default().to_owned(),
+            )
+        })
+        .filter(|(_, _, detail)| detail.starts_with("Current · "))
+        .collect()
+}
+
+/// Go To names the work, terminal and tab this window shows among look-alikes:
+/// two sessions whose names share a prefix and two tabs with the same title.
+#[gpui::test]
+fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let desk = look_alike_desk(cx);
+    let sections = desk.read_with(cx, |desk, _| goto_sections(desk));
+    assert_eq!(
+        current_rows(&sections),
+        vec![
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
+        ],
+        "exactly one work, terminal and tab is marked"
+    );
+}
+
+/// Types "current" into the palette's cached search: the marked rows it ranks,
+/// sorted by category, and how many rows it ranks in all.
+fn search_current(desk: &Entity<Desk>, cx: &mut TestAppContext) -> (Marked, usize) {
+    desk.update(cx, |desk, _| {
+        prepare_goto(desk, "current");
+        let ranked = desk.goto_search.ranked();
+        let rows = ranked.iter().map(|section| section.rows.len()).sum();
+        let mut marked = current_rows(ranked);
+        marked.sort();
+        (marked, rows)
+    })
+}
+
+/// The palette renders from the cached search, and a tab switch runs no drain:
+/// the Current marks still follow the active tab, and typing "current" finds
+/// exactly the marked rows, an agent row included.
+#[gpui::test]
+fn goto_current_follows_a_tab_switch_through_the_search_cache(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let desk = look_alike_desk(cx);
+    let (before, rows) = search_current(&desk, cx);
+    assert_eq!(
+        before,
+        vec![
+            ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
+            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+        ]
+    );
+    assert_eq!(rows, before.len(), "\"current\" finds only the marked rows");
+
+    desk.update(cx, |desk, _| desk.select_tab("a"));
+    let (after, rows) = search_current(&desk, cx);
+    assert_eq!(
+        after,
+        vec![
+            (
+                "Agents",
+                "claude — zsh 2".into(),
+                "Current · working · api · /repo".into()
+            ),
+            ("Tabs", "build".into(), "Current · Tab 1 · 2 panes".into()),
+            ("Work", "api".into(), "Current · Local · 4 terminals".into()),
+        ],
+        "the marks move to tab a and its focused agent terminal"
+    );
+    assert_eq!(rows, after.len(), "\"current\" finds only the marked rows");
 }

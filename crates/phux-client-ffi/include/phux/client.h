@@ -1011,22 +1011,29 @@ PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index
  * zero groups); unarranged_count says how many of its terminals no group
  * shows, so a host can offer to arrange them.
  *
- * Backend ORGANIZATION (the server advertised ORGANIZATION and the session
- * has a stored arrangement): reads are ARRANGEMENT_GET; a mutation is a
- * compare-and-swap ARRANGEMENT_REPLACE at server_revision, followed by a
- * confirming read. A concurrent writer makes it fail (status REFUSED, the
- * message names the current revision) and the confirming read publishes the
- * winner; redo the edit against it. It is never last-write-wins. Stored
- * entries whose resource has no live handle here are kept on write
- * (unplaced_count). The client follows the stored arrangement through the
- * organization replica and re-reads it on its own (request_id 0) when it
- * moves past server_revision.
+ * Backend ORGANIZATION (the server advertised ORGANIZATION, which gives
+ * every session a stored arrangement): reads are ARRANGEMENT_GET. A read
+ * that starts while the organization replica is still seeding, or before
+ * the live replica lists the session, stays pending (no timeout) until the
+ * replica names the arrangement or reports itself unavailable; while it is
+ * pending every other arrangement transaction is refused as already
+ * pending. A read fails at once (status 3, or a refused call) when the
+ * replica is neither live nor seeding (call
+ * phux_client_organization_refresh) or lists the session without an
+ * arrangement. A mutation before the first successful read is refused. A
+ * mutation is a compare-and-swap ARRANGEMENT_REPLACE at server_revision,
+ * followed by a confirming read. A concurrent writer makes it fail (status
+ * REFUSED, the message names the current revision) and the confirming read
+ * publishes the winner; redo the edit against it. It is never
+ * last-write-wins. Stored entries whose resource has no live handle here
+ * are kept on write (unplaced_count). The client follows the stored
+ * arrangement through the organization replica and re-reads it on its own
+ * (request_id 0) when it moves past server_revision.
  *
- * Backend LEGACY (no ORGANIZATION, or no stored arrangement yet): the
+ * Backend LEGACY (a server without ORGANIZATION): the
  * phux.tui.layout/v1/<session-id> metadata value, written by whole-value
  * last-write-wins SET and a confirming GET; expected_revision fences only
- * this client's snapshot. An ORGANIZATION server creates the stored
- * arrangement from that first write.
+ * this client's snapshot. Never used against an ORGANIZATION server.
  *
  * Initial attachment exposes catalog only (state UNAVAILABLE) until the
  * document/state replies complete. Present legacy layouts require schema v3
