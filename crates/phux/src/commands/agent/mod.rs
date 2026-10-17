@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::state::Degradation;
-use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, parse_selector, partial, report_no_server, resolve_targets};
@@ -765,8 +765,7 @@ async fn pane_evidence(
         phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true)
             .await
             .ok();
-    let window = snapshot.windows.iter().find(|w| w.id == pane.window_id);
-    let session = window.and_then(|w| session_for_window(snapshot, w));
+    let session = session_of_pane(snapshot, pane);
     // The pane's live agent session only when it has exactly one (ADR-0103).
     let agent_session = {
         let mut children = phux_client::resource::children_of(snapshot, &pane.id);
@@ -783,7 +782,7 @@ async fn pane_evidence(
     PaneEvidence {
         terminal: phux_client::selector::format_terminal_id(&pane.id),
         session: session.map_or_else(|| "unknown".to_owned(), |s| s.name.clone()),
-        window: window_label(window),
+        window: window_label(snapshot, pane, session.is_some()),
         // The live OSC title from `GET_SCREEN`, the one the server's detector
         // evaluates. `pane.title` is the user-set title and is not it.
         title: screen.as_ref().and_then(|s| s.title.clone()),
@@ -802,18 +801,30 @@ async fn pane_evidence(
     }
 }
 
-fn session_for_window<'a>(
+/// The session `pane` belongs to, through its `session` facet
+/// ([`phux_client::resource::session_of`]).
+fn session_of_pane<'a>(
     snapshot: &'a SessionSnapshot,
-    window: &WindowInfo,
+    pane: &ResourceInfo,
 ) -> Option<&'a phux_protocol::wire::info::SessionInfo> {
-    snapshot
-        .sessions
-        .iter()
-        .find(|session| session.id == window.session_id)
+    let id = phux_client::resource::session_of(snapshot, &pane.id)?;
+    snapshot.sessions.iter().find(|session| session.id == id)
 }
 
-fn window_label(window: Option<&WindowInfo>) -> String {
-    window.map_or_else(|| "unknown".to_owned(), |w| format!("window-{}", w.index))
+/// The `window` field of `phux agent --json`, kept for output stability.
+/// A session is one window (ADR-0160), labelled `window-0` as the legacy
+/// snapshot labels it, so a pane in a known session needs no window lookup.
+/// Only a pane from a server that does not report its `session` facet is
+/// labelled by its legacy window's index.
+fn window_label(snapshot: &SessionSnapshot, pane: &ResourceInfo, in_session: bool) -> String {
+    if pane.session.is_some() {
+        return if in_session { "window-0" } else { "unknown" }.to_owned();
+    }
+    snapshot
+        .windows
+        .iter()
+        .find(|window| window.id == pane.window_id)
+        .map_or_else(|| "unknown".to_owned(), |w| format!("window-{}", w.index))
 }
 
 fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) -> ExitCode {
@@ -862,4 +873,62 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+    use super::{session_of_pane, window_label};
+
+    fn snapshot(pane: &ResourceInfo) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), pane.window_id, pane.id.clone())
+            .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")])
+            .with_resources(vec![pane.clone()])
+    }
+
+    /// A pane joined to its session by the `session` facet alone (no
+    /// legacy window) still reports its session and the documented
+    /// `window-0` label.
+    #[test]
+    fn a_facet_pane_names_its_session_without_a_window() {
+        let pane = ResourceInfo::new(ResourceId::local(3), WindowId::new(0), 80, 24)
+            .with_session(Some(SessionId::new(1)));
+        let snapshot = snapshot(&pane);
+
+        let session = session_of_pane(&snapshot, &pane);
+
+        assert_eq!(session.map(|s| s.name.as_str()), Some("work"));
+        assert_eq!(
+            window_label(&snapshot, &pane, session.is_some()),
+            "window-0"
+        );
+    }
+
+    /// A satellite pane's facet names a session on the satellite, never one
+    /// of these: both fields stay `unknown`.
+    #[test]
+    fn a_satellite_pane_is_unknown() {
+        let pane = ResourceInfo::new(ResourceId::satellite("edge", 3), WindowId::new(0), 80, 24)
+            .with_session(Some(SessionId::new(1)));
+        let snapshot = snapshot(&pane);
+
+        assert!(session_of_pane(&snapshot, &pane).is_none());
+        assert_eq!(window_label(&snapshot, &pane, false), "unknown");
+    }
+
+    /// A server that predates the facet: the legacy window names both.
+    #[test]
+    fn a_pre_facet_pane_falls_back_to_its_window() {
+        let pane = ResourceInfo::new(ResourceId::local(3), WindowId::new(2), 80, 24);
+        let snapshot = snapshot(&pane).with_windows(vec![
+            WindowInfo::new(WindowId::new(2), SessionId::new(1), "w").with_index(1),
+        ]);
+
+        let session = session_of_pane(&snapshot, &pane);
+
+        assert_eq!(session.map(|s| s.name.as_str()), Some("work"));
+        assert_eq!(window_label(&snapshot, &pane, true), "window-1");
+    }
 }
