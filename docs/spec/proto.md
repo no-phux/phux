@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-17
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -106,7 +106,10 @@ oriented byte stream. This version defines these concrete transports:
   fails — a stray non-phux QUIC client never reaches the frame layer.
   A listener may also offer `phux-enroll/1` (`ENROLL_ALPN`), which carries
   one workload enrollment exchange and never a phux frame
-  ([workload-auth.md](./workload-auth.md) §8.2).
+  ([workload-auth.md](./workload-auth.md) §8.2), and `phux-satellite/1`
+  (`SATELLITE_ALPN`), on which a satellite dials its hub and the hub opens
+  the streams, each one connection with the framing above
+  ([workload-auth.md](./workload-auth.md) §8.3).
   When both peers negotiate `QUIC_STREAMS` (§6.2), the connection
   carries one control stream plus one bidi stream per attached Terminal
   instead (§4.2); without the bit the single-stream shape above is the

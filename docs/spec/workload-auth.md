@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -124,7 +124,11 @@ never scope. A record without it is `human` when its ceiling is exactly
 `inventory,observe,create,bind,input,signal@global`, the ceiling pairing
 grants (§8.1, §8.2), and `automation` otherwise. A ticket enrollment
 (§8.2) SHALL record `human`. A writer SHALL omit the field when no one
-named it, so an older reader keeps loading the file. One invalid record
+named it, so an older reader keeps loading the file. A satellite
+credential (§8.3) carries `satellite`, the name it enrolled as, and an
+empty scope list in place of a ceiling; every other record omits
+`satellite` and names at least one scope. A terminal endpoint SHALL treat a
+satellite credential as unknown. One invalid record
 makes the loaded snapshot malformed. The file obeys the same ownership, mode, no-follow,
 stable-read, lock, sync, and atomic-replacement rules. Public keys and
 fingerprints are not secrets. A malformed, replaced, or unstable read
@@ -910,6 +914,59 @@ and treats the reply as §8.1 step 3 does, and additionally refuses a CA other
 than the pinned one. The private key never appears in the link, the request,
 or any log; the ticket is a secret like the bearer token and is shown once.
 
+An unspent ticket may be revoked by its handle (`t-` and eight lowercase
+hex digits; the reference CLI is `phux workload revoke t-…`). From then on it
+is refused like a consumed one.
+
+### 8.3 Satellites that dial out
+
+<!-- impl-status: shipped; probe: SATELLITE_ALPN,mint_satellite_ticket,register_satellite,SatelliteAdopter,JoinCode -->
+> **Status: shipped (ADR-0180).** `phux host ticket NAME` mints the
+> ticket and registers `[[satellites]] NAME` as `inbound://`. `phux host
+> join CODE` enrolls and records `[[uplink]]`. The configured QUIC listener
+> of a `paired` server serves the ALPN, and the server's `[[uplink]]`
+> supervisors dial it.
+
+A server the hub cannot reach (a sandbox behind NAT) becomes the hub's
+satellite by dialing the hub. Its enrollment is §8.2's exchange with a
+**satellite ticket**: a ticket whose store record names the satellite,
+`NAME`. The ticket, never the request, decides the role. The credential it
+enrolls is recorded with `satellite = NAME` and no scope ceiling (§2). In
+the same locked write, the hub revokes every other active credential of
+`NAME`, so one name has one live credential. The reference hub mints a
+satellite ticket for ten minutes and its credential for one year.
+
+The hub's join code is
+`phux://satellite?hub=HOST:PORT[&sni=NAME]&ca=sha256:…&name=NAME&enroll=HEX`
+(`hub`, `sni`, and `name` percent-encoded). It carries no bearer token. The
+`ca` is required: the joining server pins the hub's CA, never learns it,
+and refuses an issued chain whose CA differs.
+
+The satellite then dials the hub's QUIC listener under the ALPN
+`phux-satellite/1`, trusting the hub by that CA and presenting its
+satellite certificate. On that ALPN the hub:
+
+- offers the ALPN only on a listener that verifies workload certificates
+  (`paired`);
+- admits the connection only when the certificate maps to an active
+  satellite credential whose `NAME` is an enabled `inbound://` satellite in
+  its table, and otherwise closes it with `AUTH_FAILED` (`0x01`) before any
+  stream;
+- is the phux client: it opens bidirectional streams, and each one is one
+  ordinary phux connection (§5 of [proto.md](./proto.md)) beginning with
+  the hub's `HELLO`;
+- runs that connection as `NAME`'s satellite link, exactly as a link it
+  dialed, and closes an older connection of `NAME` when a newer one is
+  admitted;
+- closes the connection with `AUTH_FAILED` once the credential is revoked,
+  expired, or no longer in the registry, re-checking at least every second.
+
+The satellite opens no stream. It serves each stream the hub opens as a
+connection to its own owner socket, so the hub holds the satellite owner's
+authority, as a hub dialing `ssh://` does through `phux stdio-bridge`. A
+satellite therefore needs no listener and may run `local`. It redials a lost
+or refused connection with capped exponential backoff.
+
 ## 9. Conformance cases
 
 A conforming implementation exercises at least these independent failures:
@@ -925,6 +982,10 @@ revoked/expired authority at admission and while live. Enrollment cases (§8.2):
 unknown ticket; one ticket raced by two keys; a malformed request leaving the
 ticket unspent; an issued chain presented with another key; and a
 certificate-less terminal connection on a listener that serves enrollment.
+Satellite cases (§8.3): a revoked ticket; a satellite credential presented
+on the terminal ALPN; a satellite credential whose name the hub has no
+enabled `inbound://` entry for; a re-enrollment revoking the name's previous
+credential; and a credential revoked while its link is live.
 
 Authorization cases include every matrix row; BIND-only
 `phux.session.create/v1`; mutation/subscription of server-owned metadata; a

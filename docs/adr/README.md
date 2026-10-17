@@ -210,6 +210,7 @@ column is the base status word plus at most one relationship clause, about
 | [0176](./0176-the-release-pipeline.md) | The release pipeline | Accepted (supersedes [0113](./0113-next-release-channel.md); supersedes in part [0074](./0074-self-update-trust-boundary.md), [0175](./0175-one-release-manifest-per-channel.md); superseded in part by [0178](./0178-release-checksums-are-minisign-signed.md)) |
 | [0177](./0177-non-terminal-resources-have-declared-producers.md) | Non-terminal resources have declared producers; usage is the first feed | Proposed (would supersede in part [0166](./0166-usage-collection-is-a-supervised-child.md); builds on [0102](./0102-resources-the-server-serves-kinds.md), [0162](./0162-organization-records-persist-and-activations-reconcile.md), [0163](./0163-actors-and-delegated-agent-grants.md)) |
 | [0178](./0178-release-checksums-are-minisign-signed.md) | Release checksums are minisign-signed | Accepted (supersedes in part [0074](./0074-self-update-trust-boundary.md), [0176](./0176-the-release-pipeline.md)) |
+| [0180](./0180-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
 
 ## When to write an ADR
 
