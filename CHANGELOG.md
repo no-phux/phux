@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.88.2](https://github.com/no-phux/phux/compare/v0.88.1...v0.88.2) (2026-10-17)
+
+
+### Refactors
+
+* **release:** one name table, one release model, one installer, one publisher (ADR-0176) ([#1507](https://github.com/no-phux/phux/issues/1507)) ([9b69c54](https://github.com/no-phux/phux/commit/9b69c547667d14fd4f761b46a6ae730b1c9c2dc1))
+
 ## [0.88.1](https://github.com/no-phux/phux/compare/v0.88.0...v0.88.1) (2026-10-17)
 
 
