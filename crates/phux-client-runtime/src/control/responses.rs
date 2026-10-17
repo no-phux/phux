@@ -308,6 +308,7 @@ impl ControlPlane {
             )));
         }
         self.attached_once = true;
+        self.attach_ended = false;
         self.error = None;
         self.set_status(Status::Attached);
         self.push_event(Event::Attached { attach_id });
@@ -408,6 +409,9 @@ impl ControlPlane {
         message: &str,
     ) -> Result<(), ControlError> {
         self.forget_roster_subscriptions();
+        // Revoked, expired, replaced or killed: the server ended this attach.
+        // Input sent before the socket closes would only reach a refusal.
+        self.attach_ended = true;
         self.push_event(Event::Detached {
             reason,
             message: message.to_owned(),

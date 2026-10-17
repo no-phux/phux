@@ -212,12 +212,13 @@ impl ControlPlane {
     }
 
     /// Whether raw input for the terminal would pass the server's gate
-    /// right now: attached, a published replica, no delivery fence, and
-    /// either the attached session's terminal or a confirmed per-terminal
-    /// subscription.
+    /// right now: attached with no `DETACHED` since, a published replica, no
+    /// delivery fence, and either the attached session's terminal or a
+    /// confirmed per-terminal subscription.
     #[must_use]
     pub fn input_ready(&self, terminal_id: &ResourceId) -> bool {
-        if self.status != Status::Attached || self.delivery_fenced(terminal_id) {
+        if self.status != Status::Attached || self.attach_ended || self.delivery_fenced(terminal_id)
+        {
             return false;
         }
         if !self

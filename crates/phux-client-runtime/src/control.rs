@@ -377,6 +377,10 @@ enum Pending {
 }
 
 /// The sans-IO control plane. See the module docs.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent per-connection lifecycle facts (handshake, first attach, detach asked, attach ended), not one state machine"
+)]
 #[derive(Debug)]
 pub struct ControlPlane {
     options: ControlOptions,
@@ -396,6 +400,10 @@ pub struct ControlPlane {
     handshake_ready: bool,
     attached_once: bool,
     detach_requested: bool,
+    /// The server sent `DETACHED` on this connection: the attach is over,
+    /// whatever the transport does next, so no input is admitted until a new
+    /// attach or connection.
+    attach_ended: bool,
     error: Option<String>,
     server: Option<ServerInfo>,
     engine: Option<EngineHandle>,
@@ -498,6 +506,7 @@ impl ControlPlane {
             handshake_ready: false,
             attached_once: false,
             detach_requested: false,
+            attach_ended: false,
             error: None,
             server: None,
             engine: None,
@@ -854,6 +863,7 @@ impl ControlPlane {
         self.stream_recoveries.clear();
         self.own_spawns.clear();
         self.handshake_ready = false;
+        self.attach_ended = false;
         self.active_attach_id = None;
         self.attach_terminals.clear();
         self.attached_session = None;
