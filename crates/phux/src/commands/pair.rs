@@ -1012,8 +1012,9 @@ struct LinkOutput<'a> {
 /// connector, not a listener, so the ADR-0141 gate becomes: the server
 /// answers on `socket`, and the config names the `[[connector]]` relay the
 /// link dials. The link pins the relay's certificate (the relay terminates
-/// TLS, ADR-0051) and carries the route as `sni`; the token crosses the
-/// relay opaquely and is verified by this server.
+/// only the outer TLS) and carries the route as `sni`, and pins this server's
+/// CA as `ca`: the device runs its session end to end with this server, and
+/// the token crosses the relay inside it (ADR-0180).
 fn mint_relay_link(
     relay: &RelayRoute,
     socket: &Path,
@@ -1096,7 +1097,7 @@ fn mint_relay_link(
     match fingerprint {
         Some(fingerprint) => {
             outln!(
-                "  relay certificate SHA-256 {fingerprint} (the device pins the relay, which terminates TLS)"
+                "  relay certificate SHA-256 {fingerprint} (the device pins the relay, which sees only ciphertext)"
             );
         }
         None => outln!("  no relay pin configured: a loopback relay only"),

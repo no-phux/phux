@@ -1,13 +1,15 @@
 //! The end-to-end TLS session a consumer runs inside a relayed stream
 //! (ADR-0154 item 5, `docs/spec/workload-auth.md` §3).
 //!
-//! A relay terminates the consumer's QUIC TLS to route it, so the consumer's
-//! certificate never reached this server. A consumer that pins this server's
-//! CA instead runs TLS 1.3 inside the spliced stream: this server presents its
-//! own certificate and verifies the consumer's against the workload CA, end to
-//! end, and the relay forwards ciphertext. The first byte tells the two
-//! shapes apart: a TLS record starts `0x16`, a bearer preamble's big-endian
-//! length starts `0x00`.
+//! A relay terminates the consumer's outer QUIC TLS to route it, so neither
+//! the consumer's certificate nor its bytes may ride that leg. Every relayed
+//! consumer pins this server's CA and runs TLS 1.3 inside the spliced stream:
+//! this server presents its own certificate and verifies the consumer's
+//! against the workload CA, end to end, and the relay forwards ciphertext
+//! (ADR-0180: the relay is blind). The first byte tells a session from
+//! anything else: a TLS record starts `0x16`. The connector refuses every
+//! other first byte; WebTransport still admits a plain stream outside
+//! `paired` for an embedder's server.
 //!
 //! The inner session offers the terminal ALPN and the enrollment ALPN, so a
 //! device behind a relay enrolls the same way (§8.2).
@@ -101,8 +103,8 @@ impl InnerTls {
         })
     }
 
-    /// Whether a plain (pre-ADR-0154) bridged consumer may still be admitted
-    /// by its bearer: only outside `paired`.
+    /// Whether a plain WebTransport stream may still be admitted by its
+    /// bearer: only outside `paired`. A relayed stream never is (ADR-0180).
     #[must_use]
     pub const fn admits_plain(&self) -> bool {
         self.workload.is_none()

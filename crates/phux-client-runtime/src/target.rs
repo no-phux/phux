@@ -420,9 +420,9 @@ impl AuthorityPin {
     }
 
     /// The end-to-end session a relayed dial runs to the server, presenting
-    /// `identity`: when the server's CA is pinned for the route. `None` dials
-    /// the relayed stream plain, which only an embedder's server admits; a
-    /// `phux server` connector requires the session (ADR-0179).
+    /// `identity`: when the server's CA is pinned for the route. `None` for a
+    /// relayed server means it cannot be dialed: a connector admits only the
+    /// session, so the relay never reads a consumer (ADR-0180).
     #[must_use]
     pub fn inner(&self, identity: &TlsClientIdentity) -> Option<phux_dial::quic::InnerTls> {
         let route = self.route.clone()?;

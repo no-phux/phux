@@ -15,7 +15,7 @@ use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::registry::TunnelRegistry;
-use crate::splice::splice;
+use crate::splice::{Tee, splice};
 use crate::tokens::{CachedRouteTokens, RouteTokenStore};
 use crate::{
     AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, RelayError, tls,
@@ -134,9 +134,19 @@ pub struct RelayRuntime {
     config: RelayConfig,
     preamble_deadline: Duration,
     handshakes_per_source: usize,
-    /// Consumer SNIs rustls read from completed handshakes. `None` in
-    /// production; tests share the list with the dialing client.
-    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
+    /// What tests watch the relay do; empty in production.
+    observers: Observers,
+}
+
+/// What a test may watch the relay do, without changing what it does. Both
+/// are `None` in production.
+#[derive(Debug, Clone, Default)]
+struct Observers {
+    /// Consumer SNIs rustls read from completed handshakes.
+    consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
+    /// Every byte the relay forwarded for a consumer, both directions: the
+    /// relay's whole view of a bridged session.
+    consumer_bytes: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl RelayRuntime {
@@ -147,7 +157,10 @@ impl RelayRuntime {
             config,
             preamble_deadline: PREAMBLE_DEADLINE,
             handshakes_per_source: DEFAULT_HANDSHAKES_PER_SOURCE,
-            observed_consumer_sni: None,
+            observers: Observers {
+                consumer_sni: None,
+                consumer_bytes: None,
+            },
         }
     }
 
@@ -155,7 +168,17 @@ impl RelayRuntime {
     /// socket, the SNI gate, or which handshakes are admitted.
     #[must_use]
     pub fn with_observed_consumer_sni(mut self, observed: Arc<Mutex<Vec<String>>>) -> Self {
-        self.observed_consumer_sni = Some(observed);
+        self.observers.consumer_sni = Some(observed);
+        self
+    }
+
+    /// Append every byte the relay forwards between a consumer and its
+    /// tunnel, in both directions, as it forwards it. This is everything a
+    /// relay operator could record of a bridged session (ADR-0180); it does
+    /// not change what is forwarded.
+    #[must_use]
+    pub fn with_observed_consumer_bytes(mut self, observed: Arc<Mutex<Vec<u8>>>) -> Self {
+        self.observers.consumer_bytes = Some(observed);
         self
     }
 
@@ -215,7 +238,7 @@ impl RelayRuntime {
             max_conns: config.max_conns,
             preamble_deadline,
             handshakes_per_source: self.handshakes_per_source,
-            observed_consumer_sni: self.observed_consumer_sni,
+            observers: self.observers,
         })
     }
 }
@@ -234,7 +257,7 @@ pub struct BoundRelay {
     max_conns: usize,
     preamble_deadline: Duration,
     handshakes_per_source: usize,
-    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
+    observers: Observers,
 }
 
 impl BoundRelay {
@@ -278,7 +301,7 @@ impl BoundRelay {
                         Arc::clone(&self.tokens),
                         self.preamble_deadline,
                         Arc::clone(&slots),
-                        self.observed_consumer_sni.clone(),
+                        self.observers.clone(),
                     ));
                 }
             }
@@ -410,7 +433,7 @@ async fn handle_connection(
     tokens: Arc<CachedRouteTokens>,
     preamble_deadline: Duration,
     slots: Arc<Semaphore>,
-    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
+    observers: Observers,
 ) {
     let AdmittedHandshake {
         incoming,
@@ -457,8 +480,15 @@ async fn handle_connection(
         };
         admit_tunnel(conn, leg, &registry).await;
     } else if alpn == QUIC_ALPN {
-        note_consumer_sni(observed_consumer_sni.as_ref(), server_name.as_deref());
-        bridge_consumer(conn, server_name, source, &registry).await;
+        note_consumer_sni(observers.consumer_sni.as_ref(), server_name.as_deref());
+        bridge_consumer(
+            conn,
+            server_name,
+            source,
+            &registry,
+            observers.consumer_bytes,
+        )
+        .await;
     } else {
         // rustls only negotiates advertised protocols; defensive.
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unknown protocol");
@@ -577,13 +607,15 @@ async fn admit_tunnel(
 }
 
 /// Bridge one consumer's first stream onto a fresh stream over its route's
-/// live tunnel. The consumer's bearer preamble crosses opaquely (ADR-0051
-/// Decision 4).
+/// live tunnel. What crosses is the consumer's end-to-end TLS session with
+/// the server, ciphertext the relay holds no key for (ADR-0180); `observed`
+/// records it for tests.
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
     source: SourceShare,
     registry: &TunnelRegistry<quinn::Connection>,
+    observed: Option<Arc<Mutex<Vec<u8>>>>,
 ) {
     let remote = conn.remote_address();
     // Defensive: the SniGate already refused absent SNI at TLS.
@@ -622,9 +654,9 @@ async fn bridge_consumer(
     tracing::info!(route = %route, %remote, "consumer bridged");
     let window = SendWindow::new(conn.clone());
     let control_bridge = splice(
-        consumer_streams.1,
+        Tee::new(consumer_streams.1, observed.clone()),
         tun_send,
-        tun_recv,
+        Tee::new(tun_recv, observed),
         TrackedSend::new(consumer_streams.0, window),
     );
     tokio::pin!(control_bridge);

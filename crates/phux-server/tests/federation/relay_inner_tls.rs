@@ -1,7 +1,7 @@
 //! Workload identity through a relay (ADR-0154 item 5): the consumer runs
 //! TLS end to end with the server inside the relayed stream, so its
 //! certificate reaches the server although the relay terminates the outer
-//! TLS. Under `paired` that is the only way in.
+//! TLS. That session is the only way in, in every posture (ADR-0180).
 //!
 //! ```text
 //! consumer ==TLS(relay pin)==> relay <== connector (in server)
@@ -238,17 +238,22 @@ fn ticket(paths: &WorkloadPaths) -> Vec<u8> {
     hex::decode(minted.secret_hex).expect("hex")
 }
 
-/// Under an embedder engine, an inner session pinning the server's CA is
-/// admitted beside the plain relayed stream, and a wrong CA is refused by
+/// Even under an embedder engine, which admits a bearer alone, the plain
+/// relayed stream is refused (ADR-0180: the relay would read it); an inner
+/// session pinning the server's CA is admitted, and a wrong CA is refused by
 /// name.
 #[test]
 fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(false);
-        let plain = first_answer(&t.plan(None))
-            .await
-            .expect("plain still admitted");
-        assert!(matches!(plain, FrameKind::HelloOk { .. }), "{plain:?}");
+        wait_for_route(&t).await;
+        assert!(
+            !matches!(
+                first_answer(&t.plan(None)).await,
+                Ok(FrameKind::HelloOk { .. })
+            ),
+            "a plain bridged consumer is refused in every posture"
+        );
         let session = inner(&t.authority, TlsClientIdentity::None);
         let answer = first_answer(&t.plan(Some(session)))
             .await

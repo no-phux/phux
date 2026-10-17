@@ -529,7 +529,8 @@ which-key-delay-ms = 400
 
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised
-# independently; the relay terminates TLS and can see plaintext phux frames.
+# independently. The relay is blind: each consumer runs TLS to this server
+# inside the relayed stream, so the relay forwards only ciphertext (ADR-0180).
 # Keep the enrollment token in an owner-only file, never inline.
 #
 # [[connector]]

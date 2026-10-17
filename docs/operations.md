@@ -946,6 +946,8 @@ certificate in a TLS session the client runs with this server inside its
 stream, since the relay terminates the outer TLS and a WebTransport session
 has none to give; under `paired` they admit nothing else
 ([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
+A connector admits nothing else in any posture: the relay must never read a
+session ([ADR-0180](adr/0180-the-relay-is-blind.md)).
 A browser cannot run that session yet, so it reaches a `paired` server over
 neither. Without `paired` there is no remote listener or connector at all
 (next section).
@@ -1217,8 +1219,14 @@ is the Application Firewall stealth-drop; see
 
 A self-hosted relay accepts an outbound QUIC tunnel per named server route.
 Consumers select a route through TLS SNI and exchange frames through that
-tunnel. **The relay terminates TLS on both connections and can read all phux
-traffic, including input and terminal output.** Run it on a host you trust.
+tunnel. **The relay is blind**: it terminates only the outer TLS of each
+leg, and every consumer runs TLS 1.3 with the server inside its stream,
+pinning the server's CA, so the relay forwards ciphertext and holds no
+session key. It still sees addresses, the route, the inner ClientHello,
+and the size and timing of every record; it can deny service but not read,
+forge, or replay a frame
+([ADR-0180](adr/0180-the-relay-is-blind.md)). Operating one for other people
+is therefore safe for confidentiality, not for availability.
 Setup: [Remote access, Path D](./remote-access.md#path-d-via-a-reference-relay).
 
 The surface is two commands: `phux relay pair --route NAME` mints the

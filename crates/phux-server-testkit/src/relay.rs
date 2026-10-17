@@ -30,6 +30,12 @@ impl RelayHarness {
         Self::spawn(RelayRuntime::new(config).with_observed_consumer_sni(observed))
     }
 
+    /// Like [`Self::start`], and append every byte the relay forwards for a
+    /// consumer, both directions: what a relay operator could record.
+    pub fn start_tapped(config: RelayConfig, forwarded: Arc<Mutex<Vec<u8>>>) -> Self {
+        Self::spawn(RelayRuntime::new(config).with_observed_consumer_bytes(forwarded))
+    }
+
     fn spawn(runtime: RelayRuntime) -> Self {
         let bound: BoundRelay = runtime.bind().expect("bind relay");
         let addr = bound.local_addr();

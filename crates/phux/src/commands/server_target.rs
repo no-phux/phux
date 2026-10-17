@@ -167,7 +167,7 @@ pub(crate) fn plan_entry(
         }
     };
     let DialPlan { dial, loopback } = plan
-        .map(|plan| {
+        .and_then(|plan| {
             plan.with_identity(identity)
                 .with_authority(&entry.authority_pin())
         })

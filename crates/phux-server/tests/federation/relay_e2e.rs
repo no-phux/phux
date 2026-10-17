@@ -4,11 +4,14 @@
 //! with the production QUIC dialer.
 //!
 //! These cases are about routing, so the server runs an embedder engine
-//! (ADR-0072) and the consumer rides the plain relayed stream; under
-//! `paired` only the end-to-end session crosses (`relay_inner_tls`).
+//! (ADR-0072) and the consumer presents no certificate; it still runs its
+//! session end to end with the server inside the relayed stream, the only
+//! shape a connector admits (ADR-0180). `relay_inner_tls` covers `paired`
+//! and `relay_blind` what the relay can see.
 //!
 //! ```text
 //! consumer --QUIC "phux-quic/1"--> relay <--"phux-relay/1"-- connector (in server) --> dispatch
+//!          \______________ TLS 1.3 (server CA pin) ______________/
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -16,7 +19,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phux_config::ConnectorConfigEntry;
-use phux_dial::{CertTrust, QuicDial};
+use phux_dial::quic::{DialedStream, InnerTls};
+use phux_dial::{CertTrust, QuicDial, TlsClientIdentity};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::input::key::PhysicalKey;
@@ -40,6 +44,9 @@ struct Topology {
     relay: Option<RelayHarness>,
     addr: SocketAddr,
     fingerprint: String,
+    /// The CA that issued the server's certificate, which every consumer
+    /// pins for the end-to-end session.
+    authority: String,
     consumer_token: Vec<u8>,
     stop_server: oneshot::Sender<()>,
     server: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
@@ -88,6 +95,18 @@ impl Topology {
             token_file: Some(dir.path().join("connector-token")),
             cert_fingerprint: Some(fingerprint.clone()),
         };
+        let d = dir.path();
+        let paths = phux_server::workload::WorkloadPaths::with_overrides(
+            Some(d.join("workload-ca.pem")),
+            Some(d.join("workload-ca.key")),
+            Some(d.join("workload-keys")),
+        );
+        let (cert, key) = (d.join("remote-cert.pem"), d.join("remote-key.pem"));
+        phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
+            .expect("server identity");
+        let authority = phux_server::transport::tls::presented_authority(&cert)
+            .expect("chain")
+            .expect("issued by the CA");
         let mut cfg = ServerConfig {
             socket_path: dir.path().join("phux.sock"),
             pre_seeded_session: seed.is_some().then(|| "default".to_owned()),
@@ -95,6 +114,8 @@ impl Topology {
             seed_command: None,
             env: phux_server::ServerEnv {
                 ws_tokens: Some(dir.path().join("consumer-tokens")),
+                tls_cert: Some(cert),
+                tls_key: Some(key),
                 ..phux_server::ServerEnv::default()
             },
             ..ServerConfig::with_default_socket()
@@ -117,6 +138,7 @@ impl Topology {
             addr: relay.addr,
             relay: Some(relay),
             fingerprint,
+            authority,
             consumer_token,
             stop_server,
             server,
@@ -141,31 +163,36 @@ impl Topology {
     }
 }
 
-/// A consumer stream through the relay.
+/// A consumer's end-to-end session through the relay.
 struct Consumer {
     _endpoint: quinn::Endpoint,
     conn: quinn::Connection,
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
+    send: tokio::io::WriteHalf<phux_dial::quic::InnerStream>,
+    recv: tokio::io::ReadHalf<phux_dial::quic::InnerStream>,
 }
 
-async fn dial(
-    addr: SocketAddr,
-    fingerprint: &str,
-    route: &str,
-    token: Option<Vec<u8>>,
-) -> Result<Consumer, String> {
+async fn dial(t: &Topology, route: &str, token: Option<Vec<u8>>) -> Result<Consumer, String> {
     let dial = QuicDial {
-        addr,
+        addr: t.addr,
         server_name: route.to_owned(),
         token,
-        trust: CertTrust::Pinned(fingerprint.to_owned()),
-        identity: None,
-        inner: None,
+        trust: CertTrust::Pinned(t.fingerprint.clone()),
+        identity: Some(TlsClientIdentity::None),
+        inner: Some(InnerTls {
+            trust: CertTrust::Authority {
+                ca: t.authority.clone(),
+            },
+            identity: TlsClientIdentity::None,
+            server_name: route.to_owned(),
+        }),
     };
-    let (endpoint, conn, send, recv) = phux_dial::quic::dial(&dial)
+    let (endpoint, conn, stream) = phux_dial::quic::dial_stream(&dial)
         .await
         .map_err(|err| err.to_string())?;
+    let DialedStream::Inner(stream) = stream else {
+        return Err("a relayed dial runs an end-to-end session".to_owned());
+    };
+    let (recv, send) = tokio::io::split(*stream);
     Ok(Consumer {
         _endpoint: endpoint,
         conn,
@@ -176,14 +203,17 @@ async fn dial(
 
 impl Consumer {
     async fn send(&mut self, frame: &FrameKind) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt as _;
         self.send
             .write_all(&encode_frame(frame))
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+        self.send.flush().await.map_err(|err| err.to_string())
     }
 
     /// Read one frame; full consumption proves framing survived both hops.
     async fn recv(&mut self) -> Result<FrameKind, String> {
+        use tokio::io::AsyncReadExt as _;
         timeout(WIRE_RECV_TIMEOUT, async {
             let mut header = [0u8; 4];
             self.recv
@@ -206,7 +236,7 @@ impl Consumer {
 }
 
 async fn ping(t: &Topology, route: &str, token: Option<Vec<u8>>) -> Result<FrameKind, String> {
-    let mut consumer = dial(t.addr, &t.fingerprint, route, token).await?;
+    let mut consumer = dial(t, route, token).await?;
     consumer
         .send(&FrameKind::Ping { nonce: PING_NONCE })
         .await?;
@@ -235,14 +265,9 @@ fn hello_attach_echo_through_relay_to_real_server() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(dir, token, Some(CommandBuilder::new("/bin/cat")));
         wait_for_pong(&t).await;
-        let mut consumer = dial(
-            t.addr,
-            &t.fingerprint,
-            ROUTE,
-            Some(t.consumer_token.clone()),
-        )
-        .await
-        .unwrap();
+        let mut consumer = dial(&t, ROUTE, Some(t.consumer_token.clone()))
+            .await
+            .unwrap();
         let hello = FrameKind::Hello {
             client_name: "relay-e2e-consumer".to_owned(),
             protocol_major: PROTOCOL_VERSION.major,

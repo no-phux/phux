@@ -310,6 +310,39 @@ const fn dial_auth_without_transport(
     }
 }
 
+/// The relay hop a one-off `--quic` dial names (ADR-0180): `--tls-server-name`
+/// is the route and `--ca-fingerprint` the server behind it. `None` for a
+/// direct dial or a WebSocket one, whose server name is only SNI.
+///
+/// # Errors
+///
+/// `--ca-fingerprint` without a relay route, or not a `sha256:` CA pin.
+fn relay_hop(
+    quic: Option<&str>,
+    tls_server_name: Option<&str>,
+    ca_fingerprint: Option<String>,
+) -> Result<Option<commands::attach::RelayHop>, String> {
+    let ca = ca_fingerprint
+        .map(|pin| {
+            phux_config::known_authorities::canonical_authority(&pin).ok_or_else(|| {
+                format!(
+                    "--ca-fingerprint {pin:?} is not a CA pin: expected sha256: and 64 hex digits"
+                )
+            })
+        })
+        .transpose()?;
+    match (quic, tls_server_name) {
+        (Some(_), Some(route)) => Ok(Some(commands::attach::RelayHop {
+            route: route.to_owned(),
+            ca,
+        })),
+        _ if ca.is_some() => {
+            Err("--ca-fingerprint names the server behind a relay route: it needs --quic and --tls-server-name".to_owned())
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Resolve a `--remote` target and attach to it.
 ///
 /// One helper for both the root and the verb-scoped spelling, so the two
@@ -959,6 +992,7 @@ struct AttachInvocation {
     token: Option<String>,
     cert_fingerprint: Option<String>,
     tls_server_name: Option<String>,
+    ca_fingerprint: Option<String>,
     remote: Option<String>,
     code: Option<String>,
     no_enroll: bool,
@@ -994,6 +1028,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         token,
         cert_fingerprint,
         tls_server_name,
+        ca_fingerprint,
         remote,
         code,
         no_enroll,
@@ -1035,6 +1070,13 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         error!("{message}");
         return ExitCode::from(exit_codes::EXIT_USAGE);
     }
+    let relay = match relay_hop(quic.as_deref(), tls_server_name.as_deref(), ca_fingerprint) {
+        Ok(relay) => relay,
+        Err(message) => {
+            error!("{message}");
+            return ExitCode::from(exit_codes::EXIT_USAGE);
+        }
+    };
     if let Some(destination) = ssh {
         return commands::ssh_bootstrap::run(commands::ssh_bootstrap::SshAttach {
             destination,
@@ -1054,7 +1096,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
             addr,
             token,
             cert_fingerprint,
-            tls_server_name,
+            relay,
             None,
             rec_spec,
         ),
@@ -1148,6 +1190,7 @@ fn dispatch(
             token,
             cert_fingerprint,
             tls_server_name,
+            ca_fingerprint,
             remote,
             code,
             no_enroll,
@@ -1164,6 +1207,7 @@ fn dispatch(
             token,
             cert_fingerprint,
             tls_server_name,
+            ca_fingerprint,
             remote,
             code,
             no_enroll,
@@ -2377,6 +2421,31 @@ mod tests {
         assert!(super::root_rec_before_verb(&cli).is_none());
         let cli = crate::parse_cli(["phux", "attach", "--rec", "demo.gif"]).expect("attach");
         assert!(super::root_rec_before_verb(&cli).is_none());
+    }
+
+    /// ADR-0180: on `--quic`, `--tls-server-name` is a relay route and
+    /// `--ca-fingerprint` the server behind it (canonicalized); the CA means
+    /// nothing anywhere else, and a WebSocket server name stays plain SNI.
+    #[test]
+    fn a_one_off_relay_hop_carries_the_route_and_the_servers_ca() {
+        let ca = format!("sha256:{}", "AB".repeat(32));
+        let hop = super::relay_hop(Some("relay:4433"), Some("mini-route"), Some(ca))
+            .expect("hop")
+            .expect("a relay route");
+        assert_eq!(hop.route, "mini-route");
+        assert_eq!(hop.ca, Some(format!("sha256:{}", "ab".repeat(32))));
+        let unpinned = super::relay_hop(Some("relay:4433"), Some("mini-route"), None)
+            .expect("planning refuses it later, by name")
+            .expect("a relay route");
+        assert_eq!(unpinned.ca, None);
+        assert_eq!(super::relay_hop(Some("relay:4433"), None, None), Ok(None));
+        assert_eq!(super::relay_hop(None, Some("host"), None), Ok(None));
+        for (quic, route) in [(Some("relay:4433"), None), (None, Some("host"))] {
+            let err = super::relay_hop(quic, route, Some(format!("sha256:{}", "ab".repeat(32))))
+                .expect_err("a CA without a relay route");
+            assert!(err.contains("--tls-server-name"), "{err}");
+        }
+        assert!(super::relay_hop(Some("r:1"), Some("r"), Some("sha256:no".to_owned())).is_err());
     }
 
     /// usage-rs `requires("--quic", "--ws")` is all-of, so a single-transport
