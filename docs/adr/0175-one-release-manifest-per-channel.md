@@ -16,6 +16,8 @@ and swaps it in only after the app has exited.
 
 Status: Accepted
 Date: 2026-10-16
+Superseded in part by [ADR-0176](./0176-the-release-pipeline.md): decisions 1-6; the manifest shape, its generation, and the bridge records.
+
 Amends [ADR-0074](./0074-self-update-trust-boundary.md) decision 1 and
 supersedes in part [ADR-0113](./0113-next-release-channel.md) decisions 3
 and 5 (clients no longer read `channel.json`).

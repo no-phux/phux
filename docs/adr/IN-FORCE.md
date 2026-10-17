@@ -205,9 +205,9 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
-- [0175](./0175-one-release-manifest-per-channel.md) Every client discovers releases from `channels/{stable,next}.json`, generated from published state; Desktop stages an update and swaps it in after exit.
+- [0176](./0176-the-release-pipeline.md) One name table, a manifest of version, commit, protocol, and digests per channel, one installer; `publish.yml` publishes stable drafts on green `ci`, and `next-release.yml` publishes green `main`.
+- [0175](./0175-one-release-manifest-per-channel.md) Desktop stages an update while running and swaps it in after exit; each release carries the protocol it speaks.
 - [0169](./0169-zig-cockpit-lives-in-an-archive.md) Zig Cockpit and its exclusive hooks leave main; a published archive branch and annotated tag preserve bot-led recovery. Shared FFI, GPUI desktop, mobile, and libghostty Zig stay.
-- [0113](./0113-next-release-channel.md) `next` is an opt-in moving prerelease of green `main`; stable stays `vX.Y.Z` and Homebrew.
 - [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
 - [0001](./0001-language-rust.md) phux is implemented in Rust.
