@@ -806,6 +806,7 @@ impl Desktop {
             Menu::new("Terminal").items([
                 MenuItem::action("Split Right", Run::new("split-right")),
                 MenuItem::action("Split Down", Run::new("split-down")),
+                MenuItem::action("Mirror Pane", Run::new("view")),
                 MenuItem::action("Zoom Pane", Run::new("zoom")),
                 MenuItem::separator(),
                 MenuItem::action("Clear Screen", Run::new("clear")),

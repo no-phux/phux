@@ -279,7 +279,7 @@ fn catalog() -> Vec<CommandSpec> {
             "Panes",
             Some("cmd+alt+d"),
             "Show the focused terminal in another pane.",
-            &["duplicate"],
+            &["duplicate", "open another view"],
         ),
         spec(
             "close",
