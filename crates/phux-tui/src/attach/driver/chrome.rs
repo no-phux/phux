@@ -9,7 +9,9 @@ use phux_protocol::wire::frame::ResourceLifecycle;
 use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
 use crate::attach::notify::{NotifyRow, Phase};
-use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
+use crate::attach::pane_state::{
+    ExitMark, PaneSlot, VcsIndex, auto_named, cwd_basename, display_window_name,
+};
 use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::ArrangementDoc;
@@ -307,14 +309,6 @@ pub(super) fn window_infos(
         .enumerate()
         .map(|(i, w)| {
             let focus = w.state.focus.as_ref();
-            let agent_label = focus
-                .and_then(|fid| agent_meta.get(fid))
-                .map(|record| record.name.clone());
-            let title = focus
-                .and_then(|fid| panes.get(fid))
-                .map(|slot| slot.last_title.trim())
-                .filter(|title| !title.is_empty())
-                .map(ToOwned::to_owned);
             let active = i == workspace.active;
             let leaves = w
                 .state
@@ -329,17 +323,8 @@ pub(super) fn window_infos(
             // The branch line under the label — the focused
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
-            let place = focus
-                .and_then(|fid| panes.get(fid))
-                .and_then(|slot| slot.cwd.as_deref())
-                .and_then(cwd_basename);
-            let explicit = (!auto_named(&w.name)).then(|| w.name.clone());
             phux_config::widget::WindowInfo {
-                name: explicit
-                    .or(agent_label)
-                    .or(title)
-                    .or(place)
-                    .unwrap_or_else(|| w.name.clone()),
+                name: display_window_name(&w.name, focus, panes, agent_meta),
                 active,
                 zoomed: active && zoomed.is_some(),
                 attention,
@@ -351,12 +336,6 @@ pub(super) fn window_infos(
         .collect()
 }
 
-/// A name [`ArrangementDoc::default_group_name`] handed out (a bare integer):
-/// it would read as a second, disagreeing index, so the tab prefers context.
-fn auto_named(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
-}
-
 /// Where an agent row says the agent is: a user-given window name, else the
 /// pane's cwd, else the auto-numbered name.
 fn agent_locator(window_name: &str, slot: Option<&PaneSlot>) -> String {
@@ -366,23 +345,6 @@ fn agent_locator(window_name: &str, slot: Option<&PaneSlot>) -> String {
     slot.and_then(|slot| slot.cwd.as_deref())
         .and_then(cwd_basename)
         .unwrap_or_else(|| window_name.to_owned())
-}
-
-/// The last component of a working directory, `~` for the home directory
-/// itself. `None` for the filesystem root or an empty path.
-fn cwd_basename(cwd: &str) -> Option<String> {
-    let trimmed = cwd.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    if std::env::var_os("HOME").is_some_and(|home| home == trimmed) {
-        return Some("~".to_owned());
-    }
-    trimmed
-        .rsplit('/')
-        .next()
-        .filter(|base| !base.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 /// ADR-0124: compact exit mark for a window with a retained exited leaf,

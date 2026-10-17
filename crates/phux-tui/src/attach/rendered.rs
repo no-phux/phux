@@ -74,7 +74,7 @@ pub(super) fn compose_full_frame_cells(
     let divider_buf = {
         let panes_ref = &*panes;
         compose_divider_buffer(&multi, content, rail, focused_resource, theme, |id| {
-            super::pane_state::pane_label(panes_ref, id)
+            super::pane_state::pane_label(kernel, panes_ref, id)
         })
     };
     overlay_buffer(&mut frame, &divider_buf, (0, 0), true);

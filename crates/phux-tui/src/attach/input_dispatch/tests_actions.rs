@@ -439,10 +439,9 @@ fn kill_window_confirm_names_terminals_shown_elsewhere() {
     assert_eq!(
         confirm.lines(),
         [
-            "End 3 terminals in tab 1.",
+            "End 3 terminals in this tab.",
             "pane 2 is also shown in tab logs",
             "pane 3 is also shown in session notes",
-            "Enter kill  ·  Esc cancel",
         ]
     );
 }
@@ -1252,14 +1251,20 @@ fn current_session_window_rows_commit_select_window() {
     let mut workspace = ArrangementDoc::single(tid(1));
     workspace.add_group("editor".to_owned(), tid(2));
     workspace.select(0);
-    let items = current_session_window_rows(&workspace);
+    let names = WindowNames {
+        panes: &HashMap::new(),
+        agent_meta: &HashMap::new(),
+    };
+    let items = current_session_window_rows(&workspace, &names);
     assert_eq!(items.len(), 2);
+    // Labelled as the tab bar labels them: the index `C-a <n>` reaches,
+    // then the name (an auto-numbered window falls back to its number).
     assert_eq!(
         (items[0].label.as_str(), items[0].secondary.as_deref()),
-        ("1", Some("1 pane"))
+        ("0 1", Some("1 pane"))
     );
     assert!(items[0].indented, "window rows nest under their session");
-    assert_eq!(items[1].label, "editor");
+    assert_eq!(items[1].label, "1 editor");
     assert_eq!(items[1].action.args.get("index"), Some(&Value::Integer(1)));
     // Committing a row performs the per-client switch a binding does.
     let effects = run(&items[1].action, &mut workspace);
@@ -1289,8 +1294,13 @@ fn window_picker_groups_windows_under_their_session() {
             .into_iter()
             .map(|ws| (SessionId::new(2), ws))
             .collect();
+        let names = WindowNames {
+            panes: &HashMap::new(),
+            agent_meta: &HashMap::new(),
+        };
         let items = window_picker_items(
             &workspace,
+            &names,
             &sessions,
             &foreign,
             None,
@@ -1345,8 +1355,13 @@ fn window_picker_counts_tabs_from_terminals_when_the_graph_reports_sessions() {
     ];
     let terminals = HashMap::from([(SessionId::new(2), 3), (SessionId::new(3), 1)]);
     let labels = |terminals: Option<&HashMap<SessionId, usize>>| {
+        let names = WindowNames {
+            panes: &HashMap::new(),
+            agent_meta: &HashMap::new(),
+        };
         let items = window_picker_items(
             &workspace,
+            &names,
             &sessions,
             &HashMap::new(),
             terminals,

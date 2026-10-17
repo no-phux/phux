@@ -141,9 +141,14 @@ impl super::SessionLoop {
         let focused = focus.as_ref();
         Some(match level {
             RepaintLevel::None => StatusBarPaint::NotPublished,
-            RepaintLevel::Chrome => {
-                paint_chrome_in_place(out, ls.as_ref(), &self.mirror.panes, focused, &mut chrome)
-            }
+            RepaintLevel::Chrome => paint_chrome_in_place(
+                out,
+                ls.as_ref(),
+                &self.mirror.panes,
+                &self.mirror.engine_kernel,
+                focused,
+                &mut chrome,
+            ),
             RepaintLevel::Rows => paint_pane_rows_in_place(
                 out,
                 ls.as_ref(),

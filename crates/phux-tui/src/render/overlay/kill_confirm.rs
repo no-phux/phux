@@ -76,7 +76,6 @@ impl KillConfirmOverlay {
                 shared.len() - MAX_SHARED_LINES
             ));
         }
-        lines.push("Enter kill  ·  Esc cancel".to_owned());
         Self {
             targets,
             lines,
@@ -130,7 +129,8 @@ impl RenderOverlay for KillConfirmOverlay {
             .iter()
             .map(|line| Line::styled(line.clone(), text))
             .collect();
-        Modal::new(&self.theme, "kill?".to_owned(), lines)
+        Modal::new(&self.theme, "Kill?".to_owned(), lines)
+            .footer("", "⏎ kill · esc cancel")
             .render_into(self.modal_area(area, self.breakpoints), buf);
     }
 
@@ -218,10 +218,7 @@ mod tests {
 
     #[test]
     fn the_message_counts_terminals_and_names_shared_ones() {
-        assert_eq!(
-            overlay(&[]).lines(),
-            ["End 2 terminals in tab build.", "Enter kill  ·  Esc cancel"]
-        );
+        assert_eq!(overlay(&[]).lines(), ["End 2 terminals in tab build."]);
         let shared = SharedTarget {
             label: "pane 1".to_owned(),
             elsewhere: vec!["window logs".to_owned(), "session notes".to_owned()],
@@ -232,7 +229,7 @@ mod tests {
         );
         let many = vec![shared; 6];
         let lines = overlay(&many).lines().to_vec();
-        assert_eq!(lines.len(), 1 + 4 + 1 + 1);
+        assert_eq!(lines.len(), 1 + 4 + 1);
         assert_eq!(lines[5], "2 more shown elsewhere");
     }
 }
