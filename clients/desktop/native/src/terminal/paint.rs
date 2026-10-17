@@ -92,6 +92,22 @@ struct RowQuad {
 struct RowInk {
     row: u16,
     ink: Ink,
+    /// Whether the ink's glyphs are in its row's [`RowSprites`]. An ink that
+    /// is not (no retained raster, a resolve error, or a translucent emoji)
+    /// paints from its shaped line.
+    resolved: bool,
+}
+
+/// One row's glyphs, resolved against the window's sprite atlas when the row
+/// was shaped. Painting them is one GPUI call per row, with no shaping,
+/// rasterizing or atlas lookup. A scroll moves the row by `dy` instead of
+/// resolving it again: rows sit on whole device pixels, so a moved glyph
+/// keeps its rasterization.
+#[derive(Clone)]
+struct RowSprites {
+    row: u16,
+    dy: Pixels,
+    sprites: Arc<[gpui::GlyphSprite]>,
 }
 
 /// How one cell's text is drawn.
@@ -232,9 +248,14 @@ pub(super) struct Scene {
     geometry: Geometry,
     /// The faces `settings.font` asks for, kept while the scene is patched.
     fonts: Rc<Fonts>,
+    /// What `sprites` were resolved under. `None` when the window cannot
+    /// retain glyphs, and then every ink paints from its shaped line.
+    raster: Option<gpui::GlyphRaster>,
     background: Hsla,
     backgrounds: Vec<RowQuad>,
     inks: Vec<RowInk>,
+    /// Resolved glyphs, one entry per row that has any, in row order.
+    sprites: Vec<RowSprites>,
     /// Underlines, strike, and overline, in row order.
     decorations: Vec<RowQuad>,
     /// Solid block cursor, painted over cell backgrounds and under glyphs.
@@ -252,12 +273,13 @@ impl Scene {
         &self,
         frame: &Arc<GridFrame>,
         bounds: Bounds<Pixels>,
-        scale: f32,
+        (scale, raster): (f32, Option<gpui::GlyphRaster>),
         settings: &Settings,
     ) -> bool {
         Arc::ptr_eq(&self.frame, frame)
             && self.bounds == bounds
             && self.scale == scale
+            && self.raster == raster
             && self.settings.paints_like(settings)
     }
 }
@@ -343,8 +365,9 @@ fn scene(
     window: &gpui::Window,
 ) -> Rc<Scene> {
     let scale = window.scale_factor();
+    let raster = window.glyph_raster();
     if let Some(scene) = cache.borrow().as_ref()
-        && scene.reusable(&frame, bounds, scale, &settings)
+        && scene.reusable(&frame, bounds, (scale, raster), &settings)
     {
         crate::perf::PREPARE_REUSED.incr();
         return Rc::clone(scene);
@@ -355,7 +378,7 @@ fn scene(
             frame.clone(),
             settings.clone(),
             bounds,
-            scale,
+            (scale, raster),
             window,
         )
     {
@@ -388,7 +411,7 @@ fn patch(
     frame: Arc<GridFrame>,
     settings: Settings,
     bounds: Bounds<Pixels>,
-    scale: f32,
+    scale: (f32, Option<gpui::GlyphRaster>),
     window: &gpui::Window,
 ) -> Option<Scene> {
     if !can_patch(&previous, &frame, bounds, scale, &settings) {
@@ -464,6 +487,7 @@ fn drop_fringe(scene: &mut Scene) {
     let rows = scene.frame.rows;
     scene.backgrounds.retain(|quad| quad.row < rows);
     scene.inks.retain(|ink| ink.row < rows);
+    scene.sprites.retain(|sprites| sprites.row < rows);
     scene.decorations.retain(|quad| quad.row < rows);
     scene.glyphs.retain(|glyph| glyph.row < rows);
 }
@@ -500,7 +524,7 @@ fn finish_patch(
         frame,
         settings,
         geometry,
-        (kept_bounds, kept_scale),
+        (kept_bounds, kept_scale, previous.raster),
         Some(fonts),
     );
     builder.paint_rows(rebuilt, window);
@@ -640,6 +664,7 @@ fn shift_scene(scene: &mut Scene, scroll: Scroll) {
     shift_quads(&mut scene.backgrounds, scroll, height, geometry);
     shift_quads(&mut scene.decorations, scroll, height, geometry);
     shift_inks(&mut scene.inks, scroll, height, geometry);
+    shift_sprites(&mut scene.sprites, scroll, height, geometry);
     shift_glyphs(&mut scene.glyphs, scroll, height, geometry);
 }
 
@@ -659,6 +684,18 @@ fn shift_inks(inks: &mut Vec<RowInk>, scroll: Scroll, height: u16, geometry: &Ge
             geometry,
         )
         .is_some()
+    });
+}
+
+fn shift_sprites(rows: &mut Vec<RowSprites>, scroll: Scroll, height: u16, geometry: &Geometry) {
+    rows.retain_mut(|sprites| {
+        let Some(next) = destination_row(scroll, height, sprites.row) else {
+            return false;
+        };
+        sprites.dy +=
+            geometry.cell_bounds(next, 0, 1).top() - geometry.cell_bounds(sprites.row, 0, 1).top();
+        sprites.row = next;
+        true
     });
 }
 
@@ -759,11 +796,12 @@ fn can_patch(
     scene: &Scene,
     frame: &GridFrame,
     bounds: Bounds<Pixels>,
-    scale: f32,
+    (scale, raster): (f32, Option<gpui::GlyphRaster>),
     settings: &Settings,
 ) -> bool {
     scene.bounds == bounds
         && scene.scale == scale
+        && scene.raster == raster
         && scene.frame.cols == frame.cols
         && scene.frame.rows == frame.rows
         && scene.frame.colors == frame.colors
@@ -929,6 +967,9 @@ fn assemble(mut previous: Scene, fresh: Scene, rebuilt: &[u16]) -> Scene {
         quad.row
     });
     previous.inks = merge_rows(previous.inks, fresh.inks, rebuilt, |ink| ink.row);
+    previous.sprites = merge_rows(previous.sprites, fresh.sprites, rebuilt, |sprites| {
+        sprites.row
+    });
     previous.decorations = merge_rows(previous.decorations, fresh.decorations, rebuilt, |quad| {
         quad.row
     });
@@ -998,6 +1039,8 @@ struct Builder {
     /// The open run of same-coloured cells on one row, merged into one quad.
     run: Option<BackgroundRun>,
     pending: Option<PendingRun>,
+    /// Glyphs resolved for the row being built.
+    row_sprites: Vec<gpui::GlyphSprite>,
 }
 
 impl Builder {
@@ -1012,7 +1055,7 @@ impl Builder {
             frame,
             settings,
             geometry,
-            (bounds, window.scale_factor()),
+            (bounds, window.scale_factor(), window.glyph_raster()),
             None,
         )
     }
@@ -1022,7 +1065,7 @@ impl Builder {
         frame: Arc<GridFrame>,
         settings: Settings,
         geometry: Geometry,
-        (bounds, scale): (Bounds<Pixels>, f32),
+        (bounds, scale, raster): (Bounds<Pixels>, f32, Option<gpui::GlyphRaster>),
         fonts: Option<Rc<Fonts>>,
     ) -> Self {
         let defaults = defaults(&frame, &settings);
@@ -1034,6 +1077,7 @@ impl Builder {
             solid_cursor,
             run: None,
             pending: None,
+            row_sprites: Vec::new(),
             scene: Scene {
                 frame,
                 bounds,
@@ -1041,9 +1085,11 @@ impl Builder {
                 settings,
                 geometry,
                 fonts,
+                raster,
                 background: defaults.1,
                 backgrounds: Vec::new(),
                 inks: Vec::new(),
+                sprites: Vec::new(),
                 decorations: Vec::new(),
                 cursor_blocks: Vec::new(),
                 cursor_overlays: Vec::new(),
@@ -1076,6 +1122,53 @@ impl Builder {
         }
         self.flush_background();
         self.flush_glyph_run(window);
+        if !self.row_sprites.is_empty() {
+            self.scene.sprites.push(RowSprites {
+                row,
+                dy: px(0.),
+                sprites: self.row_sprites.drain(..).collect(),
+            });
+        }
+    }
+
+    /// Resolve an ink's glyphs into the row's sprites, painted as `paint_glyphs`
+    /// would paint them. False leaves the row's sprites as they were, and the
+    /// ink then paints from its shaped line.
+    fn resolve(
+        &mut self,
+        line: &ShapedLine,
+        bounds: Bounds<Pixels>,
+        colors: &[(usize, Hsla)],
+        clip_cells: bool,
+        window: &gpui::Window,
+    ) -> bool {
+        if self.scene.raster.is_none() {
+            return false;
+        }
+        let kept = self.row_sprites.len();
+        let geometry = self.scene.geometry;
+        let resolved = each_glyph(line, bounds, colors, geometry, clip_cells, |glyph| {
+            let clip = glyph.clip.map_or(bounds, |cell| cell.intersect(&bounds));
+            if let Some(sprite) = window
+                .resolve_glyph(
+                    glyph.origin,
+                    glyph.font_id,
+                    glyph.id,
+                    line.font_size,
+                    glyph.color,
+                    glyph.is_emoji,
+                    clip,
+                )
+                .map_err(|error| error.to_string())?
+            {
+                self.row_sprites.push(sprite);
+            }
+            Ok(())
+        });
+        if resolved.is_err() {
+            self.row_sprites.truncate(kept);
+        }
+        resolved.is_ok()
     }
 
     fn finish(mut self) -> Scene {
@@ -1248,20 +1341,23 @@ impl Builder {
         );
         if glyphs_match_cells(&line, &text, &self.fonts.run_ids(window)) {
             let mut end = 0;
-            let colors = runs
+            let colors: Vec<_> = runs
                 .iter()
                 .map(|run| {
                     end += run.len;
                     (end, run.color)
                 })
                 .collect();
+            let bounds = geometry.cell_bounds(run.row, run.start, run.cells);
+            let resolved = self.resolve(&line, bounds, &colors, true, window);
             self.scene.inks.push(RowInk {
                 row: run.row,
                 ink: Ink::Run(Box::new(GlyphRun {
-                    bounds: geometry.cell_bounds(run.row, run.start, run.cells),
+                    bounds,
                     line,
                     colors,
                 })),
+                resolved,
             });
             return;
         }
@@ -1349,6 +1445,8 @@ impl Builder {
         } else {
             (color.opacity(opacity), 1.)
         };
+        let resolved =
+            opacity == 1. && self.resolve(&line, bounds, &[(line.len(), color)], false, window);
         self.scene.inks.push(RowInk {
             row,
             ink: Ink::Glyph(Box::new(Glyph {
@@ -1357,6 +1455,7 @@ impl Builder {
                 color,
                 opacity,
             })),
+            resolved,
         });
     }
 
@@ -1614,6 +1713,9 @@ impl Prepared {
                     for (bounds, color) in &scene.cursor_blocks {
                         window.paint_quad(fill(moved(*bounds), *color));
                     }
+                    for row in scene.sprites.iter().filter(|row| shown(row.row)) {
+                        window.paint_glyph_sprites(&row.sprites, point(px(0.), row.dy + shift));
+                    }
                     let geometry = scene.geometry;
                     for ink in &scene.inks {
                         let result = match &ink.ink {
@@ -1626,7 +1728,7 @@ impl Prepared {
                                 }
                                 layer.and_then(|layer| layer.paint(window, cx))
                             }
-                            _ if !shown(ink.row) => continue,
+                            _ if ink.resolved || !shown(ink.row) => continue,
                             Ink::Glyph(glyph) => glyph.paint(glyph.color, geometry, shift, window),
                             Ink::Run(run) => run.paint(geometry, shift, window),
                         };
@@ -1785,18 +1887,29 @@ impl OpacityLayer {
     }
 }
 
-/// Paint `line` from the left of `bounds` with every glyph on the row
-/// baseline. `colors` gives each span's (end byte, colour); colour emoji
+/// One glyph of a shaped line, placed on its cell.
+struct PlacedGlyph {
+    origin: gpui::Point<Pixels>,
+    font_id: gpui::FontId,
+    id: gpui::GlyphId,
+    color: Hsla,
+    is_emoji: bool,
+    /// The cell a non-ASCII run glyph is clipped to, inside the line's bounds.
+    clip: Option<Bounds<Pixels>>,
+}
+
+/// Visit `line`'s inked glyphs from the left of `bounds`, every glyph on the
+/// row baseline. `colors` gives each span's (end byte, colour); colour emoji
 /// ignore it. Spaces have no ink and are skipped. With `clip_cells`, each
 /// glyph is one cell of a run and a non-ASCII glyph (box drawing, symbols)
 /// is clipped to its own cell, as if it were shaped alone.
-fn paint_glyphs(
+fn each_glyph(
     line: &ShapedLine,
     bounds: Bounds<Pixels>,
     colors: &[(usize, Hsla)],
     geometry: Geometry,
     clip_cells: bool,
-    window: &mut gpui::Window,
+    mut visit: impl FnMut(PlacedGlyph) -> Result<(), String>,
 ) -> Result<(), String> {
     let baseline = bounds.top() + geometry.baseline;
     let text = line.text.as_bytes();
@@ -1812,32 +1925,61 @@ fn paint_glyphs(
             {
                 span = spans.next();
             }
-            let origin = point(
-                bounds.left() + glyph.position.x,
-                baseline + glyph.position.y,
-            );
-            let color = span.map_or_else(gpui::black, |&(_, color)| color);
-            let paint = |window: &mut gpui::Window| {
-                if glyph.is_emoji {
-                    window.paint_emoji(origin, run.font_id, glyph.id, line.font_size)
-                } else {
-                    window.paint_glyph(origin, run.font_id, glyph.id, line.font_size, color)
-                }
-            };
-            let painted = if clip_cells && text.get(glyph.index).is_some_and(|byte| *byte >= 0x80) {
-                let column = (f32::from(glyph.position.x) / f32::from(geometry.cell_width)).round();
-                let cell = Bounds::new(
-                    point(bounds.left() + geometry.cell_width * column, bounds.top()),
-                    size(geometry.cell_width, bounds.size.height),
-                );
-                window.with_content_mask(Some(ContentMask { bounds: cell }), paint)
-            } else {
-                paint(window)
-            };
-            painted.map_err(|error| error.to_string())?;
+            let clip = (clip_cells && text.get(glyph.index).is_some_and(|byte| *byte >= 0x80))
+                .then(|| {
+                    let column =
+                        (f32::from(glyph.position.x) / f32::from(geometry.cell_width)).round();
+                    Bounds::new(
+                        point(bounds.left() + geometry.cell_width * column, bounds.top()),
+                        size(geometry.cell_width, bounds.size.height),
+                    )
+                });
+            visit(PlacedGlyph {
+                origin: point(
+                    bounds.left() + glyph.position.x,
+                    baseline + glyph.position.y,
+                ),
+                font_id: run.font_id,
+                id: glyph.id,
+                color: span.map_or_else(gpui::black, |&(_, color)| color),
+                is_emoji: glyph.is_emoji,
+                clip,
+            })?;
         }
     }
     Ok(())
+}
+
+/// Paint `line` glyph by glyph, as [`each_glyph`] places it, inside the
+/// current content mask.
+fn paint_glyphs(
+    line: &ShapedLine,
+    bounds: Bounds<Pixels>,
+    colors: &[(usize, Hsla)],
+    geometry: Geometry,
+    clip_cells: bool,
+    window: &mut gpui::Window,
+) -> Result<(), String> {
+    each_glyph(line, bounds, colors, geometry, clip_cells, |glyph| {
+        let paint = |window: &mut gpui::Window| {
+            if glyph.is_emoji {
+                window.paint_emoji(glyph.origin, glyph.font_id, glyph.id, line.font_size)
+            } else {
+                window.paint_glyph(
+                    glyph.origin,
+                    glyph.font_id,
+                    glyph.id,
+                    line.font_size,
+                    glyph.color,
+                )
+            }
+        };
+        match glyph.clip {
+            Some(cell) => window.with_content_mask(Some(ContentMask { bounds: cell }), paint),
+            None => paint(window),
+        }
+        .map_err(|error| error.to_string())
+    })
 }
 
 fn rgb(color: Rgb) -> Hsla {
@@ -2098,6 +2240,7 @@ mod tests {
             solid_cursor: None,
             run: None,
             pending: None,
+            row_sprites: Vec::new(),
             scene: Scene {
                 frame,
                 bounds: geometry.bounds,
@@ -2105,9 +2248,11 @@ mod tests {
                 settings,
                 geometry,
                 fonts,
+                raster: None,
                 background: defaults.1,
                 backgrounds: Vec::new(),
                 inks: Vec::new(),
+                sprites: Vec::new(),
                 decorations: Vec::new(),
                 cursor_blocks: Vec::new(),
                 cursor_overlays: Vec::new(),
@@ -2169,20 +2314,20 @@ mod tests {
         let scene = builder(frame(), settings.clone(), geometry).scene;
         let same = Arc::clone(&scene.frame);
         let bounds = scene.bounds;
-        assert!(scene.reusable(&same, bounds, 1., &settings));
+        assert!(scene.reusable(&same, bounds, (1., None), &settings));
         // Input policy and sizing do not change a prepared scene.
         let mut unpainted = settings.clone();
         unpainted.size_owner = false;
         unpainted.option_as_alt = true;
         unpainted.app_chords = vec!["ctrl+tab".into()];
-        assert!(scene.reusable(&same, bounds, 1., &unpainted));
+        assert!(scene.reusable(&same, bounds, (1., None), &unpainted));
         assert!(
-            !scene.reusable(&Arc::new(frame()), bounds, 1., &settings),
+            !scene.reusable(&Arc::new(frame()), bounds, (1., None), &settings),
             "an equal but newly published frame is a new frame"
         );
-        assert!(!scene.reusable(&same, bounds, 2., &settings));
+        assert!(!scene.reusable(&same, bounds, (2., None), &settings));
         let moved = Bounds::new(point(px(5.), px(8.)), bounds.size);
-        assert!(!scene.reusable(&same, moved, 1., &settings));
+        assert!(!scene.reusable(&same, moved, (1., None), &settings));
         let changes: [fn(&mut Settings); 6] = [
             |settings| settings.focused = false,
             |settings| settings.cursor_visible = false,
@@ -2194,7 +2339,7 @@ mod tests {
         for change in changes {
             let mut changed = settings.clone();
             change(&mut changed);
-            assert!(!scene.reusable(&same, bounds, 1., &changed));
+            assert!(!scene.reusable(&same, bounds, (1., None), &changed));
         }
     }
 
@@ -2705,17 +2850,47 @@ mod tests {
         };
         let scene = builder(frame(), Settings::default(), geometry).scene;
         let mut next = frame();
-        assert!(can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        assert!(can_patch(
+            &scene,
+            &next,
+            scene.bounds,
+            (1., None),
+            &scene.settings
+        ));
         next.bootstrap_id += 1;
-        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        assert!(!can_patch(
+            &scene,
+            &next,
+            scene.bounds,
+            (1., None),
+            &scene.settings
+        ));
         next.bootstrap_id -= 1;
         next.stream_id += 1;
-        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        assert!(!can_patch(
+            &scene,
+            &next,
+            scene.bounds,
+            (1., None),
+            &scene.settings
+        ));
         next.stream_id -= 1;
         next.generation = 0;
-        assert!(!can_patch(&scene, &next, scene.bounds, 1., &scene.settings));
+        assert!(!can_patch(
+            &scene,
+            &next,
+            scene.bounds,
+            (1., None),
+            &scene.settings
+        ));
         next.generation = 2;
-        assert!(!can_patch(&scene, &next, scene.bounds, 2., &scene.settings));
+        assert!(!can_patch(
+            &scene,
+            &next,
+            scene.bounds,
+            (2., None),
+            &scene.settings
+        ));
     }
 
     #[test]
