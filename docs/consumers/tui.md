@@ -813,7 +813,9 @@ repository matching decides.
 
 `C-a A` (`agent-fleet`) opens a filterable overlay of the attached session's
 panes under session headers, plus satellite agents grouped by agent name.
-Rows show name, kind, state (`●` blocked, `◐` working, `◆` done,
+Rows start with the pane's address (`0:editor.1` under a named tab, `0.1`
+under an unnamed one, the same index the tab bar shows), then name, kind,
+state (`●` blocked, `◐` working, `◆` done,
 `○` idle or unknown), pending-question highlights, and branch or cwd.
 Satellite rows identify the host and open the pane beside the focused one.
 
