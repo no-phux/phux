@@ -62,7 +62,36 @@ pub async fn glance_view(conn: &mut Connection) -> Result<StateView, AttachError
             Err(_) => {}
         }
     }
+    count_session_windows(view.snapshot_mut());
     Ok(view)
+}
+
+/// Replace each local session's server-reported window count with one read
+/// from the session's own resources, when the server reports each
+/// resource's session (ADR-0161 §7).
+///
+/// Such a server's windows are synthesized, one per non-empty session, so
+/// the count is whether the session holds a Terminal; [`count_layout_windows`]
+/// then raises it to the arrangement's group count where it can read one.
+/// An older server's count is its own and stays.
+fn count_session_windows(snapshot: &mut SessionSnapshot) {
+    if !resource::reports_sessions(snapshot) {
+        return;
+    }
+    let counts: Vec<u16> = snapshot
+        .sessions
+        .iter()
+        .map(|session| {
+            u16::from(
+                resource::terminals_in(snapshot, session.id)
+                    .next()
+                    .is_some(),
+            )
+        })
+        .collect();
+    for (session, count) in snapshot.sessions.iter_mut().zip(counts) {
+        session.window_count = count;
+    }
 }
 
 /// First request id [`count_layout_windows`] reads layouts with; clear of
@@ -348,15 +377,10 @@ fn local_pane_count(snapshot: &SessionSnapshot, session: SessionId) -> u16 {
     u16::try_from(resource::terminals_in(snapshot, session).count()).unwrap_or(u16::MAX)
 }
 
-/// A local session's most recent input target as a canonical selector: its
-/// legacy window's active resource, falling back to its first Terminal.
+/// A local session's most recent input target as a canonical selector
+/// ([`resource::recent_terminal`]), falling back to its first Terminal.
 fn local_active_terminal(snapshot: &SessionSnapshot, s: &SessionInfo) -> Option<String> {
-    let recent = s
-        .active_window
-        .and_then(|id| snapshot.windows.iter().find(|w| w.id == id))
-        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == s.id))
-        .and_then(|window| window.active_resource.clone());
-    let id = recent.or_else(|| {
+    let id = resource::recent_terminal(snapshot, s).or_else(|| {
         resource::terminals_in(snapshot, s.id)
             .next()
             .map(|pane| pane.id.clone())
@@ -713,5 +737,32 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert!(groups[0].local);
         assert_eq!(groups[0].host, None);
+    }
+
+    /// A server that reports resource sessions synthesizes its window
+    /// count; the listing reads the count from the session's Terminals
+    /// instead. An older server's count is kept.
+    #[test]
+    fn window_counts_come_from_the_session_facet() {
+        let (busy, idle) = (SessionId::new(1), SessionId::new(2));
+        let facet = SessionSnapshot::new(busy, WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(busy, "busy").with_window_count(7),
+                SessionInfo::new(idle, "idle").with_window_count(7),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(99), 80, 24)
+                    .with_session(Some(busy)),
+            ]);
+        let mut counted = facet.clone();
+        count_session_windows(&mut counted);
+        let counts: Vec<u16> = counted.sessions.iter().map(|s| s.window_count).collect();
+        assert_eq!(counts, [1, 0]);
+
+        let mut legacy = facet;
+        legacy.resources[0].session = None;
+        count_session_windows(&mut legacy);
+        let counts: Vec<u16> = legacy.sessions.iter().map(|s| s.window_count).collect();
+        assert_eq!(counts, [7, 7]);
     }
 }

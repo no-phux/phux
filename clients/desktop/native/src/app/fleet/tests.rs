@@ -18,7 +18,6 @@ fn session(byte: u8, name: &str) -> SessionDescriptor {
     SessionDescriptor {
         id: u32::from(byte),
         name: name.into(),
-        window_count: 0,
         attached_client_count: 0,
         keep_empty: true,
         created_at_unix_secs: 0,

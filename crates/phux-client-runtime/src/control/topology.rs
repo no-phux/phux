@@ -22,9 +22,6 @@ pub struct SessionDescriptor {
     pub id: u32,
     /// The session name.
     pub name: String,
-    /// Legacy windows the server lists for the session (one per non-empty
-    /// session); arrangement groups are the tabs.
-    pub window_count: u16,
     /// Clients attached to the session.
     pub attached_client_count: u16,
     /// The session survives its last member (`lifetime == persistent`).
@@ -129,7 +126,6 @@ impl Topology {
             .map(|session| SessionDescriptor {
                 id: session.id.get(),
                 name: session.name.clone(),
-                window_count: session.window_count,
                 attached_client_count: session.attached_client_count,
                 keep_empty: session.keep_empty,
                 created_at_unix_secs: session.created_at_unix_secs,

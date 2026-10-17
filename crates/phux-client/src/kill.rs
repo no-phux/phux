@@ -521,12 +521,21 @@ fn target_miss(target: &str, degradation: Degradation) -> KillError {
     }
 }
 
-/// Whether the session named `name` holds no windows (ADR-0105).
+/// Whether the session named `name` holds nothing (ADR-0105): no resource
+/// names it, from a server that reports resource sessions (ADR-0161 §7),
+/// else no legacy window.
 fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
-    snapshot
-        .sessions
-        .iter()
-        .any(|session| session.name == name && session.is_empty())
+    let by_facet = crate::resource::reports_sessions(snapshot);
+    snapshot.sessions.iter().any(|session| {
+        session.name == name
+            && if by_facet {
+                crate::resource::in_session(snapshot, session.id)
+                    .next()
+                    .is_none()
+            } else {
+                session.is_empty()
+            }
+    })
 }
 
 fn session_key_named(snapshot: &SessionSnapshot, name: &str) -> Option<SessionKey> {
@@ -1114,6 +1123,24 @@ mod tests {
             matches!(result, Err(KillError::Refused { ref label, .. }) if label == "session \"work\""),
             "{result:?}"
         );
+    }
+
+    /// Emptiness comes from the session facet when the server reports it,
+    /// never from the synthesized window count.
+    #[test]
+    fn emptiness_reads_the_session_facet() {
+        let (busy, parked) = (SessionId::new(1), SessionId::new(2));
+        let state = SessionSnapshot::new(busy, WindowId::new(10), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(busy, "busy").with_window_count(0),
+                SessionInfo::new(parked, "parked").with_window_count(1),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(99), 80, 24)
+                    .with_session(Some(busy)),
+            ]);
+        assert!(!session_is_empty(&state, "busy"));
+        assert!(session_is_empty(&state, "parked"));
     }
 
     /// Without `ORGANIZATION`, an empty session cannot be deleted and
