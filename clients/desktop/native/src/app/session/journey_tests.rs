@@ -189,6 +189,29 @@ fn wait_for(cx: &mut TestAppContext, mut predicate: impl FnMut(&mut TestAppConte
     }
 }
 
+/// Press a key the way the macOS platform delivers it: one key-down that its
+/// binding consumes, then key-up. GPUI's `simulate_keystrokes` also runs a
+/// simulated IME that types `"\n"` after a propagated Enter binding, which
+/// marks a just-submitted composer draft as edited; a real Return never does.
+fn press(cx: &mut TestAppContext, window: gpui::AnyWindowHandle, key: &str) {
+    use gpui::InputEvent as _;
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_event(
+            gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(gpui::KeyUpEvent { keystroke }.to_platform_input(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 fn home_key(desk: &Entity<Desk>, cx: &TestAppContext) -> Option<SessionKey> {
     desk.read_with(cx, |desk, _| desk.link.as_ref()?.connection.home_key())
 }
@@ -946,15 +969,13 @@ fn agent_stream_enables_native_face_without_restart_and_keeps_drafts(cx: &mut Te
     .unwrap();
     cx.run_until_parked();
     // Exercise the real Kit textarea, not a separate text model.
-    cx.simulate_keystrokes(*handle, "shift-enter");
-    cx.run_until_parked();
+    press(cx, *handle, "shift-enter");
     desk.read_with(cx, |desk, cx| {
-        assert!(
-            desk.conversation_faces[&placement]
-                .input
-                .read(cx)
-                .value()
-                .contains('\n')
+        let draft = desk.conversation_faces[&placement].input.read(cx).value();
+        assert_eq!(
+            draft.matches('\n').count(),
+            2,
+            "Shift-Enter inserts a line and does not submit: {draft:?}"
         );
     });
     // Enter uses the production acknowledged paste+Return lane to the same PTY.
@@ -969,7 +990,7 @@ fn agent_stream_enables_native_face_without_restart_and_keeps_drafts(cx: &mut Te
         });
     })
     .unwrap();
-    cx.simulate_keystrokes(*handle, "enter");
+    press(cx, *handle, "enter");
     wait_for(cx, |cx| {
         desk.read_with(cx, |desk, cx| {
             desk.conversation_faces[&placement]
