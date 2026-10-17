@@ -213,8 +213,7 @@ The tab strip keeps New Terminal and the notification bell.
 Local and registered remote hosts open concurrently with host-qualified
 identity, through the shared registry and dialer; auth refusal, expiry,
 version mismatch, and offline inventory are distinct states. Settings show
-effective value, default, source, and when an edit applies, using the shared
-catalogue and comment-preserving writer. Native menus, Dock, dialogs, drops,
+effective value, default, source, and when an edit applies. Native menus, Dock, dialogs, drops,
 clipboard, notifications, scale, appearance, reduced motion, high contrast,
 and screen-reader navigation are in scope; titles, links, and dropped paths
 never become implicit command execution.
@@ -238,6 +237,16 @@ and only its backdrop, sheet, and pane cards turn opaque.
 Display edits apply live and persist with the window's layout; font selection
 follows resets and Ghostty imports while Settings stays open.
 
+Each setting and shortcut names its source: the default, a saved desktop
+preference, or the Ghostty file and line that sets it. A Ghostty-sourced value
+says when a file edit reaches it: binds and the Ghostty theme on **Reload
+config**, seeded preferences on **Use Ghostty look**. **Keyboard & shortcuts**
+lists any chord the Ghostty config binds to different actions, with every
+line; the last line wins. **Ghostty integration** lists lines it skipped as
+malformed or out of range, by file and line; every other line still applies.
+The desktop reads Ghostty's config and does not write it; it does not use the
+`phux-config` catalogue.
+
 ## Status
 
 The host is a GPUI application. Tracking IDs below name remaining product work,
@@ -249,7 +258,7 @@ accessibility journeys, and Linux remain separate gaps.
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, identity-scoped restore, Open Folder, and repository grouping across the all-host catalog. Cross-server Workspace records are not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import, and active-session attention feed. Mixed-authority tab trees, approvals, the inspector, and catalogue-backed settings provenance are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import with per-line provenance and shortcut conflicts, and active-session attention feed. Mixed-authority tab trees, approvals, and the inspector are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
