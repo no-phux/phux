@@ -54,6 +54,7 @@ use crate::publication::Publication;
 
 mod agent_delivery;
 mod agents;
+mod approvals;
 mod commands;
 mod events;
 mod extensions;
@@ -377,6 +378,10 @@ enum Pending {
 }
 
 /// The sans-IO control plane. See the module docs.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent per-connection lifecycle facts (handshake, first attach, detach asked, attach ended), not one state machine"
+)]
 #[derive(Debug)]
 pub struct ControlPlane {
     options: ControlOptions,
@@ -396,6 +401,10 @@ pub struct ControlPlane {
     handshake_ready: bool,
     attached_once: bool,
     detach_requested: bool,
+    /// The server sent `DETACHED` on this connection: the attach is over,
+    /// whatever the transport does next, so no input is admitted until a new
+    /// attach or connection.
+    attach_ended: bool,
     error: Option<String>,
     server: Option<ServerInfo>,
     engine: Option<EngineHandle>,
@@ -480,6 +489,8 @@ pub struct ControlPlane {
     organization: organization::OrganizationReplica,
     /// The organization operation journal and close batches.
     org: org_plane::OrgLane,
+    /// The opt-in projection of server-held approvals (ADR-0128).
+    approvals: approvals::ApprovalWatch,
 }
 
 impl ControlPlane {
@@ -503,6 +514,7 @@ impl ControlPlane {
             handshake_ready: false,
             attached_once: false,
             detach_requested: false,
+            attach_ended: false,
             error: None,
             server: None,
             engine: None,
@@ -550,6 +562,7 @@ impl ControlPlane {
             project_tag_pending: None,
             organization: organization::OrganizationReplica::new(),
             org: org_plane::OrgLane::default(),
+            approvals: approvals::ApprovalWatch::default(),
         }
     }
 
@@ -861,12 +874,14 @@ impl ControlPlane {
         self.own_spawns.clear();
         self.command_states.clear();
         self.handshake_ready = false;
+        self.attach_ended = false;
         self.active_attach_id = None;
         self.attach_terminals.clear();
         self.attached_session = None;
         self.selected_session = None;
         self.input_replay.connection_lost();
         self.org_connection_lost();
+        self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_pending("connection replaced before the server answered", true);
         self.push_event(Event::ConnectionOpened {
@@ -887,6 +902,7 @@ impl ControlPlane {
         self.handshake_ready = false;
         self.input_replay.connection_lost();
         self.org_connection_lost();
+        self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_native_pending("the connection ended before the server answered");
         if let Some(message) = &message {
@@ -907,6 +923,7 @@ impl ControlPlane {
         self.strand_durable("the connection failed before the operation completed");
         self.org_strand("the connection failed before the operation completed");
         self.strand_extensions("the connection failed before the operation completed");
+        self.approvals_connection_ended();
         self.fail_pending("the connection failed before the server answered", false);
         self.set_status(Status::Failed);
     }

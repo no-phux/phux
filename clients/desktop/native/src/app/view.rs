@@ -2559,6 +2559,7 @@ fn pane_controls(
                             for (command, label) in [
                                 ("split-right", "Split right"),
                                 ("split-down", "Split down"),
+                                ("view", "Mirror pane"),
                                 ("close", "Close pane"),
                             ] {
                                 let handle = handle.clone();
@@ -2846,6 +2847,7 @@ pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> Strin
             .map(agent_swatch)
             .map(str::to_owned)
             .unwrap_or_else(|| colors.theme.warning.clone()),
+        Kind::Approval => colors.theme.warning.clone(),
         Kind::Info | Kind::Refusal | Kind::Command => colors.theme.accent.clone(),
     }
 }

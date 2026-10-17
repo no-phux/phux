@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
-    Styled, Subscription, Window, div, px,
+    AnyElement, AnyWindowHandle, App, Context, Entity, EntityId, IntoElement, MouseButton,
+    ParentElement, SharedString, Styled, Subscription, WeakEntity, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -36,6 +36,8 @@ pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
 mod palette_tests;
+#[cfg(test)]
+mod window_tests;
 
 /// Transient disclosure state, reset whenever a palette opens.
 #[derive(Default)]
@@ -62,6 +64,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
+        | Modal::Windows
         | Modal::MoveResources
         | Modal::Path => {
             desk.palette_view = PaletteView::default();
@@ -388,6 +391,19 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Window { handle, desk, tab } => {
+                self.close_modal(window, cx);
+                if desk.entity_id() == cx.entity_id() {
+                    if let Some(tab) = tab {
+                        self.select_tab(&tab);
+                    }
+                    self.after_command(window, cx);
+                    return;
+                }
+                self.after_command(window, cx);
+                // Another window can be updated once this window's lease ends.
+                cx.defer(move |cx| raise_window(handle, &desk, tab.as_deref(), cx));
+            }
             Target::Work(destination) => {
                 self.close_modal(window, cx);
                 self.navigate_work(destination, cx);
@@ -445,6 +461,7 @@ impl Desk {
             }
             Target::Command
             | Target::Session(_)
+            | Target::Window { .. }
             | Target::Work(_)
             | Target::Setting(_)
             | Target::Move(_, _)
@@ -463,6 +480,12 @@ enum Target {
     Pane(ResourceId),
     Tab(String),
     Session(String),
+    /// An open native window, and the tab to show there. Never opens one.
+    Window {
+        handle: AnyWindowHandle,
+        desk: WeakEntity<Desk>,
+        tab: Option<String>,
+    },
     Work(super::fleet::Destination),
     Setting(super::settings_panel::Page),
     Move(SessionKey, String),
@@ -512,9 +535,11 @@ pub fn layer(
     let look = desk.look();
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
-        Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
-            launcher::palette(desk, colors, window, cx)
-        }
+        Modal::Commands
+        | Modal::Goto
+        | Modal::WindowSession
+        | Modal::Windows
+        | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
         Modal::Path => path_panel(desk, colors, &look, window, cx),
         Modal::Settings if desk.settings_page.is_some() => {
             super::settings_panel::panel(desk, colors, window, cx)
@@ -964,6 +989,133 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
     .collect()
 }
 
+/// What one open window shows, read for the window overview.
+struct Shown {
+    session: String,
+    host: Option<String>,
+    tabs: Vec<(String, String)>,
+    active: Option<String>,
+}
+
+impl Shown {
+    fn of(desk: &Desk) -> Self {
+        let (tabs, active) = desk.link.as_ref().map_or((Vec::new(), None), |link| {
+            let tabs = link
+                .workspace
+                .tabs
+                .iter()
+                .map(|tab| (tab.id.clone(), desk::tab_title(desk, tab)))
+                .collect();
+            (tabs, Some(link.workspace.active_id.clone()))
+        });
+        Self {
+            session: if desk.session.is_empty() {
+                "No session".to_owned()
+            } else {
+                desk.session.clone()
+            },
+            host: desk.remote.clone(),
+            tabs,
+            active,
+        }
+    }
+
+    fn host_label(&self) -> &str {
+        self.host.as_deref().unwrap_or("Local")
+    }
+}
+
+/// Section label of the window overview, whose tab rows sit under their window.
+pub(super) const WINDOWS: &str = "Windows";
+
+/// One row per open native window, each followed by its tabs. Windows are
+/// numbered in the order they opened; the session and host are phux's. The
+/// window this list is in is Current, and so is the tab it shows. Another
+/// window's tab on screen is Shown.
+fn window_sections(desk: &Desk, current: EntityId, cx: &App) -> Vec<Section> {
+    let mut rows = Vec::new();
+    for (index, (handle, entity, quick)) in desk.desktop.read(cx).desk_windows().enumerate() {
+        let here = entity.entity_id() == current;
+        let shown = if here {
+            Shown::of(desk)
+        } else {
+            Shown::of(entity.read(cx))
+        };
+        let name = if quick {
+            "Quick Terminal".to_owned()
+        } else {
+            format!("Window {}", index + 1)
+        };
+        let count = match shown.tabs.len() {
+            0 => "no tabs".to_owned(),
+            1 => "1 tab".to_owned(),
+            count => format!("{count} tabs"),
+        };
+        let mark = if here { "Current · " } else { "" };
+        let target = |tab: Option<String>| Target::Window {
+            handle,
+            desk: entity.downgrade(),
+            tab,
+        };
+        rows.push(simple_row(
+            &name,
+            format!("{mark}{} · {} · {count}", shown.session, shown.host_label()),
+            "Windows",
+            target(None),
+        ));
+        let total = shown.tabs.len();
+        for (position, (id, title)) in shown.tabs.iter().enumerate() {
+            let mark = match (shown.active.as_deref() == Some(id.as_str()), here) {
+                (true, true) => "Current · ",
+                (true, false) => "Shown · ",
+                (false, _) => "",
+            };
+            let host = shown
+                .host
+                .as_deref()
+                .map(|host| format!(" · {host}"))
+                .unwrap_or_default();
+            rows.push(simple_row(
+                title,
+                format!(
+                    "{mark}Tab {} of {total} · {name} · {}{host}",
+                    position + 1,
+                    shown.session
+                ),
+                "Tabs",
+                target(Some(id.clone())),
+            ));
+        }
+    }
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    vec![Section {
+        label: Some(WINDOWS),
+        rows,
+    }]
+}
+
+/// Bring an open window forward, out of the Dock when minimized, and show
+/// `tab` there. A window closed since it was listed is left closed.
+fn raise_window(handle: AnyWindowHandle, desk: &WeakEntity<Desk>, tab: Option<&str>, cx: &mut App) {
+    let activate = crate::diag::may_activate();
+    if activate {
+        cx.activate(true);
+    }
+    let _ = handle.update(cx, |_, window, cx| {
+        if activate {
+            window.activate_window();
+        }
+        let _ = desk.update(cx, |desk, cx| {
+            if let Some(tab) = tab {
+                desk.select_tab(tab);
+            }
+            desk.after_command(window, cx);
+        });
+    });
+}
+
 fn session_sections(desk: &Desk) -> Vec<Section> {
     let Some(link) = desk.link.as_ref() else {
         return Vec::new();
@@ -1404,9 +1556,12 @@ fn notification_rows(
 ) -> Vec<AnyElement> {
     desk.feed
         .items()
-        .filter(|entry| (entry.kind == super::notifications::Kind::Agent) == agents)
+        .filter(|entry| entry.kind.inbox() == agents)
         .map(|entry| {
             let id = entry.id;
+            let decide = entry
+                .approval
+                .map(|approval| approval_buttons(desk, approval, id, cx));
             let edge = from_hex(&super::view::notification_edge(entry, colors));
             let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
@@ -1457,7 +1612,8 @@ fn notification_rows(
                                 .line_clamp(2)
                                 .text_color(from_hex(&colors.muted))
                                 .child(body)
-                        })),
+                        }))
+                        .children(decide),
                 )
                 .child(
                     div()
@@ -1472,6 +1628,40 @@ fn notification_rows(
                 .into_any_element()
         })
         .collect()
+}
+
+/// Approve and Deny for one held action. Both go quiet while its decision
+/// is in flight; the server's answer takes the entry down or reports why not.
+fn approval_buttons(
+    desk: &Desk,
+    approval: phux_protocol::ids::ApprovalId,
+    entry: u64,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    use gpui_kit::base::Disableable;
+    use phux_client_runtime::approvals::Decision;
+    let busy = desk.approvals.deciding(approval);
+    let button = |decision: Decision, label: &'static str, selector: &'static str| {
+        div().debug_selector(move || selector.into()).child(
+            Button::new((selector, entry as usize))
+                .label(label)
+                .small()
+                .disabled(busy)
+                .when(decision == Decision::Deny, |button| button.ghost())
+                .on_click(cx.listener(move |desk, _, _, cx| {
+                    cx.stop_propagation();
+                    desk.feed.read(entry);
+                    desk.decide_approval(approval, decision, cx);
+                })),
+        )
+    };
+    div()
+        .pt(px(6.))
+        .flex()
+        .gap(px(6.))
+        .child(button(Decision::Approve, "Approve", "approval-approve"))
+        .child(button(Decision::Deny, "Deny", "approval-deny"))
+        .into_any_element()
 }
 
 fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElement {
@@ -1497,12 +1687,12 @@ fn notifications_panel(
     let unread_agents = desk
         .feed
         .unread()
-        .filter(|entry| entry.kind == super::notifications::Kind::Agent)
+        .filter(|entry| entry.kind.inbox())
         .count();
     let unread_general = desk.feed.unread().count() - unread_agents;
     let empty = desk.feed.is_empty();
     let mut rows = vec![notification_heading(
-        "Inbox — agent attention",
+        "Inbox — agents and approvals",
         unread_agents,
         colors,
     )];
@@ -1515,7 +1705,7 @@ fn notifications_panel(
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
-                .child("No agent attention alerts.")
+                .child("No agent alerts or approvals.")
                 .into_any_element(),
         );
     }

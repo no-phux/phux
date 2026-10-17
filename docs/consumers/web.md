@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-08
+last-reviewed: 2026-10-17
 ---
 
 # The phux web client
@@ -166,10 +166,13 @@ do not pull in libghostty ([ADR-0024](../adr/0024-wire-owns-input-atoms.md)).
    then send `ATTACH` with a client correlation `attach_id`.
 5. Decode matching `BOOTSTRAP_BEGIN` / `BOOTSTRAP_CHUNK` into an invisible
    engine and publish at `BOOTSTRAP_READY`; consume generation-bound
-   `RESOURCE_OUTPUT` from `base_seq + 1`. Native checkpoint and raw live bytes
-   are never rewritten. Raw profiles send no `FRAME_ACK`; only negotiated
-   `SynthesizedVtStateSync` acknowledges a transition after applying it.
-   Retained history is requested incrementally after READY. Paints are
+   `RESOURCE_OUTPUT` from `base_seq + 1`. The client offers the official
+   native snapshot (`LibghosttySnapshotV1`) when the engine decodes one at
+   load, and always offers synthesized VT as the fallback. Native snapshot
+   and raw live bytes are never rewritten. Raw profiles send no `FRAME_ACK`;
+   only negotiated `SynthesizedVtStateSync` acknowledges a transition after
+   applying it. Retained history is requested incrementally after READY, and
+   again as scrolling nears the oldest loaded row. Paints are
    coalesced to animation frames; the 530 ms cursor blink redraws only the
    cursor's row.
 6. Input goes through a hidden `<textarea>` beside the canvas, focused when

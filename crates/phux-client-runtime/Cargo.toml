@@ -83,6 +83,10 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 rustls.workspace = true
 # TRANSCRIBE returns the protocol's open-shaped JSON command value.
 serde_json.workspace = true
+# The server-held approval record (ADR-0128) is parsed once, here, for the
+# control plane and phux-client's verbs alike. Already in this crate's tree
+# through phux-core and phux-client-core at the workspace spec.
+serde.workspace = true
 # Predictive text commits are segmented by grapheme before entering the
 # shared phux-client-core predictor.
 unicode-segmentation.workspace = true

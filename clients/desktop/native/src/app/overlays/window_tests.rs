@@ -1,0 +1,375 @@
+//! The window overview: every open native window, its session, host and tabs,
+//! with the current one marked, and activation that never opens a window.
+
+use gpui::{AnyWindowHandle, Entity, TestAppContext, VisualTestContext};
+use gpui_kit::component::Root;
+
+use super::{Section, Target, WINDOWS, window_sections};
+use crate::app::desk::Link;
+use crate::app::{AppOptions, Desk, Desktop, Modal};
+use crate::connection::{Connection, DeterministicDial};
+use crate::workspace::layout::{DeskTab, LayoutNode, Placement};
+use crate::workspace::{Workspace, WorkspaceOptions, persist};
+
+struct Fixture {
+    desktop: Entity<Desktop>,
+    first: (AnyWindowHandle, Entity<Desk>),
+    second: (AnyWindowHandle, Entity<Desk>),
+}
+
+fn tab(id: &str, title: &str) -> DeskTab {
+    DeskTab {
+        id: id.into(),
+        title: Some(title.into()),
+        root: LayoutNode::Leaf {
+            placement: Placement {
+                id: id.into(),
+                terminal_id: None,
+                terminal_label: String::new(),
+                view_id: None,
+            },
+        },
+        focused_id: id.into(),
+        zoomed_id: None,
+    }
+}
+
+/// Give `desk` a session with `tabs`, the first one shown, without a runtime driver.
+fn install(desk: &Entity<Desk>, session: &str, tabs: Vec<DeskTab>, cx: &mut TestAppContext) {
+    let socket = desk.read_with(cx, |desk, _| desk.socket.clone());
+    let connection = Connection::connect(socket, session.into()).unwrap();
+    desk.update(cx, |desk, cx| {
+        let mut workspace = Workspace::new(session.into(), WorkspaceOptions::default());
+        workspace.active_id = tabs[0].id.clone();
+        workspace.tabs = tabs;
+        desk.session = session.into();
+        desk.link = Some(Link {
+            connection,
+            workspace,
+        });
+        cx.notify();
+    });
+}
+
+/// Two desk windows: `main` with two tabs whose titles match the other
+/// window's, and `other` with two tabs.
+fn fixture(cx: &mut TestAppContext) -> Fixture {
+    let path = std::env::temp_dir().join(format!(
+        "phux-window-overview-{}-{}",
+        std::process::id(),
+        cx.test_function_name().unwrap_or("isolated")
+    ));
+    let mut prefs = crate::settings::default_display();
+    prefs.ghostty_keys = false;
+    std::fs::create_dir_all(&path).unwrap();
+    let layout = persist::save_layout("", &[], &prefs, None);
+    std::fs::write(
+        path.join("layout.json"),
+        serde_json::to_vec(&persist::layout_value(&layout)).unwrap(),
+    )
+    .unwrap();
+    let handle = cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        crate::app::open(
+            AppOptions {
+                socket: path.join("never-connected.sock"),
+                session: String::new(),
+                phux: path.join("not-installed-phux"),
+                layout_path: path.join("layout.json"),
+                fresh: false,
+                initial_terminal: None,
+                quick: false,
+                dev_telemetry: false,
+                startup_error: None,
+            },
+            cx,
+        )
+        .unwrap()
+    });
+    let desk = (*handle)
+        .update(cx, |root, _, cx| {
+            root.downcast::<Root>()
+                .unwrap()
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<Desk>()
+                .unwrap()
+        })
+        .unwrap();
+    let desktop = desk.read_with(cx, |desk, _| desk.desktop.clone());
+    desktop.update(cx, |desktop, cx| {
+        desktop.open_session("other".into(), None, cx)
+    });
+    cx.run_until_parked();
+    let windows: Vec<(AnyWindowHandle, Entity<Desk>)> = desktop.read_with(cx, |desktop, _| {
+        desktop
+            .desk_windows()
+            .map(|(handle, desk, _)| (handle, desk.clone()))
+            .collect()
+    });
+    assert_eq!(windows.len(), 2, "two desk windows are open");
+    install(
+        &windows[0].1,
+        "main",
+        vec![tab("main-a", "zsh"), tab("main-b", "build")],
+        cx,
+    );
+    install(
+        &windows[1].1,
+        "other",
+        vec![tab("other-a", "zsh"), tab("other-b", "logs")],
+        cx,
+    );
+    cx.run_until_parked();
+    Fixture {
+        desktop,
+        first: windows[0].clone(),
+        second: windows[1].clone(),
+    }
+}
+
+fn overview(desk: &Entity<Desk>, cx: &mut TestAppContext) -> Vec<Section> {
+    desk.update(cx, |desk, cx| window_sections(desk, cx.entity_id(), cx))
+}
+
+fn details(sections: &[Section]) -> Vec<(String, String)> {
+    sections
+        .iter()
+        .flat_map(|section| &section.rows)
+        .map(|row| {
+            (
+                row.title.to_string(),
+                row.detail.as_deref().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn render(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+fn type_text(cx: &mut VisualTestContext, text: &str) {
+    for character in text.chars() {
+        cx.update(|window, cx| {
+            let key = character.to_string();
+            window.dispatch_keystroke(
+                gpui::Keystroke {
+                    modifiers: gpui::Modifiers::default(),
+                    key: key.clone(),
+                    key_char: Some(key),
+                },
+                cx,
+            );
+        });
+        render(cx);
+    }
+}
+
+fn active_tab(desk: &Entity<Desk>, cx: &VisualTestContext) -> String {
+    desk.read_with(cx, |desk, _| {
+        desk.link.as_ref().unwrap().workspace.active_id.clone()
+    })
+}
+
+#[gpui::test]
+fn overview_lists_every_window_with_its_tabs_and_marks_one_current(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let sections = overview(&fixture.first.1, cx);
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].label, Some(WINDOWS));
+    assert_eq!(
+        details(&sections),
+        vec![
+            ("Window 1".into(), "Current · main · Local · 2 tabs".into()),
+            (
+                "zsh".into(),
+                "Current · Tab 1 of 2 · Window 1 · main".into()
+            ),
+            ("build".into(), "Tab 2 of 2 · Window 1 · main".into()),
+            ("Window 2".into(), "other · Local · 2 tabs".into()),
+            ("zsh".into(), "Shown · Tab 1 of 2 · Window 2 · other".into()),
+            ("logs".into(), "Tab 2 of 2 · Window 2 · other".into()),
+        ],
+        "same-titled tabs stay distinguishable by window and session"
+    );
+    let rows = &sections[0].rows;
+    let current_windows = rows
+        .iter()
+        .filter(|row| matches!(row.target, Target::Window { tab: None, .. }))
+        .filter(|row| row.detail.as_deref().unwrap().starts_with("Current"))
+        .count();
+    let current_tabs = rows
+        .iter()
+        .filter(|row| matches!(row.target, Target::Window { tab: Some(_), .. }))
+        .filter(|row| row.detail.as_deref().unwrap().starts_with("Current"))
+        .count();
+    assert_eq!((current_windows, current_tabs), (1, 1));
+
+    // The other window sees itself as current, and its own shown tab.
+    let from_second = details(&overview(&fixture.second.1, cx));
+    assert_eq!(from_second[0].1, "main · Local · 2 tabs");
+    assert_eq!(from_second[1].1, "Shown · Tab 1 of 2 · Window 1 · main");
+    assert_eq!(from_second[3].1, "Current · other · Local · 2 tabs");
+    assert_eq!(from_second[4].1, "Current · Tab 1 of 2 · Window 2 · other");
+}
+
+#[gpui::test]
+fn choosing_another_windows_tab_raises_it_without_opening_a_window(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let windows = cx.update(|cx| cx.windows().len());
+    let (first_handle, first) = fixture.first.clone();
+    let (second_handle, second) = fixture.second.clone();
+    let cx = &mut VisualTestContext::from_window(first_handle, cx);
+    cx.update(|window, cx| {
+        window.activate_window();
+        first.update(cx, |desk, cx| desk.execute("windows", window, cx));
+    });
+    render(cx);
+    assert_eq!(
+        first.read_with(cx, |desk, _| desk.modal.clone()),
+        Modal::Windows
+    );
+    type_text(cx, "logs");
+    cx.simulate_keystrokes("enter");
+    render(cx);
+    assert_eq!(
+        first.read_with(cx, |desk, _| desk.modal.clone()),
+        Modal::None
+    );
+    assert_eq!(active_tab(&second, cx), "other-b");
+    assert_eq!(
+        active_tab(&first, cx),
+        "main-a",
+        "the first window keeps its tab"
+    );
+    assert_eq!(cx.update(|_, cx| cx.active_window()), Some(second_handle));
+    assert_eq!(cx.update(|_, cx| cx.windows().len()), windows);
+    assert_eq!(
+        fixture
+            .desktop
+            .read_with(cx, |desktop, _| desktop.desk_windows().count()),
+        2
+    );
+}
+
+#[gpui::test]
+fn choosing_a_tab_in_this_window_selects_it_and_reraising_is_idempotent(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let windows = cx.update(|cx| cx.windows().len());
+    let (first_handle, first) = fixture.first.clone();
+    let (second_handle, _) = fixture.second.clone();
+    let cx = &mut VisualTestContext::from_window(first_handle, cx);
+    for _ in 0..2 {
+        cx.update(|window, cx| first.update(cx, |desk, cx| desk.execute("windows", window, cx)));
+        render(cx);
+        type_text(cx, "build");
+        cx.simulate_keystrokes("enter");
+        render(cx);
+        assert_eq!(active_tab(&first, cx), "main-b");
+        assert_eq!(cx.update(|_, cx| cx.windows().len()), windows);
+    }
+    // A window row raises that window and leaves its shown tab alone.
+    cx.update(|window, cx| first.update(cx, |desk, cx| desk.execute("windows", window, cx)));
+    render(cx);
+    type_text(cx, "Window 2");
+    cx.simulate_keystrokes("enter");
+    render(cx);
+    assert_eq!(cx.update(|_, cx| cx.active_window()), Some(second_handle));
+    assert_eq!(cx.update(|_, cx| cx.windows().len()), windows);
+}
+
+#[gpui::test]
+fn closing_a_window_renumbers_the_rest_and_a_stale_row_opens_nothing(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let (_, first) = fixture.first.clone();
+    let (second_handle, _) = fixture.second.clone();
+    let stale = overview(&first, cx)[0]
+        .rows
+        .iter()
+        .find(|row| row.title.as_ref() == "logs")
+        .unwrap()
+        .target
+        .clone();
+    second_handle
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let windows = cx.update(|cx| cx.windows().len());
+    assert_eq!(
+        details(&overview(&first, cx)),
+        vec![
+            ("Window 1".into(), "Current · main · Local · 2 tabs".into()),
+            (
+                "zsh".into(),
+                "Current · Tab 1 of 2 · Window 1 · main".into()
+            ),
+            ("build".into(), "Tab 2 of 2 · Window 1 · main".into()),
+        ]
+    );
+    let Target::Window { handle, desk, tab } = stale else {
+        panic!("a window row");
+    };
+    cx.update(|cx| super::raise_window(handle, &desk, tab.as_deref(), cx));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), windows);
+    assert_eq!(
+        fixture
+            .desktop
+            .read_with(cx, |desktop, _| desktop.desk_windows().count()),
+        1
+    );
+}
+
+#[gpui::test]
+fn native_window_menu_and_palette_share_the_overview_command(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let fixture = fixture(cx);
+    let menus = cx.update(|cx| cx.get_menus()).expect("published menus");
+    let window = menus
+        .iter()
+        .find(|menu| menu.name.as_ref() == "Window")
+        .expect("a Window menu AppKit appends open windows to");
+    let actions: Vec<(String, String)> = window
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            gpui::OwnedMenuItem::Action { name, action, .. } => Some((
+                name.clone(),
+                action
+                    .as_any()
+                    .downcast_ref::<crate::app::actions::Run>()?
+                    .id
+                    .clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert!(actions.contains(&("Show All Windows…".into(), "windows".into())));
+    assert!(actions.contains(&("Minimize".into(), "minimize".into())));
+    let (first_handle, first) = fixture.first.clone();
+    let cx = &mut VisualTestContext::from_window(first_handle, cx);
+    cx.dispatch_action(crate::app::actions::Run::new("windows"));
+    render(cx);
+    assert_eq!(
+        first.read_with(cx, |desk, _| desk.modal.clone()),
+        Modal::Windows
+    );
+    assert!(cx.debug_bounds("palette-mode-windows").is_some());
+    // The same command closes it again.
+    cx.update(|window, cx| first.update(cx, |desk, cx| desk.execute("windows", window, cx)));
+    render(cx);
+    assert_eq!(
+        first.read_with(cx, |desk, _| desk.modal.clone()),
+        Modal::None
+    );
+}

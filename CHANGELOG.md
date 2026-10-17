@@ -9,6 +9,47 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.92.0](https://github.com/no-phux/phux/compare/v0.91.0...v0.92.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** list every open window with its session and tabs ([2ab8450](https://github.com/no-phux/phux/commit/2ab845002e8bfd3a2b6426c406238e6f2669a790))
+* **desktop:** move a pane into the next open window ([2283c54](https://github.com/no-phux/phux/commit/2283c54282d7f29e28f6bdc49f9ce9b8c7d13971))
+* **desktop:** show settings provenance, shortcut conflicts and skipped Ghostty lines ([a834c82](https://github.com/no-phux/phux/commit/a834c8276d52d4faa83e3a866af640bb758bedb4))
+* **ls:** carry full record keys in ls --json rows ([059820f](https://github.com/no-phux/phux/commit/059820f43d5721eae8110822485fd5750b715609))
+* **web:** decode official GHOSTSNP snapshots in the browser and advertise LibghosttySnapshotV1 ([5cbff42](https://github.com/no-phux/phux/commit/5cbff42b043857b44de91f4ad4993298dc5076e4))
+
+
+### Bug Fixes
+
+* **client-runtime:** admit no input after the server ends the attach ([f8a7bbf](https://github.com/no-phux/phux/commit/f8a7bbf84b758664aeed61c563d418f13447d7d0))
+* **desktop:** tighten settings provenance, conflicts and reload coverage ([292c816](https://github.com/no-phux/phux/commit/292c8166a698da49c9d80b94020875c5714e7ca8))
+* **install:** name a failed checksum sidecar download ([d3559ea](https://github.com/no-phux/phux/commit/d3559ea6d71b73b04c34a53198a28ac4f40b0408))
+* **server:** compare the browser fixture by decoded terminal, not bytes ([d8e18d5](https://github.com/no-phux/phux/commit/d8e18d5add65f956d9904018544f20f24df59352))
+* **server:** resolve the browser fixture path at run time ([4dd71ed](https://github.com/no-phux/phux/commit/4dd71edc6bc2c43ed424d3f40062349c32a27ce7))
+* **tooling:** lease each worktree to one agent session ([bf15dd2](https://github.com/no-phux/phux/commit/bf15dd28c937eaa42f1715f7e8619991e735d0bf))
+* **tooling:** lease every build and test recipe and verify HEAD after long runs ([65374b2](https://github.com/no-phux/phux/commit/65374b2b9632d278a0cf685ff080ff7f29c682ce))
+* **web:** demand older history after a search reveal and restore send_input docs ([2e4b429](https://github.com/no-phux/phux/commit/2e4b42937c0e9ce2c3f6b046fb28ee8b8993ad75))
+
+
+### Documentation
+
+* **desktop:** describe pane moves as built, not pointer drags ([4822a03](https://github.com/no-phux/phux/commit/4822a03d5692a118ab04569b202cd81f27ede566))
+
+## [0.91.0](https://github.com/no-phux/phux/compare/v0.90.3...v0.91.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** palette lands on the best match, shows why, and lists both splits ([acfe5fb](https://github.com/no-phux/phux/commit/acfe5fb85d961cc3161da2a0203a330f901a2915))
+* **tui:** scroll mark in the rule, copy-mode key legend, tab names that match the bar ([f46368b](https://github.com/no-phux/phux/commit/f46368b627bba70d6b4c5e9a963fe1512f43acfb))
+
+
+### Bug Fixes
+
+* **tui:** repaint a pane whose viewport a wheel or copy-mode scroll moved ([1641c4d](https://github.com/no-phux/phux/commit/1641c4d6db2b7aa3a03ea5919eb91f9fce8a5c34))
+
 ## [0.90.3](https://github.com/no-phux/phux/compare/v0.90.2...v0.90.3) (2026-10-17)
 
 

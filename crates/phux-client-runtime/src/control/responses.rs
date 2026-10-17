@@ -69,6 +69,7 @@ impl ControlPlane {
             }
         }
         self.org_connection_negotiated(new_incarnation);
+        self.approvals_negotiated();
         self.queue_durable_frames();
         self.queue_next_upload();
         Ok(())
@@ -308,6 +309,7 @@ impl ControlPlane {
             )));
         }
         self.attached_once = true;
+        self.attach_ended = false;
         self.error = None;
         self.set_status(Status::Attached);
         self.push_event(Event::Attached { attach_id });
@@ -330,6 +332,11 @@ impl ControlPlane {
         message: String,
     ) -> Result<(), ControlError> {
         if code != ErrorCode::VersionIncompatible && self.resolve_path_error(request_id, &message) {
+            return Ok(());
+        }
+        if let Some(id) = request_id
+            && self.approval_error(id, code, &message)
+        {
             return Ok(());
         }
         let rendered = format!("server error {code:?}: {message}");
@@ -408,6 +415,9 @@ impl ControlPlane {
         message: &str,
     ) -> Result<(), ControlError> {
         self.forget_roster_subscriptions();
+        // Revoked, expired, replaced or killed: the server ended this attach.
+        // Input sent before the socket closes would only reach a refusal.
+        self.attach_ended = true;
         self.push_event(Event::Detached {
             reason,
             message: message.to_owned(),

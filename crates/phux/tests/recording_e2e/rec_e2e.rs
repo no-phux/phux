@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
 use phux_record::cast::{EventCode, read_cast};
 
 /// The pre-seeded session name every test drives against.
@@ -29,33 +30,7 @@ fn demo_cast() -> PathBuf {
     crate::runner::manifest_dir().join("../../docs/assets/recording-demo.cast")
 }
 
-/// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard {
-    inner: common::ServerGuard,
-    // Output files live here; only the socket needs the short path.
-    dir: tempfile::TempDir,
-}
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 impl ServerGuard {
-    fn start() -> Self {
-        Self {
-            inner: common::ServerGuard::start("rec"),
-            dir: tempfile::tempdir().expect("create temp dir for outputs"),
-        }
-    }
-
-    /// An output path inside this guard's scratch directory.
-    fn out(&self, name: &str) -> PathBuf {
-        self.dir.path().join(name)
-    }
-
     fn json(&self, args: &[&str]) -> serde_json::Value {
         let stdout = self.success(args);
         serde_json::from_str(&stdout)
@@ -111,8 +86,10 @@ fn read_bytes(path: &Path) -> Vec<u8> {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_records_a_live_pane_to_a_playable_cast() {
-    let server = ServerGuard::start();
-    let out = server.out("live.cast");
+    let server = ServerGuard::start("rec");
+    // Output files live here; only the socket needs the short path.
+    let dir = tempfile::tempdir().expect("create temp dir for outputs");
+    let out = dir.path().join("live.cast");
     let (cols, rows) = server.pane_size();
 
     // Keep writing the marker while the recorder lives: its window opens
@@ -172,7 +149,7 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_does_not_resize_the_recorded_pane() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("rec");
     // Off the 80x24 no-TTY default, or an errant ATTACH would be a no-op.
     server.success(&["resize", SESSION, "120x40"]);
     let before = server.pane_size();
@@ -183,7 +160,9 @@ fn rec_does_not_resize_the_recorded_pane() {
          observe the regression it exists to catch"
     );
 
-    let out = server.out("observer.cast");
+    // Output files live here; only the socket needs the short path.
+    let dir = tempfile::tempdir().expect("create temp dir for outputs");
+    let out = dir.path().join("observer.cast");
     let started = Instant::now();
     server.success(&[
         "rec",

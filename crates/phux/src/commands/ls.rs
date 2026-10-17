@@ -1080,6 +1080,7 @@ mod tests {
                 ..ExecCounts::default()
             },
             project: None,
+            key: None,
         };
         let doc = HostListJson::new(vec![
             HostJson {
@@ -1195,6 +1196,7 @@ mod tests {
             members,
             exec,
             project: None,
+            key: None,
         };
         assert_eq!(
             format_row(&row(

@@ -83,9 +83,13 @@ impl Page {
             Self::Layout => {
                 "sidebar tabs top side background opacity glass blur solid opaque notifications alerts"
             }
-            Self::Keyboard => "option alt keys keybind shortcuts chord input",
+            Self::Keyboard => {
+                "option alt keys keybind shortcuts chord input conflicts duplicate source"
+            }
             Self::Spacing => "line height cell width padding horizontal vertical unfocused dimming",
-            Self::Ghostty => "import reload config ghostty look integration",
+            Self::Ghostty => {
+                "import reload config ghostty look integration skipped malformed unsupported lines"
+            }
             Self::Updates => "version release install update download channel",
             Self::Connections => {
                 "hosts machines remote ssh local add remove retry reconnect status endpoint"
@@ -508,17 +512,86 @@ fn slider_item(
     Some(SettingItem::new(title.to_owned(), field).description(description.to_owned()))
 }
 
+/// `text`, then where the value came from and when an edit to that source applies.
+fn sourced(
+    desk: &Desk,
+    text: &str,
+    ghostty_keys: &[&str],
+    field: fn(&DisplayPrefs) -> String,
+) -> String {
+    let source = settings::display_provenance(&desk.prefs, desk.ghostty(), ghostty_keys, field);
+    notes([text, &source.label(), source.applies().label()])
+}
+
+/// Non-empty notes joined into one description line.
+fn notes<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    parts
+        .into_iter()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
     let mut font = gpui::font(desk.prefs.font_family.clone());
     crate::fonts::resolve(&mut font, cx);
+    let source = sourced(desk, "", &["font-family"], |prefs| {
+        prefs.font_family.clone()
+    });
     if font.family.as_ref() == desk.prefs.font_family {
-        item
+        item.description(notes([
+            source.as_str(),
+            "Fonts installed after launch are listed after a restart.",
+        ]))
     } else {
-        item.description(format!(
-            "{} is unavailable. Using Paper Mono.",
-            desk.prefs.font_family
-        ))
+        item.description(notes([
+            &format!(
+                "{} is unavailable. Using Paper Mono.",
+                desk.prefs.font_family
+            ),
+            source.as_str(),
+        ]))
     }
+}
+
+/// Line height's source. A Ghostty import resets it to 1 for a font family,
+/// size or cell height, and the cell height (which has no slider) is named here.
+fn line_height_description(desk: &Desk) -> String {
+    let line = sourced(
+        desk,
+        "Row height as a multiple of the font size.",
+        &["adjust-cell-height", "font-size", "font-family"],
+        |prefs| prefs.line_height.to_string(),
+    );
+    if (desk.prefs.cell_height - 1.0).abs() < f64::EPSILON {
+        return line;
+    }
+    let source = settings::display_provenance(
+        &desk.prefs,
+        desk.ghostty(),
+        &["adjust-cell-height"],
+        |prefs| prefs.cell_height.to_string(),
+    );
+    let percent = ((desk.prefs.cell_height - 1.0) * 100.0).round();
+    notes([
+        line.as_str(),
+        &format!("Cell height {percent:+}% ({})", source.label()),
+    ])
+}
+
+/// The theme's source. A Ghostty theme reads the config's colours live, so a
+/// file edit reaches it on reload rather than on a fresh import.
+fn theme_source(desk: &Desk) -> String {
+    let source =
+        settings::display_provenance(&desk.prefs, desk.ghostty(), &["background"], |prefs| {
+            prefs.theme_id.clone()
+        });
+    let applies = match source {
+        settings::Provenance::Ghostty(_) => settings::Applies::OnReload,
+        _ => source.applies(),
+    };
+    notes([source.label().as_str(), applies.label()])
 }
 
 fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
@@ -569,6 +642,7 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
             )
         }),
     )
+    .description(theme_source(desk))
     .keywords(["theme", "colors", "dark", "light"]);
     let mut font_group = SettingGroup::new();
     if let Some(controls) = desk.settings_controls.as_ref() {
@@ -628,7 +702,9 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingP
                 |prefs, value| prefs.font_size = value,
             ),
         )
-        .description("Points"),
+        .description(sourced(desk, "Points", &["font-size"], |prefs| {
+            prefs.font_size.to_string()
+        })),
     );
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
@@ -1007,14 +1083,19 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             handle,
             Knob::LineHeight,
             "Line height",
-            "Row height as a multiple of the font size.",
+            &line_height_description(desk),
         ))
         .items(slider_item(
             desk,
             handle,
             Knob::CellWidth,
             "Cell width",
-            "Column width as a percent of the font's advance.",
+            &sourced(
+                desk,
+                "Column width as a percent of the font's advance.",
+                &["adjust-cell-width"],
+                |prefs| prefs.cell_width.to_string(),
+            ),
         ))
         .item(
             SettingItem::new(
@@ -1026,7 +1107,12 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     |prefs, value| prefs.padding_x = value,
                 ),
             )
-            .description("Points between the pane edge and the text."),
+            .description(sourced(
+                desk,
+                "Points between the pane edge and the text.",
+                &["window-padding-x"],
+                |prefs| prefs.padding_x.to_string(),
+            )),
         )
         .item(
             SettingItem::new(
@@ -1038,7 +1124,12 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                     |prefs, value| prefs.padding_y = value,
                 ),
             )
-            .description("Points above and below the text."),
+            .description(sourced(
+                desk,
+                "Points above and below the text.",
+                &["window-padding-y"],
+                |prefs| prefs.padding_y.to_string(),
+            )),
         );
     SettingPage::new("Terminal spacing")
         .icon(IconName::Frame)
@@ -1048,7 +1139,12 @@ fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             handle,
             Knob::Unfocused,
             "Unfocused panes",
-            "Visibility of panes you are not typing in. 100% disables dimming.",
+            &sourced(
+                desk,
+                "Visibility of panes you are not typing in. 100% disables dimming.",
+                &["unfocused-split-opacity"],
+                |prefs| prefs.unfocused_opacity.to_string(),
+            ),
         )))
 }
 
@@ -1057,7 +1153,12 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .title("Input")
         .item(
             SettingItem::new("Option sends Alt", switch(handle, |prefs| prefs.option_as_alt, |prefs, value| prefs.option_as_alt = value))
-                .description("Off keeps macOS Option characters such as å and ß."),
+                .description(sourced(
+                    desk,
+                    "Off keeps macOS Option characters such as å and ß.",
+                    &["macos-option-as-alt"],
+                    |prefs| prefs.option_as_alt.to_string(),
+                )),
         )
         .item(
             SettingItem::new("Use Ghostty keybinds", switch(handle, |prefs| prefs.ghostty_keys, |prefs, value| prefs.ghostty_keys = value))
@@ -1065,7 +1166,8 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         );
     let catalog = settings::builtin_commands();
     let shown = settings::shown_chords(desk.keymap(), &settings::default_chords());
-    let mut rows: Vec<(String, String, String)> = catalog
+    // (title, group, chord, command id)
+    let mut rows: Vec<(String, String, String, String)> = catalog
         .iter()
         .filter(|command| !command.is_tab_jump())
         .filter_map(|command| {
@@ -1077,6 +1179,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                         command.title.to_owned(),
                         command.group.to_owned(),
                         chord.clone(),
+                        command.id.to_owned(),
                     )
                 })
         })
@@ -1084,14 +1187,20 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     // Ghostty binds with no catalog entry (send:, font-size:, …) are listed by their action.
     for (chord, id) in desk.keymap() {
         if !catalog.iter().any(|command| command.id == id) {
-            rows.push((id.clone(), "Ghostty".to_owned(), chord.clone()));
+            rows.push((id.clone(), "Ghostty".to_owned(), chord.clone(), id.clone()));
         }
     }
     let shortcuts = SettingGroup::new()
         .title("Shortcuts")
-        .items(rows.into_iter().map(|(title, group, chord)| {
+        .items(rows.into_iter().map(|(title, group, chord, id)| {
             let shown = settings::display_chord(&chord);
             let keystroke = gpui_stroke(&chord).and_then(|stroke| Keystroke::parse(&stroke).ok());
+            let source =
+                settings::chord_source(desk.ghostty(), desk.prefs.ghostty_keys, &chord, &id);
+            let applies = match source {
+                settings::ChordSource::Ghostty(_) => settings::Applies::OnReload,
+                settings::ChordSource::BuiltIn => settings::Applies::Live,
+            };
             SettingItem::new(
                 title,
                 SettingField::render(move |_, _, cx| match keystroke.clone() {
@@ -1103,12 +1212,69 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                         .into_any_element(),
                 }),
             )
+            .description(notes([source.label().as_str(), applies.label()]))
             .keywords([group, settings::display_chord(&chord)])
         }));
-    SettingPage::new("Keyboard")
+    let page = SettingPage::new("Keyboard")
         .icon(IconName::ALargeSmall)
-        .group(input)
-        .group(shortcuts)
+        .group(input);
+    match conflicts_group(desk) {
+        Some(conflicts) => page.group(conflicts).group(shortcuts),
+        None => page.group(shortcuts),
+    }
+}
+
+/// Chords the Ghostty config binds to different actions, each with every
+/// line that binds it. Hidden when there are none, and while Ghostty
+/// keybinds are off, since then none of those lines apply.
+fn conflicts_group(desk: &Desk) -> Option<SettingGroup> {
+    if !desk.prefs.ghostty_keys {
+        return None;
+    }
+    let conflicts = settings::keymap_conflicts(desk.ghostty());
+    if conflicts.is_empty() {
+        return None;
+    }
+    let title = |id: &str| {
+        settings::builtin_commands()
+            .iter()
+            .find(|command| command.id == id)
+            .map_or_else(|| id.to_owned(), |command| command.title.to_owned())
+    };
+    let items = conflicts.into_iter().map(|conflict| {
+        let lines = conflict
+            .binds
+            .iter()
+            .map(|bind| format!("{} at {}", title(&bind.command), bind.origin.label()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let chord = settings::display_chord(&conflict.chord);
+        let winner = conflict
+            .binds
+            .last()
+            .map(|bind| title(&bind.command))
+            .unwrap_or_default();
+        let shown = winner.clone();
+        SettingItem::new(
+            chord.clone(),
+            SettingField::render(move |_, _, cx| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(shown.clone())
+            }),
+        )
+        .description(format!(
+            "Bound more than once: {lines}. The last line wins."
+        ))
+        .keywords(["conflict", "duplicate", "keybind", chord.as_str()].map(str::to_owned))
+    });
+    Some(
+        SettingGroup::new()
+            .title("Shortcut conflicts")
+            .description("Your Ghostty config binds these chords to different actions.")
+            .items(items),
+    )
 }
 
 fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
@@ -1174,12 +1340,62 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             )
             .into_any_element()
     });
-    SettingPage::new("Ghostty").icon(IconName::Frame).group(
+    let page = SettingPage::new("Ghostty").icon(IconName::Frame).group(
         SettingGroup::new()
             .title("Config")
-            .description("Use Ghostty look copies its theme, font, size, cell size and padding into these settings.")
+            .description("Use Ghostty look copies its theme, font, size, cell size and padding into these settings. Reload config reads the files again for keybinds and the Ghostty theme.")
             .item(status)
             .item(actions),
+    );
+    let config = desk.ghostty();
+    let page = match diagnostic_group(
+        &config.diagnostics,
+        "Skipped lines",
+        "These lines could not be read. Every other line still applies.",
+    ) {
+        Some(group) => page.group(group),
+        None => page,
+    };
+    match diagnostic_group(
+        &config.unsupported,
+        "Not used here",
+        "Ghostty accepts these lines; this app cannot represent their values, so it leaves them out.",
+    ) {
+        Some(group) => page.group(group),
+        None => page,
+    }
+}
+
+/// One row per diagnostic: file and line, the line's text, and why it was
+/// left out. `None` when there are none.
+fn diagnostic_group(
+    diagnostics: &[settings::Diagnostic],
+    title: &'static str,
+    description: &'static str,
+) -> Option<SettingGroup> {
+    if diagnostics.is_empty() {
+        return None;
+    }
+    Some(
+        SettingGroup::new()
+            .title(title)
+            .description(description)
+            .items(diagnostics.iter().map(|diagnostic| {
+                let text = diagnostic.text.clone();
+                SettingItem::new(
+                    diagnostic.origin.label(),
+                    SettingField::render(move |_, _, cx| {
+                        div()
+                            .max_w(px(260.))
+                            .truncate()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.clone())
+                    }),
+                )
+                .description(diagnostic.reason)
+                .keywords(["skipped", "malformed", "unsupported", "ghostty"].map(str::to_owned))
+            })),
     )
 }
 

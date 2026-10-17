@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 const SESSION: &str = "work";
 
 /// Shortened detector timers: the fake `claude` is identifiable at exec.
@@ -30,33 +32,21 @@ const STEP_DEADLINE: Duration = Duration::from_secs(20);
 
 const POLL: Duration = Duration::from_millis(50);
 
-/// A running `phux server`, killed when the guard drops.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+fn start_server() -> ServerGuard {
+    ServerGuard::builder("session")
+        .env("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)
+        .env("PHUX_AGENT_IDENTIFY_RECHECK_MS", TEST_RECHECK_MS)
+        .start()
 }
 
 impl ServerGuard {
-    fn start() -> Self {
-        Self(
-            common::ServerGuard::builder("session")
-                .env("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)
-                .env("PHUX_AGENT_IDENTIFY_RECHECK_MS", TEST_RECHECK_MS)
-                .start(),
-        )
-    }
-
     /// Run a verb and return its raw `Output`, success or not.
     fn try_run(&self, args: &[&str]) -> Output {
         self.cmd_global(args).output().expect("run phux verb")
     }
 
     /// Run a verb, asserting it succeeded, and return stdout.
-    fn run(&self, args: &[&str]) -> String {
+    fn success_global(&self, args: &[&str]) -> String {
         let out = self.try_run(args);
         assert!(
             out.status.success(),
@@ -69,7 +59,7 @@ impl ServerGuard {
 
     /// Run a verb whose stdout is one JSON document, and decode it.
     fn json(&self, args: &[&str]) -> serde_json::Value {
-        let text = self.run(args);
+        let text = self.success_global(args);
         serde_json::from_str(&text)
             .unwrap_or_else(|err| panic!("phux {args:?} JSON ({err}): {text}"))
     }
@@ -292,7 +282,7 @@ fn resource_named<'a>(
 fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     let fixtures = tempfile::tempdir().expect("create temp dir for the fixture");
     let claude = write_quiet_claude(fixtures.path());
-    let server = ServerGuard::start();
+    let server = start_server();
     let pane_id = server.spawn_pane(&claude);
     let pane = format!("@{pane_id}");
 
@@ -451,7 +441,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
 fn killing_the_parent_pane_cascades_the_session_closed() {
     let fixtures = tempfile::tempdir().expect("create temp dir for the fixture");
     let claude = write_quiet_claude(fixtures.path());
-    let server = ServerGuard::start();
+    let server = start_server();
     let pane = format!("@{}", server.spawn_pane(&claude));
     let session = server.session_open(&pane, "claude", Some("cascade-01"));
     server.emit(&session, "prompt", r#"{"chars":3}"#);
@@ -468,7 +458,7 @@ fn killing_the_parent_pane_cascades_the_session_closed() {
     let watch = server.watch(&session, &[]);
     let follower = server.follow_session(&session, 1);
 
-    server.run(&["kill", "--yes", &pane]);
+    server.success_global(&["kill", "--yes", &pane]);
 
     // The follower's own verdict on the close: a session that ends under a
     // `--follow` is a clean exit 0, not a broken pipe.
@@ -512,7 +502,7 @@ fn killing_the_parent_pane_cascades_the_session_closed() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {
-    let server = ServerGuard::start();
+    let server = start_server();
     let pane = format!("@{}", server.spawn_pane(Path::new("/bin/cat")));
 
     // A plain pane has no session, and both stream verbs say exactly that

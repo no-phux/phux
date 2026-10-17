@@ -83,9 +83,10 @@ pub(crate) enum WorkloadAction {
         /// Scope ceiling as `<verb>[,<verb>...]@<selector>`, where a verb is
         /// inventory, observe, create, bind, input, signal, organize,
         /// terminate, or `*`, and a selector is global, host, host:NAME,
-        /// session:KEY, or resource:KEY (a record's full 26-character key;
-        /// session and Terminal ids restart with the server, so group:ID and
-        /// terminal:ID are refused). Repeatable; at least one is required.
+        /// session:KEY, or resource:KEY (a record's full 26-character key,
+        /// the `key` of a `phux ls --json` row; session and Terminal ids
+        /// restart with the server, so group:ID and terminal:ID are
+        /// refused). Repeatable; at least one is required.
         #[usage(long, value_name = "VERBS@SELECTOR")]
         scope: Vec<String>,
 
@@ -633,7 +634,7 @@ fn cli_error(error: &WorkloadError) -> CliError {
             "pass --scope VERBS@SELECTOR, for example --scope observe,input@host"
         }
         WorkloadError::UnstableSelector { .. } => {
-            "name a session or Terminal by its record key (session:<key> or resource:<key>); session and Terminal ids restart with the server"
+            "name a session or Terminal by its record key (session:<key> or resource:<key>, the `key` `phux ls --json` prints); session and Terminal ids restart with the server"
         }
         WorkloadError::Insecure { .. } | WorkloadError::PartialPair { .. } => {
             "workload authority files are owner-only regular files in a directory only their owner can write"

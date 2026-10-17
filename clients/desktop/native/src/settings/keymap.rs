@@ -4,7 +4,7 @@
 //! `ghostty_keys`. A `global:` bind of `quick-terminal` is the system-wide
 //! quick terminal chord.
 
-use super::ghostty::GhosttyConfig;
+use super::ghostty::{Bind, GhosttyConfig, Origin};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -279,7 +279,7 @@ fn catalog() -> Vec<CommandSpec> {
             "Panes",
             Some("cmd+alt+d"),
             "Show the focused terminal in another pane.",
-            &["duplicate"],
+            &["duplicate", "open another view"],
         ),
         spec(
             "close",
@@ -408,6 +408,14 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+alt+n"),
             "Move the focused terminal into a separate window.",
             &["detach"],
+        ),
+        spec(
+            "window-next",
+            "Move Pane to Next Window",
+            "Panes",
+            None,
+            "Move the focused terminal into the next open window on the same server.",
+            &["window", "transfer"],
         ),
         spec(
             "find",
@@ -717,6 +725,22 @@ fn catalog() -> Vec<CommandSpec> {
             &[],
         ),
         spec(
+            "minimize",
+            "Minimize Window",
+            "View",
+            Some("cmd+m"),
+            "Send this window to the Dock.",
+            &["hide"],
+        ),
+        spec(
+            "windows",
+            "Show All Windows…",
+            "View",
+            None,
+            "List every open window with its session, host and tabs, and bring one forward.",
+            &["overview", "switch", "minimized", "tabs"],
+        ),
+        spec(
             "reload-config",
             "Reload Ghostty Config",
             "Ghostty",
@@ -747,6 +771,14 @@ fn catalog() -> Vec<CommandSpec> {
             None,
             "Inspect desktop CPU, memory and render timings.",
             &["telemetry", "cpu", "memory", "rss"],
+        ),
+        spec(
+            "copy-diagnostics",
+            "Copy Diagnostics",
+            "Utilities",
+            None,
+            "Copy app, runtime, server and connection identity with recent errors. No terminal content.",
+            &["support", "debug", "report", "version", "log"],
         ),
         spec(
             "performance-monitor-stop",
@@ -904,6 +936,100 @@ pub fn effective_keymap(ghostty: &GhosttyConfig, ghostty_keys: bool) -> Vec<(Str
         }
     }
     map
+}
+
+/// One chord the Ghostty config binds to more than one action. The last bind wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyConflict {
+    /// Normalized chord.
+    pub chord: String,
+    /// Every bind of the chord since the last `keybind = clear`, in config
+    /// order; the last is the one in effect.
+    pub binds: Vec<Bind>,
+}
+
+/// Chords the Ghostty config binds to different actions, in first-bind order.
+/// Repeating the same action is not a conflict. An `unbind` is deliberate, so
+/// it is never a conflict itself and it drops the binds before it: only binds
+/// after a chord's last unbind can conflict.
+#[must_use]
+pub fn keymap_conflicts(config: &GhosttyConfig) -> Vec<KeyConflict> {
+    let mut chords: Vec<&str> = Vec::new();
+    for bind in &config.binds {
+        if !chords.contains(&bind.chord.as_str()) {
+            chords.push(&bind.chord);
+        }
+    }
+    chords
+        .into_iter()
+        .filter_map(|chord| {
+            let binds = live_binds(config, chord);
+            let first = binds.first()?;
+            binds
+                .iter()
+                .any(|other| other.command != first.command)
+                .then(|| KeyConflict {
+                    chord: chord.to_owned(),
+                    binds,
+                })
+        })
+        .collect()
+}
+
+/// Binds of `chord` after its last unbind, in config order.
+fn live_binds(config: &GhosttyConfig, chord: &str) -> Vec<Bind> {
+    let mut binds = Vec::new();
+    for bind in config.binds.iter().filter(|bind| bind.chord == chord) {
+        if bind.command.is_empty() {
+            binds.clear();
+        } else {
+            binds.push(bind.clone());
+        }
+    }
+    binds
+}
+
+/// Where a keymap entry came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChordSource {
+    /// The built-in catalog.
+    BuiltIn,
+    /// A `keybind` line.
+    Ghostty(Origin),
+}
+
+impl ChordSource {
+    /// `Built-in`, or `Ghostty ~/.config/ghostty/config:12`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::BuiltIn => "Built-in".to_owned(),
+            Self::Ghostty(origin) => format!("Ghostty {}", origin.label()),
+        }
+    }
+}
+
+/// The source of `chord` running `id` in [`effective_keymap`]: the last
+/// Ghostty bind of the chord while `ghostty_keys` and it names `id`, else built-in.
+#[must_use]
+pub fn chord_source(
+    config: &GhosttyConfig,
+    ghostty_keys: bool,
+    chord: &str,
+    id: &str,
+) -> ChordSource {
+    if !ghostty_keys {
+        return ChordSource::BuiltIn;
+    }
+    config
+        .binds
+        .iter()
+        .rev()
+        .find(|bind| bind.chord == chord)
+        .filter(|bind| bind.command == id)
+        .map_or(ChordSource::BuiltIn, |bind| {
+            ChordSource::Ghostty(bind.origin.clone())
+        })
 }
 
 /// Chords without Command. The terminal must hand these to the window.
@@ -1081,4 +1207,101 @@ fn join_chord(cmd: bool, ctrl: bool, alt: bool, shift: bool, key: &str) -> Strin
     }
     parts.push(key);
     parts.join("+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ghostty::parse_ghostty;
+    use super::{ChordSource, chord_source, default_chords, effective_keymap, keymap_conflicts};
+
+    #[test]
+    fn built_in_chords_never_conflict() {
+        let chords = default_chords();
+        for (index, (chord, id)) in chords.iter().enumerate() {
+            assert!(
+                !chords[index + 1..]
+                    .iter()
+                    .any(|(other, other_id)| other == chord && other_id != id),
+                "{chord} is bound to more than one built-in command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_bound_to_different_actions_is_a_conflict() {
+        let config = parse_ghostty(
+            "keybind = super+d=new_split:right\n\
+             keybind = super+k=clear_screen\n\
+             keybind = super+d=new_split:down\n\
+             keybind = super+k=clear_screen\n\
+             keybind = super+j=new_tab\n",
+        );
+        let conflicts = keymap_conflicts(&config);
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "a repeated identical bind is not a conflict"
+        );
+        let conflict = &conflicts[0];
+        assert_eq!(conflict.chord, "cmd+d");
+        let lines: Vec<(usize, &str)> = conflict
+            .binds
+            .iter()
+            .map(|bind| (bind.origin.line, bind.command.as_str()))
+            .collect();
+        assert_eq!(lines, vec![(1, "split-right"), (3, "split-down")]);
+        // The last line is the one in effect, and the keymap agrees.
+        let keymap = effective_keymap(&config, true);
+        assert!(keymap.contains(&("cmd+d".to_owned(), "split-down".to_owned())));
+        assert_eq!(
+            chord_source(&config, true, "cmd+d", "split-down"),
+            ChordSource::Ghostty(conflict.binds[1].origin.clone())
+        );
+        assert_eq!(
+            chord_source(&config, false, "cmd+d", "split-right"),
+            ChordSource::BuiltIn
+        );
+        assert_eq!(
+            chord_source(&config, true, "cmd+t", "new"),
+            ChordSource::BuiltIn
+        );
+    }
+
+    #[test]
+    fn an_unbind_is_not_a_conflict() {
+        let config = parse_ghostty(
+            "keybind = super+d=new_split:right\n\
+             keybind = super+d=unbind\n\
+             keybind = super+k=clear_screen\n\
+             keybind = super+k=unbind\n\
+             keybind = super+k=new_tab\n\
+             keybind = super+j=new_tab\n\
+             keybind = super+j=unbind\n\
+             keybind = super+j=clear_screen\n\
+             keybind = super+j=new_split:down\n",
+        );
+        let conflicts = keymap_conflicts(&config);
+        let chords: Vec<&str> = conflicts.iter().map(|c| c.chord.as_str()).collect();
+        assert_eq!(chords, vec!["cmd+j"], "an unbind resets the chord");
+        let lines: Vec<usize> = conflicts[0]
+            .binds
+            .iter()
+            .map(|bind| bind.origin.line)
+            .collect();
+        assert_eq!(lines, vec![8, 9]);
+    }
+
+    #[test]
+    fn clear_and_built_in_restores_drop_earlier_binds() {
+        let config = parse_ghostty(
+            "keybind = super+d=new_split:right\n\
+             keybind = clear\n\
+             keybind = super+d=new_split:down\n\
+             keybind = super+c=new_tab\n\
+             keybind = super+c=copy_to_clipboard\n",
+        );
+        assert!(keymap_conflicts(&config).is_empty());
+        assert_eq!(config.binds.len(), 1);
+        assert_eq!(config.binds[0].origin.line, 3);
+    }
 }
