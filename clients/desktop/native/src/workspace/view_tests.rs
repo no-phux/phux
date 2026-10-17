@@ -384,7 +384,7 @@ fn reveal_focuses_an_existing_placement_and_never_duplicates_it() {
 }
 
 #[test]
-fn exactly_one_visible_duplicate_proposes_the_pty_size_and_focus_moves_it() {
+fn exactly_one_visible_duplicate_proposes_the_pty_size_across_focus_tabs_and_close() {
     let _dial = DeterministicDial::arm();
     let mut connection = attached();
     let (mut workspace, original, mirror) = duplicated(&mut connection);
@@ -406,5 +406,40 @@ fn exactly_one_visible_duplicate_proposes_the_pty_size_and_focus_moves_it() {
         owners(&workspace),
         [original.id.as_str()],
         "focus hands it back"
+    );
+
+    // A third placement of the same terminal in another tab. While that tab
+    // is hidden its placement never owns size, even when it was claimed last.
+    workspace.land(&connection, &original.terminal_label, Destination::Tab);
+    let hidden = workspace.focused().cloned().unwrap();
+    assert_ne!(workspace.active_id, tab);
+    assert_eq!(workspace.views_of(&terminal()), 3);
+    assert_eq!(
+        owners(&workspace),
+        [hidden.id.as_str()],
+        "the only visible placement owns size"
+    );
+    workspace.select_tab(&tab);
+    assert_eq!(
+        owners(&workspace),
+        [original.id.as_str()],
+        "a hidden duplicate never owns size, even as the last claim"
+    );
+
+    // Closing the owner hands size to the surviving visible placement.
+    workspace.focus_placement(&tab, &mirror.id);
+    assert_eq!(owners(&workspace), [mirror.id.as_str()]);
+    workspace.close_pane(&connection, Some(&mirror.id));
+    assert_eq!(
+        owners(&workspace),
+        [original.id.as_str()],
+        "the survivor owns size after the owner closes"
+    );
+    workspace.close_pane(&connection, Some(&original.id));
+    assert_eq!(workspace.tabs.len(), 1, "the emptied tab closed");
+    assert_eq!(
+        owners(&workspace),
+        [hidden.id.as_str()],
+        "the other tab's placement owns size once it is the one shown"
     );
 }

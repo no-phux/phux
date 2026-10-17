@@ -2081,4 +2081,195 @@ mod delivery {
             assert_eq!(current, Some(armed));
         });
     }
+
+    fn selected_cells(client: &Client, view: ViewId) -> usize {
+        let frame = client.acquire_view(view).expect("frame");
+        frame
+            .buffer
+            .cells
+            .iter()
+            .filter(|cell| cell.flags & phux_client_core::grid::CELL_SELECTED != 0)
+            .count()
+    }
+
+    /// Press, drag, and release across the first row of the pane.
+    fn drag(
+        input: &Entity<TerminalInput>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Result<bool, super::InputError> {
+        let at = |x: f32| point(px(x), px(8.));
+        input.update(cx, |state, cx| {
+            state.mouse_down(
+                &gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(2.),
+                    click_count: 1,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )?;
+            state.mouse_move(
+                &gpui::MouseMoveEvent {
+                    position: at(30.),
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )?;
+            state.mouse_up(
+                &gpui::MouseUpEvent {
+                    button: gpui::MouseButton::Left,
+                    position: at(30.),
+                    click_count: 1,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        })
+    }
+
+    fn left_arrow() -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: Keystroke::parse("left").expect("stroke"),
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
+    /// Two windows, each showing its own view of one terminal. Selection
+    /// and its clearing stay in the view that made them, and keys and
+    /// pointer gestures reach the terminal only through the focused view in
+    /// the active window.
+    #[gpui::test]
+    fn two_windows_keep_selection_and_input_in_their_own_view(cx: &mut TestAppContext) {
+        let client = session(None);
+        let left = client.create_view(&terminal()).expect("left view");
+        let right = client.create_view(&terminal()).expect("right view");
+        let first = cx.add_window(|_, _| gpui::Empty);
+        let second = cx.add_window(|_, _| gpui::Empty);
+        let open = |cx: &mut TestAppContext, handle: gpui::WindowHandle<gpui::Empty>, view| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.activate_window();
+                let input = bind(&client, view, window, cx);
+                arm(&input, false, 160., 68., window, cx);
+                input.update(cx, |state, cx| state.focus.focus(window, cx));
+                input
+            })
+            .expect("window")
+        };
+        let right_input = open(cx, second, right);
+        let left_input = open(cx, first, left);
+        cx.run_until_parked();
+        let _ = client.take_outbound();
+        let right_generation = client.view_generation(right).expect("right frame");
+
+        // The inactive window's view refuses keys and pointer gestures, even
+        // though it holds focus inside its own window.
+        cx.update_window(second.into(), |_, window, cx| {
+            assert!(!window.is_window_active());
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+            assert_eq!(
+                drag(&right_input, window, cx),
+                Err(super::InputError::WrongFocus)
+            );
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty(), "no wrong-view input");
+
+        // A view bound to one window never accepts that window's sibling's
+        // events as its own.
+        cx.update_window(first.into(), |_, window, cx| {
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty());
+
+        // The active window's view selects locally and sends its key.
+        cx.update_window(first.into(), |_, window, cx| {
+            assert_eq!(drag(&left_input, window, cx), Ok(true));
+            left_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Ok(KeyDisposition::Consumed)
+                );
+            });
+        })
+        .unwrap();
+        let sent = keys(&client);
+        assert_eq!(sent.len(), 1, "one key from the focused view");
+        assert_eq!(sent[0].action, KeyAction::Press);
+        let engine = client.engine().expect("engine");
+        assert!(selected_cells(&client, left) > 0, "the left view selected");
+        assert!(
+            !engine
+                .view_selection_text(left)
+                .expect("left text")
+                .is_empty()
+        );
+        assert_eq!(selected_cells(&client, right), 0);
+        assert!(
+            engine
+                .view_selection_text(right)
+                .map_or(true, |text| text.is_empty()),
+            "the right view has no selection"
+        );
+        assert_eq!(
+            client.view_generation(right),
+            Some(right_generation),
+            "selecting in one view never republishes the other"
+        );
+
+        engine.clear_view_selection(left).expect("clear");
+        assert_eq!(selected_cells(&client, left), 0, "the left view cleared");
+        assert_eq!(
+            client.view_generation(right),
+            Some(right_generation),
+            "clearing one view's selection never republishes the other"
+        );
+
+        // Activating the second window moves input there and only there.
+        let _ = cx.update_window(second.into(), |_, window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update_window(first.into(), |_, window, cx| {
+            assert!(!window.is_window_active());
+            left_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Err(super::InputError::WrongFocus)
+                );
+            });
+        })
+        .unwrap();
+        assert!(client.take_outbound().is_empty());
+        cx.update_window(second.into(), |_, window, cx| {
+            assert_eq!(drag(&right_input, window, cx), Ok(true));
+            right_input.update(cx, |state, cx| {
+                assert_eq!(
+                    state.key_down(&left_arrow(), window, cx),
+                    Ok(KeyDisposition::Consumed)
+                );
+            });
+        })
+        .unwrap();
+        assert_eq!(keys(&client).len(), 1);
+        assert!(
+            selected_cells(&client, right) > 0,
+            "the right view selected"
+        );
+        assert_eq!(selected_cells(&client, left), 0, "the left view did not");
+    }
 }
