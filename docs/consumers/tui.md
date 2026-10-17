@@ -247,7 +247,10 @@ Pane, Tab, Session, and phux. Each row reads as the action's palette title.
 Keys bound to the same action share a row, a directional family shares one
 (`h j k l  Focus`), and numeric tab jumps share one `0-9` row. Any continuation dismisses the panel and runs
 normally. Typing before the delay prevents it from appearing. Esc dismisses
-it and cancels the pending prefix.
+it and cancels the pending prefix. The panel never paints past the
+viewport: when the screen is too short or narrow for every binding it
+shows what fits and ends with a dim `+ N more`, the count of bindings a
+larger terminal would show.
 
 ```toml
 [keybindings]
