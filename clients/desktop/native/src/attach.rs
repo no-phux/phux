@@ -177,41 +177,30 @@ pub fn follow_upload(
     receipt: &FileUploadReceipt,
     local_source: Option<&Path>,
 ) -> UploadFollowup {
+    let notice = |body: &str| UploadFollowup::Notice {
+        title: PASTE_REFUSED,
+        body: body.to_owned(),
+    };
     if !same_upload_destination(started, current) {
-        let body = match current {
-            Some(current) if current.terminal == started.terminal => {
-                "This terminal is no longer on the same machine. Nothing was pasted.".to_owned()
-            }
-            _ => "The terminal changed before the upload finished. Nothing was pasted.".to_owned(),
-        };
-        return UploadFollowup::Notice {
-            title: PASTE_REFUSED,
-            body,
-        };
+        return notice(
+            if current.is_some_and(|current| current.terminal == started.terminal) {
+                "This terminal is no longer on the same machine. Nothing was pasted."
+            } else {
+                "The terminal changed before the upload finished. Nothing was pasted."
+            },
+        );
     }
     if receipt.outcome != FileUploadOutcome::Completed {
-        return UploadFollowup::Notice {
-            title: PASTE_REFUSED,
-            body: unfinished(&receipt.message),
-        };
+        return notice(&unfinished(&receipt.message));
     }
     let Some(path) = receipt.path.as_deref().filter(|path| !path.is_empty()) else {
-        return UploadFollowup::Notice {
-            title: PASTE_REFUSED,
-            body: "The upload finished without a remote path. Nothing was pasted.".to_owned(),
-        };
+        return notice("The upload finished without a remote path. Nothing was pasted.");
     };
     if local_source.is_some_and(|source| source.display().to_string() == path) {
-        return UploadFollowup::Notice {
-            title: PASTE_REFUSED,
-            body: "The upload did not return a remote path. Nothing was pasted.".to_owned(),
-        };
+        return notice("The upload did not return a remote path. Nothing was pasted.");
     }
     if path.chars().any(is_terminal_control) {
-        return UploadFollowup::Notice {
-            title: PASTE_REFUSED,
-            body: "The remote path could not be pasted safely. Nothing was pasted.".to_owned(),
-        };
+        return notice("The remote path could not be pasted safely. Nothing was pasted.");
     }
     UploadFollowup::Paste {
         terminal: started.terminal.clone(),
@@ -240,9 +229,7 @@ fn is_terminal_control(character: char) -> bool {
 #[must_use]
 pub fn prepare_upload(batch: UploadBatch) -> Vec<Result<PreparedUpload, UploadPrepareError>> {
     match batch {
-        UploadBatch::Bytes { extension, bytes } => {
-            vec![prepare_bytes(extension, bytes, None)]
-        }
+        UploadBatch::Bytes { extension, bytes } => vec![prepare_bytes(extension, bytes, None)],
         UploadBatch::Paths(paths) => paths.iter().map(|path| prepare_path(path)).collect(),
     }
 }
@@ -256,14 +243,12 @@ fn prepare_error(body: String) -> UploadPrepareError {
 
 fn prepare_path(path: &Path) -> Result<PreparedUpload, UploadPrepareError> {
     let name = file_name(path);
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return Err(prepare_error(format!(
-                "Could not read {name}. Nothing was pasted. ({error})"
-            )));
-        }
+    let unreadable = |error: std::io::Error| {
+        prepare_error(format!(
+            "Could not read {name}. Nothing was pasted. ({error})"
+        ))
     };
+    let metadata = std::fs::metadata(path).map_err(unreadable)?;
     if !metadata.is_file() {
         return Err(prepare_error(format!(
             "{name} is not a file. Nothing was pasted."
@@ -274,14 +259,7 @@ fn prepare_path(path: &Path) -> Result<PreparedUpload, UploadPrepareError> {
             "{name} is over 64 MiB. Nothing was pasted."
         )));
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(prepare_error(format!(
-                "Could not read {name}. Nothing was pasted. ({error})"
-            )));
-        }
-    };
+    let bytes = std::fs::read(path).map_err(unreadable)?;
     prepare_bytes(infer_extension(path), bytes, Some(path.to_path_buf()))
 }
 
@@ -315,8 +293,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// A 1–16 character ASCII alphanumeric extension, or `bin`.
-#[must_use]
-pub fn infer_extension(path: &Path) -> String {
+fn infer_extension(path: &Path) -> String {
     path.extension()
         .and_then(|value| value.to_str())
         .map(canonical_extension)
@@ -356,23 +333,10 @@ pub fn quote_paths(paths: &[PathBuf]) -> String {
         .join(" ")
 }
 
-/// What Paste sends for this clipboard item on a local terminal: copied files
-/// as quoted paths, else the text, else an image saved under [`dir`] as its
-/// quoted path. `None` when there is nothing to paste or the image could not
-/// be written.
-///
-/// Remote terminals go through [`clipboard_for_host`], which uploads file and
-/// image bytes instead of pasting paths from this machine.
-pub fn clipboard_paste(item: &ClipboardItem) -> Option<String> {
-    match clipboard_for_host(item, &TerminalHost::Local)? {
-        PathAttach::Paste(text) => Some(text),
-        PathAttach::Upload(_) | PathAttach::Refuse { .. } => None,
-    }
-}
-
-/// Clipboard text is host-independent. Copied files and images on a remote
-/// terminal are uploads: the Mac path is not pasted, and an image is not
-/// written just to quote that path.
+/// What Paste sends for this clipboard item: copied files, else the text, else
+/// an image. On a local terminal files and a saved image paste as quoted paths.
+/// On a remote terminal they are uploads: the Mac path is not pasted, and an
+/// image is not written just to quote that path.
 #[must_use]
 pub fn clipboard_for_host(item: &ClipboardItem, host: &TerminalHost) -> Option<PathAttach> {
     let entries = item.entries();
@@ -390,15 +354,17 @@ pub fn clipboard_for_host(item: &ClipboardItem, host: &TerminalHost) -> Option<P
         _ => None,
     })?;
     match host {
-        TerminalHost::Local => match save_image(image, &dir()) {
-            Ok(path) => Some(PathAttach::Paste(quote_paths(&[path]))),
-            Err(error) => {
-                log::warn!("clipboard image not saved: {error}");
-                None
-            }
-        },
+        TerminalHost::Local => saved(image).map(|path| PathAttach::Paste(quote_paths(&[path]))),
         TerminalHost::Remote { .. } => Some(remote_image(image)),
     }
+}
+
+/// `image` written under the attachments directory, or `None` with a warning.
+fn saved(image: &Image) -> Option<PathBuf> {
+    let dir = std::env::temp_dir().join("phux-attachments");
+    save_image(image, &dir)
+        .inspect_err(|error| log::warn!("clipboard image not saved: {error}"))
+        .ok()
 }
 
 /// Upload a clipboard image. Agent-readable bytes stay in memory. Other
@@ -411,27 +377,19 @@ fn remote_image(image: &Image) -> PathAttach {
             bytes: image.bytes.clone(),
         });
     }
-    match save_image(image, &dir()) {
-        Ok(path) => PathAttach::Upload(UploadBatch::Paths(vec![path])),
-        Err(error) => {
-            log::warn!("clipboard image not saved: {error}");
-            PathAttach::Refuse {
-                title: PASTE_REFUSED,
-                body: "The image could not be prepared. Nothing was pasted.".to_owned(),
-            }
-        }
+    match saved(image) {
+        Some(path) => PathAttach::Upload(UploadBatch::Paths(vec![path])),
+        None => PathAttach::Refuse {
+            title: PASTE_REFUSED,
+            body: "The image could not be prepared. Nothing was pasted.".to_owned(),
+        },
     }
 }
 
-/// Where pasted images are written: the per-user temporary directory, which
-/// macOS clears on its own schedule.
-pub fn dir() -> PathBuf {
-    std::env::temp_dir().join("phux-attachments")
-}
-
-/// Write `image` under `dir` as `paste-<millis>.<ext>`. Formats agents do not
+/// Write `image` under `dir` (the per-user temporary directory, which macOS
+/// clears on its own schedule) as `paste-<millis>.<ext>`. Formats agents do not
 /// read (TIFF, BMP, ...) are converted to PNG with `sips` when it is present.
-pub fn save_image(image: &Image, dir: &Path) -> std::io::Result<PathBuf> {
+fn save_image(image: &Image, dir: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -530,8 +488,8 @@ mod tests {
             ],
         };
         assert_eq!(
-            clipboard_paste(&item).as_deref(),
-            Some("'/tmp/shot one.png'")
+            clipboard_for_host(&item, &TerminalHost::Local),
+            Some(PathAttach::Paste("'/tmp/shot one.png'".into()))
         );
     }
 
@@ -543,7 +501,10 @@ mod tests {
                 ClipboardEntry::Image(Image::from_bytes(ImageFormat::Png, vec![1, 2, 3])),
             ],
         };
-        assert_eq!(clipboard_paste(&item).as_deref(), Some("hello"));
+        assert_eq!(
+            clipboard_for_host(&item, &TerminalHost::Local),
+            Some(PathAttach::Paste("hello".into()))
+        );
     }
 
     #[test]

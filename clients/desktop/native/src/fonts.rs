@@ -18,25 +18,18 @@ pub fn install(cx: &mut App) {
     if cx.has_global::<Registered>() {
         return;
     }
+    let fonts: [&'static [u8]; 8] = [
+        include_bytes!("../assets/fonts/PaperMono-Regular.ttf"),
+        include_bytes!("../assets/fonts/PaperMono-Medium.ttf"),
+        include_bytes!("../assets/fonts/PaperMono-SemiBold.ttf"),
+        include_bytes!("../assets/fonts/PaperMono-Bold.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf"),
+    ];
     cx.text_system()
-        .add_fonts(vec![
-            Cow::Borrowed(include_bytes!("../assets/fonts/PaperMono-Regular.ttf")),
-            Cow::Borrowed(include_bytes!("../assets/fonts/PaperMono-Medium.ttf")),
-            Cow::Borrowed(include_bytes!("../assets/fonts/PaperMono-SemiBold.ttf")),
-            Cow::Borrowed(include_bytes!("../assets/fonts/PaperMono-Bold.ttf")),
-            Cow::Borrowed(include_bytes!(
-                "../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"
-            )),
-            Cow::Borrowed(include_bytes!(
-                "../assets/fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf"
-            )),
-            Cow::Borrowed(include_bytes!(
-                "../assets/fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf"
-            )),
-            Cow::Borrowed(include_bytes!(
-                "../assets/fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf"
-            )),
-        ])
+        .add_fonts(fonts.map(Cow::Borrowed).to_vec())
         .expect("bundled terminal fonts must be valid");
     let families = cx.text_system().all_font_names().into_iter().collect();
     cx.set_global(Registered {

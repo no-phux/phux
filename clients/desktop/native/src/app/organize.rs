@@ -39,8 +39,7 @@ pub(crate) struct Run {
 impl Desk {
     /// Organize every pane: plan in the background, then apply.
     pub(crate) fn organize_everything(&mut self, cx: &mut Context<Self>) {
-        if self.organization.busy() {
-            self.post(Kind::Refusal, "Organize is already running", None);
+        if self.refuse_busy() {
             return;
         }
         let Some(client) = self.client() else { return };
@@ -58,7 +57,7 @@ impl Desk {
             let planned = smol::unblock(move || plan(&facts)).await;
             let _ = this.update(cx, |desk, cx| {
                 desk.organization.planning = false;
-                desk.apply_organize(planned, &planned_on, cx);
+                desk.apply_organize(planned, &planned_on);
                 cx.notify();
             });
         })
@@ -67,8 +66,7 @@ impl Desk {
 
     /// Undo the last organize run, from any surface on this profile.
     pub(crate) fn undo_organize_everything(&mut self, cx: &mut Context<Self>) {
-        if self.organization.busy() {
-            self.post(Kind::Refusal, "Organize is already running", None);
+        if self.refuse_busy() {
             return;
         }
         let journal = match phux_client_runtime::organize::load_journal() {
@@ -88,6 +86,14 @@ impl Desk {
         };
         self.start_run(Sequencer::undo(journal), None, Vec::new());
         cx.notify();
+    }
+
+    fn refuse_busy(&mut self) -> bool {
+        let busy = self.organization.busy();
+        if busy {
+            self.post(Kind::Refusal, "Organize is already running", None);
+        }
+        busy
     }
 
     /// Route an organization outcome to the run in flight. Returns whether
@@ -119,15 +125,8 @@ impl Desk {
             return;
         };
         let partial = run.sequencer.report_so_far();
-        if run.judge.is_some()
-            && !partial.journal.is_empty()
-            && let Err(err) = phux_client_runtime::organize::save_journal(&partial.journal)
-        {
-            self.post(
-                Kind::Error,
-                "Couldn't keep the organize undo record",
-                Some(err.to_string()),
-            );
+        if run.judge.is_some() {
+            self.keep_journal(&partial);
         }
         self.post(
             Kind::Error,
@@ -140,7 +139,6 @@ impl Desk {
         &mut self,
         planned: Result<(Plan, Option<String>), PlanError>,
         planned_on: &(Arc<phux_client_runtime::Client>, Option<AuthorityId>),
-        _cx: &mut Context<Self>,
     ) {
         let same_server = self.client().is_some_and(|client| {
             Arc::ptr_eq(&client, &planned_on.0) && client.organization().authority() == planned_on.1
@@ -202,6 +200,17 @@ impl Desk {
             self.finish_undo(&report);
             return;
         };
+        self.keep_journal(&report);
+        let title = journal_summary(judge, &report.journal, report.failures.len());
+        let mut body: Vec<String> = run.lines.iter().take(NOTICE_LINES).cloned().collect();
+        if run.lines.len() > NOTICE_LINES {
+            body.push(format!("… and {} more", run.lines.len() - NOTICE_LINES));
+        }
+        self.post_report(&title, body, &report);
+    }
+
+    /// Save the undo record of what `report` landed, when anything did.
+    fn keep_journal(&mut self, report: &Report) {
         if !report.journal.is_empty()
             && let Err(err) = phux_client_runtime::organize::save_journal(&report.journal)
         {
@@ -211,18 +220,25 @@ impl Desk {
                 Some(err.to_string()),
             );
         }
-        let title = journal_summary(judge, &report.journal, report.failures.len());
-        let mut body: Vec<String> = run.lines.iter().take(NOTICE_LINES).cloned().collect();
-        if run.lines.len() > NOTICE_LINES {
-            body.push(format!("… and {} more", run.lines.len() - NOTICE_LINES));
-        }
-        body.extend(step_lines(&report));
+    }
+
+    /// Post a finished run: `body`, then its failed and skipped steps.
+    fn post_report(&mut self, title: &str, mut body: Vec<String>, report: &Report) {
+        let failed = report
+            .failures
+            .iter()
+            .map(|step| format!("failed: {}: {}", step.step, step.message));
+        let skipped = report
+            .skipped
+            .iter()
+            .map(|step| format!("skipped: {}: {}", step.step, step.message));
+        body.extend(failed.chain(skipped));
         let kind = if report.failures.is_empty() {
             Kind::Info
         } else {
             Kind::Error
         };
-        self.post(kind, &title, Some(body.join("\n")));
+        self.post(kind, title, Some(body.join("\n")));
     }
 
     fn finish_undo(&mut self, report: &Report) {
@@ -236,19 +252,13 @@ impl Desk {
             );
         }
         let journal = &report.journal;
-        let mut body = vec![format!(
+        let summary = format!(
             "{} moved back, {} renamed back, {} deleted",
             journal.moved.len(),
             journal.renamed.len(),
             journal.created.len()
-        )];
-        body.extend(step_lines(report));
-        let kind = if report.failures.is_empty() {
-            Kind::Info
-        } else {
-            Kind::Error
-        };
-        self.post(kind, "Organize undone", Some(body.join("\n")));
+        );
+        self.post_report("Organize undone", vec![summary], report);
     }
 
     /// Everything the planner reads, from this window's replica and panes.
@@ -308,16 +318,4 @@ fn plan(facts: &Facts) -> Result<(Plan, Option<String>), PlanError> {
     };
     phux_client_runtime::organize::plan_or_fallback(facts, &options)
         .map(|(plan, why)| (plan, why.or(key_error)))
-}
-
-fn step_lines(report: &Report) -> Vec<String> {
-    let failed = report
-        .failures
-        .iter()
-        .map(|step| format!("failed: {}: {}", step.step, step.message));
-    let skipped = report
-        .skipped
-        .iter()
-        .map(|step| format!("skipped: {}: {}", step.step, step.message));
-    failed.chain(skipped).collect()
 }
