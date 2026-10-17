@@ -260,10 +260,12 @@ fn a_corked_batch_of_requests_is_answered_in_order() {
 }
 
 /// A server on `socket` that also listens on loopback QUIC; returns the
-/// address the listener bound.
+/// address the listener bound. `tokens` names a bearer store the listener
+/// then requires, as an enrolled host's does.
 async fn quic_server(
     tmp: &TempDir,
     socket: &Path,
+    tokens: Option<&Path>,
 ) -> (oneshot::Sender<()>, ServerTask, SocketAddr) {
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
@@ -277,6 +279,8 @@ async fn quic_server(
         env: ServerEnv {
             tls_cert: Some(cert),
             tls_key: Some(key),
+            ws_secure: tokens.is_some(),
+            ws_tokens: tokens.map(Path::to_path_buf),
             ..ServerEnv::default()
         },
         ..ServerConfig::with_default_socket()
@@ -302,7 +306,7 @@ fn a_quic_session_binds_routes_and_unbinds_terminal_streams() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("q.sock");
-        let (shutdown, server, addr) = quic_server(&tmp, &socket).await;
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, None).await;
         let target = Target::quic(addr.to_string());
         let mut session = Session::connect_target(&target, CLIENT.to_owned(), control_caps())
             .await
@@ -401,6 +405,27 @@ fn a_websocket_session_round_trips() {
             }
         }
         session.shutdown().await;
+        stop(shutdown, server).await;
+    });
+}
+
+/// A QUIC listener refusing the bearer token closes the connection with its
+/// auth code after the stream opened. The read that sees it is a refusal the
+/// caller stops on and words as one, not a lost connection it redials.
+#[test]
+fn a_refused_quic_token_is_a_fatal_refusal() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("t.sock");
+        let tokens = tmp.path().join("tokens");
+        phux_server::auth::mint_token(&tokens).expect("a credential the wrong token is not");
+        let (shutdown, server, addr) = quic_server(&tmp, &socket, Some(&tokens)).await;
+        let mut target = Target::quic(addr.to_string());
+        target.token = Some("ab".repeat(32));
+        let refused = Session::connect_target(&target, CLIENT.to_owned(), control_caps()).await;
+        let error = refused.expect_err("an unknown token");
+        assert!(error.is_fatal_refusal(), "{error}");
+        assert!(!error.to_string().contains("connection lost"), "{error}");
         stop(shutdown, server).await;
     });
 }
