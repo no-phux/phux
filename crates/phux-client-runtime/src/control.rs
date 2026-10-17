@@ -54,6 +54,7 @@ use crate::publication::Publication;
 
 mod agent_delivery;
 mod agents;
+mod approvals;
 mod commands;
 mod events;
 mod extensions;
@@ -475,6 +476,8 @@ pub struct ControlPlane {
     organization: organization::OrganizationReplica,
     /// The organization operation journal and close batches.
     org: org_plane::OrgLane,
+    /// The opt-in projection of server-held approvals (ADR-0128).
+    approvals: approvals::ApprovalWatch,
 }
 
 impl ControlPlane {
@@ -544,6 +547,7 @@ impl ControlPlane {
             project_tag_pending: None,
             organization: organization::OrganizationReplica::new(),
             org: org_plane::OrgLane::default(),
+            approvals: approvals::ApprovalWatch::default(),
         }
     }
 
@@ -860,6 +864,7 @@ impl ControlPlane {
         self.selected_session = None;
         self.input_replay.connection_lost();
         self.org_connection_lost();
+        self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_pending("connection replaced before the server answered", true);
         self.push_event(Event::ConnectionOpened {
@@ -880,6 +885,7 @@ impl ControlPlane {
         self.handshake_ready = false;
         self.input_replay.connection_lost();
         self.org_connection_lost();
+        self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_native_pending("the connection ended before the server answered");
         if let Some(message) = &message {
@@ -900,6 +906,7 @@ impl ControlPlane {
         self.strand_durable("the connection failed before the operation completed");
         self.org_strand("the connection failed before the operation completed");
         self.strand_extensions("the connection failed before the operation completed");
+        self.approvals_connection_ended();
         self.fail_pending("the connection failed before the server answered", false);
         self.set_status(Status::Failed);
     }

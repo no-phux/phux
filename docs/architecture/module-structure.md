@@ -277,6 +277,10 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   operations with the same operation id after reconnect, reports the
   outcome as unknown past the receipt horizon, maps keys to handles, and
   projects the owner-local Intake, separately from attention Inbox.
+  `approvals.rs` is the one parse of the server-held approval record and
+  decision outcome (ADR-0128), shared with `phux-client`'s verbs;
+  `control/approvals.rs` is its opt-in live projection on the control
+  connection (list, follow the journal, decide once, never retry).
 - **`phux-client-ffi`** — the one binding crate (ADR-0135). `projection/`
   derives the product vocabulary from the runtime once; `c/` (feature
   `c-abi`, default) is the C ABI in `include/phux/client.h` for native

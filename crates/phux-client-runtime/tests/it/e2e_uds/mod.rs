@@ -25,6 +25,7 @@ use tokio::net::{UnixListener, UnixStream};
 /// delivering frames keeps going, and a genuine hang still fails.
 const DEADLINE: Duration = Duration::from_secs(20);
 
+mod approvals_live;
 #[cfg(feature = "engine")]
 mod geometry_live;
 #[cfg(feature = "engine")]

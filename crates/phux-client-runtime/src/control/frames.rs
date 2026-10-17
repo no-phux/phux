@@ -381,6 +381,9 @@ impl ControlPlane {
     }
 
     pub(super) fn feed_stream_frame(&mut self, frame: FrameKind) -> Result<(), ControlError> {
+        let Some(frame) = self.take_approval_frame(frame) else {
+            return Ok(());
+        };
         let Some(frame) = self.roster_metadata_frame(frame) else {
             return Ok(());
         };

@@ -172,6 +172,8 @@ pub struct Desk {
     panes: Panes,
     agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
+    /// Server-held approvals in the Inbox (ADR-0128).
+    pub(crate) approvals: super::approvals::ApprovalInbox,
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
     pub(crate) split_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -509,6 +511,7 @@ impl Desk {
             panes: Panes::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
+            approvals: Default::default(),
             drag: None,
             split_bounds: Rc::default(),
             tab_geometry: Rc::default(),
@@ -729,6 +732,8 @@ impl Desk {
         self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
+        self.note_approvals();
+        self.note_approval_outcomes();
         self.flush_system(cx);
         for answer in answers {
             self.accept_path(answer);
@@ -1099,7 +1104,9 @@ impl Desk {
             "goto" => self.modal = Modal::Goto,
             "settings" => self.modal = Modal::Settings,
             "notifications" => self.modal = Modal::Notifications,
-            "clear-notifications" => self.feed.clear(),
+            // A pending approval is server state, not a message: it leaves
+            // the Inbox when it is decided, expires, or is withdrawn.
+            "clear-notifications" => self.feed.retain(|entry| entry.kind == Kind::Approval),
             "new" => {
                 self.workspace_call(|link| link.workspace.new_terminal(&link.connection, None))
             }
@@ -1748,6 +1755,7 @@ impl Desk {
             self.panes.clear();
             self.agent_seen.clear();
             self.feed.retain(|entry| entry.kind != Kind::Agent);
+            self.forget_approvals();
             self.find = None;
             self.find_input = None;
             self.attach(None, cx);
@@ -3462,7 +3470,18 @@ impl Desk {
     /// Reveal a notification's terminal, if it has one, and mark it read.
     pub fn open_notification(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = self.feed.get(id).and_then(|entry| entry.terminal.clone());
+        let approval = self
+            .feed
+            .get(id)
+            .is_some_and(|entry| entry.kind == Kind::Approval);
         self.feed.read(id);
+        // An approval is decided in the Inbox; opening one shows it there.
+        if approval {
+            if self.modal != Modal::Notifications {
+                self.execute("notifications", window, cx);
+            }
+            return;
+        }
         if self.modal == Modal::Notifications {
             self.close_modal(window, cx);
         }
@@ -3693,6 +3712,7 @@ impl Desk {
         self.panes.clear();
         self.agent_seen.clear();
         self.feed.retain(|entry| entry.kind != Kind::Agent);
+        self.forget_approvals();
         self.find = None;
         self.find_input = None;
         self.pending_project_terminal = None;

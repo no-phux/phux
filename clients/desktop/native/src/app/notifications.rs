@@ -1,6 +1,9 @@
 //! The one notification feed. Every message a window shows lands here.
 //!
-//! The list behind the titlebar bell is its home. Agent and error entries also
+//! The list behind the titlebar bell is its home. Its Inbox holds agent
+//! attention and server-held approvals (ADR-0128); an approval entry stands
+//! exactly while the server lists the approval, and is decided in place.
+//! Agent, approval, and error entries also
 //! interrupt: the newest one peeks as a single card, and is offered to the
 //! system notification center while Phux is not the frontmost app. A refusal
 //! of a command the user just ran peeks briefly and never enters the list.
@@ -8,6 +11,7 @@
 use std::time::{Duration, Instant};
 
 use phux_protocol::ResourceId;
+use phux_protocol::ids::ApprovalId;
 
 use crate::connection::{AgentAttention as AttentionLevel, AgentState};
 
@@ -49,13 +53,20 @@ pub enum Kind {
     Refusal,
     Error,
     Agent,
+    /// A server-held action awaiting this person's decision.
+    Approval,
 }
 
 impl Kind {
-    /// Agent and error entries peek, count as unread, and reach the system;
-    /// info waits in the list.
+    /// Agent, approval, and error entries peek, count as unread, and reach
+    /// the system; info waits in the list.
     pub fn interrupts(self) -> bool {
-        matches!(self, Self::Agent | Self::Error)
+        matches!(self, Self::Agent | Self::Approval | Self::Error)
+    }
+
+    /// Inbox entries: something waits on the person, not a report.
+    pub fn inbox(self) -> bool {
+        matches!(self, Self::Agent | Self::Approval)
     }
 
     fn peeks(self) -> bool {
@@ -83,6 +94,8 @@ pub struct Notification {
     /// The agent state an agent entry reports, for its colour. The entry
     /// stands only while its agent still reports this state.
     pub agent_state: Option<AgentState>,
+    /// The held action an approval entry decides.
+    pub approval: Option<ApprovalId>,
     pub read: bool,
 }
 
@@ -99,6 +112,18 @@ pub struct Feed {
 impl Feed {
     pub fn post(&mut self, kind: Kind, title: &str, body: Option<String>) -> u64 {
         self.push(kind, title.to_owned(), body, None, None)
+    }
+
+    /// One entry per held action; posting it again changes nothing.
+    pub fn post_approval(&mut self, title: String, body: String, id: ApprovalId) -> u64 {
+        if let Some(entry) = self.items.iter().find(|entry| entry.approval == Some(id)) {
+            return entry.id;
+        }
+        let entry = self.push(Kind::Approval, title, Some(body), None, None);
+        if let Some(posted) = self.items.iter_mut().find(|item| item.id == entry) {
+            posted.approval = Some(id);
+        }
+        entry
     }
 
     /// One entry per agent: a newer state replaces the older one.
@@ -133,6 +158,7 @@ impl Feed {
             at: Instant::now(),
             terminal,
             agent_state,
+            approval: None,
             read: !kind.interrupts(),
         });
         if kind.peeks() {
@@ -323,6 +349,22 @@ mod tests {
             vec![done]
         );
         assert_eq!(feed.take_outbound().len(), 1);
+    }
+
+    #[test]
+    fn an_approval_is_one_interrupting_inbox_entry() {
+        let mut feed = Feed::default();
+        let id = ApprovalId::new([7; 16]).unwrap();
+        let first = feed.post_approval("Approve kill?".into(), "agent".into(), id);
+        assert_eq!(
+            feed.post_approval("again".into(), "agent".into(), id),
+            first
+        );
+        assert_eq!(feed.items().count(), 1);
+        assert_eq!(feed.peek().map(|entry| entry.id), Some(first));
+        assert_eq!(feed.unread().count(), 1);
+        assert!(Kind::Approval.inbox() && Kind::Agent.inbox() && !Kind::Error.inbox());
+        assert_eq!(feed.get(first).and_then(|entry| entry.approval), Some(id));
     }
 
     #[test]
