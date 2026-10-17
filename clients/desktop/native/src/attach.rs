@@ -494,6 +494,31 @@ mod tests {
         assert!(!quoted.contains('\n'));
     }
 
+    /// A dropped file named like a command stays one quoted word: no newline
+    /// outside quotes, no expansion, no command separator the shell can act on.
+    #[test]
+    fn a_hostile_dropped_name_is_pasted_quoted_and_never_executed() {
+        let hostile = PathBuf::from("/tmp/x'; rm -rf ~; echo $(id) `id`\nreboot");
+        let host = terminal_host(None, &ResourceId::local(1));
+        let Some(PathAttach::Paste(text)) = attach_paths(&host, std::slice::from_ref(&hostile))
+        else {
+            panic!("a local drop pastes");
+        };
+        assert_eq!(
+            text, "'/tmp/x'\"'\"'; rm -rf ~; echo $(id) `id`\nreboot'",
+            "single-quoted with the embedded quote closed, escaped and reopened"
+        );
+        assert!(!text.ends_with('\n') && !text.ends_with('\r'), "no Enter");
+        // Undo POSIX single-quote quoting: what the shell would read is the
+        // file name itself, as one word.
+        let unquoted = text
+            .strip_prefix('\'')
+            .and_then(|rest| rest.strip_suffix('\''))
+            .unwrap()
+            .replace(r#"'"'"'"#, "'");
+        assert_eq!(PathBuf::from(unquoted), hostile);
+    }
+
     #[test]
     fn copied_files_paste_as_paths_not_their_names() {
         let item = ClipboardItem {

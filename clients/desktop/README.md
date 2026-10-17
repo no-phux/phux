@@ -25,7 +25,9 @@ untargeted work lands in; a server without one opens its most recent session.
 The app never creates a session on its own. `PHUX_SESSION` names a session
 instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
-`~/Library/Logs/phux-desktop.log`.
+`~/Library/Logs/phux-desktop.log` (redacted, rotated at 8 MiB). **Copy
+Diagnostics** in the command palette copies versions, server id, connection
+epoch, host and recent errors for a bug report, without terminal content.
 
 The sidebar shows one **Work** catalog across Local and registered hosts, grouped
 by repository identity when available. Each session has a **Runs on …** host chip
@@ -39,8 +41,10 @@ Select work and choose
 **Organize Selected Work…** to move it to a named session, or explicitly
 **Leave unorganized (Intake)**. Moving changes membership, never execution.
 Imported sessions can also be marked organized without moving their work.
-The bell opens **Inbox & notifications**: agent attention alerts in Inbox,
-errors and command results in Notifications. Its badge counts unread alerts,
+The bell opens **Inbox & notifications**: agent attention alerts and the
+server's held approvals in Inbox, errors and command results in
+Notifications. An approval entry offers **Approve** and **Deny** and leaves
+the Inbox once the server no longer holds it. Its badge counts unread alerts,
 not sessions or messages; an agent alert opens the agent's terminal.
 **Organize Everything** (`⌘⇧O`, in the command palette) does it for every
 pane at once, the way `phux organize` does: each pane joins its
@@ -56,7 +60,11 @@ does **not** promise process survival after a server crash or machine reboot.
 Only **Terminate Terminal Process** and **Kill Session** intentionally end
 terminals.
 
-`just desktop-package` builds the app without installing it.
+`just desktop-package` builds the app without installing it. The app's
+`Contents/Resources` carries the repository `LICENSE` and `NOTICE` and a
+`THIRD-PARTY-NOTICES.txt` generated from the desktop's Cargo graph: every
+shipped crate with its declared license, then the license texts the crates
+ship. Packaging fails if any shipped crate declares no license.
 `just desktop-install-app` builds and installs `/Applications/Phux.app`.
 Release ownership and qualification are in [Releasing](../../docs/RELEASING.md).
 
@@ -247,8 +255,10 @@ path or open it; the palette's **Open Scrollback as a File** does the last for s
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
-switches keybind import off (the global hotkey too, from the next launch), and
-lists the binds it skipped: key sequences,
+switches keybind import off (the global hotkey too, from the next launch),
+lists malformed lines, and valid lines whose values it cannot represent, by
+file and line (the rest still apply),
+and counts the binds it skipped: key sequences,
 bare letters, keys the window never reports (such as keypad keys), and
 actions with no equivalent yet. Keys may be named as Ghostty names them, as
 W3C codes (`KeyK`, `Digit1`, `ArrowUp`) or with a `physical:` prefix. `reset` is one: the

@@ -3,31 +3,31 @@
 
 # Quick type-check across the workspace.
 [group('build')]
-check:
+check: worktree-claim
     cargo check --workspace --all-targets
 
 
 # Build the developer executables (debug).
 [group('build')]
-build:
+build: worktree-claim
     cargo build --locked -p phux -p phux-mcp
 
 
 # Build every workspace target, including test harnesses, examples and benches.
 [group('build')]
-build-all:
+build-all: worktree-claim
     cargo build --workspace --all-targets
 
 
 # Build without browser HTTP/3 support; UDS, WebSocket and raw QUIC remain.
 [group('build')]
-build-lean:
+build-lean: worktree-claim
     cargo build --locked -p phux -p phux-mcp --no-default-features
 
 
 # Release executables with full LTO.
 [group('build')]
-build-release:
+build-release: worktree-claim
     cargo build --locked -p phux -p phux-mcp --release
 
 
@@ -36,7 +36,7 @@ build-release:
 # build already uses the `dev` profile so it cannot steal that server.
 [group('build')]
 [doc('Build and atomically install the developer binaries into Cargo bin dir.')]
-install-dev:
+install-dev: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build -p phux -p phux-mcp
@@ -55,7 +55,7 @@ install-dev:
 # A server originally started by Homebrew needs a one-time restart first.
 [group('build')]
 [doc('Install rebuilt binaries, then hot-swap the running server, keeping sessions.')]
-rebuild:
+rebuild: worktree-claim
     just install-dev
     "${CARGO_HOME:-$HOME/.cargo}/bin/phux" upgrade
 

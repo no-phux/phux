@@ -32,7 +32,7 @@ use super::actions::Run;
 use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::Motion;
-use super::notifications::{Feed, Kind};
+use super::notifications::{Feed, Kind, SystemTag};
 use super::overlays::{GotoFrecency, GotoPalette, GotoSearch, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
@@ -107,6 +107,8 @@ pub enum Modal {
         session: u32,
     },
     WindowSession,
+    /// Every open native window, its session, host and tabs.
+    Windows,
     Terminate {
         terminal: ResourceId,
         title: String,
@@ -116,6 +118,16 @@ pub enum Modal {
     /// Forget a registered machine with `phux host rm`.
     RemoveHost {
         name: String,
+    },
+    /// A line-breaking paste held because the placement's terminal is
+    /// running a command.
+    Paste {
+        placement_id: String,
+        /// The terminal the paste was held for; a retargeted placement
+        /// refuses it.
+        terminal_id: ResourceId,
+        title: String,
+        paste: crate::input::HeldPaste,
     },
 }
 
@@ -172,6 +184,10 @@ pub struct Desk {
     panes: Panes,
     agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
+    /// Shell commands in flight, for the finished-in-the-background alert.
+    commands: super::notifications::Commands,
+    /// Server-held approvals in the Inbox (ADR-0128).
+    pub(crate) approvals: super::approvals::ApprovalInbox,
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
     pub(crate) split_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -439,8 +455,8 @@ impl Desk {
         let loaded = persist::load_layout(&store.read());
         let blocked = loaded.blocked;
         let saved = loaded.initial;
-        let text = settings::read_ghostty_config();
-        let ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        let text = settings::read_ghostty_sources();
+        let ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         let mut prefs = saved
             .as_ref()
             .map(|layout| layout.display.clone())
@@ -509,6 +525,8 @@ impl Desk {
             panes: Panes::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
+            commands: Default::default(),
+            approvals: Default::default(),
             drag: None,
             split_bounds: Rc::default(),
             tab_geometry: Rc::default(),
@@ -729,6 +747,8 @@ impl Desk {
         self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
+        self.note_approvals(cx);
+        self.note_approval_outcomes();
         self.flush_system(cx);
         for answer in answers {
             self.accept_path(answer);
@@ -750,6 +770,8 @@ impl Desk {
         if self.agent_epoch != Some(epoch)
             || events.iter().any(crate::connection::starts_connection)
         {
+            // Command starts survive a reconnect: a build that spans one
+            // still alerts when it finishes, and a newer start replaces them.
             self.agent_seen.clear();
             self.feed.retain(|entry| entry.kind != Kind::Agent);
             self.agent_epoch = Some(epoch);
@@ -799,10 +821,15 @@ impl Desk {
 
     fn note_event(&mut self, event: &Event) {
         self.note_terminal_event(event);
+        self.note_command_event(event);
         self.note_operation_event(event);
         self.note_input_event(event);
-        if let Event::Detached { message, .. } = event {
-            self.post(Kind::Error, "Detached", Some(message.clone()));
+        if let Event::Detached { reason, message } = event {
+            self.post(
+                Kind::Error,
+                "Detached",
+                Some(detach_detail(*reason, message)),
+            );
         }
     }
 
@@ -919,9 +946,47 @@ impl Desk {
                 self.post(Kind::Info, &format!("{title} ended"), Some(status));
             }
             self.agent_seen.remove(terminal_id);
+            self.commands.forget(terminal_id);
             self.feed.retain(|entry| {
-                entry.kind != Kind::Agent || entry.terminal.as_ref() != Some(terminal_id)
+                !matches!(entry.kind, Kind::Agent | Kind::Command)
+                    || entry.terminal.as_ref() != Some(terminal_id)
             });
+        }
+    }
+
+    /// A long shell command that finishes in a pane the person is not
+    /// looking at asks for attention, as a finished agent does.
+    fn note_command_event(&mut self, event: &Event) {
+        match event {
+            Event::CommandStarted { terminal_id } => {
+                self.commands.started(terminal_id.clone(), Instant::now());
+            }
+            Event::CommandFinished {
+                terminal_id,
+                exit_code,
+            } => {
+                let focused = self.focused_terminal().as_ref() == Some(terminal_id);
+                let Some(ran) = self.commands.finished(terminal_id, Instant::now(), focused) else {
+                    return;
+                };
+                if !self.prefs.notifications {
+                    return;
+                }
+                let title = self.pane_title(Some(terminal_id));
+                let (title, outcome) = match exit_code {
+                    Some(0) | None => (format!("{title} finished"), "done".to_owned()),
+                    Some(code) => (format!("{title} failed"), format!("exit {code}")),
+                };
+                let body = format!(
+                    "{outcome} after {} · {}",
+                    command_span(ran),
+                    short_path(self.pane_cwd(Some(terminal_id)))
+                );
+                self.feed.post_command(title, body, terminal_id.clone());
+            }
+            // An exited shell finishes nothing it started.
+            Event::Exited { terminal_id, .. } => self.commands.forget(terminal_id),
+            _ => {}
         }
     }
 
@@ -1059,6 +1124,7 @@ impl Desk {
                 (&open, id),
                 (Modal::Commands, "palette")
                     | (Modal::Goto, "goto")
+                    | (Modal::Windows, "windows")
                     | (Modal::Settings, "settings")
                     | (Modal::Notifications, "notifications")
             );
@@ -1099,7 +1165,9 @@ impl Desk {
             "goto" => self.modal = Modal::Goto,
             "settings" => self.modal = Modal::Settings,
             "notifications" => self.modal = Modal::Notifications,
-            "clear-notifications" => self.feed.clear(),
+            // A pending approval is server state, not a message: it leaves
+            // the Inbox when it is decided, expires, or is withdrawn.
+            "clear-notifications" => self.feed.retain(|entry| entry.kind == Kind::Approval),
             "new" => {
                 self.workspace_call(|link| link.workspace.new_terminal(&link.connection, None))
             }
@@ -1159,6 +1227,7 @@ impl Desk {
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),
             "window" => self.move_to_window(cx),
+            "window-next" => self.move_to_next_window(cx),
             "find" => self.open_find(window, cx),
             "find-next" => self.step_find(1, window, cx),
             "find-prev" => self.step_find(-1, window, cx),
@@ -1192,11 +1261,14 @@ impl Desk {
             "prompt-next" => self.jump_prompt(1, cx),
             "quick-terminal" => self.toggle_quick(cx),
             "new-window" => self.new_window(window, cx),
+            "windows" => self.modal = Modal::Windows,
+            "minimize" => window.minimize_window(),
             "fullscreen" => window.toggle_fullscreen(),
             "maximize" => window.zoom_window(),
             "reload-config" => self.reload_ghostty(cx),
             "import-ghostty" => self.import_ghostty(cx),
             "reconnect" => self.reconnect(cx),
+            "copy-diagnostics" => self.copy_diagnostics(cx),
             "performance-monitor" | "performance-monitor-stop" => {
                 // Opening/closing windows must wait until this desk's window lease ends.
                 let desktop = self.desktop.clone();
@@ -1275,6 +1347,11 @@ impl Desk {
                 }
                 Modal::RemoveHost { .. } => {
                     self.confirm_remove_host(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                Modal::Paste { .. } => {
+                    self.confirm_paste(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -1747,7 +1824,9 @@ impl Desk {
             }
             self.panes.clear();
             self.agent_seen.clear();
+            self.commands.clear();
             self.feed.retain(|entry| entry.kind != Kind::Agent);
+            self.forget_approvals();
             self.find = None;
             self.find_input = None;
             self.attach(None, cx);
@@ -1766,13 +1845,28 @@ impl Desk {
     }
 
     pub(crate) fn reload_ghostty(&mut self, cx: &mut Context<Self>) {
-        let text = settings::read_ghostty_config();
-        self.ghostty_found = text.is_some();
-        self.ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        let sources = settings::read_ghostty_sources();
+        self.apply_ghostty_sources(sources.as_deref(), cx);
+    }
+
+    /// Adopt freshly read Ghostty files (`None` when there are none): rebind,
+    /// drop the cached paint so the Ghostty theme follows, and post a notice
+    /// for a missing config or skipped lines. Reload config runs this on what
+    /// it reads from disk.
+    pub fn apply_ghostty_sources(
+        &mut self,
+        sources: Option<&[settings::GhosttySource]>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ghostty_found = sources.is_some();
+        self.ghostty = settings::parse_ghostty_sources(sources.unwrap_or_default());
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
-        if text.is_none() {
+        if sources.is_none() {
             self.post(Kind::Refusal, "No Ghostty config found", None);
+        }
+        if let Some((title, body)) = settings::skipped_lines_notice(&self.ghostty) {
+            self.post(Kind::Refusal, &title, Some(body));
         }
         cx.notify();
     }
@@ -1804,6 +1898,51 @@ impl Desk {
         let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
             desktop.open_moved(session, terminal, remote, cx);
+        });
+    }
+
+    /// Move the focused placement into the next open window on the same
+    /// server. Only this window's view is released; the terminal (same
+    /// `ResourceId`, same process) is shown by the target's own client.
+    fn move_to_next_window(&mut self, cx: &mut Context<Self>) {
+        let Some(terminal) = self
+            .focused_placement()
+            .and_then(|placement| placement.terminal_id.clone())
+        else {
+            return;
+        };
+        let target = self
+            .desktop
+            .read(cx)
+            .next_window(cx.entity_id(), self.remote.as_deref(), cx);
+        let Some((handle, desk)) = target else {
+            // Refuse before releasing anything: a target that is not attached
+            // could never reveal the terminal, which would then have no view
+            // in either window.
+            self.post(
+                Kind::Refusal,
+                "No other connected window",
+                Some(
+                    "Open or reconnect another window on this server, or use Move Pane to New Window."
+                        .into(),
+                ),
+            );
+            cx.notify();
+            return;
+        };
+        let placement = self
+            .focused_placement()
+            .map(|placement| placement.id.clone());
+        self.workspace_call(|link| {
+            link.workspace
+                .close_pane(&link.connection, placement.as_deref())
+        });
+        cx.notify();
+        // Deferred: the target is another window, updated outside this one.
+        cx.defer(move |cx| {
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            desk.update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
         });
     }
 
@@ -1890,6 +2029,17 @@ impl Desk {
             );
         }
         cx.notify();
+    }
+
+    /// Whether a terminal moved here from another window would be revealed:
+    /// attached, and not already waiting to reveal another one (which a new
+    /// move would silently replace).
+    pub(crate) fn accepts_moved_terminal(&self) -> bool {
+        self.pending_project_terminal.is_none()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
     pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {
@@ -1983,6 +2133,38 @@ impl Desk {
         };
         let title = self.pane_title(Some(&terminal));
         self.modal = Modal::Terminate { terminal, title };
+    }
+
+    /// Send the held paste to the placement it was meant for.
+    pub fn confirm_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Modal::Paste {
+            placement_id,
+            terminal_id,
+            paste,
+            ..
+        } = self.modal.clone()
+        else {
+            return;
+        };
+        self.close_modal(window, cx);
+        let current = self
+            .placement(&placement_id)
+            .and_then(|placement| placement.terminal_id.as_ref());
+        if !held_paste_target_holds(current, &terminal_id)
+            || self.panes.get(&placement_id).is_none()
+        {
+            self.post(
+                Kind::Refusal,
+                crate::attach::PASTE_REFUSED,
+                Some("That terminal is gone. Nothing was pasted.".into()),
+            );
+        } else if let Some(notice) =
+            self.panes
+                .request(&placement_id, HostAction::PasteConfirmed(paste), cx)
+        {
+            self.post(Kind::Refusal, notice.title, Some(notice.body));
+        }
+        self.after_command(window, cx);
     }
 
     pub fn confirm_terminate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3462,7 +3644,18 @@ impl Desk {
     /// Reveal a notification's terminal, if it has one, and mark it read.
     pub fn open_notification(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = self.feed.get(id).and_then(|entry| entry.terminal.clone());
+        let approval = self
+            .feed
+            .get(id)
+            .is_some_and(|entry| entry.kind == Kind::Approval);
         self.feed.read(id);
+        // An approval is decided in the Inbox; opening one shows it there.
+        if approval {
+            if self.modal != Modal::Notifications {
+                self.execute("notifications", window, cx);
+            }
+            return;
+        }
         if self.modal == Modal::Notifications {
             self.close_modal(window, cx);
         }
@@ -3472,9 +3665,10 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    /// Mirror new agent and error entries to the system notification center
-    /// while no Phux window is active. A click comes back through
-    /// [`super::session::Desktop`] by the tag's desk entity and entry id.
+    /// Mirror new agent, approval, and error entries to the system
+    /// notification center while no Phux window is active. A click comes
+    /// back through [`super::session::Desktop`] by its [`SystemTag`]; an
+    /// approval's tag is shared by every window that holds it.
     pub(crate) fn flush_system(&mut self, cx: &mut Context<Self>) {
         let outbound = self.feed.take_outbound();
         if outbound.is_empty() || cx.active_window().is_some() {
@@ -3483,7 +3677,7 @@ impl Desk {
         let desk = cx.entity_id().as_u64();
         for entry in outbound {
             cx.show_system_notification(gpui::SystemNotification {
-                tag: format!("{desk}/{}", entry.id).into(),
+                tag: SystemTag::of(desk, &entry).to_string().into(),
                 title: entry.title.into(),
                 body: entry.body.unwrap_or_default().into(),
                 actions: Vec::new(),
@@ -3692,7 +3886,9 @@ impl Desk {
         self.link = None;
         self.panes.clear();
         self.agent_seen.clear();
+        self.commands.clear();
         self.feed.retain(|entry| entry.kind != Kind::Agent);
+        self.forget_approvals();
         self.find = None;
         self.find_input = None;
         self.pending_project_terminal = None;
@@ -3810,13 +4006,16 @@ impl Desk {
 
     /// `{tab} — phux`, or `phux` with no tab, plus the host on a remote window.
     /// Written only when it changes.
+    /// The native title names the shown tab and its session, so the Window
+    /// menu and Mission Control tell apart windows whose terminals look alike.
     pub(crate) fn sync_title(&mut self, window: &mut Window) {
-        let title = self
-            .active_tab()
-            .map(|tab| format!("{} — phux", tab_title(self, tab)))
-            .unwrap_or_else(|| "phux".into());
+        let title = match (self.active_tab(), self.session.as_str()) {
+            (Some(tab), "") => format!("{} — phux", tab_title(self, tab)),
+            (Some(tab), session) => format!("{} — {session}", tab_title(self, tab)),
+            (None, _) => "phux".into(),
+        };
         let title = match self.remote.as_deref() {
-            Some(host) => format!("{title} · {host}"),
+            Some(host) => format!("{title} · {}", display_title(host)),
             None => title,
         };
         if title != self.window_title {
@@ -4055,6 +4254,27 @@ impl Desk {
                 }
                 self.start_upload(&terminal, batch.clone(), cx);
             }
+            crate::terminal::TerminalEvent::ConfirmPaste(paste) => {
+                let Some(terminal_id) = self
+                    .placement(placement_id)
+                    .and_then(|placement| placement.terminal_id.clone())
+                else {
+                    self.post(
+                        Kind::Refusal,
+                        crate::attach::PASTE_REFUSED,
+                        Some("That terminal is gone. Nothing was pasted.".into()),
+                    );
+                    cx.notify();
+                    return;
+                };
+                self.modal = Modal::Paste {
+                    placement_id: placement_id.to_owned(),
+                    title: self.pane_title(Some(&terminal_id)),
+                    terminal_id,
+                    paste: paste.clone(),
+                };
+                self.after_command(window, cx);
+            }
         }
         cx.notify();
     }
@@ -4076,10 +4296,29 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{TabGeometry, pane_label, tab_drop_index};
+    use super::{
+        TabGeometry, command_span, display_title, held_paste_target_holds, pane_label,
+        tab_drop_index,
+    };
     use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
+    use std::time::Duration;
+
+    #[test]
+    fn a_confirmed_paste_goes_only_to_the_terminal_it_was_held_for() {
+        let held = ResourceId::local(7);
+        assert!(held_paste_target_holds(Some(&ResourceId::local(7)), &held));
+        assert!(!held_paste_target_holds(Some(&ResourceId::local(8)), &held));
+        assert!(!held_paste_target_holds(None, &held));
+    }
+
+    #[test]
+    fn a_finished_command_reads_its_run_time_coarsely() {
+        assert_eq!(command_span(Duration::from_millis(42_900)), "42s");
+        assert_eq!(command_span(Duration::from_secs(185)), "3m 5s");
+        assert_eq!(command_span(Duration::from_secs(3725)), "1h 2m");
+    }
 
     fn pane(name: Option<&str>, title: Option<&str>, cwd: Option<&str>) -> PaneDescriptor {
         PaneDescriptor {
@@ -4113,6 +4352,40 @@ mod tests {
         assert_eq!(pane_label(Some(&pane(None, None, None)), group), "logs");
         assert_eq!(pane_label(Some(&pane(None, None, None)), None), "shell");
         assert_eq!(pane_label(None, group), "shell");
+    }
+
+    #[test]
+    fn a_revoked_attach_says_why_without_a_server_message() {
+        use phux_protocol::wire::frame::DetachReason;
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationRevoked), ""),
+            "this connection's authorization was revoked"
+        );
+        assert_eq!(
+            super::detach_detail(Some(DetachReason::AuthorizationExpired), "token aged out"),
+            "this connection's authorization expired: token aged out"
+        );
+        assert!(!super::detach_detail(None, "").is_empty());
+    }
+
+    #[test]
+    fn a_hostile_title_loses_controls_and_bidi_overrides() {
+        // OSC 2 text that tries to forge a filename, smuggle an escape and a
+        // newline, and run on forever.
+        let hostile = format!(
+            "\u{1b}]0;x\u{7}inv\u{202e}fdp.exe\u{2066}\nrm -rf ~\u{7f}{}",
+            "a".repeat(4096)
+        );
+        let clean = display_title(&hostile);
+        assert!(clean.starts_with("]0;xinvfdp.exerm -rf ~a"), "{clean:?}");
+        assert!(clean.chars().all(|ch| !ch.is_control()));
+        assert!(!clean.contains(['\u{202e}', '\u{2066}']));
+        assert_eq!(clean.chars().count(), super::TITLE_CAP);
+        let titled = pane(None, Some(&hostile), Some("/src/phux"));
+        assert_eq!(pane_label(Some(&titled), None), clean);
+        let blank = pane(Some("\u{1b}\u{202e}"), Some("\u{7}"), Some("/src/\u{200f}"));
+        assert_eq!(pane_label(Some(&blank), Some("logs")), "logs");
+        assert_eq!(display_title("مرحبا vim"), "مرحبا vim", "RTL text stays");
     }
 
     #[test]
@@ -4180,6 +4453,22 @@ fn region_text(client: &Client, view: phux_client_runtime::ViewId, region: TextR
     }
 }
 
+/// Whether a confirmed paste may still go to its placement: the placement
+/// still shows the terminal the paste was held for.
+fn held_paste_target_holds(current: Option<&ResourceId>, held_for: &ResourceId) -> bool {
+    current == Some(held_for)
+}
+
+/// How long a finished command ran, coarsely: `42s`, `3m 5s`, `1h 2m`.
+fn command_span(ran: Duration) -> String {
+    let seconds = ran.as_secs();
+    match (seconds / 3600, seconds % 3600 / 60, seconds % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
+}
+
 pub(crate) fn short_path(path: Option<String>) -> String {
     let Some(path) = path else {
         return String::new();
@@ -4217,26 +4506,67 @@ pub(crate) fn pane_label(
     let Some(pane) = pane else {
         return "shell".into();
     };
-    let named = |text: Option<&str>| {
-        text.map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
+    let named = |text: Option<&str>| text.map(display_title).filter(|text| !text.is_empty());
     named(pane.name.as_deref())
         .or_else(|| named(pane.title.as_deref()))
         .or_else(|| {
-            pane.cwd
-                .as_deref()
-                .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()))
-                .map(str::to_owned)
+            named(
+                pane.cwd
+                    .as_deref()
+                    .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty())),
+            )
         })
         .or_else(|| named(group))
         .unwrap_or_else(|| "shell".into())
 }
 
+/// Why the server ended the attach, in words: a revoked or expired
+/// authorization says so even when the server sent no message.
+fn detach_detail(
+    reason: Option<phux_protocol::wire::frame::DetachReason>,
+    message: &str,
+) -> String {
+    match (reason, message.trim()) {
+        (Some(reason), "") => reason.describe().to_owned(),
+        (Some(reason), extra) => format!("{}: {extra}", reason.describe()),
+        (None, "") => "The server ended the attach without saying why.".to_owned(),
+        (None, extra) => extra.to_owned(),
+    }
+}
+
+/// Longest title, in characters, any chrome surface or the window shows.
+const TITLE_CAP: usize = 256;
+
+/// Program-set text made safe to show: no control characters (an OSC title
+/// cannot smuggle a newline, escape or `DEL` into the window title or a tab)
+/// and no bidi overrides or isolates that would reorder what follows, so a
+/// title cannot pose as another file or host. Trimmed and bounded.
+pub(crate) fn display_title(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|&ch| !ch.is_control() && !is_bidi_control(ch))
+        .take(TITLE_CAP)
+        .collect();
+    clean.trim().to_owned()
+}
+
+/// Explicit direction marks, embeddings, overrides and isolates (the same
+/// set `phux ls` and the TUI drop).
+const fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 pub fn tab_title(desk: &Desk, tab: &crate::workspace::layout::DeskTab) -> String {
-    if let Some(title) = tab.title.as_deref().filter(|title| !title.is_empty()) {
-        return title.to_owned();
+    if let Some(title) = tab
+        .title
+        .as_deref()
+        .map(display_title)
+        .filter(|title| !title.is_empty())
+    {
+        return title;
     }
     let focus = crate::workspace::layout::placements(&tab.root)
         .into_iter()

@@ -11,7 +11,9 @@ use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::text::TextView;
 use phux_client_core::session::AgentStreamInfo;
 use phux_client_core::session::agent_stream::AgentSessionStatus;
-use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptEntry, TranscriptRole};
+use phux_client_core::session::agent_transcript::{
+    ToolStatus, TranscriptEntry, TranscriptRole, TranscriptTool,
+};
 use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
 use phux_protocol::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
@@ -888,6 +890,7 @@ pub(crate) fn render(
     let pending = face.pending.is_some();
     let error = face.error.clone();
     let notice = face.notice.clone();
+    let has_rows = !rows.is_empty();
     let question_rows = questions::render(
         face,
         conversation.native.as_ref().filter(|_| {
@@ -938,10 +941,13 @@ pub(crate) fn render(
                     cx.notify();
                 }
             }))
+            // Only transcript rows live in the List; notices and question
+            // panels sit beside it so every List child is a ListItem.
             .child(div().flex().flex_col().gap(px(12.)).pb(px(12.))
-                .when(omitted, |list| list.child(div().text_xs().text_color(from_hex(&colors.muted)).child("Earlier entries omitted from the bounded native transcript.")))
-                .when(rows.is_empty(), |list| list.child("Waiting for conversation entries. Transcript sharing may be disabled; lifecycle events remain visible here."))
-                .children(rows).children(question_rows)))
+                .when(omitted, |list| list.child(readable("conversation-omitted", OMITTED_NOTICE).text_xs().text_color(from_hex(&colors.muted)).child(OMITTED_NOTICE)))
+                .when(!has_rows, |list| list.child(readable("conversation-waiting", WAITING_NOTICE).child(WAITING_NOTICE)))
+                .when(has_rows, |list| list.child(conversation_list(rows)))
+                .children(question_rows)))
         .when(!following, |face| face.child(Button::new(SharedString::from(format!("conversation-live-{placement}"))).label("Jump to latest").ghost().small()
             .on_click(cx.listener(move |desk, _, _, cx| {
                 if let Some(face) = desk.conversation_faces.get_mut(&live_id) {
@@ -952,11 +958,11 @@ pub(crate) fn render(
             }))))
         .children(error.map(|error| div().text_sm().text_color(from_hex(&colors.theme.warning)).child(error)))
         .children(notice.map(|notice| div().text_xs().text_color(from_hex(&colors.muted)).child(notice)))
-        .child(Textarea::new(&input).w_full().disabled(!editable))
+        .child(Textarea::new(&input).aria_label("Message").w_full().disabled(!editable))
         .child(div().flex().items_center().gap(px(8.))
             .child(Button::new(SharedString::from(format!("conversation-send-{placement}"))).label(if pending { "Sending…" } else { "Send" }).primary().small().disabled(!writable || empty)
                 .on_click(cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx))))
-            .child(Button::new(SharedString::from(format!("conversation-stop-{placement}"))).label("Stop · Esc").ghost().small().disabled(!stopping)
+            .child(Button::new(SharedString::from(format!("conversation-stop-{placement}"))).label("Stop · Esc").accessibility_label("Stop agent").ghost().small().disabled(!stopping)
                 .on_click(cx.listener(move |desk, _, _, cx| desk.stop_conversation(&stop_id, cx))))
             .child(div().text_xs().text_color(from_hex(&colors.muted)).child(if native && blocked {
                 "Respond to the provider request above · first response across viewers wins"
@@ -992,25 +998,140 @@ fn unavailable(placement: &str, cx: &mut Context<Desk>) -> AnyElement {
         .into_any_element()
 }
 
+const OMITTED_NOTICE: &str = "Earlier entries omitted from the bounded native transcript.";
+const WAITING_NOTICE: &str = "Waiting for conversation entries. Transcript sharing may be disabled; lifecycle events remain visible here.";
+
+/// A container screen readers announce as static text. GPUI only reports
+/// nodes that carry both an id and a role, and plain string children carry
+/// neither, so visible text that matters is mirrored into a `Label` value.
+fn readable(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    div().id(id.into()).role(gpui::Role::Label).aria_value(text)
+}
+
+/// The transcript as one named list whose children are the entry rows.
+fn conversation_list(
+    rows: impl IntoIterator<Item = gpui::Stateful<gpui::Div>>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("conversation-list")
+        .role(gpui::Role::List)
+        .aria_label("Conversation")
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .children(rows)
+}
+
+fn speaker(role: TranscriptRole) -> &'static str {
+    match role {
+        TranscriptRole::User => "You",
+        TranscriptRole::Assistant => "Assistant",
+        TranscriptRole::Thinking => "Thinking",
+        TranscriptRole::Tool => "Tool",
+        TranscriptRole::System => "Activity",
+    }
+}
+
+fn tool_status(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Running => "running",
+        ToolStatus::Ok => "ok",
+        ToolStatus::Error => "error",
+    }
+}
+
+/// The first non-empty line of `text`, trimmed.
+fn first_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+/// What a screen reader announces when it lands on a row: the speaker (or
+/// tool, state and command) plus the first line. The full body, summary and
+/// output are separate `Label` children, so this stays a short name.
+fn entry_label(entry: &TranscriptEntry) -> String {
+    if let Some(tool) = &entry.tool {
+        let name = format!("Tool {}, {}", tool.name, tool_status(tool.status));
+        return match first_line(&tool.summary) {
+            Some(summary) => format!("{name}: {summary}"),
+            None => name,
+        };
+    }
+    let mut name = speaker(entry.role).to_owned();
+    if !entry.is_final {
+        name.push_str(", streaming");
+    }
+    if entry.truncated {
+        name.push_str(", truncated");
+    }
+    match first_line(&entry.text) {
+        Some(first) => format!("{name}: {first}"),
+        None => name,
+    }
+}
+
+/// Plain text set one visual line per `div`, exposed as one `Label` holding
+/// the whole text.
+fn readable_lines(id: &'static str, text: &str) -> gpui::Stateful<gpui::Div> {
+    readable(id, text.to_owned())
+        .text_sm()
+        .children(text.lines().map(|line| div().child(line.to_owned())))
+}
+
+/// The entry body: markdown prose for the assistant and thinking, plain lines
+/// otherwise. Screen readers get the full text either way.
+fn entry_body(entry: &TranscriptEntry) -> gpui::Stateful<gpui::Div> {
+    if !matches!(
+        entry.role,
+        TranscriptRole::Assistant | TranscriptRole::Thinking
+    ) {
+        return readable_lines("body", &entry.text);
+    }
+    readable("body", entry.text.clone()).child(
+        TextView::markdown(
+            SharedString::from(format!("conversation-prose-{}", entry.id)),
+            entry.text.clone(),
+        )
+        .selectable(true)
+        .scrollable(false),
+    )
+}
+
+/// A tool call's command summary and, once there is any, its output.
+fn tool_details(
+    tool: &TranscriptTool,
+    colors: &Palette,
+    mono: &SharedString,
+) -> Vec<gpui::Stateful<gpui::Div>> {
+    let mut details = vec![
+        readable("tool-summary", tool.summary.clone())
+            .text_sm()
+            .text_color(from_hex(&colors.muted))
+            .child(tool.summary.clone()),
+    ];
+    if !tool.output.is_empty() {
+        details.push(readable_lines("tool-output", &tool.output).font_family(mono.clone()));
+    }
+    details
+}
+
 /// One transcript entry; tool output sets in the terminal font `mono`.
 fn transcript_row(
     entry: &TranscriptEntry,
     colors: &Palette,
     look: &Look,
     mono: &SharedString,
-) -> AnyElement {
-    let label = match entry.role {
-        TranscriptRole::User => "You",
-        TranscriptRole::Assistant => "Assistant",
-        TranscriptRole::Thinking => "Thinking",
-        TranscriptRole::Tool => "Tool",
-        TranscriptRole::System => "Activity",
-    };
+) -> gpui::Stateful<gpui::Div> {
+    let label = speaker(entry.role);
     let mut row = div()
         .id(SharedString::from(format!(
             "conversation-entry-{}",
             entry.id
         )))
+        .role(gpui::Role::ListItem)
+        .aria_label(entry_label(entry))
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -1027,49 +1148,17 @@ fn transcript_row(
                     if entry.truncated { " · truncated" } else { "" }
                 )),
         )
-        .child(
-            if matches!(
-                entry.role,
-                TranscriptRole::Assistant | TranscriptRole::Thinking
-            ) {
-                TextView::markdown(
-                    SharedString::from(format!("conversation-prose-{}", entry.id)),
-                    entry.text.clone(),
-                )
-                .selectable(true)
-                .scrollable(false)
-                .into_any_element()
-            } else {
-                div()
-                    .text_sm()
-                    .children(entry.text.lines().map(|line| div().child(line.to_owned())))
-                    .into_any_element()
-            },
-        );
+        .child(entry_body(entry));
     if let Some(tool) = &entry.tool {
-        let status = match tool.status {
-            ToolStatus::Running => "running",
-            ToolStatus::Ok => "ok",
-            ToolStatus::Error => "error",
-        };
         row = row
-            .child(div().text_sm().child(format!("{} · {status}", tool.name)))
             .child(
                 div()
                     .text_sm()
-                    .text_color(from_hex(&colors.muted))
-                    .child(tool.summary.clone()),
-            );
-        if !tool.output.is_empty() {
-            row = row.child(
-                div()
-                    .text_sm()
-                    .font_family(mono.clone())
-                    .children(tool.output.lines().map(|line| div().child(line.to_owned()))),
-            );
-        }
+                    .child(format!("{} · {}", tool.name, tool_status(tool.status))),
+            )
+            .children(tool_details(tool, colors, mono));
     }
-    row.into_any_element()
+    row
 }
 
 #[cfg(test)]
@@ -1140,6 +1229,117 @@ mod tests {
         );
         assert!(pending.is_none());
         assert_eq!(delivered.as_deref(), Some("draft"));
+    }
+
+    fn entry(role: TranscriptRole, text: &str) -> TranscriptEntry {
+        TranscriptEntry {
+            id: "entry".into(),
+            role,
+            text: text.into(),
+            truncated: false,
+            is_final: true,
+            tool: None,
+        }
+    }
+
+    fn tool(summary: &str, output: &str) -> TranscriptTool {
+        TranscriptTool {
+            name: "bash".into(),
+            call_id: "entry".into(),
+            summary: summary.into(),
+            status: ToolStatus::Error,
+            output: output.into(),
+        }
+    }
+
+    /// The role and accessibility properties GPUI reports for `element`.
+    pub(crate) fn a11y(
+        element: &impl gpui::Element,
+    ) -> (Option<gpui::Role>, gpui::accesskit::Node) {
+        let role = element.a11y_role();
+        let mut node = gpui::accesskit::Node::new(role.unwrap_or(gpui::Role::Unknown));
+        element.write_a11y_info(&mut node);
+        (role, node)
+    }
+
+    #[test]
+    fn rows_name_their_speaker_and_first_line_for_screen_readers() {
+        let reply = entry(TranscriptRole::Assistant, "\n  Done.  \nSecond line");
+        assert_eq!(entry_label(&reply), "Assistant: Done.");
+        assert_eq!(entry_label(&entry(TranscriptRole::User, "hi")), "You: hi");
+        assert_eq!(entry_label(&entry(TranscriptRole::System, "")), "Activity");
+        let mut live = entry(TranscriptRole::Assistant, "Working");
+        live.is_final = false;
+        live.truncated = true;
+        assert_eq!(
+            entry_label(&live),
+            "Assistant, streaming, truncated: Working"
+        );
+        let mut call = entry(TranscriptRole::Tool, "");
+        call.tool = Some(tool("ls\n-la", ""));
+        assert_eq!(entry_label(&call), "Tool bash, error: ls");
+        call.tool = Some(tool("", ""));
+        assert_eq!(entry_label(&call), "Tool bash, error");
+    }
+
+    #[test]
+    fn transcript_rows_are_labeled_list_items() {
+        use crate::settings::theme::{default_theme_id, palette, theme_by_id};
+        let colors = palette(&theme_by_id(default_theme_id(), &[]));
+        let look = Look::of(
+            &crate::settings::skin::TERMINAL,
+            &colors,
+            &crate::settings::default_display(),
+        );
+        let row = transcript_row(
+            &entry(TranscriptRole::User, "Run the tests\nthen push"),
+            &colors,
+            &look,
+            &"Menlo".into(),
+        );
+        let (role, node) = a11y(&row);
+        assert_eq!(role, Some(gpui::Role::ListItem));
+        assert_eq!(node.label(), Some("You: Run the tests"));
+
+        let (role, node) = a11y(&conversation_list(vec![row]));
+        assert_eq!(role, Some(gpui::Role::List));
+        assert_eq!(node.label(), Some("Conversation"));
+    }
+
+    #[test]
+    fn whole_bodies_and_tool_details_reach_screen_readers() {
+        use crate::settings::theme::{default_theme_id, palette, theme_by_id};
+        let colors = palette(&theme_by_id(default_theme_id(), &[]));
+        for role in [TranscriptRole::User, TranscriptRole::Assistant] {
+            let (role, node) = a11y(&entry_body(&entry(role, "Run the tests\nthen push")));
+            assert_eq!(role, Some(gpui::Role::Label));
+            assert_eq!(node.value(), Some("Run the tests\nthen push"));
+        }
+        let details = tool_details(&tool("ls -la", "denied\nexit 1"), &colors, &"Menlo".into());
+        let values: Vec<_> = details
+            .iter()
+            .map(|detail| {
+                let (role, node) = a11y(detail);
+                assert_eq!(role, Some(gpui::Role::Label));
+                node.value().map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [Some("ls -la".to_owned()), Some("denied\nexit 1".to_owned())]
+        );
+        assert_eq!(
+            tool_details(&tool("ls", ""), &colors, &"Menlo".into()).len(),
+            1
+        );
+        for (id, text) in [
+            ("conversation-omitted", OMITTED_NOTICE),
+            ("conversation-waiting", WAITING_NOTICE),
+        ] {
+            let (role, node) = a11y(&readable(id, text));
+            assert_eq!(role, Some(gpui::Role::Label));
+            assert_eq!(node.value(), Some(text));
+        }
     }
 
     #[test]

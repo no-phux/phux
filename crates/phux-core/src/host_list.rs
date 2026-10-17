@@ -100,6 +100,7 @@ mod tests {
                     members: 0,
                     exec: crate::session_list::ExecCounts::default(),
                     project: None,
+                    key: None,
                 }],
             },
             HostJson {

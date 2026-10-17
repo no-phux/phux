@@ -142,6 +142,43 @@ impl ActionSpec {
     }
 }
 
+/// An extra palette row for an action whose one registry row lists only
+/// one of its argument values: the same action under another title, so the
+/// palette offers what which-key already shows (`"` splits below, `%`
+/// splits right).
+struct PaletteVariant {
+    /// The [`ActionSpec::name`] the row commits.
+    action: &'static str,
+    /// The row's title, in the registry row's sentence case.
+    title: &'static str,
+    /// The args that make it this variant.
+    args: &'static [(&'static str, ArgValue)],
+}
+
+/// The variant rows, each listed right after its action's own row.
+const PALETTE_VARIANTS: &[PaletteVariant] = &[
+    PaletteVariant {
+        action: "split-pane",
+        title: "Split below",
+        args: &[("direction", ArgValue::Str("horizontal"))],
+    },
+    PaletteVariant {
+        action: "focus-direction",
+        title: "Focus pane on the right",
+        args: &[("direction", ArgValue::Str("right"))],
+    },
+    PaletteVariant {
+        action: "focus-direction",
+        title: "Focus pane above",
+        args: &[("direction", ArgValue::Str("up"))],
+    },
+    PaletteVariant {
+        action: "focus-direction",
+        title: "Focus pane below",
+        args: &[("direction", ArgValue::Str("down"))],
+    },
+];
+
 /// The registry row named `name`, if any.
 #[must_use]
 pub fn find(name: &str) -> Option<&'static ActionSpec> {
@@ -824,6 +861,24 @@ pub fn palette_items(
                     .keywords(spec.name)
                     .indented(),
             );
+            for variant in PALETTE_VARIANTS
+                .iter()
+                .filter(|variant| variant.action == spec.name)
+            {
+                let resolved = ResolvedAction {
+                    action: spec.name.to_owned(),
+                    args: variant
+                        .args
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), v.to_toml()))
+                        .collect::<BTreeMap<_, _>>(),
+                };
+                items.push(
+                    chord_annotated(SelectItem::new(variant.title, resolved), keybindings)
+                        .keywords(spec.name)
+                        .indented(),
+                );
+            }
         }
     }
     let mut header_pushed = false;
@@ -1044,6 +1099,34 @@ mod tests {
             Some(&toml::Value::String("freeze".to_owned())),
             "the palette default signal must remain the reversible freeze",
         );
+    }
+
+    /// The palette offers both split directions, each committing the
+    /// `direction` its title says, so `spl` finds "Split below" as well as
+    /// "Split right".
+    #[test]
+    fn palette_lists_split_below_beside_split_right() {
+        let items = palette_items(None, &[], &[]);
+        let direction_of = |title: &str| {
+            items
+                .iter()
+                .find(|i| i.label == title)
+                .unwrap_or_else(|| panic!("{title} row"))
+                .action
+                .args
+                .get("direction")
+                .and_then(toml::Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        assert_eq!(direction_of("Split right").as_deref(), Some("vertical"));
+        assert_eq!(direction_of("Split below").as_deref(), Some("horizontal"));
+        let pane_rows: Vec<&str> = items
+            .iter()
+            .take_while(|i| i.label != "Tab")
+            .filter(|i| !i.is_header())
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(&pane_rows[..2], ["Split right", "Split below"]);
     }
 
     #[test]

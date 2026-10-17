@@ -332,6 +332,23 @@ pub struct ViewPresentation {
     pub frame: Option<Arc<GridFrame>>,
 }
 
+/// Where a replica's shell is in its OSC 133 prompt cycle, read from the
+/// replica's own marks rather than from events, so it survives a reconnect
+/// and an attach while a command already runs.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicaPrompt {
+    /// The cursor sits on a prompt or input row: the shell reads a command
+    /// line.
+    AtPrompt,
+    /// Prompt marks exist, but the cursor is off them: a command has the
+    /// screen.
+    Running,
+    /// No marks, the alternate screen, or no replica: shell integration is
+    /// off or unknowable here.
+    Unknown,
+}
+
 /// Mouse tracking mode, matching the C ABI's stable numeric vocabulary.
 #[cfg(feature = "engine")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,6 +581,8 @@ enum Query {
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
     BracketedPaste(ResourceId, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
+    Prompt(ResourceId, Sender<ReplicaPrompt>),
     #[cfg(feature = "engine")]
     TrackAnchor(
         ResourceId,
@@ -840,6 +859,15 @@ impl EngineHandle {
     #[cfg(feature = "engine")]
     pub fn bracketed_paste(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
         self.request(|reply| Command::Query(Query::BracketedPaste(terminal_id.clone(), reply)))?
+    }
+
+    /// Where the replica's shell is in its prompt cycle, from its OSC 133
+    /// marks. [`ReplicaPrompt::Unknown`] when the owner has stopped.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn replica_prompt(&self, terminal_id: &ResourceId) -> ReplicaPrompt {
+        self.request(|reply| Command::Query(Query::Prompt(terminal_id.clone(), reply)))
+            .unwrap_or(ReplicaPrompt::Unknown)
     }
 
     /// Track a document coordinate on the owner thread.

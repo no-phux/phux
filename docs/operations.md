@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-17
 ---
 
 # Operations
@@ -1104,7 +1104,9 @@ Under `local` and `paired` the owner socket means the serving user's uid: a
 peer running as another user, root included (`sudo phux ...`), is refused at
 HELLO. Without a mode this is unchanged, and such a peer is admitted as
 before. Registry scopes name `global`, `host`, `host:<name>`, or one
-record by its persistent key: `session:<key>` or `resource:<key>`. Session
+record by its persistent key: `session:<key>` or `resource:<key>`, the full
+26-character `key` of a `phux ls --json` session or resource row (for
+example `phux ls --json | jq -r '.sessions[] | "\(.name) \(.key)"'`). Session
 and Terminal ids restart with the server, so `phux workload add-key`
 refuses `group:` and `terminal:` selectors; a record key names the same
 session or resource across restarts and relaunches. A server older than

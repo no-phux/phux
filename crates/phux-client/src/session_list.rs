@@ -195,7 +195,10 @@ async fn count_arrangement_groups(
 /// carries this host's group alone and says so (`"hosts_complete": false`).
 ///
 /// `organization` supplies each session's lifetime, member count, and
-/// execution counts; without it they are derived from the snapshot.
+/// execution counts; without it they are derived from the snapshot. It
+/// also supplies every session's and resource's full record `key`, the text
+/// a workload `session:<key>` or `resource:<key>` scope names; without it
+/// each `key` is `None`.
 #[must_use]
 pub fn document(
     snapshot: &SessionSnapshot,
@@ -225,6 +228,9 @@ pub fn document(
             parent: pane.parent.as_ref().map(format_terminal_id),
             lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
             exit: pane.exit.as_ref().map(resource_exit_json),
+            key: organization
+                .and_then(|org| org.resource_by_live(&pane.id))
+                .map(|record| record.key.to_string()),
         })
         .collect();
     SessionListJson::new(entries)
@@ -243,7 +249,8 @@ pub fn document(
 /// `exec` come from it; otherwise from the snapshot: its reported lifetime,
 /// the resources it lists in the session, and their lifecycles (a retained
 /// exited process counts as completed). `project` is the identity its
-/// attributes carry (ADR-0168): the record's, else the snapshot's.
+/// attributes carry (ADR-0168): the record's, else the snapshot's. `key` is
+/// the record's full key text, `None` without a record.
 #[must_use]
 pub fn session_json(
     snapshot: &SessionSnapshot,
@@ -298,6 +305,7 @@ pub fn session_json(
                 )
             })
             .or_else(|| crate::project_identity::of_session(s)),
+        key: record.map(|record| record.key.to_string()),
     }
 }
 
@@ -684,6 +692,49 @@ mod tests {
         assert_eq!(work["lifetime"], "persistent");
         assert_eq!(work["members"], 1);
         assert_eq!(work["exec"]["running"], 1);
+    }
+
+    /// Session and resource rows carry the record's full key, the text a
+    /// workload `session:<key>` / `resource:<key>` scope names, never the
+    /// `^prefix` the listings print; `null` without organization records.
+    #[test]
+    fn json_rows_carry_full_record_keys() {
+        use crate::testkit::OrgFixture;
+
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let shell = fixture.shell(work);
+        let live = fixture.live(&shell).expect("the shell executes");
+        let snapshot = fixture.snapshot();
+        let inventory = crate::org::OrgInventory {
+            authority: phux_protocol::ids::AuthorityId::new([1; 16]).expect("non-zero"),
+            inbox: None,
+            sessions: fixture.sessions().to_vec(),
+            resources: fixture.resources().to_vec(),
+            snapshot_revision: phux_protocol::ids::Revision::new(1),
+            journal_seq: 0,
+            total_intake: 0,
+            degradation: Degradation::default(),
+        };
+        let doc = document(&snapshot, Some(&inventory), &Degradation::default(), false);
+        let session_key = doc.sessions[0].key.clone().expect("session key");
+        assert_eq!(session_key, work.to_string());
+        assert_eq!(session_key.len(), phux_protocol::ids::KEY_TEXT_LEN);
+        assert_eq!(
+            phux_protocol::ids::SessionKey::parse(&session_key),
+            Some(work),
+            "the key round-trips as the text a workload scope names"
+        );
+        let row = doc
+            .resources
+            .iter()
+            .find(|row| row.id == format_terminal_id(&live))
+            .expect("the shell's row");
+        assert_eq!(row.key.as_deref(), Some(shell.to_string().as_str()));
+
+        let doc = document(&snapshot, None, &Degradation::default(), false);
+        assert_eq!(doc.sessions[0].key, None);
+        assert!(doc.resources.iter().all(|row| row.key.is_none()));
     }
 
     /// `--json` gains `hosts` beside `sessions`; `sessions` still lists this

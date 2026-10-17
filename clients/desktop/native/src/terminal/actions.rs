@@ -17,6 +17,8 @@ pub enum HostAction {
     Copy,
     /// Paste the clipboard's text, as Command-V.
     Paste,
+    /// Send a paste the person confirmed after it was held.
+    PasteConfirmed(crate::input::HeldPaste),
     /// Put `text` on the clipboard.
     CopyText(String),
     /// Open this path with its default application.
@@ -46,6 +48,10 @@ pub(super) fn run(
             None
         }
         HostAction::Paste => input.update(cx, |state, cx| state.paste_command(cx)),
+        HostAction::PasteConfirmed(paste) => {
+            input.update(cx, |state, _| state.paste_confirmed(&paste.text));
+            None
+        }
         HostAction::CopyText(text) => {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             None

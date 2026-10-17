@@ -21,6 +21,10 @@ struct PriorView {
     /// Whether a modal overlay (palette, picker, prompt) was up. Like the
     /// floating box it scribbles over pane cells the rect diff cannot see.
     overlay: bool,
+    /// Each drawn pane's history viewport offset, so a batch that scrolled
+    /// one (a wheel notch, a copy-mode page) repaints its rows even though
+    /// no tile moved.
+    viewports: HashMap<ResourceId, u64>,
 }
 
 /// How much of the view a batch that reported `layout_changed` must redraw,
@@ -139,18 +143,20 @@ impl super::SessionLoop {
         let expects_reply = events.iter().any(input_expects_a_reply);
         // Pre-dispatch view, so zoom and sidebar toggles, and a resized or
         // rearranged window, can reflow PTYs.
+        let rects = view_rects(
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            self.content(sidebar),
+            self.viewport_dims,
+        );
         let prior = PriorView {
             zoomed: self.mirror.zoomed.clone(),
             sidebar,
             active_window: self.mirror.workspace.active,
-            rects: view_rects(
-                &self.mirror.workspace,
-                self.mirror.zoomed.as_ref(),
-                self.content(sidebar),
-                self.viewport_dims,
-            ),
             floating: crate::attach::floating::floating_pane(&self.mirror.panes).is_some(),
             overlay: self.overlays.is_active(),
+            viewports: self.viewport_offsets(&rects),
+            rects,
         };
         // Batch this read's wire writes into one; released before parking.
         conn.cork();
@@ -202,7 +208,9 @@ impl super::SessionLoop {
     /// redraw, from the pre-batch and current tilings. A dismissed modal or a
     /// toggled floating overlay forces [`RepaintLevel::Full`]; otherwise see
     /// [`classify_repaint`] for the rect-diff rule. The pane liveness probe
-    /// reads this loop's slots and published grids.
+    /// reads this loop's slots and published grids. Unchanged tiles over a
+    /// pane whose viewport the batch scrolled still repaint that pane's rows
+    /// ([`RepaintLevel::Rows`]).
     fn classify_repaint(
         &self,
         prior: &PriorView,
@@ -221,11 +229,34 @@ impl super::SessionLoop {
             self.content(sidebar),
             self.viewport_dims,
         );
-        classify_repaint(&prior.rects, &after, |id| {
+        let level = classify_repaint(&prior.rects, &after, |id| {
             self.mirror.panes.contains_key(id)
                 && crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)
                     .is_some()
-        })
+        });
+        if level == RepaintLevel::Chrome && self.viewport_offsets(&after) != prior.viewports {
+            return RepaintLevel::Rows;
+        }
+        level
+    }
+
+    /// The history viewport offset of every pane the view draws: the tiled
+    /// panes in `rects` plus the floating overlay's pane. A pane with no
+    /// published grid has no offset and is left out.
+    fn viewport_offsets(
+        &self,
+        rects: &HashMap<ResourceId, crate::layout::Rect>,
+    ) -> HashMap<ResourceId, u64> {
+        rects
+            .keys()
+            .chain(crate::attach::floating::floating_pane(&self.mirror.panes))
+            .filter_map(|id| {
+                let terminal =
+                    crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)?;
+                let offset = terminal.scrollbar().ok()?.offset;
+                Some((id.clone(), offset))
+            })
+            .collect()
     }
 
     /// Resize PTYs whose tile changed because this batch moved the view.

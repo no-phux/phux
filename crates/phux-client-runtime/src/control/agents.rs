@@ -36,6 +36,7 @@ impl ControlPlane {
         event: AgentEvent,
     ) -> Result<(), ControlError> {
         self.observe_roster_event(&event);
+        self.observe_approval_event(&event);
         let event = match event {
             AgentEvent::NativeAgentResult {
                 agent_session_id,
@@ -149,11 +150,17 @@ impl ControlPlane {
                     waiting_seconds: elapsed_seconds,
                 });
             }
-            AgentEvent::CommandStarted => self.push_event(Event::CommandStarted { terminal_id }),
-            AgentEvent::CommandFinished { exit_code } => self.push_event(Event::CommandFinished {
-                terminal_id,
-                exit_code,
-            }),
+            AgentEvent::CommandStarted => {
+                self.command_states.insert(terminal_id.clone(), true);
+                self.push_event(Event::CommandStarted { terminal_id });
+            }
+            AgentEvent::CommandFinished { exit_code } => {
+                self.command_states.insert(terminal_id.clone(), false);
+                self.push_event(Event::CommandFinished {
+                    terminal_id,
+                    exit_code,
+                });
+            }
             AgentEvent::CwdChanged { cwd } => {
                 if let Some(pane) = self
                     .topology
@@ -200,6 +207,7 @@ impl ControlPlane {
         }
         self.forget_agent_metadata(terminal_id);
         self.live_asks.remove(terminal_id);
+        self.command_states.remove(terminal_id);
         self.listings.forget(terminal_id);
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)

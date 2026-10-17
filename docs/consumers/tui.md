@@ -630,6 +630,8 @@ wrapping at either end, and scrolls it into view; the hit becomes the
 selection (so Enter copies it) and the other visible hits are underlined.
 `n` repeats the search in its direction and `N` reverses it; an empty search
 line repeats the last one. The strip shows `/needle 2/7` or `no match`.
+The strip spans the pane columns (the sidebar keeps its rows) and ends
+with the key legend when it fits.
 Search is case-sensitive and covers the scrollback this client holds, like
 selection.
 
@@ -667,12 +669,17 @@ Clipboard reads (`OSC 52 ; ?`) are never answered.
 
 `C-a Space`, `C-a :`, and `C-a ?` (`command-palette`) open the Commands
 overlay. Actions show a short title and their live chord (nothing when
-unbound), grouped under Pane, Tab, Session, and phux. Typing
-fuzzy-filters titles, chords, and canonical action names (`kill-pane` finds
-"Close pane"); Enter runs the selected action.
+unbound), grouped under Pane, Tab, Session, and phux; an action with more
+than one everyday argument lists each as its own row (`Split right` and
+`Split below`, the four `Focus pane` directions). Typing fuzzy-filters
+titles, chords, and canonical action names (`kill-pane` finds "Close
+pane"), moves the selection to the best match, and brightens the matched
+letters in each title; Enter runs the selected action. The bottom border
+says where you are (`3 of 61`) and what the keys do.
 Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
 PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
-and hostable `[[panes]]` appear under Plugin.
+and hostable `[[panes]]` appear under Plugin. Every picker and prompt
+shares this frame, so its key legend sits in the same place.
 
 <!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
 > **Status: shipped.** Every manifest `placement` opens a real server-side
@@ -704,7 +711,8 @@ active pane as a tab of the session you are already in. The tab
 holds the satellite's real Terminal; closing it kills that pane there.
 
 The **tab picker** (`C-a w`) is hierarchical: sessions as headers,
-tabs nested by name. A tab in the current session switches directly; a
+tabs nested under them, labelled as the tab bar labels them (the index
+`C-a <n>` reaches, then the name). A tab in the current session switches directly; a
 tab in another session is a one-step `switch-session` that also
 selects that tab.
 
@@ -816,7 +824,7 @@ focus, and a drag whose button goes up outside the window ends cleanly.
 | Click in a pane | Focus, then forward |
 | Press / drag a divider | Resize; release commits the layout |
 | Drag the sidebar's separator rule | Resize the strip for this attach; `sidebar.width` in the config is unchanged |
-| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
+| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off. While a pane is scrolled back, the right end of its title rule shows `↑ N`, the rows between the viewport and the live tail; a key press to the pane snaps it back |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
 | Drag a status-bar tab onto another tab | Move the window into that slot; an insertion marker follows the pointer |

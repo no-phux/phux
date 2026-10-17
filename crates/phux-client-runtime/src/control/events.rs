@@ -10,11 +10,13 @@ pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordM
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ClientId;
 use phux_protocol::ResourceId;
-use phux_protocol::ids::OperationId;
+use phux_protocol::ids::{ApprovalId, OperationId};
 use phux_protocol::wire::frame::{
     CloseReason, CommandResult, ControlAction, DetachReason, ErrorCode, FrameKind, TombstoneReason,
 };
 use phux_protocol::wire::info::SessionSnapshot;
+
+use crate::approvals::{Decision, DecisionOutcome};
 
 /// Where the session is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +419,20 @@ pub enum Event {
         /// Why, when known.
         message: Option<String>,
     },
+    /// The pending set of server-held approvals changed (ADR-0128); re-read
+    /// `approvals()`. Only after `watch_approvals`.
+    ApprovalsChanged,
+    /// One decision `decide_approval` sent resolved. Lossless, and never
+    /// retried: a [`DecisionOutcome::Stale`] decision lost a race with
+    /// another decider, the expiry, or a withdrawal.
+    ApprovalDecision {
+        /// The approval decided.
+        id: ApprovalId,
+        /// What was sent.
+        decision: Decision,
+        /// How it ended.
+        outcome: DecisionOutcome,
+    },
     /// A transport opened: connection `connection_epoch` begins. Every later
     /// event belongs to it, every earlier one to a previous connection, even
     /// when the new connection reuses the old session and terminal ids.
@@ -483,6 +499,8 @@ impl Event {
                 | Self::InputHolderChanged { .. }
                 | Self::AgentPublication { .. }
                 | Self::AgentSessionClosed { .. }
+                | Self::ApprovalsChanged
+                | Self::ApprovalDecision { .. }
                 | Self::ConnectionOpened { .. }
         )
     }
@@ -501,6 +519,8 @@ impl Event {
                 | Self::NativeAgentResult { .. }
                 | Self::AgentMetadata { .. }
                 | Self::SessionProject { .. }
+                | Self::ApprovalsChanged
+                | Self::ApprovalDecision { .. }
         )
     }
 }

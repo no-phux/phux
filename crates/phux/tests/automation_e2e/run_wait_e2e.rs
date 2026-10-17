@@ -16,19 +16,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
+
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
-
-/// A running `phux server`, killed when the guard drops so a failing
-/// assertion never leaks a daemon.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 /// A headless `phux watch --json` subprocess with its stdout decoded by a
 /// background line reader. Killed on drop so assertion failures cannot leak it.
@@ -81,21 +72,10 @@ impl WatchGuard {
 }
 
 impl ServerGuard {
-    /// Spawn `phux server --session work --socket <unique>` detached
-    /// from any terminal, then block until the socket file appears.
-    fn start() -> Self {
-        Self(common::ServerGuard::start("run-wait"))
-    }
-
-    fn cmd(&self, args: &[&str]) -> Command {
-        phux_command(&self.socket, args)
-    }
-
     /// Start the real CLI watcher without attaching to the pane. Its only
     /// server interaction is target resolution followed by event subscription.
     fn watch_json(&self) -> WatchGuard {
-        let mut child = self
-            .cmd(&["watch", "--json", SESSION])
+        let mut child = phux_command(&self.socket, &["watch", "--json", SESSION])
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn phux watch --json");
@@ -131,8 +111,7 @@ fn phux_command(socket: &Path, args: &[&str]) -> Command {
 
 /// Run a verb to completion and return its exit code.
 fn run_status(server: &ServerGuard, args: &[&str]) -> i32 {
-    let status = server
-        .cmd(args)
+    let status = phux_command(&server.socket, args)
         .stdout(Stdio::null())
         .status()
         .expect("run phux verb");
@@ -143,8 +122,7 @@ fn run_status(server: &ServerGuard, args: &[&str]) -> i32 {
 
 /// Run a verb capturing stdout, asserting it exited 0, and return stdout.
 fn run_stdout(server: &ServerGuard, args: &[&str]) -> String {
-    let out = server
-        .cmd(args)
+    let out = phux_command(&server.socket, args)
         .output()
         .expect("run phux verb with output");
     assert!(
@@ -162,7 +140,7 @@ fn run_stdout(server: &ServerGuard, args: &[&str]) -> String {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn run_mirrors_exit_codes_and_resolves_selectors() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     for (command, code) in [("true", 0), ("false", 1), ("(exit 7)", 7), ("true", 0)] {
         assert_eq!(
             run_status(&server, &["run", SESSION, command]),
@@ -190,7 +168,7 @@ fn run_mirrors_exit_codes_and_resolves_selectors() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn wait_until_meets_the_marker_or_times_out() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     let send = ["send-keys", "work:0.0", "echo WAIT_MARKER_XYZ", "Enter"];
     assert_eq!(run_status(&server, &send), 0);
     let wait = |marker: &str, timeout: &str| {
@@ -206,7 +184,7 @@ fn wait_until_meets_the_marker_or_times_out() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn run_json_reports_output_and_clean_exit() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     // `--json` MUST precede the trailing command, or it is swallowed into
     // it (documented in the `run` help text).
     let stdout = run_stdout(&server, &["run", "--json", SESSION, "echo HELLO_E2E"]);
@@ -229,7 +207,7 @@ fn run_json_reports_output_and_clean_exit() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn headless_watch_json_receives_repeatable_dirty_idle_cycles() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     let watch = server.watch_json();
 
     watch.trigger_and_wait_for_dirty_idle(|| {
@@ -285,7 +263,7 @@ fn run_rejects_malformed_selector_before_touching_server() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn tag_round_trips_and_drives_the_hash_selector() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
 
     // Tag the seed pane (resolving the whole session to its panes).
     assert_eq!(
@@ -350,7 +328,7 @@ fn tag_round_trips_and_drives_the_hash_selector() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn snapshot_format_html_writes_a_document() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     // Split so the marker appears only in the output, not the echoed line.
     assert_eq!(
         run_status(
@@ -427,7 +405,7 @@ fn snapshot_format_html_writes_a_document() {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn percent_name_reaches_tag_and_kill_and_agent_list_marks_it() {
-    let server = ServerGuard::start();
+    let server = ServerGuard::start("run-wait");
     let address_of = |server: &ServerGuard| {
         let listed = run_stdout(server, &["agent", "list", "--json"]);
         let doc: serde_json::Value = serde_json::from_str(&listed).expect("agent list --json");

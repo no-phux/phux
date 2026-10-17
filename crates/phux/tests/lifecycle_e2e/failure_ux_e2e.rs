@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use common::ServerGuard;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// The pre-seeded session every scenario drives against.
@@ -109,35 +110,17 @@ impl Isolation {
     }
 }
 
-/// A running `phux server` on a private socket, killed on drop.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ServerGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+/// Spawn the server inside `iso`; `SHELL=/bin/sh` keeps the seed pane free
+/// of user rc noise.
+fn start_server(iso: &Isolation) -> ServerGuard {
+    ServerGuard::builder("fx")
+        .env("SHELL", "/bin/sh")
+        .start_with(|cmd| iso.apply(cmd))
 }
 
 impl ServerGuard {
-    /// Spawn the server inside `iso`; `SHELL=/bin/sh` keeps the seed pane
-    /// free of user rc noise.
-    fn start(iso: &Isolation) -> Self {
-        Self(
-            common::ServerGuard::builder("fx")
-                .env("SHELL", "/bin/sh")
-                .start_with(|cmd| iso.apply(cmd)),
-        )
-    }
-
     /// `phux <verb> --socket <sock> <rest...>` inside `iso`.
-    fn cmd(&self, iso: &Isolation, args: &[&str]) -> Command {
+    fn cmd_in(&self, iso: &Isolation, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
         let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.arg(verb)
@@ -261,7 +244,7 @@ impl AttachedClient {
                 "attach client exited before the scenario ran; output:\n{}",
                 self.output_text(),
             );
-            let (code, stdout, _stderr) = run_captured(&mut server.cmd(iso, &["ls", "--json"]));
+            let (code, stdout, _stderr) = run_captured(&mut server.cmd_in(iso, &["ls", "--json"]));
             if code == 0
                 && let Ok(doc) = serde_json::from_str::<serde_json::Value>(&stdout)
                 && doc["sessions"].as_array().is_some_and(|sessions| {
@@ -397,7 +380,7 @@ fn malformed_chord_keeps_detach_alive() {
     // included) down with it.
     let iso = Isolation::new();
     iso.write_config("[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\nd = \"detach\"\n");
-    let server = ServerGuard::start(&iso);
+    let server = start_server(&iso);
 
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
@@ -420,7 +403,7 @@ fn malformed_chord_keeps_detach_alive() {
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn attaching_a_missing_session_names_phux_new() {
     let iso = Isolation::new();
-    let server = ServerGuard::start(&iso);
+    let server = start_server(&iso);
 
     let mut client = AttachedClient::start_named(&server, &iso, "nosuch");
     let status = client.wait_exit();
@@ -432,7 +415,7 @@ fn attaching_a_missing_session_names_phux_new() {
     client.wait_for_output("no session named \"nosuch\"");
     client.wait_for_output("phux new nosuch");
 
-    let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["ls", "--json"]));
+    let (code, stdout, stderr) = run_captured(&mut server.cmd_in(&iso, &["ls", "--json"]));
     assert_eq!(code, 0, "ls must succeed; stderr:\n{stderr}");
     assert!(
         !stdout.contains("nosuch"),
@@ -444,18 +427,18 @@ fn attaching_a_missing_session_names_phux_new() {
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn last_pane_death_surfaces_its_exit_status() {
     let iso = Isolation::new();
-    let server = ServerGuard::start(&iso);
+    let server = start_server(&iso);
 
     // An ephemeral session ends with its last pane, and the teardown line
     // names that pane's death.
     let (code, _stdout, stderr) =
-        run_captured(&mut server.cmd(&iso, &["new", "--json", "--ephemeral", "-s", "solo"]));
+        run_captured(&mut server.cmd_in(&iso, &["new", "--json", "--ephemeral", "-s", "solo"]));
     assert_eq!(code, 0, "new must succeed; stderr:\n{stderr}");
     let mut client = AttachedClient::start_named(&server, &iso, "solo");
     client.wait_until_attached_to(&server, &iso, "solo");
 
     let (code, _stdout, stderr) =
-        run_captured(&mut server.cmd(&iso, &["kill", "--yes", "solo:0.0"]));
+        run_captured(&mut server.cmd_in(&iso, &["kill", "--yes", "solo:0.0"]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
@@ -471,7 +454,7 @@ fn last_pane_death_surfaces_its_exit_status() {
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn session_kill_detaches_with_its_explanation() {
     let iso = Isolation::new();
-    let server = ServerGuard::start(&iso);
+    let server = start_server(&iso);
 
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
@@ -479,7 +462,8 @@ fn session_kill_detaches_with_its_explanation() {
     // Killing the persistent session terminates its pane, removes it, and
     // deletes the session; a deleted session detaches its clients (R15), and
     // the teardown line explains the ending.
-    let (code, _stdout, stderr) = run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    let (code, _stdout, stderr) =
+        run_captured(&mut server.cmd_in(&iso, &["kill", "--yes", SESSION]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
@@ -495,7 +479,7 @@ fn session_kill_detaches_with_its_explanation() {
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn server_sigkill_shows_the_reconnect_indicator() {
     let iso = Isolation::new();
-    let mut server = ServerGuard::start(&iso);
+    let mut server = start_server(&iso);
 
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
@@ -510,11 +494,11 @@ fn server_sigkill_shows_the_reconnect_indicator() {
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn status_logs_doctor_name_real_paths() {
     let iso = Isolation::new();
-    let server = ServerGuard::start(&iso);
+    let server = start_server(&iso);
     let server_log = iso.server_log().display().to_string();
 
     // `phux status` against the live server names the canonical log paths.
-    let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["status"]));
+    let (code, stdout, stderr) = run_captured(&mut server.cmd_in(&iso, &["status"]));
     assert_eq!(
         code, 0,
         "status against a live server exits 0; stderr:\n{stderr}"
@@ -537,7 +521,7 @@ fn status_logs_doctor_name_real_paths() {
 
     // Doctor reads every ambient seam at once; the isolation keeps its exit
     // code about this setup, not the operator's install.
-    let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["doctor"]));
+    let (code, stdout, stderr) = run_captured(&mut server.cmd_in(&iso, &["doctor"]));
     assert_eq!(
         code, 0,
         "doctor with a healthy setup exits 0; stdout:\n{stdout}\nstderr:\n{stderr}"

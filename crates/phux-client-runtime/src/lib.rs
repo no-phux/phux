@@ -1,6 +1,8 @@
 //! The client runtime: everything between the sans-IO session kernel and a
 //! language binding, implemented once (ADR-0133).
 //!
+//! - [`approvals`]: the server-held approval record and decision
+//!   (ADR-0128), shared by the one-shot verbs and the control plane.
 //! - [`target`]: resolve `[USER@]HOST[:PORT]` against the `[[remote]]`
 //!   registry (ADR-0093 rung 1).
 //! - [`dial`]: dial a resolved entry under the CLI's trust rules.
@@ -29,6 +31,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod approvals;
 pub mod connection;
 pub mod control;
 pub mod dial;

@@ -26,7 +26,7 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 # instead of Cargo target flags.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
-test:
+test: worktree-claim && (worktree-verify "test")
     #!/usr/bin/env bash
     set -euo pipefail
     part="${PHUX_UNIT_PART:-all}"
@@ -118,7 +118,7 @@ TEST_FEATURES := "--features phux-server/measure"
 # builds only PHUX_UNIT_TARGETS, plus the e2e set unless PHUX_E2E=false.
 [group('test')]
 [doc('Build the unit and e2e test binaries into one nextest archive.')]
-test-archive:
+test-archive: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     archive="${PHUX_TEST_ARCHIVE:-{{justfile_directory()}}/target/nextest/phux-tests.tar.zst}"
@@ -161,7 +161,7 @@ test-archive:
 # `just test-archive` output instead.
 [group('test')]
 [doc('Fast e2e + perf gates that spin a real server; every PR.')]
-e2e:
+e2e: worktree-claim && (worktree-verify "e2e")
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
@@ -185,7 +185,7 @@ E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e -
 # feature builds the target, which the default test build skips.
 [group('test')]
 [doc('Heavy stress storms; off the PR path (post-merge + nightly).')]
-stress:
+stress: worktree-claim
     cargo nextest run --workspace --run-ignored ignored-only \
       {{TEST_FEATURES}} --features phux-server/stress --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::stress)'
@@ -198,7 +198,7 @@ stress:
 #
 # One-command real-server repro of a lag/crash edge case.
 [group('test')]
-e2e-repro:
+e2e-repro: worktree-claim
     cargo run -p phux-server --example e2e-repro
 
 
@@ -210,7 +210,7 @@ e2e-repro:
 # the parallel `ci` pool and runs on demand or as its own CI step.
 [group('test')]
 [doc('Smoke-test the examples/agents/ scripts against a throwaway server.')]
-examples-smoke:
+examples-smoke: worktree-claim
     bash scripts/examples-smoke.sh
 
 
@@ -218,7 +218,7 @@ examples-smoke:
 # fake phux binary, so it needs neither a server nor installed agent CLIs.
 [group('test')]
 [doc('Hermetic argv and control-flow gate for the placed-fleet example.')]
-agents-fleet-smoke:
+agents-fleet-smoke: worktree-claim
     bash examples/agents/tests/placed-fleet-smoke.sh
 
 
@@ -227,7 +227,7 @@ agents-fleet-smoke:
 # spawn installed claude/codex binaries on the private server.
 [group('test')]
 [doc('Real isolated-server dogfood for placement, layout, watch, and ask.')]
-agents-fleet-live:
+agents-fleet-live: worktree-claim
     cargo build -p phux
     PHUX="{{justfile_directory()}}/target/debug/phux" \
       bash examples/agents/tests/placed-fleet-live.sh
@@ -269,5 +269,5 @@ parity-gate *SCENARIOS:
 
 # Stable-cargo test for environments without nextest.
 [group('test')]
-test-cargo:
+test-cargo: worktree-claim
     {{AUTO_SPAWN_BACKSTOP}} cargo test --workspace
