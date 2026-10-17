@@ -31,6 +31,18 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.37.1](https://github.com/no-phux/phux/compare/desktop-v0.37.0...desktop-v0.37.1) (2026-10-17)
+
+
+### Performance
+
+* **desktop:** paint a retained glyph slice as one gpui-fast operation ([60109ab](https://github.com/no-phux/phux/commit/60109ab95cdc8cbdafab7e7a870ca2cbe0afd675))
+
+
+### Refactors
+
+* **relay:** extract the relay into quictun, a standalone QUIC tunnel crate ([#1598](https://github.com/no-phux/phux/issues/1598)) ([3d5c186](https://github.com/no-phux/phux/commit/3d5c186604319a7f551db0b0eb6d910bc21c951c))
+
 ## [0.37.0](https://github.com/no-phux/phux/compare/desktop-v0.36.1...desktop-v0.37.0) (2026-10-17)
 
 
