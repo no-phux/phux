@@ -165,9 +165,11 @@ doorbell (as `phux config reload` does). The hub then re-reads
 `[[satellites]]`: it dials new entries, stops removed ones, redials changed
 ones, and leaves every other link and pane alone. The command prints what
 happened, and `--json` carries it as `hub_reload`: `signalled`, `no_server`,
-or `failed`. A server started without `--hub` ignores the registry. When
-`host add --role satellite` patches `--hub` into its service unit, that
-server starts dialing after its next restart.
+or `failed`. A running server started without `--hub` becomes a hub the
+first time the doorbell finds an enabled satellite: it starts dialing in
+place, keeps its panes, and keeps hub mode across `phux upgrade`. An empty
+registry leaves it alone. `host add --role satellite` also patches `--hub`
+into the service unit, so the next cold start is a hub too.
 
 `--role satellite` uses the same steps to register a peer this hub dials for
 its users instead of a server you attach to. `--ssh-only` registers an
