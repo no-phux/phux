@@ -442,7 +442,7 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 
 # Uplinks make this server a satellite of a hub that cannot dial it (a
-# sandbox behind NAT, ADR-0180): the server dials the hub and serves the
+# sandbox behind NAT, ADR-0181): the server dials the hub and serves the
 # hub's streams over that one connection, so it needs no listener. `phux
 # host join CODE` (the code comes from `phux host ticket NAME` on the hub)
 # enrolls a key it keeps and writes the entry; edit by hand only to disable

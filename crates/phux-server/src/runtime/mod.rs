@@ -360,7 +360,7 @@ pub enum ServerError {
     /// Outbound connector configuration was unsafe or malformed.
     #[error("connector: {0}")]
     Connector(#[from] crate::connector::ConnectorError),
-    /// An `[[uplink]]` entry was unsafe or malformed (ADR-0180).
+    /// An `[[uplink]]` entry was unsafe or malformed (ADR-0181).
     #[error("{0}")]
     Uplink(#[from] crate::uplink::UplinkError),
 
@@ -426,7 +426,7 @@ pub struct ServerRuntime {
     connectors: Vec<phux_config::ConnectorConfigEntry>,
     /// Raw `--connect` value, kept for the upgrade argv.
     connect_override: Option<String>,
-    /// Hubs this server dials out to as a satellite (ADR-0180).
+    /// Hubs this server dials out to as a satellite (ADR-0181).
     uplinks: Vec<phux_config::UplinkConfigEntry>,
     /// Where a config-reload doorbell re-reads `[[uplink]]`.
     uplink_source: Option<crate::uplink::UplinkSource>,
@@ -611,7 +611,7 @@ impl ServerRuntime {
     }
 
     /// Keep an uplink to each enabled hub in `entries`, serving it as a
-    /// satellite (ADR-0180). A malformed entry fails startup with
+    /// satellite (ADR-0181). A malformed entry fails startup with
     /// [`ServerError::Uplink`].
     #[must_use]
     pub fn uplinks(mut self, entries: Vec<phux_config::UplinkConfigEntry>) -> Self {
@@ -761,7 +761,7 @@ impl ServerRuntime {
                     s.arm_hub_reload(satellite_source.clone(), root_token.clone());
                 });
                 spawn_hub_links(&state, hub_table.as_ref(), satellite_source, &root_token);
-                // Satellite uplinks (ADR-0180): hub streams splice to the
+                // Satellite uplinks (ADR-0181): hub streams splice to the
                 // socket bound above.
                 state.with_mut(|s| {
                     let uplinks = s.uplinks_mut();
@@ -1564,7 +1564,7 @@ impl RemoteListeners {
             let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
             state.with_mut(|s| s.record_remote_listener(slot));
             // The configured listener adopts satellites that dial in
-            // (ADR-0180); it offers their ALPN only when it verifies
+            // (ADR-0181); it offers their ALPN only when it verifies
             // workload certificates.
             listener.map(|listener| {
                 listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))

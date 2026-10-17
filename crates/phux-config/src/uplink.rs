@@ -1,4 +1,4 @@
-//! Satellite uplink registry schema (ADR-0180).
+//! Satellite uplink registry schema (ADR-0181).
 
 use std::path::PathBuf;
 

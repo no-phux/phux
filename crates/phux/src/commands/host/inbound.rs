@@ -1,4 +1,4 @@
-//! Reverse enrollment (ADR-0180): `phux host ticket NAME` on a hub, and
+//! Reverse enrollment (ADR-0181): `phux host ticket NAME` on a hub, and
 //! `phux host join CODE` on a machine the hub cannot dial.
 //!
 //! `ticket` mints a single-use satellite ticket into the workload store,
@@ -7,7 +7,7 @@
 //! and rings the local server, which dials the hub at once.
 //!
 //! `host ticket --json` emits `{"schema_version":1,"satellite","ticket_id",
-//! "expires_at","hub","ca_fingerprint","join_code","hub_reload"}`; `host join
+//! "expires_at","hub","ca_fingerprint","join_code","enabled","hub_reload"}`; `host join
 //! --json` emits `{"schema_version":1,"satellite","hub","credential_id",
 //! "client_cert","client_key","server_reload"}`. Both follow the shared JSON
 //! error contract on failure.
@@ -41,9 +41,14 @@ struct Minted {
     name: String,
     ticket: tickets::MintedTicket,
     code: JoinCode,
+    /// The entry's enabled state, kept from an existing `inbound://` entry.
+    enabled: bool,
     reload: HubReload,
 }
 
+/// Validate everything, mint the ticket, then register the entry: a bad
+/// argument or a conflicting entry leaves the store and `config.toml`
+/// untouched.
 fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError> {
     let name = satellite_registry::registry_name(name).map_err(reject)?;
     phux_server::workload::validate_satellite_name(&name).map_err(|err| reject(err.to_string()))?;
@@ -52,6 +57,13 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
         Some(hub) => hub.to_owned(),
         None => live_hub_endpoint()?,
     };
+    phux_server::uplink::validate_hub_endpoint(&hub).map_err(|err| {
+        CliError::new(
+            codes::USAGE_ERROR,
+            format!("the hub endpoint cannot go in a join code: {err}"),
+            "pass --hub HOST:PORT, the QUIC address the satellite dials, with no scheme",
+        )
+    })?;
     let ca = super::super::pair::presented_server_authority().ok_or_else(|| {
         CliError::new(
             codes::WORKLOAD,
@@ -60,9 +72,19 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
             "run `phux workload authority --rotate`, restart the server, and mint again",
         )
     })?;
+    let enabled = inbound_entry_enabled(&name)?;
+    let entry = satellite_registry::NewSatellite::new(
+        &name,
+        phux_server::hub::INBOUND_ENDPOINT,
+        enabled,
+        None,
+        None,
+    )
+    .map_err(reject)?;
     let paths = WorkloadPaths::from_env();
+    let tickets_path = tickets::tickets_path(&paths.registry);
     let ticket = tickets::mint_satellite_ticket(
-        &tickets::tickets_path(&paths.registry),
+        &tickets_path,
         &name,
         tickets::DEFAULT_CREDENTIAL_SECONDS,
         minutes.saturating_mul(60),
@@ -74,15 +96,17 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
             "check the state directory's permissions, then rerun",
         )
     })?;
-    let entry = satellite_registry::NewSatellite::new(
-        &name,
-        phux_server::hub::INBOUND_ENDPOINT,
-        true,
-        None,
-        None,
-    )
-    .map_err(reject)?;
-    satellite_registry::add_or_update(&entry).map_err(registry_failure)?;
+    if let Err(err) = satellite_registry::add_or_update(&entry) {
+        // Nothing points at the ticket yet; withdraw it rather than leave a
+        // live secret for an entry that was never written.
+        if let Err(revoke) = tickets::revoke_ticket(&tickets_path, &ticket.id) {
+            warn!(
+                "could not withdraw ticket {} ({revoke}); revoke it with `phux workload revoke {}`",
+                ticket.id, ticket.id
+            );
+        }
+        return Err(registry_failure(err));
+    }
     let code = JoinCode {
         hub,
         server_name: None,
@@ -90,22 +114,41 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
         name: name.clone(),
         ticket: ticket.secret_hex.clone(),
     };
-    // Validates the endpoint the same way `join` will read it.
-    JoinCode::parse(&code.to_link()).map_err(|err| {
-        reject(format!(
-            "the hub endpoint cannot go in a join code ({err}); pass --hub HOST:PORT"
-        ))
-    })?;
     Ok(Minted {
         name,
         ticket,
         code,
+        enabled,
         reload: reload_local_hub(),
     })
 }
 
+/// Whether NAME's `inbound://` entry is enabled: `true` for a new name, the
+/// existing state for an `inbound://` entry. A name registered under any
+/// other endpoint is refused, so a ticket never silently replaces a dialed
+/// satellite or drops its auth material.
+fn inbound_entry_enabled(name: &str) -> Result<bool, CliError> {
+    let existing = satellite_registry::load_registry()
+        .map_err(registry_failure)?
+        .into_iter()
+        .find(|entry| entry.name == name);
+    match existing {
+        None => Ok(true),
+        Some(entry) if phux_server::hub::is_inbound_endpoint(&entry.endpoint) => Ok(entry.enabled),
+        Some(entry) => Err(CliError::new(
+            codes::REGISTRY,
+            format!(
+                "satellite {name:?} is already registered at {}, which this hub dials",
+                entry.endpoint
+            ),
+            "pick another name, or run `phux host rm NAME` first to replace it with an \
+             inbound satellite",
+        )),
+    }
+}
+
 /// Only a hub that verifies workload certificates offers the satellite ALPN
-/// (ADR-0180), so a ticket minted for any other would enroll a satellite the
+/// (ADR-0181), so a ticket minted for any other would enroll a satellite the
 /// hub then refuses.
 fn require_paired() -> Result<(), CliError> {
     let config = config_loader::load().map_err(|err| registry_failure(err.to_string()))?;
@@ -156,6 +199,7 @@ fn report_ticket(minted: &Minted, json: bool) -> ExitCode {
             "hub": minted.code.hub,
             "ca_fingerprint": minted.code.ca,
             "join_code": link,
+            "enabled": minted.enabled,
         });
         add_hub_reload(&mut doc, Some(&minted.reload));
         return crate::output::json(&doc);
@@ -166,9 +210,19 @@ fn report_ticket(minted: &Minted, json: bool) -> ExitCode {
         minted.ticket.id
     );
     outln!("  {}", minted.reload.describe());
+    if !minted.enabled {
+        outln!(
+            "  {:?} is disabled here; run `phux host enable {}` before it joins.",
+            minted.name,
+            minted.name
+        );
+    }
     outln!();
-    outln!("On the satellite, run:");
-    outln!("  phux host join '{link}'");
+    outln!("On the satellite, run `phux host join -` and paste this code:");
+    outln!("  {link}");
+    outln!(
+        "(Passing the code as an argument also works, but leaves it in `ps` and shell history.)"
+    );
     outln!();
     outln!(
         "The code is a secret until it is used. Withdraw it with `phux workload revoke {}`.",
@@ -194,9 +248,9 @@ pub(super) fn revoke_satellite(name: &str) -> Option<usize> {
     }
 }
 
-/// `phux host join CODE`.
+/// `phux host join CODE`, or `phux host join -` to read CODE from stdin.
 pub(super) fn run_join(code: &str, json: bool) -> ExitCode {
-    let code = match JoinCode::parse(code) {
+    let code = match read_code(code).and_then(|code| JoinCode::parse(&code)) {
         Ok(code) => code,
         Err(err) => {
             let err = CliError::new(
@@ -225,9 +279,57 @@ pub(super) fn run_join(code: &str, json: bool) -> ExitCode {
         }
     };
     if let Err(err) = record_uplink(&joined, &dir) {
-        return json_err::emit(json, &registry_failure(err), 1);
+        return json_err::emit(json, &unrecorded_uplink(&joined, &err), 1);
     }
     report_joined(&joined, &reload_local_hub(), json)
+}
+
+/// The code argument, or one line of stdin for `-` so the single-use
+/// secret stays out of `ps` and shell history.
+fn read_code(arg: &str) -> Result<String, String> {
+    use std::io::{BufRead as _, IsTerminal as _};
+    if arg != "-" {
+        return Ok(arg.to_owned());
+    }
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        info!("Paste the join code from `phux host ticket`:");
+    }
+    let mut line = String::new();
+    stdin
+        .lock()
+        .read_line(&mut line)
+        .map_err(|err| format!("could not read the join code from stdin: {err}"))?;
+    Ok(line.trim().to_owned())
+}
+
+/// The ticket is spent and the hub holds the credential, so a failed
+/// `config.toml` write names the stored identity and the entry to add by
+/// hand instead of leaving the files with nothing pointing at them.
+fn unrecorded_uplink(joined: &Joined, err: &str) -> CliError {
+    let entry = &joined.entry;
+    let server_name = entry
+        .server_name
+        .as_ref()
+        .map(|name| format!("server-name = {name:?}\n"))
+        .unwrap_or_default();
+    CliError::new(
+        codes::REGISTRY,
+        format!(
+            "enrolled as credential {}, but could not record the uplink in config.toml: {err}",
+            joined.credential
+        ),
+        format!(
+            "add this entry to config.toml and run `phux config reload`:\n[[uplink]]\n\
+             name = {:?}\nhub = {:?}\n{server_name}ca-fingerprint = {:?}\n\
+             client-cert = {:?}\nclient-key = {:?}\nenabled = true",
+            entry.name,
+            entry.hub,
+            entry.ca_fingerprint,
+            entry.client_cert.display().to_string(),
+            entry.client_key.display().to_string(),
+        ),
+    )
 }
 
 /// Write `joined`'s `[[uplink]]` entry, replacing one for the same name and

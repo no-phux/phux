@@ -118,7 +118,7 @@ src/
                   — detector (ADR-0046), SET_METADATA arbitration, ask ingress
   hooks.rs        — event-hook dispatcher, argv-only
   hub/            — federation: satellite links, relay, operation fence,
-                    adoption of satellites that dial in (ADR-0180)
+                    adoption of satellites that dial in (ADR-0181)
   uplink.rs       — this server as a satellite dialing out to a hub
   transport.rs, transport/ — UDS, WebSocket, QUIC, TLS, WebTransport
   upgrade/        — graceful re-exec and PTY handoff (ADR-0032)

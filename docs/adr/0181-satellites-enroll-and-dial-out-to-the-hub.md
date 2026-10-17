@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-17
 ---
 
-# 0180 — Satellites enroll with a ticket and dial out to the hub
+# 0181 — Satellites enroll with a ticket and dial out to the hub
 
 **TL;DR.** A machine the hub cannot dial (a sandbox VM behind NAT) joins
 as a satellite by dialing out. `phux host ticket NAME` on the hub mints a
@@ -39,6 +39,10 @@ link supervisor (`hub/link.rs`), and the connector's supervised dial-out.
    consumed under the store lock before anything is issued; it expires after
    ten minutes. New here: `phux workload revoke t-…` revokes an unspent
    ticket. An unknown, expired, consumed, or revoked ticket is refused alike.
+   `ticket` validates its arguments before it mints or writes anything, and
+   refuses a NAME already registered with a dialed endpoint. `join` also
+   reads the code from stdin (`phux host join -`), which keeps the secret
+   out of `ps` and shell history; the hub prints that form.
 2. **Enrollment is unchanged on the wire.** The sandbox generates a P-256
    key, sends a CSR over `phux-enroll/1`, and checks the reply as `host add`
    does (§8.1 step 3, plus the pinned CA). The hub records the credential
@@ -58,7 +62,13 @@ link supervisor (`hub/link.rs`), and the connector's supervised dial-out.
 4. **The hub holds the satellite owner's authority**, as an `ssh://` hub
    does through `phux stdio-bridge` (ADR-0038 addendum). The sandbox's
    operator granted it by running `phux host join`. The satellite therefore
-   needs no listener and can run in `local` mode.
+   needs no listener and can run in `local` mode. ADR-0179 requires
+   `[policy] mode = "paired"` before a server exposes a listener or relay
+   connector, because those admit remote parties the server must then
+   authenticate. An uplink admits no one: the satellite dials a hub it pins
+   by CA, accepts streams only from that hub, and splices them to its owner
+   socket. The trust decision is made once, by the operator who ran `join`,
+   not per connection, so the satellite needs no `paired` posture.
 5. **A link is a link regardless of who dialed.** An `inbound://` entry
    gets the same `run_link` supervisor. Its transport waits for the next
    adopted connection for NAME instead of dialing. HELLO negotiation, the
@@ -76,6 +86,8 @@ link supervisor (`hub/link.rs`), and the connector's supervised dial-out.
    the next adoption and, within a second, on a live link, which is closed.
    `phux host disable NAME` stops the supervisor and refuses adoption.
    `phux host rm NAME` also revokes NAME's satellite credentials.
+   `phux host rename` refuses an `inbound://` entry, because the credential
+   names the satellite. The remedy is `rm`, then a new ticket and `join`.
 
 ## Why
 
@@ -92,9 +104,9 @@ link supervisor (`hub/link.rs`), and the connector's supervised dial-out.
 - **The hub gets owner authority over the satellite.** A satellite that
   wants a narrower grant needs its own CA to issue the hub a certificate. If
   that is ever wanted, it can be added without breaking this.
-- **The hub must run `paired`** for the ALPN to be offered. A hub in any
-  other posture refuses every satellite at the handshake, and the satellite
-  logs the failure and keeps backing off.
+- **The hub must run `paired`** for the ALPN to be offered. Under ADR-0179
+  the only other posture, `local`, has no remote listener at all, so the
+  satellite logs the failed dial and keeps backing off.
 - **A registry with a satellite record cannot be read by older binaries**
   (`deny_unknown_fields`). A downgrade must revoke and remove the record
   first. Registries without one are unchanged.
@@ -120,4 +132,5 @@ link supervisor (`hub/link.rs`), and the connector's supervised dial-out.
 ## Related
 
 - `docs/spec/workload-auth.md` §8.3, `docs/spec/proto.md` §4.
-- ADR-0007, ADR-0038, ADR-0051, ADR-0052, ADR-0098, ADR-0116, ADR-0154.
+- ADR-0007, ADR-0038, ADR-0051, ADR-0052, ADR-0098, ADR-0116, ADR-0154,
+  ADR-0179.

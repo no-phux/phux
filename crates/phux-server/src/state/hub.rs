@@ -45,13 +45,13 @@ impl ServerState {
         self.hub.arm_reload(source, cancel);
     }
 
-    /// Where the QUIC listener hands satellites that dial in (ADR-0180).
+    /// Where the QUIC listener hands satellites that dial in (ADR-0181).
     #[must_use]
     pub(crate) fn satellite_adopter(&self) -> crate::hub::adopt::SatelliteAdopter {
         self.hub.adopter()
     }
 
-    /// The uplinks this server keeps to hubs as a satellite (ADR-0180).
+    /// The uplinks this server keeps to hubs as a satellite (ADR-0181).
     #[must_use]
     pub(crate) const fn uplinks(&self) -> &crate::uplink::Uplinks {
         &self.uplinks

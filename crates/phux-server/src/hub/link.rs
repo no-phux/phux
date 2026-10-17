@@ -21,7 +21,7 @@
 //! satellite's `RelaySession`; while down it fails queued requests fast with
 //! `SatelliteUnreachable`.
 //!
-//! `inbound://` (ADR-0180) dials nothing: its supervisor's transport waits
+//! `inbound://` (ADR-0181) dials nothing: its supervisor's transport waits
 //! for the satellite to dial in and be adopted (`hub::adopt`), then runs
 //! the same relay session over a stream it opens. The dialing satellite owns
 //! the backoff, so the hub takes the next connection without delay.
@@ -122,7 +122,7 @@ pub enum DialSpec {
         port: Option<u16>,
     },
     /// Dial nothing: adopt the connection the satellite dials in with
-    /// (ADR-0180). Its certificate is the credential, so no token or pin.
+    /// (ADR-0181). Its certificate is the credential, so no token or pin.
     Inbound,
 }
 
@@ -267,7 +267,7 @@ pub enum LinkStatus {
         /// 1-based attempt number since the last successful connection.
         attempt: u32,
     },
-    /// An `inbound://` satellite has not dialed in yet (ADR-0180).
+    /// An `inbound://` satellite has not dialed in yet (ADR-0181).
     Awaiting,
     /// The link is established and authenticated.
     Connected,
@@ -1227,7 +1227,7 @@ pub(crate) struct HubLinks {
     cancel: CancellationToken,
     transport: NetLinkTransport,
     links: BTreeMap<SatelliteHost, CancellationToken>,
-    /// Where the QUIC listener hands satellites that dial in (ADR-0180).
+    /// Where the QUIC listener hands satellites that dial in (ADR-0181).
     adopter: super::adopt::SatelliteAdopter,
 }
 
@@ -1295,7 +1295,7 @@ impl HubLinks {
 pub(crate) struct NetLinkTransport {
     /// Program for SSH dials: `ssh`, or `$PHUX_SSH`.
     ssh_program: std::ffi::OsString,
-    /// Where `inbound://` satellites' connections arrive (ADR-0180).
+    /// Where `inbound://` satellites' connections arrive (ADR-0181).
     adopter: super::adopt::SatelliteAdopter,
 }
 
@@ -1427,7 +1427,7 @@ impl NetLinkConn {
 impl NetLinkTransport {
     /// Take `host`'s next inbound connection and open the link's stream on
     /// it: the hub is the phux client, so it opens the stream and sends HELLO
-    /// first (ADR-0180).
+    /// first (ADR-0181).
     async fn adopt_inbound(&self, host: &SatelliteHost) -> Result<NetLinkConn, String> {
         let adopted = self
             .adopter

@@ -498,7 +498,7 @@ pub(crate) fn run_server(
             .map(|config| config.satellites)
             .map_err(|err| err.to_string())
     }));
-    // Satellite uplinks (ADR-0180): `phux host join` writes `[[uplink]]` and
+    // Satellite uplinks (ADR-0181): `phux host join` writes `[[uplink]]` and
     // rings the doorbell, which starts the new uplink without a restart.
     server = server
         .uplinks(uplinks)

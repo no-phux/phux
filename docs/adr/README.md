@@ -212,7 +212,7 @@ column is the base status word plus at most one relationship clause, about
 | [0178](./0178-release-checksums-are-minisign-signed.md) | Release checksums are minisign-signed | Accepted (supersedes in part [0074](./0074-self-update-trust-boundary.md), [0176](./0176-the-release-pipeline.md)) |
 | [0179](./0179-the-legacy-auth-paths-are-removed.md) | The transitional and legacy authentication paths are removed | Accepted (supersedes in part [0153](./0153-clients-pin-the-workload-ca.md), [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)) |
 | [0180](./0180-the-relay-is-blind.md) | The relay is blind: every relayed session ends at the server | Accepted (supersedes in part [0051](./0051-outbound-dial-out-connector-transport.md), [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md)) |
-| [0180](./0180-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
+| [0181](./0181-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
 
 ## When to write an ADR
 

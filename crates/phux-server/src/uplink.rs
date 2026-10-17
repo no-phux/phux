@@ -1,4 +1,4 @@
-//! Satellite uplinks: dialing out to a hub (ADR-0180, `workload-auth.md`
+//! Satellite uplinks: dialing out to a hub (ADR-0181, `workload-auth.md`
 //! §8.3).
 //!
 //! A server the hub cannot reach joins as a satellite by dialing the hub. On
@@ -225,16 +225,36 @@ pub async fn join(code: &JoinCode, dir: &Path) -> Result<Joined, String> {
     })
 }
 
+/// Create `dir` owner-only, or check an existing one: it must be a directory
+/// this user owns, and any group or other access is removed.
 fn ensure_private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    if dir.is_dir() {
-        return Ok(());
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+    let existing = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|err| format!("could not create {}: {err}", dir.display()));
+        }
+        Err(err) => return Err(format!("could not inspect {}: {err}", dir.display())),
+    };
+    if !existing.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
     }
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|err| format!("could not create {}: {err}", dir.display()))
+    if existing.uid() != rustix::process::geteuid().as_raw() {
+        return Err(format!(
+            "{} is owned by uid {}, not this user",
+            dir.display(),
+            existing.uid()
+        ));
+    }
+    if existing.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("could not make {} owner-only: {err}", dir.display()))?;
+    }
+    Ok(())
 }
 
 /// A satellite name as a file-name component: anything outside
@@ -324,6 +344,16 @@ fn plan_uplink(entry: &UplinkConfigEntry) -> Result<UplinkSpec, UplinkError> {
         client_cert: entry.client_cert.clone(),
         client_key: entry.client_key.clone(),
     })
+}
+
+/// Check a hub endpoint the way a join code and an `[[uplink]]` entry read
+/// it: `HOST:PORT`, IPv6 bracketed, no scheme.
+///
+/// # Errors
+///
+/// Wording naming the malformed endpoint.
+pub fn validate_hub_endpoint(hub: &str) -> Result<(), String> {
+    split_host_port(hub).map(drop)
 }
 
 /// Split `HOST:PORT` (IPv6 bracketed), refusing an empty host or port 0.
@@ -679,5 +709,143 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].server_name, "hub");
         assert!(plan_uplinks(&[entry(true, "relative.pem")]).is_err());
+    }
+
+    #[test]
+    fn a_hub_endpoint_with_a_scheme_or_no_port_is_refused() {
+        assert!(validate_hub_endpoint("hub.example:8788").is_ok());
+        assert!(validate_hub_endpoint("[::1]:8788").is_ok());
+        for bad in ["quic://hub:8788", "hub", "hub:", "https://hub"] {
+            assert!(validate_hub_endpoint(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_existing_uplinks_directory_is_made_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("uplinks");
+        ensure_private_dir(&dir).unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700, "an existing directory is repaired");
+        let file = root.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(ensure_private_dir(&file).is_err(), "a file is refused");
+    }
+
+    fn uplink_entry(name: &str, hub: &str, enabled: bool) -> UplinkConfigEntry {
+        UplinkConfigEntry {
+            name: name.to_owned(),
+            // Nothing listens: each supervisor fails to read its identity
+            // and backs off, which is all these tests need.
+            hub: hub.to_owned(),
+            server_name: None,
+            ca_fingerprint: format!("sha256:{}", "ab".repeat(32)),
+            client_cert: PathBuf::from("/nonexistent/u.pem"),
+            client_key: PathBuf::from("/nonexistent/u.key"),
+            enabled,
+        }
+    }
+
+    fn plans(entries: &[UplinkConfigEntry]) -> Vec<UplinkSpec> {
+        plan_uplinks(entries).unwrap()
+    }
+
+    #[tokio::test]
+    async fn apply_starts_stops_and_restarts_only_what_changed() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut uplinks = Uplinks::default();
+                let a = uplink_entry("a", "127.0.0.1:9", true);
+                let b = uplink_entry("b", "127.0.0.1:9", true);
+                assert_eq!(
+                    uplinks.apply(plans(std::slice::from_ref(&a))),
+                    (0, 0),
+                    "nothing runs before the runtime arms supervision"
+                );
+
+                let root = CancellationToken::new();
+                uplinks.arm(None, PathBuf::from("/nonexistent.sock"), root.clone());
+                assert_eq!(uplinks.apply(plans(&[a.clone(), b.clone()])), (2, 0));
+                let a_token = uplinks.running["a@127.0.0.1:9"].1.clone();
+                assert_eq!(uplinks.apply(plans(&[a.clone(), b.clone()])), (0, 0));
+                assert!(!a_token.is_cancelled(), "an unchanged uplink keeps running");
+
+                // A changed pin restarts `b` alone; a new hub is a new key.
+                let mut b2 = b;
+                b2.ca_fingerprint = format!("sha256:{}", "cd".repeat(32));
+                let b_token = uplinks.running["b@127.0.0.1:9"].1.clone();
+                assert_eq!(uplinks.apply(plans(&[a, b2.clone()])), (1, 1));
+                assert!(b_token.is_cancelled() && !a_token.is_cancelled());
+                let moved = uplink_entry("a", "127.0.0.1:10", true);
+                assert_eq!(uplinks.apply(plans(&[moved, b2])), (1, 1));
+                assert!(a_token.is_cancelled());
+
+                // Disabled or removed entries stop.
+                assert_eq!(
+                    uplinks.apply(plans(&[uplink_entry("b", "127.0.0.1:9", false)])),
+                    (0, 2)
+                );
+                assert!(uplinks.running.is_empty());
+                root.cancel();
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_applies_the_source_and_keeps_running_uplinks_on_failure() {
+        use std::sync::Mutex;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let entries =
+                    Arc::new(Mutex::new(Ok(vec![uplink_entry("a", "127.0.0.1:9", true)])));
+                let source = {
+                    let entries = Arc::clone(&entries);
+                    UplinkSource::new(move || entries.lock().unwrap().clone())
+                };
+                let state = crate::state::SharedState::new();
+                let root = CancellationToken::new();
+                let running = |state: &crate::state::SharedState| {
+                    state.with(|s| s.uplinks().running.keys().cloned().collect::<Vec<_>>())
+                };
+                state.with_mut(|s| {
+                    s.uplinks_mut().arm(
+                        Some(source),
+                        PathBuf::from("/nonexistent.sock"),
+                        root.clone(),
+                    );
+                });
+                reload_uplinks(&state);
+                assert_eq!(running(&state), ["a@127.0.0.1:9"]);
+
+                *entries.lock().unwrap() = Err("config.toml is unreadable".to_owned());
+                reload_uplinks(&state);
+                assert_eq!(
+                    running(&state),
+                    ["a@127.0.0.1:9"],
+                    "a failed read keeps them"
+                );
+
+                *entries.lock().unwrap() = Ok(vec![uplink_entry("a", "relative", true)]);
+                reload_uplinks(&state);
+                assert_eq!(
+                    running(&state),
+                    ["a@127.0.0.1:9"],
+                    "an invalid entry keeps them"
+                );
+
+                *entries.lock().unwrap() = Ok(vec![uplink_entry("b", "127.0.0.1:9", true)]);
+                reload_uplinks(&state);
+                assert_eq!(running(&state), ["b@127.0.0.1:9"]);
+
+                *entries.lock().unwrap() = Ok(Vec::new());
+                reload_uplinks(&state);
+                assert!(running(&state).is_empty(), "a removed uplink stops");
+                root.cancel();
+            })
+            .await;
     }
 }

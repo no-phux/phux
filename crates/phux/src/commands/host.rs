@@ -370,7 +370,8 @@ pub(crate) enum HostAction {
     /// up, redialing after any drop, and needs no listener of its own: the
     /// hub reaches this machine's terminals through it.
     Join {
-        /// The `phux://satellite?...` code from the hub.
+        /// The `phux://satellite?...` code from the hub, or `-` to read it
+        /// from stdin and keep it out of `ps` and shell history.
         code: String,
 
         #[usage(flatten)]
@@ -1516,7 +1517,7 @@ fn auth_display(endpoint: &str, has_token: bool, has_pin: bool) -> &'static str 
     if endpoint.trim().starts_with("ssh://") {
         return "ssh";
     }
-    if endpoint.trim() == phux_server::hub::INBOUND_ENDPOINT {
+    if phux_server::hub::is_inbound_endpoint(endpoint) {
         // The satellite dials in with the credential its ticket enrolled.
         return "cert";
     }
@@ -2095,6 +2096,9 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
         Ok(row) => row,
         Err((err, code)) => return json_err::emit(json, &err, code),
     };
+    if let Some(err) = inbound_rename_refusal(&row) {
+        return json_err::emit(json, &err, 2);
+    }
     let validated = match row.role {
         HostRole::Remote => remote::validate_name(new_name),
         HostRole::Satellite => satellite_registry::registry_name(new_name),
@@ -2145,6 +2149,25 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
         outln!("  {}", reload.describe());
     }
     ExitCode::SUCCESS
+}
+
+/// An `inbound://` satellite's credential names the satellite it was
+/// enrolled as (ADR-0181), so renaming only the entry would strand the
+/// joined machine under a name the hub no longer adopts.
+fn inbound_rename_refusal(row: &HostRow) -> Option<CliError> {
+    let inbound =
+        row.role == HostRole::Satellite && phux_server::hub::is_inbound_endpoint(&row.endpoint);
+    inbound.then(|| {
+        CliError::new(
+            codes::USAGE_ERROR,
+            format!(
+                "{:?} is an inbound satellite; its credential is bound to that name",
+                row.name
+            ),
+            "run `phux host rm NAME` (which revokes it), then `phux host ticket NEW` and \
+             `phux host join` on that machine again",
+        )
+    })
 }
 
 /// Add the `hub_reload` token to a satellite edit's `--json` document.
@@ -2229,7 +2252,7 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
         return json_err::emit(json, &registry_failure(err), 1);
     }
     // A satellite that dialed in holds a credential this hub issued; removing
-    // it revokes that credential too (ADR-0180).
+    // it revokes that credential too (ADR-0181).
     let revoked = (resolved == HostRole::Satellite)
         .then(|| inbound::revoke_satellite(name))
         .flatten();
@@ -2265,8 +2288,8 @@ mod tests {
 
     use super::{
         AddMode, AddOpts, HostRole, HostRow, Route, add_failure_error, auth_display,
-        edit_host_field_at, empty_state, finish_enroll_in, keeps_credentials,
-        relay_route_authority, render_table, resolve_host_role, resolve_rm_role,
+        edit_host_field_at, empty_state, finish_enroll_in, inbound_rename_refusal,
+        keeps_credentials, relay_route_authority, render_table, resolve_host_role, resolve_rm_role,
         role_flag_mismatch, sort_rows,
     };
     use crate::commands::JsonOpt;
@@ -2661,6 +2684,25 @@ mod tests {
         assert_eq!(auth_display("quic://mini:8788", true, false), "token");
         assert_eq!(auth_display("wss://mini:8787", false, false), "none");
         assert_eq!(auth_display("inbound://", false, false), "cert");
+    }
+
+    /// An inbound satellite's credential is bound to its name, so `rename`
+    /// refuses it; dialed satellites and remotes still rename.
+    #[test]
+    fn rename_refuses_only_inbound_satellites() {
+        let mut inbound = row("sandbox", HostRole::Satellite);
+        inbound.endpoint = "inbound://".to_owned();
+        let refused = inbound_rename_refusal(&inbound).expect("inbound refused");
+        assert_eq!(refused.code, codes::USAGE_ERROR);
+        assert!(
+            refused.remedy.contains("phux host ticket"),
+            "{}",
+            refused.remedy
+        );
+        assert!(inbound_rename_refusal(&row("mini", HostRole::Satellite)).is_none());
+        let mut remote = row("mini", HostRole::Remote);
+        remote.endpoint = "inbound://".to_owned();
+        assert!(inbound_rename_refusal(&remote).is_none());
     }
 
     /// The table carries the five pinned columns; STATE is `-` for remotes

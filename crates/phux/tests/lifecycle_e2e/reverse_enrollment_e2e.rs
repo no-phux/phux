@@ -1,8 +1,10 @@
-//! Reverse enrollment through the CLI (ADR-0180): `phux host ticket` on a
+//! Reverse enrollment through the CLI (ADR-0181): `phux host ticket` on a
 //! `paired` hub mints a join code, `phux host join` on a server with no
 //! listener enrolls with it and starts the uplink without a restart, and the
 //! hub then spawns on that satellite. The code works once, and `phux
-//! workload revoke t-…` withdraws an unused one.
+//! workload revoke t-…` withdraws an unused one. `host disable` drops the
+//! link and `host enable` lets the satellite back in; `host rename` is
+//! refused; `host rm` revokes the credential.
 //!
 //! Two hermetic machines in two temp dirs, each with its own config, state,
 //! and socket.
@@ -23,8 +25,9 @@ use tempfile::TempDir;
 
 use crate::hermetic::{hermetic_env, prepare_dirs};
 
-/// How long the uplink has to come up after `join`.
-const LINK_DEADLINE: Duration = Duration::from_secs(30);
+/// How long the uplink has to come up after `join` or `host enable`; the
+/// satellite's redial backoff caps at 30 s.
+const LINK_DEADLINE: Duration = Duration::from_secs(60);
 
 /// A running `phux server`, killed on drop.
 struct Server(Child);
@@ -54,6 +57,27 @@ fn phux(dir: &Path, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .output()
         .expect("run phux")
+}
+
+/// `phux ARGS` with `input` on stdin.
+fn phux_with_stdin(dir: &Path, args: &[&str], input: &str) -> Output {
+    use std::io::Write as _;
+    let mut child = common::phux_cmd(crate::runner::phux_bin())
+        .envs(env(dir))
+        .current_dir(dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn phux");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("run phux")
 }
 
 fn start_server(dir: &Path, extra: &[&str]) -> Server {
@@ -118,6 +142,36 @@ fn ticket(hub: &Path, quic: &str) -> serde_json::Value {
     ))
 }
 
+/// Retry spawning on satellite `sat` until it fails (a reload is applied
+/// asynchronously); the failing output.
+fn spawn_refused(hub: &Path) -> Output {
+    let start = Instant::now();
+    loop {
+        let out = phux(
+            hub,
+            &["spawn", "--satellite", "sat", "--json", "--", "/bin/cat"],
+        );
+        if !out.status.success() {
+            return out;
+        }
+        assert!(
+            start.elapsed() < LINK_DEADLINE,
+            "the hub still reaches the satellite"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Whether `host ls` on `dir` lists a host named `name`.
+fn host_listed(dir: &Path, name: &str) -> bool {
+    let listed = json_doc(&phux(dir, &["host", "ls", "--json"]));
+    listed["hosts"]
+        .as_array()
+        .expect("hosts")
+        .iter()
+        .any(|host| host["name"] == name)
+}
+
 /// Spawn `/bin/cat` on satellite `sat` through the hub, retrying while the
 /// uplink comes up.
 fn spawn_on_satellite(hub: &Path) -> serde_json::Value {
@@ -137,6 +191,106 @@ fn spawn_on_satellite(hub: &Path) -> serde_json::Value {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Whether `workload list` on `hub` shows `credential` with `key` = `value`.
+fn credential_has(hub: &Path, credential: &str, key: &str, value: &str) -> bool {
+    let workloads = json_doc(&phux(hub, &["workload", "list", "--json"]));
+    workloads["credentials"]
+        .as_array()
+        .expect("credentials")
+        .iter()
+        .any(|row| row["credential_id"] == credential && row[key] == value)
+}
+
+/// Bad input to `host ticket` writes nothing: a hub endpoint with a scheme,
+/// and a name a dialed satellite already holds.
+fn bad_tickets_write_nothing(hub: &Path, quic: &str) {
+    let bad_hub = phux(
+        hub,
+        &[
+            "host",
+            "ticket",
+            "other",
+            "--hub",
+            "quic://127.0.0.1:9",
+            "--json",
+        ],
+    );
+    assert!(!bad_hub.status.success(), "a scheme in --hub is refused");
+    assert!(!host_listed(hub, "other"), "nothing was registered");
+    let dialed = phux(
+        hub,
+        &[
+            "host",
+            "add",
+            "--role",
+            "satellite",
+            "lab",
+            "quic://127.0.0.1:9",
+            "--json",
+        ],
+    );
+    assert!(dialed.status.success(), "{}", text(&dialed.stderr));
+    let clobber = phux(hub, &["host", "ticket", "lab", "--hub", quic, "--json"]);
+    assert!(
+        !clobber.status.success(),
+        "a dialed satellite is not replaced"
+    );
+    let hub_config =
+        std::fs::read_to_string(hub.join("config/phux/config.toml")).expect("hub config");
+    assert!(hub_config.contains("quic://127.0.0.1:9"), "{hub_config}");
+}
+
+/// Rename, disable, enable, a satellite-side restart, and rm on the joined
+/// satellite `sat`.
+fn manage_the_joined_satellite(hub: &Path, sat: &Path, sat_server: Server, credential: &str) {
+    // The credential is bound to the name, so rename is refused.
+    let renamed = phux(hub, &["host", "rename", "sat", "sat2", "--json"]);
+    assert!(
+        !renamed.status.success(),
+        "an inbound satellite is not renamed"
+    );
+    assert!(host_listed(hub, "sat"));
+
+    // Disable drops the live link and refuses re-adoption; enable lets the
+    // redialing satellite back in.
+    json_doc(&phux(hub, &["host", "disable", "sat", "--json"]));
+    let refused = spawn_refused(hub);
+    assert!(
+        text(&refused.stdout).contains("satellite") || text(&refused.stderr).contains("satellite"),
+        "{}{}",
+        text(&refused.stdout),
+        text(&refused.stderr)
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !phux(
+            hub,
+            &["spawn", "--satellite", "sat", "--json", "--", "/bin/cat"]
+        )
+        .status
+        .success(),
+        "a disabled satellite is not re-adopted when it redials"
+    );
+    json_doc(&phux(hub, &["host", "enable", "sat", "--json"]));
+    spawn_on_satellite(hub);
+
+    // A satellite-side drop: the restarted server reads `[[uplink]]` and
+    // dials the hub again, superseding the link the killed one left behind.
+    drop(sat_server);
+    let _sat_server = start_server(sat, &[]);
+    await_server(sat);
+    spawn_on_satellite(hub);
+
+    // Remove revokes the credential and ends the link.
+    let removed = json_doc(&phux(hub, &["host", "rm", "sat", "--json"]));
+    assert_eq!(removed["revoked_credentials"], 1, "{removed}");
+    spawn_refused(hub);
+    assert!(
+        credential_has(hub, credential, "status", "revoked"),
+        "the removed satellite's credential is revoked"
+    );
 }
 
 #[test]
@@ -161,7 +315,7 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
     ));
     assert_eq!(revoked["newly_revoked"], true, "{revoked}");
 
-    let _sat_server = start_server(sat.path(), &[]);
+    let sat_server = start_server(sat.path(), &[]);
     await_server(sat.path());
     let stale = withdrawn["join_code"].as_str().expect("join code");
     let refused = phux(sat.path(), &["host", "join", stale, "--json"]);
@@ -181,7 +335,10 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
         "{listed}"
     );
 
-    let joined_out = phux(sat.path(), &["host", "join", &code, "--json"]);
+    bad_tickets_write_nothing(hub.path(), &quic);
+
+    // The code goes in on stdin, out of `ps` and shell history.
+    let joined_out = phux_with_stdin(sat.path(), &["host", "join", "-", "--json"], &code);
     assert!(
         !text(&joined_out.stdout).contains(&ticket_secret)
             && !text(&joined_out.stderr).contains(&ticket_secret),
@@ -205,14 +362,8 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
     let spawned = spawn_on_satellite(hub.path());
     assert_eq!(spawned["satellite"], "sat", "{spawned}");
 
-    let workloads = json_doc(&phux(hub.path(), &["workload", "list", "--json"]));
     let credential = joined["credential_id"].as_str().expect("credential");
-    assert!(
-        workloads["credentials"]
-            .as_array()
-            .expect("credentials")
-            .iter()
-            .any(|row| row["credential_id"] == credential && row["satellite"] == "sat"),
-        "{workloads}"
-    );
+    assert!(credential_has(hub.path(), credential, "satellite", "sat"));
+
+    manage_the_joined_satellite(hub.path(), sat.path(), sat_server, credential);
 }

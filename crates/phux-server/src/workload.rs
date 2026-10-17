@@ -284,7 +284,7 @@ pub struct WorkloadCredential {
     /// predates the field ([`Self::enrolled_for`] infers it).
     pub recorded_for: Option<EnrolledFor>,
     /// The satellite this credential is (`workload-auth.md` §8.3,
-    /// ADR-0180): admitted only on the satellite ALPN, never on the terminal
+    /// ADR-0181): admitted only on the satellite ALPN, never on the terminal
     /// endpoint, and it carries no scope ceiling. `None` for every other
     /// credential.
     pub satellite: Option<String>,
@@ -363,7 +363,7 @@ struct RegistryRecord {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     principal: Option<EnrolledFor>,
-    /// The satellite name, on a satellite credential only (ADR-0180), so a
+    /// The satellite name, on a satellite credential only (ADR-0181), so a
     /// registry with none stays readable by readers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     satellite: Option<String>,
@@ -502,7 +502,7 @@ impl WorkloadRegistry {
     }
 
     /// Find an active terminal-endpoint credential by its public-key-derived
-    /// id. A satellite credential is never one (ADR-0180): every terminal
+    /// id. A satellite credential is never one (ADR-0181): every terminal
     /// admission path reads the registry through here, so it is refused on
     /// all of them alike.
     #[must_use]
@@ -519,7 +519,7 @@ impl WorkloadRegistry {
         self.lookup(&credential_id(&public_key))
     }
 
-    /// Find an active satellite credential by its id (ADR-0180).
+    /// Find an active satellite credential by its id (ADR-0181).
     #[must_use]
     pub fn lookup_satellite(&self, id: &str) -> Option<&WorkloadCredential> {
         self.find_active(id)
@@ -527,7 +527,7 @@ impl WorkloadRegistry {
     }
 
     /// Find an active satellite credential by a verified TLS leaf's public
-    /// key (ADR-0180).
+    /// key (ADR-0181).
     #[must_use]
     pub fn lookup_satellite_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
         let public_key = subject_public_key_info(certificate).ok()?;
@@ -642,7 +642,7 @@ impl WorkloadRegistry {
         })
     }
 
-    /// Register `public_key` as satellite `name`'s credential (ADR-0180) and,
+    /// Register `public_key` as satellite `name`'s credential (ADR-0181) and,
     /// in the same locked write, revoke every other active credential of that
     /// name: one satellite name has one live credential.
     ///
@@ -802,7 +802,7 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         ));
     }
     match &record.satellite {
-        // A satellite credential grants no terminal authority (ADR-0180).
+        // A satellite credential grants no terminal authority (ADR-0181).
         Some(name) => {
             validate_satellite_name(name)?;
             if !record.scopes.is_empty() {

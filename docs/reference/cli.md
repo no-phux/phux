@@ -1606,7 +1606,8 @@ it.
 Usage: phux host join [--json] <CODE>
 
 Arguments:
-  <CODE>  The `phux://satellite?...` code from the hub.
+  <CODE>  The `phux://satellite?...` code from the hub, or `-` to read it from
+          stdin and keep it out of `ps` and shell history.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the

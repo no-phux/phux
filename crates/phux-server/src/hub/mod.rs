@@ -8,7 +8,7 @@
 //! non-hub server never reads the registry ([`resolve_hub_table`]); a hub
 //! re-reads it on the config-reload doorbell (`reload_satellites`). An
 //! `inbound://` satellite is never dialed: it dials the hub, and its link
-//! supervisor adopts the connection (`hub::adopt`, ADR-0180).
+//! supervisor adopts the connection (`hub::adopt`, ADR-0181).
 
 pub(crate) mod adopt;
 pub mod link;
@@ -56,12 +56,19 @@ pub enum SatelliteTarget {
         port: Option<u16>,
     },
     /// `inbound://` — the satellite dials this hub with the credential a
-    /// `phux host ticket` enrolled (ADR-0180); the hub never dials it.
+    /// `phux host ticket` enrolled (ADR-0181); the hub never dials it.
     Inbound,
 }
 
 /// The endpoint of an `inbound://` satellite, exactly.
 pub const INBOUND_ENDPOINT: &str = "inbound://";
+
+/// Whether a `[[satellites]]` endpoint names an `inbound://` satellite, one
+/// whose link this hub adopts instead of dialing.
+#[must_use]
+pub fn is_inbound_endpoint(endpoint: &str) -> bool {
+    endpoint.trim() == INBOUND_ENDPOINT
+}
 
 impl core::fmt::Display for SatelliteTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

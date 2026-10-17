@@ -371,15 +371,15 @@ installing the *remote* unit only; the local `--hub` ensure still runs.
 
 A sandbox or VM behind NAT has no address the hub can dial and often no ssh.
 It joins by dialing out instead
-([ADR-0180](adr/0180-satellites-enroll-and-dial-out-to-the-hub.md)). The hub
+([ADR-0181](adr/0181-satellites-enroll-and-dial-out-to-the-hub.md)). The hub
 must run `[policy] mode = "paired"` with a QUIC listener the sandbox can
 reach.
 
 ```sh
 # On the hub:
 phux host ticket sandbox            # or --hub HOST:PORT to name the address
-# On the sandbox, with its server running:
-phux host join 'phux://satellite?hub=...&ca=...&name=sandbox&enroll=...'
+# On the sandbox, with its server running; paste the code when asked:
+phux host join -
 ```
 
 `host ticket` registers `sandbox` as an `inbound://` satellite and prints a
@@ -393,7 +393,10 @@ needs no listener. The hub reaches its terminals over the connection the
 sandbox opened, with the authority an `ssh://` hub has.
 
 - A code works once. `phux workload revoke t-…` on the hub withdraws an
-  unused one.
+  unused one. `host join CODE` also takes it as an argument, which leaves
+  the secret in `ps` and shell history until it is spent.
+- `host ticket` refuses a name already registered with a dialed endpoint,
+  and keeps an existing `inbound://` entry's enabled state.
 - `phux host disable sandbox` drops the link and refuses the sandbox until
   re-enabled. `phux host rm sandbox` also revokes its credential;
   `phux workload revoke sha256:…` does that alone and ends a live link
@@ -401,6 +404,9 @@ sandbox opened, with the authority an `ssh://` hub has.
 - Joining again with a new code replaces the sandbox's credential. The hub
   revokes the old one in the same write.
 - A satellite credential cannot attach to the hub as a client.
+- `phux host rename` refuses an `inbound://` satellite, because its
+  credential names it. Remove it, mint a ticket under the new name, and
+  join again.
 
 ## A fleet that sees itself: registrations are one-way
 

@@ -224,7 +224,7 @@ pub(crate) async fn dial_relayed(
 /// Handshake only, offering `alpn`, and open no stream.
 ///
 /// For a leg whose peer opens the streams (a satellite's link to its hub,
-/// ADR-0180). Presents [`QuicDial::identity`]; [`QuicDial::token`] is not
+/// ADR-0181). Presents [`QuicDial::identity`]; [`QuicDial::token`] is not
 /// sent, since there is no stream to carry it.
 ///
 /// # Errors

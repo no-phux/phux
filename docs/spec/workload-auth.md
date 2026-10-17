@@ -930,7 +930,7 @@ is refused like a consumed one.
 ### 8.3 Satellites that dial out
 
 <!-- impl-status: shipped; probe: SATELLITE_ALPN,mint_satellite_ticket,register_satellite,SatelliteAdopter,JoinCode -->
-> **Status: shipped (ADR-0180).** `phux host ticket NAME` mints the
+> **Status: shipped (ADR-0181).** `phux host ticket NAME` mints the
 > ticket and registers `[[satellites]] NAME` as `inbound://`. `phux host
 > join CODE` enrolls and records `[[uplink]]`. The configured QUIC listener
 > of a `paired` server serves the ALPN, and the server's `[[uplink]]`

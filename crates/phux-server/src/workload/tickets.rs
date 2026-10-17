@@ -8,7 +8,7 @@
 //! file sits beside the registry and obeys its rules (owner-only, no-follow,
 //! locked atomic replacement).
 //!
-//! A satellite ticket (`phux host ticket`, ADR-0180) names the satellite the
+//! A satellite ticket (`phux host ticket`, ADR-0181) names the satellite the
 //! credential it enrolls will be; the ticket, never the requester, decides
 //! that role. An unspent ticket can be revoked (`phux workload revoke t-…`).
 
@@ -63,7 +63,7 @@ struct TicketRecord {
     /// When it was revoked unspent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revoked_at: Option<i64>,
-    /// The satellite name a satellite ticket enrolls (ADR-0180); `None` for
+    /// The satellite name a satellite ticket enrolls (ADR-0181); `None` for
     /// a device ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     satellite: Option<String>,
@@ -123,7 +123,7 @@ pub fn mint_ticket(
     mint(path, scopes, None, credential_seconds, ticket_seconds)
 }
 
-/// Mint a ticket that enrolls satellite `name` (ADR-0180) into the store at
+/// Mint a ticket that enrolls satellite `name` (ADR-0181) into the store at
 /// `path`. The credential it enrolls carries no scope ceiling.
 ///
 /// # Errors
@@ -310,7 +310,7 @@ pub fn enroll_with_ticket(
         .to_owned();
     let registered = if let Some(name) = &redeemed.satellite {
         // The ticket names the role: a satellite credential, admitted only on
-        // the satellite ALPN (ADR-0180).
+        // the satellite ALPN (ADR-0181).
         super::WorkloadRegistry::register_satellite(
             &paths.registry,
             prepared.public_key(),
