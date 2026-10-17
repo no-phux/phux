@@ -5,8 +5,7 @@
 # The browser instantiates the engine as a second WASM module with no imports.
 # The source is the official libghostty-vt C API (the GHOSTSNP snapshot codec
 # the server speaks) plus one fork commit that makes terminal identity
-# wasm32-safe; the browser does not bind the snapshot decoder yet, so it
-# advertises synthesized VT only.
+# wasm32-safe; the browser decodes native bootstraps with its snapshot decoder.
 #
 # Requires Node, plus the official Zig release binary, which this script
 # installs itself with scripts/install-zig.sh (digest-verified against

@@ -37,7 +37,7 @@ use phux_protocol::wire::frame::{
     PathQueryResult, PathResults, SpawnResult, TerminateMode, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
-use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
+use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
 
 mod attach;
 mod resources;
@@ -47,6 +47,8 @@ use attach::Discovery;
 
 const ATTACH_ID: u32 = 1;
 const HISTORY_LINES: u32 = 5_000;
+/// Staged READY prefix and parser-continuation bound, as native clients use.
+const NATIVE_DECODER_LIMIT: usize = 64 * 1024 * 1024;
 
 fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
     Some(match reason {
@@ -74,22 +76,15 @@ fn history_rejection_reason(
 }
 /// The capability set phux-web advertises in `HELLO`.
 ///
-/// Synthesized compatibility remains unconditional. Native checkpoint v2 is
-/// added only after the loaded WASM module reports the canonical immutable
-/// codec identity, version, required features, and sufficient record bounds.
+/// Synthesized compatibility remains unconditional. The official snapshot
+/// codec (`LibghosttySnapshotV1`) is added only after the loaded engine
+/// decoded a snapshot through the browser's reader at load.
 #[must_use]
 pub fn client_caps(vt: &Vt) -> ClientCapabilities {
     let mut bootstrap = synthesized_bootstrap_caps();
-    let required_record_bytes = bootstrap
-        .limits
-        .max_chunk_bytes()
-        .max(bootstrap.limits.max_history_page_bytes()) as usize;
-    if vt
-        .incremental_capabilities()
-        .is_some_and(|capabilities| capabilities.supports_protocol_07(required_record_bytes))
-    {
+    if vt.native_snapshot_available() {
         bootstrap = bootstrap.with_native(
-            EngineCodec::LibghosttyCheckpointV2,
+            EngineCodec::LibghosttySnapshotV1,
             EngineFeatureSet::required_native(),
         );
     }
@@ -202,11 +197,11 @@ struct WebReplica {
 
 enum WebReplicaState {
     Synthesized(Terminal),
+    /// The decoder owns the READY terminal; `protocol_finished` records
+    /// that the protocol READY decoded and published it.
     Native {
         decoder: NativeDecoder,
-        terminal: Option<Terminal>,
         protocol_finished: bool,
-        decoder_finished: bool,
     },
 }
 
@@ -214,7 +209,7 @@ impl WebReplica {
     fn terminal(&self) -> Option<&Terminal> {
         match &self.state {
             WebReplicaState::Synthesized(terminal) => Some(terminal),
-            WebReplicaState::Native { terminal, .. } => terminal.as_ref(),
+            WebReplicaState::Native { decoder, .. } => decoder.terminal(),
         }
     }
 
@@ -234,9 +229,6 @@ enum WebEngineError {
     Native(NativeCodecError),
     PayloadLimitExceeded { actual: usize, limit: usize },
     InvalidNativeTransition(&'static str),
-    InvalidProgress { consumed: usize, available: usize },
-    TrailingAfterReady(usize),
-    TrailingAfterFinish(usize),
 }
 
 impl From<NativeCodecError> for WebEngineError {
@@ -259,19 +251,6 @@ impl std::fmt::Display for WebEngineError {
                 )
             }
             Self::InvalidNativeTransition(message) => formatter.write_str(message),
-            Self::InvalidProgress {
-                consumed,
-                available,
-            } => write!(
-                formatter,
-                "invalid checkpoint progress: consumed {consumed} of {available}"
-            ),
-            Self::TrailingAfterReady(bytes) => {
-                write!(formatter, "{bytes} trailing bootstrap bytes after READY")
-            }
-            Self::TrailingAfterFinish(bytes) => {
-                write!(formatter, "{bytes} trailing history bytes after FINISH")
-            }
         }
     }
 }
@@ -293,28 +272,11 @@ impl EngineAdapter for WebEngine {
                 WebReplicaState::Synthesized(self.vt.terminal(geometry.cols, geometry.rows))
             }
             BootstrapStreamProfile::NativeState {
-                codec: EngineCodec::LibghosttyCheckpointV2,
-            } => {
-                let max_record_bytes =
-                    self.limits
-                        .max_chunk_bytes()
-                        .max(self.limits.max_history_page_bytes()) as usize;
-                let capabilities = self
-                    .vt
-                    .incremental_capabilities()
-                    .filter(|capabilities| capabilities.supports_protocol_07(max_record_bytes))
-                    .ok_or(WebEngineError::UnsupportedProfile(profile))?;
-                WebReplicaState::Native {
-                    decoder: self.vt.native_decoder(
-                        max_record_bytes,
-                        max_record_bytes,
-                        capabilities.max_pages,
-                    )?,
-                    terminal: None,
-                    protocol_finished: false,
-                    decoder_finished: false,
-                }
-            }
+                codec: EngineCodec::LibghosttySnapshotV1,
+            } if self.vt.native_snapshot_available() => WebReplicaState::Native {
+                decoder: self.vt.native_decoder(NATIVE_DECODER_LIMIT)?,
+                protocol_finished: false,
+            },
             _ => return Err(WebEngineError::UnsupportedProfile(profile)),
         };
         Ok(WebReplica {
@@ -356,57 +318,25 @@ impl EngineAdapter for WebEngine {
             }
             WebReplicaState::Native {
                 decoder,
-                terminal,
                 protocol_finished,
-                decoder_finished,
             } => {
-                if *protocol_finished || *decoder_finished {
+                if *protocol_finished {
                     return Err(WebEngineError::InvalidNativeTransition(
                         "bootstrap input arrived after READY",
                     ));
                 }
-                let mut remaining = payload;
-                loop {
-                    if remaining.is_empty() {
-                        return Ok(BootstrapProgress::Pending);
-                    }
-                    let event = decoder.push(remaining)?;
-                    if event.consumed == 0 || event.consumed > remaining.len() {
-                        return Err(WebEngineError::InvalidProgress {
-                            consumed: event.consumed,
-                            available: remaining.len(),
-                        });
-                    }
-                    remaining = &remaining[event.consumed..];
-                    match event.kind {
-                        NativeDecodeKind::NeedInput | NativeDecodeKind::Progress => {}
-                        NativeDecodeKind::Ready => {
-                            *terminal = event.terminal;
-                            if terminal.is_none() {
-                                return Err(WebEngineError::InvalidNativeTransition(
-                                    "READY did not transfer a terminal",
-                                ));
-                            }
-                            if let (Some(terminal), Some((max_bytes, max_rows))) =
-                                (terminal.as_ref(), replica.history_budget)
-                            {
-                                terminal.set_history_budget(max_bytes, max_rows)?;
-                            }
-                            if !remaining.is_empty() {
-                                return Err(WebEngineError::TrailingAfterReady(remaining.len()));
-                            }
-                            return Ok(BootstrapProgress::Ready);
-                        }
-                        NativeDecodeKind::HistoryBegin
-                        | NativeDecodeKind::HistoryPage
-                        | NativeDecodeKind::Finish => {
-                            return Err(WebEngineError::InvalidNativeTransition(
-                                "history transition arrived before protocol READY",
-                            ));
-                        }
-                    }
-                }
+                // The prefix is decoded whole at protocol READY, so a chunk
+                // boundary can never be mistaken for end-of-file.
+                decoder.feed(payload)?;
+                Ok(BootstrapProgress::Pending)
             }
+        }
+    }
+
+    fn bootstrap_staging_bytes(&self, replica: &Self::Replica) -> usize {
+        match &replica.state {
+            WebReplicaState::Native { decoder, .. } => decoder.staged_capacity(),
+            WebReplicaState::Synthesized(_) => 0,
         }
     }
 
@@ -415,24 +345,25 @@ impl EngineAdapter for WebEngine {
         replica: &mut Self::Replica,
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
-        match &mut replica.state {
-            WebReplicaState::Synthesized(_) => {
-                effects.push(EngineEffect::Damage(EngineDamage::Full));
-            }
+        let progress = match &mut replica.state {
+            WebReplicaState::Synthesized(_) => BootstrapProgress::Finished,
             WebReplicaState::Native {
-                terminal,
+                decoder,
                 protocol_finished,
-                ..
             } => {
-                if terminal.is_none() || std::mem::replace(protocol_finished, true) {
+                if std::mem::replace(protocol_finished, true) {
                     return Err(WebEngineError::InvalidNativeTransition(
-                        "protocol READY did not follow engine READY exactly once",
+                        "protocol READY arrived twice",
                     ));
                 }
-                effects.push(EngineEffect::Damage(EngineDamage::Full));
+                decoder.ready()?;
+                // Renderable now; history pages and FINISH follow.
+                BootstrapProgress::Ready
             }
-        }
-        Ok(BootstrapProgress::Finished)
+        };
+        replica.apply_history_budget()?;
+        effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(progress)
     }
 
     fn apply_history_page(
@@ -452,8 +383,6 @@ impl EngineAdapter for WebEngine {
         let WebReplicaState::Native {
             decoder,
             protocol_finished,
-            decoder_finished,
-            ..
         } = &mut replica.state
         else {
             return Ok(HistoryApplyOutcome {
@@ -467,52 +396,20 @@ impl EngineAdapter for WebEngine {
                 "history arrived before protocol READY",
             ));
         }
-        if *decoder_finished {
-            return Err(WebEngineError::InvalidNativeTransition(
-                "history arrived after FINISH",
-            ));
-        }
-        let mut retained = true;
-        let mut remaining = payload;
-        loop {
-            if remaining.is_empty() {
-                return Ok(HistoryApplyOutcome {
-                    progress: BootstrapProgress::Ready,
-                    retained_rows: if retained { declared_rows as usize } else { 0 },
-                    authenticated_rows: declared_rows as usize,
-                });
-            }
-            let event = decoder.push(remaining)?;
-            if event.consumed == 0 || event.consumed > remaining.len() {
-                return Err(WebEngineError::InvalidProgress {
-                    consumed: event.consumed,
-                    available: remaining.len(),
-                });
-            }
-            remaining = &remaining[event.consumed..];
-            match event.kind {
-                NativeDecodeKind::NeedInput
-                | NativeDecodeKind::Progress
-                | NativeDecodeKind::HistoryBegin => {}
-                NativeDecodeKind::HistoryPage => retained &= event.retained,
-                NativeDecodeKind::Finish => {
-                    *decoder_finished = true;
-                    if !remaining.is_empty() {
-                        return Err(WebEngineError::TrailingAfterFinish(remaining.len()));
-                    }
-                    return Ok(HistoryApplyOutcome {
-                        progress: BootstrapProgress::Finished,
-                        retained_rows: if retained { declared_rows as usize } else { 0 },
-                        authenticated_rows: declared_rows as usize,
-                    });
-                }
-                NativeDecodeKind::Ready => {
-                    return Err(WebEngineError::InvalidNativeTransition(
-                        "second READY arrived in history",
-                    ));
-                }
-            }
-        }
+        decoder.feed(payload)?;
+        let outcome = match decoder.next_checked(declared_rows as usize)? {
+            Some(page) => HistoryApplyOutcome {
+                progress: BootstrapProgress::Ready,
+                retained_rows: page.rows,
+                authenticated_rows: page.authenticated_rows,
+            },
+            None => HistoryApplyOutcome {
+                progress: BootstrapProgress::Finished,
+                retained_rows: 0,
+                authenticated_rows: 0,
+            },
+        };
+        Ok(outcome)
     }
 
     fn apply_output(
@@ -1849,20 +1746,8 @@ impl Connection {
                     bootstrap_id: *bootstrap_id,
                     seq: *seq,
                 })),
-                KernelEffect::Send(KernelSend::HistoryRequest {
-                    key,
-                    cursor,
-                    max_bytes,
-                    max_rows,
-                }) => {
-                    outcome.send.push(encode(&FrameKind::HistoryRequest {
-                        terminal_id: key.terminal_id.clone(),
-                        stream_id: key.stream_id,
-                        bootstrap_id: key.bootstrap_id,
-                        cursor: Bytes::copy_from_slice(cursor),
-                        max_bytes: *max_bytes,
-                        max_rows: *max_rows,
-                    }));
+                KernelEffect::Send(send @ KernelSend::HistoryRequest { .. }) => {
+                    outcome.send.extend(history_request_frame(send));
                 }
                 KernelEffect::Send(KernelSend::SubscribeEvents {
                     terminal,
@@ -1938,6 +1823,36 @@ impl Connection {
         }
     }
 
+    /// Ask for older history once the focused viewport scrolls near the
+    /// oldest loaded row: a native bootstrap delivers history a page at a
+    /// time, on demand. Returns the `HISTORY_REQUEST` to send, if any; an
+    /// in-flight request is not repeated.
+    pub fn history_demand(&mut self) -> Vec<Vec<u8>> {
+        let Some(terminal_id) = self.first_published_terminal() else {
+            return Vec::new();
+        };
+        let Some(terminal) = self.published_terminal() else {
+            return Vec::new();
+        };
+        let rows_from_oldest = usize::try_from(terminal.scrollbar().offset).unwrap_or(usize::MAX);
+        let Some(kernel) = self.kernel.as_mut() else {
+            return Vec::new();
+        };
+        self.effects.clear();
+        kernel.prefetch_history(&terminal_id, rows_from_oldest, &mut self.effects);
+        let frames = self
+            .effects
+            .as_slice()
+            .iter()
+            .filter_map(|effect| match effect {
+                KernelEffect::Send(send) => history_request_frame(send),
+                _ => None,
+            })
+            .collect();
+        self.effects.clear();
+        frames
+    }
+
     fn first_published_terminal(&self) -> Option<ResourceId> {
         let kernel = self.kernel.as_ref()?;
         if let Some(focused) = self.focused_terminal.as_ref()
@@ -1998,6 +1913,27 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf.to_vec()
+}
+
+/// The encoded `HISTORY_REQUEST` for a kernel history request.
+fn history_request_frame(send: &KernelSend) -> Option<Vec<u8>> {
+    let KernelSend::HistoryRequest {
+        key,
+        cursor,
+        max_bytes,
+        max_rows,
+    } = send
+    else {
+        return None;
+    };
+    Some(encode(&FrameKind::HistoryRequest {
+        terminal_id: key.terminal_id.clone(),
+        stream_id: key.stream_id,
+        bootstrap_id: key.bootstrap_id,
+        cursor: Bytes::copy_from_slice(cursor),
+        max_bytes: *max_bytes,
+        max_rows: *max_rows,
+    }))
 }
 
 /// The resource a terminal-stream frame addresses, when it addresses one.
