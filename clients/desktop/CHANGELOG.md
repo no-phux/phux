@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.36.1](https://github.com/no-phux/phux/compare/desktop-v0.36.0...desktop-v0.36.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **desktop:** keep the plain-terminal toggle clickable in the slim strip ([#1581](https://github.com/no-phux/phux/issues/1581)) ([6736208](https://github.com/no-phux/phux/commit/673620835bd2987a085053db255da3993f469549))
+
 ## [0.36.0](https://github.com/no-phux/phux/compare/desktop-v0.35.0...desktop-v0.36.0) (2026-10-17)
 
 
