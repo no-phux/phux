@@ -41,6 +41,7 @@ use super::skin::{Look, apply_backdrop};
 use super::typed::typed_keys;
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
+const UPLOAD_MOVED: &str = "The terminal changed before the upload started. Nothing was pasted.";
 
 fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
     super::notifications::AgentAttention {
@@ -895,11 +896,7 @@ impl Desk {
         if !self.stable_layout || self.role == WindowRole::Fresh {
             return;
         }
-        let Some(key) = self
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.home_key())
-        else {
+        let Some(key) = self.link_home_key() else {
             return;
         };
         if self.layout_key == Some(key) {
@@ -1145,11 +1142,8 @@ impl Desk {
             // A pending approval is server state, not a message: it leaves
             // the Inbox when it is decided, expires, or is withdrawn.
             "clear-notifications" => self.feed.retain(|entry| entry.kind == Kind::Approval),
-            "new" => {
-                self.workspace_call(|link| link.workspace.new_terminal(&link.connection, None))
-            }
-            "new-home" => {
-                let home = std::env::var("HOME").ok();
+            "new" | "new-home" => {
+                let home = std::env::var("HOME").ok().filter(|_| id == "new-home");
                 self.workspace_call(|link| {
                     link.workspace
                         .new_terminal(&link.connection, home.as_deref())
@@ -1202,10 +1196,10 @@ impl Desk {
             "tabs-side" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Side, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
             "font-down" => self.update_prefs(|prefs| prefs.font_size -= 1.0, cx),
-            "font-reset" => {
-                let size = DisplayPrefs::default().font_size;
-                self.update_prefs(|prefs| prefs.font_size = size, cx);
-            }
+            "font-reset" => self.update_prefs(
+                |prefs| prefs.font_size = DisplayPrefs::default().font_size,
+                cx,
+            ),
             "scroll-page-up" => self.scroll_page(-1, cx),
             "scroll-page-down" => self.scroll_page(1, cx),
             "scroll-top" => self.scroll(Scroll::Top, cx),
@@ -1670,7 +1664,14 @@ impl Desk {
     /// what belonged to it: agent alerts, the find bar, and pending uploads
     /// with a notice.
     fn release_link(&mut self, replacing: bool) {
-        self.abort_uploads(replacing);
+        let uploading = !self.uploads.is_empty() || self.uploads_reading > 0;
+        self.uploads.clear();
+        self.upload_epoch = self.upload_epoch.wrapping_add(1);
+        if replacing && uploading {
+            self.refuse_paste(
+                "The terminal changed before the upload finished. Nothing was pasted.",
+            );
+        }
         if let Some(link) = self.link.as_mut() {
             link.workspace.release_all(&link.connection);
             link.connection.close();
@@ -1691,11 +1692,7 @@ impl Desk {
         if self.session_is_attached() {
             return true;
         }
-        let key = self
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.home_key())
-            .or(self.home_key);
+        let key = self.link_home_key().or(self.home_key);
         let result = if let Some(remote) = self.remote.as_deref() {
             crate::connection::home::existing_remote_home(remote, &self.session, key)
         } else {
@@ -1740,13 +1737,7 @@ impl Desk {
     fn redial(&mut self, cx: &mut Context<Self>) {
         // Managed updates bypass the CLI resolver, but must not lose the
         // identity already learned by the old connection when rebuilding it.
-        if let Some(key) = self
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.home_key())
-        {
-            self.home_key = Some(key);
-        }
+        self.home_key = self.link_home_key().or(self.home_key);
         self.persist();
         let snapshot = self.last_saved.clone();
         let closed = self
@@ -1812,17 +1803,11 @@ impl Desk {
     }
 
     fn move_to_window(&mut self, cx: &mut Context<Self>) {
-        let Some(placement) = self.focused_placement().cloned() else {
-            return;
-        };
-        let Some(terminal) = placement.terminal_id.clone() else {
+        let (Some(id), Some(terminal)) = (self.focused_id(), self.focused_terminal()) else {
             return;
         };
         let session = self.session.clone();
-        self.workspace_call(|link| {
-            link.workspace
-                .close_pane(&link.connection, Some(placement.id.as_str()))
-        });
+        self.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&id)));
         let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
             desktop.open_moved(session, terminal, remote, cx);
@@ -2066,10 +2051,7 @@ impl Desk {
     }
 
     fn ask_terminate(&mut self) {
-        let Some(placement) = self.focused_placement() else {
-            return;
-        };
-        let Some(terminal) = placement.terminal_id.clone() else {
+        let Some(terminal) = self.focused_terminal() else {
             return;
         };
         let title = self.pane_title(Some(&terminal));
@@ -2228,8 +2210,7 @@ impl Desk {
     }
 
     fn legacy_rename_matches(&self, target: Option<&SessionRenameTarget>, name: &str) -> bool {
-        let Some(target) = target else { return false };
-        let Some(link) = self.link.as_ref() else {
+        let (Some(target), Some(link)) = (target, self.link.as_ref()) else {
             return false;
         };
         link.connection.status == Status::Attached
@@ -2345,16 +2326,15 @@ impl Desk {
         let Some(link) = self.link.as_ref() else {
             return;
         };
-        let len = link.workspace.tabs.len();
-        if len < 2 {
-            return;
-        }
-        let from = link
-            .workspace
-            .tabs
+        let tabs = &link.workspace.tabs;
+        let len = tabs.len();
+        let Some(from) = tabs
             .iter()
-            .position(|tab| tab.id == link.workspace.active_id);
-        let Some(from) = from else { return };
+            .position(|tab| tab.id == link.workspace.active_id)
+            .filter(|_| len > 1)
+        else {
+            return;
+        };
         let to = (from as i32 + step as i32).rem_euclid(len as i32) as usize;
         self.workspace_call(|link| link.workspace.move_tab(from, to));
     }
@@ -2485,10 +2465,7 @@ impl Desk {
 
     fn scroll_page(&mut self, direction: i64, cx: &mut Context<Self>) {
         self.with_view(cx, |client, view| {
-            let rows = client
-                .acquire_view(view)
-                .map(|frame| frame.rows)
-                .unwrap_or(1);
+            let rows = client.acquire_view(view).map_or(1, |frame| frame.rows);
             let _ = client.scroll_view(
                 view,
                 Scroll::Delta(direction * i64::from(rows.saturating_sub(1)).max(1)),
@@ -2564,22 +2541,19 @@ impl Desk {
         if self.refuse_native_input(terminal) {
             return;
         }
-        match crate::attach::attach_paths(&self.terminal_host(terminal), paths) {
+        let host = crate::attach::terminal_host(self.remote.as_deref(), terminal);
+        match crate::attach::attach_paths(&host, paths) {
             Some(crate::attach::PathAttach::Paste(text)) => {
                 self.paste_text_to(terminal, &text);
             }
             Some(crate::attach::PathAttach::Upload(batch)) => {
-                self.start_upload(terminal, batch, cx);
+                self.start_upload(terminal, batch, cx)
             }
             Some(crate::attach::PathAttach::Refuse { title, body }) => {
-                self.post(Kind::Refusal, title, Some(body));
+                self.post(Kind::Refusal, title, Some(body))
             }
             None => {}
         }
-    }
-
-    fn terminal_host(&self, terminal: &ResourceId) -> crate::attach::TerminalHost {
-        crate::attach::terminal_host(self.remote.as_deref(), terminal)
     }
 
     /// A pending or retained native owner never turns back into a raw PTY.
@@ -2705,29 +2679,21 @@ impl Desk {
             .client()
             .is_none_or(|current| !Arc::ptr_eq(&current, client))
         {
-            self.refuse_paste(
-                "The terminal changed before the upload started. Nothing was pasted.",
-            );
+            self.refuse_paste(UPLOAD_MOVED);
             return;
         }
         if self.refuse_native_input(&started.terminal) {
             return;
         }
         let current = self.destination_of(&started.terminal);
-        if !crate::attach::same_upload_destination(started, current.as_ref()) {
-            self.refuse_paste(
-                "The terminal changed before the upload started. Nothing was pasted.",
-            );
-            for item in &prepared {
-                if let Err(error) = item {
-                    self.post(Kind::Refusal, error.title, Some(error.body.clone()));
-                }
-            }
-            return;
+        let moved = !crate::attach::same_upload_destination(started, current.as_ref());
+        if moved {
+            self.refuse_paste(UPLOAD_MOVED);
         }
         for item in prepared {
             match item {
                 Err(error) => self.post(Kind::Refusal, error.title, Some(error.body)),
+                Ok(_) if moved => {}
                 Ok(file) => {
                     let transfer_id =
                         client.put_file(started.terminal.clone(), file.extension, file.bytes);
@@ -2796,19 +2762,8 @@ impl Desk {
         self.placement_of(terminal)?;
         Some(crate::attach::UploadDestination {
             terminal: terminal.clone(),
-            host: self.terminal_host(terminal),
+            host: crate::attach::terminal_host(self.remote.as_deref(), terminal),
         })
-    }
-
-    fn abort_uploads(&mut self, notify: bool) {
-        let pending = std::mem::take(&mut self.uploads);
-        let reading = self.uploads_reading > 0;
-        self.upload_epoch = self.upload_epoch.wrapping_add(1);
-        if notify && (!pending.is_empty() || reading) {
-            self.refuse_paste(
-                "The terminal changed before the upload finished. Nothing was pasted.",
-            );
-        }
     }
 
     fn write_file(&mut self, region: &str, mode: &str, cx: &mut Context<Self>) {
@@ -2816,24 +2771,22 @@ impl Desk {
             return;
         };
         let Some(client) = self.client() else { return };
-        let (text, name) = match region {
-            "selection" => (self.selection_text().unwrap_or_default(), "selection.txt"),
-            "scrollback" => (
-                region_text(&client, view, TextRegion::History),
-                "scrollback.txt",
-            ),
-            _ => (region_text(&client, view, TextRegion::Screen), "screen.txt"),
+        let (text, name, empty) = match region {
+            "selection" => {
+                let text = self.selection_text().unwrap_or_default();
+                (text, "selection.txt", "Nothing selected")
+            }
+            "scrollback" => {
+                let text = region_text(&client, view, TextRegion::History);
+                (text, "scrollback.txt", "Nothing to write")
+            }
+            _ => {
+                let text = region_text(&client, view, TextRegion::Screen);
+                (text, "screen.txt", "Nothing to write")
+            }
         };
         if text.is_empty() {
-            self.post(
-                Kind::Refusal,
-                if region == "selection" {
-                    "Nothing selected"
-                } else {
-                    "Nothing to write"
-                },
-                None,
-            );
+            self.post(Kind::Refusal, empty, None);
             return;
         }
         let path = match host::write_temp_file(name, &text) {
@@ -3061,23 +3014,18 @@ impl Desk {
         let Some(active) = self.picker.clone() else {
             return;
         };
-        let Some(current) = self.path_target() else {
+        let Some(current) = self
+            .path_target()
+            .filter(|current| paths::same_target(&active.target, Some(current)))
+        else {
             self.close_path_picker();
             return;
         };
-        if !paths::same_target(&active.target, Some(&current)) {
-            self.close_path_picker();
-            return;
-        }
         let host = paths::host_for_terminal(&current.terminal_id).map(SatelliteHost::new);
-        let id = self
-            .link
-            .as_ref()
-            .map(|link| {
-                link.connection
-                    .path_query(root.clone(), query.clone(), !query.is_empty(), host)
-            })
-            .unwrap_or(0);
+        let id = self.link.as_ref().map_or(0, |link| {
+            link.connection
+                .path_query(root.clone(), query.clone(), !query.is_empty(), host)
+        });
         self.picker = Some(if id == 0 {
             let mut failed = active;
             failed.root = root;
@@ -3224,10 +3172,13 @@ impl Desk {
         self.paint().palette.clone()
     }
 
+    /// The home session's durable key, as the live connection learned it.
+    fn link_home_key(&self) -> Option<SessionKey> {
+        self.link.as_ref()?.connection.home_key()
+    }
+
     pub fn client(&self) -> Option<Arc<Client>> {
-        self.link
-            .as_ref()
-            .map(|link| link.connection.client.clone())
+        Some(self.link.as_ref()?.connection.client.clone())
     }
 
     /// Change the focused view locally, then repaint it.
@@ -3281,8 +3232,7 @@ impl Desk {
     }
 
     fn focused_id(&self) -> Option<String> {
-        self.focused_placement()
-            .map(|placement| placement.id.clone())
+        Some(self.focused_placement()?.id.clone())
     }
 
     pub(crate) fn focused_terminal(&self) -> Option<ResourceId> {
@@ -3313,9 +3263,7 @@ impl Desk {
     }
 
     pub(crate) fn active_tab(&self) -> Option<&crate::workspace::layout::DeskTab> {
-        self.link
-            .as_ref()
-            .and_then(|link| link.workspace.active_tab())
+        self.link.as_ref()?.workspace.active_tab()
     }
 
     pub(crate) fn active_tab_id(&self) -> Option<String> {
@@ -3379,24 +3327,16 @@ impl Desk {
     }
 
     fn pane_cwd(&self, terminal: Option<&ResourceId>) -> Option<String> {
-        let terminal = terminal?;
-        self.link
-            .as_ref()
-            .and_then(|link| link.connection.pane(terminal))
-            .and_then(|pane| pane.cwd.clone())
+        self.link.as_ref()?.connection.pane(terminal?)?.cwd.clone()
     }
 
     pub(crate) fn focused_pane(&self) -> Option<&phux_client_runtime::control::PaneDescriptor> {
         let terminal = self.focused_terminal()?;
-        self.link
-            .as_ref()
-            .and_then(|link| link.connection.pane(&terminal))
+        self.link.as_ref()?.connection.pane(&terminal)
     }
 
     pub fn agent(&self, terminal: &ResourceId) -> Option<&AgentInfo> {
-        self.link
-            .as_ref()
-            .and_then(|link| link.connection.agents.get(terminal))
+        self.link.as_ref()?.connection.agents.get(terminal)
     }
 
     pub fn post(&mut self, kind: Kind, title: &str, body: Option<String>) {
@@ -3599,10 +3539,7 @@ impl Desk {
         let previous = self.work_layout_path(
             self.remote.as_deref(),
             &self.session,
-            self.link
-                .as_ref()
-                .and_then(|link| link.connection.home_key())
-                .or(self.home_key),
+            self.link_home_key().or(self.home_key),
         );
         self.locations.insert(previous, self.store.clone());
         self.persist();
