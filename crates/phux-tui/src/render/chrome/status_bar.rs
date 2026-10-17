@@ -795,6 +795,24 @@ impl StatusBarPainter {
         badge_span(&chip, cols, 0).start.checked_sub(1)
     }
 
+    /// Columns the widgets compose into: all of them, less the prefix chip
+    /// and its gap while the prefix is pending, so a right-aligned widget
+    /// moves left of the chip whole instead of being cut under it. A bar
+    /// too narrow for the chip keeps every column.
+    fn widget_cols(&self, cols: u16) -> u16 {
+        let Some(chip) = self.prefix_chip() else {
+            return cols;
+        };
+        let reserve = u16::try_from(chip.chars().count())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
+        if reserve >= cols {
+            cols
+        } else {
+            cols - reserve
+        }
+    }
+
     /// Cells the attention chip sits in from the right edge: the badge width
     /// plus a gap, or `0` with no badge.
     fn attention_offset(&self) -> u16 {
@@ -881,7 +899,7 @@ impl StatusBarPainter {
         }
         let ctx = self.ctx_with_window_list(ctx);
         phux_client::perf::BAR_COMPOSES.add(1);
-        let mut new_row = self.bar.render(&ctx.as_widget(), cols);
+        let mut new_row = self.bar.render(&ctx.as_widget(), self.widget_cols(cols));
         mark_window_drop(&mut new_row, self.drop_at);
         if !self.needs_repaint(x, cols, rows, &new_row) {
             return Ok(false);
@@ -1049,7 +1067,7 @@ impl StatusBarPainter {
             last_exit: self.last_exit,
             ..*ctx
         };
-        let mut row = self.bar.render(&ctx.as_widget(), cols);
+        let mut row = self.bar.render(&ctx.as_widget(), self.widget_cols(cols));
         mark_window_drop(&mut row, self.drop_at);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
         fill_buffer(&mut buffer, &row, cols, self.theme.surface, &self.theme);
@@ -1584,6 +1602,36 @@ mod tests {
         assert!(p.set_prefix_pending(false));
         assert!(!visible(&mut p, 40, 10, "").contains("C-a"));
         assert!(!p.set_prefix_pending(false), "already clear");
+    }
+
+    /// A right-aligned widget moves left of the pending prefix chip whole;
+    /// the chip never cuts into its text.
+    #[test]
+    fn the_prefix_chip_moves_right_widgets_instead_of_cutting_them() {
+        let cfg = StatusCfg {
+            left: vec![spec("windows", &[])],
+            right: vec![spec("session-name", &[])],
+            ..StatusCfg::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+        p.set_windows(wins(&[("a", true)]));
+        let before = visible(&mut p, 40, 10, "work");
+        assert!(before.trim_end().ends_with("work"), "{before:?}");
+
+        assert!(p.set_prefix_pending(true));
+        let during = visible(&mut p, 40, 10, "work");
+        let work = during
+            .find("work")
+            .expect("the session name survives whole");
+        let chip = during.find(" C-a ").expect("the chip");
+        assert!(
+            work + 4 < chip,
+            "the name sits left of the chip: {during:?}"
+        );
+
+        assert!(p.set_prefix_pending(false));
+        let after = visible(&mut p, 40, 10, "work");
+        assert!(after.trim_end().ends_with("work"), "{after:?}");
     }
 
     /// Painter-owned focused-pane state feeds the `cwd` and `exit` widgets;
