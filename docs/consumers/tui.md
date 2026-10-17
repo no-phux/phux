@@ -736,7 +736,7 @@ satellite row cannot re-attach this client to that remote session:
 active pane as a tab of the session you are already in. The tab
 holds the satellite's real Terminal; closing it kills that pane there.
 
-The **tab picker** (`C-a w`) is hierarchical: sessions as headers,
+The **tab picker** (`C-a w`, titled `Tabs`) is hierarchical: sessions as headers,
 tabs nested under them, labelled as the tab bar labels them (the index
 `C-a <n>` reaches, then the name). A tab in the current session switches directly; a
 tab in another session is a one-step `switch-session` that also
@@ -762,10 +762,10 @@ or end, `C-w` kills the previous word, `C-h`/Backspace and `C-d`/Delete
 delete a character. Enter commits; Esc cancels.
 
 The **directory picker** (`C-a G`) browses directories on the attached
-server and opens a new window there. Its title is the action (`Go to
-directory`, naming the host when it is not simply the attached server's)
-and the directory it shows is the footer status, `~`-shortened and clipped
-from the left when long. While the listing is in flight the same box says
+server and opens a new window there. Its title is the label its chord and
+palette row carry (`New tab in folder`, naming the host when it is not
+simply the attached server's) and the directory it shows is the footer
+status, `~`-shortened and clipped from the left when long. While the listing is in flight the same box says
 `Listing ~…`; Esc cancels it. Over `phux --remote` it browses the remote
 host. With a satellite pane focused, and a hub that advertises
 `LIST_DIRECTORY_HOST`, it lists that satellite through the hub.
