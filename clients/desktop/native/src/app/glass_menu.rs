@@ -431,13 +431,13 @@ impl GlassMenu {
                     Entry {
                         gap: true,
                         ..Entry::new(
-                            "Pane layout",
+                            "Pane Layout",
                             IconName::PanelsTopLeft,
                             Choice::Page(Page::Panes),
                         )
                     },
                     Entry::new(
-                        "Tab placement",
+                        "Tab Placement",
                         IconName::PanelLeft,
                         Choice::Page(Page::Tabs),
                     ),
@@ -481,7 +481,7 @@ impl GlassMenu {
                     entry.checked = self.current.as_ref() == Some(&host.name);
                     entry
                 }));
-                let mut add = Entry::new("Add host…", IconName::Plus, Choice::AddHost);
+                let mut add = Entry::new("Add Host…", IconName::Plus, Choice::AddHost);
                 add.gap = true;
                 entries.push(add);
                 entries
@@ -713,8 +713,8 @@ impl GlassMenu {
                     .into(),
                 "Switch host",
             ),
-            Page::Panes => ("Pane layout".into(), "Split or duplicate this terminal"),
-            Page::Tabs => ("Tab placement".into(), "Choose top or side workspace tabs"),
+            Page::Panes => ("Pane Layout".into(), "Split or duplicate this terminal"),
+            Page::Tabs => ("Tab Placement".into(), "Choose top or side workspace tabs"),
             Page::Hosts => ("Switch host".into(), "Local and saved hosts"),
         };
         let icon = match (home, self.current.is_some()) {

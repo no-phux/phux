@@ -54,6 +54,25 @@ fn next_window_cycles_same_server_peers_and_never_picks_the_source() {
 }
 
 #[test]
+fn every_menu_bar_item_carries_its_catalog_title_once() {
+    use super::{MENU_BAR, MENU_SEPARATOR};
+    use crate::app::actions::title;
+    for (menu, ids) in MENU_BAR {
+        let mut titles: Vec<&str> = ids
+            .iter()
+            .filter(|id| **id != MENU_SEPARATOR)
+            .map(|id| title(id))
+            .collect();
+        let count = titles.len();
+        titles.sort_unstable();
+        titles.dedup();
+        assert_eq!(titles.len(), count, "{menu} names each command once");
+    }
+    assert_eq!(title("settings"), "Settings…");
+    assert_eq!(title("find"), "Find in Terminal");
+}
+
+#[test]
 fn next_window_skips_peers_that_cannot_take_the_terminal_yet() {
     use super::next_peer;
     // Window 2 is still connecting (or failed, or already revealing another

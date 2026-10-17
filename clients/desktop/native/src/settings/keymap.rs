@@ -112,7 +112,7 @@ pub fn builtin_commands() -> &'static [CommandSpec] {
 const CATALOG: &str = "\
     palette | Command Palette | General | cmd+shift+p | Search and run desktop commands. |
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
-    settings | Settings | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
+    settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
     native-agent | New Agent… | Terminal |  | Launch a host-owned ACP agent. | agent acp
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
@@ -186,7 +186,7 @@ const CATALOG: &str = "\
     new-window | New Window | View | cmd+n | Open another window on a session. |
     fullscreen | Toggle Full Screen | View | cmd+ctrl+f | Enter or leave native full-screen mode. |
     maximize | Maximize Window | View |  | Toggle the native window's zoomed size. |
-    minimize | Minimize Window | View | cmd+m | Send this window to the Dock. | hide
+    minimize | Minimize | View | cmd+m | Send this window to the Dock. | hide window
     windows | Show All Windows… | View |  | List every open window with its session, host and tabs, and bring one forward. | overview switch minimized tabs
     reload-config | Reload Ghostty Config | Ghostty | cmd+shift+, | Read the Ghostty configuration again. |
     import-ghostty | Use Ghostty Font, Colors and Padding | Ghostty |  | Apply Ghostty appearance settings to this window. |
