@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FontWeight, HighlightStyle, IntoElement, MouseButton, Styled, StyledText,
-    WeakEntity, Window, div, px,
+    AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, MouseButton, Styled,
+    StyledText, WeakEntity, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem};
@@ -22,7 +22,7 @@ use crate::settings::theme::Palette;
 use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
 use super::{
-    Row, Section, Target, command_results, command_sections, move_sections, prepare_goto,
+    Row, Section, Target, command_results, command_sections, corner, move_sections, prepare_goto,
     query_terms, rank_sections, session_sections, settings_sections,
 };
 
@@ -118,6 +118,7 @@ pub(super) fn palette(
         .min(400.)
         .min(available - detail_height);
     let width = (viewport.width.as_f32() - 32.).clamp(0., 560.);
+    let look = desk.look();
     let handle = cx.weak_entity();
     let confirm = handle.clone();
     let selection = handle.clone();
@@ -137,7 +138,7 @@ pub(super) fn palette(
     let mut command = Command::new(&state)
         .filterable(false)
         .bordered(false)
-        .rounded(px(12.))
+        .rounded(corner(&look, 12.))
         .h(px(list_height))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
@@ -181,7 +182,7 @@ pub(super) fn palette(
             },
         )));
     }
-    super::card(&colors, width)
+    super::card(&look, width)
         .id("palette-panel")
         .debug_selector(|| "palette-panel".into())
         .mt(px(top))
@@ -190,11 +191,11 @@ pub(super) fn palette(
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(command)
-        .children(details.map(|card| facts_panel(card, detail_height, &colors)))
+        .children(details.map(|card| facts_panel(card, detail_height, &colors, look.border)))
         .into_any_element()
 }
 
-fn facts_panel(card: FactsCard, height: f32, colors: &Palette) -> impl IntoElement {
+fn facts_panel(card: FactsCard, height: f32, colors: &Palette, rule: Hsla) -> impl IntoElement {
     div()
         .id("palette-facts")
         .debug_selector(|| "palette-facts".into())
@@ -203,7 +204,7 @@ fn facts_panel(card: FactsCard, height: f32, colors: &Palette) -> impl IntoEleme
         .overflow_y_scroll()
         .p(px(14.))
         .border_t_1()
-        .border_color(from_hex(&colors.border))
+        .border_color(rule)
         .flex()
         .flex_col()
         .gap(px(6.))

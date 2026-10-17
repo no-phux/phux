@@ -20,6 +20,7 @@
     "patches/0003-memory-font-fallback.patch": "22e8e84b03d8c544745bcab8b57e29283a658f78629334ff6aacda1fdd1ce144",
     "patches/0004-native-glass-surfaces.patch": "5a672d39694b3bb03ab0cbc37a30c08bcef2a0d09e41e256b22ee8214a5691fa",
     "patches/0005-element-input-key-repeat.patch": "9e199aa833f9aadd97fec305a5e2b239872d389846350118a3a666fdf81461a2",
-    "patches/0006-bulk-glyph-sprites.patch": "1a8869aa8c7c962f5afb951e17ab4a1c9f8e0e6fc81158d178798371b8221d1a"
+    "patches/0006-bulk-glyph-sprites.patch": "1a8869aa8c7c962f5afb951e17ab4a1c9f8e0e6fc81158d178798371b8221d1a",
+    "patches/0007-clearable-native-glass.patch": "0390f9f2d2ea12ec0afee46979c475bed38e2ed19f6466ab9436dcd1f86bfc82"
   }
 }

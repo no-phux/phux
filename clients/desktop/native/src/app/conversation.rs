@@ -22,6 +22,8 @@ use std::collections::HashMap;
 mod questions;
 use super::color::from_hex;
 use super::desk::{Desk, Modal};
+use super::overlays::corner;
+use super::skin::Look;
 use crate::connection::{Connection, ConnectionIdentity};
 use crate::settings::theme::Palette;
 
@@ -801,6 +803,8 @@ pub(crate) fn render(
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     desk.prepare_conversation(placement, window, cx);
+    let look = desk.look();
+    let mono = SharedString::from(desk.prefs.font_family.clone());
     let writable = desk.conversation_writable(placement, false);
     let stopping = desk.conversation_writable(placement, true);
     let Some(face) = desk.conversation_faces.get_mut(placement) else {
@@ -875,7 +879,7 @@ pub(crate) fn render(
     let rows = conversation
         .entries
         .iter()
-        .map(|entry| transcript_row(entry, colors))
+        .map(|entry| transcript_row(entry, colors, &look, &mono))
         .collect::<Vec<_>>();
     let omitted = conversation.omitted;
     let input = face.input.clone();
@@ -895,7 +899,7 @@ pub(crate) fn render(
                     && conversation.epoch == link.connection.connection_epoch()
             }),
         placement,
-        colors,
+        &look,
         cx,
     );
     let native = conversation.native.is_some();
@@ -988,7 +992,13 @@ fn unavailable(placement: &str, cx: &mut Context<Desk>) -> AnyElement {
         .into_any_element()
 }
 
-fn transcript_row(entry: &TranscriptEntry, colors: &Palette) -> AnyElement {
+/// One transcript entry; tool output sets in the terminal font `mono`.
+fn transcript_row(
+    entry: &TranscriptEntry,
+    colors: &Palette,
+    look: &Look,
+    mono: &SharedString,
+) -> AnyElement {
     let label = match entry.role {
         TranscriptRole::User => "You",
         TranscriptRole::Assistant => "Assistant",
@@ -1005,7 +1015,7 @@ fn transcript_row(entry: &TranscriptEntry, colors: &Palette) -> AnyElement {
         .flex_col()
         .gap(px(4.))
         .p(px(10.))
-        .rounded(px(8.))
+        .rounded(corner(look, 8.))
         .bg(from_hex(&colors.raised).opacity(0.55))
         .child(
             div()
@@ -1054,7 +1064,7 @@ fn transcript_row(entry: &TranscriptEntry, colors: &Palette) -> AnyElement {
             row = row.child(
                 div()
                     .text_sm()
-                    .font_family("Paper Mono")
+                    .font_family(mono.clone())
                     .children(tool.output.lines().map(|line| div().child(line.to_owned()))),
             );
         }

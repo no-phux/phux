@@ -490,6 +490,14 @@ fn catalog() -> Vec<CommandSpec> {
             &[],
         ),
         spec(
+            "plain-terminal",
+            "Toggle Plain Terminal",
+            "View",
+            Some("cmd+ctrl+t"),
+            "Switch between the glass desk and a plain terminal window.",
+            &["skin", "minimal", "ghostty", "chrome", "glass"],
+        ),
+        spec(
             "tabs-top",
             "Tabs on Top",
             "View",

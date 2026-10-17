@@ -7,6 +7,7 @@
 mod actions;
 pub mod geometry;
 mod input_host;
+mod laser;
 mod paint;
 pub mod settings;
 
@@ -14,6 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::presentation::{self, Ticket};
 use gpui::{
@@ -58,6 +60,7 @@ pub struct Terminal {
     /// The last prepared scene, reused while its inputs are unchanged.
     scene: paint::SceneCache,
     surface: presentation::Surface,
+    laser: laser::Laser,
     input: gpui::Entity<crate::input::TerminalInput>,
     /// Forwards clipboard refusals and upload requests from [`crate::input::TerminalInput`].
     /// Kept so the subscription lives with the view.
@@ -110,6 +113,7 @@ impl Terminal {
             observation: Arc::new(Mutex::new(paint::Observation::default())),
             scene: paint::SceneCache::default(),
             surface: presentation::Surface::default(),
+            laser: laser::Laser::default(),
             input,
             _input_notices,
             window_remote: None,
@@ -268,6 +272,16 @@ impl Render for Terminal {
         let fraction = frame
             .as_ref()
             .map_or(0., |frame| self.input.read(cx).fraction_of(frame));
+        let now = Instant::now();
+        let target = frame
+            .as_ref()
+            .ok()
+            .filter(|_| !cx.reduce_motion())
+            .and_then(|frame| paint::laser_target(frame, &self.settings));
+        self.laser.observe(target.map(|(spot, _)| spot), now);
+        let beam = target
+            .filter(|_| self.laser.active(now))
+            .map(|(_, color)| (self.laser, color));
         let epoch = recovery.as_ref().map(Ticket::connection_epoch);
         let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
@@ -375,6 +389,16 @@ impl Render for Terminal {
                     move |bounds, window, cx| paint::prepare(frame, settings, fraction, bounds, &scene, window, cx),
                     move |bounds, prepared, window, cx| {
                         let mut report = prepared.paint(bounds, window, cx);
+                        if let Some((laser, color)) = beam
+                            && report.frame.is_some()
+                        {
+                            let geometry = report.geometry;
+                            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                                if laser.paint(geometry, color, Instant::now(), window) {
+                                    window.request_animation_frame();
+                                }
+                            });
+                        }
                         report.view_id = Some(view);
                         report.epoch = epoch;
                         let needs_rebind =

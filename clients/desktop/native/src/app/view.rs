@@ -3,6 +3,8 @@
 //! The window is one sheet of glass over the desktop blur. Titlebar, sidebar
 //! and status sit on it unframed; panes float on it as rounded cards with no
 //! header. A pane's controls appear when the pointer reaches its top edge.
+//! Every extent, radius and paint comes from the desk's skin each frame, so
+//! a skin shift (such as into the plain terminal) morphs instead of popping.
 //! The titlebar and sidebar are cached views: a terminal frame marks the desk
 //! dirty as their ancestor, and they stay as painted until the desk notifies.
 
@@ -33,7 +35,7 @@ use phux_protocol::{ResourceId, ResourceKind};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
 use crate::settings::theme::Palette;
-use crate::settings::{DisplayPrefs, TabPosition, WindowBackground};
+use crate::settings::{Skin, TabPosition, TabsWhen};
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 
 use super::actions::{OpenPathDirectory, Run};
@@ -43,14 +45,8 @@ use super::keys::gpui_stroke;
 use super::motion;
 use super::notifications::{Kind, Notification};
 use super::overlays;
+use super::skin::{Look, Surface, Surfaced};
 
-const TITLEBAR: f32 = 44.;
-const STATUS: f32 = 26.;
-/// The glass between panes, which is also the split's grab area.
-const GAP: f32 = 12.;
-/// The glass around the pane canvas.
-const GUTTER: f32 = 12.;
-const RADIUS: f32 = 12.;
 const SIDEBAR_ROW: f32 = 32.;
 const SIDEBAR_ICON: f32 = 16.;
 /// How far down a pane the pointer reveals its controls.
@@ -60,44 +56,106 @@ const TRAFFIC_LIGHTS: f32 = 78.;
 /// Room for the search menu and sidebar toggle, even with the navigator hidden.
 const MENU_RAIL: f32 = 224.;
 const TAB_RAIL: f32 = 212.;
+/// Titlebar heights between which its controls fade in: a slim drag strip
+/// holds only the traffic lights and a title.
+const SLIM_BAR: f32 = 30.;
+const FULL_BAR: f32 = 42.;
+/// The narrowest grab area a split keeps when its painted gap is thinner.
+const SPLIT_GRAB: f32 = 8.;
 
-/// Paint values for the glass sheet and the cards on it, from the theme.
-struct Glass {
-    /// The window sheet: translucent over the desktop blur, opaque on a
-    /// solid window.
-    sheet: Hsla,
-    /// Light falling from the top edge of the sheet.
-    sheen: Hsla,
-    /// A pane card: the terminal background at the terminal opacity.
-    card: Hsla,
-    /// Neutral and focused edges. Quiet cards keep their edge transparent.
-    edge: Hsla,
-    lit: Hsla,
-    shadow: Hsla,
+/// How much of the full titlebar's controls fit a bar `titlebar` points
+/// tall: 0 in a slim strip, 1 in the full bar.
+fn controls_fit(titlebar: f32) -> f32 {
+    ((titlebar - SLIM_BAR) / (FULL_BAR - SLIM_BAR)).clamp(0., 1.)
 }
 
-impl Glass {
-    fn of(colors: &Palette, prefs: &DisplayPrefs) -> Self {
-        let light = colors.theme.appearance == "light";
-        let ink = from_hex(&colors.theme.foreground);
-        let sheet = match prefs.window_background {
-            WindowBackground::Blur => {
-                from_hex(&colors.theme.background).opacity(if light { 0.58 } else { 0.44 })
-            }
-            WindowBackground::Solid => from_hex(&colors.theme.background),
-        };
-        Self {
-            sheet,
-            sheen: ink.opacity(if light { 0.07 } else { 0.05 }),
-            card: from_hex(&crate::settings::theme::with_alpha(
-                &colors.theme.background,
-                prefs.painted_terminal_opacity(),
-            )),
-            edge: gpui::transparent_black(),
-            lit: ink.opacity(0.22),
-            shadow: gpui::black().opacity(if light { 0.08 } else { 0.18 }),
-        }
+/// Titlebar tab height for a bar `titlebar` points tall.
+fn tab_height(titlebar: f32) -> f32 {
+    (titlebar - 14.).clamp(22., 30.)
+}
+
+/// Whether the skin shows workspace tabs when there are `count` of them.
+fn tabs_shown(skin: &Skin, count: usize) -> bool {
+    skin.chrome.tabs == TabsWhen::Always || count >= 2
+}
+
+/// How see-through the skin's pane cards are, 0 (solid) to 1. Gloss
+/// highlights scale with it so they fade out as the glass goes opaque.
+fn gloss(skin: &Skin) -> f32 {
+    (1. - skin.material.card_solid).clamp(0., 1.)
+}
+
+/// Sidebar and list rows.
+fn row_radius(skin: &Skin) -> f32 {
+    (skin.shape.kit_radius - 2.).max(0.)
+}
+
+/// Small status chips.
+fn chip_radius(skin: &Skin) -> f32 {
+    skin.shape.kit_radius / 2.
+}
+
+/// The selected tab's lift, plus a specular top edge and a faint accent glow
+/// while the skin is glassy.
+fn tab_glow(look: &Look) -> Vec<BoxShadow> {
+    let mut shadows = look.tab_shadow.clone();
+    let gloss = gloss(&look.skin);
+    if gloss > 0. && look.lit.a > 0. {
+        shadows.push(BoxShadow {
+            color: look.lit.opacity(0.5 * gloss),
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(0.),
+            spread_radius: px(0.),
+            inset: true,
+        });
+        shadows.push(BoxShadow {
+            color: from_hex(&look.colors.theme.accent).opacity(0.1 * gloss),
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(12.),
+            spread_radius: px(-4.),
+            inset: false,
+        });
     }
+    shadows
+}
+
+/// A pane card's shadow plus a faint inner rim while the skin is glassy.
+fn pane_shadows(look: &Look) -> Vec<BoxShadow> {
+    let mut shadows = look.pane_shadow.clone();
+    let rim = look.rim.opacity(0.6 * gloss(&look.skin));
+    if rim.a > 0. {
+        shadows.push(BoxShadow {
+            color: rim,
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(1.),
+            inset: true,
+        });
+    }
+    shadows
+}
+
+/// Light catching a card's top edge: a hairline brightest at the centre,
+/// `inset` points in from either corner. None when `color` is clear.
+fn specular(color: Hsla, inset: f32) -> Option<gpui::Div> {
+    let half = |from: Hsla, to: Hsla| {
+        div().flex_1().h_full().bg(linear_gradient(
+            90.,
+            linear_color_stop(from, 0.),
+            linear_color_stop(to, 1.),
+        ))
+    };
+    (color.a > 0.).then(|| {
+        div()
+            .absolute()
+            .top_0()
+            .left(px(inset))
+            .right(px(inset))
+            .h(px(1.))
+            .flex()
+            .child(half(color.opacity(0.), color))
+            .child(half(color, color.opacity(0.)))
+    })
 }
 
 /// Stable per route, independent of inventory order and the selected session.
@@ -261,19 +319,17 @@ fn chrome_slot(
 fn build_titlebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     let look = desk.look();
-    let colors = &look.chrome;
-    titlebar(desk, sidebar, colors, cx).into_any_element()
+    titlebar(desk, sidebar, &look, cx).into_any_element()
 }
 
 fn build_sidebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    let colors = &look.chrome;
-    sidebar_column(desk, colors, cx).into_any_element()
+    sidebar_column(desk, &look.colors, cx).into_any_element()
 }
 
 fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    let colors = &look.chrome;
+    let colors = &look.colors;
     div()
         .w(px(TAB_RAIL))
         .h_full()
@@ -299,29 +355,28 @@ fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .child(tab_strip(desk, TabPosition::Side, colors, cx)),
+                .child(tab_strip(desk, TabPosition::Side, &look, cx)),
         )
         .into_any_element()
 }
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    let colors = &look.chrome;
-    overlays::layer(desk, colors, window, cx)
+    overlays::layer(desk, &look.colors, window, cx)
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
-    let look = desk.look();
-    let colors = &look.chrome;
-    let glass = Glass::of(colors, &desk.prefs);
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     desk.set_viewport(window.viewport_size());
     desk.sync_title(window);
-    desk.sync_window_background(window);
     desk.settle_focus(window, cx);
+    desk.drive_skin(window, cx);
     desk.ensure_clock(cx);
     desk.flush_system(cx);
+    // Read after the skin is driven, so a shift paints its current step.
+    let look = desk.look();
+    let skin = look.skin;
     if crate::diag::evidence_pending(cx) {
         let desk_handle = cx.weak_entity();
         crate::diag::arm_evidence(
@@ -339,6 +394,18 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         desk.drop_target = None;
     }
     observe_motion(desk, window);
+    // The sidebar slides shut as the skin withdraws it, whatever the prefs say.
+    let presence = skin.chrome.sidebar.clamp(0., 1.);
+    let sidebar_width = desk.prefs.sidebar_width as f32 * presence;
+    let tab_count = desk
+        .link
+        .as_ref()
+        .map_or(0, |link| link.workspace.tabs.len());
+    let side_tabs = desk.tab_position() == TabPosition::Side && tabs_shown(&skin, tab_count);
+    let sheen_height = skin.material.sheen_height;
+    let sheen = sheen_height > 0.
+        && look.sheen.a > 0.
+        && (skin.chrome.sheen || desk.shift_progress().is_some());
 
     div()
         .id("desk")
@@ -348,21 +415,23 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .relative()
         .flex()
         .flex_col()
-        .bg(glass.sheet)
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .h(px(220.))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(glass.sheen, 0.),
-                    linear_color_stop(glass.sheen.opacity(0.), 1.),
-                )),
-        )
-        .text_color(from_hex(&colors.theme.foreground))
+        .bg(look.sheet)
+        .when(sheen, |sheet| {
+            sheet.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(sheen_height))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(look.sheen, 0.),
+                        linear_color_stop(look.sheen.opacity(0.), 1.),
+                    )),
+            )
+        })
+        .text_color(look.ink)
         .on_action(cx.listener(|desk, action: &Run, window, cx| {
             desk.execute(&action.id, window, cx);
         }))
@@ -375,7 +444,9 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .child(chrome_slot(
             &mut desk.chrome.titlebar,
             build_titlebar,
-            StyleRefinement::default().w_full().h(px(TITLEBAR)),
+            StyleRefinement::default()
+                .w_full()
+                .h(px(skin.chrome.titlebar)),
             cx,
         ))
         .child(
@@ -383,16 +454,21 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                 .flex_grow(1.)
                 .flex()
                 .min_h(px(0.))
-                .when(sidebar, |row| {
-                    let width = px(desk.prefs.sidebar_width as f32);
+                .when(sidebar && presence > 0., |row| {
+                    let style = StyleRefinement::default().w(px(sidebar_width)).h_full();
+                    let style = if presence < 1. {
+                        style.overflow_hidden().opacity(presence)
+                    } else {
+                        style
+                    };
                     row.child(chrome_slot(
                         &mut desk.chrome.sidebar,
                         build_sidebar,
-                        StyleRefinement::default().w(width).h_full(),
+                        style,
                         cx,
                     ))
                 })
-                .when(desk.tab_position() == TabPosition::Side, |row| {
+                .when(side_tabs, |row| {
                     row.child(chrome_slot(
                         &mut desk.chrome.tabs,
                         build_tab_rail,
@@ -403,7 +479,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                         cx,
                     ))
                 })
-                .child(main_column(desk, colors, window, cx)),
+                .child(main_column(desk, &look, window, cx)),
         )
         .child(chrome_slot(
             &mut desk.chrome.overlays,
@@ -466,26 +542,78 @@ fn drag_capture(cursor: CursorStyle, cx: &mut Context<Desk>) -> AnyElement {
     .into_any_element()
 }
 
+/// The full bar holds the main menu, tabs and actions; a slim strip, as the
+/// terminal skin wears it, keeps the traffic lights, a centred title, tabs
+/// only when there are several, and the skin toggle on hover. Controls fade
+/// with the bar's height, so a skin shift morphs between the two.
 fn titlebar(
     desk: &mut Desk,
     sidebar: bool,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let region = desk
         .drag_region
         .get_or_insert_with(|| cx.new(crate::chrome::DragRegion::new))
         .clone();
+    let colors = &look.colors;
+    let skin = &look.skin;
+    let height = skin.chrome.titlebar;
+    let fit = controls_fit(height);
     let quick = desk.role == desk::WindowRole::Quick;
-    let lead = titlebar_lead(sidebar, quick, desk.prefs.sidebar_width as f32);
+    let presence = skin.chrome.sidebar.clamp(0., 1.);
+    let full = titlebar_lead(
+        sidebar && presence > 0.,
+        quick,
+        desk.prefs.sidebar_width as f32 * presence,
+    );
+    let lead = (TRAFFIC_LIGHTS + (full - TRAFFIC_LIGHTS) * fit).max(TRAFFIC_LIGHTS);
+    let tabs = desk
+        .link
+        .as_ref()
+        .map_or(0, |link| link.workspace.tabs.len());
+    let top_tabs = desk.tab_position() == TabPosition::Top && tabs_shown(skin, tabs);
+    let title = (fit < 1. && !top_tabs).then(|| {
+        let title = desk
+            .active_tab()
+            .map(|tab| desk::tab_title(desk, tab))
+            .unwrap_or_else(|| "phux".to_owned());
+        match desk.remote.as_deref() {
+            Some(host) => format!("{title} · {host}"),
+            None => title,
+        }
+    });
     div()
-        .h(px(TITLEBAR))
+        .id("titlebar")
+        .group("titlebar")
+        .h(px(height))
         .w_full()
         .relative()
         .flex()
         .items_center()
         .flex_shrink_0()
+        .when(fit < 1., |bar| bar.overflow_hidden())
         .child(div().absolute().inset_0().child(region))
+        .children(title.map(|title| {
+            // Centred on the window with no hitbox, so the strip still drags.
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(TRAFFIC_LIGHTS + 8.))
+                .when(fit > 0., |row| row.opacity(1. - fit))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(from_hex(&colors.subtext))
+                        .child(title),
+                )
+        }))
         .child(
             div()
                 .w(px(lead))
@@ -496,19 +624,21 @@ fn titlebar(
                 .gap(px(2.))
                 .pl(px(TRAFFIC_LIGHTS))
                 .pr(px(8.))
-                .child(main_menu(desk, cx))
-                .when(!quick, |lead| {
-                    lead.child(icon_button(
-                        "sidebar",
-                        IconName::PanelLeft,
-                        if sidebar {
-                            "Hide Sidebar"
-                        } else {
-                            "Show Sidebar"
-                        },
-                        desk.shown_chord("sidebar"),
-                        cx.listener(|desk, _, window, cx| desk.execute("sidebar", window, cx)),
-                    ))
+                .when(fit < 1., |lead| lead.overflow_hidden().opacity(fit))
+                .when(fit > 0., |lead| {
+                    lead.child(main_menu(desk, cx)).when(!quick, |lead| {
+                        lead.child(icon_button(
+                            "sidebar",
+                            IconName::PanelLeft,
+                            if sidebar {
+                                "Hide Sidebar"
+                            } else {
+                                "Show Sidebar"
+                            },
+                            desk.shown_chord("sidebar"),
+                            cx.listener(|desk, _, window, cx| desk.execute("sidebar", window, cx)),
+                        ))
+                    })
                 })
                 .with_spring(
                     "main-menu-rail",
@@ -516,13 +646,18 @@ fn titlebar(
                     |rail, width| rail.w(px(width)),
                 ),
         )
-        .child(workspace_identity(desk, colors))
-        .when(desk.tab_position() == TabPosition::Top, |bar| {
-            bar.child(tab_strip(desk, TabPosition::Top, colors, cx))
+        .when(fit > 0., |bar| {
+            bar.child(
+                div()
+                    .flex_shrink_0()
+                    .when(fit < 1., |slot| slot.overflow_hidden().opacity(fit))
+                    .child(workspace_identity(desk, colors)),
+            )
         })
-        .when(desk.tab_position() == TabPosition::Side, |bar| {
-            bar.child(div().flex_1())
+        .when(top_tabs, |bar| {
+            bar.child(tab_strip(desk, TabPosition::Top, look, cx))
         })
+        .when(!top_tabs, |bar| bar.child(div().flex_1()))
         .child(
             div()
                 .flex()
@@ -530,36 +665,74 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
+                .when(fit > 0., |cluster| {
+                    cluster.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .when(fit < 1., |actions| actions.opacity(fit))
+                            .child(
+                                div().occlude().child(
+                                    Button::new("launch-native-agent")
+                                        .icon(IconName::Bot)
+                                        .accessibility_label("New agent")
+                                        .ghost()
+                                        .small()
+                                        .tooltip("New agent")
+                                        .on_click(cx.listener(|desk, _, window, cx| {
+                                            desk.execute("native-agent", window, cx)
+                                        })),
+                                ),
+                            )
+                            .child(icon_button(
+                                "new-tab",
+                                IconName::Plus,
+                                "New Terminal",
+                                desk.shown_chord("new"),
+                                cx.listener(|desk, _, window, cx| desk.execute("new", window, cx)),
+                            ))
+                            .child(bell(desk, colors, cx)),
+                    )
+                })
                 .child(
-                    div().occlude().child(
-                        Button::new("launch-native-agent")
-                            .icon(IconName::Bot)
-                            .accessibility_label("New agent")
-                            .ghost()
-                            .small()
-                            .tooltip("New agent")
-                            .on_click(cx.listener(|desk, _, window, cx| {
-                                desk.execute("native-agent", window, cx)
-                            })),
-                    ),
+                    // The way back stays reachable in the slim strip, where it
+                    // shows while the pointer is over the bar.
+                    div()
+                        .debug_selector(|| "skin-toggle".into())
+                        .when(fit == 0., |toggle| {
+                            toggle
+                                .invisible()
+                                .group_hover("titlebar", |style| style.visible())
+                        })
+                        .child(icon_button(
+                            "plain-terminal",
+                            IconName::SquareTerminal,
+                            skin_toggle_label(desk.prefs.plain),
+                            desk.shown_chord("plain-terminal"),
+                            cx.listener(|desk, _, window, cx| {
+                                desk.execute("plain-terminal", window, cx)
+                            }),
+                        )),
                 )
-                .child(icon_button(
-                    "new-tab",
-                    IconName::Plus,
-                    "New Terminal",
-                    desk.shown_chord("new"),
-                    cx.listener(|desk, _, window, cx| desk.execute("new", window, cx)),
-                ))
-                .child(bell(desk, colors, cx))
                 .child(update_button(desk, cx)),
         )
+}
+
+/// What the skin toggle offers: the skin it switches to.
+fn skin_toggle_label(plain: bool) -> &'static str {
+    if plain {
+        "Liquid Glass"
+    } else {
+        "Plain terminal"
+    }
 }
 
 /// One tab renderer and one set of tab actions for both placements.
 fn tab_strip(
     desk: &Desk,
     position: TabPosition,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let tabs = desk
@@ -596,7 +769,7 @@ fn tab_strip(
                         .px(px(4.))
                 })
                 .children(tabs.iter().map(|tab| {
-                    tab_button(desk, tab, active, position, colors, cx).into_any_element()
+                    tab_button(desk, tab, active, position, look, cx).into_any_element()
                 }))
                 .on_children_prepainted(move |bounds, _, _| {
                     let mut geometry = geometry.borrow_mut();
@@ -624,9 +797,12 @@ fn tab_button(
     tab: &DeskTab,
     active: &str,
     position: TabPosition,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let colors = &look.colors;
+    let shape = &look.skin.shape;
+    let height = tab_height(look.skin.chrome.titlebar);
     let id = tab.id.clone();
     let tab_selector = SharedString::from(format!("tab-{id}"));
     let close_selector = SharedString::from(format!("tab-close-{id}"));
@@ -648,38 +824,22 @@ fn tab_button(
         .flex_shrink_0()
         .when(side, |tab| tab.h(px(38.)).w_full())
         .when(!side, |tab| {
-            tab.h(px(30.)).min_w(px(100.)).max_w(px(220.)).flex_1()
+            tab.h(px(height)).min_w(px(100.)).max_w(px(220.)).flex_1()
         })
         .pl(px(10.))
         .pr(px(4.))
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded(px(if side { 11. } else { 10. }))
-        .border_1()
-        .border_color(if selected {
-            from_hex(&colors.border)
-        } else {
-            gpui::transparent_black()
-        })
-        .bg(if selected {
-            from_hex(&colors.active)
-        } else {
-            gpui::transparent_black()
-        })
-        .when(!selected, |tab| tab.hover(move |style| style.bg(hover)))
         .when(selected, |tab| {
-            tab.shadow(vec![BoxShadow {
-                color: gpui::black().opacity(if colors.theme.appearance == "light" {
-                    0.05
-                } else {
-                    0.12
-                }),
-                offset: point(px(0.), px(1.)),
-                blur_radius: px(4.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            tab.surface(look, if side { Surface::SideTab } else { Surface::Tab })
+                .shadow(tab_glow(look))
+        })
+        .when(!selected, |tab| {
+            tab.rounded(px(shape.tab_radius[usize::from(side)]))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .hover(move |style| style.bg(hover))
         })
         .block_mouse_except_scroll()
         .children(agent.map(|state| {
@@ -813,7 +973,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .flex_grow(1.)
         .overflow_y_scroll()
         .px(px(8.))
-        .py(px(GUTTER))
+        .py(px(12.))
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -853,9 +1013,7 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
 /// A stable entry point; the material and interaction live in their own window.
 pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
     let label = "Phux";
-    let look = desk.look();
-    let colors = &look.chrome;
-    let menu_ink = from_hex(&colors.theme.foreground);
+    let menu_ink = desk.look().ink;
     div()
         .flex_1()
         .min_w_0()
@@ -1024,7 +1182,7 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
                 cx,
             ));
         } else {
-            rows.push(work_row(work, colors, cx));
+            rows.push(work_row(work, &desk.skin(), colors, cx));
         }
     }
     for (host, error) in desk.fleet.failures() {
@@ -1044,7 +1202,12 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
     rows
 }
 
-fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+fn work_row(
+    work: super::fleet::Work,
+    skin: &Skin,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
     let target = work.destination.clone();
     let tip = format!("{} · Runs on {}", target.name, target.host_label());
     let selector = format!("work-{}-{}", target.host_label(), work.id);
@@ -1054,7 +1217,7 @@ fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) 
         .min_h(px(52.))
         .px(px(8.))
         .py(px(4.))
-        .rounded(px(6.))
+        .rounded(px(row_radius(skin)))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -1089,6 +1252,7 @@ fn work_row(work: super::fleet::Work, colors: &Palette, cx: &mut Context<Desk>) 
                 &work.needs_you.to_string(),
                 &colors.accent_wash,
                 &colors.theme.accent,
+                skin,
             ))
         })
         .opacity(if work.online { 1. } else { 0.55 })
@@ -1247,7 +1411,7 @@ fn session_block(
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(6.))
+        .rounded(px(row_radius(&desk.skin())))
         .bg(host_tint(desk.remote.as_deref(), colors).opacity(0.07))
         .cursor_pointer()
         .hover(|style| style.bg(from_hex(&colors.hover)))
@@ -1282,7 +1446,14 @@ fn session_block(
         )
         .when(
             intake_badge(designated, awaiting) == Some("imported"),
-            |row| row.child(pill("imported", &colors.accent_wash, &colors.theme.accent)),
+            |row| {
+                row.child(pill(
+                    "imported",
+                    &colors.accent_wash,
+                    &colors.theme.accent,
+                    &desk.skin(),
+                ))
+            },
         )
         .when_some(project_path, |header, path| {
             header.child(
@@ -1415,7 +1586,7 @@ fn record_row(
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(6.))
+        .rounded(px(row_radius(&desk.skin())))
         .cursor_pointer()
         .bg(if selected {
             from_hex(&colors.active)
@@ -1507,7 +1678,7 @@ fn pane_row(
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(6.))
+        .rounded(px(row_radius(&desk.skin())))
         .cursor_pointer()
         .bg(if focused || selected {
             from_hex(&colors.active)
@@ -1585,7 +1756,7 @@ fn agent_row(
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(6.))
+        .rounded(px(row_radius(&desk.skin())))
         .border_1()
         .border_color(if urgent {
             from_hex(&format!("{tint}66"))
@@ -1721,41 +1892,46 @@ fn sidebar_resize(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl
 
 fn main_column(
     desk: &mut Desk,
-    colors: &Palette,
+    look: &Look,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let status = look.skin.chrome.status;
     div()
         .flex_grow(1.)
         .min_w(px(0.))
         .flex()
         .flex_col()
-        .child(workspace_body(desk, colors, window, cx))
-        .child(status_bar(desk, colors, cx))
+        .child(workspace_body(desk, look, window, cx))
+        .when(status > 0., |column| {
+            column.child(status_bar(desk, status, &look.skin, &look.colors, cx))
+        })
 }
 
 fn workspace_body(
     desk: &mut Desk,
-    colors: &Palette,
+    look: &Look,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let colors = &look.colors;
+    let gutter = look.skin.shape.gutter;
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
     div()
         .flex_grow(1.)
         .min_h(px(0.))
         .relative()
-        .pt(px(GUTTER))
-        .px(px(GUTTER))
+        .pt(px(gutter))
+        .px(px(gutter))
         .child(if let Some(id) = zoomed {
             zoomed_pane(desk, &id, window, cx).into_any_element()
         } else if let Some(root) = root {
-            split_tree(desk, &root, colors, window, cx).into_any_element()
+            split_tree(desk, &root, look, window, cx).into_any_element()
         } else {
             empty_state(desk, colors, cx).into_any_element()
         })
-        .children(peek_card(desk, colors, cx))
+        .children(peek_card(desk, look, cx))
 }
 
 fn empty_state(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -1903,7 +2079,7 @@ fn node_presence(desk: &Desk, node: &LayoutNode, now: Instant) -> f32 {
 fn split_tree(
     desk: &mut Desk,
     node: &LayoutNode,
-    colors: &Palette,
+    look: &Look,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
@@ -1928,7 +2104,12 @@ fn split_tree(
                 node_presence(desk, second, now),
             );
             let painted = motion::ratio(*ratio, lead, trail);
-            let gap = GAP * lead.min(trail);
+            let shape = &look.skin.shape;
+            let gap = shape.gap * lead.min(trail);
+            let thick = gap.max(shape.divider);
+            // Too thin to grab: the second side lends a wider strip over the line.
+            let lend = thick < SPLIT_GRAB;
+            let reach = -(SPLIT_GRAB + thick) / 2.;
             div()
                 .size_full()
                 .flex()
@@ -1939,15 +2120,25 @@ fn split_tree(
                         .when(horizontal, |side| side.w(relative(painted)).h_full())
                         .when(!horizontal, |side| side.h(relative(painted)).w_full())
                         .flex_shrink_0()
-                        .child(split_tree(desk, first, colors, window, cx)),
+                        .child(split_tree(desk, first, look, window, cx)),
                 )
-                .child(split_divider(desk, id.clone(), *axis, gap, colors, cx))
+                .child(split_divider(desk, id.clone(), *axis, gap, thick, look, cx))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .min_h_0()
-                        .child(split_tree(desk, second, colors, window, cx)),
+                        .when(lend, |side| side.relative())
+                        .child(split_tree(desk, second, look, window, cx))
+                        .when(lend, |side| {
+                            let strip = div().absolute();
+                            let strip = if horizontal {
+                                strip.top_0().bottom_0().left(px(reach)).w(px(SPLIT_GRAB))
+                            } else {
+                                strip.left_0().right_0().top(px(reach)).h(px(SPLIT_GRAB))
+                            };
+                            side.child(split_grab(strip, id.clone(), *axis, cx))
+                        }),
                 )
                 .on_children_prepainted(move |children, _, _| {
                     if let (Some(first), Some(last)) = (children.first(), children.last()) {
@@ -1959,43 +2150,69 @@ fn split_tree(
     }
 }
 
-/// The glass between two panes is the grab area. A short pill appears on
-/// hover, in the accent while dragged.
+/// The sheet between two panes, `thick` points across. A skin with a gap
+/// grabs it whole and shows a short pill on hover, in the accent while
+/// dragged; a skin with a painted divider draws the line, and the second
+/// side lends it a wider grab strip.
 fn split_divider(
     desk: &Desk,
     id: String,
     axis: Axis,
     gap: f32,
-    colors: &Palette,
+    thick: f32,
+    look: &Look,
     cx: &mut Context<Desk>,
-) -> impl IntoElement {
+) -> AnyElement {
     let horizontal = matches!(axis, Axis::Row);
     let active = desk.dragging_split() == Some(id.as_str());
-    let accent = from_hex(&colors.theme.accent);
-    let grip = from_hex(&colors.theme.foreground).opacity(0.28);
-    div()
-        .id(SharedString::from(format!("split-{id}")))
-        .group("divider")
+    let accent = from_hex(&look.colors.theme.accent);
+    let grip = look.ink.opacity(0.28);
+    let divider = look.skin.shape.divider;
+    let bar = div()
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .when(horizontal, |bar| {
-            bar.w(px(gap)).h_full().cursor_col_resize()
+        .when(horizontal, |bar| bar.w(px(thick)).h_full())
+        .when(!horizontal, |bar| bar.h(px(thick)).w_full())
+        .when(divider > 0., |bar| {
+            // The line takes over the bar as the gap closes onto it.
+            bar.bg(if active {
+                accent
+            } else {
+                look.divider.opacity(divider.min(1.) * divider / thick)
+            })
+        });
+    if thick < SPLIT_GRAB {
+        return bar.into_any_element();
+    }
+    split_grab(bar.group("divider"), id, axis, cx)
+        .when(gap > divider, |bar| {
+            bar.child(
+                div()
+                    .rounded_full()
+                    .when(active, |pill| pill.bg(accent))
+                    .when(!active, |pill| {
+                        pill.group_hover("divider", move |style| style.bg(grip))
+                    })
+                    .when(horizontal, |pill| pill.w(px(3.)).h(px(44.)))
+                    .when(!horizontal, |pill| pill.h(px(3.)).w(px(44.))),
+            )
         })
-        .when(!horizontal, |bar| {
-            bar.h(px(gap)).w_full().cursor_row_resize()
-        })
-        .child(
-            div()
-                .rounded_full()
-                .when(active, |pill| pill.bg(accent))
-                .when(!active, |pill| {
-                    pill.group_hover("divider", move |style| style.bg(grip))
-                })
-                .when(horizontal, |pill| pill.w(px(3.)).h(px(44.)))
-                .when(!horizontal, |pill| pill.h(px(3.)).w(px(44.))),
-        )
+        .into_any_element()
+}
+
+/// Make `area` start a drag of split `id`.
+fn split_grab(
+    area: gpui::Div,
+    id: String,
+    axis: Axis,
+    cx: &mut Context<Desk>,
+) -> gpui::Stateful<gpui::Div> {
+    let horizontal = matches!(axis, Axis::Row);
+    area.id(SharedString::from(format!("split-{id}")))
+        .when(horizontal, |area| area.cursor_col_resize())
+        .when(!horizontal, |area| area.cursor_row_resize())
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |desk, _, _, cx| {
@@ -2018,8 +2235,7 @@ fn pane_view(
     let focused =
         desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
     let look = desk.look();
-    let colors = &look.chrome;
-    let glass = Glass::of(colors, &desk.prefs);
+    let colors = &look.colors;
     let placement_id = placement.id.clone();
     let terminal = placement.terminal_id.clone();
     let view = placement.view_id;
@@ -2115,14 +2331,18 @@ fn pane_view(
         agent
             .as_ref()
             .map(|info| from_hex(agent_swatch(info.state)).opacity(0.75))
-            .unwrap_or(glass.lit)
+            .unwrap_or(look.lit)
     } else if focused && leaves > 1 && !zoomed {
-        glass.lit
+        look.lit
     } else {
-        glass.edge
+        look.edge
     };
+    let shine = look
+        .lit
+        .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin));
+    let radius = look.skin.shape.radius;
     let controls_bar = if controls {
-        Some(pane_controls(desk, placement, zoomed, colors, cx).into_any_element())
+        Some(pane_controls(desk, placement, zoomed, &look, cx).into_any_element())
     } else {
         None
     };
@@ -2140,17 +2360,9 @@ fn pane_view(
         .flex()
         .flex_col()
         .when(presence < 1., |card| card.opacity(presence.max(0.)))
-        .rounded(px(RADIUS))
-        .bg(glass.card)
-        .border_1()
+        .surface(&look, Surface::Pane)
         .border_color(edge)
-        .shadow(vec![BoxShadow {
-            color: glass.shadow,
-            offset: point(px(0.), px(4.)),
-            blur_radius: px(16.),
-            spread_radius: px(-8.),
-            inset: false,
-        }])
+        .shadow(pane_shadows(&look))
         .overflow_hidden()
         .block_mouse_except_scroll()
         .on_drag_move::<ExternalPaths>(cx.listener(
@@ -2191,6 +2403,7 @@ fn pane_view(
                     dim.map(|amount| div().absolute().inset_0().bg(Hsla { a: amount, ..fade })),
                 ),
         )
+        .children(specular(shine, radius))
         .child(
             // Reveals the controls. It holds no other listener, so presses and
             // drags still reach the terminal under it.
@@ -2215,6 +2428,7 @@ fn pane_view(
                 "Typing may not have arrived",
                 &format!("{}22", colors.theme.warning),
                 &colors.theme.warning,
+                &look.skin,
             )))
         })
         .children(controls_bar)
@@ -2231,7 +2445,7 @@ fn pane_view(
                 ),
             )
         })
-        .when(dropping, |card| card.child(drop_hint(colors, remote_files)))
+        .when(dropping, |card| card.child(drop_hint(&look, remote_files)))
         .children(find_bar)
         .into_any_element()
 }
@@ -2242,9 +2456,10 @@ fn pane_controls(
     desk: &Desk,
     placement: &Placement,
     zoomed: bool,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let colors = &look.colors;
     let title = desk.pane_title(placement.terminal_id.as_ref());
     let agent = placement
         .terminal_id
@@ -2266,17 +2481,7 @@ fn pane_controls(
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded_full()
-        .bg(from_hex(&colors.raised).opacity(0.9))
-        .border_1()
-        .border_color(from_hex(&colors.border))
-        .shadow(vec![BoxShadow {
-            color: gpui::black().opacity(0.22),
-            offset: point(px(0.), px(4.)),
-            blur_radius: px(14.),
-            spread_radius: px(-2.),
-            inset: false,
-        }])
+        .surface(look, Surface::Capsule)
         .occlude()
         .text_xs()
         .on_hover(cx.listener(move |desk, hovered: &bool, _, cx| {
@@ -2390,12 +2595,13 @@ fn pane_controls(
 }
 
 /// Shown over the pane a file drag from the OS is above.
-fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
+fn drop_hint(look: &Look, remote: bool) -> impl IntoElement {
+    let colors = &look.colors;
     let accent = from_hex(&colors.theme.accent);
     div()
         .absolute()
         .inset_0()
-        .rounded(px(RADIUS))
+        .rounded(px(look.skin.shape.radius))
         .bg(accent.opacity(0.1))
         .border_2()
         .border_color(accent.opacity(0.8))
@@ -2406,11 +2612,10 @@ fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
             div()
                 .px(px(16.))
                 .py(px(10.))
-                .rounded(px(12.))
+                .surface(look, Surface::Card)
+                .rounded(px(look.skin.shape.card_radius - 2.))
                 .bg(from_hex(&colors.raised).opacity(0.92))
-                .border_1()
-                .border_color(from_hex(&colors.border))
-                .shadow_lg()
+                .when(!look.popover_shadow.is_empty(), |hint| hint.shadow_lg())
                 .flex()
                 .flex_col()
                 .items_center()
@@ -2474,7 +2679,14 @@ fn header_button(
 
 /// Exceptions only: an unhealthy connection, agents that need a person, a
 /// terminal still starting, and a pane scrolled away from live output.
-fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+fn status_bar(
+    desk: &Desk,
+    height: f32,
+    skin: &Skin,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let chip = chip_radius(skin);
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
     let scrolled = desk.session_is_attached()
@@ -2505,9 +2717,10 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
     });
     let hover = from_hex(&colors.hover);
     div()
-        .h(px(STATUS))
+        .h(px(height))
         .w_full()
         .flex_shrink_0()
+        .overflow_hidden()
         .px(px(10.))
         .flex()
         .items_center()
@@ -2522,7 +2735,7 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
                     .items_center()
                     .gap(px(6.))
                     .px(px(4.))
-                    .rounded(px(4.))
+                    .rounded(px(chip))
                     .child(div().size(px(7.)).rounded_full().bg(tone_color))
                     .child(div().text_color(tone_color).child(label))
                     .when(unhealthy, |status| {
@@ -2543,7 +2756,7 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
                     .items_center()
                     .gap(px(4.))
                     .px(px(4.))
-                    .rounded(px(4.))
+                    .rounded(px(chip))
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child(
@@ -2568,7 +2781,7 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
                 div()
                     .id("status-scrolled")
                     .px(px(6.))
-                    .rounded(px(4.))
+                    .rounded(px(chip))
                     .bg(from_hex(&colors.accent_wash))
                     .text_color(from_hex(&colors.theme.accent))
                     .cursor_pointer()
@@ -2639,7 +2852,8 @@ pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> Strin
 
 /// The newest agent or error entry, briefly, over the workspace. Everything
 /// else waits behind the bell.
-fn peek_card(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Option<impl IntoElement> {
+fn peek_card(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<impl IntoElement> {
+    let colors = &look.colors;
     if desk.modal == Modal::Notifications {
         return None;
     }
@@ -2655,12 +2869,11 @@ fn peek_card(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Option<im
             .w(px(340.))
             .p(px(10.))
             .pl(px(12.))
-            .rounded(px(12.))
+            .surface(look, Surface::Card)
             .bg(from_hex(&colors.raised).opacity(0.94))
-            .border_1()
             .border_l_4()
             .border_color(from_hex(&notification_edge(entry, colors)))
-            .shadow_lg()
+            .when(!look.popover_shadow.is_empty(), |card| card.shadow_lg())
             .occlude()
             .cursor_pointer()
             .flex()
@@ -2726,11 +2939,11 @@ fn section_label(title: &str, colors: &Palette) -> gpui::Div {
         .child(div().flex_1().child(title.to_owned()))
 }
 
-fn pill(text: &str, background: &str, color: &str) -> gpui::Div {
+fn pill(text: &str, background: &str, color: &str, skin: &Skin) -> gpui::Div {
     div()
         .flex_shrink_0()
         .px(px(6.))
-        .rounded(px(8.))
+        .rounded(px(skin.shape.kit_radius))
         .bg(from_hex(background))
         .text_xs()
         .text_color(from_hex(color))

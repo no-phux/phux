@@ -21,6 +21,7 @@ use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
+use crate::settings::skin::{Backdrop, Shift, Skin};
 use crate::settings::{self, DisplayPrefs, TabPosition, WindowBackground};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
@@ -30,12 +31,13 @@ use crate::workspace::{Workspace, WorkspaceOptions};
 use super::actions::Run;
 use super::host;
 use super::keys::{gpui_stroke, shell_chord};
-use super::motion::{self, Motion};
+use super::motion::Motion;
 use super::notifications::{Feed, Kind};
 use super::overlays::{GotoFrecency, GotoPalette, GotoSearch, InputSlot};
 use super::panes::Panes;
 use super::session::Desktop;
 use super::settings_panel::SettingsControls;
+use super::skin::{Look, apply_backdrop};
 use super::typed::typed_keys;
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
@@ -146,8 +148,8 @@ pub struct Desk {
     keymap: Vec<(String, String)>,
     /// The chord each command shows, from `keymap`.
     chords: HashMap<String, Chord>,
-    /// Paint values for the current preferences, Ghostty config and keymap.
-    look: RefCell<Option<Rc<Look>>>,
+    /// Paint values for the current preferences, skin, Ghostty config and keymap.
+    paint: RefCell<Option<Rc<Paint>>>,
     pub modal: Modal,
     /// The modal whose controls were last built and focused.
     prepared: Modal,
@@ -218,9 +220,6 @@ pub struct Desk {
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
     window_title: String,
-    /// The background the platform window has, starting from the one
-    /// [`window_options_background`] opens it with.
-    pub(super) window_background: WindowBackground,
     closed: bool,
     /// Session creates awaiting their outcome, by operation, with the name.
     creates: HashMap<OperationId, String>,
@@ -230,6 +229,11 @@ pub struct Desk {
     pub(crate) organization: super::organization::Organization,
     /// Panes growing in and folding away.
     pub(crate) motion: Motion,
+    /// The skin the prefs resolve to, and the change into it still painting.
+    skin_target: &'static str,
+    shift: Option<Shift>,
+    /// The window background last applied.
+    backdrop: Option<Backdrop>,
     /// The placement whose top edge, or whose pane controls, the pointer is over.
     pub(crate) chrome_hover: Option<String>,
     pub(crate) controls_hover: Option<String>,
@@ -335,35 +339,33 @@ fn shown_chords(keymap: &[(String, String)]) -> HashMap<String, Chord> {
         .collect()
 }
 
-/// Paint values derived from the display preferences, the Ghostty config and
-/// the keymap. A desk builds it once per change, not once per frame.
-pub(crate) struct Look {
-    /// The preferences this look was built from.
+/// Paint values derived from the display preferences, the skin, the Ghostty
+/// config and the keymap. A desk builds it once per change, not once per
+/// frame; only a running skin shift rebuilds it every frame.
+pub(crate) struct Paint {
+    /// The preferences this paint was built from.
     prefs: DisplayPrefs,
+    /// The skin this paint was built from.
+    skin: Skin,
+    /// The theme's palette, without the skin's washes.
     pub palette: crate::settings::theme::Palette,
-    /// The palette with translucent washes and hairlines, so hovered and
-    /// selected chrome tints the glass instead of covering it.
-    pub chrome: crate::settings::theme::Palette,
+    /// The skin resolved against the palette.
+    pub look: Rc<Look>,
     /// Every terminal's settings except `focused` and `size_owner`.
     pub(super) terminal: TerminalSettings,
 }
 
-impl Look {
+impl Paint {
     fn new(
         prefs: &DisplayPrefs,
+        skin: &Skin,
         ghostty: &settings::GhosttyConfig,
         keymap: &[(String, String)],
     ) -> Self {
         let extra = settings::ghostty_theme(ghostty);
         let theme = crate::settings::theme::theme_by_id(&prefs.theme_id, extra.as_slice());
         let palette = crate::settings::theme::palette(&theme);
-        let alpha = crate::settings::theme::with_alpha;
-        let mut chrome = palette.clone();
-        let ink = &palette.theme.foreground;
-        chrome.hover = alpha(ink, 0.06);
-        chrome.active = alpha(ink, 0.11);
-        chrome.border = alpha(ink, 0.08);
-        chrome.divider = alpha(ink, 0.08);
+        let look = Rc::new(Look::of(skin, &palette, prefs));
         let from_hex = super::color::from_hex;
         let theme = &palette.theme;
         let terminal = TerminalSettings {
@@ -373,10 +375,7 @@ impl Look {
             cell_width_scale: prefs.cell_width as f32,
             cell_height_scale: prefs.cell_height as f32,
             foreground: Some(from_hex(&theme.foreground)),
-            background: Some(from_hex(&alpha(
-                &theme.background,
-                prefs.painted_terminal_opacity(),
-            ))),
+            background: Some(look.card),
             host_fills_background: true,
             cursor: Some(from_hex(&theme.cursor)),
             selection_background: from_hex(&theme.selection),
@@ -398,14 +397,16 @@ impl Look {
             }),
             cursor_visible: true,
             blink_visible: true,
+            cursor_laser: prefs.cursor_laser && prefs.animations && skin.motion.cursor_effects,
             option_as_alt: prefs.option_as_alt,
             app_chords: settings::app_chords(keymap),
             ..TerminalSettings::default()
         };
         Self {
             prefs: prefs.clone(),
+            skin: *skin,
             palette,
-            chrome,
+            look,
             terminal,
         }
     }
@@ -458,6 +459,7 @@ impl Desk {
         }
         prefs = settings::sanitize_display(&prefs);
         let keymap = settings::effective_keymap(&ghostty, prefs.ghostty_keys);
+        let skin_target = settings::resolved_id(&prefs.skin_id, prefs.plain);
         let focus = cx.focus_handle();
         let saves = persist::writer::Writer::default();
         let errors = saves.errors();
@@ -485,7 +487,7 @@ impl Desk {
             chords: shown_chords(&keymap),
             keymap,
             ghostty,
-            look: RefCell::new(None),
+            paint: RefCell::new(None),
             modal: Modal::None,
             prepared: Modal::None,
             find: None,
@@ -539,13 +541,15 @@ impl Desk {
             main_menu: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
-            window_background: WindowBackground::default(),
             closed: false,
             creates: HashMap::new(),
             renames: HashMap::new(),
             kills: HashMap::new(),
             organization: Default::default(),
             motion: Motion::default(),
+            skin_target,
+            shift: None,
+            backdrop: None,
             chrome_hover: None,
             controls_hover: None,
             pane_menu_open: None,
@@ -567,6 +571,8 @@ impl Desk {
         desk.attach(request.initial_terminal, cx);
         desk.refresh_hosts(cx);
         desk.sync_bindings(cx);
+        desk.set_motion_spans();
+        desk.drive_skin(window, cx);
         desk.apply_kit_theme(cx);
         let updates = desk.updates.clone();
         let mut runtime_generation = updates.read(cx).runtime_generation;
@@ -877,6 +883,7 @@ impl Desk {
             self.last_saved = Some(saved.clone());
             self.workspace_mut(|link| link.workspace.restore(Some(saved)));
             self.sync_bindings(cx);
+            self.sync_skin(false, cx);
             self.apply_kit_theme(cx);
         }
     }
@@ -1164,6 +1171,7 @@ impl Desk {
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
+            "plain-terminal" => self.update_prefs(|prefs| prefs.plain = !prefs.plain, cx),
             "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
             "tabs-side" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Side, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
@@ -1325,7 +1333,7 @@ impl Desk {
         self.keymap = settings::effective_keymap(&self.ghostty, self.prefs.ghostty_keys);
         self.chords = shown_chords(&self.keymap);
         // Every Ghostty config change resyncs the bindings, so the look follows it too.
-        *self.look.get_mut() = None;
+        *self.paint.get_mut() = None;
         let desktop = self.desktop.clone();
         let keymap = self.keymap.clone();
         let ghostty = self.ghostty.clone();
@@ -1340,7 +1348,103 @@ impl Desk {
     /// Kit controls (buttons, inputs, palette, settings) paint with the phux theme.
     pub(crate) fn apply_kit_theme(&self, cx: &mut Context<Self>) {
         let colors = self.palette();
-        cx.defer(move |cx| super::color::apply_kit_theme(&colors, cx));
+        let skin = *settings::skin_by_id(self.skin_target);
+        cx.defer(move |cx| super::color::apply_kit_theme(&colors, &skin, cx));
+    }
+
+    /// The skin painting now: the resolved one, or a step toward it while a
+    /// shift runs.
+    /// A solid window background wears the skin opaque.
+    pub(crate) fn skin(&self) -> Skin {
+        let skin = match &self.shift {
+            Some(shift) => shift.skin(Instant::now()),
+            None => *settings::skin_by_id(self.skin_target),
+        };
+        match self.prefs.window_background {
+            WindowBackground::Blur => skin,
+            WindowBackground::Solid => skin.opaque(),
+        }
+    }
+
+    /// The skin the prefs resolve to, where any shift settles.
+    pub(crate) fn skin_target(&self) -> &'static Skin {
+        settings::skin_by_id(self.skin_target)
+    }
+
+    /// Linear progress of the running shift, 0 to 1. `None` when settled.
+    pub(crate) fn shift_progress(&self) -> Option<f32> {
+        self.shift.map(|shift| shift.progress(Instant::now()))
+    }
+
+    /// Start a shift when the prefs resolve to a different skin. Without
+    /// `animate`, or under reduced motion, the shift is instant.
+    fn sync_skin(&mut self, animate: bool, cx: &mut Context<Self>) {
+        let id = settings::resolved_id(&self.prefs.skin_id, self.prefs.plain);
+        if id == self.skin_target {
+            return;
+        }
+        let now = Instant::now();
+        let from = self.skin();
+        self.skin_target = id;
+        let to = *self.skin_target();
+        self.shift = Some(Shift::new(from, to, now, !animate || self.still(cx)));
+        self.set_motion_spans();
+        cx.notify();
+    }
+
+    fn set_motion_spans(&mut self) {
+        let motion = self.skin_target().motion;
+        if self.prefs.animations {
+            self.motion
+                .set_spans(motion.pane_enter(), motion.pane_leave());
+        } else {
+            self.motion.set_spans(Duration::ZERO, Duration::ZERO);
+        }
+    }
+
+    /// Animations are off in the prefs or under macOS reduce motion.
+    fn still(&self, cx: &App) -> bool {
+        !self.prefs.animations || cx.reduce_motion()
+    }
+
+    /// Called from every render: applies the backdrop for this point of the
+    /// shift, keeps frames coming while one runs, and settles Kit when it ends.
+    pub(crate) fn drive_skin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_skin(false, cx);
+        let now = Instant::now();
+        // A solid window is opaque all the way down: the window, its Metal
+        // layer and the painted sheet, so the compositor neither blurs nor
+        // blends it.
+        let backdrop = match (&self.shift, self.prefs.window_background) {
+            (_, WindowBackground::Solid) => Backdrop::Opaque,
+            (Some(shift), WindowBackground::Blur) => shift.backdrop(now),
+            (None, WindowBackground::Blur) => self.skin_target().material.backdrop,
+        };
+        if self.backdrop != Some(backdrop) {
+            let appearance = if self.palette().theme.appearance == "light" {
+                gpui::WindowAppearance::Light
+            } else {
+                gpui::WindowAppearance::Dark
+            };
+            // Installing or clearing native glass reparents the view being
+            // drawn, so it waits until this frame is done.
+            cx.defer_in(window, move |_, window, _| {
+                apply_backdrop(window, backdrop, appearance);
+            });
+            self.backdrop = Some(backdrop);
+        }
+        let Some(shift) = self.shift else {
+            return;
+        };
+        if shift.done(now) {
+            self.shift = None;
+            self.apply_kit_theme(cx);
+            return;
+        }
+        let desk = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = desk.update(cx, |_, cx| cx.notify());
+        });
     }
 
     pub fn ghostty(&self) -> &settings::GhosttyConfig {
@@ -1460,7 +1564,12 @@ impl Desk {
             self.sync_bindings(cx);
         }
         if self.prefs.theme_id != before.theme_id {
+            self.backdrop = None;
             self.apply_kit_theme(cx);
+        }
+        self.sync_skin(true, cx);
+        if self.prefs.animations != before.animations {
+            self.set_motion_spans();
         }
         cx.notify();
         true
@@ -2406,8 +2515,9 @@ impl Desk {
         if !self.motion.leave(&id, Instant::now()) {
             return;
         }
+        let span = self.motion.leave_span();
         cx.spawn_in(window, async move |this, cx| {
-            smol::Timer::after(motion::LEAVE).await;
+            smol::Timer::after(span).await;
             let _ = this.update_in(cx, |desk, window, cx| {
                 desk.motion.left(&id);
                 desk.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&id)));
@@ -3152,7 +3262,7 @@ impl Desk {
         focused: bool,
     ) -> Option<TerminalSettings> {
         placement.terminal_id.as_ref()?;
-        let mut settings = self.look().terminal.clone();
+        let mut settings = self.paint().terminal.clone();
         settings.focused = focused;
         settings.size_owner = self
             .link
@@ -3161,21 +3271,28 @@ impl Desk {
         Some(settings)
     }
 
-    /// Paint values for the current preferences, rebuilt only after they change.
-    pub(crate) fn look(&self) -> Rc<Look> {
-        let mut cached = self.look.borrow_mut();
+    /// Paint values for the current preferences and skin, rebuilt only after
+    /// they change.
+    pub(crate) fn paint(&self) -> Rc<Paint> {
+        let skin = self.skin();
+        let mut cached = self.paint.borrow_mut();
         match cached.as_ref() {
-            Some(look) if look.prefs == self.prefs => look.clone(),
+            Some(paint) if paint.prefs == self.prefs && paint.skin == skin => paint.clone(),
             _ => {
-                let look = Rc::new(Look::new(&self.prefs, &self.ghostty, &self.keymap));
-                *cached = Some(look.clone());
-                look
+                let paint = Rc::new(Paint::new(&self.prefs, &skin, &self.ghostty, &self.keymap));
+                *cached = Some(paint.clone());
+                paint
             }
         }
     }
 
+    /// The skin resolved against the theme, for this frame.
+    pub(crate) fn look(&self) -> Rc<Look> {
+        self.paint().look.clone()
+    }
+
     pub fn palette(&self) -> crate::settings::theme::Palette {
-        self.look().palette.clone()
+        self.paint().palette.clone()
     }
 
     pub fn client(&self) -> Option<Arc<Client>> {
@@ -3708,17 +3825,6 @@ impl Desk {
         }
     }
 
-    /// Give the platform window the background the preferences ask for. A
-    /// solid window is opaque all the way down: the window, its Metal layer
-    /// and the painted sheet, so the compositor neither blurs nor blends it.
-    pub(crate) fn sync_window_background(&mut self, window: &mut Window) {
-        let wanted = self.prefs.window_background;
-        if wanted != self.window_background {
-            window.set_background_appearance(window_options_background(wanted));
-            self.window_background = wanted;
-        }
-    }
-
     /// Reconcile the keyboard after state changed without a window at hand (a
     /// modal or find bar closed by server activity): nothing focused falls back
     /// to the terminal, or to the window so its key bindings keep working.
@@ -3966,18 +4072,6 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
         }
     }
     to
-}
-
-/// The platform background for a window preference. Windows open with the
-/// default and [`Desk::sync_window_background`] moves them to the preference.
-#[must_use]
-pub(crate) fn window_options_background(
-    background: WindowBackground,
-) -> gpui::WindowBackgroundAppearance {
-    match background {
-        WindowBackground::Blur => gpui::WindowBackgroundAppearance::Blurred,
-        WindowBackground::Solid => gpui::WindowBackgroundAppearance::Opaque,
-    }
 }
 
 #[cfg(test)]

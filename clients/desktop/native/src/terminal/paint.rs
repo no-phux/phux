@@ -1633,10 +1633,7 @@ fn prepare_cursor(scene: &mut Scene) {
     let geometry = scene.geometry;
     let (row, col) = cursor_head(&frame);
     let bounds = geometry.cell_bounds(row, col, if frame.cursor.width.is_wide() { 2 } else { 1 });
-    let color = settings
-        .cursor
-        .or_else(|| frame.colors.cursor.map(rgb))
-        .unwrap_or_else(|| defaults(&frame, settings).0);
+    let color = cursor_color(&frame, settings);
     let thickness = px(1. / geometry.scale);
     let style = if settings.focused {
         frame.cursor.style
@@ -2167,6 +2164,22 @@ fn cursor_visible(frame: &GridFrame, settings: &Settings) -> bool {
     frame.cursor.visible
         && settings.cursor_visible
         && (!frame.cursor.blinking || settings.blink_visible)
+}
+
+fn cursor_color(frame: &GridFrame, settings: &Settings) -> Hsla {
+    settings
+        .cursor
+        .or_else(|| frame.colors.cursor.map(rgb))
+        .unwrap_or_else(|| defaults(frame, settings).0)
+}
+
+/// Where a laser beam lands, and its colour: the focused, visible cursor.
+pub(super) fn laser_target(
+    frame: &GridFrame,
+    settings: &Settings,
+) -> Option<(super::laser::Spot, Hsla)> {
+    (settings.cursor_laser && settings.focused && cursor_visible(frame, settings))
+        .then(|| (cursor_span(frame), cursor_color(frame, settings)))
 }
 
 fn solid_cursor(frame: &GridFrame, settings: &Settings) -> bool {

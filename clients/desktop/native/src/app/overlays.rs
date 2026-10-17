@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, SharedString,
-    Styled, Subscription, Window, div, point, px,
+    Styled, Subscription, Window, div, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -22,6 +22,7 @@ use crate::settings::theme::Palette;
 
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
+use super::skin::{Look, Surface, Surfaced};
 
 mod goto_facts;
 mod goto_filter;
@@ -507,34 +508,37 @@ pub fn layer(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    let look = desk.look();
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
             launcher::palette(desk, colors, window, cx)
         }
-        Modal::Path => path_panel(desk, colors, window, cx),
+        Modal::Path => path_panel(desk, colors, &look, window, cx),
         Modal::Settings if desk.settings_page.is_some() => {
             super::settings_panel::panel(desk, colors, window, cx)
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
-        Modal::Notifications => notifications_panel(desk, colors, cx),
-        Modal::NativeLaunch => super::native_launch::panel(desk, colors, cx),
-        Modal::Rename { .. } => rename_dialog(desk, colors, cx),
-        Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
+        Modal::Notifications => notifications_panel(desk, colors, &look, cx),
+        Modal::NativeLaunch => super::native_launch::panel(desk, colors, &look, cx),
+        Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
+        Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::KillSession { name, .. } => confirm(
             format!("Kill {name}?"),
             "This ends every process in the session, for every client, and deletes it. Closing a pane, tab, or window never does this.",
             "Kill Session",
             colors,
+            &look,
             cx,
             |desk, window, cx| desk.confirm_kill_session(window, cx),
         ),
-        Modal::AddHost => add_host_dialog(desk, colors, cx),
+        Modal::AddHost => add_host_dialog(desk, colors, &look, cx),
         Modal::RemoveHost { name } => confirm(
             format!("Remove {name}?"),
             "This forgets the machine here. Its server and terminals keep running; `phux host add` registers it again.",
             "Remove Host",
             colors,
+            &look,
             cx,
             |desk, window, cx| desk.confirm_remove_host(window, cx),
         ),
@@ -543,6 +547,7 @@ pub fn layer(
             "This ends the process for every view and every client attached to it. Closing a pane only detaches.",
             "Terminate",
             colors,
+            &look,
             cx,
             |desk, window, cx| desk.confirm_terminate(window, cx),
         ),
@@ -570,34 +575,26 @@ fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) ->
         .into_any_element()
 }
 
-// Match the launcher's fine rim and lifted material without washing out text
-// over terminal content. The near-opaque tint works in both theme appearances.
-pub(crate) fn card(colors: &Palette, width: f32) -> gpui::Div {
-    let light = colors.theme.appearance == "light";
+/// A dialog or palette card. The skin decides how much it lifts; the backing
+/// stays near-opaque so text reads over terminal content.
+pub(crate) fn card(look: &Look, width: f32) -> gpui::Div {
     div()
         .w(px(width))
-        .rounded(px(14.))
-        .bg(from_hex(&colors.raised).opacity(0.97))
-        .text_color(from_hex(&colors.theme.foreground))
-        .border_1()
-        .border_color(from_hex(&colors.theme.foreground).opacity(if light { 0.12 } else { 0.14 }))
-        .shadow(vec![
-            gpui::BoxShadow {
-                color: gpui::black().opacity(if light { 0.14 } else { 0.42 }),
-                offset: point(px(0.), px(20.)),
-                blur_radius: px(64.),
-                spread_radius: px(-8.),
-                inset: false,
-            },
-            gpui::BoxShadow {
-                color: gpui::black().opacity(if light { 0.06 } else { 0.18 }),
-                offset: point(px(0.), px(2.)),
-                blur_radius: px(8.),
-                spread_radius: px(0.),
-                inset: false,
-            },
-        ])
+        .text_color(look.ink)
+        .surface(look, Surface::Popover)
         .occlude()
+}
+
+/// `glass` points of corner on an inner element, scaled to the skin's kit
+/// radius so the glass skin keeps its shipped corners.
+pub(crate) fn corner(look: &Look, glass: f32) -> gpui::Pixels {
+    let kit = crate::settings::skin::GLASS.shape.kit_radius;
+    px(glass * look.skin.shape.kit_radius / kit)
+}
+
+/// An inset row inside a [`card`]: its corner follows the card's.
+fn inset_radius(look: &Look) -> gpui::Pixels {
+    px((look.skin.shape.card_radius - 4.).max(0.))
 }
 
 pub fn find_bar(
@@ -609,7 +606,8 @@ pub fn find_bar(
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
-    card(colors, 420.)
+    let look = desk.look();
+    card(&look, 420.)
         .absolute()
         .top(px(12.))
         .right(px(12.))
@@ -628,7 +626,7 @@ pub fn find_bar(
             div()
                 .px(px(6.))
                 .py(px(3.))
-                .rounded(px(5.))
+                .rounded(corner(&look, 5.))
                 .bg(from_hex(&colors.theme.foreground).opacity(0.045))
                 .text_xs()
                 .text_color(from_hex(&colors.muted))
@@ -1261,6 +1259,7 @@ fn query_terms(query: &str) -> Vec<String> {
 fn path_panel(
     desk: &mut Desk,
     colors: &Palette,
+    look: &Look,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
@@ -1376,7 +1375,7 @@ fn path_panel(
                 let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
             }
         });
-    card(colors, 640.)
+    card(look, 640.)
         .mt(px(72.))
         .overflow_hidden()
         .key_context("PathPicker")
@@ -1389,6 +1388,7 @@ fn path_panel(
 fn notification_rows(
     desk: &Desk,
     colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
     agents: bool,
 ) -> Vec<AnyElement> {
@@ -1403,7 +1403,7 @@ fn notification_rows(
                 .id(("notification", id as usize))
                 .px(px(12.))
                 .py(px(12.))
-                .rounded(px(10.))
+                .rounded(inset_radius(look))
                 .border_1()
                 .border_color(from_hex(&colors.theme.foreground).opacity(0.055))
                 .bg(from_hex(&colors.theme.foreground).opacity(if entry.read {
@@ -1476,9 +1476,14 @@ fn notification_heading(title: &str, unread: usize, colors: &Palette) -> AnyElem
         .into_any_element()
 }
 
-fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
-    let agent_rows = notification_rows(desk, colors, cx, true);
-    let general_rows = notification_rows(desk, colors, cx, false);
+fn notifications_panel(
+    desk: &Desk,
+    colors: &Palette,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let agent_rows = notification_rows(desk, colors, look, cx, true);
+    let general_rows = notification_rows(desk, colors, look, cx, false);
     let unread_agents = desk
         .feed
         .unread()
@@ -1496,7 +1501,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
             div()
                 .px(px(12.))
                 .py(px(16.))
-                .rounded(px(10.))
+                .rounded(inset_radius(look))
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
                 .text_sm()
                 .text_color(from_hex(&colors.muted))
@@ -1513,7 +1518,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
         ));
         rows.extend(general_rows);
     }
-    card(colors, 460.)
+    card(look, 460.)
         .mt(px(60.))
         .p(px(12.))
         .flex()
@@ -1549,7 +1554,7 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
             div()
                 .px(px(20.))
                 .py(px(28.))
-                .rounded(px(10.))
+                .rounded(inset_radius(look))
                 .border_1()
                 .border_color(from_hex(&colors.theme.foreground).opacity(0.06))
                 .bg(from_hex(&colors.theme.foreground).opacity(0.025))
@@ -1571,8 +1576,8 @@ fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) ->
         .into_any_element()
 }
 
-fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
-    card(colors, 440.)
+fn dialog_card(title: &str, colors: &Palette, look: &Look) -> gpui::Div {
+    card(look, 440.)
         .mt(px(120.))
         .p(px(24.))
         .flex()
@@ -1603,11 +1608,11 @@ fn dialog_buttons(confirm: Button, cx: &mut Context<Desk>) -> impl IntoElement {
         .child(confirm)
 }
 
-fn rename_dialog(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+fn rename_dialog(desk: &Desk, colors: &Palette, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
     let Some(input) = desk.input_entity(InputSlot::Rename) else {
         return div().into_any_element();
     };
-    dialog_card("Rename Tab", colors)
+    dialog_card("Rename Tab", colors, look)
         .child(
             div()
                 .text_xs()
@@ -1632,6 +1637,7 @@ fn session_dialog(
     desk: &Desk,
     create: bool,
     colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let Some(name) = desk.input_entity(InputSlot::SessionName) else {
@@ -1645,6 +1651,7 @@ fn session_dialog(
             "Rename Session"
         },
         colors,
+        look,
     )
     .child(Input::new(&name))
     .children(directory.map(|directory| Input::new(&directory)))
@@ -1664,14 +1671,19 @@ fn session_dialog(
     .into_any_element()
 }
 
-fn add_host_dialog(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+fn add_host_dialog(
+    desk: &Desk,
+    colors: &Palette,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
     let (Some(target), Some(name)) = (
         desk.input_entity(InputSlot::HostTarget),
         desk.input_entity(InputSlot::HostName),
     ) else {
         return div().into_any_element();
     };
-    dialog_card("Add Host", colors)
+    dialog_card("Add Host", colors, look)
         .child(
             div()
                 .text_xs()
@@ -1699,10 +1711,11 @@ fn confirm(
     body: &str,
     label: &str,
     colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
     run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> AnyElement {
-    dialog_card(&title, colors)
+    dialog_card(&title, colors, look)
         .border_color(from_hex(&colors.theme.danger).opacity(0.55))
         .child(
             div()

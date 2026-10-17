@@ -9,8 +9,10 @@ use std::time::{Duration, Instant};
 pub const ENTER: Duration = Duration::from_millis(260);
 pub const LEAVE: Duration = Duration::from_millis(190);
 
-#[derive(Default)]
 pub struct Motion {
+    /// How long a placement takes to grow in and to fold away.
+    enter: Duration,
+    leave: Duration,
     /// The tab the last frame painted, and its placements.
     tab: Option<String>,
     seen: HashSet<String>,
@@ -18,7 +20,31 @@ pub struct Motion {
     leaving: HashMap<String, Instant>,
 }
 
+impl Default for Motion {
+    fn default() -> Self {
+        Self {
+            enter: ENTER,
+            leave: LEAVE,
+            tab: None,
+            seen: HashSet::new(),
+            entering: HashMap::new(),
+            leaving: HashMap::new(),
+        }
+    }
+}
+
 impl Motion {
+    /// Set the enter and leave spans, from the skin.
+    pub fn set_spans(&mut self, enter: Duration, leave: Duration) {
+        self.enter = enter;
+        self.leave = leave;
+    }
+
+    /// How long a fold takes before the placement is released.
+    pub fn leave_span(&self) -> Duration {
+        self.leave
+    }
+
     /// Record this frame's tab and placements. A placement new to the tab the
     /// previous frame also painted enters; switching tabs animates nothing.
     pub fn observe(&mut self, tab: Option<&str>, placements: &[&str], now: Instant) {
@@ -27,8 +53,9 @@ impl Motion {
             && placements.len() == self.seen.len()
             && placements.iter().all(|id| self.seen.contains(*id))
         {
+            let enter = self.enter;
             self.entering
-                .retain(|_, at| now.duration_since(*at) < ENTER);
+                .retain(|_, at| now.duration_since(*at) < enter);
             return;
         }
         if same_tab {
@@ -40,8 +67,9 @@ impl Motion {
         }
         self.tab = tab.map(str::to_owned);
         self.seen = placements.iter().map(|id| (*id).to_owned()).collect();
+        let enter = self.enter;
         self.entering
-            .retain(|id, at| self.seen.contains(id) && now.duration_since(*at) < ENTER);
+            .retain(|id, at| self.seen.contains(id) && now.duration_since(*at) < enter);
         self.leaving.retain(|id, _| self.seen.contains(id));
     }
 
@@ -67,10 +95,10 @@ impl Motion {
     /// How present `id` is, 0 (absent) to 1 (settled), eased.
     pub fn presence(&self, id: &str, now: Instant) -> f32 {
         if let Some(at) = self.leaving.get(id) {
-            return 1. - ease_in(progress(*at, LEAVE, now));
+            return 1. - ease_in(progress(*at, self.leave, now));
         }
         if let Some(at) = self.entering.get(id) {
-            return ease_out(progress(*at, ENTER, now));
+            return ease_out(progress(*at, self.enter, now));
         }
         1.
     }
@@ -79,7 +107,7 @@ impl Motion {
     pub fn active(&self, now: Instant) -> bool {
         self.entering
             .values()
-            .any(|at| now.duration_since(*at) < ENTER)
+            .any(|at| now.duration_since(*at) < self.enter)
             || !self.leaving.is_empty()
     }
 }
@@ -98,6 +126,9 @@ pub fn ratio(settled: f32, first: f32, second: f32) -> f32 {
 }
 
 fn progress(at: Instant, span: Duration, now: Instant) -> f32 {
+    if span.is_zero() {
+        return 1.;
+    }
     (now.duration_since(at).as_secs_f32() / span.as_secs_f32()).clamp(0., 1.)
 }
 
@@ -170,6 +201,19 @@ mod tests {
         motion.observe(Some("t"), &ids(&["a"]), now + LEAVE);
         assert!(!motion.is_leaving("b"));
         assert!(!motion.active(now + LEAVE));
+    }
+
+    #[test]
+    fn spans_follow_the_skin_and_an_empty_span_is_settled() {
+        let now = Instant::now();
+        let mut motion = Motion::default();
+        motion.set_spans(Duration::from_millis(100), Duration::ZERO);
+        assert_eq!(motion.leave_span(), Duration::ZERO);
+        motion.observe(Some("t"), &ids(&["a"]), now);
+        motion.observe(Some("t"), &ids(&["a", "b"]), now);
+        assert_eq!(motion.presence("b", now + Duration::from_millis(100)), 1.);
+        assert!(motion.leave("a", now));
+        assert_eq!(motion.presence("a", now), 0.);
     }
 
     #[test]

@@ -109,6 +109,11 @@ half alpha. Only a faint cell holding a colour emoji paints inside a
 `Div::opacity` scope, because GPUI's color-emoji path ignores the colour.
 A non-ASCII glyph inside a shared line is still clipped to its own cell, so
 box drawing and symbols that overhang their advance do not ink a neighbour.
+`Settings::cursor_laser` streaks a beam from the old cursor cell to the new
+one when the focused cursor jumps (any move but one cell right), burning out
+over 170 ms. The beam is painted over the cached scene and never enters it,
+asks for animation frames only while it burns, and is off under macOS
+reduce motion.
 Hyperlink metadata stays in the retained `GridFrame`. Cross-cell ligatures,
 procedural box drawing, blink timers, and Kitty/sixel graphics (`GridFrame`
 carries no image data) are not provided.
