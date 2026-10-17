@@ -417,7 +417,6 @@ fn patch(
     if !can_patch(&previous, &frame, bounds, scale, &settings) {
         return None;
     }
-    drop_fringe(&mut previous);
     let rebuilt = rows_to_rebuild(&previous.frame, &frame, &settings);
     // Hashing both grids costs a full read. Do it only when the in-place
     // diff would reshape most of the screen, which is what a line of output
@@ -426,24 +425,44 @@ fn patch(
         || worth_scroll_search(rebuilt.len(), frame.rows))
         && let Some(scroll) = scroll_of(&previous.frame, &frame)
     {
-        let scrolled = rows_after_scroll(
+        // Two frames that both carry a fringe scroll it with the viewport: a
+        // row leaving the bottom becomes the fringe, and the old fringe can
+        // enter, so only the rows new to the scene are shaped.
+        let height = shifted_height(&previous.frame, &frame);
+        let mut scrolled = rows_after_scroll(
             &previous.frame,
             &frame,
             &settings,
-            scroll,
+            (scroll, height),
             &previous.geometry,
         );
-        if scrolled.len() < rebuilt.len() {
-            shift_scene(&mut previous, scroll);
-            let scrolled = with_fringe_row(scrolled, &frame);
+        if height == frame.rows {
+            scrolled = with_fringe_row(scrolled, &frame);
+        }
+        if scrolled.len() < rebuilt.len() + usize::from(has_fringe(&frame)) {
+            if height == frame.rows {
+                drop_fringe(&mut previous);
+            }
+            shift_scene(&mut previous, scroll, height);
             return finish_patch(previous, frame, settings, &scrolled, window);
         }
     }
     if rebuilt.len() == usize::from(frame.rows) {
         return None;
     }
+    drop_fringe(&mut previous);
     let rebuilt = with_fringe_row(rebuilt, &frame);
     finish_patch(previous, frame, settings, &rebuilt, window)
+}
+
+/// Rows a scroll shift moves: the viewport, plus the fringe row when both
+/// frames carry one.
+fn shifted_height(previous: &GridFrame, next: &GridFrame) -> u16 {
+    if has_fringe(previous) && has_fringe(next) {
+        next.rows + 1
+    } else {
+        next.rows
+    }
 }
 
 /// Whether `frame` carries the row below its viewport, which the painter
@@ -620,11 +639,13 @@ fn scrolled_pair(scroll: Scroll, row: usize) -> (u16, u16) {
     )
 }
 
+/// Rows of the new scene, among the `height` a shift moves, that cannot be
+/// moved from the previous scene and must be shaped.
 fn rows_after_scroll(
     previous: &GridFrame,
     next: &GridFrame,
     settings: &Settings,
-    scroll: Scroll,
+    (scroll, height): (Scroll, u16),
     geometry: &Geometry,
 ) -> Vec<u16> {
     let reverse = match scroll {
@@ -633,14 +654,12 @@ fn rows_after_scroll(
     };
     let old_cursor = solid_head(previous, settings);
     let new_cursor = solid_head(next, settings);
-    (0..next.rows)
+    (0..height)
         .filter(|row| {
-            let Some(source) = destination_row(reverse, previous.rows, *row) else {
+            let Some(source) = destination_row(reverse, height, *row) else {
                 return true;
             };
-            let source_bounds = geometry.cell_bounds(source, 0, 1);
-            source_bounds.top() < geometry.bounds.top()
-                || source_bounds.bottom() > geometry.bounds.bottom()
+            !fully_built(previous, source, geometry)
                 || old_cursor
                     .filter(|(at, _)| *at == source)
                     .map(|(_, col)| col)
@@ -648,6 +667,17 @@ fn rows_after_scroll(
                 || !rows_paint_alike(previous, next, source, *row)
         })
         .collect()
+}
+
+/// Whether the previous scene holds every primitive of `row`. The builder
+/// skips viewport cells outside the pane, so a row cut by the pane's edge
+/// is shaped again; the fringe row is always built whole.
+fn fully_built(previous: &GridFrame, row: u16, geometry: &Geometry) -> bool {
+    if row == previous.rows {
+        return true;
+    }
+    let bounds = geometry.cell_bounds(row, 0, 1);
+    bounds.top() >= geometry.bounds.top() && bounds.bottom() <= geometry.bounds.bottom()
 }
 
 fn destination_row(scroll: Scroll, height: u16, row: u16) -> Option<u16> {
@@ -658,8 +688,7 @@ fn destination_row(scroll: Scroll, height: u16, row: u16) -> Option<u16> {
     }
 }
 
-fn shift_scene(scene: &mut Scene, scroll: Scroll) {
-    let height = scene.frame.rows;
+fn shift_scene(scene: &mut Scene, scroll: Scroll, height: u16) {
     let geometry = &scene.geometry;
     shift_quads(&mut scene.backgrounds, scroll, height, geometry);
     shift_quads(&mut scene.decorations, scroll, height, geometry);
@@ -895,15 +924,29 @@ fn row_slices<'a>(
     if previous.cols != next.cols {
         return None;
     }
-    let cols = usize::from(previous.cols);
-    let prev = row_range(prev_row, cols)?;
-    let next_span = row_range(next_row, cols)?;
+    let (prev_cells, prev_meta) = painted_row(previous, prev_row)?;
+    let (next_cells, next_meta) = painted_row(next, next_row)?;
     Some(RowParts {
-        prev_cells: previous.buffer.cells.get(prev.clone())?,
-        next_cells: next.buffer.cells.get(next_span.clone())?,
-        prev_meta: previous.buffer.metadata.get(prev)?,
-        next_meta: next.buffer.metadata.get(next_span)?,
+        prev_cells,
+        next_cells,
+        prev_meta,
+        next_meta,
     })
+}
+
+/// A viewport row's cells and metadata, or the fringe's for row `frame.rows`.
+fn painted_row(frame: &GridFrame, row: u16) -> Option<(&[Cell], &[CellMetadata])> {
+    if row == frame.rows {
+        return has_fringe(frame).then_some((
+            frame.buffer.fringe.as_slice(),
+            frame.buffer.fringe_metadata.as_slice(),
+        ));
+    }
+    let span = row_range(row, usize::from(frame.cols))?;
+    Some((
+        frame.buffer.cells.get(span.clone())?,
+        frame.buffer.metadata.get(span)?,
+    ))
 }
 
 fn row_range(row: u16, cols: usize) -> Option<std::ops::Range<usize>> {
@@ -2424,7 +2467,7 @@ mod tests {
                 &previous,
                 &next,
                 &settings,
-                Scroll::Up(1),
+                (Scroll::Up(1), previous.rows),
                 &scrolling_geometry()
             ),
             vec![2]
@@ -2437,7 +2480,7 @@ mod tests {
                 &previous,
                 &next,
                 &settings,
-                Scroll::Up(1),
+                (Scroll::Up(1), previous.rows),
                 &scrolling_geometry()
             ),
             vec![1, 2]
@@ -2451,7 +2494,7 @@ mod tests {
                 &back,
                 &forward,
                 &settings,
-                Scroll::Down(1),
+                (Scroll::Down(1), back.rows),
                 &scrolling_geometry()
             ),
             vec![0]
@@ -2492,7 +2535,8 @@ mod tests {
             bounds: origin,
             color: gpui::red(),
         });
-        shift_scene(&mut scene, Scroll::Up(1));
+        let height = scene.frame.rows;
+        shift_scene(&mut scene, Scroll::Up(1), height);
         assert_eq!(scene.backgrounds.len(), 1);
         assert_eq!(scene.backgrounds[0].row, 1);
         assert_eq!(
@@ -2759,12 +2803,18 @@ mod tests {
         let mut next = scrolling_frame(&["B", "C", "D", "E"], 11);
         assert_eq!(scroll_of(&old, &next), Some(Scroll::Up(1)));
         assert_eq!(
-            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &geometry),
+            rows_after_scroll(&old, &next, &settings, (Scroll::Up(1), old.rows), &geometry),
             vec![3]
         );
         assert_eq!(scroll_of(&next, &old), Some(Scroll::Down(1)));
         assert_eq!(
-            rows_after_scroll(&next, &old, &settings, Scroll::Down(1), &geometry),
+            rows_after_scroll(
+                &next,
+                &old,
+                &settings,
+                (Scroll::Down(1), next.rows),
+                &geometry
+            ),
             vec![0]
         );
         next.scrollbar.offset = old.scrollbar.offset;
@@ -2777,7 +2827,7 @@ mod tests {
         next.buffer.cells[2].flags |= CELL_SELECTED;
         next.buffer.cells[4].wide = 1;
         assert_eq!(
-            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &geometry),
+            rows_after_scroll(&old, &next, &settings, (Scroll::Up(1), old.rows), &geometry),
             vec![1, 2, 3],
             "selection and wide-head changes must not keep stale ink"
         );
@@ -2786,9 +2836,51 @@ mod tests {
             ..geometry
         };
         assert_eq!(
-            rows_after_scroll(&old, &next, &settings, Scroll::Up(1), &clipped),
+            rows_after_scroll(&old, &next, &settings, (Scroll::Up(1), old.rows), &clipped),
             vec![0, 1, 2, 3],
             "previously clipped rows must be freshly painted when exposed"
+        );
+    }
+
+    fn with_fringe(mut frame: GridFrame, text: &str) -> GridFrame {
+        let cell = text_cell(&mut frame.buffer.utf8, text.as_bytes());
+        frame.buffer.fringe = vec![cell, Cell::default()];
+        frame.buffer.fringe_metadata = vec![CellMetadata::default(); 2];
+        frame
+    }
+
+    /// A row that leaves the viewport becomes the fringe and the old fringe
+    /// enters it, so a one-row history scroll shapes only the row new to the
+    /// scene.
+    #[test]
+    fn history_scrolling_moves_the_fringe_with_the_viewport() {
+        let settings = Settings::default();
+        let geometry = scrolling_geometry();
+        // Older history above: scrolling back moves content down.
+        let near = with_fringe(scrolling_frame(&["B", "C", "D", "E"], 11), "F");
+        let back = with_fringe(scrolling_frame(&["A", "B", "C", "D"], 10), "E");
+        assert_eq!(shifted_height(&near, &back), 5);
+        assert_eq!(scroll_of(&near, &back), Some(Scroll::Down(1)));
+        assert_eq!(
+            rows_after_scroll(&near, &back, &settings, (Scroll::Down(1), 5), &geometry),
+            vec![0],
+            "the row leaving the bottom is the new fringe"
+        );
+        assert_eq!(
+            rows_after_scroll(&back, &near, &settings, (Scroll::Up(1), 5), &geometry),
+            vec![4],
+            "the old fringe enters the viewport"
+        );
+        let other = with_fringe(scrolling_frame(&["A", "B", "C", "D"], 10), "X");
+        assert_eq!(
+            rows_after_scroll(&near, &other, &settings, (Scroll::Down(1), 5), &geometry),
+            vec![0, 4],
+            "a fringe that does not match its source row is shaped again"
+        );
+        assert_eq!(
+            shifted_height(&scrolling_frame(&["A", "B", "C", "D"], 10), &back),
+            4,
+            "a frame without a fringe shifts the viewport alone"
         );
     }
 
@@ -2811,7 +2903,7 @@ mod tests {
                 &old,
                 &next,
                 &Settings::default(),
-                Scroll::Up(1),
+                (Scroll::Up(1), old.rows),
                 &scrolling_geometry()
             ),
             vec![0, 2, 3]
@@ -2846,7 +2938,8 @@ mod tests {
             baseline: px(35.),
             foreground: gpui::red(),
         });
-        shift_scene(&mut scene, Scroll::Up(1));
+        let height = scene.frame.rows;
+        shift_scene(&mut scene, Scroll::Up(1), height);
         assert_eq!(scene.backgrounds[0].row, 0);
         assert_eq!(scene.backgrounds[0].bounds, geometry.cell_bounds(0, 0, 2));
         assert_eq!(scene.decorations[0].bounds, scene.backgrounds[0].bounds);
