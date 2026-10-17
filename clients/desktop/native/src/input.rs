@@ -189,9 +189,10 @@ impl std::fmt::Debug for HeldPaste {
 }
 
 /// A paste that would type a line break into a terminal whose shell is
-/// running a command (OSC 133 C without D) needs confirmation: each line
-/// reaches the running program, not a prompt. Unknown command state, as
-/// without shell integration, never holds a paste.
+/// running a command (OSC 133 C without D, from this connection's events or
+/// else the replica's marks) needs confirmation: each line reaches the
+/// running program, not a prompt. Unknown command state, as without shell
+/// integration, never holds a paste.
 #[must_use]
 pub fn paste_needs_confirmation(command_running: bool, text: &str) -> bool {
     command_running && text.contains(['\n', '\r'])
@@ -786,10 +787,9 @@ impl TerminalInput {
         let Ok(client) = self.client() else {
             return false;
         };
-        let held = client.with_control(|control| {
-            self.validate(control, true).is_ok()
-                && paste_needs_confirmation(control.command_running(&self.terminal), text)
-        });
+        let held = text.contains(['\n', '\r'])
+            && client.with_control(|control| self.validate(control, true).is_ok())
+            && paste_needs_confirmation(client.command_running(&self.terminal), text);
         if held {
             cx.emit(InputEvent::ConfirmPaste(HeldPaste {
                 text: text.to_owned(),
@@ -2169,6 +2169,46 @@ mod delivery {
         let (_input, held) = paste_held(&client, view, text, cx);
         assert!(held.borrow().is_empty(), "nothing to confirm at a prompt");
         assert_eq!(pasted(&client), vec![text.to_owned()]);
+    }
+
+    /// A screen whose shell started `make` and has not come back to a prompt.
+    const RUNNING: &[u8] = b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07building";
+    /// A screen whose shell is back at its prompt.
+    const AT_PROMPT: &[u8] =
+        b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+
+    /// A start the new connection never saw, as across a reconnect, is still
+    /// read from the replica: the cursor is off the prompt row.
+    #[gpui::test]
+    fn a_command_running_across_a_reconnect_still_holds_a_multi_line_paste(
+        cx: &mut TestAppContext,
+    ) {
+        let client = session_with(None, RUNNING);
+        shell(
+            &client,
+            phux_protocol::wire::frame::AgentEvent::CommandStarted,
+        );
+        open_session_with(&client, 2, RUNNING);
+        let view = client
+            .create_view(&terminal())
+            .expect("view after reconnect");
+        let text = "make\nmake install";
+        let (_input, held) = paste_held(&client, view, text, cx);
+        assert_eq!(*held.borrow(), vec![text.to_owned()], "the shell is asked");
+        assert!(pasted(&client).is_empty(), "nothing reaches the program");
+    }
+
+    /// The replica at a prompt, or with no marks at all, never holds a paste.
+    #[gpui::test]
+    fn a_reconnected_prompt_or_unmarked_screen_sends_a_paste_directly(cx: &mut TestAppContext) {
+        for screen in [AT_PROMPT, b"$ make\r\nbuilding".as_slice()] {
+            let client = session_with(None, screen);
+            let view = client.create_view(&terminal()).expect("view");
+            let text = "make\nmake install";
+            let (_input, held) = paste_held(&client, view, text, cx);
+            assert!(held.borrow().is_empty(), "nothing to confirm");
+            assert_eq!(pasted(&client), vec![text.to_owned()]);
+        }
     }
 
     #[gpui::test]

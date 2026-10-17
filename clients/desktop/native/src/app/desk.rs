@@ -121,6 +121,9 @@ pub enum Modal {
     /// running a command.
     Paste {
         placement_id: String,
+        /// The terminal the paste was held for; a retargeted placement
+        /// refuses it.
+        terminal_id: ResourceId,
         title: String,
         paste: crate::input::HeldPaste,
     },
@@ -760,8 +763,9 @@ impl Desk {
         if self.agent_epoch != Some(epoch)
             || events.iter().any(crate::connection::starts_connection)
         {
+            // Command starts survive a reconnect: a build that spans one
+            // still alerts when it finishes, and a newer start replaces them.
             self.agent_seen.clear();
-            self.commands.clear();
             self.feed.retain(|entry| entry.kind != Kind::Agent);
             self.agent_epoch = Some(epoch);
         }
@@ -933,7 +937,8 @@ impl Desk {
             self.agent_seen.remove(terminal_id);
             self.commands.forget(terminal_id);
             self.feed.retain(|entry| {
-                entry.kind != Kind::Agent || entry.terminal.as_ref() != Some(terminal_id)
+                !matches!(entry.kind, Kind::Agent | Kind::Command)
+                    || entry.terminal.as_ref() != Some(terminal_id)
             });
         }
     }
@@ -968,6 +973,8 @@ impl Desk {
                 );
                 self.feed.post_command(title, body, terminal_id.clone());
             }
+            // An exited shell finishes nothing it started.
+            Event::Exited { terminal_id, .. } => self.commands.forget(terminal_id),
             _ => {}
         }
     }
@@ -2042,6 +2049,7 @@ impl Desk {
     pub fn confirm_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Modal::Paste {
             placement_id,
+            terminal_id,
             paste,
             ..
         } = self.modal.clone()
@@ -2049,7 +2057,12 @@ impl Desk {
             return;
         };
         self.close_modal(window, cx);
-        if self.panes.get(&placement_id).is_none() {
+        let current = self
+            .placement(&placement_id)
+            .and_then(|placement| placement.terminal_id.as_ref());
+        if !held_paste_target_holds(current, &terminal_id)
+            || self.panes.get(&placement_id).is_none()
+        {
             self.post(
                 Kind::Refusal,
                 crate::attach::PASTE_REFUSED,
@@ -4136,13 +4149,22 @@ impl Desk {
                 self.start_upload(&terminal, batch.clone(), cx);
             }
             crate::terminal::TerminalEvent::ConfirmPaste(paste) => {
-                let title = self.pane_title(
-                    self.placement(placement_id)
-                        .and_then(|placement| placement.terminal_id.as_ref()),
-                );
+                let Some(terminal_id) = self
+                    .placement(placement_id)
+                    .and_then(|placement| placement.terminal_id.clone())
+                else {
+                    self.post(
+                        Kind::Refusal,
+                        crate::attach::PASTE_REFUSED,
+                        Some("That terminal is gone. Nothing was pasted.".into()),
+                    );
+                    cx.notify();
+                    return;
+                };
                 self.modal = Modal::Paste {
                     placement_id: placement_id.to_owned(),
-                    title,
+                    title: self.pane_title(Some(&terminal_id)),
+                    terminal_id,
                     paste: paste.clone(),
                 };
                 self.after_command(window, cx);
@@ -4168,11 +4190,19 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], coordinate: f32) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{TabGeometry, command_span, pane_label, tab_drop_index};
+    use super::{TabGeometry, command_span, held_paste_target_holds, pane_label, tab_drop_index};
     use crate::settings::TabPosition;
     use phux_client_runtime::control::PaneDescriptor;
     use phux_protocol::ResourceId;
     use std::time::Duration;
+
+    #[test]
+    fn a_confirmed_paste_goes_only_to_the_terminal_it_was_held_for() {
+        let held = ResourceId::local(7);
+        assert!(held_paste_target_holds(Some(&ResourceId::local(7)), &held));
+        assert!(!held_paste_target_holds(Some(&ResourceId::local(8)), &held));
+        assert!(!held_paste_target_holds(None, &held));
+    }
 
     #[test]
     fn a_finished_command_reads_its_run_time_coarsely() {
@@ -4278,6 +4308,12 @@ fn region_text(client: &Client, view: phux_client_runtime::ViewId, region: TextR
         }
         _ => String::new(),
     }
+}
+
+/// Whether a confirmed paste may still go to its placement: the placement
+/// still shows the terminal the paste was held for.
+fn held_paste_target_holds(current: Option<&ResourceId>, held_for: &ResourceId) -> bool {
+    current == Some(held_for)
 }
 
 /// How long a finished command ran, coarsely: `42s`, `3m 5s`, `1h 2m`.
