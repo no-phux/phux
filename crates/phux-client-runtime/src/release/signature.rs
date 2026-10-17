@@ -1,5 +1,5 @@
 //! The release signature: the independent trust root every updater checks
-//! before it believes a digest (ADR-0177).
+//! before it believes a digest (ADR-0178).
 //!
 //! CI signs every artifact's `.sha256` sidecar with minisign and publishes
 //! `<asset>.sha256.minisig` beside it. Clients embed the public keys they
@@ -15,7 +15,7 @@ use super::is_lower_hex;
 /// The keys a release signature may come from.
 ///
 /// The key CI signs with now, then the next key, held off the build
-/// workstation until a rotation (ADR-0177). The key id in each signature picks the key.
+/// workstation until a rotation (ADR-0178). The key id in each signature picks the key.
 /// `scripts/install.sh` embeds the same list as `RELEASE_KEYS`; a test in
 /// the `phux` crate keeps them in step.
 pub const RELEASE_KEYS: &[&str] = &[

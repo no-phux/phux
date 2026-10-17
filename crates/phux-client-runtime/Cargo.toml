@@ -82,7 +82,7 @@ sha2 = "0.11"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 rustls.workspace = true
 # Release checksums are trusted only once a release key signed them
-# (ADR-0177). `phux update` and Desktop's updater both verify through
+# (ADR-0178). `phux update` and Desktop's updater both verify through
 # `release::signature`, so the key list and the check exist once. The
 # minisign author's verify-only crate: no dependencies of its own, no C, and
 # already locked by the `phux` crate at this spec.

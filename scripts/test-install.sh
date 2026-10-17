@@ -177,7 +177,7 @@ refused 'checksum mismatch' --os linux --arch x86_64 --install-dir "$TMP/stable"
 grep -Fxq 'old phux' "$TMP/stable/phux" || fail "a mismatch replaced the binary"
 mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
 
-# --- signatures (ADR-0177) ------------------------------------------------------
+# --- signatures (ADR-0178) ------------------------------------------------------
 
 # With minisign on PATH the signed sidecar must verify and agree with the
 # manifest. A fake minisign drives the installer's side; the real one, when

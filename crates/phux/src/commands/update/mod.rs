@@ -6,7 +6,7 @@
 //! Trust boundary:
 //!
 //! * The artifact's `.sha256` sidecar must carry a minisign signature from a
-//!   key compiled into this binary (see [`signature`], ADR-0177); a missing,
+//!   key compiled into this binary (see [`signature`], ADR-0178); a missing,
 //!   invalid, or foreign signature installs nothing.
 //! * The download's digest must equal that signed digest, and the channel
 //!   manifest's when it names the build, before anything is unpacked; a
@@ -66,7 +66,7 @@ pub(crate) enum UpdateError {
     Signature(String),
     /// The channel manifest names a stable release older than the installed
     /// one and no `--version` pin asked for it. A rewritten manifest must not
-    /// roll a user back to a genuinely signed, older release (ADR-0177).
+    /// roll a user back to a genuinely signed, older release (ADR-0178).
     Downgrade(String),
     /// The published digest and the downloaded bytes disagree. The one
     /// failure this whole module exists to produce.
@@ -747,7 +747,7 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
 /// Only a `--version` pin moves a stable install to an older release. The
 /// manifest is unsigned, so a host that rewrites it could otherwise name an
 /// older, genuinely signed release with a known flaw and roll every
-/// `phux update` back to it (ADR-0177).
+/// `phux update` back to it (ADR-0178).
 fn refuse_unpinned_downgrade(plan: &Plan, pinned: bool) -> Result<(), UpdateError> {
     if pinned || plan.update_available {
         return Ok(());

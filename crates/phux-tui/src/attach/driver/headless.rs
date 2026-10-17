@@ -293,8 +293,7 @@ impl HeadlessSession {
             &crate::attach::agent_rows::agent_session_rows(&mirror.engine_kernel),
             &crate::attach::review::ReviewIndex::new(),
         );
-        let badged =
-            super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.theme);
+        super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.theme);
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
@@ -314,7 +313,7 @@ impl HeadlessSession {
         sidebar_painter.set_roster(vec![session]);
         // Local rows and the current session only: a capture must not depend
         // on what else happened to be running on the server.
-        sidebar_painter.set_needs_you(super::chrome::unbadged(local, &badged));
+        sidebar_painter.set_agents(local);
 
         let layout_state = mirror
             .workspace
@@ -873,30 +872,21 @@ mod sidebar_tests {
                     .collect()
             })
             .collect();
-        // The blocked agent shows once, as its tab's badge; the session row
-        // counts it and the (empty) Agents panel does not repeat it.
+        // The blocked agent badges its tab, the session row counts it, and
+        // the Agents panel lists it: the panel shows every agent.
         let work_row = rows
             .iter()
             .position(|row| row.contains("work"))
             .expect("session row");
         assert!(rows[work_row].contains("●1"), "{rows:?}");
-        let tab_row = rows
-            .iter()
-            .position(|row| row.contains("reviewer"))
-            .expect("tab row");
-        assert!(rows[tab_row].contains("● reviewer"), "{rows:?}");
+        // The tab row, nested under its session, carries the agent's badge.
+        assert!(rows[work_row + 1].contains("● reviewer"), "{rows:?}");
         assert_eq!(
             rows.iter().filter(|row| row.contains("reviewer")).count(),
-            1,
+            2,
             "{rows:?}"
         );
-        // ADR-0112: the Agents panel keeps its header and quiet placeholder.
         assert!(rows.iter().any(|row| row.contains("Agents")), "{rows:?}");
-        assert!(
-            rows.iter()
-                .any(|row| row.contains(crate::render::chrome::sidebar::AGENTS_EMPTY_LABEL)),
-            "{rows:?}"
-        );
     }
 
     /// ADR-0161: against an `ORGANIZATION` server the composite's layout is

@@ -19,7 +19,7 @@ on:
         type: string
     secrets:
       PHUX_MINISIGN_SECRET_KEY:
-        description: minisign secret key that signs a stable checksum (ADR-0177); next signs in next-release.yml
+        description: minisign secret key that signs a stable checksum (ADR-0178); next signs in next-release.yml
         required: false
 
 permissions:
@@ -196,7 +196,7 @@ jobs:
           if-no-files-found: error
 
   # Signing runs on a hosted Linux runner, so the release key never reaches the
-  # macOS build host (ADR-0177). The draft publishes only once it is signed.
+  # macOS build host (ADR-0178). The draft publishes only once it is signed.
   sign:
     name: Sign and publish stable
     needs: macos

@@ -1,5 +1,5 @@
 //! The release signature `phux update` checks before it believes any digest
-//! (ADR-0177). The verifier and the embedded keys live in
+//! (ADR-0178). The verifier and the embedded keys live in
 //! `phux_client_runtime::release::signature`, shared with Desktop's updater;
 //! this module maps a refusal onto [`UpdateError::Signature`].
 

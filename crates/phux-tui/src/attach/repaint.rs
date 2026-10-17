@@ -53,6 +53,12 @@ impl RepaintAccumulator {
         }
     }
 
+    /// Request every visible pane redrawn in place; wins over chrome and
+    /// rows, never over a full repaint.
+    pub(super) fn raise_panes(&mut self) {
+        self.level = self.level.max(RepaintLevel::Panes);
+    }
+
     /// Request a full-viewport repaint; always wins over chrome.
     pub(super) const fn raise_full(&mut self) {
         self.level = RepaintLevel::Full;

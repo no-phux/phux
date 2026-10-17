@@ -5,7 +5,7 @@
 set -eu
 
 RELEASES=https://github.com/no-phux/phux/releases/download
-# minisign keys a release checksum may be signed by (ADR-0177): current
+# minisign keys a release checksum may be signed by (ADR-0178): current
 # (9F105950F46456C9), then next (B9E437599627DC6A). One line, kept equal to
 # RELEASE_KEYS in crates/phux-client-runtime/src/release/signature.rs by a test.
 RELEASE_KEYS='RWTJVmT0UFkQn2Zw1mG2cIcm5O/9kLuffefLpHw3vwhWAxgn/gcsoxiX RWRq3CeWWTfkuYUoONcL0LsC/L3BYav/SIeHRPDMauxHAZnrUd+UoYU1'
@@ -205,7 +205,7 @@ signed_by_release_key() {
 # With minisign on PATH, the asset's signed sidecar is the trust root: it
 # must verify against RELEASE_KEYS and agree with the expected digest, or
 # supply it. Without minisign the SHA-256 alone is checked, unless
-# PHUX_REQUIRE_SIGNATURE=1 makes that a refusal (ADR-0177 decision 5).
+# PHUX_REQUIRE_SIGNATURE=1 makes that a refusal (ADR-0178 decision 5).
 verify_signature() {
   case "${PHUX_REQUIRE_SIGNATURE:-0}" in
     0 | 1) ;;

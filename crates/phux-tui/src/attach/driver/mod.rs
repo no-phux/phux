@@ -37,4 +37,4 @@ mod viewport;
 
 pub use entry::{connect_for_attach, run_connection, run_dial, run_with_stdout};
 pub use headless::{CompositedCapture, record_composited, run_headless_rendered};
-pub use terminal::write_terminal_reset;
+pub use terminal::{adopt_alt_screen_handoff, leave_inherited_alt_screen, write_terminal_reset};

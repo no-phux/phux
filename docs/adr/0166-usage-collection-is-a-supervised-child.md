@@ -14,6 +14,7 @@ its history store and UI are not.
 
 Status: Proposed
 Date: 2026-10-13
+See [ADR-0178](./0177-non-terminal-resources-have-declared-producers.md) for a proposed replacement of Decision §2 lifecycle, §5 delivery, and Open decision 2.
 
 ## Context
 

@@ -81,7 +81,7 @@ previous commit.
 ## Signing
 
 Every CLI and Desktop sidecar is signed with minisign
-([ADR-0177](./adr/0177-release-checksums-are-minisign-signed.md)).
+([ADR-0178](./adr/0178-release-checksums-are-minisign-signed.md)).
 `scripts/ci/sign-release.sh` reads the unencrypted secret key from the
 `PHUX_MINISIGN_SECRET_KEY` repository secret, writes `<asset>.sha256.minisig`,
 and fails unless the signature verifies against `RELEASE_KEYS` in
@@ -89,7 +89,7 @@ and fails unless the signature verifies against `RELEASE_KEYS` in
 `desktop-release.yml` (which publishes the Desktop draft), and in
 `next-release.yml`. A missing secret fails the release instead of shipping it
 unsigned. The next key's secret is held encrypted off any machine that holds
-the current one; ADR-0177 decision 6 is the custody rule and the rotation
+the current one; ADR-0178 decision 6 is the custody rule and the rotation
 procedure.
 
 ## Manifests

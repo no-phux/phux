@@ -419,15 +419,20 @@ its columns rather than spanning underneath. **Agents** on top and
 (50) by default, `0` drops the panel. The population never moves the line;
 only a viewport resize changes the allocation.
 
-**Agents** lists only the agents that need you: blocked or asking (`●`),
-or finished and not yet looked at (`◆`). Working and idle agents stay off
-it, and an agent already shown as a tab's badge in the current session is
-not listed again. An empty panel keeps its header and a quiet
-`none need you` placeholder, so Sessions never shifts. Rows keep
-session / tab / pane order; the list does not
-sort by urgency. A local row selects that tab; a peer row is a one-step
-`switch-session` onto that pane. Overflow is a `+N more` row that opens
-the agents dashboard.
+**Agents** lists every agent, on every session, under a chip row that
+filters it in one click: `all`, `this` (the attached session's), or `need`
+(blocked or asking `●`, or finished and not yet looked at `◆`). When agents
+run on more than one machine an `@` chip follows; each click steps it
+through every machine, `here`, then each satellite. `C-a a`
+(`agents-filter`) steps the scope from the keyboard, and
+`agents-filter { scope, host }` sets either half from a binding. The choice
+is this client's, kept in `agents-filter.json` in the state directory, so
+it survives session switches and re-attaches. An empty panel keeps its
+header, the chips, and a quiet placeholder (`none running`, or
+`none need you` under `need`), so Sessions never shifts. Rows keep
+session / tab / pane order; the list does not sort by urgency. A local row
+selects that tab; a peer row is a one-step `switch-session` onto that pane.
+Overflow is a `+N more` row that opens the agents dashboard.
 
 <!-- impl-status: shipped; probe: AgentSessionRow -->
 > **Status: shipped.** When a pane has a live agent session, the sidebar
@@ -535,7 +540,8 @@ did-you-mean suggestion.
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
 destination; overflow opens the matching view. The footer keeps `+ new tab`
-as the create affordance. Commands and Settings stay on the palette
+as the create affordance; the status bar repeats it as a `+` after the tabs
+and offers `+ session` in its top-right corner (both `button` widgets). Commands and Settings stay on the palette
 (`C-a Space` / `:`) and the context menu. The collapse chevron runs
 `toggle-sidebar`. Pointer events over the strip never leak into pane routing.
 

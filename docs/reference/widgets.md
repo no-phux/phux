@@ -16,6 +16,16 @@ hand edits do not survive. Regenerate with `just docs-gen`.
 
 A `[[status.widgets]]` entry (or a plugin's `[[widgets]]` contribution) names one of the kinds below plus kind-specific options. The set is closed twice over: an unknown `kind` fails the bar build, and every factory rejects an option outside its documented set with a did-you-mean suggestion — `phux config check` surfaces both as located findings. Each section here renders from the same spec const the factory validates against, so these options are exactly the ones the binary accepts.
 
+## `button`
+
+A clickable label that runs one argument-free TUI action (`new-window`, `new-session`, `session-picker`, ...) through the ordinary action dispatcher. Every cell, padding included, is the click target; the button shows whole or not at all.
+
+Options:
+
+- `action` — string, required — the action a click runs; any name from the action vocabulary that needs no arguments.
+- `label` — string, default `"+"` — the button's text, rendered with one space of padding on each side.
+- `style` — style table, default bold — the button's style.
+
 ## `cwd`
 
 The focused pane's live working directory, fed by the server's `cwd_changed` agent events (kernel-queried PTY-child cwd). A `$HOME` prefix collapses to `~`; renders nothing until the cwd is known.

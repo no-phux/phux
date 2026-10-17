@@ -110,6 +110,7 @@ pub(super) struct CtxFixture {
     pub(super) reload_request: bool,
     pub(super) host_switch_request: Option<(String, String)>,
     pub(super) project_toggle_request: Option<String>,
+    pub(super) agents_filter_request: Option<crate::render::chrome::sidebar::FilterRequest>,
     pub(super) agent_meta: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) vcs: VcsIndex,
     /// The fixture's own job facility; await `jobs.next()` for results.
@@ -174,6 +175,7 @@ impl Default for CtxFixture {
             reload_request: false,
             host_switch_request: None,
             project_toggle_request: None,
+            agents_filter_request: None,
             agent_meta: HashMap::new(),
             vcs: VcsIndex::default(),
             jobs: crate::attach::jobs::Jobs::new(),
@@ -256,6 +258,7 @@ impl CtxFixture {
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
             project_toggle_request: &mut self.project_toggle_request,
+            agents_filter_request: &mut self.agents_filter_request,
             agent_meta: &self.agent_meta,
             vcs: &mut self.vcs,
         }
@@ -515,6 +518,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
             plugin: crate::render::chrome::sidebar_sections::PluginShape::default(),
             agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
+            agent_host_chip: false,
         },
         // Row 0 is local; the rest are peers, so one fixture covers both.
         needs_you: (0..needs_you)

@@ -50,6 +50,7 @@ impl super::SessionLoop {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
         }
+        self.adopt_carried_local_agents();
         self.fold_inventory(outcome.inventory);
         self.resolve_cross_session_pick();
         // The peer sweep is deferred to the first drain (`sweep_pending`) so

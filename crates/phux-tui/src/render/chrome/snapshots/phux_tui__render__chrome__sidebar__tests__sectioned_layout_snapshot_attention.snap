@@ -2,15 +2,15 @@
 source: crates/phux-tui/src/render/chrome/sidebar.rs
 expression: "strip_text(&p, rect)"
 ---
- Agents                2 │
+ Agents                9 │
+ all this need           │
  ● phux            codex │
  ● feat-auth      claude │
-                         │
-                         │
-                         │
-                         │
-                         │
-                         │
+ ◐ wave-0         claude │
+ ◐ wave-1         claude │
+ ◐ wave-2         claude │
+ ◐ wave-3         claude │
+   +3 more               │
  Sessions              2 │
  ○ development           │
    ● phux           main │

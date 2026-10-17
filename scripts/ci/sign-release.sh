@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sign release checksums with the phux release key (ADR-0177).
+# Sign release checksums with the phux release key (ADR-0178).
 #
 #   PHUX_MINISIGN_SECRET_KEY=<minisign secret key file contents> \
 #     bash scripts/ci/sign-release.sh dist/<asset>.sha256...
@@ -45,7 +45,7 @@ for sidecar in "$@"; do
   done
   if [[ $verified -eq 0 ]]; then
     rm -f "$sidecar.minisig"
-    die "the signing key is not one scripts/install.sh embeds; see ADR-0177 for rotation"
+    die "the signing key is not one scripts/install.sh embeds; see ADR-0178 for rotation"
   fi
   echo "signed $(basename "$sidecar")"
 done

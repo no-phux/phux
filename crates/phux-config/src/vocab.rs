@@ -47,6 +47,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "window-picker",
     "session-picker",
     "agent-fleet",
+    "agents-filter",
     "focus-pane",
     "next-attention",
     "return-from-attention",

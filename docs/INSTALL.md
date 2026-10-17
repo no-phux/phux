@@ -204,7 +204,7 @@ under a lock with a recovery journal. It then asks a running server to
 graceful-upgrade, the `phux upgrade` path. The previous pair stays in
 `.phux-update-backup/` beside the binaries for `--rollback`. The trust
 boundary is [ADR-0074](adr/0074-self-update-trust-boundary.md), with the
-signature from [ADR-0177](adr/0177-release-checksums-are-minisign-signed.md).
+signature from [ADR-0178](adr/0178-release-checksums-are-minisign-signed.md).
 A stable manifest naming a release older than the installed one is refused
 (`update_downgrade_refused`); a downgrade takes `--version`. Phux Desktop
 verifies the same signature in-process before it stages an update. The

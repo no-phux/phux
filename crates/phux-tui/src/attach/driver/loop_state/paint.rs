@@ -36,6 +36,21 @@ impl super::SessionLoop {
         content_rect(self.viewport_dims, self.bar(), sidebar)
     }
 
+    /// The tiling a whole-view paint would draw right now.
+    pub(super) fn view_key(&self, sidebar: Option<SidebarReservation>) -> super::ViewKey {
+        super::ViewKey {
+            rects: super::view_rects(
+                &self.mirror.workspace,
+                self.mirror.zoomed.as_ref(),
+                self.content(sidebar),
+                self.viewport_dims,
+            ),
+            floating: crate::attach::floating::floating_pane(&self.mirror.panes).cloned(),
+            viewport: self.viewport_dims,
+            sidebar,
+        }
+    }
+
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
     pub(super) fn refresh_chrome(&mut self) -> bool {
         let rows = crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel);
@@ -102,10 +117,14 @@ impl super::SessionLoop {
         sidebar: Option<SidebarReservation>,
         level: RepaintLevel,
     ) {
-        if self.overlays.is_active() {
+        // A held switch paints once, whole, when the hold releases.
+        if self.overlays.is_active() || self.paint_held() {
             return;
         }
         if let Some(painted) = self.paint_view(out, sidebar, level) {
+            if matches!(level, RepaintLevel::Full | RepaintLevel::Panes) {
+                self.painted_view = Some(self.view_key(sidebar));
+            }
             self.finish_paint(painted);
             // A `Panes` repaint redrew every visible pane, so their delivery
             // fences clear exactly as a `Full` repaint's do.
@@ -244,6 +263,10 @@ impl super::SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) -> StatusBarPaint {
+        // The overlay composites over a full frame, which is the hold's paint;
+        // what it draws on top is no longer a view an in-place repaint fixes.
+        self.paint_hold = None;
+        self.painted_view = None;
         let base = self
             .mirror
             .workspace
@@ -341,7 +364,7 @@ impl super::SessionLoop {
         // A failed reload always leaves its toast on top.
         let painted = if self.overlays.is_active() {
             self.paint_overlay_layer(out, sidebar)
-        } else if reloaded && has_window {
+        } else if reloaded && has_window && !self.paint_held() {
             self.paint_view(out, sidebar, RepaintLevel::Full)
                 .unwrap_or(StatusBarPaint::NotPublished)
         } else {
@@ -392,7 +415,7 @@ impl super::SessionLoop {
         // Arm the next window from the settle, not from the burst that filled
         // it, so a sustained producer paints on a steady cadence.
         self.pacer.rearm(tokio::time::Instant::now());
-        if self.overlays.is_active() {
+        if self.overlays.is_active() || self.paint_held() {
             return;
         }
         // ADR-0147: under the floating overlay only the overlay paints; the
@@ -617,8 +640,9 @@ impl super::SessionLoop {
         self.expire_overdue_host_inventory();
         // Surface a background update check once it lands.
         self.poll_update_notice(out, sidebar);
-        // An overlay would be partly overwritten by the bar paint.
-        if self.overlays.is_active() {
+        // An overlay would be partly overwritten by the bar paint, and a held
+        // switch's bar would land on the previous session's frame.
+        if self.overlays.is_active() || self.paint_held() {
             return;
         }
         // Restore the cursor to wherever the focused pane left it

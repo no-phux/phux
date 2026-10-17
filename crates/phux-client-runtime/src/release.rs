@@ -170,7 +170,7 @@ impl Asset {
         format!("{}.sha256", self.url)
     }
 
-    /// The minisign signature over the sidecar (ADR-0177).
+    /// The minisign signature over the sidecar (ADR-0178).
     #[must_use]
     pub fn signature_url(&self) -> String {
         format!("{}.sha256.minisig", self.url)

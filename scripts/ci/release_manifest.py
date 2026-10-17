@@ -296,7 +296,7 @@ def stable(out, publish):
 
 def verified_dist(product, sha, dist):
     """`{target: (path, hex)}` for each built asset whose sidecar matches it
-    and carries a signature (ADR-0177)."""
+    and carries a signature (ADR-0178)."""
     verified = {}
     for target in TARGETS[product]:
         name = asset_name(product, "next", None, sha, target)

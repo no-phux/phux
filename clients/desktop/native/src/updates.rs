@@ -2,7 +2,7 @@
 //! channel manifest; an update stages a verified bundle beside the app while it
 //! runs and a detached helper swaps it in only after this process has exited.
 //! No downloaded code runs during a check. Before staging, the manifest's
-//! digest must equal the one a release key signed (ADR-0177); the installer
+//! digest must equal the one a release key signed (ADR-0178); the installer
 //! then holds the archive to that digest.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -376,7 +376,7 @@ fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Require that a release key signed exactly the digest the manifest
-/// publishes for `target` (ADR-0177). The manifest is unsigned, so its digest
+/// publishes for `target` (ADR-0178). The manifest is unsigned, so its digest
 /// alone would let a host that rewrites release assets vouch for any archive.
 /// A missing or foreign signature refuses: an unsigned release is never
 /// staged.

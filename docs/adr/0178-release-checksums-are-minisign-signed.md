@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-17
 ---
 
-# 0177 — Release checksums are minisign-signed
+# 0178 — Release checksums are minisign-signed
 
 **TL;DR.** CI signs every release asset's `.sha256` sidecar with one minisign
 key held as the `PHUX_MINISIGN_SECRET_KEY` Actions secret and publishes

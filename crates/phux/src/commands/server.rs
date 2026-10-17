@@ -633,7 +633,10 @@ pub(crate) fn maybe_auto_spawn_server(
         .arg(socket_path)
         .arg("--daemonize")
         .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .stdout(Stdio::null())
+        // A `switch-host` successor's hand-off marker describes its own
+        // terminal; the server and every pane it spawns must not inherit it.
+        .env_remove(phux_tui::attach::hosts::ALT_SCREEN_HANDOFF_ENV);
     // A server started from a non-login environment gets the service marker, so
     // its panes run login shells (ADR-0120).
     if login_shell {

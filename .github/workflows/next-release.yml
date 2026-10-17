@@ -125,7 +125,7 @@ jobs:
           merge-multiple: true
 
       # The signature over each sidecar is the trust root `phux update` and
-      # the installer check (ADR-0177); release_manifest.py refuses an
+      # the installer check (ADR-0178); release_manifest.py refuses an
       # unsigned build.
       - name: Sign the checksums
         env:

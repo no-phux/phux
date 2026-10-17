@@ -14,7 +14,7 @@ on:
         type: string
     secrets:
       PHUX_MINISIGN_SECRET_KEY:
-        description: "minisign secret key that signs each checksum (ADR-0177)."
+        description: "minisign secret key that signs each checksum (ADR-0178)."
         required: true
 
 permissions:
@@ -47,7 +47,7 @@ jobs:
           merge-multiple: true
 
       # The signature over each sidecar is the trust root `phux update` and
-      # the installer check (ADR-0177); nothing publishes unsigned.
+      # the installer check (ADR-0178); nothing publishes unsigned.
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}

@@ -159,7 +159,7 @@ pub(super) fn refresh_window_chrome(
         .sidebar_painter
         .as_deref()
         .map_or(chrome.theme, SidebarPainter::theme);
-    let badged = badge_windows(&mut windows, workspace, &local, badge_theme);
+    badge_windows(&mut windows, workspace, &local, badge_theme);
     let agents = agent_queue(local.clone(), workspace, &peers);
     let mut changed = false;
     if let Some(sb) = chrome.status_bar.as_deref_mut() {
@@ -175,10 +175,9 @@ pub(super) fn refresh_window_chrome(
             &agent_meta.records,
         );
         changed |= sidebar_painter.set_plugin_sections(sections);
-        // A tab row already shows its focused agent's badge, so the Agents
-        // list leaves that row out: no agent appears twice.
-        let listed = agent_queue(unbadged(local.clone(), &badged), workspace, &peers);
-        changed |= feed_sidebar(sidebar_painter, windows, &local, listed, &peers);
+        // The Agents panel lists every agent and filters on its own; a tab
+        // row's badge does not take its agent off the list.
+        changed |= feed_sidebar(sidebar_painter, windows, &local, agents.clone(), &peers);
     }
     (changed, agents)
 }
@@ -213,7 +212,7 @@ fn feed_sidebar(
     let mut changed = sidebar_painter.set_windows(windows);
     changed |=
         sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(peers, local));
-    changed |= sidebar_painter.set_needs_you(agents);
+    changed |= sidebar_painter.set_agents(agents);
     changed
 }
 
@@ -238,26 +237,15 @@ pub(super) fn agent_queue(
     agents
 }
 
-/// `local` without the rows at the `badged` indexes.
-pub(super) fn unbadged(local: Vec<AgentEntry>, badged: &[usize]) -> Vec<AgentEntry> {
-    local
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !badged.contains(i))
-        .map(|(_, entry)| entry)
-        .collect()
-}
-
 /// Give each window the badge of the agent in its focused pane, from the
 /// same [`agent_entries`] rows the sidebar paints, so tab, row, and title
-/// agree. Returns the indexes of the `agents` rows used as badges.
+/// agree.
 pub(super) fn badge_windows(
     windows: &mut [phux_config::widget::WindowInfo],
     workspace: &ArrangementDoc,
     agents: &[AgentEntry],
     theme: &crate::render::Theme,
-) -> Vec<usize> {
-    let mut badged = Vec::new();
+) {
     for (i, (info, window)) in windows.iter_mut().zip(&workspace.groups).enumerate() {
         let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
             window
@@ -267,14 +255,12 @@ pub(super) fn badge_windows(
                 .map(crate::layout::leaves)
                 .and_then(|leaves| leaves.iter().position(|id| id == focus))
         });
-        let Some((index, entry)) = agents
+        let Some(entry) = agents
             .iter()
-            .enumerate()
-            .find(|(_, e)| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
+            .find(|e| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
         else {
             continue;
         };
-        badged.push(index);
         let badge =
             crate::render::chrome::agent_badge(theme, entry.state, entry.attention, entry.seen);
         info.badge = Some(phux_config::widget::WindowBadge {
@@ -286,7 +272,6 @@ pub(super) fn badge_windows(
             },
         });
     }
-    badged
 }
 
 /// The window widget's input. Labels prefer a user-given name, then the

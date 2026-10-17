@@ -284,6 +284,10 @@ which-key-delay-ms = 400
 #       other sessions hop there via `switch-session` (their panes list
 #       once attached). The rows refresh live as agent events arrive.
 "A" = "agent-fleet"
+#   a - step the sidebar's Agents filter: every agent, this session's,
+#       then only the ones that need you. The chip row under the Agents
+#       header picks one in a click, and its `@` chip steps the machine.
+"a" = "agents-filter"
 "S" = "settings"
 
 # Organize: put every pane in the session it belongs in (`phux organize`).
@@ -517,8 +521,14 @@ which-key-delay-ms = 400
 # surface, the contrast floor documented in crates/phux-tui/src/render/theme.rs.
 # They are spelled out rather than named because widget styles are plain
 # data — see `[theme]` in docs/consumers/tui.md section 4.4 for the slot list.
+#
+# A `button` runs one argument-free action on click. The `+` that follows
+# the tabs opens a new tab, where a browser puts it; `+ session` in the
+# top-right corner prompts for a new session's name. Both use the inactive tabs' ink,
+# so they read as part of the strip rather than as alerts.
 left = [
   { kind = "windows", format = " {index} {name} ", separator = " ", active = { fg = "#bef264", bg = "#293628", bold = true }, inactive = { fg = "#9aa4b2" }, index = { fg = "#7c8696" } },
+  { kind = "button", label = "+", action = "new-window", style = { fg = "#9aa4b2", bold = true } },
 ]
 center = []
 # The right slot changes shape with the terminal, via the universal
@@ -535,6 +545,7 @@ center = []
 right = [
   { kind = "session-name", min-cols = 65, style = { fg = "#9aa4b2" } },
   { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "#9aa4b2" } },
+  { kind = "button", label = "+ session", action = "new-session", min-cols = 65, style = { fg = "#9aa4b2" } },
   { kind = "switch", max-cols = 64, chip = { fg = "#bef264", bold = true } },
 ]
 # Which outer-terminal row the bar reserves: "top" (default) or "bottom".
@@ -586,9 +597,12 @@ right = [
 
 # The sidebar (prefix-b toggles it), ON by default.
 #
-#   Agents      only the agents that need you: blocked or asking, or
-#               finished and not yet looked at, in stable order. Hidden
-#               when nothing needs you; never more than half the strip.
+#   Agents      every agent, in stable order, under a chip row that
+#               filters it in one click: `all`, `this` (this session's),
+#               or `need` (blocked or asking, or finished and not yet
+#               looked at); an `@` chip steps through the machines when
+#               agents run on more than one. `prefix a` steps the same
+#               filter, and the choice is kept across attaches.
 #   Sessions    session names, with the current session's tabs nested
 #               below and a host line per machine when there is more
 #               than one.
