@@ -1418,7 +1418,12 @@ fn path_panel(
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
-                .child(empty.clone())
+                .child({
+                    let text = empty.clone();
+                    div()
+                        .debug_selector(move || format!("path-notice: {text}"))
+                        .child(empty.clone())
+                })
         })
         .footer(move |_, _, _| {
             div()
@@ -1430,8 +1435,17 @@ fn path_panel(
                 .gap(px(12.))
                 .text_xs()
                 .text_color(muted)
-                .child(div().min_w_0().truncate().children(status.clone()))
-                .child(div().flex_shrink_0().child("Tab: open terminal"))
+                .children(status.clone().map(|status| {
+                    div()
+                        .debug_selector({
+                            let text = status.clone();
+                            move || format!("path-status: {text}")
+                        })
+                        .min_w_0()
+                        .truncate()
+                        .child(status)
+                }))
+                .child(div().ml_auto().flex_shrink_0().child("Tab: open terminal"))
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));

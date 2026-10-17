@@ -3142,12 +3142,7 @@ impl Desk {
             let mut failed = active;
             failed.root = root;
             failed.query = query;
-            failed.pending = None;
-            failed.rows.clear();
-            failed.parent = None;
-            failed.message.clear();
-            failed.failure = Some("Path search is unavailable on this server.".into());
-            failed
+            paths::fail_search(failed, "Path search is unavailable on this server.")
         } else {
             paths::start_query(active, id, root, &query)
         });
