@@ -99,6 +99,16 @@ impl<'a> PeerInputs<'a> {
         counts
     }
 
+    /// Whether the cached graph reports each resource's session: some local
+    /// resource carries the `session` facet (ADR-0161 §7), so the server's
+    /// windows are synthesized. The slice form of
+    /// [`phux_client::resource::reports_sessions`].
+    pub(in crate::attach) fn reports_sessions(&self) -> bool {
+        self.resources
+            .iter()
+            .any(|info| info.id.is_local() && info.session.is_some())
+    }
+
     /// ADR-0140: every hosts-provider machine except the attached one, in
     /// provider order. Empty when the CLI recorded no origin.
     pub(super) fn other_machines(&self) -> Vec<&'a phux_core::host_list::HostJson> {

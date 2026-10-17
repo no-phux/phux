@@ -53,7 +53,7 @@ pub(super) struct PeerWatch {
     pub(super) foreign_layouts: HashMap<SessionId, ArrangementDoc>,
     /// Peer arrangement records to read over the arrangement link once this
     /// burst settles (the `ORGANIZATION` form of the layout sweep).
-    pub(super) arrangement_reads_owed: PeerArrangementReads,
+    pub(super) arrangement_reads_owed: crate::attach::peer_arrangements::PeerReads,
     /// In-flight peer-layout GETs, by request id.
     pub(super) foreign_layout_pending: HashMap<u32, SessionId>,
     /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
@@ -100,31 +100,6 @@ pub(super) struct PeerWatch {
     /// session switch, which drops all subscriptions) does not queue peer
     /// GET/SUBSCRIBE traffic ahead of the snapshot burst that paints.
     pub(super) sweep_pending: bool,
-}
-
-/// Which peer arrangement records a settled burst still owes a read.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) enum PeerArrangementReads {
-    /// Nothing to read.
-    #[default]
-    Settled,
-    /// The peers whose record changed (`ARRANGEMENT_CHANGED`).
-    Sessions(HashSet<phux_protocol::ids::SessionKey>),
-    /// Every peer: a sweep.
-    All,
-}
-
-impl PeerArrangementReads {
-    /// Owe a read of `session`; a pending sweep already covers it.
-    pub(super) fn add(&mut self, session: phux_protocol::ids::SessionKey) {
-        match self {
-            Self::All => {}
-            Self::Sessions(sessions) => {
-                sessions.insert(session);
-            }
-            Self::Settled => *self = Self::Sessions(HashSet::from([session])),
-        }
-    }
 }
 
 impl PeerWatch {

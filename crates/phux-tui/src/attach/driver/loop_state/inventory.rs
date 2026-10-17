@@ -24,16 +24,17 @@ impl super::SessionLoop {
 
     /// Refresh each peer session's arrangement (for the picker's one-step
     /// rows and the live roster), then the peer agent records, serving host,
-    /// and host inventory. With an arrangement link the records are read
-    /// over it once the burst settles; otherwise each peer's legacy layout
-    /// key is fetched and subscribed, fire-and-forget.
+    /// and host inventory. With a peer reader (an `ORGANIZATION` server) the
+    /// records are read off the loop once the burst settles; otherwise each
+    /// peer's legacy layout key is fetched and subscribed, fire-and-forget.
     pub(super) async fn sweep_peer_layouts(
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if self.arrangement.is_some() {
-            self.peers.arrangement_reads_owed =
-                super::super::subscriptions::PeerArrangementReads::All;
+        if self.peer_reader.is_some() {
+            self.peers
+                .arrangement_reads_owed
+                .merge(crate::attach::peer_arrangements::PeerReads::All);
         } else {
             self.peers
                 .sweep_layouts(conn, &mut self.next_request_id)

@@ -1840,28 +1840,20 @@ async fn peer_sweep_reads_arrangement_records_over_the_link() {
         .organization(fixture);
     let (socket, _org_server) = serve_one(dir.path(), spec);
 
-    let (mut state, mut client, mut server, _) =
+    let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
     let _ = frames_sent(&mut client, &mut server).await;
-    state.arrangement = crate::attach::arrangement_link::ArrangementLink::open(
-        &crate::attach::Dial::uds(&socket),
+    state.peer_reader = Some(crate::attach::peer_arrangements::PeerReader::spawn(
+        crate::attach::Dial::uds(&socket),
         our_id,
-    )
-    .await
-    .unwrap();
-    assert!(state.arrangement.is_some());
+    ));
     state.peers.focused_session = Some(our_id);
     state.peers.sessions = vec![
         SessionInfo::new(our_id, "test").with_key(Some(ours)),
         SessionInfo::new(peer_id, "peer").with_key(Some(peer)),
     ];
     state.sweep_peer_layouts(&mut client).await.unwrap();
-    assert!(
-        state
-            .settle_peer_arrangement_reads(&mut client, &mut RepaintAccumulator::default())
-            .await
-            .unwrap()
-    );
+    settle_peer_reads(&mut state, &mut client, &mut out).await;
     let cached = state
         .peers
         .foreign_layouts
@@ -1886,13 +1878,50 @@ async fn peer_sweep_reads_arrangement_records_over_the_link() {
     // A peer's change re-reads only that peer.
     state.peers.foreign_layouts.clear();
     state.peers.arrangement_reads_owed.add(peer);
-    assert!(
-        state
-            .settle_peer_arrangement_reads(&mut client, &mut RepaintAccumulator::default())
-            .await
-            .unwrap()
-    );
+    settle_peer_reads(&mut state, &mut client, &mut out).await;
     assert!(state.peers.foreign_layouts.contains_key(&peer_id));
+}
+
+/// Send what the loop owes the peer reader and fold its answer, as the
+/// burst drain and the reader's `select!` arm do.
+async fn settle_peer_reads(state: &mut SessionLoop, client: &mut Connection, out: &mut Vec<u8>) {
+    state.request_peer_arrangement_reads();
+    let done = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.peer_reader.as_mut().expect("reader").next(),
+    )
+    .await
+    .expect("peer read answered");
+    state
+        .on_peer_reads_done(client, out, None, done)
+        .await
+        .unwrap();
+}
+
+/// A failed peer read keeps the caches, owes its reads again, and holds the
+/// next attempt back instead of retrying every burst.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_peer_read_is_owed_again_after_a_delay() {
+    use crate::attach::peer_arrangements::{PeerReader, PeerReads};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.peer_reader = Some(PeerReader::spawn(
+        crate::attach::Dial::uds(&dir.path().join("absent.sock")),
+        SessionId::new(1),
+    ));
+    state.peers.foreign_layouts.insert(
+        SessionId::new(2),
+        ArrangementDoc::single(ResourceId::local(9)),
+    );
+    state.peers.arrangement_reads_owed = PeerReads::All;
+    settle_peer_reads(&mut state, &mut client, &mut out).await;
+    assert_eq!(state.peers.arrangement_reads_owed, PeerReads::All);
+    assert!(state.peer_read_retry_at.is_some());
+    assert!(state.peers.foreign_layouts.contains_key(&SessionId::new(2)));
+    // Held back during the delay: nothing is handed to the reader.
+    state.request_peer_arrangement_reads();
+    assert_eq!(state.peers.arrangement_reads_owed, PeerReads::All);
 }
 
 #[tokio::test(flavor = "current_thread")]
