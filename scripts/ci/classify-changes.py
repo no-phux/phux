@@ -25,6 +25,48 @@ ALL = set(SURFACES)
 RUST = {"phux"}
 SHARED = RUST | {"web", "native"}
 ZIG = SHARED | {"web_engine", "desktop"}
+ROOT = Path(__file__).resolve().parents[2]
+
+# What each separately built lane compiles from crates/*: manifests whose path
+# dependencies (every kind) it builds, plus root crates it builds directly.
+# The rest of the lane's closure follows the manifests. Every other
+# clients/desktop path is unrouted, so it requests every surface.
+LANE_ROOTS = {
+    # The browser workspaces, plus web-browser.py's harness build:
+    # phux-server's ws_demo_server example (dev dependencies) and the phux bin.
+    "web": (("clients/phux-web/Cargo.toml", "clients/phux-vt-web/Cargo.toml",
+             "crates/phux-server/Cargo.toml"), ("phux-server", "phux")),
+    "desktop": (("clients/desktop/native/Cargo.toml",), ()),
+}
+ALL_KINDS = ("dependencies", "dev-dependencies", "build-dependencies")
+# Cargo builds dev dependencies only for the crate under test, not for the
+# crates it depends on.
+BUILD_KINDS = ("dependencies", "build-dependencies")
+
+
+def manifest_dependencies(manifest, kinds):
+    tables = [manifest, *manifest.get("target", {}).values()]
+    return {name for table in tables for kind in kinds for name in table.get(kind, {})}
+
+
+def lane_closures(root=ROOT):
+    """Root crate directories each lane in LANE_ROOTS compiles."""
+    crates = {path.parent.name: tomllib.loads(path.read_text())
+              for path in (root / "crates").glob("*/Cargo.toml")}
+    closures = {}
+    for lane, (manifests, direct) in LANE_ROOTS.items():
+        pending = set(direct)
+        for manifest in manifests:
+            pending |= manifest_dependencies(tomllib.loads((root / manifest).read_text()), ALL_KINDS)
+        closure = set()
+        pending &= crates.keys()
+        while pending:
+            name = pending.pop()
+            closure.add(name)
+            pending |= manifest_dependencies(crates[name], BUILD_KINDS) & crates.keys() - closure
+        closures[lane] = closure
+    return closures
+
 
 # Documentation that code or a guard reads as an input. Each row leaves the
 # docs-only fast path and routes like its reader: Rust tests byte-compare the
@@ -56,24 +98,10 @@ ROUTES = DOC_INPUTS + (
     # route on their own. classify-changes-test.py checks every desktop file
     # input outside clients/desktop against this table.
     (("scripts/fixtures/release-manifest/*",), RUST | {"desktop"}),
-    # Browser Rust consumers plus the live demo server and local-owner CLI
-    # fixture dependency closures (including Cargo dev dependencies). The test checks this
-    # against manifests so a new local dependency cannot silently lose coverage.
-    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
-      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
-      "crates/phux-client-runtime/*",
-      "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
-      "crates/phux-server/*", "crates/phux-server-testkit/*",
-      "crates/phux-agent-rules/*", "crates/phux-agent-host/*", "crates/phux/*", "crates/phux-client/*",
-      "crates/phux-mission/*", "crates/phux-work/*",
-      "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
-      "crates/portable-pty-adopt/*", "crates/quictun/*"), {"web"}),
-    # The desktop host's path-dependency closure, checked against the
-    # manifests by the test. Every other clients/desktop path is unrouted, so
-    # it requests every surface, desktop included.
-    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
-      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
-      "crates/phux-client-runtime/*", "crates/phux-dial/*", "crates/quictun/*"), {"desktop"}),
+    # Root crates reach the web and desktop lanes only through Cargo, so their
+    # rows are computed from the manifests (LANE_ROOTS), not listed.
+    *(((f"crates/{name}/*",), {lane}) for lane, closure in lane_closures().items()
+      for name in sorted(closure)),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
     # Path crates inherit `workspace = true` keys from the root manifest, and
@@ -132,7 +160,6 @@ WORKFLOWS = (
     "scripts/ci/test_release_drift.py",
     "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
-ROOT = Path(__file__).resolve().parents[2]
 # nextest package matchers treat an unprefixed name as a glob; `=` is exact.
 CRATE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
