@@ -1193,6 +1193,9 @@ pub fn snapshot_layout(
 }
 
 #[cfg(test)]
+mod view_tests;
+
+#[cfg(test)]
 mod home_tests {
     use super::*;
 
