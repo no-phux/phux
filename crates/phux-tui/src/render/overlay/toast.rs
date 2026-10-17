@@ -79,13 +79,11 @@ impl RenderOverlay for ToastOverlay {
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // 50% of the viewport, min 32 wide, clamped to the outer rect; then
-        // only as tall as the wrapped body needs, so a short notice is not a
-        // mostly-empty box. A row-starved viewport keeps the full-bleed panel.
+        // 50% of the viewport, min 32 wide, clamped to the outer rect (the
+        // whole width when columns are starved); then only as tall as the
+        // wrapped body needs, so a short notice is never a mostly-empty box,
+        // however few rows the viewport has.
         let panel = centered_panel(area, 5, 32, 6, self.breakpoints);
-        if self.breakpoints.is_row_starved(area.height) {
-            return Some(panel);
-        }
         let height = self.modal().height_for(panel.width).min(panel.height);
         let y = area.y + area.height.saturating_sub(height) / 2;
         Some(Rect { y, height, ..panel })
@@ -195,6 +193,24 @@ mod tests {
         // Tiny viewport still yields a rect inside it.
         let tiny = toast.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
         assert!(tiny.width <= 20 && tiny.height <= 6);
+    }
+
+    /// Starved of rows, a toast takes the panel's width but still only the
+    /// rows its body needs: no frame around empty rows.
+    #[test]
+    fn a_row_starved_toast_is_still_only_as_tall_as_its_body() {
+        let mut toast = ToastOverlay::new("t", vec!["one".into()], &Theme::default());
+        toast.set_breakpoints(ChromeBreakpoints {
+            compact_rows: 30,
+            ..ChromeBreakpoints::default()
+        });
+        let area = Rect::new(0, 0, 60, 20);
+        assert!(
+            toast.breakpoints.is_row_starved(area.height),
+            "the fixture is starved"
+        );
+        let b = toast.bounds(area).expect("bounded");
+        assert_eq!(b.height, 3, "one body row plus two borders: {b:?}");
     }
 
     /// A short notice is only as tall as its body plus borders, centered;

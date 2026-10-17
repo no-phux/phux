@@ -84,7 +84,11 @@ impl<'a> Modal<'a> {
     /// included, wrapping exactly as [`Self::render_into`] does.
     #[must_use]
     pub fn height_for(&self, width: u16) -> u16 {
-        u16::try_from(self.paragraph().line_count(width)).unwrap_or(u16::MAX)
+        // `line_count` wraps at the width it is handed and adds the block's
+        // rows, so it takes the interior width: a body line that wraps once
+        // the borders and padding are in counts as two rows here too.
+        let interior = modal_inner_width(width);
+        u16::try_from(self.paragraph().line_count(interior)).unwrap_or(u16::MAX)
     }
 
     fn paragraph(&self) -> Paragraph<'a> {
@@ -346,6 +350,22 @@ mod tests {
         // Full-bleed fills the inset rect it was given, never the sidebar.
         let content = Rect::new(20, 0, 40, 14);
         assert_eq!(centered_panel(content, 6, 30, 10, bp), content);
+    }
+
+    /// `height_for` counts the rows the box really paints: a body line that
+    /// wraps inside the borders and padding costs two rows.
+    #[test]
+    fn height_for_wraps_at_the_interior_width() {
+        let theme = Theme::default();
+        let forty = "This session stays alive when you leave.";
+        assert_eq!(forty.chars().count(), 40);
+        let modal = Modal::new(&theme, "t", vec![Line::from(forty)]).wrap(true);
+        assert_eq!(modal.height_for(60), 3, "fits on one row with room");
+        assert_eq!(
+            modal.height_for(41),
+            4,
+            "41 wide leaves 37 interior cells, so the line wraps"
+        );
     }
 
     /// A modal is opaque: painted over a wider line in the same box, none

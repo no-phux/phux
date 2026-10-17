@@ -25,8 +25,8 @@ use ratatui::text::{Line, Span};
 
 use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
-use crate::render::clip_text;
 use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::{clip_left, clip_text};
 
 /// Blank columns between a row's label and its secondary.
 const GAP: usize = 1;
@@ -666,28 +666,6 @@ fn session_management_command(item: &SelectItem) -> OverlayCommand {
 fn footer_status_budget(modal_width: u16, keys: &str) -> usize {
     let keys_w = crate::render::display_width(keys) + 2;
     usize::from(modal_width).saturating_sub(2 + keys_w + 2 + 1)
-}
-
-/// `text` cut from the left to fit `max` cells, led by `…`, so the tail stays.
-fn clip_left(text: &str, max: usize) -> String {
-    if crate::render::display_width(text) <= max {
-        return text.to_owned();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 1;
-    for ch in text.chars().rev() {
-        let w = crate::render::cell_width(ch).unwrap_or(0);
-        if used + w > max {
-            break;
-        }
-        used += w;
-        tail.push(ch);
-    }
-    tail.push('…');
-    tail.into_iter().rev().collect()
 }
 
 impl RenderOverlay for SelectList {
