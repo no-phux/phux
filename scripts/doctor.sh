@@ -126,9 +126,10 @@ desktop_tools() {
         fail 'desktop toolchain selection' 'Choose one environment; see docs/SETUP.md#gpui-desktop'
         return
     fi
-    # Match the desktop build's existing Apple-toolchain normalization.
-    # shellcheck source=scripts/lib/apple-toolchain-env.sh
-    source "$DEV_ROOT/scripts/lib/apple-toolchain-env.sh"
+    if [[ "$(uname -s)" == Darwin ]]; then
+        # shellcheck source=scripts/lib/apple-toolchain-env.sh
+        source "$DEV_ROOT/scripts/lib/apple-toolchain-env.sh"
+    fi
     native_tools
     node_tools
     need python3 'mise install; or: nix develop'
@@ -138,12 +139,25 @@ desktop_tools() {
     if [[ "$actual" == "$expected" ]]; then ok "Bun $actual"; else
         fail "Bun $expected (found: ${actual:-none})" 'mise install; use the repository Bun pin'
     fi
-    if [[ "$(uname -s)/$(uname -m)" != Darwin/arm64 ]]; then
-        fail 'Desktop first platform requires Apple-silicon macOS' 'Use an Apple-silicon Mac; Linux follows in phux-d4x9.19'
-        return
-    fi
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64|Linux/aarch64) linux_desktop_tools; return ;;
+        Darwin/arm64) ;;
+        *) fail 'unsupported desktop platform' 'Use Apple-silicon macOS or x86-64/ARM64 Linux'; return ;;
+    esac
     if xcrun metal --version >/dev/null 2>&1; then ok 'Metal compiler executes'; else
         fail 'Metal compiler unavailable in this environment' 'xcodebuild -downloadComponent MetalToolchain; verify xcrun metal --version; see clients/desktop/toolchain/README.md for inherited Nix SDK environments'
+    fi
+}
+
+linux_desktop_tools() {
+    local library
+    for library in fontconfig freetype2 xkbcommon xkbcommon-x11 wayland-client x11 xcb; do
+        if pkg-config --exists "$library"; then ok "$library"; else
+            fail "$library development libraries" 'Install the Linux desktop packages in docs/SETUP.md#gpui-desktop; or use nix develop'
+        fi
+    done
+    if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then ok 'graphical session'; else
+        phux_warn 'no DISPLAY or WAYLAND_DISPLAY; builds and headless tests work, launching needs a graphical session'
     fi
 }
 

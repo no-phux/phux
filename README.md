@@ -76,7 +76,7 @@ brew install no-phux/tap/phux
 ```
 
 Release builds support macOS arm64, Linux x86_64, and Linux arm64. Windows is
-not supported. The macOS desktop app installs the CLI with it:
+not supported. The macOS and Linux desktop app installs the CLI with it:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh

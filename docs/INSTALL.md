@@ -8,7 +8,7 @@ last-reviewed: 2026-10-17
 
 **TL;DR.** One command installs phux on Apple-silicon macOS and on Linux:
 `curl -fsSL https://phux.sh/install | sh`. `phux update` keeps it current.
-The macOS desktop app has its own one-liner and installs the CLI with it.
+The desktop app has its own one-liner and installs the CLI with it.
 
 ---
 
@@ -26,7 +26,9 @@ unpacking, and an interrupted install leaves the previous binaries in place.
 detach; run `phux` again to reattach. Continue with the
 [Quickstart](./QUICKSTART.md).
 
-## Desktop app (macOS)
+<a id="desktop-app-macos"></a>
+
+## Desktop app
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -38,6 +40,16 @@ running server. The app then updates itself: **Settings > Updates** checks in
 the background and installs a verified update with one click. Releases are ad-hoc signed, not
 Apple-notarized: the installer checks the checksum and signature, then clears
 quarantine. See the [desktop guide](./consumers/desktop.md).
+
+### Linux desktop
+
+The same command installs the Linux desktop on x86-64 and ARM64 systems with
+glibc, X11 or Wayland, and a Vulkan driver. Ubuntu 24.04 is the release build
+baseline. The package does not bundle a coordinator: an existing CLI is reused
+and a missing CLI is installed separately. Linux keyboard shortcuts include
+`Ctrl-Shift-P` for the palette, `Ctrl-Shift-T` for a terminal, and
+`Ctrl-Shift-C` / `Ctrl-Shift-V` for copy/paste; plain `Ctrl-C` stays a shell
+interrupt. See [desktop prerequisites](./SETUP.md#gpui-desktop) for libraries.
 
 The desktop has its own canary on the same moving `next` prerelease:
 
@@ -177,7 +189,7 @@ Put the extracted `phux` and `phux-mcp` on `PATH`. In `~/.local/bin`,
 ### Archived Zig Cockpit
 
 The Zig Cockpit and its installer are removed from `main`. Use the
-[desktop app](#desktop-app-macos) for the maintained native macOS client.
+[desktop app](#desktop-app) for the maintained native client.
 The [archive guide](./consumers/cockpit.md) preserves source and recovery
 instructions; existing releases and installed copies are not deleted.
 

@@ -13,7 +13,7 @@ path = "src/lib.rs"
 name = "phux-desktop"
 path = "src/main.rs"
 
-# The GPUI graph is large and macOS-specific. Keep this host's resolved union
+# The GPUI graph is large and platform-specific. Keep this host's resolved union
 # local instead of adding the platform renderer to every phux workspace consumer.
 [workspace]
 
@@ -37,7 +37,7 @@ phux-protocol = { path = "../../../crates/phux-protocol" }
 # GPUI, platform and Kit move together: Kit 0.7.3 pins gpui-pre 0.3.9, which
 # `[patch.crates-io]` below serves as gpui-fast 0.1.9 (same Zed revision).
 gpui = { package = "gpui-pre", version = "=0.3.9" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 gpui-kit = { version = "=0.7.3" }
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }

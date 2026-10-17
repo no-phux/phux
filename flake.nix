@@ -347,7 +347,19 @@
           # backs the `-fuse-ld=mold` rustflags in .cargo/config.toml for the
           # linux-gnu targets; it has no mach-o backend, so it is Linux-only
           # and macOS keeps Apple's default linker (already the fast path).
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.mold
+            # GPUI's X11/Wayland backends, font system and Vulkan renderer.
+            pkgs.fontconfig
+            pkgs.freetype
+            pkgs.libxkbcommon
+            pkgs.wayland
+            pkgs.xorg.libX11
+            pkgs.xorg.libXi
+            pkgs.xorg.libxcb
+            pkgs.vulkan-loader
+            pkgs.mesa
+          ]
           # Darwin archive tools, including the `nmedit` Ghostty's build
           # invokes through `xcrun`; with it the shell's own Apple SDK is
           # all a cold Ghostty build needs (see the shellHook).
@@ -365,6 +377,11 @@
           # and nmedit under this DEVELOPER_DIR. The probe below only reports
           # a host where that resolution is broken (no Command Line Tools).
           shellHook =
+            pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              # wgpu and xkbcommon load these at runtime, not through the linker.
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.vulkan-loader pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11 pkgs.xorg.libxcb ]}:''${LD_LIBRARY_PATH:-}"
+            ''
+            +
             pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
               if ! command -v xcrun >/dev/null 2>&1 ||
                  ! xcrun --show-sdk-path >/dev/null 2>&1 ||

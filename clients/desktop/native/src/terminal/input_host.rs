@@ -112,9 +112,39 @@ pub(super) fn chord(keystroke: &gpui::Keystroke) -> String {
 }
 
 fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {
-    event.keystroke.modifiers.platform
-        && !event.keystroke.modifiers.shift
-        && event.keystroke.key == key
+    let modifiers = event.keystroke.modifiers;
+    let clipboard = match (
+        modifiers.platform,
+        modifiers.control,
+        modifiers.shift,
+        modifiers.alt,
+    ) {
+        (true, _, false, false) => true,
+        (false, true, true, false) => cfg!(target_os = "linux"),
+        _ => false,
+    };
+    clipboard && event.keystroke.key == key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut;
+
+    #[test]
+    fn clipboard_shortcuts_do_not_capture_shell_interrupts() {
+        let event = |stroke| gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(stroke).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        assert!(!shortcut(&event("ctrl-c"), "c"));
+        assert!(shortcut(&event("cmd-c"), "c"));
+        assert_eq!(
+            shortcut(&event("ctrl-shift-c"), "c"),
+            cfg!(target_os = "linux")
+        );
+        assert!(!shortcut(&event("ctrl-alt-shift-c"), "c"));
+    }
 }
 
 pub(super) fn paint_preedit(

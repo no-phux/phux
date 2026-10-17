@@ -1,6 +1,7 @@
 # phux desktop
 
-Install the GPUI desktop client on Apple-silicon macOS 27 or later:
+Install the GPUI desktop client on Apple-silicon macOS 27 or later, or Linux
+x86-64/ARM64 with X11 or Wayland and Vulkan:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -15,6 +16,13 @@ roll back with `sh -s -- --version X.Y.Z` after the pipe. `--applications-dir`
 and `--install-dir` select alternate destinations. Releases are ad-hoc signed,
 **not Apple-notarized**; after verification the installer clears quarantine.
 
+Linux uses a checksummed, signed tarball instead of an Apple bundle. See
+[Linux installation](../../docs/INSTALL.md#linux-desktop) and the
+[desktop prerequisites](../../docs/SETUP.md#gpui-desktop). Shortcuts use Super
+instead of Command; `Ctrl-Shift-P/T/W/F` also open the palette, create/close a
+terminal, and find. `Ctrl-Shift-C/V` copy/paste without intercepting shell
+`Ctrl-C`. Text fields use normal Linux `Ctrl-C/V` editing shortcuts.
+
 `Phux.app` bundles the `phux-desktop` binary built from `clients/desktop/native`.
 There is no JavaScript bundle and no NAPI addon. Launched from the Dock or
 Spotlight, the app resolves the installed `phux` CLI
@@ -25,7 +33,9 @@ untargeted work lands in; a server without one opens its most recent session.
 The app never creates a session on its own. `PHUX_SESSION` names a session
 instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
-`~/Library/Logs/phux-desktop.log` (redacted, rotated at 8 MiB). **Copy
+`~/Library/Logs/phux-desktop.log` on macOS or
+`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux (default
+`~/.local/state/phux-desktop/desktop.log`; redacted, rotated at 8 MiB). **Copy
 Diagnostics** in the command palette copies versions, server id, connection
 epoch, host and recent errors for a bug report, without terminal content.
 

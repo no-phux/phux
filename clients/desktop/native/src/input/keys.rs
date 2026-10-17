@@ -46,7 +46,7 @@ fn physical_key(name: &str) -> PhysicalKey {
 
 pub(super) fn uses_text(event: &KeyDownEvent, option_as_alt: bool) -> bool {
     let mods = event.keystroke.modifiers;
-    if mods.control || (mods.alt && option_as_alt) {
+    if mods.control || (mods.alt && (option_as_alt || cfg!(target_os = "linux"))) {
         return false;
     }
     // macOS gives Enter and Tab a key_char, but handles them as commands,
@@ -147,7 +147,7 @@ mod tests {
             is_held: true,
             prefer_character_input: false,
         };
-        assert!(uses_text(&down, false));
+        assert_eq!(uses_text(&down, false), !cfg!(target_os = "linux"));
         assert!(!uses_text(&down, true));
         let encoded = event(&down.keystroke, KeyAction::Repeat);
         assert_eq!(encoded.action, KeyAction::Repeat);

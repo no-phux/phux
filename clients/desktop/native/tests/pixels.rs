@@ -504,34 +504,37 @@ fn palette_recolors_ansi_and_keeps_true_color() {
 
 fn nerd_symbols_are_not_missing_glyph_boxes_in_any_face() {
     let mut payload = String::from("\u{1b}[?25l");
-    for (row, face) in ["0", "1", "3", "1;3"].into_iter().enumerate() {
-        // U+0378 is unassigned; compare the actual rendered missing-glyph
-        // box, not merely whether an icon cell contains some ink.
-        payload.push_str(&format!(
-            "\u{1b}[{};1H\u{1b}[0;{face}m\u{f013}\u{f0206}\u{0378}",
-            row + 1
-        ));
+    for (face_row, face) in ["0", "1", "3", "1;3"].into_iter().enumerate() {
+        for (column, icon) in ['\u{f013}', '\u{f0206}'].into_iter().enumerate() {
+            // Keep each reference glyph at the same device-pixel x origin.
+            // Different primary-font widths put later columns at different
+            // subpixel phases on FreeType, even with the exact same font.
+            // U+0378 is unassigned: some ink alone is not proof of an icon.
+            payload.push_str(&format!(
+                "\u{1b}[{};1H\u{1b}[0;{face}m{icon}\u{0378}",
+                face_row * 2 + column + 1
+            ));
+        }
     }
-    let (client, view) = publish(payload.as_bytes());
+    let (client, view) = publish_at(payload.as_bytes(), 20, 8);
     let shot = paint(Arc::clone(&client), view, settings(false));
     let mut explicit = settings(false);
     explicit.font = gpui::font(phux_desktop::fonts::SYMBOLS);
     let expected = paint(client, view, explicit);
-    for row in 0..4 {
-        let missing = cell_pixels(&shot, row, 2);
-        for col in 0..2 {
-            let icon = cell_pixels(&shot, row, col);
-            assert_ink(&icon, "Nerd Font symbol");
-            assert_ne!(
-                icon, missing,
-                "Nerd icon column {col}, SGR face row {row} resolved to the missing-glyph box"
-            );
-            assert_eq!(
-                ink_mask(&shot, row, col),
-                ink_mask(&expected, row, col),
-                "Nerd icon column {col}, SGR face row {row} must render the bundled symbol outline"
-            );
-        }
+    for row in 0..8 {
+        let missing = cell_pixels(&shot, row, 1);
+        let col = 0;
+        let icon = cell_pixels(&shot, row, col);
+        assert_ink(&icon, "Nerd Font symbol");
+        assert_ne!(
+            icon, missing,
+            "Nerd icon column {col}, SGR face row {row} resolved to the missing-glyph box"
+        );
+        assert_eq!(
+            ink_mask(&shot, row, col),
+            ink_mask(&expected, row, col),
+            "Nerd icon column {col}, SGR face row {row} must render the bundled symbol outline"
+        );
     }
 }
 

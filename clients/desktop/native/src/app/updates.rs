@@ -311,13 +311,13 @@ pub(crate) fn page(
         )
         .group(
             SettingGroup::new()
-                .title("phux on this Mac")
+                .title("phux on this computer")
                 .item(runtime.item(entity, look, &mono))
                 .item(switch_item(
                     entity,
                     "Manage phux updates",
                     |prefs| &mut prefs.manage_runtime,
-                    "Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
+                    "Let this app run phux’s own updater for this computer and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
                 ))
                 .item(channel_item(entity, true, busy, updater.prefs.runtime, look)),
         )
@@ -698,7 +698,7 @@ impl Updater {
         }
         let protocol = self.protocol_change().map(|(now, next)| {
             format!(
-                "This update changes the wire protocol from {now} to {next}; phux on this Mac must be updated too."
+                "This update changes the wire protocol from {now} to {next}; phux on this computer must be updated too."
             )
         });
         let staged = self.staged.as_ref().map(|staged| {

@@ -191,7 +191,7 @@ const CATALOG: &str = "\
     reload-config | Reload Ghostty Config | Ghostty | cmd+shift+, | Read the Ghostty configuration again. |
     import-ghostty | Use Ghostty Font, Colors and Padding | Ghostty |  | Apply Ghostty appearance settings to this window. |
     reconnect | Reconnect to Server | Connection | cmd+shift+r | Restart this window's connection to the server. |
-    machines | Machines… | Connection |  | List this Mac and every saved machine with its connection state; open, retry, disconnect or forget one. | hosts remote servers ssh connect status
+    machines | Machines… | Connection |  | List this computer and every saved machine with its connection state; open, retry, disconnect or forget one. | hosts remote servers ssh connect status
     add-host | Add Machine… | Connection |  | Enroll a machine over ssh so its sessions appear in Work. | host remote server ssh enroll pair connect
     performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
     copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log
@@ -236,6 +236,21 @@ fn catalog() -> Vec<CommandSpec> {
 #[must_use]
 pub fn default_chords() -> Vec<(String, String)> {
     let mut chords = Vec::new();
+    // Keep Super bindings available, but put terminal-native Linux shortcuts
+    // first so menus show them. Plain Ctrl-C/Z/D stay with the terminal.
+    #[cfg(target_os = "linux")]
+    chords.extend(
+        [
+            ("ctrl+shift+p", "palette"),
+            ("ctrl+shift+t", "new"),
+            ("ctrl+shift+w", "close"),
+            ("ctrl+shift+n", "new-window"),
+            ("ctrl+shift+f", "find"),
+            ("ctrl+shift+c", "copy"),
+            ("ctrl+shift+v", "paste"),
+        ]
+        .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
+    );
     for command in builtin_commands() {
         if let Some(chord) = command.chord {
             chords.push((chord.to_owned(), command.id.to_owned()));
@@ -517,9 +532,29 @@ pub fn plain_key(key: &str) -> String {
     key.to_lowercase()
 }
 
-/// macOS modifier order: control, option, shift, command, then the key.
+/// Platform modifier labels, followed by the key.
 #[must_use]
 pub fn display_chord(chord: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        chord
+            .split('+')
+            .map(|part| match part {
+                "cmd" => "Super".to_owned(),
+                "ctrl" => "Ctrl".to_owned(),
+                "alt" => "Alt".to_owned(),
+                "shift" => "Shift".to_owned(),
+                key => key.to_uppercase(),
+            })
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+    #[cfg(not(target_os = "linux"))]
+    display_apple_chord(chord)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn display_apple_chord(chord: &str) -> String {
     let parts: Vec<&str> = chord.split('+').collect();
     let key = parts.last().copied().unwrap_or("");
     let mut shown: String = ["ctrl", "alt", "shift", "cmd"]
@@ -536,6 +571,7 @@ pub fn display_chord(chord: &str) -> String {
     shown
 }
 
+#[cfg(not(target_os = "linux"))]
 fn glyph(name: &str) -> &str {
     match name {
         "cmd" => "⌘",
@@ -595,6 +631,19 @@ pub(super) fn join_chord(cmd: bool, ctrl: bool, alt: bool, shift: bool, key: &st
 mod tests {
     use super::super::ghostty::parse_ghostty;
     use super::{ChordSource, chord_source, default_chords, effective_keymap, keymap_conflicts};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_shortcuts_leave_shell_control_keys_alone() {
+        let chords = default_chords();
+        assert!(chords.contains(&("ctrl+shift+c".into(), "copy".into())));
+        assert!(chords.contains(&("ctrl+shift+v".into(), "paste".into())));
+        for key in ["ctrl+c", "ctrl+z", "ctrl+d"] {
+            assert!(!chords.iter().any(|(chord, _)| chord == key));
+        }
+        assert_eq!(super::display_chord("ctrl+shift+c"), "Ctrl+Shift+C");
+        assert_eq!(super::display_chord("cmd+t"), "Super+T");
+    }
 
     #[test]
     fn built_in_chords_never_conflict() {
