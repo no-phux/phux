@@ -1,7 +1,7 @@
 //! The server's `PHUX_*` process configuration, resolved once.
 //!
 //! The daemon's remote surface (listener addresses, TLS pair, credential
-//! store, workload mode) is configurable through environment variables, and
+//! store, workload authority) is configurable through environment variables, and
 //! a running server exports several of them into every pane. Reading them
 //! ad hoc from deep inside the runtime made every in-process server (tests,
 //! embedders) inherit whatever the launching shell carried: run from a
@@ -40,8 +40,10 @@ pub struct ServerEnv {
     pub tls_cert: Option<PathBuf>,
     /// `PHUX_WS_TLS_KEY`: the operator's private key (see [`Self::tls_cert`]).
     pub tls_key: Option<PathBuf>,
-    /// `PHUX_WORKLOAD_MTLS` (set): request workload mode (ADR-0116).
-    pub workload_mtls: bool,
+    /// `PHUX_WORKLOAD_MTLS` (set): the retired workload-mode opt-in. A
+    /// server that sees it refuses to start, naming `[policy] mode`
+    /// (ADR-0179).
+    pub retired_workload_mtls: bool,
     /// `PHUX_WORKLOAD_CA`: workload authority certificate location.
     pub workload_ca: Option<PathBuf>,
     /// `PHUX_WORKLOAD_CA_KEY`: workload authority key location.
@@ -86,7 +88,7 @@ impl ServerEnv {
             ws_tokens: path("PHUX_WS_TOKENS"),
             tls_cert: path("PHUX_WS_TLS_CERT"),
             tls_key: path("PHUX_WS_TLS_KEY"),
-            workload_mtls: lookup("PHUX_WORKLOAD_MTLS").is_some(),
+            retired_workload_mtls: lookup("PHUX_WORKLOAD_MTLS").is_some(),
             workload_ca: path("PHUX_WORKLOAD_CA"),
             workload_ca_key: path("PHUX_WORKLOAD_CA_KEY"),
             workload_keys: path("PHUX_WORKLOAD_KEYS"),
@@ -203,7 +205,7 @@ mod tests {
             Some("/x/PHUX_WS_ALLOWED_ORIGINS")
         );
         assert_eq!(env.tokens_path(), PathBuf::from("/x/PHUX_WS_TOKENS"));
-        assert!(env.workload_mtls && env.no_auto_listen);
+        assert!(env.retired_workload_mtls && env.no_auto_listen);
         assert_eq!(env.ssh_program(), OsString::from("/x/PHUX_SSH"));
     }
 
@@ -227,7 +229,7 @@ mod tests {
             ServerEnv::from_lookup(|asked| (asked == "PHUX_WORKLOAD_MTLS").then(|| "1".into()));
         assert!(
             !mtls_only.workload_authority_configured(),
-            "PHUX_WORKLOAD_MTLS opts in; it names no location"
+            "PHUX_WORKLOAD_MTLS names no location"
         );
     }
 }

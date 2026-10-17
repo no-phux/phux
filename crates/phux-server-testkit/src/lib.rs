@@ -18,6 +18,7 @@
 )]
 
 pub mod builder;
+pub mod embedder;
 pub mod relay;
 pub mod screen;
 pub mod tracing_capture;

@@ -2,15 +2,20 @@
 //! run`, a `phux server` whose only door is its `[[connector]]`, `phux pair
 //! --relay-route` minting the link, and clients in their own homes that
 //! register through that link (`attach --remote --code`, on a PTY) or through
-//! `host add --tls-server-name`, then list sessions over the relay. Every
-//! process has a private home; nothing touches the operator's server, config,
-//! or relay state.
+//! `host add --tls-server-name`, then list sessions over the relay. The
+//! server runs `paired` (a connector needs it, ADR-0179), so each client
+//! presents an enrolled certificate inside the end-to-end session: the link
+//! carries an enrollment ticket, and the manual client is enrolled directly.
+//! Every process has a private home; nothing touches the operator's server,
+//! config, or relay state.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::io::{BufRead as _, BufReader, Read as _};
 use std::path::{Path, PathBuf};
@@ -121,7 +126,7 @@ impl Topology {
         let tunnel_file = server_home.secret_file("relay-route.token", &tunnel_token);
         server_home.write_config(&format!(
             "[[connector]]\nrelay = \"{relay_addr}\"\ntoken-file = \"{}\"\n\
-             cert-fingerprint = \"{relay_fp}\"\n",
+             cert-fingerprint = \"{relay_fp}\"\n\n[policy]\nmode = \"paired\"\n",
             tunnel_file.display()
         ));
         let server = server_home
@@ -151,6 +156,7 @@ impl Topology {
                 ROUTE,
                 "--name",
                 "mini",
+                "--enroll",
                 "--json",
             ]);
             if out.status.success() {
@@ -266,9 +272,10 @@ fn pair_from_code(home: &Home, name: &str, link: &str) -> String {
         }
     });
     let needle = format!("paired {name} ->");
+    let enrolled = "enrolled a workload certificate";
     let start = Instant::now();
     let mut seen = String::new();
-    while !seen.contains(&needle) && start.elapsed() < DEADLINE {
+    while !(seen.contains(&needle) && seen.contains(enrolled)) && start.elapsed() < DEADLINE {
         if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
             seen.push_str(&String::from_utf8_lossy(&chunk));
         }
@@ -276,8 +283,8 @@ fn pair_from_code(home: &Home, name: &str, link: &str) -> String {
     let _ = child.kill();
     let _ = child.wait();
     assert!(
-        seen.contains(&needle),
-        "no pairing line from --code: {seen}"
+        seen.contains(&needle) && seen.contains(enrolled),
+        "no pairing and enrollment lines from --code: {seen}"
     );
     seen
 }
@@ -341,8 +348,21 @@ fn a_relay_route_attaches_from_a_link_and_from_the_registry() {
     let listed = list_over_relay(&linked, "mini");
     assert!(listed["sessions"].is_array(), "{listed}");
 
-    // By hand: the same credentials through `host add --tls-server-name`.
+    // By hand: the same credentials through `host add --tls-server-name`,
+    // a certificate enrolled on the server host, and the server's CA pinned
+    // for the route as pairing would (a connection never learns it).
     let manual = Home::new();
+    std::fs::create_dir_all(manual.path().join("config/phux")).expect("config dir");
+    let enrolled = paired::enroll_client(manual.path(), |args, stdin| {
+        paired::output_with_stdin(topology.server_home.command(args), stdin)
+    });
+    phux_config::known_authorities::record(
+        &manual.path().join("config/phux/known-authorities"),
+        &topology.relay_fp,
+        Some(ROUTE),
+        authority,
+    )
+    .expect("pin the server's CA for the route");
     let token_file = manual.secret_file("mini.token", &token);
     let endpoint = format!("quic://{}", topology.relay_addr);
     let token_path = token_file.display().to_string();
@@ -369,6 +389,14 @@ fn a_relay_route_attaches_from_a_link_and_from_the_registry() {
     assert!(show.status.success(), "host show: {}", stderr(&show));
     let shown: serde_json::Value = serde_json::from_slice(&show.stdout).expect("show --json");
     assert_eq!(shown["host"]["tls_server_name"], ROUTE);
+    // `host add` with an explicit endpoint enrolls nothing; name the
+    // certificate in the entry, as `host add` over ssh would.
+    let config = manual.config();
+    manual.write_config(&config.replacen(
+        "name = \"routed\"\n",
+        &format!("name = \"routed\"\n{}", enrolled.remote_lines()),
+        1,
+    ));
     let listed = list_over_relay(&manual, "routed");
     assert!(listed["sessions"].is_array(), "{listed}");
 

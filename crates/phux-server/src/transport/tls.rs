@@ -58,6 +58,10 @@ pub enum TlsError {
     /// read or replace it.
     #[error("{0}")]
     InsecureKey(String),
+    /// The workload CA could not issue the server certificate; there is no
+    /// self-signed fallback (ADR-0179).
+    #[error("the workload CA could not issue the server certificate: {0}")]
+    Authority(String),
 }
 
 /// Maps onto the variants [`TlsError`] already had, so operator-facing
@@ -122,12 +126,13 @@ pub fn ensure_self_signed_for(
 /// a half-present pair is refused as by [`ensure_self_signed_for`].
 ///
 /// When the authority cannot issue (an insecure state directory, a partial
-/// CA pair), this logs why and provisions a self-signed pair instead, so a
-/// listener is never lost to it; clients then pin that leaf, as before.
+/// CA pair), this fails: a new pair no CA issued is a server no client can
+/// pin by its CA, so nothing falls back to a self-signed one (ADR-0179).
 ///
 /// # Errors
 ///
-/// As [`ensure_self_signed_for`].
+/// As [`ensure_self_signed_for`], or [`TlsError::Authority`] when the
+/// workload CA cannot issue.
 pub fn ensure_server_identity(
     cert_path: &Path,
     key_path: &Path,
@@ -148,14 +153,7 @@ pub fn ensure_server_identity(
             issued.chain_pem(),
             issued.key_pem(),
         )?),
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "the workload authority could not issue the server certificate; \
-                 provisioning a self-signed one, which clients pin by its leaf"
-            );
-            ensure_self_signed_for(cert_path, key_path, advertised)
-        }
+        Err(error) => Err(TlsError::Authority(error.to_string())),
     }
 }
 

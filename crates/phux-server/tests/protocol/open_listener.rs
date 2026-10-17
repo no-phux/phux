@@ -4,7 +4,9 @@
 //! admits the token it was opened with and nothing else, the command itself is
 //! refused when it arrives over QUIC, and the listener closes once nobody has
 //! used it for its linger. Every case drives a real in-process server and real
-//! QUIC dials on loopback.
+//! QUIC dials on loopback. The door mechanics run under an embedder engine
+//! (ADR-0072); with no mode the server is `local` and opens no door at all
+//! (ADR-0179).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -192,6 +194,16 @@ where
     F: FnOnce(UnixStream) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    with_server_in(true, body);
+}
+
+/// [`with_server`], with the embedder engine or (`embedded = false`) the
+/// default posture.
+fn with_server_in<F, Fut>(embedded: bool, body: F)
+where
+    F: FnOnce(UnixStream) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let tls = tls();
     let dir = TempDir::new().expect("tempdir");
     let socket = dir.path().join("s.sock");
@@ -199,11 +211,26 @@ where
         let (shutdown, handle) = spawn_server_with(socket.clone(), Some("s"), |cfg| {
             cfg.env.tls_cert = Some(tls.cert.clone());
             cfg.env.tls_key = Some(tls.key.clone());
+            if embedded {
+                phux_server_testkit::embedder::embed_owner_engine(cfg);
+            }
         });
         let uds = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         body(uds).await;
         let _ = shutdown.send(());
         let _ = tokio::time::timeout(SERVER_JOIN_DEADLINE, handle).await;
+    });
+}
+
+/// No `[policy] mode` is `local`: the owner may not open a door, so nothing
+/// past the owner's socket exists (ADR-0179).
+#[test]
+fn with_no_mode_open_listener_is_refused() {
+    with_server_in(false, |mut uds| async move {
+        match open(&mut uds, 1, ListenerTransport::Quic, None, 0).await {
+            CommandResult::Error { code, .. } => assert_eq!(code, ErrorCode::PermissionDenied),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     });
 }
 

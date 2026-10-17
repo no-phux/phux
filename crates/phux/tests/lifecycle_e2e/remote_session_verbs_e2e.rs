@@ -1,7 +1,8 @@
 //! The session verbs (`new`, `ls`, `rename`, `detach`, `kill`) over
-//! `--remote` against a real server registered as a `[[remote]]` with a
-//! loopback QUIC listener (no token or pin needed). Hermetic: private dirs,
-//! no ssh, no overlay detection.
+//! `--remote` against a real `paired` server registered as a `[[remote]]`
+//! with a loopback QUIC listener (no token or pin needed; the entry names an
+//! enrolled client certificate, ADR-0179). Hermetic: private dirs, no ssh,
+//! no overlay detection.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -10,6 +11,8 @@
 mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::path::Path;
 use std::process::{Child, Output, Stdio};
@@ -34,12 +37,19 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(10);
 struct LoopbackRemote {
     dir: TempDir,
     server: Child,
+    enrolled: paired::Enrolled,
 }
 
 impl LoopbackRemote {
     fn start() -> Self {
         let dir = TempDir::new().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("run")).expect("runtime dir");
+        paired::write_paired_policy(&dir.path().join("config/phux/config.toml"));
+        let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
+            let mut command = common::phux_cmd(crate::runner::phux_bin());
+            command.envs(hermetic_env(dir.path())).args(args);
+            paired::output_with_stdin(command, stdin)
+        });
         let socket = dir.path().join("s.sock");
         let server = common::phux_cmd(crate::runner::phux_bin())
             .envs(hermetic_env(dir.path()))
@@ -55,10 +65,14 @@ impl LoopbackRemote {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn phux server");
-        let remote = Self { dir, server };
+        let remote = Self {
+            dir,
+            server,
+            enrolled,
+        };
         let quic =
             listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic);
-        write_registry(remote.dir.path(), quic.port());
+        write_registry(remote.dir.path(), quic.port(), &remote.enrolled);
         remote.await_ready();
         remote
     }
@@ -134,12 +148,15 @@ impl Drop for LoopbackRemote {
 
 /// Register the loopback listener as [`REMOTE`], the way `phux host add loop
 /// quic://127.0.0.1:PORT` would.
-fn write_registry(dir: &Path, port: u16) {
+fn write_registry(dir: &Path, port: u16, enrolled: &paired::Enrolled) {
     let config_dir = dir.join("config/phux");
     std::fs::create_dir_all(&config_dir).expect("config dir");
     std::fs::write(
         config_dir.join("config.toml"),
-        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+        format!(
+            "[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n{}",
+            enrolled.remote_lines()
+        ),
     )
     .expect("write registry");
 }

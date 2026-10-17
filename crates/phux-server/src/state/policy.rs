@@ -7,8 +7,8 @@ impl ServerState {
         self.config.policy_engine = engine;
     }
 
-    /// Read the HELLO authorization engine. Defaults to
-    /// [`crate::policy::PermissivePolicy`] (ADR-0072).
+    /// Read the HELLO authorization engine. Defaults to the
+    /// `local` [`crate::policy::ScopedPolicy`] (ADR-0072).
     #[must_use]
     pub fn policy_engine(&self) -> &std::sync::Arc<dyn crate::policy::PolicyEngine> {
         &self.config.policy_engine

@@ -21,6 +21,7 @@ session inside their stream, so `paired` no longer refuses either.
 
 Status: Accepted
 Date: 2026-10-07
+Superseded in part by [ADR-0179](./0179-the-legacy-auth-paths-are-removed.md): the transitional posture and item 5's plain relayed stream outside `paired` are gone.
 Builds on [ADR-0116](./0116-workload-auth-is-mtls.md) (which left
 mobile enrollment to "its own authorizer") and
 [ADR-0153](./0153-clients-pin-the-workload-ca.md).

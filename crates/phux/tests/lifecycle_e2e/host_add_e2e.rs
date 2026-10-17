@@ -15,6 +15,8 @@
 mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -51,6 +53,9 @@ impl FarHost {
         }
         std::os::unix::fs::symlink(crate::runner::phux_bin(), root.join("bin/phux"))
             .expect("phux on the fake PATH");
+        // A remote listener runs only under `paired` (ADR-0179); `host add`
+        // enrolls the certificate the direct route then presents.
+        paired::write_paired_policy(&root.join("config/phux/config.toml"));
 
         // The first server binds a port the kernel picks; the fake ssh's
         // restart then asks for that same port, as a service unit would.

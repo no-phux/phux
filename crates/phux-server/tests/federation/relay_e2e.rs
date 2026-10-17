@@ -3,6 +3,10 @@
 //! through its production connector, and consumers reach it through the relay
 //! with the production QUIC dialer.
 //!
+//! These cases are about routing, so the server runs an embedder engine
+//! (ADR-0072) and the consumer rides the plain relayed stream; under
+//! `paired` only the end-to-end session crosses (`relay_inner_tls`).
+//!
 //! ```text
 //! consumer --QUIC "phux-quic/1"--> relay <--"phux-relay/1"-- connector (in server) --> dispatch
 //! ```
@@ -29,7 +33,6 @@ use tokio::time::{sleep, timeout};
 const ROUTE: &str = "connector-test";
 const PING_NONCE: u64 = 0xC011_EC70;
 const TUNNEL_TOKEN: [u8; 32] = [0x11; 32];
-const CONSUMER_TOKEN: [u8; 32] = [0x22; 32];
 
 /// A relay and a connector-configured server behind it, sharing a tempdir.
 struct Topology {
@@ -37,6 +40,7 @@ struct Topology {
     relay: Option<RelayHarness>,
     addr: SocketAddr,
     fingerprint: String,
+    consumer_token: Vec<u8>,
     stop_server: oneshot::Sender<()>,
     server: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 }
@@ -57,24 +61,22 @@ fn write_token(path: &Path, token: &[u8]) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod token");
 }
 
-/// Enroll the route and the consumer credential; [`Topology::start`] points
-/// the server's token store at the consumer store.
-fn provision(dir: &Path) {
+/// Enroll the route and the consumer credential, returning its bearer;
+/// [`Topology::start`] points the server's token store at the consumer store.
+fn provision(dir: &Path) -> Vec<u8> {
     std::fs::write(
         dir.join("relay-tokens"),
         format!("{} {ROUTE}\n", hex::encode(TUNNEL_TOKEN)),
     )
     .expect("write relay route");
     write_token(&dir.join("connector-token"), &TUNNEL_TOKEN);
-    let consumer_tokens = dir.join("consumer-tokens");
-    write_token(&consumer_tokens, &CONSUMER_TOKEN);
-    phux_server::auth::migrate_legacy_store(&consumer_tokens).expect("migrate consumer store");
+    phux_server_testkit::embedder::mint_bearer(&dir.join("consumer-tokens"))
 }
 
 impl Topology {
     /// Start the relay, then a server (optionally seeding session `default`
     /// with a PTY running `seed`) whose connector dials it.
-    fn start(dir: TempDir, seed: Option<CommandBuilder>) -> Self {
+    fn start(dir: TempDir, consumer_token: Vec<u8>, seed: Option<CommandBuilder>) -> Self {
         let relay = RelayHarness::start(relay_config(
             dir.path(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
@@ -100,6 +102,7 @@ impl Topology {
         if let Some(seed) = seed {
             seed_pty(&mut cfg, seed);
         }
+        phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let (stop_server, server_stopped) = oneshot::channel();
         let server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)
@@ -114,6 +117,7 @@ impl Topology {
             addr: relay.addr,
             relay: Some(relay),
             fingerprint,
+            consumer_token,
             stop_server,
             server,
         }
@@ -213,7 +217,7 @@ async fn wait_for_pong(t: &Topology) {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut last_error = String::new();
     while Instant::now() < deadline {
-        match ping(t, ROUTE, Some(CONSUMER_TOKEN.to_vec())).await {
+        match ping(t, ROUTE, Some(t.consumer_token.clone())).await {
             Ok(FrameKind::Pong { nonce }) if nonce == PING_NONCE => return,
             Ok(frame) => last_error = format!("unexpected frame: {frame:?}"),
             Err(err) => last_error = err,
@@ -227,13 +231,18 @@ async fn wait_for_pong(t: &Topology) {
 #[test]
 fn hello_attach_echo_through_relay_to_real_server() {
     let dir = TempDir::new().unwrap();
-    provision(dir.path());
+    let token = provision(dir.path());
     phux_server_testkit::run_local(async {
-        let t = Topology::start(dir, Some(CommandBuilder::new("/bin/cat")));
+        let t = Topology::start(dir, token, Some(CommandBuilder::new("/bin/cat")));
         wait_for_pong(&t).await;
-        let mut consumer = dial(t.addr, &t.fingerprint, ROUTE, Some(CONSUMER_TOKEN.to_vec()))
-            .await
-            .unwrap();
+        let mut consumer = dial(
+            t.addr,
+            &t.fingerprint,
+            ROUTE,
+            Some(t.consumer_token.clone()),
+        )
+        .await
+        .unwrap();
         let hello = FrameKind::Hello {
             client_name: "relay-e2e-consumer".to_owned(),
             protocol_major: PROTOCOL_VERSION.major,
@@ -290,15 +299,15 @@ fn hello_attach_echo_through_relay_to_real_server() {
 #[test]
 fn connector_bridges_consumers_rejects_bad_auth_and_redials() {
     let dir = TempDir::new().unwrap();
-    provision(dir.path());
+    let token = provision(dir.path());
     phux_server_testkit::run_local(async {
-        let mut t = Topology::start(dir, None);
+        let mut t = Topology::start(dir, token, None);
         wait_for_pong(&t).await;
 
         let bad_auth = ping(&t, ROUTE, Some(vec![0x33; 32])).await;
         assert!(bad_auth.is_err(), "bad consumer token reached dispatch");
         wait_for_pong(&t).await;
-        let wrong_route = ping(&t, "unknown-route", Some(CONSUMER_TOKEN.to_vec())).await;
+        let wrong_route = ping(&t, "unknown-route", Some(t.consumer_token.clone())).await;
         assert!(wrong_route.is_err(), "unknown route connected");
 
         t.restart_relay().await;

@@ -5,9 +5,9 @@
 //!
 //! Over one ssh channel: confirm `phux` is installed; make sure a server runs
 //! and stays running (install the service, adopt a live server, or fall back to
-//! `phux server --ensure`); run `phux pair --json` (migrating a legacy token
-//! store once); probe the direct routes; and return the first that answers, or
-//! `ssh://HOST` with the first candidate kept as `direct`. A host with nothing
+//! `phux server --ensure`); run `phux pair --json`; probe the direct routes;
+//! and return the first that answers, or `ssh://HOST` with the first
+//! candidate kept as `direct`. A host with nothing
 //! dialable is not an error.
 //!
 //! A remote also gets a workload client certificate (ADR-0116): the key is
@@ -54,10 +54,6 @@ const COMMAND_NOT_FOUND: i32 = 127;
 /// enrollment answers it with `--adopt`.
 const SERVICE_INCUMBENT_LIVE: &str = "a server is already running on";
 
-/// `phux pair`'s refusal for a pre-versioning token store; enrollment runs
-/// the documented migration once.
-const LEGACY_TOKEN_STORE: &str = "legacy token store requires explicit migration";
-
 /// What `phux pair --json` reported on the remote host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PairReport {
@@ -74,7 +70,6 @@ impl PairReport {
     pub(crate) fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
         phux_client_runtime::target::AuthorityPin {
             ca: self.ca_fingerprint.clone(),
-            learner: None,
             route: None,
         }
     }
@@ -278,15 +273,6 @@ pub(crate) enum EnrollEvent {
     /// Pairing is still tried, since a server may be live regardless, but
     /// `phux pair` mints nothing without a bound listener (ADR-0141).
     ServerStartFailed { error: String },
-    /// The host's token store predated versioning; `phux pair` was rerun
-    /// with `--migrate-legacy`.
-    LegacyStoreMigrated,
-    /// After a migration, `phux upgrade` was asked to restart the server so
-    /// its listeners re-read the store.
-    ListenersRestarted,
-    /// That restart did not happen; the probe below decides what is
-    /// reachable regardless.
-    ListenerRestartFailed { error: String },
     /// The pairing document came back.
     Paired,
     /// A previously enrolled credential still works after the server was
@@ -358,16 +344,13 @@ impl EnrollEvent {
         match self {
             Self::ServerReady(supervision) => supervision.severity(),
             Self::ServerStartFailed { .. }
-            | Self::ListenerRestartFailed { .. }
             | Self::DirectUnreachable { .. }
             | Self::CertificateNotEnrolled { .. }
             | Self::CertificateRenewalDue { .. }
             | Self::CertificateNotRevoked { .. }
             | Self::CertificateNotHeld { .. }
             | Self::PreviousCertificateUnidentified { .. } => Severity::Warn,
-            Self::LegacyStoreMigrated
-            | Self::ListenersRestarted
-            | Self::Paired
+            Self::Paired
             | Self::CredentialReused
             | Self::CredentialReplaced
             | Self::DirectReachable { .. }
@@ -400,15 +383,6 @@ impl EnrollEvent {
             Self::ServerReady(supervision) => supervision.describe(),
             Self::ServerStartFailed { error } => format!(
                 "could not start a server there ({error}); pairing needs one with a remote listener, trying anyway"
-            ),
-            Self::LegacyStoreMigrated => {
-                "its token store predates versioning; migrated it (secrets preserved)".to_owned()
-            }
-            Self::ListenersRestarted => {
-                "restarted the server so its listeners re-read the token store".to_owned()
-            }
-            Self::ListenerRestartFailed { error } => format!(
-                "could not restart the server after the migration ({error}); its listeners come up on the next restart"
             ),
             Self::Paired => "paired".to_owned(),
             Self::CredentialReused => {
@@ -811,7 +785,7 @@ pub(crate) fn enroll_over_ssh(
         on_event(EnrollEvent::CredentialReused);
         (report, true)
     } else {
-        let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token, on_event)?;
+        let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token)?;
         if req.previous_token.is_some() {
             on_event(EnrollEvent::CredentialReplaced);
         } else {
@@ -1191,10 +1165,11 @@ fn accept_and_store(
 
 /// Enroll a fresh local key with the single-use `ticket_hex` a connect link
 /// carried (ADR-0154): over the link's `quic` endpoint, under the enrollment
-/// ALPN, trusting the server by the link's pins. The reply is checked as an
-/// ssh enrollment's is ([`ClientRequest::accept`]), its CA must be the
-/// link's `ca` when the link names one, and the pair is stored owner-only
-/// in `workload.dir`.
+/// ALPN, trusting the server by the link's pins. The link must pin the
+/// server's CA (`ca`), which is never learned from the reply (ADR-0179). The
+/// reply is checked as an ssh enrollment's is ([`ClientRequest::accept`]),
+/// its CA must be the link's `ca`, and the pair is stored owner-only in
+/// `workload.dir`.
 ///
 /// # Errors
 ///
@@ -1209,6 +1184,12 @@ pub(crate) fn enroll_with_ticket(
         .ok()
         .filter(|ticket| ticket.len() == phux_server::workload::tickets::TICKET_BYTES)
         .ok_or_else(|| "the link's enrollment ticket is not 64 hex digits".to_owned())?;
+    let Some(pinned) = pins.authority else {
+        return Err(
+            "an enrollment link must pin the server's `ca`; mint a new one with `phux pair --enroll`"
+                .to_owned(),
+        );
+    };
     let request = ClientRequest::generate()
         .map_err(|err| format!("could not generate a client key: {err}"))?;
     let csr = match phux_server::workload::ClientMaterial::from_pem(request.csr_pem().as_bytes()) {
@@ -1220,16 +1201,9 @@ pub(crate) fn enroll_with_ticket(
         .build()
         .map_err(|err| format!("could not build a runtime: {err}"))?;
     let pin = phux_client_runtime::target::AuthorityPin {
-        ca: pins.authority.map(str::to_owned),
-        learner: None,
+        ca: Some(pinned.to_owned()),
         route: pins.route.map(str::to_owned),
     };
-    if pin.route.is_some() && pin.ca.is_none() {
-        return Err(
-            "a relay link enrolls only end to end, so it needs the server's `ca`; mint a new one with `phux pair --relay-route ROUTE --enroll`"
-                .to_owned(),
-        );
-    }
     let plan = super::attach::plan_quic_dial(
         &rt,
         quic_target,
@@ -1262,9 +1236,8 @@ pub(crate) fn enroll_with_ticket(
         .map_err(|_| "the server did not answer the enrollment in time".to_owned())?
         .map_err(|err| err.to_string())?;
     let issued = request.accept(&chain).map_err(|err| err.to_string())?;
-    if let Some(pinned) = pins.authority
-        && phux_config::known_authorities::canonical_authority(pinned).as_deref()
-            != Some(issued.ca_fingerprint())
+    if phux_config::known_authorities::canonical_authority(pinned).as_deref()
+        != Some(issued.ca_fingerprint())
     {
         return Err("the issuing CA is not the one the link pins".to_owned());
     }
@@ -1476,14 +1449,14 @@ fn try_reuse_previous_credential(
     None
 }
 
-/// `phux pair --json` on the host, migrating a pre-versioned token store
-/// once if that is what refuses the mint. When `replace_token` is set, the
-/// remote mint revokes that bearer in the same rewrite.
+/// `phux pair --json` on the host. When `replace_token` is set, the remote
+/// mint revokes that bearer in the same rewrite. A pre-versioning token store
+/// refuses the mint, and that refusal is reported as it is: its migration is
+/// retired (ADR-0179).
 fn pair_over_ssh(
     ssh_host: &str,
     remote_phux: &str,
     replace_token: Option<&str>,
-    on_event: &mut dyn FnMut(EnrollEvent),
 ) -> Result<PairReport, EnrollFailure> {
     let mut pair_argv = vec![remote_phux, "pair", "--json"];
     let replace_flag;
@@ -1494,66 +1467,13 @@ fn pair_over_ssh(
         pair_argv.push(&replace_flag);
         pair_argv.push(&replace_value);
     }
-    let first = ssh_run(ssh_host, &pair_argv).map_err(EnrollFailure::Pair)?;
-    let stdout = if first.status.success() {
-        first.stdout
-    } else if first.stderr.contains(LEGACY_TOKEN_STORE) {
-        migrate_legacy_over_ssh(ssh_host, remote_phux, &pair_argv, on_event)?
-    } else {
+    let paired = ssh_run(ssh_host, &pair_argv).map_err(EnrollFailure::Pair)?;
+    if !paired.status.success() {
         return Err(EnrollFailure::Pair(
-            first.command_failure(ssh_host, &pair_argv),
-        ));
-    };
-    PairReport::parse(&stdout).map_err(EnrollFailure::Pair)
-}
-
-/// Rerun `phux pair --json` with `--migrate-legacy`, then restart the server
-/// so its listeners re-read the migrated store. A server from before remote
-/// listeners bound ahead of the store disabled them when the legacy store
-/// failed to load at boot, and `phux pair` mints nothing with no listener
-/// bound (ADR-0141); the migration has landed by then, so that refusal is
-/// answered with the restart first and one more `phux pair --json`. Returns
-/// the pairing document's stdout.
-fn migrate_legacy_over_ssh(
-    ssh_host: &str,
-    remote_phux: &str,
-    pair_argv: &[&str],
-    on_event: &mut dyn FnMut(EnrollEvent),
-) -> Result<String, EnrollFailure> {
-    let mut migrated_argv = pair_argv.to_vec();
-    migrated_argv.push("--migrate-legacy");
-    let migrated = ssh_run(ssh_host, &migrated_argv).map_err(EnrollFailure::Pair)?;
-    if migrated.status.success() {
-        on_event(EnrollEvent::LegacyStoreMigrated);
-        restart_listeners(ssh_host, remote_phux, on_event);
-        return Ok(migrated.stdout);
-    }
-    if !migrated.stderr.contains(super::pair::NO_BOUND_LISTENER) {
-        return Err(EnrollFailure::Pair(
-            migrated.command_failure(ssh_host, &migrated_argv),
+            paired.command_failure(ssh_host, &pair_argv),
         ));
     }
-    restart_listeners(ssh_host, remote_phux, on_event);
-    let retried = ssh_run(ssh_host, pair_argv).map_err(EnrollFailure::Pair)?;
-    if !retried.status.success() {
-        return Err(EnrollFailure::Pair(
-            retried.command_failure(ssh_host, pair_argv),
-        ));
-    }
-    on_event(EnrollEvent::LegacyStoreMigrated);
-    Ok(retried.stdout)
-}
-
-/// Restart the server with `phux upgrade`, the restart that keeps every pane
-/// alive, so its listeners re-read a migrated store.
-fn restart_listeners(ssh_host: &str, remote_phux: &str, on_event: &mut dyn FnMut(EnrollEvent)) {
-    match ssh_run(ssh_host, &[remote_phux, "upgrade"]) {
-        Ok(upgrade) if upgrade.status.success() => on_event(EnrollEvent::ListenersRestarted),
-        Ok(upgrade) => on_event(EnrollEvent::ListenerRestartFailed {
-            error: upgrade.failure_detail(),
-        }),
-        Err(error) => on_event(EnrollEvent::ListenerRestartFailed { error }),
-    }
+    PairReport::parse(&paired.stdout).map_err(EnrollFailure::Pair)
 }
 
 /// Write a pairing token owner-only, creating the directory it lives in.

@@ -40,6 +40,15 @@ impl Server {
             NEXT_SERVER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&root).unwrap();
+        if port.is_some() {
+            // A remote listener runs only under `paired` (ADR-0179).
+            std::fs::create_dir_all(root.join("config/phux")).unwrap();
+            std::fs::write(
+                root.join("config/phux/config.toml"),
+                "[policy]\nmode = \"paired\"\n",
+            )
+            .unwrap();
+        }
         let socket = root.join("s");
         let child = Command::new(&binary)
             .arg("--socket")
@@ -87,19 +96,104 @@ impl Server {
     }
 
     fn run(&self, args: &[&str]) {
-        let output = Command::new(&self.binary)
+        self.output(args, b"");
+    }
+
+    /// `phux --socket S ARGS` in this server's private dirs, fed `stdin`;
+    /// its stdout. Panics on failure.
+    fn output(&self, args: &[&str], stdin: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut child = Command::new(&self.binary)
             .arg("--socket")
             .arg(&self.socket)
             .args(args)
+            .env("HOME", &self.root)
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("PHUX_PROFILE", "desktop-journey")
             .env_remove("PHUX_SOCKET")
-            .stdin(Stdio::null())
-            .output()
+            .env_remove("PHUX_WS_TOKENS")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        child.stdin.take().unwrap().write_all(stdin).unwrap();
+        let output = child.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        output.stdout
+    }
+
+    /// The `[[remote]]` entry for this paired server's wss listener: a
+    /// pairing token, the leaf pin, and a client certificate enrolled into
+    /// its workload registry from a key `openssl` generated here.
+    fn paired_remote_entry(&self, name: &str) -> String {
+        let pair: serde_json::Value =
+            serde_json::from_slice(&self.output(&["pair", "--json"], b"")).unwrap();
+        let token = self.root.join("client.token");
+        std::fs::write(&token, format!("{}\n", pair["token"].as_str().unwrap())).unwrap();
+        let sec1 = self.root.join("client.sec1");
+        let key = self.root.join("client.key");
+        let csr = self.root.join("client.csr");
+        let cert = self.root.join("client.pem");
+        for args in [
+            vec![
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-out",
+            ],
+            vec!["pkcs8", "-topk8", "-nocrypt", "-in"],
+        ] {
+            let mut command = Command::new("openssl");
+            command.args(&args);
+            if args[0] == "ecparam" {
+                command.arg(&sec1);
+            } else {
+                command.arg(&sec1).arg("-out").arg(&key);
+            }
+            assert!(command.status().unwrap().success(), "openssl {}", args[0]);
+        }
+        let made = Command::new("openssl")
+            .args(["req", "-new", "-subj", "/CN=journey", "-key"])
+            .arg(&key)
+            .arg("-out")
+            .arg(&csr)
+            .status()
+            .unwrap();
+        assert!(made.success(), "openssl req");
+        for path in [&token, &key] {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        self.run(&["workload", "authority", "--init"]);
+        self.output(
+            &[
+                "workload",
+                "add-key",
+                "--cert-out",
+                cert.to_str().unwrap(),
+                "--scope",
+                "*@global",
+            ],
+            &std::fs::read(&csr).unwrap(),
+        );
+        format!(
+            "[[remote]]\nname = \"{name}\"\nendpoint = \"wss://{}\"\n\
+             cert-fingerprint = \"{}\"\ntoken-file = \"{}\"\n\
+             client-cert = \"{}\"\nclient-key = \"{}\"\n",
+            pair["ws_addr"].as_str().unwrap(),
+            pair["cert_fingerprint"].as_str().unwrap(),
+            token.display(),
+            cert.display(),
+            key.display(),
+        )
     }
 
     fn launch(
@@ -240,7 +334,7 @@ fn federated_work_round_trip_preserves_layouts_and_never_spawns_when_browsing(
     std::fs::create_dir_all(config.join("phux")).unwrap();
     std::fs::write(
         config.join("phux/config.toml"),
-        format!("[[remote]]\nname = \"journey-remote\"\nendpoint = \"ws://127.0.0.1:{port}\"\n"),
+        remote.paired_remote_entry("journey-remote"),
     )
     .unwrap();
     let desktop = desktop(cx);

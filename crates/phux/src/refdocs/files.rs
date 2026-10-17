@@ -59,10 +59,9 @@ pub(crate) fn page() -> Page {
          Beside it, `known-authorities` holds the certificate authority \
          each paired server's leaf was issued by, one line per server \
          keyed by the `[[remote]]` entry's `cert-fingerprint` \
-         (ADR-0153). `phux host add` writes it, and so does the first \
-         connection to a server whose CA is not pinned yet; a server \
-         presenting another CA is then refused. Delete a line to forget \
-         a pin.\n\n\
+         (ADR-0153). Pairing writes it (`phux host add`, `--code`); a \
+         connection never does (ADR-0179). A server presenting another \
+         CA is refused. Delete a line to forget a pin.\n\n\
          ## State\n\n\
          The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling \
          back to `~/.local/state/<profile-dir>` when `XDG_STATE_HOME` is \
@@ -142,8 +141,8 @@ pub(crate) fn page() -> Page {
            regular, non-symlink file owned by the effective user with no \
            group/world permissions; an integrity failure denies \
            authentication. `PHUX_WS_TOKENS` moves it without weakening those \
-           checks. Legacy anonymous token lines \
-           require the idempotent `phux pair --migrate-legacy` conversion.\n\
+           checks. A store of legacy anonymous token lines is refused \
+           (ADR-0179): remove it and pair again.\n\
          - `enrollment-tickets` holds the SHA-256 of each single-use \
            ticket `phux pair --enroll` minted (never the ticket), with \
            the scope and lifetime the credential it enrolls gets; the \

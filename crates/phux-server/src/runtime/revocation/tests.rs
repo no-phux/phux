@@ -78,9 +78,9 @@ fn the_local_host_covers_keyed_selectors_and_a_session_never_covers_a_resource()
     assert!(still_contained(&[&keyed], &[&keyed]));
 }
 
-/// §7 step 1: a revoked grant admits nothing, whatever its shape. The
-/// owner-shaped grant a bearer holds in the transitional posture is the case
-/// the owner shortcut would otherwise let through.
+/// §7 step 1: a revoked grant admits nothing, whatever its shape. An
+/// owner-shaped grant an embedder engine (ADR-0072) mints for a bearer is the
+/// case the owner shortcut would otherwise let through.
 #[test]
 fn a_revoked_grant_admits_nothing_even_owner_shaped() {
     use crate::policy::{ConnectionGrant, Request, Revocation, enforce};

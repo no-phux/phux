@@ -6,8 +6,9 @@
 //! that Terminal's own stream, so a bootstrap reflow that sized the dead
 //! leaf before any stream was bound ended the attach with "Terminal frame
 //! requires a live QUIC binding". This drives the real binary: a real
-//! server with a loopback QUIC listener, a two-pane layout whose second leaf
-//! is already gone, and `phux attach --quic` on a PTY.
+//! `paired` server with a loopback QUIC listener (the only mode that serves
+//! one, ADR-0179), a two-pane layout whose second leaf is already gone, and
+//! `phux attach --quic` on a PTY presenting an enrolled certificate.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
@@ -15,6 +16,8 @@
 mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -42,6 +45,7 @@ struct QuicServer {
     inner: common::ServerGuard,
     dir: tempfile::TempDir,
     quic: std::net::SocketAddr,
+    enrolled: paired::Enrolled,
 }
 
 impl QuicServer {
@@ -50,6 +54,12 @@ impl QuicServer {
         for name in ["home", "config", "state", "runtime"] {
             std::fs::create_dir(dir.path().join(name)).expect("create isolated server directory");
         }
+        paired::write_paired_policy(&dir.path().join("config/phux/config.toml"));
+        let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
+            let mut command = common::phux_cmd(crate::runner::phux_bin());
+            command.envs(isolated_env(dir.path())).args(args);
+            paired::output_with_stdin(command, stdin)
+        });
         let inner = common::ServerGuard::builder("quic-restore")
             .env("SHELL", "/bin/sh")
             .envs(isolated_env(dir.path()))
@@ -58,7 +68,12 @@ impl QuicServer {
             });
         let quic =
             listeners::bound_listener_addr(&inner.socket, listeners::RemoteListenerTransport::Quic);
-        Self { inner, dir, quic }
+        Self {
+            inner,
+            dir,
+            quic,
+            enrolled,
+        }
     }
 
     fn command(&self, args: &[&str]) -> std::process::Output {
@@ -177,11 +192,15 @@ impl QuicServer {
     fn attach_over_quic(&self) -> common::PtyAttach {
         let addr = self.quic.to_string();
         let dir = self.dir.path().to_owned();
+        let identity = self.enrolled.env();
         common::PtyAttach::start_dialing(&["--quic", &addr, SESSION], ATTACH_PTY, |_, command| {
             for (key, value) in isolated_env(&dir) {
                 if key != "XDG_CONFIG_HOME" {
                     command.env(key, value);
                 }
+            }
+            for (key, value) in &identity {
+                command.env(key, value);
             }
         })
     }

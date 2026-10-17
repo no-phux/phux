@@ -431,13 +431,24 @@ for the trust model and environment settings.
 
 ## Common steps: listen, then pair
 
-Every path below shares the same server-side setup, done once. First the
-server needs a remote listener. On the default profile a host on an overlay
-network already has one: the server binds its overlay address on 8787 (wss)
-and 8788 (QUIC) at startup
+Every path below shares the same server-side setup, done once. The server
+serves remote clients only in `paired` policy mode, so set it in the host's
+`config.toml` first; with no mode a remote listener refuses to start
+([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)):
+
+```toml
+[policy]
+mode = "paired"
+```
+
+`phux service install --quic` (and so `phux host add`) writes that line
+when no mode is set, and refuses a host set to `local`. Then the server
+needs a remote listener. On the default profile a host on an
+overlay network already has one: the server binds its overlay address on
+8787 (wss) and 8788 (QUIC) at startup
 ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
-Otherwise start it on a non-loopback bind — TLS and token auth engage
-automatically:
+Otherwise start it on a non-loopback bind — TLS, token, and client
+certificate checks engage automatically:
 
 ```sh
 phux server --listen 0.0.0.0:8787      # TLS WebSocket (= PHUX_WS_ADDR)
@@ -458,8 +469,9 @@ remote listener, is an error that names the socket and the fix
 ([ADR-0141](adr/0141-pair-mints-only-against-a-live-listener.md)). The server
 re-reads the credential store when it changes, so the token works at the next
 connection attempt with no restart, and revocation applies just as promptly.
-Legacy anonymous token lines require a one-time explicit
-`phux pair --migrate-legacy`. `phux pair` provisions the server
+A store of legacy anonymous token lines is refused: remove it and pair again
+([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)). `phux pair`
+provisions the server
 certificate if none exists yet, issued by the server's workload CA
 ([ADR-0153](adr/0153-clients-pin-the-workload-ca.md)), so the fingerprints
 it prints are the ones the server presents.
@@ -490,8 +502,8 @@ Record the token and the fingerprint; every `phux attach` below uses both. The
 fingerprint is SHA-256, 64 hex digits, optionally colon-separated. The
 authority line appears when the certificate was issued by the workload CA
 (a server provisioned before ADR-0153 keeps its self-signed certificate and
-prints none); `phux host add` and `--code` pin it, and a client holding
-only the leaf fingerprint pins it on its first connection
+prints none); `phux host add` and `--code` pin it. A client holding only the
+leaf fingerprint keeps that pin and learns nothing from a connection
 ([operations](./operations.md#server-identity-and-the-ca-pin)).
 
 Keep the non-secret credential ID for lifecycle operations. Rotation prints a

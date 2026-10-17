@@ -819,9 +819,11 @@ remote sessions and windows are not merged. Enrollment is
 installs the satellite's per-user service, registers it here, and enables
 local `--hub` without dropping listeners already baked into the unit.
 
-- **WebSocket/TCP:** `phux server --listen HOST:PORT`; loopback can be
-  plaintext for browser/dev use, while routable binds auto-provision TLS
-  and require a `phux pair` bearer token.
+- **WebSocket/TCP:** `phux server --listen HOST:PORT`; routable binds
+  auto-provision TLS and require a `phux pair` bearer token. Every remote
+  listener needs `[policy] mode = "paired"` (next sections), under which a
+  loopback bind serves TLS too; only an embedder's own server (the
+  browser demo) serves plaintext loopback.
 - **QUIC/UDP:** `phux server --quic HOST:PORT`; always TLS 1.3. Routable
   binds use the same token store and certificate fingerprint as the
   WebSocket path.
@@ -928,16 +930,16 @@ issued by its workload CA, which clients pin from then on (next sections).
 
 #### Workload mTLS (`phux workload`)
 
-Setting `[policy] mode = "paired"` (or `PHUX_WORKLOAD_MTLS` with no mode) on
-the server adds a client-certificate check
+Setting `[policy] mode = "paired"` on the server adds a client-certificate
+check
 to every QUIC listener (the configured one and each `phux attach --ssh`
 door) and to the WSS listener
 ([ADR-0116](adr/0116-workload-auth-is-mtls.md),
 [workload-auth.md](spec/workload-auth.md)). A connection must then present a
 certificate issued by the server's workload CA whose public key is enrolled
 and neither revoked nor expired. Where the listener asks for a pairing token,
-the token is still checked first, as outer admission only. With the variable
-set, a loopback WebSocket listener serves TLS too, because plaintext cannot
+the token is still checked first, as outer admission only. Under `paired`, a
+loopback WebSocket listener serves TLS too, because plaintext cannot
 carry the certificate check. A relay connector (`[[connector]]`) and a
 WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) carry the
 certificate in a TLS session the client runs with this server inside its
@@ -945,8 +947,8 @@ stream, since the relay terminates the outer TLS and a WebTransport session
 has none to give; under `paired` they admit nothing else
 ([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
 A browser cannot run that session yet, so it reaches a `paired` server over
-neither. Unset, every listener and connector behaves exactly as described
-above.
+neither. Without `paired` there is no remote listener or connector at all
+(next section).
 
 ```sh
 phux workload authority --init            # create the CA; prints only its fingerprint
@@ -1026,15 +1028,18 @@ if needed, and presents the chain: the leaf, then the CA
 fingerprint beside the leaf fingerprint, `--json` reports it as
 `ca_fingerprint`, and the connect link carries it as `ca`. Clients pin it:
 `phux host add` and `--code` record it in `known-authorities` beside
-`config.toml`, one line per server, keyed by its leaf pin. A client that
-paired earlier and holds only a leaf pin records the CA on its first
-connection to a server that presents one. Existing certificates are never
-re-issued, so a server provisioned before this keeps its self-signed leaf,
-presents no CA, and every pin a device already holds keeps working;
-upgrading needs no re-pair.
+`config.toml`, one line per server, keyed by its leaf pin. A pin is made at
+pairing and never learned from a connection
+([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)): a client that
+holds only a leaf pin keeps dialing by that leaf, and re-pairs to pin the
+CA. Existing certificates are never re-issued, so a server provisioned
+before ADR-0153 keeps its self-signed leaf and presents no CA; its leaf pins
+keep working, but it mints no enrollment ticket and no relay link until its
+operator rotates. If the CA cannot issue a new server certificate, the
+listener is disabled rather than given a self-signed one.
 
-A client pinning a CA refuses a server presenting another one before any
-pairing token is sent, and does not retry:
+A client pinning a CA refuses a server presenting another one, or a leaf
+that CA did not issue, before any pairing token is sent, and does not retry:
 
 ```text
 mini: the server's certificate authority changed: pinned sha256:..., presented sha256:....
@@ -1057,7 +1062,7 @@ longer verify. The replaced CA, key, and server pair are kept beside the new
 ones as `*.retired-<unix>`, owner-only. An operator-supplied certificate
 (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) is never touched, and such a server
 presents no CA unless its chain names one. Deleting a line from
-`known-authorities` forgets that pin; the next connection learns it again.
+`known-authorities` forgets that pin; only a re-pair records it again.
 
 #### Policy mode (`[policy] mode`)
 
@@ -1065,28 +1070,34 @@ presents no CA unless its chain names one. Deleting a line from
 The server reads it once at start
 ([workload-auth.md](spec/workload-auth.md) §8):
 
-- **Unset**, the default, keeps today's behaviour: every connection the
-  server admits holds the owner's full grant. With a remote listener or
-  relay connector configured, the server logs one warning at startup,
-  because a pairing token then admits a consumer with command-execution
-  authority. This transitional posture stays until the clients that reach
-  such a server carry workload certificates: every entry point can carry
-  one under `paired`, but a phone needs an app that enrolls, a relayed
-  consumer a relay link that names the server's CA, and a browser a key it
-  cannot hold yet. Naming a workload CA or registry location
-  (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`) with no
-  mode refuses to start the server: set `mode = "paired"` to enforce that
-  authority, or unset the variables. A registry at the default location,
-  such as one `phux host add` enrolled into, refuses nothing.
+- **Unset**, the default, is `local`. A configured remote listener or relay
+  connector then refuses to start the server, naming `mode = "paired"`:
+  no mode gives a remote consumer the owner's grant
+  ([ADR-0179](adr/0179-the-legacy-auth-paths-are-removed.md)). Naming a
+  workload CA or registry location (`PHUX_WORKLOAD_CA`,
+  `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`) with no mode refuses too: set
+  `mode = "paired"` to enforce that authority, or unset the variables. A
+  registry at the default location, such as one `phux host add` enrolled
+  into, refuses nothing. The retired `PHUX_WORKLOAD_MTLS` refuses to start
+  in every mode and names `[policy] mode`. On a default-profile server with
+  no mode, the overlay listener is not auto-bound, and the server log says
+  so once at info.
+- **An upgrade into a refused mode keeps the panes.** `phux upgrade` or
+  `phux update` into a build whose posture check refuses the configuration
+  does not exit: the resumed server runs `local`, leaves every remote
+  listener and connector unbound, logs the refusal, and `phux doctor`
+  reports each listener as `policy_mode_refused`. Set the mode, then
+  `phux upgrade` again to bind them with the panes intact. Only a cold start
+  (a restart, or a service unit) refuses.
 - **`local`** admits the owner's Unix socket only, from the serving user's
   uid. A configured remote listener (`--listen`, `--quic`, `--webtransport`,
   their environment variables, or a `[[connector]]`) refuses to start the
   server, the overlay listener is never auto-bound, `phux attach --ssh`'s
   on-demand listener is refused, and any other connection is refused at
   HELLO.
-- **`paired`** turns on the workload mTLS check above; `PHUX_WORKLOAD_MTLS`
-  with no mode means the same. The owner's Unix socket keeps full
-  authority. Every TLS connection must present an enrolled certificate and
+- **`paired`** turns on the workload mTLS check above and is the only mode
+  with remote listeners, including the auto-bound overlay listener. The
+  owner's Unix socket keeps full authority. Every TLS connection must present an enrolled certificate and
   holds exactly its registry scopes, such as `observe,input@host` or `inventory@global`. A
   frame or command outside them is refused with `PERMISSION_DENIED`, and the
   connection stays up. Server-wide reads are filtered rather than refused:

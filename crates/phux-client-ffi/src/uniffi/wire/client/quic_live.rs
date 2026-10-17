@@ -34,7 +34,8 @@ impl QuicServer {
 
     /// With `authority`, the certificate is the one a server provisions
     /// itself: issued by its workload CA, presented after the leaf
-    /// (ADR-0153).
+    /// (ADR-0153). The server runs an embedder engine (ADR-0072): these
+    /// cases are about the dial, not about who may act.
     fn start_with(authority: bool) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
@@ -59,7 +60,7 @@ impl QuicServer {
         let addr = UdpSocket::bind("127.0.0.1:0")
             .and_then(|socket| socket.local_addr())
             .expect("reserve a loopback UDP port");
-        let config = ServerConfig {
+        let mut config = ServerConfig {
             socket_path: dir.path().join("phux.sock"),
             pre_seeded_session: Some(SESSION.to_owned()),
             seed_with_pty: false,
@@ -71,6 +72,7 @@ impl QuicServer {
             },
             ..ServerConfig::with_default_socket()
         };
+        phux_server_testkit::embedder::embed_owner_engine(&mut config);
         let (shutdown, stopped) = oneshot::channel::<()>();
         let thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -125,10 +127,10 @@ impl QuicServer {
             pre_seeded_session: Some(SESSION.to_owned()),
             seed_with_pty: false,
             seed_command: None,
+            policy_mode: Some(phux_config::PolicyMode::Paired),
             env: ServerEnv {
                 tls_cert: Some(cert),
                 tls_key: Some(key),
-                workload_mtls: true,
                 workload_ca: Some(paths.ca_cert.clone()),
                 workload_ca_key: Some(paths.ca_key.clone()),
                 workload_keys: Some(paths.registry.clone()),
@@ -194,11 +196,12 @@ impl RelayedServer {
                 .expect("chmod");
         };
         let tunnel = "31".repeat(32);
-        let token = "42".repeat(32);
         std::fs::write(d.join("relay-tokens"), format!("{tunnel} {ROUTE}\n")).expect("route");
         write_secret("connector-token", &format!("{tunnel}\n"));
-        write_secret("consumer-tokens", &format!("{token}\n"));
-        phux_server::auth::migrate_legacy_store(&d.join("consumer-tokens")).expect("migrate");
+        let token = phux_server::auth::mint_token(&d.join("consumer-tokens"))
+            .expect("consumer credential")
+            .secret()
+            .to_owned();
         let paths = phux_server::workload::WorkloadPaths::with_overrides(
             Some(d.join("workload-ca.pem")),
             Some(d.join("workload-ca.key")),
@@ -216,7 +219,6 @@ impl RelayedServer {
             ws_tokens: Some(d.join("consumer-tokens")),
             tls_cert: Some(cert),
             tls_key: Some(key),
-            workload_mtls: true,
             workload_ca: Some(paths.ca_cert.clone()),
             workload_ca_key: Some(paths.ca_key.clone()),
             workload_keys: Some(paths.registry.clone()),
@@ -251,6 +253,7 @@ impl RelayedServer {
                 ready_tx.send((relay.addr, pin)).expect("ready");
                 let config = ServerConfig {
                     socket_path: state.join("phux.sock"),
+                    policy_mode: Some(phux_config::PolicyMode::Paired),
                     pre_seeded_session: Some(SESSION.to_owned()),
                     seed_with_pty: false,
                     seed_command: None,
@@ -443,11 +446,11 @@ fn a_remote_programs_osc52_reaches_the_mobile_clipboard_event() {
     remote.stop_connection();
 }
 
-/// ADR-0153 for the phone: a leaf-pinned client learns the CA on its first
-/// connection; pinned, a different CA is refused by name and never attaches,
-/// and the right one attaches.
+/// ADR-0153 for the phone: a leaf-pinned client attaches by its leaf and
+/// learns nothing (ADR-0179); pinned, a different CA is refused by name and
+/// never attaches, and the right one attaches.
 #[test]
-fn a_leaf_pinned_phone_learns_the_authority_and_a_swapped_one_is_refused() {
+fn a_pinned_phone_attaches_and_a_swapped_authority_is_refused() {
     let server = QuicServer::start_with(true);
     let leaf = phux_server::transport::tls::cert_fingerprint(&server.cert()).expect("leaf");
     let authority = phux_server::transport::tls::presented_authority(&server.cert())
@@ -455,12 +458,16 @@ fn a_leaf_pinned_phone_learns_the_authority_and_a_swapped_one_is_refused() {
         .expect("issued by the workload CA");
     let endpoint = format!("quic://{}", server.addr);
 
-    let learning = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
-    learning.connect().expect("connect");
-    learning.attach_session(SESSION.to_owned());
-    wait_for(&learning, |remote| remote.status() == WireStatus::Attached);
-    assert_eq!(learning.learned_authority(), Some(authority.clone()));
-    learning.stop_connection();
+    let leaf_only = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    leaf_only.connect().expect("connect");
+    leaf_only.attach_session(SESSION.to_owned());
+    wait_for(&leaf_only, |remote| remote.status() == WireStatus::Attached);
+    assert_eq!(
+        leaf_only.target().expect("target").authority.ca,
+        None,
+        "a connection teaches no pin"
+    );
+    leaf_only.stop_connection();
 
     let swapped = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
     swapped.set_authority_pin(Some(format!("sha256:{}", "0".repeat(64))));
@@ -476,11 +483,6 @@ fn a_leaf_pinned_phone_learns_the_authority_and_a_swapped_one_is_refused() {
         "names the presented CA: {error}"
     );
     assert_ne!(swapped.status(), WireStatus::Attached);
-    assert_eq!(
-        swapped.learned_authority(),
-        None,
-        "a pinned client learns nothing"
-    );
     swapped.stop_connection();
 
     let pinned = RemoteClient::new(endpoint, 80, 24, Some(leaf), None);
@@ -513,23 +515,28 @@ fn a_phone_enrolls_with_a_ticket_and_attaches_to_a_paired_server() {
 
     let ticket = mint(&paths);
     let key = test_key();
+    let authority = phux_server::workload::ca_fingerprint(&paths.ca_cert).expect("ca");
+    // A phone that pins no CA is refused before it spends the ticket: the CA
+    // comes from the link, never from the reply (ADR-0179).
+    let unpinned = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    let refused = unpinned
+        .enroll_device(ticket.clone(), Arc::clone(&key))
+        .expect_err("enrollment needs a pinned CA");
+    assert!(refused.to_string().contains("`ca`"), "{refused}");
     let phone = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    phone.set_authority_pin(Some(authority.clone()));
     let chain = phone
         .enroll_device(ticket.clone(), Arc::clone(&key))
         .expect("the ticket enrolls the device key");
     assert!(!chain.contains("PRIVATE KEY"));
-    assert_eq!(
-        phone.learned_authority(),
-        Some(phux_server::workload::ca_fingerprint(&paths.ca_cert).expect("ca")),
-        "enrolling pins the authority that issued the device's certificate"
-    );
     phone.connect().expect("connect");
     phone.attach_session(SESSION.to_owned());
     wait_for(&phone, |remote| remote.status() == WireStatus::Attached);
     phone.stop_connection();
 
-    // A later launch: the stored chain and the keystore key.
+    // A later launch: the stored chain, the keystore key, and the CA pin.
     let relaunched = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    relaunched.set_authority_pin(Some(authority.clone()));
     relaunched
         .set_device_identity(chain.clone(), Arc::clone(&key))
         .expect("identity");
@@ -542,6 +549,7 @@ fn a_phone_enrolls_with_a_ticket_and_attaches_to_a_paired_server() {
 
     // Adversarial: the ticket is spent.
     let thief = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    thief.set_authority_pin(Some(authority.clone()));
     let replay = thief
         .enroll_device(ticket, test_key())
         .expect_err("a consumed ticket enrolls nothing");
@@ -552,6 +560,7 @@ fn a_phone_enrolls_with_a_ticket_and_attaches_to_a_paired_server() {
 
     // Adversarial: the phone's (public) chain with another device's key.
     let impostor = RemoteClient::new(endpoint, 80, 24, Some(leaf), None);
+    impostor.set_authority_pin(Some(authority));
     impostor
         .set_device_identity(chain, test_key())
         .expect("identity");

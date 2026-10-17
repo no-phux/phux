@@ -36,7 +36,8 @@ pub(super) struct ServerConfig {
     /// How a Terminal shared by differently sized clients picks its PTY size
     /// (`defaults.window-size`).
     pub(super) window_size: phux_config::WindowSize,
-    /// HELLO authorization engine (ADR-0072); permissive unless configured.
+    /// HELLO authorization engine (ADR-0072); the `local` engine unless
+    /// configured.
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
     /// The startup authorization posture (`docs/spec/workload-auth.md` §8).
     pub(super) policy_posture: crate::policy::PolicyPosture,
@@ -70,10 +71,8 @@ impl Default for ServerConfig {
             server_socket_path: None,
             native_host_executable: None,
             window_size: phux_config::WindowSize::default(),
-            policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),
-            policy_posture: crate::policy::PolicyPosture::Transitional {
-                remote_listener: false,
-            },
+            policy_engine: std::sync::Arc::new(crate::policy::ScopedPolicy::local()),
+            policy_posture: crate::policy::PolicyPosture::Local,
             attach_create_seeds_pty: false,
             attach_create_seed_command: None,
             pre_seeded_session: None,

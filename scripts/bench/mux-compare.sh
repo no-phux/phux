@@ -242,11 +242,62 @@ EOF
   log_cmd "# attach wrapper ($MUX): env -i <isolated env> $1"
 }
 
+# The enrolled client identity a remote lane's attach presents.
+phux_identity_env() {
+  printf 'PHUX_WORKLOAD_CERT=%s PHUX_WORKLOAD_KEY=%s' "$MUX_HOME/client.pem" "$MUX_HOME/client.key"
+}
+
+phux_iso() {
+  eval "${BASE_ENV[*]} $(iso_env) \"\$PHUX_BIN\" \"\$@\""
+}
+
+# The lanes that dial a remote listener. phux serves one only under
+# `[policy] mode = "paired"`, to clients presenting an enrolled certificate
+# (ADR-0179), so only these lanes bind one; the UDS lane measures no listener.
+phux_remote_lane() { [[ $MUX == phux-ws || $MUX == phux-quic ]]; }
+
+# Settle the paired policy in the lane's isolated config and enroll the
+# client identity its attach presents, once per lane.
+prepare_phux_paired() {
+  [[ -f $MUX_HOME/client.pem ]] && return 0
+  mkdir -p "$MUX_HOME/cfg/phux"
+  printf '[policy]\nmode = "paired"\n' >"$MUX_HOME/cfg/phux/config.toml"
+  log_cmd "# $MUX: [policy] mode = \"paired\"; enroll a client key with every verb at global"
+  {
+    openssl ecparam -name prime256v1 -genkey -noout -out "$MUX_HOME/client.sec1" &&
+      openssl pkcs8 -topk8 -nocrypt -in "$MUX_HOME/client.sec1" -out "$MUX_HOME/client.key" &&
+      chmod 600 "$MUX_HOME/client.key" &&
+      openssl req -new -subj /CN=muxbench -key "$MUX_HOME/client.key" -out "$MUX_HOME/client.csr" &&
+      phux_iso workload authority --init &&
+      phux_iso workload add-key --cert-out "$MUX_HOME/client.pem" --scope '*@global' \
+        <"$MUX_HOME/client.csr"
+  } >>"$MUX_HOME/enroll.log" 2>&1 || {
+    printf 'enrolling the %s client failed; see %s/enroll.log\n' "$MUX" "$MUX_HOME" >&2
+    return 1
+  }
+}
+
+# A paired wss listener also wants a pairing token beside the certificate;
+# mint one per server start into the file the ws lane's attach reads.
+mint_phux_ws_token() {
+  [[ $MUX == phux-ws ]] || return 0
+  phux_iso --socket "$MUX_HOME/mux.sock" pair --json 2>>"$MUX_HOME/enroll.log" |
+    python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' >"$MUX_HOME/client.token" || {
+    printf 'minting the phux-ws pairing token failed; see %s/enroll.log\n' "$MUX_HOME" >&2
+    return 1
+  }
+  chmod 600 "$MUX_HOME/client.token"
+}
+
 start_server() {
   case "$FAMILY" in
     phux)
       rm -f "$MUX_HOME/mux.sock"
-      local listeners="--listen 127.0.0.1:$WS_PORT --quic 127.0.0.1:$QUIC_PORT"
+      local listeners=""
+      if phux_remote_lane; then
+        prepare_phux_paired || return 1
+        listeners="--listen 127.0.0.1:$WS_PORT --quic 127.0.0.1:$QUIC_PORT"
+      fi
       local filter=""
       # Handshake accounting needs frame-level server logs; the measured runs
       # stay at the default level so logging never taxes a timing.
@@ -259,6 +310,7 @@ start_server() {
       local deadline=$((SECONDS + 30))
       while [[ ! -S "$MUX_HOME/mux.sock" ]] && (( SECONDS < deadline )); do sleep 0.05; done
       [[ -S "$MUX_HOME/mux.sock" ]] || { printf 'phux server never bound its socket\n' >&2; return 1; }
+      mint_phux_ws_token || return 1
       ;;
     tmux)
       log_cmd "env -i <isolated env> $TMUX_BIN -f /dev/null -S $MUX_HOME/mux.sock new-session -d -s bench -x $COLS -y $ROWS /bin/sh"
@@ -351,8 +403,12 @@ setup_mux() {
   case "$MUX" in
     phux) FAMILY=phux; MUX_DETACH=(C-a d)
       MUX_ARGV="$PHUX_BIN attach --socket $MUX_HOME/mux.sock bench" ;;
+    # The remote lanes present the client identity `prepare_phux_paired`
+    # enrolled; the ws lane's token is read when the attach runs, after the
+    # server that minted it is up.
     phux-ws) FAMILY=phux; MUX_DETACH=(C-a d)
-      MUX_ARGV="$PHUX_BIN attach --ws ws://127.0.0.1:$WS_PORT bench" ;;
+      MUX_ARGV="env $(phux_identity_env) $PHUX_BIN attach --ws wss://127.0.0.1:$WS_PORT \
+--token \$(cat $MUX_HOME/client.token) bench" ;;
     phux-quic) FAMILY=phux; MUX_DETACH=(C-a d)
       local port=$QUIC_PORT
       # Requested shaping puts the relay between client and server; the
@@ -361,7 +417,7 @@ setup_mux() {
         start_relay || exit 2
         port=$QUIC_RELAY_PORT
       fi
-      MUX_ARGV="$PHUX_BIN attach --quic 127.0.0.1:$port bench" ;;
+      MUX_ARGV="env $(phux_identity_env) $PHUX_BIN attach --quic 127.0.0.1:$port bench" ;;
     herdr) FAMILY=herdr; MUX_DETACH=(C-b q); MUX_ARGV="$HERDR_BIN" ;;
     tmux) FAMILY=tmux; MUX_DETACH=(C-b d)
       MUX_ARGV="'$TMUX_BIN' -f /dev/null -S $MUX_HOME/mux.sock attach-session -t bench" ;;

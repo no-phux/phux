@@ -511,12 +511,9 @@ mod tests {
         let Dial::Quic(dial) = &quic.dial else {
             panic!("expected a QUIC dial, got {:?}", quic.dial);
         };
-        // No CA is pinned for this leaf, so the dial learns one (ADR-0153).
-        assert!(
-            matches!(&dial.trust, CertTrust::PinnedLearning { leaf, .. } if leaf == "ab"),
-            "{:?}",
-            dial.trust
-        );
+        // No CA is pinned for this leaf, so the dial pins the leaf and learns
+        // nothing (ADR-0179).
+        assert_eq!(dial.trust, CertTrust::Pinned("ab".to_owned()));
 
         // A routable wss:// dial also needs a bearer token, as under attach.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -529,12 +526,7 @@ mod tests {
         let Dial::Ws(dial) = &wss.dial else {
             panic!("expected a WebSocket dial, got {:?}", wss.dial);
         };
-        // No CA is pinned for this leaf, so the dial learns one (ADR-0153).
-        assert!(
-            matches!(&dial.trust, CertTrust::PinnedLearning { leaf, .. } if leaf == "cd"),
-            "{:?}",
-            dial.trust
-        );
+        assert_eq!(dial.trust, CertTrust::Pinned("cd".to_owned()));
     }
 
     /// Credential gaps are refused, as attach refuses them.

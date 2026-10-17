@@ -21,7 +21,6 @@ use super::{
 use crate::auth::{
     AuthenticatedCredential, BearerAdmission, ConnectionIdentity, ReloadingTokenStore, TOKEN_LEN,
 };
-use crate::policy::PermissivePolicy;
 use crate::runtime::revocation::{POLL, spawn_revocation_watcher};
 
 const SECRET: [u8; TOKEN_LEN] = [0x5a; TOKEN_LEN];
@@ -29,14 +28,15 @@ const SECRET: [u8; TOKEN_LEN] = [0x5a; TOKEN_LEN];
 /// The id `write_test_credential` records.
 const TOKEN_ID: &str = "test-credential";
 
-/// The default engine: every connection holds the owner's grant, as with no
-/// `[policy] mode`.
+/// An embedder engine (ADR-0072) granting every connection the owner's
+/// authority, so these cases isolate the pairing-token store: what ends a
+/// bearer-admitted session is the store, never the grant.
 fn permissive() -> Fixture {
     Fixture::with_engine(
         tempfile::tempdir().unwrap(),
         PathBuf::new(),
         String::new(),
-        Arc::new(PermissivePolicy),
+        Arc::new(crate::policy::OwnerForAll),
     )
 }
 

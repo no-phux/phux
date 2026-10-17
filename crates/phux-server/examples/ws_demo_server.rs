@@ -18,6 +18,12 @@
 //! [`ServerEnv::from_process`], so CI's authenticated fallback can probe
 //! `wss://` with a bearer token.
 //!
+//! A browser holds no workload certificate, and `phux server` admits a
+//! remote consumer only under `paired` with one (ADR-0179). This demo is an
+//! embedder (ADR-0072): it injects an engine that grants every connection
+//! the owner's authority, which no configuration of `phux server` can.
+//! Never expose it beyond loopback.
+//!
 //!   PHUX_WS_ADDR=127.0.0.1:47654 cargo run --example ws_demo_server
 
 #![allow(
@@ -52,7 +58,7 @@ fn main() {
     let env = ServerEnv::from_process();
     let scheme = if env.ws_secure { "wss" } else { "ws" };
 
-    let cfg = ServerConfig {
+    let mut cfg = ServerConfig {
         socket_path: socket_path.clone(),
         pre_seeded_session: Some("default".to_owned()),
         seed_with_pty: true,
@@ -60,6 +66,7 @@ fn main() {
         env,
         ..ServerConfig::with_default_socket()
     };
+    phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

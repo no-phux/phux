@@ -19,6 +19,7 @@ on its first connection to a server that presents one.
 
 Status: Accepted
 Date: 2026-10-07
+Superseded in part by [ADR-0179](./0179-the-legacy-auth-paths-are-removed.md): no self-signed fallback (item 1), no leaf beside a CA pin (item 4), no learning on first connect (item 5).
 Amends [ADR-0116](./0116-workload-auth-is-mtls.md) ("the CA fingerprint
 replaces the leaf pin, so CA rotation is explicit re-pairing"): it decides
 how the pin is made, how a change surfaces, and how existing pairs migrate.

@@ -25,6 +25,10 @@ pub enum ListenerDisabledReason {
     OverlayGateClosed,
     /// Auto-overlay gate was open but no overlay address was detected.
     NoOverlayAddress,
+    /// The `[policy] mode` admits no remote listener (none is set, or it is
+    /// `local`), so a server resumed across an upgrade left it unbound
+    /// rather than exit and end its panes (ADR-0179).
+    PolicyModeRefused,
 }
 
 impl ListenerDisabledReason {
@@ -38,6 +42,7 @@ impl ListenerDisabledReason {
             Self::BindFailed => "bind_failed",
             Self::OverlayGateClosed => "overlay_gate_closed",
             Self::NoOverlayAddress => "no_overlay_address",
+            Self::PolicyModeRefused => "policy_mode_refused",
         }
     }
 }

@@ -597,9 +597,11 @@ fn live_listeners(
     Err(format!(
         "the server at {} {NO_BOUND_LISTENER}{why}, so nothing would accept a \
          credential and none was minted.\n  \
-         give it one: restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
-         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or join an overlay network so the default-profile \
-         server auto-binds one (`phux upgrade` restarts it with panes intact); \
+         give it one: first set `[policy] mode = \"paired\"` in config.toml (a remote \
+         listener serves only enrolled clients, and with no mode the server binds none), \
+         then restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
+         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or let the default-profile server auto-bind \
+         one on an overlay network (`phux upgrade` re-binds with panes intact); \
          `phux doctor` names the cause",
         socket.display()
     ))
@@ -747,7 +749,6 @@ pub(crate) fn run_pair(
     host: Option<String>,
     name: Option<String>,
     json: bool,
-    migrate_legacy: bool,
     replace_token: Option<String>,
     door: Door,
 ) -> ExitCode {
@@ -776,14 +777,9 @@ pub(crate) fn run_pair(
     };
     let certificate = resolve_certificate_paths(cert);
 
-    if migrate_legacy && !migrate_legacy_credentials(&tokens) {
-        return ExitCode::FAILURE;
-    }
-
     // Everything that could make the credential useless is settled before
     // the store is touched. The store's own refusal comes first, in the
-    // words a failed mint uses, because `phux host add` answers the
-    // legacy-store one by migrating.
+    // words a failed mint uses (a retired legacy store names its remedy).
     if let Err(err) = phux_server::auth::TokenStore::load(&tokens) {
         error!("pair: failed to mint token: {err}");
         return ExitCode::FAILURE;
@@ -829,6 +825,18 @@ pub(crate) fn run_pair(
         return ExitCode::FAILURE;
     }
     provision_pairing_certificate(&certificate, &addresses.advertised);
+    // A device enrolls trusting the CA its link pins and never learns one
+    // (ADR-0179), so a certificate no workload CA issued has nothing to give
+    // it. Refused before anything is minted.
+    if enroll
+        && phux_server::transport::tls::presented_authority(&certificate.cert)
+            .ok()
+            .flatten()
+            .is_none()
+    {
+        error!("pair: {ENROLL_NEEDS_AUTHORITY}");
+        return ExitCode::FAILURE;
+    }
 
     let Some(minted) = mint_pairing_credential(&tokens, replace_token.as_deref(), expires_at)
     else {
@@ -946,6 +954,11 @@ pub(crate) enum Door {
     },
 }
 
+/// Why `--enroll` refuses a server certificate no workload CA issued.
+const ENROLL_NEEDS_AUTHORITY: &str = "--enroll needs the server's certificate to chain to its \
+     workload CA (ADR-0153), and this one does not (it predates the CA, or the operator \
+     supplied it). `phux workload authority --rotate` issues one (every device then re-pairs)";
+
 const ENROLL_NEEDS_QUIC: &str = "--enroll needs a bound QUIC listener: a device enrolls over \
      QUIC (`phux server --quic ADDR`, or the overlay auto-listener)";
 
@@ -1019,34 +1032,36 @@ fn mint_relay_link(
             return ExitCode::FAILURE;
         }
     };
+    // The server's own CA, which a consumer verifies end to end through the
+    // relay (ADR-0154). A relayed consumer is admitted only through that
+    // session, so a server whose certificate predates its CA has nothing to
+    // pair through a relay: the plain relayed stream is retired (ADR-0179).
+    // Refused before anything is minted.
+    let Some(authority) =
+        phux_server::transport::tls::presented_authority(&resolve_certificate_paths(None).cert)
+            .ok()
+            .flatten()
+    else {
+        error!(
+            "pair: pairing through a relay needs the server's certificate to chain to its \
+             workload CA (ADR-0153); this one predates it. `phux workload authority --rotate` \
+             issues one (every device then re-pairs)"
+        );
+        return ExitCode::FAILURE;
+    };
     let Some(minted) = mint_pairing_credential(tokens, replace_token, output.expires_at) else {
         return ExitCode::FAILURE;
     };
     let token = minted.secret().to_owned();
     let hide_bearer = hides_bearer(output.qr, output.secret_file.is_some(), output.json);
     let fingerprint = connector.cert_fingerprint.as_deref();
-    // The server's own CA, which a consumer verifies end to end through the
-    // relay (ADR-0154). A server whose certificate predates its CA has none,
-    // and its consumers keep the plain relayed stream.
-    let authority =
-        phux_server::transport::tls::presented_authority(&resolve_certificate_paths(None).cert)
-            .ok()
-            .flatten();
-    if enroll && authority.is_none() {
-        error!(
-            "pair: --enroll through a relay needs the server's certificate to chain to its \
-             workload CA (ADR-0153); this one predates it. `phux workload authority --rotate` \
-             issues one (every device then re-pairs)"
-        );
-        return ExitCode::FAILURE;
-    }
     let ticket = match enroll.then(|| mint_enrollment_ticket(output.json, secret_surface(output))) {
         Some(None) => return ExitCode::FAILURE,
         minted => minted.flatten(),
     };
     let pins = ServerPins {
         leaf: fingerprint,
-        authority: authority.as_deref(),
+        authority: Some(authority.as_str()),
         enrollment: ticket.as_ref().map(|ticket| ticket.secret_hex.as_str()),
     };
     let link = build_relay_connect_link(&connector.relay, &relay.route, output.name, pins, &token);
@@ -1067,7 +1082,7 @@ fn mint_relay_link(
             "endpoint": connector.relay,
             "route": relay.route,
         });
-        add_pins_to_document(&mut doc, authority.as_deref(), ticket.as_ref());
+        add_pins_to_document(&mut doc, Some(authority.as_str()), ticket.as_ref());
         return crate::output::json(&doc);
     }
     if !hide_bearer {
@@ -1086,11 +1101,7 @@ fn mint_relay_link(
         }
         None => outln!("  no relay pin configured: a loopback relay only"),
     }
-    if let Some(authority) = &authority {
-        outln!(
-            "  server certificate authority {authority} (verified end to end through the relay)"
-        );
-    }
+    outln!("  server certificate authority {authority} (verified end to end through the relay)");
     outln!();
     if present_human_secret(&HumanSecret {
         credential_id: &minted.id,
@@ -1948,29 +1959,6 @@ fn parse_duration(raw: &str, flag: &str) -> Result<chrono::Duration, String> {
         }
     };
     Ok(chrono::Duration::seconds(seconds))
-}
-
-fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
-    match phux_server::auth::migrate_legacy_store(tokens) {
-        Ok(outcome) => {
-            ok!(
-                "pair: migrated {} legacy credential(s) to the versioned store",
-                outcome.migrated()
-            );
-            if !outcome.is_durable() {
-                let durable = phux_server::auth::migrate_legacy_store(tokens)
-                    .is_ok_and(phux_server::auth::MigrationOutcome::is_durable);
-                if !durable {
-                    warn!("pair: migration is active, but the store directory could not be synced");
-                }
-            }
-            true
-        }
-        Err(err) => {
-            error!("pair: failed to migrate legacy credentials: {err}");
-            false
-        }
-    }
 }
 
 /// The `phux pair --json` document. Pure, so the shape (including

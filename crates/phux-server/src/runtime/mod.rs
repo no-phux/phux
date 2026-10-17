@@ -148,8 +148,10 @@ pub struct ServerConfig {
     /// HELLO authorization engine override (ADR-0072). `None` lets
     /// [`Self::policy_mode`] choose; tests and embedders inject one here.
     pub policy_engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
-    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is the
-    /// transitional posture (every connection holds the owner's grant).
+    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is `local`
+    /// unless a remote entry point or authority location is configured,
+    /// which refuses to start (ADR-0179); with an injected
+    /// [`Self::policy_engine`] it leaves that engine in charge.
     pub policy_mode: Option<phux_config::PolicyMode>,
     /// Event-hook catalog; empty means no dispatcher task runs.
     pub hook_catalog: crate::hooks::HookCatalog,
@@ -633,24 +635,50 @@ impl ServerRuntime {
 
         // Connector plans and the policy posture are startup gates: bad
         // configuration fails before anything is bound.
-        let connector_specs = crate::connector::plan_connectors(&self.connectors)?;
+        let mut connector_specs = crate::connector::plan_connectors(&self.connectors)?;
         // Each opt-in address: the flag wins over the environment.
         let env = &self.cfg.env;
-        let ws_addr = self.ws_addr.or(env.ws_addr);
-        let quic_addr = self.quic_addr.or(env.quic_addr);
+        let mut ws_addr = self.ws_addr.or(env.ws_addr);
+        let mut quic_addr = self.quic_addr.or(env.quic_addr);
         #[cfg(feature = "webtransport")]
-        let webtransport_addr = self.wt_addr.or(env.wt_addr);
+        let mut webtransport_addr = self.wt_addr.or(env.wt_addr);
         #[cfg(feature = "webtransport")]
         let webtransport = webtransport_addr.is_some();
         #[cfg(not(feature = "webtransport"))]
         let webtransport = false;
-        let (posture, posture_engine) = startup_policy(
+        let (posture, posture_engine, fallback) = startup_policy(
             &self.cfg,
-            ws_addr,
-            quic_addr,
-            webtransport,
-            !self.connectors.is_empty(),
+            remote_listener_configured(
+                ws_addr,
+                quic_addr,
+                webtransport,
+                !self.connectors.is_empty(),
+            ),
+            self.resume_fd.is_some(),
         )?;
+        // A resume the posture refuses keeps its panes and binds no remote
+        // entry point; the flags stay in `runtime_flags`, so the next upgrade
+        // after the operator sets a mode binds them again.
+        let mut refused_listeners = Vec::new();
+        if fallback.is_some_and(|fallback| fallback.remote_dropped) {
+            refused_listeners.extend(
+                [
+                    (RemoteListenerTransport::Wss, ws_addr.take()),
+                    (RemoteListenerTransport::Quic, quic_addr.take()),
+                    #[cfg(feature = "webtransport")]
+                    (RemoteListenerTransport::Wt, webtransport_addr.take()),
+                ]
+                .into_iter()
+                .filter_map(|(transport, addr)| addr.map(|addr| (transport, addr))),
+            );
+            if !connector_specs.is_empty() {
+                warn!(
+                    connectors = connector_specs.len(),
+                    "relay connectors not started: the [policy] mode admits no remote consumer"
+                );
+                connector_specs.clear();
+            }
+        }
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs, env)?;
 
         let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
@@ -672,6 +700,8 @@ impl ServerRuntime {
 
         mirror_config_into_state(&self.cfg, &socket_path, &state);
         install_policy_posture(&state, posture, posture_engine);
+        record_refused_listeners(&state, &refused_listeners);
+        let mode_unset = self.cfg.policy_mode.is_none();
 
         let pre_seeded = self.cfg.pre_seeded_session.clone();
         let org_store = self.cfg.org_store.clone();
@@ -790,7 +820,8 @@ impl ServerRuntime {
                 // set (see `serve_auto_overlay_listeners`); only the cheap gate
                 // is evaluated here.
                 let auto_overlay_ports = configured.unclaimed_overlay_ports();
-                let auto_overlay_gate = auto_overlay_allowed(auto_overlay_ports, &state);
+                let auto_overlay_gate =
+                    auto_overlay_allowed(auto_overlay_ports, &state, mode_unset);
 
                 let mut accepts =
                     configured.accept_loops(&listener, &state, &root_token, &input_lane_handle);
@@ -982,30 +1013,73 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
 /// The engine a posture calls for; `None` keeps the state's current engine.
 type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
 
-/// Resolve the startup posture from `[policy] mode`, `PHUX_WORKLOAD_MTLS`,
-/// and the configured entry points, refuse the contradictions
-/// (`docs/spec/workload-auth.md` §8), and build the engine it calls for.
+/// Resolve the startup posture from `[policy] mode` and the configured entry
+/// points, refuse the contradictions (`docs/spec/workload-auth.md` §8), and
+/// build the engine it calls for.
+///
+/// A `resuming` image (ADR-0032) never exits on a refusal: the previous
+/// process is already gone, and exiting would end every pane it handed over.
+/// It takes [`crate::policy::PolicyPosture::resume_fallback`] instead, logs
+/// the refusal, and returns the fallback so the caller can leave the remote
+/// entry points unbound.
 fn startup_policy(
     cfg: &ServerConfig,
-    ws_addr: Option<SocketAddr>,
-    quic_addr: Option<SocketAddr>,
-    webtransport: bool,
-    connectors: bool,
-) -> Result<(crate::policy::PolicyPosture, PostureEngine), ServerError> {
-    let remote = remote_listener_configured(ws_addr, quic_addr, webtransport, connectors);
-    let posture = crate::policy::PolicyPosture::resolve(
-        cfg.policy_mode,
-        cfg.env.workload_mtls,
-        remote,
-        cfg.env.workload_authority_configured(),
-    )?;
+    remote_listener: bool,
+    resuming: bool,
+) -> Result<
+    (
+        crate::policy::PolicyPosture,
+        PostureEngine,
+        Option<crate::policy::ResumeFallback>,
+    ),
+    ServerError,
+> {
+    let inputs = crate::policy::PostureInputs {
+        mode: cfg.policy_mode,
+        retired_workload_mtls_env: cfg.env.retired_workload_mtls,
+        remote_listener,
+        workload_authority_configured: cfg.env.workload_authority_configured(),
+        embedder_engine: cfg.policy_engine.is_some(),
+    };
+    let (posture, fallback) = match crate::policy::PolicyPosture::resolve(inputs) {
+        Ok(posture) => (posture, None),
+        Err(refusal) if resuming => {
+            let fallback = crate::policy::PolicyPosture::resume_fallback(inputs, refusal);
+            error!(
+                %refusal,
+                posture = ?fallback.posture,
+                remote_unbound = fallback.remote_dropped,
+                "resumed across an upgrade with a configuration a cold start refuses; \
+                 kept every pane and left the remote entry points unbound; fix the \
+                 configuration, then `phux upgrade` again to bind them"
+            );
+            (fallback.posture, Some(fallback))
+        }
+        Err(refusal) => return Err(refusal.into()),
+    };
     let engine = posture_policy_engine(cfg, posture)?;
-    Ok((posture, engine))
+    Ok((posture, engine, fallback))
 }
 
-/// The engine the posture calls for, or `None` when the state's default
-/// ([`crate::policy::PermissivePolicy`]) already is it or the embedder
-/// injected one through [`ServerConfig::policy_engine`].
+/// Report each remote listener a resume left unbound for its posture in
+/// `GET_STATE`, so `phux doctor` and `phux pair` name the cause.
+fn record_refused_listeners(
+    state: &SharedState,
+    refused: &[(RemoteListenerTransport, SocketAddr)],
+) {
+    state.with_mut(|s| {
+        for &(transport, addr) in refused {
+            s.record_remote_listener(RemoteListenerSlot::disabled(
+                transport,
+                Some(addr.to_string()),
+                ListenerDisabledReason::PolicyModeRefused,
+            ));
+        }
+    });
+}
+
+/// The engine the posture calls for, or `None` when the embedder injected
+/// one through [`ServerConfig::policy_engine`].
 ///
 /// `paired` loads the workload authority here, before anything binds, so
 /// missing, malformed, or unsafe material refuses to start
@@ -1020,8 +1094,9 @@ fn posture_policy_engine(
         return Ok(None);
     }
     let engine: std::sync::Arc<dyn crate::policy::PolicyEngine> = match posture {
-        PolicyPosture::Transitional { .. } => return Ok(None),
-        PolicyPosture::Local => std::sync::Arc::new(ScopedPolicy::local()),
+        PolicyPosture::Local | PolicyPosture::Embedded => {
+            std::sync::Arc::new(ScopedPolicy::local())
+        }
         PolicyPosture::Paired => {
             let authority = workload_auth::WorkloadAuth::configured(&cfg.env)
                 .map_err(ServerError::PolicyMaterial)?;
@@ -1032,9 +1107,9 @@ fn posture_policy_engine(
 }
 
 /// Whether a remote entry point is configured: a WebSocket, QUIC, or
-/// WebTransport listener (flag or environment) or a relay connector. The
-/// `local` posture refuses to start beside one, and the transitional posture
-/// warns about it (`docs/spec/workload-auth.md` §8).
+/// WebTransport listener (flag or environment) or a relay connector. With no
+/// mode, or `local`, the server refuses to start beside one
+/// (`docs/spec/workload-auth.md` §8).
 const fn remote_listener_configured(
     ws_addr: Option<SocketAddr>,
     quic_addr: Option<SocketAddr>,
@@ -1057,30 +1132,32 @@ fn install_policy_posture(
             s.set_policy_engine(engine);
         }
     });
-    if posture.warns_remote_owner_grant() {
-        warn!(
-            target: crate::policy::POLICY_TARGET,
-            "no [policy] mode is configured and a remote listener or relay connector is: \
-             remote consumers hold the owner's full grant (transitional posture, \
-             docs/spec/workload-auth.md section 8); set [policy] mode = \"paired\" to \
-             require enrolled workload certificates and enforce their scope ceilings"
-        );
-    }
 }
 
 /// Whether the auto-bound overlay listener may run: some overlay port is
 /// unclaimed, its gate is open, and the posture admits a remote door, which
 /// `[policy] mode = "local"` never does (`docs/spec/workload-auth.md` §8).
-fn auto_overlay_allowed(ports: AutoOverlayPorts, state: &SharedState) -> bool {
-    let local_only = state
-        .with(crate::state::ServerState::policy_posture)
-        .is_local();
-    ports.any()
-        && !local_only
+///
+/// With no mode set (`mode_unset`) the server is `local` too; where the
+/// overlay listener would otherwise have bound, that is said once at info,
+/// since such a host served it with no configuration before ADR-0179.
+fn auto_overlay_allowed(ports: AutoOverlayPorts, state: &SharedState, mode_unset: bool) -> bool {
+    let gate_open = ports.any()
         && auto_overlay_gate_open(
             state.with(|s| s.server_env().no_auto_listen),
             phux_config::instance::is_default_profile(),
-        )
+        );
+    let local_only = state
+        .with(crate::state::ServerState::policy_posture)
+        .is_local();
+    if gate_open && local_only && mode_unset {
+        info!(
+            "overlay listener not bound: no [policy] mode is set, so the server admits its \
+             owner socket only; set [policy] mode = \"paired\" in config.toml to serve \
+             enrolled clients over an overlay network"
+        );
+    }
+    gate_open && !local_only
 }
 
 /// Fold the external shutdown future into the root token. `spawn_local` (not
@@ -1595,17 +1672,6 @@ async fn serve_auto_overlay_listeners(
         debug!("no auto-bound overlay listener; nothing detected or nothing to bind");
         root_token.cancelled().await;
         return Ok(());
-    }
-    if state
-        .with(crate::state::ServerState::policy_posture)
-        .is_transitional()
-    {
-        warn!(
-            target: crate::policy::POLICY_TARGET,
-            "an overlay listener bound with no [policy] mode configured: remote consumers \
-             hold the owner's full grant (transitional posture, docs/spec/workload-auth.md \
-             section 8); set [policy] mode = \"paired\" to enforce workload scopes"
-        );
     }
 
     drive_accept_loops(accepts, &root_token).await
@@ -2228,6 +2294,121 @@ mod tests {
                 assert!(
                     connected,
                     "a successful resume must accept on the adopted listener"
+                );
+                let _ = shutdown_tx.send(());
+                server
+                    .await
+                    .expect("server task")
+                    .expect("resumed server shuts down cleanly");
+            })
+            .await;
+    }
+
+    /// A mode beside an embedder's engine (ADR-0072) sets the posture, and
+    /// the injected engine still decides every HELLO: `paired` loads no
+    /// workload authority of its own and `local` does not replace it.
+    #[test]
+    fn an_injected_engine_survives_either_mode() {
+        for mode in [
+            phux_config::PolicyMode::Paired,
+            phux_config::PolicyMode::Local,
+        ] {
+            let injected: std::sync::Arc<dyn crate::policy::PolicyEngine> =
+                std::sync::Arc::new(crate::policy::OwnerForAll);
+            let cfg = ServerConfig {
+                policy_engine: Some(injected.clone()),
+                policy_mode: Some(mode),
+                ..ServerConfig::with_default_socket()
+            };
+            let (posture, engine, fallback) =
+                startup_policy(&cfg, false, false).expect("a mode with no listener starts");
+            assert!(engine.is_none(), "{mode:?}: no posture engine replaces it");
+            assert!(fallback.is_none());
+            let state = SharedState::new();
+            mirror_config_into_state(&cfg, &cfg.socket_path, &state);
+            install_policy_posture(&state, posture, engine);
+            let live = state.with(|s| s.policy_engine().clone());
+            assert!(
+                std::ptr::addr_eq(
+                    std::sync::Arc::as_ptr(&live),
+                    std::sync::Arc::as_ptr(&injected)
+                ),
+                "{mode:?}: the injected engine authorizes"
+            );
+            assert_eq!(
+                state.with(crate::state::ServerState::policy_posture),
+                match mode {
+                    phux_config::PolicyMode::Paired => crate::policy::PolicyPosture::Paired,
+                    phux_config::PolicyMode::Local => crate::policy::PolicyPosture::Local,
+                }
+            );
+        }
+    }
+
+    /// An upgrade into a posture a cold start refuses (no mode beside a
+    /// remote listener, ADR-0179) keeps serving the adopted socket, binds no
+    /// remote listener, and reports why in `GET_STATE`; the same
+    /// configuration cold refuses to start.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refused_posture_on_resume_keeps_the_panes_and_drops_the_remote_door() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let quic: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+                let dir = tempfile::tempdir().expect("tempdir");
+                let cold = ServerConfig {
+                    socket_path: dir.path().join("cold.sock"),
+                    ..ServerConfig::with_default_socket()
+                };
+                let refused = ServerRuntime::new(cold)
+                    .listen_quic(quic)
+                    .overlay_detect(Vec::new)
+                    .run_async(std::future::pending())
+                    .await
+                    .expect_err("a cold start refuses no mode beside a listener");
+                assert!(
+                    matches!(
+                        refused,
+                        ServerError::Policy(crate::policy::PostureError::UnsetWithRemoteListener)
+                    ),
+                    "{refused:?}"
+                );
+
+                let (path, listener_fd) = bind_resume_listener(&dir);
+                let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
+                let resume_fd = write_resume_fd(&blob);
+                let cfg = ServerConfig {
+                    socket_path: path.clone(),
+                    ..ServerConfig::with_default_socket()
+                };
+                let (report_tx, report_rx) = tokio::sync::oneshot::channel();
+                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+                let server = tokio::task::spawn_local(async move {
+                    ServerRuntime::new(cfg)
+                        .resume(resume_fd)
+                        .listen_quic(quic)
+                        .overlay_detect(Vec::new)
+                        .on_listening(move |report| {
+                            let _ = report_tx.send(report.clone());
+                        })
+                        .run_async(async move {
+                            let _ = shutdown_rx.await;
+                        })
+                        .await
+                });
+
+                let report = report_rx.await.expect("the resumed server reports");
+                assert_eq!(
+                    report.listeners,
+                    vec![RemoteListenerSlot::disabled(
+                        RemoteListenerTransport::Quic,
+                        Some(quic.to_string()),
+                        ListenerDisabledReason::PolicyModeRefused,
+                    )],
+                );
+                assert!(
+                    tokio::net::UnixStream::connect(&path).await.is_ok(),
+                    "the resumed server serves the adopted socket"
                 );
                 let _ = shutdown_tx.send(());
                 server

@@ -66,7 +66,12 @@ reach it. A blank canvas is not proof of a server failure: first check that
 the generated JS/WASM assets loaded, then inspect the browser console and the
 server output for transport or handshake errors. Confirm the client and server
 come from compatible revisions before changing authentication or certificates.
-Keep this plain-WebSocket development listener on loopback.
+Keep this plain-WebSocket development listener on loopback. The demo server
+is an embedder that grants every connection the owner's authority; `phux
+server` itself has no such mode: it serves a remote listener only under
+`[policy] mode = "paired"`, which admits a browser only over WSS with a
+client certificate installed in the browser
+([ADR-0179](../adr/0179-the-legacy-auth-paths-are-removed.md)).
 
 **Serve the page from a loopback origin** (`http://127.0.0.1:…` or
 `http://localhost:…`; Trunk's default is one). The loopback listener refuses
@@ -79,11 +84,15 @@ name is refused: the console shows `Unexpected response code: 403` and
 that exact origin in the server's `PHUX_WS_ALLOWED_ORIGINS` when you trust
 it; a browser on another machine belongs on the TLS + token listener.
 
-For the WebTransport path, run a real server with a WebTransport listener and
-hand the client both URLs (it tries WebTransport, then falls back):
+For the WebTransport path, run the demo server with a WebTransport listener
+as well and hand the client both URLs (it tries WebTransport, then falls
+back). A `paired` `phux server` refuses a browser's WebTransport session: the
+browser cannot run the end-to-end session that carries a certificate
+([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
 
 ```sh
-phux server --webtransport 127.0.0.1:4433 --listen 127.0.0.1:8787
+PHUX_WT_ADDR=127.0.0.1:4433 PHUX_WS_ADDR=127.0.0.1:8787 \
+  cargo run -p phux-server --example ws_demo_server
 # then: start_webtransport("https://127.0.0.1:4433/session",
 #                          "ws://127.0.0.1:8787/", canvasId, cols, rows)
 # or load the Trunk page with ?wt=https%3A%2F%2F127.0.0.1%3A4433%2Fsession

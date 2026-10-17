@@ -23,7 +23,7 @@ pub mod window;
 pub mod ws;
 
 pub use quic::QuicDial;
-pub use tls::{AuthorityChange, AuthorityLearner, CertTrust, HeldIdentity, TlsClientIdentity};
+pub use tls::{AuthorityChange, CertTrust, HeldIdentity, TlsClientIdentity};
 pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
 

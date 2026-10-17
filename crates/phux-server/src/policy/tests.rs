@@ -39,7 +39,8 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::SessionSnapshot;
 
 use super::{
-    Authority, ConnectionGrant, PolicyPosture, PostureError, Request, ScopedPolicy, enforce,
+    Authority, ConnectionGrant, PolicyPosture, PostureError, PostureInputs, Request, ScopedPolicy,
+    enforce,
 };
 use crate::auth::AuthenticatedCredential;
 use crate::state::{ClientId, ServerState};
@@ -1897,91 +1898,153 @@ fn paired_mode_without_registry_denies_everything() {
 }
 
 #[test]
-fn posture_follows_the_mode_the_environment_and_the_listeners() {
+fn posture_follows_the_mode_and_the_listeners() {
     use phux_config::PolicyMode::{Local, Paired};
-    // (mode, PHUX_WORKLOAD_MTLS, remote listener, workload location named)
+    // (mode, remote listener, workload location named, embedder engine)
     let cases = [
+        // No mode and nothing past the owner's socket is `local`.
+        (None, false, false, false, Ok(PolicyPosture::Local)),
+        // No mode beside a remote door is refused, never an owner grant for
+        // whoever reaches it (ADR-0179).
         (
             None,
-            false,
-            false,
-            false,
-            Ok(PolicyPosture::Transitional {
-                remote_listener: false,
-            }),
-        ),
-        (
-            None,
-            false,
             true,
             false,
-            Ok(PolicyPosture::Transitional {
-                remote_listener: true,
-            }),
+            false,
+            Err(PostureError::UnsetWithRemoteListener),
         ),
-        (None, true, true, false, Ok(PolicyPosture::Paired)),
-        (None, true, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Paired), true, false, false, Ok(PolicyPosture::Paired)),
         (Some(Paired), false, true, false, Ok(PolicyPosture::Paired)),
-        (Some(Paired), false, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Paired), true, false, true, Ok(PolicyPosture::Paired)),
         (Some(Local), false, false, false, Ok(PolicyPosture::Local)),
-        (Some(Local), false, false, true, Ok(PolicyPosture::Local)),
+        (Some(Local), false, true, false, Ok(PolicyPosture::Local)),
         (
             Some(Local),
             true,
             false,
-            false,
-            Err(PostureError::LocalWithWorkloadMtls),
-        ),
-        (
-            Some(Local),
-            false,
-            true,
             false,
             Err(PostureError::LocalWithRemoteListener),
         ),
-        // A named CA or registry location with no mode never falls back to
-        // the owner's grant (workload-auth §8): with or without a listener.
+        (
+            Some(Local),
+            true,
+            false,
+            true,
+            Err(PostureError::LocalWithRemoteListener),
+        ),
+        // A named CA or registry location with no mode is refused, with or
+        // without a listener (workload-auth §8).
         (
             None,
             false,
-            false,
             true,
+            false,
             Err(PostureError::UnsetWithWorkloadAuthority),
         ),
         (
             None,
+            true,
+            true,
             false,
-            true,
-            true,
             Err(PostureError::UnsetWithWorkloadAuthority),
         ),
+        // An embedder's own engine with no mode owns the decision.
+        (None, true, false, true, Ok(PolicyPosture::Embedded)),
+        (None, false, true, true, Ok(PolicyPosture::Embedded)),
+        // A mode wins over an embedder's engine: the posture follows the
+        // mode, and the runtime keeps the injected engine authorizing.
+        (Some(Paired), false, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Local), false, false, true, Ok(PolicyPosture::Local)),
     ];
-    for (mode, env, remote, located, want) in cases {
+    for (mode, remote, located, embedded, want) in cases {
+        let inputs = PostureInputs {
+            mode,
+            retired_workload_mtls_env: false,
+            remote_listener: remote,
+            workload_authority_configured: located,
+            embedder_engine: embedded,
+        };
         assert_eq!(
-            PolicyPosture::resolve(mode, env, remote, located),
+            PolicyPosture::resolve(inputs),
             want,
-            "{mode:?} env={env} remote={remote} located={located}"
+            "{mode:?} remote={remote} located={located} embedded={embedded}"
         );
     }
-    let message = PostureError::UnsetWithWorkloadAuthority.to_string();
-    assert!(
-        message.contains("PHUX_WORKLOAD_KEYS") && message.contains("mode = \"paired\""),
-        "the refusal names the setting and the remedy: {message}"
-    );
-    assert!(
-        PolicyPosture::Transitional {
-            remote_listener: true
-        }
-        .warns_remote_owner_grant()
-    );
-    assert!(
-        !PolicyPosture::Transitional {
-            remote_listener: false
-        }
-        .warns_remote_owner_grant()
-    );
+    for message in [
+        PostureError::UnsetWithWorkloadAuthority.to_string(),
+        PostureError::UnsetWithRemoteListener.to_string(),
+        PostureError::RetiredWorkloadMtlsEnv.to_string(),
+    ] {
+        assert!(
+            message.contains("mode = \"paired\""),
+            "the refusal names the remedy: {message}"
+        );
+    }
     assert!(PolicyPosture::Paired.requires_workload_mtls());
     assert!(!PolicyPosture::Local.requires_workload_mtls());
+    assert!(!PolicyPosture::Embedded.requires_workload_mtls());
+    assert!(!PolicyPosture::Embedded.is_local());
+}
+
+/// A resumed image never exits on its posture (ADR-0032): the retired
+/// variable is ignored when the rest resolves, and anything else still
+/// refused runs `local` with the remote entry points unbound.
+#[test]
+fn a_resume_falls_back_instead_of_refusing() {
+    use phux_config::PolicyMode::{Local, Paired};
+    // (mode, retired env, remote listener, workload location) -> (posture, dropped)
+    let cases = [
+        (None, false, true, false, PolicyPosture::Local, true),
+        (None, true, true, false, PolicyPosture::Local, true),
+        (
+            Some(Paired),
+            true,
+            true,
+            false,
+            PolicyPosture::Paired,
+            false,
+        ),
+        (Some(Local), true, false, false, PolicyPosture::Local, false),
+        (Some(Local), false, true, false, PolicyPosture::Local, true),
+        (None, false, false, true, PolicyPosture::Local, false),
+        (None, true, false, false, PolicyPosture::Local, false),
+    ];
+    for (mode, retired, remote, located, posture, dropped) in cases {
+        let inputs = PostureInputs {
+            mode,
+            retired_workload_mtls_env: retired,
+            remote_listener: remote,
+            workload_authority_configured: located,
+            embedder_engine: false,
+        };
+        let refusal = PolicyPosture::resolve(inputs).expect_err("a cold start refuses");
+        let fallback = PolicyPosture::resume_fallback(inputs, refusal);
+        assert_eq!(
+            (fallback.posture, fallback.remote_dropped, fallback.refusal),
+            (posture, dropped, refusal),
+            "{mode:?} retired={retired} remote={remote} located={located}"
+        );
+    }
+}
+
+#[test]
+fn retired_workload_mtls_variable_refuses_every_mode() {
+    use phux_config::PolicyMode::{Local, Paired};
+    for mode in [None, Some(Local), Some(Paired)] {
+        for embedder_engine in [false, true] {
+            let inputs = PostureInputs {
+                mode,
+                retired_workload_mtls_env: true,
+                embedder_engine,
+                ..PostureInputs::default()
+            };
+            assert_eq!(
+                PolicyPosture::resolve(inputs),
+                Err(PostureError::RetiredWorkloadMtlsEnv),
+                "{mode:?} embedded={embedder_engine}"
+            );
+        }
+    }
 }
 
 #[test]

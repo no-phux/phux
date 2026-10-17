@@ -14,6 +14,7 @@ homegrown crypto or new wire frames: auth and encryption stay transport concerns
 
 Status: Accepted
 Date: 2026-06-09
+Superseded in part by [ADR-0179](./0179-the-legacy-auth-paths-are-removed.md): legacy store migration retired; `phux pair --migrate-legacy` is gone and a store of anonymous lines is refused.
 
 ## Context
 

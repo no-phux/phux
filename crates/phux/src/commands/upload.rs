@@ -198,7 +198,7 @@ fn managed_target(dial: Dial) -> Target {
             if let Some(inner) = quic.inner {
                 target.authority.route = Some(inner.server_name);
                 target.client_identity = inner.identity;
-                if let CertTrust::Authority { ca, .. } = inner.trust {
+                if let CertTrust::Authority { ca } = inner.trust {
                     target.authority.ca = Some(ca);
                 }
             }
@@ -208,12 +208,7 @@ fn managed_target(dial: Dial) -> Target {
     match trust {
         CertTrust::SkipVerify => {}
         CertTrust::Pinned(leaf) => target.cert_fingerprint = Some(leaf),
-        CertTrust::PinnedLearning { leaf, learn } => {
-            target.cert_fingerprint = Some(leaf);
-            target.authority.learner = Some(learn);
-        }
-        CertTrust::Authority { ca, leaf } => {
-            target.cert_fingerprint = leaf;
+        CertTrust::Authority { ca } => {
             target.authority = AuthorityPin {
                 ca: Some(ca),
                 ..target.authority
@@ -237,18 +232,10 @@ mod tests {
             managed_target(Dial::uds(std::path::Path::new("/tmp/private.sock"))),
             Target::uds("/tmp/private.sock")
         );
-        let learner = phux_dial::AuthorityLearner::new(|_| {});
         for trust in [
             CertTrust::SkipVerify,
             CertTrust::Pinned("leaf".into()),
-            CertTrust::PinnedLearning {
-                leaf: "leaf".into(),
-                learn: learner.clone(),
-            },
-            CertTrust::Authority {
-                ca: "ca".into(),
-                leaf: Some("leaf".into()),
-            },
+            CertTrust::Authority { ca: "ca".into() },
         ] {
             let target = managed_target(Dial::Ws(WsDial {
                 url: "wss://host:8787".into(),
@@ -265,9 +252,6 @@ mod tests {
                 CertTrust::Pinned(_) => {
                     assert_eq!(target.cert_fingerprint.as_deref(), Some("leaf"));
                 }
-                CertTrust::PinnedLearning { .. } => {
-                    assert_eq!(target.authority.learner, Some(learner.clone()));
-                }
                 CertTrust::Authority { .. } => {
                     assert_eq!(target.authority.ca.as_deref(), Some("ca"));
                 }
@@ -282,7 +266,6 @@ mod tests {
             inner: Some(phux_dial::quic::InnerTls {
                 trust: CertTrust::Authority {
                     ca: "server-ca".into(),
-                    leaf: None,
                 },
                 identity: TlsClientIdentity::None,
                 server_name: "server-route".into(),

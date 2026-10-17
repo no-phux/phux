@@ -676,8 +676,8 @@ pub struct ThemeCfg {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PolicyCfg {
-    /// Unset keeps the transitional posture: every admitted connection holds
-    /// the owner's grant, and a remote listener logs a warning.
+    /// Unset is `local`, and a configured remote entry point or workload
+    /// authority location then refuses to start (ADR-0179).
     pub mode: Option<PolicyMode>,
 }
 
