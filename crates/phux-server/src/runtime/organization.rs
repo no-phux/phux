@@ -1439,6 +1439,75 @@ mod tests {
         });
     }
 
+    /// A `resource:` grant names the record, not an activation: it admits
+    /// the relaunch of a dormant record and the live handle that relaunch
+    /// starts, which no `terminal:` id could have named in advance.
+    #[test]
+    fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
+        use phux_protocol::scope::TerminalScopeSet;
+        use phux_protocol::wire::frame::LaunchMode;
+
+        run(async {
+            let state = SharedState::new();
+            let root = CancellationToken::new();
+            let (session, _) = state.with_mut(|s| s.seed_session("work"));
+            let session = state
+                .with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
+            let create = Command::ResourceCreate {
+                operation: op(1),
+                session,
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                launch: Some(Box::new(LaunchSpec::new(vec!["sh".to_owned()]))),
+                name: None,
+                on_exit: phux_protocol::wire::frame::ExitPolicy::Remove,
+                launch_mode: LaunchMode::Deferred,
+            };
+            let resource = committed(handle(&state, CLIENT, create, &root))
+                .resource
+                .expect("a record");
+            let grant = crate::policy::ConnectionGrant::scoped(
+                TerminalScopeSet::parse_all(&[&format!("*@resource:{resource}")]).unwrap(),
+                Some("sha256:test".to_owned()),
+            )
+            .unwrap();
+            let allowed = |s: &crate::state::ServerState, command: &Command| {
+                crate::policy::enforce(s, CLIENT, &grant, crate::policy::Request::Command(command))
+                    .is_ok()
+            };
+            let record = page(&state, OrgFilter::Session(session))
+                .resources
+                .into_iter()
+                .find(|r| r.key == resource)
+                .expect("listed");
+            let relaunch = Command::ResourceRelaunch {
+                operation: op(2),
+                resource,
+                expected: record.revision,
+            };
+            assert!(state.with(|s| allowed(s, &relaunch)));
+            assert!(matches!(
+                handle(&state, CLIENT, relaunch, &root),
+                CommandResult::Accepted { .. }
+            ));
+            let (live, other) = state.with_mut(|s| {
+                let key = phux_core::ResourceKey::from_bytes(*resource.as_bytes());
+                let id = s.registry().resource_id(&key).unwrap();
+                let (_, sibling) = s.seed_session("elsewhere");
+                (s.intern_terminal_wire(id), s.intern_terminal_wire(sibling))
+            });
+            let screen = |terminal_id| Command::GetScreen {
+                terminal_id,
+                request_scrollback: None,
+                cells: false,
+                format: 0,
+            };
+            state.with(|s| {
+                assert!(allowed(s, &screen(live)), "the new activation's handle");
+                assert!(!allowed(s, &screen(other)), "another record's handle");
+            });
+        });
+    }
+
     #[test]
     fn arrangements_read_and_replace_by_revision() {
         run(async {

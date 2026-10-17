@@ -917,8 +917,11 @@ version mismatch before admission; no client certificate; unknown, expired,
 or non-chaining certificate; downgrade (paired client against a listener
 that does not request certificates); unknown credential id; empty or
 over-ceiling grant; unknown verb/selector; duplicate, unsorted, truncated,
-overlong, or trailing scope encoding; and revoked/expired authority at
-admission and while live. Enrollment cases (§8.2): a consumed, expired, or
+overlong, or trailing scope encoding; an all-zero `SESSION` or `RESOURCE`
+key; an uppercase or shortened-prefix key spelling; a persisted registry
+record accepting `session:<key>` and `resource:<key>` but refusing `group:`
+and `terminal:`; a key no live record carries matching nothing; and
+revoked/expired authority at admission and while live. Enrollment cases (§8.2): a consumed, expired, or
 unknown ticket; one ticket raced by two keys; a malformed request leaving the
 ticket unspent; an issued chain presented with another key; and a
 certificate-less terminal connection on a listener that serves enrollment.
