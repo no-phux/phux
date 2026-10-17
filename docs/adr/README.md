@@ -197,7 +197,7 @@ column is the base status word plus at most one relationship clause, about
 | [0163](./0163-actors-and-delegated-agent-grants.md) | Actors and delegated agent grants | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0164](./0164-pair-links-name-the-magicdns-host.md) | Pair links name the host's MagicDNS name | Accepted (builds on [0141](./0141-pair-mints-only-against-a-live-listener.md), [0091](./0091-certificate-names-the-advertised-address.md)) |
 | [0165](./0165-gpui-desktop-replaces-the-solid-host.md) | GPUI desktop replaces the Solid host | Accepted (supersedes [0139](./0139-solid-desktop-over-native-runtime-views.md)) |
-| [0166](./0166-usage-collection-is-a-supervised-child.md) | Optional usage is a supervised collector child | Proposed |
+| [0166](./0166-usage-collection-is-a-supervised-child.md) | Optional usage is a supervised collector child | Proposed (superseded in part by [0177](./0177-non-terminal-resources-come-from-providers.md)) |
 | [0167](./0167-cockpit-is-frozen.md) | The Zig Cockpit is frozen | Superseded by [0169](./0169-zig-cockpit-lives-in-an-archive.md) |
 | [0168](./0168-project-identity-is-a-session-attribute.md) | Project identity is a session attribute keyed by remote | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md)) |
 | [0169](./0169-zig-cockpit-lives-in-an-archive.md) | Zig Cockpit lives in an archive, not main | Accepted (supersedes [0167](./0167-cockpit-is-frozen.md), [0138](./0138-cockpit-rides-the-next-channel.md)) |
@@ -208,6 +208,7 @@ column is the base status word plus at most one relationship clause, about
 | [0174](./0174-organize-asks-a-judge-and-code-decides.md) | Organize asks a judge; code decides | Accepted (builds on [0160](./0160-sessions-own-resources-and-window-is-retired.md), [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md), [0168](./0168-project-identity-is-a-session-attribute.md)) |
 | [0175](./0175-one-release-manifest-per-channel.md) | One release manifest per channel, and Desktop updates on restart | Accepted (superseded in part by [0176](./0176-the-release-pipeline.md)) |
 | [0176](./0176-the-release-pipeline.md) | The release pipeline | Accepted (supersedes [0113](./0113-next-release-channel.md); supersedes in part [0074](./0074-self-update-trust-boundary.md), [0175](./0175-one-release-manifest-per-channel.md)) |
+| [0177](./0177-non-terminal-resources-come-from-providers.md) | Non-terminal resources come from providers; usage is the first feed | Proposed (supersedes in part [0166](./0166-usage-collection-is-a-supervised-child.md); builds on [0102](./0102-resources-the-server-serves-kinds.md), [0162](./0162-organization-records-persist-and-activations-reconcile.md), [0163](./0163-actors-and-delegated-agent-grants.md)) |
 
 ## When to write an ADR
 

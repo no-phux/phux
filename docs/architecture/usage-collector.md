@@ -18,6 +18,12 @@ a collector, reads a usage snapshot, or defines `[usage]`. Three
 choices are still open for Patrick; they are the Open decisions
 section of that ADR. The answers below are the draft.
 
+[ADR-0177](../adr/0177-non-terminal-resources-come-from-providers.md),
+also Proposed, would replace this page's Lifecycle, Delivery, and
+"Who can see the reading" sections: the collector becomes the usage
+feed's provider. Its other sections carry over;
+[resource-providers.md](./resource-providers.md) lists what changes.
+
 ## Ownership
 
 | Fact | Owner |

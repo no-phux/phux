@@ -14,6 +14,7 @@ its history store and UI are not.
 
 Status: Proposed
 Date: 2026-10-13
+Superseded in part by [ADR-0177](./0177-non-terminal-resources-come-from-providers.md): Decision §2 lifecycle, §5 delivery, and Open decision 2.
 
 ## Context
 
