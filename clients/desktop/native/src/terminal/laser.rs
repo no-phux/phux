@@ -104,11 +104,11 @@ impl Laser {
         let head = cell(beam.to);
         // The tail chases the head, fast at first, then lands with it.
         let tail = lerp(cell(beam.from), head, 1. - (1. - t).powi(3));
-        let (dx, dy) = (
-            f32::from(head.center().x - tail.center().x),
-            f32::from(head.center().y - tail.center().y),
-        );
-        let angle = dx.atan2(-dy).to_degrees().rem_euclid(360.);
+        let d = head.center() - tail.center();
+        let angle = f32::from(d.x)
+            .atan2(-f32::from(d.y))
+            .to_degrees()
+            .rem_euclid(360.);
         Some((hull(tail, head), 1. - t * t, angle))
     }
 }
@@ -140,12 +140,12 @@ fn hull(a: Bounds<Pixels>, b: Bounds<Pixels>) -> Vec<Point<Pixels>> {
     ] {
         let (p, q) = (a.corner(corner), b.corner(corner));
         let out = |p: Point<Pixels>| (sx * f32::from(p.x), sy * f32::from(p.y));
-        let ((px, py), (qx, qy)) = (out(p), out(q));
-        if px >= qx && py >= qy {
+        let ((ax, ay), (bx, by)) = (out(p), out(q));
+        if ax >= bx && ay >= by {
             outline.push(p);
-        } else if qx >= px && qy >= py {
+        } else if bx >= ax && by >= ay {
             outline.push(q);
-        } else if x_first == (px > qx) {
+        } else if x_first == (ax > bx) {
             outline.extend([p, q]);
         } else {
             outline.extend([q, p]);
