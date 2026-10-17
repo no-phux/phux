@@ -49,13 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Shared lane setup. This builds integration tests in the test
-      # profile, so it restores ci.yml's `test-integration` dependency cache
+      # profile, so it restores ci.yml's `test` build dependency cache
       # instead of writing another copy.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          cache-lane: test-integration
+          cache-lane: test
           build-cache: deps
       # Timed + junit-instrumented like ci.yml's lanes (ADR-0082): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
