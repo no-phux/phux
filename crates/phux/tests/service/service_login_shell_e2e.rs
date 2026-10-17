@@ -36,33 +36,21 @@ const RESULT_DEADLINE: Duration = Duration::from_secs(20);
 /// Poll cadence for every wait loop in this file.
 const POLL: Duration = Duration::from_millis(50);
 
-/// A running `phux server` child plus its private socket.
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+/// Start `phux server` from a cleared environment: only `HOME` (the fixture)
+/// and launchd's default `PATH`, so nothing from the test's own (often
+/// `nix develop`) shell leaks in. `service_managed` stamps
+/// [`SERVICE_MANAGED_ENV`] exactly as `phux service install` would.
+fn start_server(home: &Path, seed_command: &str, service_managed: bool) -> common::ServerGuard {
+    let mut spawn = common::ServerGuard::builder("login")
+        .session("svc")
+        .seed_command(seed_command)
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", LAUNCHD_DEFAULT_PATH);
+    if service_managed {
+        spawn = spawn.env(SERVICE_MANAGED_ENV, "1");
     }
-}
-
-impl ServerGuard {
-    /// Start `phux server` from a cleared environment: only `HOME` (the fixture)
-    /// and launchd's default `PATH`, so nothing from the test's own (often
-    /// `nix develop`) shell leaks in. `service_managed` stamps
-    /// [`SERVICE_MANAGED_ENV`] exactly as `phux service install` would.
-    fn start(home: &Path, seed_command: &str, service_managed: bool) -> Self {
-        let mut spawn = common::ServerGuard::builder("login")
-            .session("svc")
-            .seed_command(seed_command)
-            .env_clear()
-            .env("HOME", home)
-            .env("PATH", LAUNCHD_DEFAULT_PATH);
-        if service_managed {
-            spawn = spawn.env(SERVICE_MANAGED_ENV, "1");
-        }
-        Self(spawn.start())
-    }
+    spawn.start()
 }
 
 /// A fixture `$HOME` whose `~/.profile` prepends `$HOME/bin` (holding an
@@ -137,7 +125,7 @@ fn service_managed_pane_resolves_a_profile_provided_command() {
     let result_path = home.path().join("result");
     let seed = seed_command(&result_path);
 
-    let _server = ServerGuard::start(home.path(), &seed, true);
+    let _server = start_server(home.path(), &seed, true);
 
     let contents = read_result_file(&result_path, RESULT_DEADLINE);
     let pane_path = contents.lines().next().unwrap_or_default().to_owned();
@@ -253,7 +241,7 @@ fn ordinary_pane_does_not_source_the_profile_twice() {
     let result_path = home.path().join("result");
     let seed = seed_command(&result_path);
 
-    let _server = ServerGuard::start(home.path(), &seed, false);
+    let _server = start_server(home.path(), &seed, false);
 
     let contents = read_result_file(&result_path, RESULT_DEADLINE);
     let pane_path = contents.lines().next().unwrap_or_default().to_owned();
