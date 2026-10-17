@@ -93,7 +93,7 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .find(|c| c.hit == Some(CellHit::Window(0)))
         .and_then(|c| c.style.as_ref())
         .expect("inactive tab styled");
-    assert_eq!(inactive.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(inactive.fg.as_deref(), Some("theme.dim"));
     assert_eq!(inactive.bg, None);
 
     let active = row
@@ -101,8 +101,8 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .find(|c| c.hit == Some(CellHit::Window(1)))
         .and_then(|c| c.style.as_ref())
         .expect("active tab styled");
-    assert_eq!(active.fg.as_deref(), Some("#bef264"));
-    assert_eq!(active.bg.as_deref(), Some("#293628"));
+    assert_eq!(active.fg.as_deref(), Some("theme.accent"));
+    assert_eq!(active.bg.as_deref(), Some("theme.selection_bg"));
     assert!(active.bold);
 
     let index = row
@@ -110,15 +110,23 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .find(|c| c.hit == Some(CellHit::Window(1)) && c.text.first() == Some(&'1'))
         .and_then(|c| c.style.as_ref())
         .expect("active index styled");
-    assert_eq!(index.fg.as_deref(), Some("#7c8696"), "the index recedes");
-    assert_eq!(index.bg.as_deref(), Some("#293628"), "but keeps the bed");
+    assert_eq!(
+        index.fg.as_deref(),
+        Some("theme.border"),
+        "the index recedes"
+    );
+    assert_eq!(
+        index.bg.as_deref(),
+        Some("theme.selection_bg"),
+        "but keeps the bed"
+    );
 
     let session = row
         .iter()
         .find(|c| c.hit.is_none() && c.text.first() == Some(&'p'))
         .and_then(|c| c.style.as_ref())
         .expect("session name styled");
-    assert_eq!(session.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(session.fg.as_deref(), Some("theme.dim"));
     assert_eq!(session.bg, None);
 
     let clock = row
@@ -126,7 +134,7 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .find(|c| c.hit.is_none() && c.text.first() == Some(&':'))
         .and_then(|c| c.style.as_ref())
         .expect("clock styled");
-    assert_eq!(clock.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(clock.fg.as_deref(), Some("theme.dim"));
     assert_eq!(clock.bg, None);
 }
 

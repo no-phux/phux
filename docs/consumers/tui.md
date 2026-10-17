@@ -350,6 +350,16 @@ shape at 64 columns: session name and clock give way to a clickable
 adds its host to the supervisory badge (`devbox`, or `devbox down` while
 that satellite is unreachable).
 
+Any widget colour may name a theme slot as `theme.<slot>` (for example
+`fg = "theme.accent"`; the slots are listed under [Theme](#theme)). The
+shipped bar spells its tabs, buttons, session name, and clock that way, so a
+`[theme]` name, file, or override recolours the bar with the rest of the
+chrome. An unknown slot falls back to the terminal default, like an
+unparseable colour. The bar's own chips take theme slots too: the
+supervisory badge rides `accent`, an info notice the `selection_fg` on
+`selection_bg` pair, and a warning notice and the config-error line
+`selection_fg` on `error`.
+
 ### Spacer
 
 A `spacer` widget has no content and absorbs leftover columns. Slack is

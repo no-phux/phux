@@ -173,9 +173,7 @@ impl TuiSettings {
         let mut status_bar = StatusBarPainter::error_line(config_error_line(err));
         // The attention chip rides the theme even on the error
         // line, as the attach-time seed always did.
-        status_bar.set_attention_color(theme.attention);
-        status_bar.set_fill(theme.surface);
-        status_bar.set_accent_color(theme.accent);
+        status_bar.set_theme(&theme);
         Self {
             keybindings: None,
             resolver: None,
@@ -280,9 +278,7 @@ impl TuiSettings {
     /// attention chip rides the `attention` slot rather than a hardcoded SGR.
     fn with_theme(mut self, theme: Theme) -> Self {
         if let Some(sb) = self.status_bar.as_mut() {
-            sb.set_attention_color(theme.attention);
-            sb.set_fill(theme.surface);
-            sb.set_accent_color(theme.accent);
+            sb.set_theme(&theme);
         }
         self.theme = theme;
         self
