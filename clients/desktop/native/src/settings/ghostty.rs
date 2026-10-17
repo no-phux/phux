@@ -1,7 +1,9 @@
 //! Ghostty config: font, colour, padding, and keybinds mapped onto this app.
 //!
-//! Parsing is total. Unknown keys and malformed values are ignored. Later
-//! lines win. The theme file is read first so the config's own lines override it.
+//! Parsing is total. Unknown keys are ignored; a malformed line or a value a
+//! known key rejects is skipped with a [`Diagnostic`], and every other line still
+//! applies. Later lines win. The theme file is read first so the config's own
+//! lines override it. Each applied key and bind keeps the file and line that set it.
 
 use super::display::DisplayPrefs;
 use super::theme::{Theme, mix};
@@ -48,6 +50,70 @@ pub struct GhosttyConfig {
     pub globals: Vec<String>,
     /// Lines this app cannot apply.
     pub unmapped: Vec<String>,
+    /// The line that set each applied key, by Ghostty key name.
+    pub origins: HashMap<String, Origin>,
+    /// Every applied `keybind` line in config order, unbinds included. Later
+    /// entries for the same chord win; see [`super::keymap::keymap_conflicts`].
+    pub binds: Vec<Bind>,
+    /// Lines skipped because they are malformed or a known key rejects the value.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// The file and 1-based line a Ghostty value came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// Source file; `None` for text parsed without one.
+    pub file: Option<PathBuf>,
+    /// 1-based line within `file`.
+    pub line: usize,
+}
+
+impl Origin {
+    /// `~/.config/ghostty/config:12`, or `line 12` without a file.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let Some(file) = &self.file else {
+            return format!("line {}", self.line);
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let shown = home
+            .as_deref()
+            .and_then(|home| file.strip_prefix(home).ok())
+            .map(|rest| Path::new("~").join(rest))
+            .unwrap_or_else(|| file.clone());
+        format!("{}:{}", shown.display(), self.line)
+    }
+}
+
+/// One applied `keybind` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    /// Normalized chord, as in [`GhosttyConfig::keybinds`].
+    pub chord: String,
+    /// Command id. Empty unbinds.
+    pub command: String,
+    /// The line that bound it.
+    pub origin: Origin,
+}
+
+/// A line the parser skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// Where the line is.
+    pub origin: Origin,
+    /// The trimmed line.
+    pub text: String,
+    /// Why it was skipped.
+    pub reason: &'static str,
+}
+
+/// One file of Ghostty config text, in the order Ghostty reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhosttySource {
+    /// The file the text was read from; `None` for inline text.
+    pub path: Option<PathBuf>,
+    /// File contents.
+    pub text: String,
 }
 
 impl Default for GhosttyConfig {
@@ -71,101 +137,176 @@ impl Default for GhosttyConfig {
             keybinds: HashMap::new(),
             globals: Vec::new(),
             unmapped: Vec::new(),
+            origins: HashMap::new(),
+            binds: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 }
 
-/// Parse Ghostty config text. Never fails.
+/// Parse Ghostty config text with no file attached. Never fails.
 #[must_use]
 pub fn parse_ghostty(text: &str) -> GhosttyConfig {
+    parse_ghostty_sources(&[GhosttySource {
+        path: None,
+        text: text.to_owned(),
+    }])
+}
+
+/// Parse Ghostty config files in read order, keeping each value's origin.
+/// Never fails: a skipped line becomes a [`Diagnostic`] and the rest apply.
+#[must_use]
+pub fn parse_ghostty_sources(sources: &[GhosttySource]) -> GhosttyConfig {
     let mut config = GhosttyConfig::default();
     let mut font_reset = false;
-    for raw in text.split(['\n', '\r']) {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some(equals) = line.find('=') else {
-            continue;
-        };
-        let key = line[..equals].trim();
-        let value = unquote(line[equals + 1..].trim());
-        if key == "font-family" {
-            if value.is_empty() {
-                font_reset = true;
-                config.font_family = None;
-            } else if config.font_family.is_none() || font_reset {
-                config.font_family = Some(value);
-                font_reset = false;
+    for source in sources {
+        // A lone CR also ends a line; CRLF counts once.
+        for (index, physical) in source.text.split('\n').enumerate() {
+            let origin = Origin {
+                file: source.path.clone(),
+                line: index + 1,
+            };
+            for raw in physical.split('\r') {
+                parse_line(&mut config, &mut font_reset, raw.trim(), &origin);
             }
-            continue;
         }
-        apply(&mut config, key, &value);
     }
     config
 }
 
-fn apply(config: &mut GhosttyConfig, key: &str, value: &str) {
+fn parse_line(config: &mut GhosttyConfig, font_reset: &mut bool, line: &str, origin: &Origin) {
+    if line.is_empty() || line.starts_with('#') {
+        return;
+    }
+    let Some(equals) = line.find('=') else {
+        config.diagnostics.push(Diagnostic {
+            origin: origin.clone(),
+            text: line.to_owned(),
+            reason: "expected key = value",
+        });
+        return;
+    };
+    let key = line[..equals].trim();
+    let value = unquote(line[equals + 1..].trim());
+    if key == "font-family" {
+        set_font_family(config, font_reset, value, origin);
+        return;
+    }
+    match apply(config, key, &value, origin) {
+        Applied::Yes => {
+            config.origins.insert(key.to_owned(), origin.clone());
+        }
+        Applied::Rejected => config.diagnostics.push(Diagnostic {
+            origin: origin.clone(),
+            text: line.to_owned(),
+            reason: "value is malformed or out of range",
+        }),
+        Applied::Unknown => {}
+    }
+}
+
+/// The first `font-family` wins until an empty one resets the list.
+fn set_font_family(
+    config: &mut GhosttyConfig,
+    font_reset: &mut bool,
+    value: String,
+    origin: &Origin,
+) {
+    if value.is_empty() {
+        *font_reset = true;
+        config.font_family = None;
+        config.origins.remove("font-family");
+    } else if config.font_family.is_none() || *font_reset {
+        config.font_family = Some(value);
+        config
+            .origins
+            .insert("font-family".to_owned(), origin.clone());
+        *font_reset = false;
+    }
+}
+
+/// Whether a line's key took its value.
+enum Applied {
+    /// Stored.
+    Yes,
+    /// A key this app reads, with a value it cannot use.
+    Rejected,
+    /// A key this app does not read, or a keybind (whose origin `binds` keeps).
+    Unknown,
+}
+
+impl From<bool> for Applied {
+    fn from(stored: bool) -> Self {
+        if stored { Self::Yes } else { Self::Rejected }
+    }
+}
+
+fn apply(config: &mut GhosttyConfig, key: &str, value: &str, origin: &Origin) -> Applied {
     match key {
-        "font-size" => set_number(value, 4.0, 72.0, |size| config.font_size = Some(size)),
-        "adjust-cell-width" => set_percent(value, |scale| config.cell_width = Some(scale)),
-        "adjust-cell-height" => set_percent(value, |scale| config.cell_height = Some(scale)),
+        "font-size" => set_number(value, 4.0, 72.0, |size| config.font_size = Some(size)).into(),
+        "adjust-cell-width" => set_percent(value, |scale| config.cell_width = Some(scale)).into(),
+        "adjust-cell-height" => set_percent(value, |scale| config.cell_height = Some(scale)).into(),
         "background"
         | "foreground"
         | "cursor-color"
         | "selection-background"
         | "selection-foreground"
-        | "split-divider-color" => set_color(config, key, value),
-        "palette" => set_palette(config, value),
-        "window-padding-x" => {
-            set_number(first_number(value), 0.0, 64.0, |pad| {
-                config.padding_x = Some(pad)
-            });
-        }
-        "window-padding-y" => {
-            set_number(first_number(value), 0.0, 64.0, |pad| {
-                config.padding_y = Some(pad)
-            });
-        }
+        | "split-divider-color" => set_color(config, key, value).into(),
+        "palette" => set_palette(config, value).into(),
+        "window-padding-x" => set_number(first_number(value), 0.0, 64.0, |pad| {
+            config.padding_x = Some(pad);
+        })
+        .into(),
+        "window-padding-y" => set_number(first_number(value), 0.0, 64.0, |pad| {
+            config.padding_y = Some(pad);
+        })
+        .into(),
         "unfocused-split-opacity" => set_number(value, 0.15, 1.0, |opacity| {
             config.unfocused_split_opacity = Some(opacity);
-        }),
+        })
+        .into(),
         "macos-option-as-alt" => {
             config.option_as_alt = Some(matches!(value, "true" | "left" | "right"));
+            Applied::Yes
         }
-        "keybind" => set_keybind(config, value),
-        _ => {}
+        "keybind" if set_keybind(config, value, origin) => Applied::Unknown,
+        "keybind" => Applied::Rejected,
+        _ => Applied::Unknown,
     }
 }
 
-fn set_color(config: &mut GhosttyConfig, key: &str, value: &str) {
+fn set_color(config: &mut GhosttyConfig, key: &str, value: &str) -> bool {
     let Some(color) = hex_color(value) else {
-        return;
+        return false;
     };
-    match key {
-        "background" => config.background = Some(color),
-        "foreground" => config.foreground = Some(color),
-        "cursor-color" => config.cursor = Some(color),
-        "selection-background" => config.selection_background = Some(color),
-        "selection-foreground" => config.selection_foreground = Some(color),
-        "split-divider-color" => config.split_divider_color = Some(color),
-        _ => {}
-    }
+    let slot = match key {
+        "background" => &mut config.background,
+        "foreground" => &mut config.foreground,
+        "cursor-color" => &mut config.cursor,
+        "selection-background" => &mut config.selection_background,
+        "selection-foreground" => &mut config.selection_foreground,
+        "split-divider-color" => &mut config.split_divider_color,
+        _ => return false,
+    };
+    *slot = Some(color);
+    true
 }
 
-fn set_palette(config: &mut GhosttyConfig, value: &str) {
+fn set_palette(config: &mut GhosttyConfig, value: &str) -> bool {
     let Some((index, color)) = value.split_once('=') else {
-        return;
+        return false;
     };
     let Ok(index) = index.trim().parse::<usize>() else {
-        return;
+        return false;
     };
     let Some(color) = hex_color(color) else {
-        return;
+        return false;
     };
-    if index < 16 {
-        config.palette[index] = Some(color);
-    }
+    let Some(slot) = config.palette.get_mut(index) else {
+        return false;
+    };
+    *slot = Some(color);
+    true
 }
 
 fn hex_color(value: &str) -> Option<String> {
@@ -181,30 +322,31 @@ fn hex_color(value: &str) -> Option<String> {
     None
 }
 
-fn set_number(value: &str, low: f64, high: f64, set: impl FnOnce(f64)) {
+fn set_number(value: &str, low: f64, high: f64, set: impl FnOnce(f64)) -> bool {
     let Ok(number) = value.parse::<f64>() else {
-        return;
+        return false;
     };
-    if !value.is_empty() && number.is_finite() && (low..=high).contains(&number) {
+    let usable = !value.is_empty() && number.is_finite() && (low..=high).contains(&number);
+    if usable {
         set(number);
     }
+    usable
 }
 
-fn set_percent(value: &str, set: impl FnOnce(f64)) {
+fn set_percent(value: &str, set: impl FnOnce(f64)) -> bool {
     let value = value.trim();
     let Some(body) = value.strip_suffix('%') else {
-        return;
+        return false;
     };
     let Ok(percent) = body.parse::<f64>() else {
-        return;
+        return false;
     };
-    if !percent.is_finite() {
-        return;
-    }
     let scale = 1.0 + percent / 100.0;
-    if (0.5..=2.0).contains(&scale) {
+    let usable = percent.is_finite() && (0.5..=2.0).contains(&scale);
+    if usable {
         set(scale);
     }
+    usable
 }
 
 fn first_number(value: &str) -> &str {
@@ -592,15 +734,17 @@ fn trigger_end(value: &str) -> Option<usize> {
     }
 }
 
-fn set_keybind(config: &mut GhosttyConfig, value: &str) {
+/// Apply one `keybind` value. `false` when it lacks the `trigger=action` shape.
+fn set_keybind(config: &mut GhosttyConfig, value: &str, origin: &Origin) -> bool {
     if value == "clear" {
         config.keybinds.clear();
         config.globals.clear();
         config.unmapped.clear();
-        return;
+        config.binds.clear();
+        return true;
     }
     let Some(equals) = trigger_end(value) else {
-        return;
+        return false;
     };
     let raw = &value[..equals];
     let global = is_global_prefix(raw);
@@ -612,21 +756,24 @@ fn set_keybind(config: &mut GhosttyConfig, value: &str) {
         .is_some_and(|chord| own(BUILT_IN, chord) == Some(action))
     {
         let chord = chord.expect("checked");
-        config.keybinds.remove(&chord);
-        config.globals.retain(|item| item != &chord);
-        return;
+        forget_chord(config, &chord);
+        return true;
     }
     let command = ghostty_action(action);
     let Some(chord) = chord else {
         config.unmapped.push(format!("{trigger} = {action}"));
-        return;
+        return true;
     };
     let Some(command) = command else {
-        config.keybinds.remove(&chord);
-        config.globals.retain(|item| item != &chord);
+        forget_chord(config, &chord);
         config.unmapped.push(format!("{trigger} = {action}"));
-        return;
+        return true;
     };
+    config.binds.push(Bind {
+        chord: chord.clone(),
+        command: command.clone(),
+        origin: origin.clone(),
+    });
     config.keybinds.insert(chord.clone(), command);
     if global {
         if !config.globals.contains(&chord) {
@@ -635,6 +782,14 @@ fn set_keybind(config: &mut GhosttyConfig, value: &str) {
     } else {
         config.globals.retain(|item| item != &chord);
     }
+    true
+}
+
+/// A later line returned `chord` to the built-in, so earlier binds stop applying.
+fn forget_chord(config: &mut GhosttyConfig, chord: &str) {
+    config.keybinds.remove(chord);
+    config.globals.retain(|item| item != chord);
+    config.binds.retain(|bind| bind.chord != chord);
 }
 
 fn is_global_prefix(raw: &str) -> bool {
@@ -764,14 +919,21 @@ pub fn ghostty_prefs(base: &DisplayPrefs, config: &GhosttyConfig) -> DisplayPref
     next
 }
 
-/// Read the user's Ghostty config, theme file first. `None` when Ghostty is not configured.
+/// Read the user's Ghostty config files, theme file first, from disk each call
+/// so an external edit shows on the next reload. `None` when Ghostty is not configured.
 #[must_use]
-pub fn read_ghostty_config() -> Option<String> {
+pub fn read_ghostty_sources() -> Option<Vec<GhosttySource>> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| home.join(".config"));
+    read_ghostty_sources_in(&home, &config_home)
+}
+
+/// [`read_ghostty_sources`] for an explicit home and XDG config directory.
+#[must_use]
+pub fn read_ghostty_sources_in(home: &Path, config_home: &Path) -> Option<Vec<GhosttySource>> {
     let configs = [
         config_home.join("ghostty/config"),
         config_home.join("ghostty/config.ghostty"),
@@ -780,16 +942,22 @@ pub fn read_ghostty_config() -> Option<String> {
     ];
     let main = configs.iter().find(|path| path.is_file())?;
     let text = read_text(main)?;
-    let includes = include_texts(main, &text, &home);
-    let all = std::iter::once(text.clone())
-        .chain(includes)
+    let mut files = vec![GhosttySource {
+        path: Some(main.clone()),
+        text,
+    }];
+    files.extend(include_texts(main, &files[0].text, home));
+    let all = files
+        .iter()
+        .map(|source| source.text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let theme = theme_text(&all, &config_home);
-    Some([theme.unwrap_or_default(), all].join("\n"))
+    let mut sources: Vec<GhosttySource> = theme_text(&all, config_home).into_iter().collect();
+    sources.extend(files);
+    Some(sources)
 }
 
-fn include_texts(main: &Path, text: &str, home: &Path) -> Vec<String> {
+fn include_texts(main: &Path, text: &str, home: &Path) -> Vec<GhosttySource> {
     let mut found = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -812,13 +980,16 @@ fn include_texts(main: &Path, text: &str, home: &Path) -> Vec<String> {
             main.parent().unwrap_or(Path::new(".")).join(value)
         };
         if let Some(text) = read_text(&path) {
-            found.push(text);
+            found.push(GhosttySource {
+                path: Some(path),
+                text,
+            });
         }
     }
     found
 }
 
-fn theme_text(config: &str, config_home: &Path) -> Option<String> {
+fn theme_text(config: &str, config_home: &Path) -> Option<GhosttySource> {
     let mut name = None;
     for line in config.lines() {
         let line = line.trim();
@@ -840,14 +1011,20 @@ fn theme_text(config: &str, config_home: &Path) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    if Path::new(name).is_absolute() {
-        return read_text(Path::new(name));
-    }
-    let dirs = [
-        config_home.join("ghostty/themes"),
-        PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes"),
-    ];
-    dirs.iter().find_map(|dir| read_text(&dir.join(name)))
+    let candidates = if Path::new(name).is_absolute() {
+        vec![PathBuf::from(name)]
+    } else {
+        vec![
+            config_home.join("ghostty/themes").join(name),
+            PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes").join(name),
+        ]
+    };
+    candidates.into_iter().find_map(|path| {
+        read_text(&path).map(|text| GhosttySource {
+            path: Some(path),
+            text,
+        })
+    })
 }
 
 fn read_text(path: &Path) -> Option<String> {
@@ -859,7 +1036,8 @@ mod tests {
     use super::super::display::default_display;
     use super::super::keymap::{KeyChord, key_chord};
     use super::{
-        ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty, zig_string,
+        GhosttySource, ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty,
+        parse_ghostty_sources, read_ghostty_sources_in, zig_string,
     };
 
     const CONFIG: &str = r#"
@@ -971,5 +1149,101 @@ keybind = f12=set_font_size:15
         event.ctrl = true;
         assert_eq!(key_chord(&event), "ctrl+tab");
         assert_eq!(key_chord(&KeyChord::new("a")), "");
+    }
+
+    #[test]
+    fn malformed_lines_are_reported_and_the_rest_still_apply() {
+        let config = parse_ghostty(
+            "font-size = 14\nthis line has no equals\nbackground = #zzzzzz\n\
+             font-size = 900\nkeybind = nonsense\nforeground = #c5d0cd\r\nbackground = #071012\n",
+        );
+        assert_eq!(config.font_size, Some(14.0));
+        assert_eq!(config.foreground.as_deref(), Some("#c5d0cd"));
+        assert_eq!(config.background.as_deref(), Some("#071012"));
+        let skipped: Vec<(usize, &str)> = config
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.origin.line, diagnostic.text.as_str()))
+            .collect();
+        assert_eq!(
+            skipped,
+            vec![
+                (2, "this line has no equals"),
+                (3, "background = #zzzzzz"),
+                (4, "font-size = 900"),
+                (5, "keybind = nonsense"),
+            ]
+        );
+        assert_eq!(config.origins["font-size"].line, 1);
+        assert_eq!(config.origins["background"].line, 7);
+        assert!(ghostty_theme(&config).is_some());
+    }
+
+    #[test]
+    fn origins_name_the_file_and_line_across_sources() {
+        let theme = GhosttySource {
+            path: Some("/themes/night".into()),
+            text: "background = #000000\nforeground = #ffffff\n".to_owned(),
+        };
+        let main = GhosttySource {
+            path: Some("/cfg/config".into()),
+            text: "# mine\n\nfont-family = Iosevka\nbackground = #101010\nkeybind = super+d=new_split:down\n"
+                .to_owned(),
+        };
+        let config = parse_ghostty_sources(&[theme, main]);
+        assert_eq!(config.origins["foreground"].label(), "/themes/night:2");
+        assert_eq!(config.origins["background"].label(), "/cfg/config:4");
+        assert_eq!(config.origins["font-family"].label(), "/cfg/config:3");
+        assert_eq!(config.binds.len(), 1);
+        assert_eq!(config.binds[0].origin.label(), "/cfg/config:5");
+    }
+
+    #[test]
+    fn reload_reads_an_external_edit() {
+        let root = std::env::temp_dir().join(format!(
+            "phux-ghostty-reload-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let config_home = root.join("xdg");
+        let dir = config_home.join("ghostty");
+        std::fs::create_dir_all(dir.join("themes")).expect("config dir");
+        let file = dir.join("config");
+        std::fs::write(dir.join("themes/night"), "background = #000000\n").expect("theme");
+        std::fs::write(
+            &file,
+            "theme = night\nfont-size = 12\nconfig-file = extra\n",
+        )
+        .expect("write");
+        std::fs::write(dir.join("extra"), "keybind = super+d=new_split:down\n").expect("include");
+        let first = parse_ghostty_sources(
+            &read_ghostty_sources_in(&root, &config_home).expect("config found"),
+        );
+        assert_eq!(first.font_size, Some(12.0));
+        assert_eq!(first.background.as_deref(), Some("#000000"));
+        assert_eq!(
+            first.origins["background"].file.as_deref(),
+            Some(dir.join("themes/night").as_path())
+        );
+        assert_eq!(
+            first.binds[0].origin.file.as_deref(),
+            Some(dir.join("extra").as_path())
+        );
+
+        // Another editor rewrites the file while the app runs.
+        std::fs::write(&file, "font-size = 16\nbroken\n").expect("rewrite");
+        let second = parse_ghostty_sources(
+            &read_ghostty_sources_in(&root, &config_home).expect("config found"),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(second.font_size, Some(16.0));
+        assert_eq!(
+            second.origins["font-size"].file.as_deref(),
+            Some(file.as_path())
+        );
+        assert!(second.background.is_none());
+        assert!(second.binds.is_empty());
+        assert_eq!(second.diagnostics.len(), 1);
+        assert_eq!(second.diagnostics[0].origin.line, 2);
     }
 }

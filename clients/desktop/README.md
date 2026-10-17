@@ -249,8 +249,9 @@ path or open it; the palette's **Open Scrollback as a File** does the last for s
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
-switches keybind import off (the global hotkey too, from the next launch), and
-lists the binds it skipped: key sequences,
+switches keybind import off (the global hotkey too, from the next launch),
+lists malformed or out-of-range lines by file and line (the rest still apply),
+and counts the binds it skipped: key sequences,
 bare letters, keys the window never reports (such as keypad keys), and
 actions with no equivalent yet. Keys may be named as Ghostty names them, as
 W3C codes (`KeyK`, `Digit1`, `ArrowUp`) or with a `physical:` prefix. `reset` is one: the

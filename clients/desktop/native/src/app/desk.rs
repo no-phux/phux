@@ -439,8 +439,8 @@ impl Desk {
         let loaded = persist::load_layout(&store.read());
         let blocked = loaded.blocked;
         let saved = loaded.initial;
-        let text = settings::read_ghostty_config();
-        let ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        let text = settings::read_ghostty_sources();
+        let ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         let mut prefs = saved
             .as_ref()
             .map(|layout| layout.display.clone())
@@ -1771,13 +1771,29 @@ impl Desk {
     }
 
     pub(crate) fn reload_ghostty(&mut self, cx: &mut Context<Self>) {
-        let text = settings::read_ghostty_config();
+        let text = settings::read_ghostty_sources();
         self.ghostty_found = text.is_some();
-        self.ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
+        self.ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
         if text.is_none() {
             self.post(Kind::Refusal, "No Ghostty config found", None);
+        }
+        if let Some(first) = self.ghostty.diagnostics.first() {
+            let skipped = self.ghostty.diagnostics.len();
+            let body = format!(
+                "{}: {} ({}). Settings > Ghostty integration lists {}.",
+                first.origin.label(),
+                first.text,
+                first.reason,
+                if skipped == 1 { "it" } else { "all of them" },
+            );
+            let title = if skipped == 1 {
+                "Skipped 1 Ghostty config line".to_owned()
+            } else {
+                format!("Skipped {skipped} Ghostty config lines")
+            };
+            self.post(Kind::Refusal, &title, Some(body));
         }
         cx.notify();
     }
