@@ -241,16 +241,23 @@ impl Workspace {
             .map(|(label, destination)| (label.clone(), destination.clone()))
             .collect();
         for (label, destination) in ready {
-            self.awaiting.remove(&label);
-            let revealed = self.reveal(&label);
-            if !revealed || matches!(destination, Destination::Split { .. }) {
-                self.land(connection, &label, destination);
-            }
+            self.place_ready(connection, &label, destination);
         }
         if !self.restored {
             self.finish_restore(connection);
         }
         self.resolve_restored(connection);
+    }
+
+    /// Place one terminal the server reports ready at its recorded
+    /// destination. A tab spawn whose terminal is already shown is revealed
+    /// instead of landing twice; a split always lands in its own tab.
+    fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
+        self.awaiting.remove(label);
+        let revealed = self.reveal(label);
+        if !revealed || matches!(destination, Destination::Split { .. }) {
+            self.land(connection, label, destination);
+        }
     }
 
     /// A validated new connection must restore visible foreign-session streams too.
@@ -1263,13 +1270,17 @@ mod home_tests {
         }
     }
 
-    /// Mirror of [`Workspace::settle`] for one reply, without a live server.
+    /// One spawn reply followed by the per-terminal step of
+    /// [`Workspace::settle`]. `settle` itself returns early on a connection
+    /// that is not attached and validated, and no deterministic attached
+    /// connection exists for unit tests, so these drive the same
+    /// `answered` -> `place_ready` path it runs once the terminal is ready.
     fn reply(workspace: &mut Workspace, connection: &Connection, request: u32, terminal: u32) {
         let terminal = ResourceId::local(terminal);
         workspace.answered(request, Some(&terminal), None);
         let label = terminal_label(&terminal);
-        let destination = workspace.awaiting.remove(&label).unwrap();
-        workspace.land(connection, &label, destination);
+        let destination = workspace.awaiting.get(&label).cloned().unwrap();
+        workspace.place_ready(connection, &label, destination);
     }
 
     fn leaves(tab: &Tab) -> Vec<String> {
@@ -1311,21 +1322,39 @@ mod home_tests {
         assert_eq!(workspace.pending(), 0);
     }
 
+    /// The layout is never changed optimistically when a split is requested,
+    /// so "restore the previous layout" holds by construction; what a refusal
+    /// must get right is dropping the destination so nothing lands later.
     #[test]
-    fn refused_split_restores_the_previous_layout_and_focus() {
-        let (_dial, connection) = offline();
+    fn refused_split_drops_its_destination_and_keeps_layout_and_focus() {
         let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
         workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
         workspace.active_id = "b".into();
         let before = workspace.snapshot();
         workspace.spawns.insert(7, split_of("b"));
         workspace.answered(7, None, Some("refused"));
-        workspace.settle(&connection);
-        assert_eq!(workspace.snapshot(), before);
         assert_eq!(workspace.pending(), 0);
         let notices = workspace.take_notices();
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].title, "Could not start a terminal");
+        // A late or duplicated reply for the refused request has no
+        // destination left, so it cannot split the focused pane.
+        workspace.answered(7, Some(&ResourceId::local(9)), None);
+        assert!(workspace.awaiting.is_empty());
+        assert_eq!(workspace.snapshot(), before);
+    }
+
+    #[test]
+    fn ready_tab_spawn_for_a_shown_terminal_reveals_instead_of_landing_twice() {
+        let (_dial, connection) = offline();
+        let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
+        workspace.tabs = vec![one_pane_tab("a", 1), one_pane_tab("b", 2)];
+        workspace.active_id = "b".into();
+        workspace.spawns.insert(7, Destination::Tab);
+        reply(&mut workspace, &connection, 7, 1);
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(workspace.active_id, "a");
+        assert_eq!(workspace.pending(), 0);
     }
 
     #[test]
