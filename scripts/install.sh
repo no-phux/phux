@@ -517,7 +517,7 @@ has_cli() {
   for candidate in "${install_dir}/phux" "${HOME:-}/.local/bin/phux" "${HOME:-}/.cargo/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
     [ ! -x "$candidate" ] || return 0
   done
-  return 1
+  command -v phux >/dev/null 2>&1
 }
 
 install_desktop() {
@@ -560,6 +560,13 @@ install_desktop() {
 
 # Linux archives contain only these regular files/directories. Check types
 # before extraction: a symlink must never redirect a later archive member.
+linux_data_home() {
+  case "${XDG_DATA_HOME:-}" in
+    /*) printf '%s\n' "$XDG_DATA_HOME" ;;
+    *) printf '%s\n' "${HOME:-}/.local/share" ;;
+  esac
+}
+
 linux_desktop_member() {
   case "${1%/}" in
     phux-desktop | phux-desktop/bin | phux-desktop/bin/phux-desktop | \
@@ -594,7 +601,7 @@ check_linux_desktop_archive() {
 }
 
 check_linux_desktop_release() {
-  [ -x "${app}/bin/phux-desktop" ] || die "the archive has no desktop executable"
+  [ -f "${app}/bin/phux-desktop" ] && [ -x "${app}/bin/phux-desktop" ] || die "the archive has no desktop executable"
   linux_metadata "$app" || die "the archive is not Phux Desktop"
   [ "$(manifest_value "${work}/desktop-metadata" target)" = "$target" ] || die "the bundle is for another target"
   [ "$(manifest_value "${work}/desktop-metadata" channel)" = "$channel" ] || die "the bundle is for another channel"
@@ -658,7 +665,7 @@ register_linux_desktop() {
 '*) return 1 ;; esac
   executable="$(printf '%s' "${bundle_path}/bin/phux-desktop" | sed 's/%/%%/g; s/[\\"`$]/\\&/g; s/\\/\\\\/g')"
   icon="$(printf '%s' "${bundle_path}/share/icons/hicolor/scalable/apps/dev.phux.desktop.svg" | sed 's/\\/\\\\/g')"
-  entries="${XDG_DATA_HOME:-${HOME:-}/.local/share}/applications"
+  entries="$(linux_data_home)/applications"
   mkdir -p "$entries" || return 1
   [ ! -d "${entries}/dev.phux.desktop.desktop" ] || return 1
   entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
@@ -760,7 +767,7 @@ if [ -n "$stage_dir" ]; then
   applications_dir="$(dirname "$stage_dir")"
 elif [ -z "$applications_dir" ]; then
   case "${os:-$(uname -s)}" in
-    [Ll]inux) applications_dir="${XDG_DATA_HOME:-${HOME:-}/.local/share}" ;;
+    [Ll]inux) applications_dir="$(linux_data_home)" ;;
     *) if [ -w /Applications ]; then applications_dir=/Applications; else applications_dir="${HOME:-}/Applications"; fi ;;
   esac
 fi

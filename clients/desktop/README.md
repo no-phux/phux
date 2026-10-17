@@ -22,6 +22,8 @@ Linux uses a checksummed, signed tarball instead of an Apple bundle. See
 instead of Command; `Ctrl-Shift-P/T/W/F` also open the palette, create/close a
 terminal, and find. `Ctrl-Shift-C/V` copy/paste without intercepting shell
 `Ctrl-C`. Text fields use normal Linux `Ctrl-C/V` editing shortcuts.
+Linux updates are explicit installer reruns; the Updates panel checks releases
+and prints the signature-required command rather than offering a macOS swap.
 
 `Phux.app` bundles the `phux-desktop` binary built from `clients/desktop/native`.
 There is no JavaScript bundle and no NAPI addon. Launched from the Dock or

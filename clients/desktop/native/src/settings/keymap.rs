@@ -645,6 +645,18 @@ mod tests {
         assert_eq!(super::display_chord("cmd+t"), "Super+T");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_clipboard_shortcuts_can_be_unbound() {
+        let config =
+            parse_ghostty("keybind = ctrl+shift+c=unbind\nkeybind = ctrl+shift+v=unbind\n");
+        let keymap = effective_keymap(&config, true);
+        for chord in ["ctrl+shift+c", "ctrl+shift+v"] {
+            assert!(!keymap.iter().any(|(key, _)| key == chord));
+            assert!(!super::app_chords(&keymap).iter().any(|key| key == chord));
+        }
+    }
+
     #[test]
     fn built_in_chords_never_conflict() {
         let chords = default_chords();

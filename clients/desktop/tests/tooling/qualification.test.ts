@@ -285,7 +285,11 @@ test("the third-party notice covers every shipped crate and refuses an unlicense
 });
 
 test("a crate with no license file gets the canonical text of a license it offers", () => {
-  const canonical = { "Apache-2.0": "Apache text", MIT: "MIT text\nCopyright (c) {holders}" };
+  const canonical = {
+    "Apache-2.0": "Apache text",
+    MIT: "MIT text\nCopyright (c) {holders}",
+    "CC0-1.0": "CC0 text",
+  };
   const crate = shippedCrates(metadata(graph())).find((each) => each.name === "derive");
   if (crate === undefined) throw new Error("derive is shipped");
   expect(noticeTexts(crate, canonical)).toEqual(
@@ -296,6 +300,9 @@ test("a crate with no license file gets the canonical text of a license it offer
   const anonymous = noticeTexts({ ...crate, authors: [] }, canonical);
   expect(anonymous.get("MIT, canonical text")).toBe("MIT text\nCopyright (c) The derive authors");
   expect(electedLicense("Zlib OR Apache-2.0 OR MIT")).toBe("Apache-2.0");
+  expect(noticeTexts({ ...crate, license: "CC0-1.0" }, canonical)).toEqual(
+    new Map([["CC0-1.0, canonical text", "CC0 text"]]),
+  );
   expect(electedLicense("MIT AND BSD-3-Clause")).toBeUndefined();
   expect(electedLicense("Apache-2.0 WITH LLVM-exception")).toBeUndefined();
   expect(electedLicense("Zlib")).toBeUndefined();
@@ -306,8 +313,10 @@ test("a crate with no license file gets the canonical text of a license it offer
 });
 
 test("the bundled canonical license texts are the unmodified SPDX texts", () => {
-  const { MIT, "Apache-2.0": apache } = canonicalLicenses();
+  const { MIT, "Apache-2.0": apache, "CC0-1.0": cc0 } = canonicalLicenses();
   expect(apache).toStartWith("                                 Apache License");
   expect(apache).toContain("END OF TERMS AND CONDITIONS");
   expect(MIT).toContain("Copyright (c) {holders}\n\nPermission is hereby granted");
+  expect(cc0).toStartWith("Creative Commons Legal Code\n\nCC0 1.0 Universal");
+  expect(cc0).toEndWith("this CC0 or use of the Work.");
 });

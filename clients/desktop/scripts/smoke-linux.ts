@@ -189,7 +189,61 @@ function serverPid(): unknown {
   assert(status && typeof status === "object" && "pid" in status);
   return status.pid;
 }
+
+async function nativeInput(app: Bun.Subprocess): Promise<void> {
+  const window = run(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid)])
+    .trim()
+    .split("\n")[0];
+  assert(window, "Native desktop window must be mapped");
+  assert(
+    run(["xprop", "-id", window, "WM_CLASS"]).includes("dev.phux.desktop"),
+    "Window identity must match the packaged desktop entry",
+  );
+  run(["xdotool", "windowactivate", "--sync", window]);
+  run(["xdotool", "mousemove", "--window", window, "800", "500", "click", "1"]);
+  // The observed marker does not occur in the typed command, so shell echo
+  // cannot satisfy the check without actual native key delivery and Return.
+  run(["xdotool", "type", "--clearmodifiers", "--delay", "30", "printf '%s%s\\n' PHUX NATIVEKEYS"]);
+  run(["xdotool", "key", "Return"]);
+  await until(
+    "native keyboard delivery",
+    () => cli("snapshot", session).includes("PHUXNATIVEKEYS"),
+    app,
+  );
+  const clipboard = "printf '%s%s\\n' PHUX CLIPBOARD";
+  const copied = spawnSync("xclip", ["-selection", "clipboard"], {
+    env,
+    input: clipboard,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(copied.status, 0, "Clipboard fixture must own the X11 selection");
+  run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"]);
+  run(["xdotool", "key", "Return"]);
+  await until(
+    "native clipboard paste",
+    () => cli("snapshot", session).includes("PHUXCLIPBOARD"),
+    app,
+  );
+  run([
+    "xdotool",
+    "type",
+    "--clearmodifiers",
+    "--delay",
+    "30",
+    "printf '%s%s\\n' PHUX METAREADY; stty raw -echo; dd bs=1 count=2 2>/dev/null | od -An -tx1; stty sane",
+  ]);
+  run(["xdotool", "key", "Return"]);
+  await until("raw Meta reader", () => cli("snapshot", session).includes("PHUXMETAREADY"), app);
+  run(["xdotool", "key", "--clearmodifiers", "alt+shift+a"]);
+  await until("shifted Meta bytes", () => cli("snapshot", session).includes("1b 41"), app);
+}
+
 try {
+  launch(["openbox"], "window-manager");
+  await until("X11 window manager", () =>
+    run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).includes("window id"),
+  );
   const server = launch(
     [phux, "--socket", socket, "server", "--session", session, "--exit-after-idle", "120"],
     "server",
@@ -216,6 +270,7 @@ try {
   assert.equal(smoked.exitCode, 0, "--smoke must exit successfully");
   verifyCapture("smoke-exit", marker);
   let app = await capture("first-launch", marker);
+  await nativeInput(app);
   for (const [signal, label] of [
     ["SIGKILL", "after-crash"],
     ["SIGTERM", "after-stop"],
@@ -245,7 +300,15 @@ try {
     backend: "X11 (Xvfb/lavapipe qualification; not real-GPU or Wayland qualification)",
     serverPid: server.pid,
     shellPid,
-    scenarios: ["smoke-exit", "launch", "SIGKILL/relaunch", "SIGTERM/relaunch"],
+    scenarios: [
+      "smoke-exit",
+      "launch",
+      "native keyboard",
+      "clipboard paste",
+      "shifted Meta bytes",
+      "SIGKILL/relaunch",
+      "SIGTERM/relaunch",
+    ],
     presentations,
     boundary: "Submitted frame and terminal marker verified by native evidence and Tesseract OCR",
   };

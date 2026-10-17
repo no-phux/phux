@@ -27,6 +27,7 @@ pub(crate) fn open(cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
     titlebar.title = Some("phux Performance Monitor".into());
     let (handle, _) = gpui_kit::open_window(
         WindowOptions {
+            app_id: Some("dev.phux.desktop".into()),
             window_bounds: Some(WindowBounds::centered(size(px(940.), px(760.)), cx)),
             window_min_size: Some(size(px(760.), px(480.))),
             titlebar: Some(titlebar),

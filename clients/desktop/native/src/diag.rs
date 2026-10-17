@@ -131,7 +131,9 @@ fn log_path() -> Option<PathBuf> {
 fn default_log_path(home: &Path, state: Option<std::ffi::OsString>) -> PathBuf {
     if cfg!(target_os = "linux") {
         state
-            .map_or_else(|| home.join(".local/state"), PathBuf::from)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".local/state"))
             .join("phux-desktop/desktop.log")
     } else {
         home.join("Library/Logs/phux-desktop.log")
@@ -155,6 +157,12 @@ mod path_tests {
                 default_log_path(home, Some("/state".into())),
                 Path::new("/state/phux-desktop/desktop.log")
             );
+            for invalid in ["", "relative/state"] {
+                assert_eq!(
+                    default_log_path(home, Some(invalid.into())),
+                    default_log_path(home, None)
+                );
+            }
         } else {
             assert_eq!(
                 default_log_path(home, None),
@@ -252,7 +260,7 @@ pub fn may_activate() -> bool {
 /// keeps working in another app.
 #[must_use]
 pub fn window_kind() -> gpui::WindowKind {
-    if EVIDENCE_MODE.load(Ordering::Relaxed) {
+    if cfg!(target_os = "macos") && EVIDENCE_MODE.load(Ordering::Relaxed) {
         gpui::WindowKind::PopUp
     } else {
         gpui::WindowKind::Normal

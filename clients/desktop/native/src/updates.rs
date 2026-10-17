@@ -403,7 +403,7 @@ fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
 /// shipped installer. Nothing outside the staging directory changes.
 pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
     if cfg!(target_os = "linux") {
-        bail!("{}", linux_install_remedy(target.channel));
+        bail!("{}", linux_install_remedy(target.channel, Some(bundle)));
     }
     stage_with(
         bundle,
@@ -413,12 +413,20 @@ pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
     )
 }
 
-pub fn linux_install_remedy(channel: Channel) -> String {
+pub fn linux_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
+    let destination = bundle
+        .and_then(Path::parent)
+        .map_or_else(String::new, |directory| {
+            format!(
+                " --applications-dir {}",
+                crate::attach::quote_paths(&[directory.to_path_buf()])
+            )
+        });
     format!(
         "Automatic Desktop installation is not supported on Linux. With minisign on PATH, quit Phux and run: \
          curl -fsSL https://phux.sh/install | PHUX_REQUIRE_SIGNATURE=1 sh -s -- \
-         --desktop --channel {}",
-        channel.as_str()
+         --desktop --channel {}{destination}",
+        channel.as_str(),
     )
 }
 
@@ -629,7 +637,7 @@ fn update_log() -> Stdio {
 /// touched while this process uses it.
 pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Result<()> {
     if cfg!(target_os = "linux") {
-        bail!("{}", linux_install_remedy(Channel::Stable));
+        bail!("{}", linux_install_remedy(Channel::Stable, Some(bundle)));
     }
     use std::os::unix::process::CommandExt;
     let mut command = apply_command(
@@ -1372,10 +1380,14 @@ mod tests {
 
     #[test]
     fn linux_manual_update_requires_release_signatures() {
-        let remedy = linux_install_remedy(Channel::Next);
+        let remedy = linux_install_remedy(Channel::Next, None);
         assert!(remedy.contains("PHUX_REQUIRE_SIGNATURE=1"));
         assert!(remedy.contains("--desktop --channel next"));
         assert!(remedy.contains("minisign"));
+        let bundle = Path::new("/custom apps/person's desktop/phux-desktop");
+        let remedy = linux_install_remedy(Channel::Stable, Some(bundle));
+        let expected = crate::attach::quote_paths(&[bundle.parent().unwrap().to_path_buf()]);
+        assert!(remedy.ends_with(&format!("--applications-dir {expected}")));
     }
 
     #[cfg(target_os = "linux")]

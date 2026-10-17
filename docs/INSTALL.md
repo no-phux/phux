@@ -51,6 +51,13 @@ and a missing CLI is installed separately. Linux keyboard shortcuts include
 `Ctrl-Shift-C` / `Ctrl-Shift-V` for copy/paste; plain `Ctrl-C` stays a shell
 interrupt. See [desktop prerequisites](./SETUP.md#gpui-desktop) for libraries.
 
+The bundle lives at `$XDG_DATA_HOME/phux-desktop` (default
+`~/.local/share/phux-desktop`), with a launcher in `~/.local/bin` and a desktop
+menu entry. **Settings > Updates** checks Linux releases but does not replace
+the running app; rerun the installer to update. To require release-key
+verification, use `curl -fsSL https://phux.sh/install-desktop |
+PHUX_REQUIRE_SIGNATURE=1 sh`. The coordinator is not replaced or restarted.
+
 The desktop has its own canary on the same moving `next` prerelease:
 
 ```sh

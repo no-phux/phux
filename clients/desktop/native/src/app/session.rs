@@ -798,6 +798,7 @@ impl Desktop {
         };
         let (any, desk) = gpui_kit::open_window(
             WindowOptions {
+                app_id: Some("dev.phux.desktop".into()),
                 window_bounds: Some(WindowBounds::centered(bounds, cx)),
                 titlebar: Some(TitlebarOptions {
                     title: Some(title),

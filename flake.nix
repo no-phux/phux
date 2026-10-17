@@ -354,9 +354,9 @@
             pkgs.freetype
             pkgs.libxkbcommon
             pkgs.wayland
-            pkgs.xorg.libX11
-            pkgs.xorg.libXi
-            pkgs.xorg.libxcb
+            pkgs.libx11
+            pkgs.libxi
+            pkgs.libxcb
             pkgs.vulkan-loader
             pkgs.mesa
           ]
@@ -379,7 +379,7 @@
           shellHook =
             pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               # wgpu and xkbcommon load these at runtime, not through the linker.
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.vulkan-loader pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11 pkgs.xorg.libxcb ]}:''${LD_LIBRARY_PATH:-}"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.vulkan-loader pkgs.libxkbcommon pkgs.wayland pkgs.libx11 pkgs.libxcb ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             ''
             +
             pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''

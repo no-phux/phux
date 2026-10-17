@@ -34,6 +34,7 @@ printf '%s\\n' "$url" >> "$FIXTURE/calls"
 case "$url" in
   */channels/*.json) file=manifest.json ;;
   *SHA256SUMS | *.sha256) file=checksum ;;
+  *.minisig) file=signature ;;
   *.tar.gz) file=archive.tar.gz ;;
   *) exit 22 ;;
 esac
@@ -52,13 +53,18 @@ cp "$FIXTURE/$file" "$out"
     def installed(self):
         return self.apps / "phux-desktop"
 
-    def pack(self, extra=None):
+    def pack(self, extra=None, executable_is_dir=False):
         entries = {"phux-desktop/bin/phux-desktop": b'#!/bin/sh\nprintf "linux:%s\\n" "$*"\n',
                    "phux-desktop/share/phux-desktop/release.json":
                        (json.dumps(self.metadata, indent=2) + "\n").encode()}
         with tarfile.open(self.root / "archive.tar.gz", "w:gz") as tar:
             for name, content in entries.items():
                 info = tarfile.TarInfo(name)
+                if executable_is_dir and name.endswith("/bin/phux-desktop"):
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    tar.addfile(info)
+                    continue
                 info.size = len(content)
                 info.mode = 0o755 if name.endswith("/bin/phux-desktop") else 0o644
                 tar.addfile(info, io.BytesIO(content))
@@ -112,6 +118,29 @@ cp "$FIXTURE/$file" "$out"
         result = self.install(ok=False)
         self.assertTrue("minisign" in result.stderr or "signature" in result.stderr, result.stderr)
         self.assertEqual((self.installed / "share/phux-desktop/release.json").read_bytes(), before)
+
+    def test_invalid_signature_is_refused_even_with_an_installed_cli(self):
+        self.install()
+        before = (self.installed / "share/phux-desktop/release.json").read_bytes()
+        (self.bin / "minisign").write_text("#!/bin/sh\nexit 1\n")
+        (self.bin / "minisign").chmod(0o755)
+        (self.root / "signature").write_text("foreign signature")
+        self.env["PHUX_REQUIRE_SIGNATURE"] = "1"
+        self.install(ok=False)
+        self.assertEqual((self.installed / "share/phux-desktop/release.json").read_bytes(), before)
+
+    def test_directory_is_not_a_desktop_executable(self):
+        self.install()
+        before = (self.installed / "bin/phux-desktop").read_bytes()
+        self.pack(executable_is_dir=True)
+        self.assertIn("no desktop executable", self.install(ok=False).stderr)
+        self.assertEqual((self.installed / "bin/phux-desktop").read_bytes(), before)
+
+    def test_custom_cli_on_path_is_not_reinstalled(self):
+        (self.launchers / "phux").unlink()
+        (self.bin / "phux").symlink_to("/usr/bin/true")
+        self.install()
+        self.assertFalse((self.launchers / "phux").exists())
 
     def test_identity_version_channel_and_target_are_checked(self):
         for field, value in (("identifier", "dev.example.other"), ("version", "9.9.9"),
@@ -173,6 +202,13 @@ exec /bin/mv "$@"
         self.env.pop("XDG_DATA_HOME")
         self.install()
         self.assertTrue((self.root / "home/.local/share/phux-desktop/bin/phux-desktop").is_file())
+
+    def test_invalid_xdg_data_home_uses_user_local_share(self):
+        for value in ("", "relative/data"):
+            with self.subTest(value=value):
+                self.env["XDG_DATA_HOME"] = value
+                self.install()
+                self.assertTrue((self.root / "home/.local/share/phux-desktop/bin/phux-desktop").is_file())
 
     @unittest.skipUnless(shutil.which("bun"), "packaging requires Bun")
     def test_actual_packager_bundle_is_accepted(self):

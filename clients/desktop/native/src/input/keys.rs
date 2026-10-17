@@ -65,7 +65,12 @@ pub(super) fn event(stroke: &Keystroke, action: KeyAction) -> KeyEvent {
         mods: modifiers(stroke.modifiers),
         consumed_mods: ModSet::empty(),
         composing: false,
-        text: None,
+        // Linux Alt is Meta, but its resolved UTF-8 still carries Shift and
+        // keyboard-layout results. Keeping Alt unconsumed lets libghostty
+        // prefix the text without falling back to the lowercase physical key.
+        text: stroke.key_char.clone().filter(|_| {
+            cfg!(target_os = "linux") && stroke.modifiers.alt && action != KeyAction::Release
+        }),
         unshifted_codepoint: single_char(&stroke.key).map(u32::from),
     }
 }
@@ -153,6 +158,21 @@ mod tests {
         assert_eq!(encoded.action, KeyAction::Repeat);
         assert_eq!(encoded.mods, ModSet::ALT);
         assert_eq!(encoded.key, PhysicalKey::S);
-        assert!(encoded.text.is_none());
+        assert_eq!(
+            encoded.text.as_deref(),
+            cfg!(target_os = "linux").then_some("ß")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shifted_meta_preserves_resolved_text_without_consuming_alt() {
+        let stroke = Keystroke::parse("alt-shift-a->A").unwrap();
+        let encoded = event(&stroke, KeyAction::Press);
+        assert_eq!(encoded.text.as_deref(), Some("A"));
+        assert_eq!(encoded.mods, ModSet::ALT | ModSet::SHIFT);
+        assert!(encoded.consumed_mods.is_empty());
+        assert_eq!(encoded.unshifted_codepoint, Some(u32::from('a')));
+        assert!(event(&stroke, KeyAction::Release).text.is_none());
     }
 }

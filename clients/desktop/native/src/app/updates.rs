@@ -282,8 +282,9 @@ pub(crate) fn page(
             }),
         status: updater.desktop_status(),
         detail: updater.desktop_detail(),
-        note: cfg!(target_os = "linux")
-            .then(|| updates::linux_install_remedy(updater.prefs.desktop)),
+        note: cfg!(target_os = "linux").then(|| {
+            updates::linux_install_remedy(updater.prefs.desktop, updater.bundle.as_deref())
+        }),
         actions: std::iter::once(check).chain(install).collect(),
     };
     let runtime = Header {
@@ -607,7 +608,8 @@ impl Updater {
 
     pub fn desktop_act(&mut self, cx: &mut Context<Self>) {
         if cfg!(target_os = "linux") {
-            self.message = updates::linux_install_remedy(self.prefs.desktop);
+            self.message =
+                updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref());
             cx.notify();
             return;
         }

@@ -19,18 +19,24 @@ are in [CI](./CI.md).
 | Product | Tag | Assets | Built by |
 |---|---|---|---|
 | `phux` + `phux-mcp` | `vX.Y.Z` | `phux-vX.Y.Z-<target>.tar.gz` + `.sha256` + `.sha256.minisig` | `release.yml` -> `build-cli.yml` |
-| Phux Desktop | `desktop-vX.Y.Z` | `phux-desktop-X.Y.Z-macos-arm64.zip` + `.sha256` + `.sha256.minisig`, `SHA256SUMS` | `desktop-release.yml` |
+| Phux Desktop | `desktop-vX.Y.Z` | `phux-desktop-X.Y.Z-macos-arm64.zip`, `phux-desktop-X.Y.Z-linux-{x64,arm64}.tar.gz` + signed `.sha256`, `SHA256SUMS` | `desktop-release.yml` |
 | Mobile FFI | on `vX.Y.Z` | `PhuxFFI-*`, `PhuxMobileFFI-*` zips + `.sha256` + `.provenance` | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` | `<component>-vX.Y.Z` | npm with provenance + release tarball | `agent-integration-release.yml` |
 | Claude and Grok plugins | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | release tarball; repository marketplace | `agent-integration-release.yml` |
 | `phux-protocol` | `vX.Y.Z` | crates.io | `publish-crate.yml`, by hand |
-| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, `phux-desktop-next.<sha>-macos-arm64.zip`, signed sidecars | `next-release.yml` |
+| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, desktop ZIP/Linux tarballs at `next.<sha>`, signed sidecars | `next-release.yml` |
 | Manifests | `channels` | `stable.json`, `next.json` | `scripts/ci/release_manifest.py` |
 
 CLI targets are `aarch64-apple-darwin` (`xcode-27`), `x86_64-unknown-linux-gnu`
 (`ubuntu-24.04`), and `aarch64-unknown-linux-gnu` (`ubuntu-24.04-arm`). Linux
 builds run in an `ubuntu:22.04` container to link against glibc 2.35. Desktop
-is Apple silicon on macOS 27 or later, ad-hoc signed and not notarized. Only
+supports Apple silicon on macOS 27 or later, ad-hoc signed and not notarized,
+and native x86-64/ARM64 Linux built on Ubuntu 24.04. Linux desktop links the
+host font/display libraries and requires a Vulkan driver; it does not inherit
+the CLI's glibc 2.35 portability promise. Both X11 and Wayland backends are
+compiled; release qualification uses X11 with Xvfb/lavapipe, not a physical
+GPU or every Wayland compositor. All three desktop targets must qualify before
+their checksums are signed and the draft becomes public. Only
 CLI releases are GitHub's Latest. The Homebrew tap
 ([no-phux/homebrew-tap](https://github.com/no-phux/homebrew-tap)) renders
 `Formula/phux.rb` from Latest every fifteen minutes.
@@ -141,7 +147,11 @@ versions after any version-bearing change.
   member set, so change them together.
 - Desktop is qualified before upload. The archived app must pass
   `clients/desktop/scripts/smoke-app.ts` against an isolated server built from
-  the same checkout, and the installer transaction tests must pass.
+  the same checkout, and the installer transaction tests must pass. Linux
+  archives run `clients/desktop/scripts/smoke-linux.ts` under Xvfb/lavapipe,
+  checking native submitted-frame evidence, Tesseract OCR and shell/server
+  survival across app termination. A submitted receipt is never represented
+  as confirmed physical-display presentation.
 - The mobile FFI workflows build the commit their run names, key concurrency
   on that commit, and fail if provenance names any other. phux-mobile pins
   `PHUX_REV` to that provenance's `phux-rev`. The build scripts
