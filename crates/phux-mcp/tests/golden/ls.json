@@ -23,6 +23,7 @@
     {
       "exit": null,
       "id": "@1",
+      "key": null,
       "kind": "terminal",
       "lifecycle": "running",
       "parent": null
@@ -30,6 +31,7 @@
     {
       "exit": null,
       "id": "@2",
+      "key": null,
       "kind": "terminal",
       "lifecycle": "running",
       "parent": null
@@ -37,6 +39,7 @@
     {
       "exit": null,
       "id": "@9",
+      "key": null,
       "kind": "agent_session",
       "lifecycle": "running",
       "parent": "@1"
@@ -50,6 +53,7 @@
         "status": 42
       },
       "id": "@4",
+      "key": null,
       "kind": "terminal",
       "lifecycle": "exited",
       "parent": null
@@ -72,6 +76,7 @@
         "stopping": 0
       },
       "keep_empty": false,
+      "key": null,
       "lifetime": null,
       "members": 4,
       "name": "work",
