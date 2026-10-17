@@ -37,6 +37,9 @@ const CHROME_ROWS: u16 = 3;
 /// Rows the selection moves per wheel detent (matches copy-mode).
 pub const WHEEL_SCROLL_ROWS: usize = 3;
 
+/// The key legend in the bottom border, right-aligned.
+const FOOTER_KEYS: &str = "↑↓ move · ⏎ run · esc";
+
 /// A selectable row or a non-selectable section header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectKind {
@@ -403,6 +406,14 @@ impl SelectList {
         self.page.get().max(1)
     }
 
+    /// After the query changed: the rows are re-ranked, so the selection
+    /// moves to the best match (the first selectable row), never to whatever
+    /// now happens to sit at the old position.
+    fn select_best_match(&mut self) {
+        let indices = self.filtered_indices();
+        self.select_first(&indices);
+    }
+
     /// Jump to the first selectable row (Home).
     fn select_first(&mut self, indices: &[usize]) {
         self.selected = 0;
@@ -476,6 +487,24 @@ impl SelectList {
         lines
     }
 
+    /// The bottom-left border text: the selection's position among the
+    /// selectable rows (`3 of 61`), or the match count alone when nothing is
+    /// selected.
+    fn footer(&self, indices: &[usize]) -> String {
+        let selectable = indices
+            .iter()
+            .filter(|&&idx| !self.items[idx].is_header())
+            .count();
+        if selectable == 0 || !self.row_selectable(indices, self.selected) {
+            return format!("{selectable} rows");
+        }
+        let at = indices[..=self.selected]
+            .iter()
+            .filter(|&&idx| !self.items[idx].is_header())
+            .count();
+        format!("{at} of {selectable}")
+    }
+
     /// The query's tail that fits `width`, so the caret stays visible.
     fn visible_query(&self, width: u16) -> String {
         let query = clip_text(&self.query, usize::MAX);
@@ -529,15 +558,26 @@ impl SelectList {
         let padding =
             " ".repeat(width.saturating_sub(crate::render::display_width(&label) + sec_w));
 
+        // The matched letters, offset past the indent, so the user sees why
+        // a row is here.
+        let hits = self.label_hits(item).map(|hits| {
+            hits.into_iter()
+                .map(|pos| pos + indent.chars().count())
+                .collect::<Vec<_>>()
+        });
         if selected {
             // Own both colors so the selection reads on light terminals too.
-            let text = format!("{label}{padding}{secondary}");
-            Line::from(Span::styled(
-                text,
-                Style::default()
-                    .fg(self.theme.selection_fg)
-                    .bg(self.theme.selection_bg),
-            ))
+            let style = Style::default()
+                .fg(self.theme.selection_fg)
+                .bg(self.theme.selection_bg);
+            let mut spans = highlight_spans(
+                &label,
+                hits.as_deref(),
+                style,
+                style.add_modifier(Modifier::BOLD),
+            );
+            spans.push(Span::styled(format!("{padding}{secondary}"), style));
+            Line::from(spans)
         } else {
             let label_style = if item.attention {
                 Style::default()
@@ -546,12 +586,29 @@ impl SelectList {
             } else {
                 Style::default().fg(self.theme.text)
             };
-            Line::from(vec![
-                Span::styled(label, label_style),
-                Span::raw(padding),
-                Span::styled(secondary, Style::default().fg(self.theme.dim)),
-            ])
+            let hit_style = Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD);
+            let mut spans = highlight_spans(&label, hits.as_deref(), label_style, hit_style);
+            spans.push(Span::raw(padding));
+            spans.push(Span::styled(secondary, Style::default().fg(self.theme.dim)));
+            Line::from(spans)
         }
+    }
+
+    /// Char positions in `item.label` the query matches, when the label
+    /// alone is a match (a row kept by its keywords or chord shows no
+    /// highlight). `None` with an empty query.
+    fn label_hits(&self, item: &SelectItem) -> Option<Vec<usize>> {
+        if self.query.is_empty() {
+            return None;
+        }
+        let lowered = item.label.to_lowercase();
+        // A lowercase form of a different length cannot index the label.
+        if lowered.chars().count() != item.label.chars().count() {
+            return None;
+        }
+        fuzzy_match(&self.query.to_lowercase(), &lowered).map(|(_, hits)| hits)
     }
 }
 
@@ -588,7 +645,9 @@ impl RenderOverlay for SelectList {
             .unwrap_or(&[]);
 
         let body = self.body_lines(window, offset, inner_width);
-        Modal::new(&self.theme, self.title.clone(), body).render_into(modal_area, buf);
+        Modal::new(&self.theme, self.title.clone(), body)
+            .footer(self.footer(&indices), FOOTER_KEYS)
+            .render_into(modal_area, buf);
         paint_scrollbar(
             buf,
             Self::scrollbar_track(modal_area),
@@ -638,8 +697,7 @@ impl RenderOverlay for SelectList {
 
     fn handle_paste(&mut self, text: &str) {
         self.query.push_str(text);
-        let indices = self.filtered_indices();
-        self.snap_to_selectable(&indices);
+        self.select_best_match();
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
@@ -707,8 +765,7 @@ impl RenderOverlay for SelectList {
             }
             PhysicalKey::Backspace => {
                 self.query.pop();
-                let indices = self.filtered_indices();
-                self.snap_to_selectable(&indices);
+                self.select_best_match();
                 OverlayCommand::Stay
             }
             // `j`/`k` navigate only while the query is empty.
@@ -725,13 +782,43 @@ impl RenderOverlay for SelectList {
                     && !t.chars().any(char::is_control)
                 {
                     self.query.push_str(t);
-                    let indices = self.filtered_indices();
-                    self.snap_to_selectable(&indices);
+                    self.select_best_match();
                 }
                 OverlayCommand::Stay
             }
         }
     }
+}
+
+/// `text` as spans: the chars at `hits` (sorted char positions) in `hit`,
+/// the rest in `base`. Without hits, one span.
+fn highlight_spans(
+    text: &str,
+    hits: Option<&[usize]>,
+    base: Style,
+    hit: Style,
+) -> Vec<Span<'static>> {
+    let Some(hits) = hits.filter(|hits| !hits.is_empty()) else {
+        return vec![Span::styled(text.to_owned(), base)];
+    };
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_hit = false;
+    for (pos, ch) in text.chars().enumerate() {
+        let is_hit = hits.binary_search(&pos).is_ok();
+        if is_hit != run_hit && !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_hit { hit } else { base },
+            ));
+        }
+        run_hit = is_hit;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_hit { hit } else { base }));
+    }
+    spans
 }
 
 /// Indices of the `(index, haystack)` pairs a lowercased `query` fuzzy-matches,
@@ -754,18 +841,26 @@ pub(super) fn fuzzy_rank(
 /// and skipped gaps cost a little. Only the induced ordering is contractual.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
+    fuzzy_match(needle, haystack).map(|(score, _)| score)
+}
+
+/// [`fuzzy_score`] plus the char positions in `haystack` it matched, in
+/// order (empty for an empty needle).
+fn fuzzy_match(needle: &str, haystack: &str) -> Option<(i32, Vec<usize>)> {
     if needle.is_empty() {
-        return Some(0);
+        return Some((0, Vec::new()));
     }
     let hay: Vec<char> = haystack.chars().collect();
     let mut score: i32 = 0;
     let mut run: i32 = 0;
     let mut hay_idx: usize = 0;
     let mut last_match: Option<usize> = None;
+    let mut hits = Vec::with_capacity(needle.len());
 
     for nc in needle.chars() {
         let found = hay[hay_idx..].iter().position(|&hc| hc == nc)?;
         let pos = hay_idx + found;
+        hits.push(pos);
 
         // Gap penalty: earlier, tighter matches win.
         let gap = last_match.map_or(pos, |prev| pos - prev - 1);
@@ -790,7 +885,7 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
         last_match = Some(pos);
         hay_idx = pos + 1;
     }
-    Some(score)
+    Some((score, hits))
 }
 
 #[cfg(test)]
