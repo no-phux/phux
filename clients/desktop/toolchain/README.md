@@ -6,8 +6,8 @@ last-reviewed: 2026-10-17
 
 # Desktop framework toolchain
 
-**TL;DR.** The desktop builds against GPUI Kit 0.7.1 and the exact GPUI
-snapshot it was released with, `gpui-pre` 0.3.8. Three of those crates carry
+**TL;DR.** The desktop builds against GPUI Kit 0.7.3 and the exact GPUI
+snapshot it was released with, `gpui-pre` 0.3.9. Three of those crates carry
 reviewed local patches. `source.json` pins each crates.io archive and each
 patch by SHA-256; `bootstrap.py` materializes the patched copies under
 `gpui/` (ignored build state), and `native/Cargo.toml` points
@@ -94,12 +94,11 @@ Sources: <https://crates.io/crates/gpui-pre> (a snapshot of Zed's
 `Phux.app`.
 
 `gpui_util` and `gpui_shared_string` (published as `gpui-pre-util` and
-`gpui-pre-shared-string` 0.3.8) once carried no license in Zed. Their
+`gpui-pre-shared-string` 0.3.9) once carried no license in Zed. Their
 Apache-2.0 label now rests on upstream, not on the republisher's manifest.
 Zed [#63573](https://github.com/zed-industries/zed/pull/63573)
 (`ac5af8b9e1`) declared `license = "Apache-2.0"` for both, and each crate
 directory carries `LICENSE-APACHE`. Both packages record
-`zed-rev = 279fe070bb38` in `package.metadata.gpui-pre`. At that revision
-both upstream manifests declare Apache-2.0, and the published sources and
-`LICENSE-APACHE` files are byte-identical to Zed's. A `gpui-pre` bump repeats
+`zed-rev = 93d745668805` in `package.metadata.gpui-pre`, a revision after
+that change, where both upstream manifests declare Apache-2.0. A `gpui-pre` bump repeats
 this check for any crate that was not Apache-2.0 upstream at its new pin.

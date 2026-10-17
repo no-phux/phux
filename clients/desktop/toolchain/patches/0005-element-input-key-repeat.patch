@@ -130,7 +130,7 @@ index 71bcb10..f049e24 100644
 +    }
 +}
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 9fc3c95..9650294 100644
+index d346296..891762f 100644
 --- a/gpui-pre-macos/src/window.rs
 +++ b/gpui-pre-macos/src/window.rs
 @@ -1,6 +1,7 @@
@@ -142,7 +142,7 @@ index 9fc3c95..9650294 100644
      kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
      ns_string, renderer,
  };
-@@ -2846,12 +2847,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
+@@ -2857,12 +2858,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
                  return YES;
              }
  
@@ -159,10 +159,10 @@ index 9fc3c95..9650294 100644
                      }
                      NO
 diff --git a/gpui-pre/src/app/test_context.rs b/gpui-pre/src/app/test_context.rs
-index e7a8c06..dd059e1 100644
+index 1632843..67610c3 100644
 --- a/gpui-pre/src/app/test_context.rs
 +++ b/gpui-pre/src/app/test_context.rs
-@@ -617,7 +617,7 @@ impl TestAppContext {
+@@ -647,7 +647,7 @@ impl TestAppContext {
      }
  
      /// Returns the `TestWindow` backing the given handle.

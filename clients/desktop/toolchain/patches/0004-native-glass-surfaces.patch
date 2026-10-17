@@ -1,8 +1,8 @@
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 4d0b160..9fc3c95 100644
+index 1ced587..d346296 100644
 --- a/gpui-pre-macos/src/window.rs
 +++ b/gpui-pre-macos/src/window.rs
-@@ -660,6 +660,7 @@ struct MacWindowState {
+@@ -661,6 +661,7 @@ struct MacWindowState {
      native_window: id,
      native_view: NonNull<Object>,
      blurred_view: Option<id>,
@@ -10,7 +10,7 @@ index 4d0b160..9fc3c95 100644
      background_appearance: WindowBackgroundAppearance,
      cursor_style: CursorStyle,
      cursor_visible: Arc<AtomicBool>,
-@@ -1093,6 +1094,7 @@ impl MacWindow {
+@@ -1095,6 +1096,7 @@ impl MacWindow {
                  native_window,
                  native_view: NonNull::new_unchecked(native_view),
                  blurred_view: None,
@@ -18,7 +18,7 @@ index 4d0b160..9fc3c95 100644
                  background_appearance: WindowBackgroundAppearance::Opaque,
                  cursor_style: CursorStyle::Arrow,
                  cursor_visible,
-@@ -1919,6 +1921,71 @@ impl PlatformWindow for MacWindow {
+@@ -1926,6 +1928,71 @@ impl PlatformWindow for MacWindow {
          }
      }
  
@@ -91,10 +91,10 @@ index 4d0b160..9fc3c95 100644
          self.0.as_ref().lock().background_appearance
      }
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index c78829b..21e03c1 100644
+index ac970bb..c31380e 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -1211,6 +1211,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1260,6 +1260,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn background_appearance(&self) -> WindowBackgroundAppearance;
      fn set_title(&mut self, title: &str);
      fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
@@ -109,10 +109,10 @@ index c78829b..21e03c1 100644
      fn zoom(&self);
      fn toggle_fullscreen(&self);
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index c6f2dec..c0c056f 100644
+index d26dafa..8cebf93 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3019,6 +3019,18 @@ impl Window {
+@@ -3137,6 +3137,18 @@ impl Window {
              .set_background_appearance(background_appearance);
      }
  

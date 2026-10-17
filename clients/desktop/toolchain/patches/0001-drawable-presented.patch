@@ -1,8 +1,8 @@
 diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
-index a2a78ed..6757ea0 100644
+index e466205..c0a0e28 100644
 --- a/gpui-pre-apple/src/metal_renderer.rs
 +++ b/gpui-pre-apple/src/metal_renderer.rs
-@@ -145,6 +145,52 @@ pub struct PathRasterizationVertex {
+@@ -146,6 +146,52 @@ pub struct PathRasterizationVertex {
      pub bounds: Bounds<ScaledPixels>,
  }
  
@@ -55,7 +55,7 @@ index a2a78ed..6757ea0 100644
  impl MetalRenderer {
      /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
      pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
-@@ -472,46 +518,39 @@ impl MetalRenderer {
+@@ -490,46 +536,39 @@ impl MetalRenderer {
      }
  
      pub fn draw(&mut self, scene: &Scene) {
@@ -125,10 +125,10 @@ index a2a78ed..6757ea0 100644
  
      fn render_frame(
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 81d16f7..a753752 100644
+index b042825..ae1b2a2 100644
 --- a/gpui-pre-macos/src/window.rs
 +++ b/gpui-pre-macos/src/window.rs
-@@ -1420,6 +1420,32 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
+@@ -1423,6 +1423,32 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
      }
  }
  
@@ -161,7 +161,7 @@ index 81d16f7..a753752 100644
  impl PlatformWindow for MacWindow {
      fn bounds(&self) -> Bounds<Pixels> {
          self.0.as_ref().lock().bounds()
-@@ -2110,11 +2136,27 @@ impl PlatformWindow for MacWindow {
+@@ -2121,11 +2147,27 @@ impl PlatformWindow for MacWindow {
          self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
      }
  
@@ -190,10 +190,10 @@ index 81d16f7..a753752 100644
          self.0.lock().renderer.sprite_atlas().clone()
      }
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index e47fd00..2f76441 100644
+index c08d964..8dca552 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -1140,6 +1140,20 @@ pub enum TextInputStateChange {
+@@ -1189,6 +1189,20 @@ pub enum TextInputStateChange {
      ContentChanged,
  }
  
@@ -214,7 +214,7 @@ index e47fd00..2f76441 100644
  #[expect(missing_docs)]
  pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn bounds(&self) -> Bounds<Pixels>;
-@@ -1220,7 +1234,24 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1273,7 +1287,24 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn on_close(&self, callback: Box<dyn FnOnce()>);
      fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
      fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
@@ -240,10 +240,10 @@ index e47fd00..2f76441 100644
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
      fn is_subpixel_rendering_supported(&self) -> bool;
 diff --git a/gpui-pre/src/profiler/hang.rs b/gpui-pre/src/profiler/hang.rs
-index fbd5234..66ad8b8 100644
+index 827682c..886b300 100644
 --- a/gpui-pre/src/profiler/hang.rs
 +++ b/gpui-pre/src/profiler/hang.rs
-@@ -1461,7 +1461,7 @@ mod tests {
+@@ -1817,7 +1817,7 @@ mod tests {
      fn draw_window(cx: &mut VisualTestContext) {
          cx.update(|window, cx| {
              let arena_clear = window.draw(cx);
@@ -253,7 +253,7 @@ index fbd5234..66ad8b8 100644
          });
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 259a451..9c19014 100644
+index 1214b03..c861250 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -6,13 +6,13 @@ use crate::Inspector;
@@ -272,7 +272,7 @@ index 259a451..9c19014 100644
      PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
      PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
      RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-@@ -729,6 +729,43 @@ pub struct DismissEvent;
+@@ -731,6 +731,43 @@ pub struct DismissEvent;
  
  type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
  
@@ -316,7 +316,7 @@ index 259a451..9c19014 100644
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
-@@ -1202,6 +1239,9 @@ pub struct Window {
+@@ -1253,6 +1290,9 @@ pub struct Window {
      pub(crate) next_tooltip_id: TooltipId,
      pub(crate) tooltip_bounds: Option<TooltipBounds>,
      pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
@@ -326,7 +326,7 @@ index 259a451..9c19014 100644
      pub(crate) dirty_views: FxHashSet<EntityId>,
      focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
      pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
-@@ -1841,14 +1881,14 @@ impl Window {
+@@ -1896,14 +1936,14 @@ impl Window {
                                      window.refresh();
                                  }
                                  let arena_clear_needed = window.draw(cx);
@@ -343,7 +343,7 @@ index 259a451..9c19014 100644
                          .log_err();
                  }
  
-@@ -2090,6 +2130,9 @@ impl Window {
+@@ -2150,6 +2190,9 @@ impl Window {
              rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame_callbacks,
@@ -353,7 +353,7 @@ index 259a451..9c19014 100644
              next_hitbox_id: HitboxId(0),
              next_tooltip_id: TooltipId::default(),
              tooltip_bounds: None,
-@@ -2646,6 +2689,40 @@ impl Window {
+@@ -2706,6 +2749,40 @@ impl Window {
          AsyncWindowContext::new_context(cx.to_async(), self.handle)
      }
  
@@ -394,7 +394,7 @@ index 259a451..9c19014 100644
      /// Schedule the given closure to be run directly after the current frame is rendered.
      pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
          RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
-@@ -3480,13 +3557,46 @@ impl Window {
+@@ -3600,13 +3677,46 @@ impl Window {
          self.invalidator.replace_views(views);
      }
  
@@ -443,7 +443,7 @@ index 259a451..9c19014 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.record_present(
              present_start,
-@@ -3500,9 +3610,9 @@ impl Window {
+@@ -3620,9 +3730,9 @@ impl Window {
  
      /// Presents the most recently drawn frame if it hasn't been presented yet.
      #[cfg(all(test, feature = "profiler"))]

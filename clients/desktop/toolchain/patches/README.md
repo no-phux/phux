@@ -6,7 +6,7 @@ last-reviewed: 2026-10-16
 
 # Local GPUI patches
 
-**TL;DR.** Ordered, reviewed patches over the pinned `gpui-pre` 0.3.8
+**TL;DR.** Ordered, reviewed patches over the pinned `gpui-pre` 0.3.9
 snapshot crates, applied by `../bootstrap.py`. `../source.json` records each
 patch's SHA-256. Paths are relative to `toolchain/gpui/` (one directory per
 crate). None has been published upstream.

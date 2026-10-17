@@ -34,12 +34,12 @@ phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
 phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false }
 phux-perf = { path = "../../../crates/phux-perf" }
 phux-protocol = { path = "../../../crates/phux-protocol" }
-# GPUI snapshot, platform and Kit move together: Kit 0.7.1 is built against
-# exactly gpui-pre 0.3.8. `toolchain/bootstrap.py` materializes the patched
+# GPUI snapshot, platform and Kit move together: Kit 0.7.3 is built against
+# exactly gpui-pre 0.3.9. `toolchain/bootstrap.py` materializes the patched
 # copies `[patch.crates-io]` points at (drawable-presented receipts).
-gpui = { package = "gpui-pre", version = "=0.3.8" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
-gpui-kit = { version = "=0.7.1" }
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
+gpui-kit = { version = "=0.7.3" }
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
@@ -62,8 +62,8 @@ gpui-pre-macos = { path = "../toolchain/gpui/gpui-pre-macos" }
 # only with GPUI's `test-support` feature. Enabling it here keeps the feature
 # out of the shipping binary: Cargo unifies it for `cargo test` and clippy
 # `--all-targets`, and `cargo build` does not.
-gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = [
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = [
     "font-kit",
     "runtime_shaders",
     "test-support",
