@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-07
+last-reviewed: 2026-10-17
 ---
 
 # Decisions in force
@@ -205,6 +205,7 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
+- [0178](./0178-release-checksums-are-minisign-signed.md) CI minisign-signs every release sidecar with one Actions-held key; `phux update` verifies it against embedded current and next keys and refuses an unsigned or foreign checksum.
 - [0176](./0176-the-release-pipeline.md) One name table; clients read version, commit, protocol, and digest from the channel manifest and derive the rest; one installer; `publish.yml` publishes stable drafts on green `ci`, `next-release.yml` publishes green `main`.
 - [0175](./0175-one-release-manifest-per-channel.md) Desktop stages an update while running and swaps it in after exit; each release carries the protocol it speaks.
 - [0169](./0169-zig-cockpit-lives-in-an-archive.md) Zig Cockpit and its exclusive hooks leave main; a published archive branch and annotated tag preserve bot-led recovery. Shared FFI, GPUI desktop, mobile, and libghostty Zig stay.

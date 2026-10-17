@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-16
+last-reviewed: 2026-10-17
 ---
 
 # Releasing
@@ -18,13 +18,13 @@ are in [CI](./CI.md).
 
 | Product | Tag | Assets | Built by |
 |---|---|---|---|
-| `phux` + `phux-mcp` | `vX.Y.Z` | `phux-vX.Y.Z-<target>.tar.gz` + `.sha256` | `release.yml` -> `build-cli.yml` |
-| Phux Desktop | `desktop-vX.Y.Z` | `phux-desktop-X.Y.Z-macos-arm64.zip` + `.sha256`, `SHA256SUMS` | `desktop-release.yml` |
+| `phux` + `phux-mcp` | `vX.Y.Z` | `phux-vX.Y.Z-<target>.tar.gz` + `.sha256` + `.sha256.minisig` | `release.yml` -> `build-cli.yml` |
+| Phux Desktop | `desktop-vX.Y.Z` | `phux-desktop-X.Y.Z-macos-arm64.zip` + `.sha256` + `.sha256.minisig`, `SHA256SUMS` | `desktop-release.yml` |
 | Mobile FFI | on `vX.Y.Z` | `PhuxFFI-*`, `PhuxMobileFFI-*` zips + `.sha256` + `.provenance` | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` | `<component>-vX.Y.Z` | npm with provenance + release tarball | `agent-integration-release.yml` |
 | Claude and Grok plugins | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | release tarball; repository marketplace | `agent-integration-release.yml` |
 | `phux-protocol` | `vX.Y.Z` | crates.io | `publish-crate.yml`, by hand |
-| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, `phux-desktop-next.<sha>-macos-arm64.zip`, sidecars | `next-release.yml` |
+| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, `phux-desktop-next.<sha>-macos-arm64.zip`, signed sidecars | `next-release.yml` |
 | Manifests | `channels` | `stable.json`, `next.json` | `scripts/ci/release_manifest.py` |
 
 CLI targets are `aarch64-apple-darwin` (`xcode-27`), `x86_64-unknown-linux-gnu`
@@ -77,6 +77,20 @@ changed since the commit `next.json` names. After a build lands,
 in `next.json`, writes its bridge record (`channel.json` or
 `desktop-channel.json`), and prunes that product's assets to the current and
 previous commit.
+
+## Signing
+
+Every CLI and Desktop sidecar is signed with minisign
+([ADR-0178](./adr/0178-release-checksums-are-minisign-signed.md)).
+`scripts/ci/sign-release.sh` reads the unencrypted secret key from the
+`PHUX_MINISIGN_SECRET_KEY` repository secret, writes `<asset>.sha256.minisig`,
+and fails unless the signature verifies against `RELEASE_KEYS` in
+`scripts/install.sh`. It runs in `release.yml`, in the Linux `sign` job of
+`desktop-release.yml` (which publishes the Desktop draft), and in
+`next-release.yml`. A missing secret fails the release instead of shipping it
+unsigned. The next key's secret is held encrypted off any machine that holds
+the current one; ADR-0178 decision 6 is the custody rule and the rotation
+procedure.
 
 ## Manifests
 

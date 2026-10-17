@@ -5,7 +5,10 @@
 //! never read from the network, so a manifest vouches for an asset only
 //! through its digest. `scripts/ci/release_manifest.py` writes the manifest
 //! and `scripts/install.sh` derives the same names; the golden manifests in
-//! `scripts/fixtures/release-manifest/` keep all three in step.
+//! `scripts/fixtures/release-manifest/` keep all three in step. A digest is
+//! trusted only once [`signature`] verifies that a release key signed it.
+
+pub mod signature;
 
 use std::fmt;
 
@@ -165,6 +168,12 @@ impl Asset {
     #[must_use]
     pub fn sidecar_url(&self) -> String {
         format!("{}.sha256", self.url)
+    }
+
+    /// The minisign signature over the sidecar (ADR-0178).
+    #[must_use]
+    pub fn signature_url(&self) -> String {
+        format!("{}.sha256.minisig", self.url)
     }
 }
 
@@ -392,6 +401,10 @@ mod tests {
             assert!(path.ends_with(&format!("/{}", asset.name)));
             assert!(asset.name.starts_with(&asset.stem));
             assert_eq!(asset.sidecar_url(), format!("{}.sha256", asset.url));
+            assert_eq!(
+                asset.signature_url(),
+                format!("{}.sha256.minisig", asset.url)
+            );
         }
     }
 

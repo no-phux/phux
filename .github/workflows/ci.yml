@@ -103,9 +103,13 @@ jobs:
       - name: compile-free guards
         if: env.DOCS_ONLY != 'true'
         run: |
+          # minisign: the installer's real-signature checks must run here,
+          # not skip (PHUX_TEST_REAL_MINISIGN makes a skip a failure).
           nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck \
             nixpkgs#just nixpkgs#nodejs_24 nixpkgs#python3 nixpkgs#jq \
+            nixpkgs#minisign \
             -c bash -euo pipefail <<'EOF'
+          export PHUX_TEST_REAL_MINISIGN=1
           just workflow-check docs-check font-check e2e-lane-check zig-pin-check ghostty-pin-check install-surface-check cache-portable-check
           just desktop-install desktop-check
           timeout 120 just agents-fleet-smoke

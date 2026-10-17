@@ -12,6 +12,10 @@ on:
         description: "Existing vX.Y.Z draft."
         required: true
         type: string
+    secrets:
+      PHUX_MINISIGN_SECRET_KEY:
+        description: "minisign secret key that signs each checksum (ADR-0178)."
+        required: true
 
 permissions:
   contents: write
@@ -33,10 +37,21 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
+
+      # The signature over each sidecar is the trust root `phux update` and
+      # the installer check (ADR-0178); nothing publishes unsigned.
+      - name: Sign the checksums
+        env:
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
+        run: bash scripts/ci/sign-release.sh dist/phux-*.tar.gz.sha256
 
       # `gh release upload` adds assets and never touches the notes. Only the
       # CLI is Latest: the tap and pre-manifest binaries resolve through it.
@@ -50,6 +65,7 @@ jobs:
           for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             test -f "dist/phux-${TAG}-${target}.tar.gz"
             test -f "dist/phux-${TAG}-${target}.tar.gz.sha256"
+            test -f "dist/phux-${TAG}-${target}.tar.gz.sha256.minisig"
           done
-          gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 --clobber
+          gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig --clobber
           gh release edit "$TAG" --draft=false --latest

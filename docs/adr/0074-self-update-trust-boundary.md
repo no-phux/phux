@@ -15,7 +15,7 @@ unrecognized location rather than overwriting it.
 
 Status: Accepted
 Date: 2026-08-07
-Superseded in part by [ADR-0176](./0176-the-release-pipeline.md): decision 1; the channel manifest digest is the anchor, and a pin verifies against its sidecar.
+Superseded in part by [ADR-0176](./0176-the-release-pipeline.md): decision 1; the channel manifest digest is the anchor, and a pin verifies against its sidecar. [ADR-0178](./0178-release-checksums-are-minisign-signed.md) then makes a minisign-signed sidecar the trust root.
 
 ## Context
 

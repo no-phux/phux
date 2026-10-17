@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-17
 ---
 
 # Install
@@ -151,8 +151,8 @@ published crate is the wire library, `phux-protocol`.
 ### Release tarball
 
 Every release carries `phux-<tag>-<target>.tar.gz` with a `.sha256` sidecar
-for `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
-`aarch64-unknown-linux-gnu`:
+and its minisign signature, `.sha256.minisig`, for `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu`:
 
 ```sh
 tag=vX.Y.Z
@@ -160,6 +160,13 @@ target=aarch64-apple-darwin
 base="https://github.com/no-phux/phux/releases/download/${tag}"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz.sha256"
+curl -LO "${base}/phux-${tag}-${target}.tar.gz.sha256.minisig"
+# Trust any key in RELEASE_KEYS in scripts/install.sh; one of them verifies.
+keys="$(curl -fsSL https://raw.githubusercontent.com/no-phux/phux/main/scripts/install.sh \
+  | sed -n "s/^RELEASE_KEYS='\(.*\)'$/\1/p")"
+for key in $keys; do
+  minisign -V -H -P "$key" -m "phux-${tag}-${target}.tar.gz.sha256" && break
+done
 shasum -a 256 -c "phux-${tag}-${target}.tar.gz.sha256"
 tar -xzf "phux-${tag}-${target}.tar.gz"
 ```
@@ -189,12 +196,21 @@ phux channel latest            # back to numbered releases
 
 `phux update` reads the channel's release manifest
 (`releases/download/channels/stable.json` or `next.json`; one small file, no
-GitHub API calls), downloads the release tarball, refuses on a mismatch with
-the manifest's SHA-256, and replaces `phux` and `phux-mcp` together
+GitHub API calls), downloads the release tarball, verifies the minisign
+signature on its checksum against the release keys compiled into `phux`,
+refuses on a missing or foreign signature or a mismatch with the signed or
+manifest SHA-256, and replaces `phux` and `phux-mcp` together
 under a lock with a recovery journal. It then asks a running server to
 graceful-upgrade, the `phux upgrade` path. The previous pair stays in
 `.phux-update-backup/` beside the binaries for `--rollback`. The trust
-boundary is [ADR-0074](adr/0074-self-update-trust-boundary.md).
+boundary is [ADR-0074](adr/0074-self-update-trust-boundary.md), with the
+signature from [ADR-0178](adr/0178-release-checksums-are-minisign-signed.md).
+A stable manifest naming a release older than the installed one is refused
+(`update_downgrade_refused`); a downgrade takes `--version`. Phux Desktop
+verifies the same signature in-process before it stages an update. The
+installer checks the signature when `minisign` is on `PATH`;
+`PHUX_REQUIRE_SIGNATURE=1` makes it refuse without one (`0`, the default,
+falls back to the SHA-256 alone).
 
 It writes only to direct installs: the binary's resolved path must be in
 `$PHUX_INSTALL_DIR`, `~/.local/bin`, `~/bin`, `/usr/local/bin`, or

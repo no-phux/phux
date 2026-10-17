@@ -295,7 +295,8 @@ def stable(out, publish):
 
 
 def verified_dist(product, sha, dist):
-    """`{target: (path, hex)}` for each built asset whose sidecar matches it."""
+    """`{target: (path, hex)}` for each built asset whose sidecar matches it
+    and carries a signature (ADR-0178)."""
     verified = {}
     for target in TARGETS[product]:
         name = asset_name(product, "next", None, sha, target)
@@ -303,6 +304,8 @@ def verified_dist(product, sha, dist):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if Path(dist, f"{name}.sha256").read_text().split() != [digest, name]:
             raise ManifestError(f"{name}.sha256 does not match {name}")
+        if not Path(dist, f"{name}.sha256.minisig").is_file():
+            raise ManifestError(f"{name}.sha256 is not signed")
         verified[target] = (path, digest)
     return verified
 
@@ -349,7 +352,8 @@ def publish_next(product, sha, dist):
     current = published_manifest("next")
 
     ensure_prerelease("next", "Moving next channel (green main). Not a stable release.", sha)
-    upload("next", [p for path, _ in built.values() for p in (path, f"{path}.sha256")])
+    upload("next", [p for path, _ in built.values()
+                    for p in (path, f"{path}.sha256", f"{path}.sha256.minisig")])
     recorded = asset_digests(release("next")["assets"], [path.name for path, _ in built.values()])
     if any(recorded[path.name] != digest for path, digest in built.values()):
         raise ManifestError("the uploaded bytes do not match the build")

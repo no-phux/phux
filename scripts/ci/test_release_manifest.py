@@ -78,6 +78,9 @@ class NextTests(unittest.TestCase):
             Path(dist, name).write_bytes(b"app")
             digest = hashlib.sha256(b"app").hexdigest()
             Path(dist, f"{name}.sha256").write_text(f"{digest}  {name}\n")
+            with self.assertRaisesRegex(rm.ManifestError, "not signed"):
+                rm.verified_dist("desktop", sha, dist)
+            Path(dist, f"{name}.sha256.minisig").write_text("signature\n")
             self.assertEqual(rm.verified_dist("desktop", sha, dist)["aarch64-apple-darwin"][1], digest)
             Path(dist, f"{name}.sha256").write_text(f"{'0' * 64}  {name}\n")
             with self.assertRaises(rm.ManifestError):
