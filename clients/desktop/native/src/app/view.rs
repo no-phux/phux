@@ -2804,7 +2804,10 @@ pub(super) fn ghost_button(
     Button::new(id).label(label).ghost().small()
 }
 
-/// A chrome icon button that keeps the titlebar from dragging the window when pressed.
+/// A chrome icon button that keeps the titlebar from dragging the window when
+/// pressed. It stops the press rather than occluding: an occluder would hide
+/// the titlebar's own hover, and the slim strip reveals its skin toggle on
+/// that hover, so the toggle would vanish as the pointer reached it.
 fn icon_button(
     id: &'static str,
     icon: IconName,
@@ -2813,10 +2816,12 @@ fn icon_button(
     click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let button = ghost_icon(id, icon, label).small().on_click(click);
-    div().occlude().child(match chord {
-        Some(chord) => button.tooltip(format!("{label}  {chord}")),
-        None => button,
-    })
+    div()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(match chord {
+            Some(chord) => button.tooltip(format!("{label}  {chord}")),
+            None => button,
+        })
 }
 
 /// `chord` as a GPUI keystroke, when it parses.
