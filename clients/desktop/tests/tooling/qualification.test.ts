@@ -10,6 +10,7 @@ import {
   productionSocketReason,
 } from "../../scripts/host.ts";
 import { infoPlist, packageVersion } from "../../scripts/package-app.ts";
+import { BUDGETS, checkPerfBudget } from "../../scripts/perf-budget.ts";
 
 const png = Buffer.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -135,4 +136,61 @@ test("the app plist identifies the GPUI host and a stable release version", () =
   expect(infoPlist("0.1.0", "abc", "next")).toContain(
     "<key>PhuxDesktopChannel</key><string>next</string>",
   );
+});
+
+function perfLine(phase: string, overrides: Record<string, unknown> = {}): string {
+  const budget = BUDGETS[phase];
+  if (!budget) throw new Error(`no budget for ${phase}`);
+  const value = (path: string) => budget.counters[path] ?? 0;
+  return JSON.stringify({
+    phase,
+    frames: value("frames"),
+    tick_us: { mean: 100, p50: 90, p99: 200 },
+    scene: {
+      reused: value("scene.reused"),
+      patched: value("scene.patched"),
+      shaped_lines: value("scene.shaped_lines"),
+    },
+    runtime: {
+      project_grid: { count: 0 },
+      published: value("runtime.published"),
+      buffer_fresh: value("runtime.buffer_fresh"),
+    },
+    process: { max_rss_bytes: 80_000_000 },
+    ...overrides,
+  });
+}
+
+test("headless perf passes within budget and ignores cargo noise", () => {
+  const lines = Object.keys(BUDGETS).map((phase) => perfLine(phase));
+  expect(checkPerfBudget(["running 1 test", ...lines, "mbx[cache]: done"].join("\n"))).toEqual([]);
+});
+
+test("headless perf fails on work, time, RSS and phase-set regressions", () => {
+  const phases = Object.keys(BUDGETS);
+  const ok = (phase: string) => perfLine(phase);
+  const replace = (phase: string, line: string) =>
+    phases.map((name) => (name === phase ? line : ok(name))).join("\n");
+  expect(
+    checkPerfBudget(
+      replace("cached", perfLine("cached", { scene: { reused: 0, patched: 0, shaped_lines: 24 } })),
+    ),
+  ).toEqual([
+    "cached: scene.reused is 0, budget 128",
+    "cached: scene.shaped_lines is 24, budget 0",
+  ]);
+  expect(
+    checkPerfBudget(replace("scroll", perfLine("scroll", { tick_us: { mean: 1e9 } }))),
+  ).toEqual(["scroll: tick_us.mean is 1000000000, ceiling 60000"]);
+  expect(
+    checkPerfBudget(replace("sparse", perfLine("sparse", { process: { max_rss_bytes: 2 ** 31 } }))),
+  ).toEqual(["sparse: process.max_rss_bytes is 2147483648, ceiling 1073741824"]);
+  expect(checkPerfBudget(phases.slice(1).map(ok).join("\n"))).toEqual([
+    "cached: phase missing from the run",
+  ]);
+  expect(
+    checkPerfBudget(
+      [...phases.map(ok), ok("cached"), perfLine("cached", { phase: "new" })].join("\n"),
+    ),
+  ).toEqual(["cached: phase reported twice", "new: phase has no budget"]);
 });
