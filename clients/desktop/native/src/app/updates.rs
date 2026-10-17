@@ -104,7 +104,7 @@ fn status_header(
     use gpui::prelude::*;
     use gpui::{div, px};
     let (status, tone) = status;
-    let colors = &look.colors;
+    let colors = &look.chrome;
 
     div()
         .flex()

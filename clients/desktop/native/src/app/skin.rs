@@ -17,7 +17,7 @@ use super::color::from_hex;
 pub struct Look {
     pub skin: Skin,
     /// The palette with the skin's washes, as [`chrome_palette`] builds it.
-    pub colors: Palette,
+    pub chrome: Palette,
     /// Theme foreground.
     pub ink: Hsla,
     /// The window sheet.
@@ -76,7 +76,7 @@ impl Look {
             popover_shadow: shadows(&m.popover_shadow, light),
             capsule_shadow: shadows(&[m.capsule_shadow], light),
             tab_shadow: shadows(&[m.tab_shadow], light),
-            colors: chrome,
+            chrome,
         }
     }
 }
@@ -243,10 +243,10 @@ mod tests {
             assert_eq!(look.rim, ink.opacity(if light { 0.12 } else { 0.14 }));
             assert_eq!(look.raised, from_hex(&colors.raised).opacity(0.97));
             let ink_hex = &colors.theme.foreground;
-            assert_eq!(look.colors.hover, with_alpha(ink_hex, 0.06));
-            assert_eq!(look.colors.active, with_alpha(ink_hex, 0.11));
-            assert_eq!(look.colors.border, with_alpha(ink_hex, 0.08));
-            assert_eq!(look.colors.divider, with_alpha(ink_hex, 0.08));
+            assert_eq!(look.chrome.hover, with_alpha(ink_hex, 0.06));
+            assert_eq!(look.chrome.active, with_alpha(ink_hex, 0.11));
+            assert_eq!(look.chrome.border, with_alpha(ink_hex, 0.08));
+            assert_eq!(look.chrome.divider, with_alpha(ink_hex, 0.08));
             assert_eq!(look.pane_shadow.len(), 1);
             assert_eq!(
                 look.pane_shadow[0].color,

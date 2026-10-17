@@ -28,8 +28,6 @@ use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMe
 use gpui_kit::component::tooltip::Tooltip;
 use phux_client_runtime::control::{PaneDescriptor, Status};
 use phux_protocol::ids::ResourceKey;
-#[cfg(test)]
-use phux_protocol::ids::SessionKey;
 use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use phux_protocol::{ResourceId, ResourceKind};
 
@@ -79,6 +77,20 @@ fn tabs_shown(skin: &Skin, count: usize) -> bool {
     skin.chrome.tabs == TabsWhen::Always || count >= 2
 }
 
+/// Whether the desk's workspace tabs show at `position` in `skin`.
+fn tabs_at(desk: &Desk, skin: &Skin, position: TabPosition) -> bool {
+    let count = desk
+        .link
+        .as_ref()
+        .map_or(0, |link| link.workspace.tabs.len());
+    desk.tab_position() == position && tabs_shown(skin, count)
+}
+
+/// Whether the prefs show the sidebar in this window.
+fn sidebar_wanted(desk: &Desk) -> bool {
+    desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick
+}
+
 /// How see-through the skin's pane cards are, 0 (solid) to 1. Gloss
 /// highlights scale with it so they fade out as the glass goes opaque.
 fn gloss(skin: &Skin) -> f32 {
@@ -95,26 +107,25 @@ fn chip_radius(skin: &Skin) -> f32 {
     skin.shape.kit_radius / 2.
 }
 
+fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -> BoxShadow {
+    BoxShadow {
+        color,
+        offset: point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(spread),
+        inset,
+    }
+}
+
 /// The selected tab's lift, plus a specular top edge and a faint accent glow
 /// while the skin is glassy.
 fn tab_glow(look: &Look) -> Vec<BoxShadow> {
     let mut shadows = look.tab_shadow.clone();
     let gloss = gloss(&look.skin);
     if gloss > 0. && look.lit.a > 0. {
-        shadows.push(BoxShadow {
-            color: look.lit.opacity(0.5 * gloss),
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(0.),
-            spread_radius: px(0.),
-            inset: true,
-        });
-        shadows.push(BoxShadow {
-            color: from_hex(&look.colors.theme.accent).opacity(0.1 * gloss),
-            offset: point(px(0.), px(0.)),
-            blur_radius: px(12.),
-            spread_radius: px(-4.),
-            inset: false,
-        });
+        let accent = from_hex(&look.chrome.theme.accent);
+        shadows.push(shadow(look.lit.opacity(0.5 * gloss), 1., 0., 0., true));
+        shadows.push(shadow(accent.opacity(0.1 * gloss), 0., 12., -4., false));
     }
     shadows
 }
@@ -124,13 +135,7 @@ fn pane_shadows(look: &Look) -> Vec<BoxShadow> {
     let mut shadows = look.pane_shadow.clone();
     let rim = look.rim.opacity(0.6 * gloss(&look.skin));
     if rim.a > 0. {
-        shadows.push(BoxShadow {
-            color: rim,
-            offset: point(px(0.), px(0.)),
-            blur_radius: px(0.),
-            spread_radius: px(1.),
-            inset: true,
-        });
+        shadows.push(shadow(rim, 0., 0., 1., true));
     }
     shadows
 }
@@ -178,10 +183,18 @@ fn host_tint(host: Option<&str>, colors: &Palette) -> Hsla {
     )
 }
 
+/// A round swatch `size` points across.
+fn dot(size: f32, color: Hsla) -> gpui::Div {
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .rounded_full()
+        .bg(color)
+}
+
 fn host_chip(host: Option<&str>, online: bool, colors: &Palette) -> impl IntoElement {
-    let label = host.unwrap_or("Local");
     let tint = host_tint(host, colors);
-    let detail = format!("Runs on {label}");
+    let detail = format!("Runs on {}", host.unwrap_or("Local"));
     div()
         .min_w_0()
         .max_w_full()
@@ -198,7 +211,7 @@ fn host_chip(host: Option<&str>, online: bool, colors: &Palette) -> impl IntoEle
             linear_color_stop(tint.opacity(0.13), 0.),
             linear_color_stop(tint.opacity(0.05), 1.),
         ))
-        .child(div().size(px(5.)).flex_shrink_0().rounded_full().bg(tint))
+        .child(dot(5., tint))
         .child(
             div()
                 .min_w_0()
@@ -291,45 +304,47 @@ impl gpui::Render for CachedChrome {
     }
 }
 
-fn cached_chrome(
-    build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
-    cx: &mut Context<Desk>,
-) -> Entity<CachedChrome> {
-    let observed = cx.entity();
-    cx.new(|cx| {
-        cx.observe(&observed, |_, _, cx| cx.notify()).detach();
-        CachedChrome {
-            desk: observed.downgrade(),
-            build,
-        }
-    })
-}
-
 fn chrome_slot(
     slot: &mut Option<Entity<CachedChrome>>,
     build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
     style: StyleRefinement,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    slot.get_or_insert_with(|| cached_chrome(build, cx))
-        .clone()
-        .cached(style)
+    slot.get_or_insert_with(|| {
+        let observed = cx.entity();
+        cx.new(|cx| {
+            cx.observe(&observed, |_, _, cx| cx.notify()).detach();
+            CachedChrome {
+                desk: observed.downgrade(),
+                build,
+            }
+        })
+    })
+    .clone()
+    .cached(style)
 }
 
 fn build_titlebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     let look = desk.look();
-    titlebar(desk, sidebar, &look, cx).into_any_element()
+    titlebar(desk, &look, cx).into_any_element()
 }
 
 fn build_sidebar(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    sidebar_column(desk, &look.colors, cx).into_any_element()
+    div()
+        .w(px(desk.prefs.sidebar_width as f32))
+        .h_full()
+        .flex_shrink_0()
+        .relative()
+        .flex()
+        .flex_col()
+        .child(sidebar_list(desk, &look, cx))
+        .child(sidebar_resize(desk, &look, cx))
+        .into_any_element()
 }
 
 fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    let colors = &look.colors;
     div()
         .w(px(TAB_RAIL))
         .h_full()
@@ -346,7 +361,7 @@ fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
                 .pb(px(10.))
                 .text_xs()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(from_hex(&colors.muted))
+                .text_color(from_hex(&look.chrome.muted))
                 .child("Workspace"),
         )
         .child(
@@ -362,12 +377,11 @@ fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    overlays::layer(desk, &look.colors, window, cx)
+    overlays::layer(desk, &look.chrome, window, cx)
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
-    let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     desk.set_viewport(window.viewport_size());
     desk.sync_title(window);
     desk.settle_focus(window, cx);
@@ -396,12 +410,9 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     observe_motion(desk, window);
     // The sidebar slides shut as the skin withdraws it, whatever the prefs say.
     let presence = skin.chrome.sidebar.clamp(0., 1.);
+    let sidebar = sidebar_wanted(desk) && presence > 0.;
     let sidebar_width = desk.prefs.sidebar_width as f32 * presence;
-    let tab_count = desk
-        .link
-        .as_ref()
-        .map_or(0, |link| link.workspace.tabs.len());
-    let side_tabs = desk.tab_position() == TabPosition::Side && tabs_shown(&skin, tab_count);
+    let side_tabs = tabs_at(desk, &skin, TabPosition::Side);
     let sheen_height = skin.material.sheen_height;
     let sheen = sheen_height > 0.
         && look.sheen.a > 0.
@@ -454,7 +465,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                 .flex_grow(1.)
                 .flex()
                 .min_h(px(0.))
-                .when(sidebar && presence > 0., |row| {
+                .when(sidebar, |row| {
                     let style = StyleRefinement::default().w(px(sidebar_width)).h_full();
                     let style = if presence < 1. {
                         style.overflow_hidden().opacity(presence)
@@ -546,21 +557,17 @@ fn drag_capture(cursor: CursorStyle, cx: &mut Context<Desk>) -> AnyElement {
 /// terminal skin wears it, keeps the traffic lights, a centred title, tabs
 /// only when there are several, and the skin toggle on hover. Controls fade
 /// with the bar's height, so a skin shift morphs between the two.
-fn titlebar(
-    desk: &mut Desk,
-    sidebar: bool,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
+fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let region = desk
         .drag_region
         .get_or_insert_with(|| cx.new(crate::chrome::DragRegion::new))
         .clone();
-    let colors = &look.colors;
+    let colors = &look.chrome;
     let skin = &look.skin;
     let height = skin.chrome.titlebar;
     let fit = controls_fit(height);
     let quick = desk.role == desk::WindowRole::Quick;
+    let sidebar = sidebar_wanted(desk);
     let presence = skin.chrome.sidebar.clamp(0., 1.);
     let full = titlebar_lead(
         sidebar && presence > 0.,
@@ -568,11 +575,7 @@ fn titlebar(
         desk.prefs.sidebar_width as f32 * presence,
     );
     let lead = (TRAFFIC_LIGHTS + (full - TRAFFIC_LIGHTS) * fit).max(TRAFFIC_LIGHTS);
-    let tabs = desk
-        .link
-        .as_ref()
-        .map_or(0, |link| link.workspace.tabs.len());
-    let top_tabs = desk.tab_position() == TabPosition::Top && tabs_shown(skin, tabs);
+    let top_tabs = tabs_at(desk, skin, TabPosition::Top);
     let title = (fit < 1. && !top_tabs).then(|| {
         let title = desk
             .active_tab()
@@ -626,7 +629,7 @@ fn titlebar(
                 .pr(px(8.))
                 .when(fit < 1., |lead| lead.overflow_hidden().opacity(fit))
                 .when(fit > 0., |lead| {
-                    lead.child(main_menu(desk, cx)).when(!quick, |lead| {
+                    lead.child(main_menu(look, cx)).when(!quick, |lead| {
                         lead.child(icon_button(
                             "sidebar",
                             IconName::PanelLeft,
@@ -672,19 +675,15 @@ fn titlebar(
                             .items_center()
                             .gap(px(2.))
                             .when(fit < 1., |actions| actions.opacity(fit))
-                            .child(
-                                div().occlude().child(
-                                    Button::new("launch-native-agent")
-                                        .icon(IconName::Bot)
-                                        .accessibility_label("New agent")
-                                        .ghost()
-                                        .small()
-                                        .tooltip("New agent")
-                                        .on_click(cx.listener(|desk, _, window, cx| {
-                                            desk.execute("native-agent", window, cx)
-                                        })),
-                                ),
-                            )
+                            .child(icon_button(
+                                "launch-native-agent",
+                                IconName::Bot,
+                                "New agent",
+                                None,
+                                cx.listener(|desk, _, window, cx| {
+                                    desk.execute("native-agent", window, cx)
+                                }),
+                            ))
                             .child(icon_button(
                                 "new-tab",
                                 IconName::Plus,
@@ -708,7 +707,12 @@ fn titlebar(
                         .child(icon_button(
                             "plain-terminal",
                             IconName::SquareTerminal,
-                            skin_toggle_label(desk.prefs.plain),
+                            // Named for the skin it switches to.
+                            if desk.prefs.plain {
+                                "Liquid Glass"
+                            } else {
+                                "Plain terminal"
+                            },
                             desk.shown_chord("plain-terminal"),
                             cx.listener(|desk, _, window, cx| {
                                 desk.execute("plain-terminal", window, cx)
@@ -719,15 +723,6 @@ fn titlebar(
         )
 }
 
-/// What the skin toggle offers: the skin it switches to.
-fn skin_toggle_label(plain: bool) -> &'static str {
-    if plain {
-        "Liquid Glass"
-    } else {
-        "Plain terminal"
-    }
-}
-
 /// One tab renderer and one set of tab actions for both placements.
 fn tab_strip(
     desk: &Desk,
@@ -735,16 +730,12 @@ fn tab_strip(
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let tabs = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.tabs.as_slice())
-        .unwrap_or_default();
-    let active = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.active_id.as_str())
-        .unwrap_or_default();
+    let (tabs, active) = desk.link.as_ref().map_or((&[][..], ""), |link| {
+        (
+            link.workspace.tabs.as_slice(),
+            link.workspace.active_id.as_str(),
+        )
+    });
     let geometry = desk.tab_geometry.clone();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
@@ -800,17 +791,14 @@ fn tab_button(
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let colors = &look.colors;
-    let shape = &look.skin.shape;
+    let colors = &look.chrome;
     let height = tab_height(look.skin.chrome.titlebar);
-    let id = tab.id.clone();
+    let id = &tab.id;
     let tab_selector = SharedString::from(format!("tab-{id}"));
     let close_selector = SharedString::from(format!("tab-close-{id}"));
     let selected = tab.id == active;
-    let title = desk::tab_title(desk, tab);
-    let agent = strongest_agent(desk, tab);
-    let count = tab.zoomed_id.is_some().then_some("⤢");
-    let hover = from_hex(&colors.hover);
+    let zoomed = tab.zoomed_id.is_some().then_some("⤢");
+    let (hover, muted) = (look.hover, from_hex(&colors.muted));
     let close_id = tab.id.clone();
     let drag_id = tab.id.clone();
     let rename_id = tab.id.clone();
@@ -836,19 +824,13 @@ fn tab_button(
                 .shadow(tab_glow(look))
         })
         .when(!selected, |tab| {
-            tab.rounded(px(shape.tab_radius[usize::from(side)]))
+            tab.rounded(px(look.skin.shape.tab_radius[usize::from(side)]))
                 .border_1()
                 .border_color(gpui::transparent_black())
                 .hover(move |style| style.bg(hover))
         })
         .block_mouse_except_scroll()
-        .children(agent.map(|state| {
-            div()
-                .flex_shrink_0()
-                .size(px(7.))
-                .rounded_full()
-                .bg(from_hex(agent_swatch(state)))
-        }))
+        .children(strongest_agent(desk, tab).map(|state| dot(7., from_hex(agent_swatch(state)))))
         .child(
             div()
                 .flex_1()
@@ -858,19 +840,19 @@ fn tab_button(
                 .when(selected, |label| {
                     label.font_weight(gpui::FontWeight::MEDIUM)
                 })
-                .text_color(from_hex(if selected {
-                    &colors.theme.foreground
+                .text_color(if selected {
+                    look.ink
                 } else {
-                    &colors.subtext
-                }))
-                .child(title),
+                    from_hex(&colors.subtext)
+                })
+                .child(desk::tab_title(desk, tab)),
         )
-        .children(count.map(|count| {
+        .children(zoomed.map(|mark| {
             div()
                 .flex_shrink_0()
                 .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child(count)
+                .text_color(muted)
+                .child(mark)
         }))
         .child(
             div()
@@ -883,7 +865,7 @@ fn tab_button(
                 .items_center()
                 .justify_center()
                 .text_xs()
-                .text_color(from_hex(&colors.muted))
+                .text_color(muted)
                 .invisible()
                 .group_hover("tab", |style| style.visible())
                 .when(selected, |close| close.visible())
@@ -929,19 +911,8 @@ fn tab_button(
         }))
 }
 
-fn sidebar_column(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
-    div()
-        .w(px(desk.prefs.sidebar_width as f32))
-        .h_full()
-        .flex_shrink_0()
-        .relative()
-        .flex()
-        .flex_col()
-        .child(sidebar_list(desk, colors, cx))
-        .child(sidebar_resize(desk, colors, cx))
-}
-
-fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+fn sidebar_list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let colors = &look.chrome;
     let link = desk.link.as_ref();
     let agent = |id: &ResourceId| link.and_then(|link| link.connection.agents.get(id));
     let panes = link.map_or(&[][..], |link| link.connection.panes());
@@ -957,12 +928,12 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
                 .cmp(&left.map(|info| info.changed_at_ms))
         })
     });
-    let sessions = session_groups(desk, colors, cx);
-    let recent_paths = &desk.recent_projects;
-    let recent: Vec<_> = recent_paths
+    let sessions = session_groups(desk, look, cx);
+    let recent: Vec<_> = desk
+        .recent_projects
         .iter()
         .enumerate()
-        .map(|(index, path)| recent_folder_row(path.clone(), index, colors, cx))
+        .map(|(index, path)| recent_folder_row(path.clone(), index, look, cx))
         .collect();
     let session_count = link
         .and_then(|link| link.connection.topology.as_ref())
@@ -981,7 +952,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .when(!agent_panes.is_empty(), |list| {
             list.child(section_label("Needs you", colors))
                 .children(agent_panes.into_iter().map(|pane| {
-                    agent_row(desk, pane, agent(&pane.terminal_id), colors, cx).into_any_element()
+                    agent_row(desk, pane, agent(&pane.terminal_id), look, cx).into_any_element()
                 }))
                 .child(div().h(px(8.)))
         })
@@ -1011,9 +982,7 @@ fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
 }
 
 /// A stable entry point; the material and interaction live in their own window.
-pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
-    let label = "Phux";
-    let menu_ink = desk.look().ink;
+fn main_menu(look: &Look, cx: &mut Context<Desk>) -> AnyElement {
     div()
         .flex_1()
         .min_w_0()
@@ -1022,7 +991,7 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
         .occlude()
         .child(
             Button::new("main-menu")
-                .label(label)
+                .label("Phux")
                 .icon(IconName::Search)
                 .ghost()
                 .small()
@@ -1030,7 +999,7 @@ pub(super) fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
                 .h(px(30.))
                 .px(px(10.))
                 .w_full()
-                .text_color(menu_ink)
+                .text_color(look.ink)
                 .on_click(cx.listener(|desk, _, window, cx| {
                     desk.open_modal(Modal::Goto, window, cx);
                 })),
@@ -1087,19 +1056,17 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                 Button::new("move-selected-work")
                     .label("Move…")
                     .small()
-                    .disabled(desk.organization.busy())
+                    .disabled(busy)
                     .on_click(cx.listener(|desk, _, window, cx| {
                         desk.execute("move-resources", window, cx)
                     })),
             )
-        })
-        .when(count > 0, |row| {
-            row.child(
+            .child(
                 Button::new("clear-work-selection")
                     .label("Clear")
                     .ghost()
                     .small()
-                    .disabled(desk.organization.busy())
+                    .disabled(busy)
                     .on_click(cx.listener(|desk, _, _, cx| {
                         desk.organization.selected.clear();
                         cx.notify();
@@ -1111,7 +1078,7 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                 Button::new("undo-organization")
                     .label("Undo")
                     .small()
-                    .disabled(desk.organization.busy())
+                    .disabled(busy)
                     .on_click(cx.listener(|desk, _, window, cx| {
                         desk.execute("undo-organization", window, cx)
                     })),
@@ -1123,9 +1090,10 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
 fn recent_folder_row(
     path: PathBuf,
     index: usize,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    let hover = look.hover;
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1156,12 +1124,13 @@ fn recent_folder_row(
                     desk.forget_recent_project(&forgotten, cx);
                 })),
         )
-        .hover(|style| style.bg(from_hex(&colors.hover)))
+        .hover(move |style| style.bg(hover))
         .into_any_element()
 }
 
 /// One work catalog across authorities. A host is context, never a navigation root.
-fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<AnyElement> {
+fn session_groups(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyElement> {
+    let colors = &look.chrome;
     let mut rows = Vec::new();
     let mut project = None;
     for work in desk.work_catalog() {
@@ -1173,17 +1142,11 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
             rows.push(section_label(&group.1, colors).into_any_element());
             project = Some(group.0);
         }
-        if desk.work_is_active(&work.destination) {
-            rows.push(session_block(
-                desk,
-                work.id,
-                &work.destination.name,
-                colors,
-                cx,
-            ));
+        rows.push(if desk.work_is_active(&work.destination) {
+            session_block(desk, work.id, &work.destination.name, look, cx)
         } else {
-            rows.push(work_row(work, &desk.skin(), colors, cx));
-        }
+            work_row(work, look, cx)
+        });
     }
     for (host, error) in desk.fleet.failures() {
         let name = host.as_deref().unwrap_or("Local");
@@ -1202,72 +1165,81 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
     rows
 }
 
-fn work_row(
-    work: super::fleet::Work,
-    skin: &Skin,
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let target = work.destination.clone();
-    let tip = format!("{} · Runs on {}", target.name, target.host_label());
-    let selector = format!("work-{}-{}", target.host_label(), work.id);
+/// A sidebar row: icon slot, label, trailing detail; washed on hover.
+fn sidebar_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
+    let hover = look.hover;
     div()
-        .id(SharedString::from(selector.clone()))
-        .debug_selector(move || selector.clone())
-        .min_h(px(52.))
+        .id(id)
+        .min_h(px(SIDEBAR_ROW))
         .px(px(8.))
         .py(px(4.))
-        .rounded(px(row_radius(skin)))
         .flex()
         .items_center()
         .gap(px(8.))
+        .rounded(px(row_radius(&look.skin)))
         .cursor_pointer()
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
-            div()
-                .w(px(SIDEBAR_ICON))
-                .text_xs()
-                .text_color(from_hex(&colors.faint))
-                .child("›"),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .items_start()
-                .gap(px(3.))
-                .child(
-                    div()
-                        .w_full()
-                        .truncate()
-                        .text_sm()
-                        .child(target.name.clone()),
-                )
-                .child(host_chip(target.host.as_deref(), work.online, colors)),
-        )
+        .hover(move |style| style.bg(hover))
+}
+
+/// A row's centred icon slot.
+fn row_icon(icon: impl IntoElement) -> gpui::Div {
+    div()
+        .w(px(SIDEBAR_ICON))
+        .flex_shrink_0()
+        .flex()
+        .justify_center()
+        .child(icon)
+}
+
+/// A work row's leading glyph.
+fn caret(glyph: &'static str, colors: &Palette) -> gpui::Div {
+    div()
+        .w(px(SIDEBAR_ICON))
+        .text_xs()
+        .text_color(from_hex(&colors.faint))
+        .child(glyph)
+}
+
+/// A work row's name over the chip naming where it runs.
+fn work_heading(name: gpui::Div, host: Option<&str>, online: bool, colors: &Palette) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(3.))
+        .child(name.w_full().truncate().text_sm())
+        .child(host_chip(host, online, colors))
+}
+
+fn work_row(work: super::fleet::Work, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
+    let target = work.destination.clone();
+    let tip = format!("{} · Runs on {}", target.name, target.host_label());
+    let selector = format!("work-{}-{}", target.host_label(), work.id);
+    sidebar_row(SharedString::from(selector.clone()), look)
+        .debug_selector(move || selector.clone())
+        .min_h(px(52.))
+        .child(caret("›", colors))
+        .child(work_heading(
+            div().child(target.name.clone()),
+            target.host.as_deref(),
+            work.online,
+            colors,
+        ))
         .when(work.needs_you > 0, |row| {
             row.child(pill(
                 &work.needs_you.to_string(),
                 &colors.accent_wash,
                 &colors.theme.accent,
-                skin,
+                &look.skin,
             ))
         })
         .opacity(if work.online { 1. } else { 0.55 })
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(target.clone(), cx)))
         .into_any_element()
-}
-
-#[cfg(test)]
-fn is_intake_session(
-    key: Option<SessionKey>,
-    awaiting_organization: bool,
-    designated: Option<SessionKey>,
-) -> bool {
-    key.is_some_and(|key| Some(key) == designated) || awaiting_organization
 }
 
 fn intake_badge(designated: bool, awaiting_organization: bool) -> Option<&'static str> {
@@ -1284,9 +1256,10 @@ fn session_block(
     desk: &Desk,
     id: u32,
     name: &str,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    let colors = &look.chrome;
     let Some(link) = desk.link.as_ref() else {
         return div().into_any_element();
     };
@@ -1318,61 +1291,52 @@ fn session_block(
     let organizing = link.connection.organization();
     let rename_target = desk.rename_session_target(id);
     let handle = cx.weak_entity();
-    let menu = move |name: String| {
-        let handle = handle.clone();
+    let session_name = name.to_owned();
+    let menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+        let (rename, kill, select) = (handle.clone(), handle.clone(), handle.clone());
+        let (rename_name, kill_name) = (session_name.clone(), session_name.clone());
         let rename_target = rename_target.clone();
-        move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            let rename = handle.clone();
-            let kill = handle.clone();
-            let select = handle.clone();
-            let (rename_name, kill_name) = (name.clone(), name.clone());
-            let rename_target = rename_target.clone();
-            let menu = if organizing {
-                menu.item(PopupMenuItem::new("Select All").on_click(move |_, _, cx| {
-                    let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
-                }))
-            } else {
-                menu
-            };
-            let menu = menu.item(PopupMenuItem::new("Rename Session…").on_click(
-                move |_, window, cx| {
-                    let current = rename_name.clone();
-                    let _ = rename.update(cx, |desk, cx| {
-                        desk.open_modal(
-                            Modal::Session {
-                                create: false,
-                                current,
-                                target: rename_target.clone(),
-                            },
-                            window,
-                            cx,
-                        )
+        menu.when(organizing, |menu| {
+            menu.item(PopupMenuItem::new("Select All").on_click(move |_, _, cx| {
+                let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
+            }))
+        })
+        .item(
+            PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
+                let current = rename_name.clone();
+                let _ = rename.update(cx, |desk, cx| {
+                    desk.open_modal(
+                        Modal::Session {
+                            create: false,
+                            current,
+                            target: rename_target.clone(),
+                        },
+                        window,
+                        cx,
+                    )
+                });
+            }),
+        )
+        .when_some(intake, |menu, key| {
+            let organized = handle.clone();
+            let intake_name = session_name.clone();
+            menu.item(
+                PopupMenuItem::new("Mark organized").on_click(move |_, _, cx| {
+                    let name = intake_name.clone();
+                    let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
+                }),
+            )
+        })
+        .when(!designated, |menu| {
+            menu.item(
+                PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
+                    let name = kill_name.clone();
+                    let _ = kill.update(cx, |desk, cx| {
+                        desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
                     });
-                },
-            ));
-            if let Some(key) = intake {
-                let organized = handle.clone();
-                let intake_name = name.clone();
-                menu.item(
-                    PopupMenuItem::new("Mark organized").on_click(move |_, _, cx| {
-                        let name = intake_name.clone();
-                        let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
-                    }),
-                )
-            } else {
-                menu
-            }
-            .when(!designated, |menu| {
-                menu.item(
-                    PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
-                        let name = kill_name.clone();
-                        let _ = kill.update(cx, |desk, cx| {
-                            desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
-                        });
-                    }),
-                )
-            })
-        }
+                }),
+            )
+        })
     };
     let toggle_name = name.to_owned();
     let extra: Vec<ResourceRecord> = destination
@@ -1393,7 +1357,8 @@ fn session_block(
             })
         })
         .unwrap_or_default();
-    let details = match intake_badge(designated, awaiting) {
+    let badge = intake_badge(designated, awaiting);
+    let details = match badge {
         Some("intake") => "Designated home for unorganized work",
         Some(_) => "Imported session awaiting organization",
         None => "Session",
@@ -1403,58 +1368,28 @@ fn session_block(
         desk.remote.as_deref().unwrap_or("Local"),
         panes.len() + extra.len()
     );
-    let header = div()
-        .id(SharedString::from(format!("session-{id}")))
+    let header = sidebar_row(SharedString::from(format!("session-{id}")), look)
         .group("session")
         .min_h(px(52.))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .rounded(px(row_radius(&desk.skin())))
+        .py_0()
         .bg(host_tint(desk.remote.as_deref(), colors).opacity(0.07))
-        .cursor_pointer()
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
+        .child(caret(if collapsed { "▸" } else { "▾" }, colors))
+        .child(work_heading(
             div()
-                .w(px(SIDEBAR_ICON))
-                .text_xs()
-                .text_color(from_hex(&colors.faint))
-                .child(if collapsed { "▸" } else { "▾" }),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .items_start()
-                .gap(px(3.))
-                .child(
-                    div()
-                        .w_full()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(name.to_owned()),
-                )
-                .child(host_chip(
-                    desk.remote.as_deref(),
-                    link.connection.status == Status::Attached,
-                    colors,
-                )),
-        )
-        .when(
-            intake_badge(designated, awaiting) == Some("imported"),
-            |row| {
-                row.child(pill(
-                    "imported",
-                    &colors.accent_wash,
-                    &colors.theme.accent,
-                    &desk.skin(),
-                ))
-            },
-        )
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(name.to_owned()),
+            desk.remote.as_deref(),
+            link.connection.status == Status::Attached,
+            colors,
+        ))
+        .when(badge == Some("imported"), |row| {
+            row.child(pill(
+                "imported",
+                &colors.accent_wash,
+                &colors.theme.accent,
+                &look.skin,
+            ))
+        })
         .when_some(project_path, |header, path| {
             header.child(
                 Button::new(SharedString::from(format!("project-open-{id}")))
@@ -1491,7 +1426,7 @@ fn session_block(
                 .ghost()
                 .xsmall()
                 .tooltip("Session actions")
-                .dropdown_menu(menu(name.to_owned())),
+                .dropdown_menu(menu.clone()),
         )
         .on_click(
             cx.listener(move |desk, _, _, cx| desk.toggle_session_collapsed(&toggle_name, cx)),
@@ -1511,7 +1446,7 @@ fn session_block(
                 }))
         })
         .tooltip(move |window, cx| Tooltip::new(session_tip.clone()).build(window, cx))
-        .context_menu(menu(name.to_owned()));
+        .context_menu(menu);
     div()
         .flex()
         .flex_col()
@@ -1522,12 +1457,12 @@ fn session_block(
                 .children(
                     panes
                         .iter()
-                        .map(|pane| pane_row(desk, pane, colors, cx).into_any_element()),
+                        .map(|pane| pane_row(desk, pane, look, cx).into_any_element()),
                 )
                 .children(
                     extra
                         .iter()
-                        .map(|resource| record_row(desk, resource, colors, cx)),
+                        .map(|resource| record_row(desk, resource, look, cx)),
                 )
         })
         .into_any_element()
@@ -1538,20 +1473,25 @@ fn session_block(
 /// or attach to, so it stays out of the list.
 fn running(resource: &ResourceRecord) -> bool {
     matches!(
-        resource
-            .activation
-            .as_ref()
-            .map(|activation| activation.state),
+        exec_state(resource),
         Some(ExecState::Starting | ExecState::Running | ExecState::Stopping)
     )
+}
+
+fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
+    resource
+        .activation
+        .as_ref()
+        .map(|activation| activation.state)
 }
 
 fn record_row(
     desk: &Desk,
     resource: &ResourceRecord,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    let muted = from_hex(&look.chrome.muted);
     let key = resource.key;
     let selected = desk.organization.selected.contains(&key);
     let kind = match resource.kind {
@@ -1559,11 +1499,7 @@ fn record_row(
         _ => "Item",
     };
     let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
-    let state = match resource
-        .activation
-        .as_ref()
-        .map(|activation| activation.state)
-    {
+    let state = match exec_state(resource) {
         Some(ExecState::Starting) => "Starting",
         Some(ExecState::Running) => "Running",
         Some(ExecState::Stopping) => "Stopping",
@@ -1578,43 +1514,12 @@ fn record_row(
         label: drag_label(&keys, &label),
         keys,
     };
-    div()
-        .id(SharedString::from(format!("resource-{key}")))
-        .min_h(px(SIDEBAR_ROW))
-        .px(px(8.))
-        .py(px(4.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .rounded(px(row_radius(&desk.skin())))
-        .cursor_pointer()
-        .bg(if selected {
-            from_hex(&colors.active)
-        } else {
-            gpui::transparent_black()
-        })
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
-            div()
-                .w(px(SIDEBAR_ICON))
-                .flex_shrink_0()
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(from_hex(&colors.muted)),
-                ),
-        )
+    sidebar_row(SharedString::from(format!("resource-{key}")), look)
+        .when(selected, |row| row.bg(look.active))
+        .child(row_icon(dot(6., muted)))
         .child(div().flex_1().min_w_0().truncate().text_sm().child(label))
         .when(state != "Running", |row| {
-            row.child(
-                div()
-                    .text_xs()
-                    .text_color(from_hex(&colors.muted))
-                    .child(state),
-            )
+            row.child(div().text_xs().text_color(muted).child(state))
         })
         .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
         .on_click(cx.listener(move |desk, _, _, cx| desk.toggle_resource_selection(key, cx)))
@@ -1627,9 +1532,10 @@ fn record_row(
 fn pane_row(
     desk: &Desk,
     pane: &PaneDescriptor,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let colors = &look.chrome;
     let terminal = pane.terminal_id.clone();
     let key = pane.key;
     let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
@@ -1647,17 +1553,10 @@ fn pane_row(
     });
     let agent = desk.agent(&terminal);
     let glyph = match agent {
-        Some(info) => div()
-            .size(px(8.))
-            .rounded_full()
-            .bg(
-                from_hex(agent_swatch(info.state)).opacity(if info.needs_you() {
-                    1.
-                } else {
-                    0.65
-                }),
-            )
-            .into_any_element(),
+        Some(info) => dot(
+            8.,
+            from_hex(agent_swatch(info.state)).opacity(if info.needs_you() { 1. } else { 0.65 }),
+        ),
         None => div()
             .text_xs()
             .text_color(from_hex(if visible {
@@ -1665,35 +1564,13 @@ fn pane_row(
             } else {
                 &colors.faint
             }))
-            .child("❯")
-            .into_any_element(),
+            .child("❯"),
     };
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
-    div()
-        .id(SharedString::from(format!("pane-{terminal}")))
-        .min_h(px(SIDEBAR_ROW))
-        .px(px(8.))
-        .py(px(4.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .rounded(px(row_radius(&desk.skin())))
-        .cursor_pointer()
-        .bg(if focused || selected {
-            from_hex(&colors.active)
-        } else {
-            gpui::transparent_black()
-        })
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
-            div()
-                .w(px(SIDEBAR_ICON))
-                .flex()
-                .justify_center()
-                .flex_shrink_0()
-                .child(glyph),
-        )
+    sidebar_row(SharedString::from(format!("pane-{terminal}")), look)
+        .when(focused || selected, |row| row.bg(look.active))
+        .child(row_icon(glyph))
         .child(
             div().flex_1().min_w_0().child(
                 div()
@@ -1704,11 +1581,11 @@ fn pane_row(
                     } else {
                         gpui::FontWeight::MEDIUM
                     })
-                    .text_color(from_hex(if focused {
-                        &colors.theme.foreground
+                    .text_color(if focused {
+                        look.ink
                     } else {
-                        &colors.subtext
-                    }))
+                        from_hex(&colors.subtext)
+                    })
                     .child(title),
             ),
         )
@@ -1732,53 +1609,32 @@ fn agent_row(
     desk: &Desk,
     pane: &PaneDescriptor,
     agent: Option<&AgentInfo>,
-    colors: &Palette,
+    look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let terminal = pane.terminal_id.clone();
     let focused = desk.focused_terminal().as_ref() == Some(&terminal);
-    let state = if agent.is_some_and(AgentInfo::urgent)
-        && agent.is_none_or(|info| info.state != AgentState::Blocked)
-    {
+    let urgent = agent.is_some_and(AgentInfo::urgent);
+    let state = if urgent && agent.is_none_or(|info| info.state != AgentState::Blocked) {
         "attention"
     } else {
         agent.map_or("", AgentInfo::word)
     };
     let tint = agent_swatch(agent.map_or(AgentState::Unknown, |info| info.state));
-    let urgent = agent.is_some_and(AgentInfo::urgent);
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
-    div()
-        .id(SharedString::from(format!("agent-{terminal}")))
-        .min_h(px(SIDEBAR_ROW))
-        .px(px(8.))
-        .py(px(4.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .rounded(px(row_radius(&desk.skin())))
+    sidebar_row(SharedString::from(format!("agent-{terminal}")), look)
         .border_1()
         .border_color(if urgent {
             from_hex(&format!("{tint}66"))
         } else {
             gpui::transparent_black()
         })
-        .bg(if focused {
-            from_hex(&colors.active)
-        } else if urgent {
-            from_hex(&format!("{tint}14"))
-        } else {
-            gpui::transparent_black()
+        .when(focused, |row| row.bg(look.active))
+        .when(urgent && !focused, |row| {
+            row.bg(from_hex(&format!("{tint}14")))
         })
-        .cursor_pointer()
-        .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(
-            div()
-                .w(px(SIDEBAR_ICON))
-                .flex()
-                .justify_center()
-                .child(div().size(px(8.)).rounded_full().bg(from_hex(tint))),
-        )
+        .child(row_icon(dot(8., from_hex(tint))))
         .child(
             div().flex_1().min_w_0().child(
                 div()
@@ -1871,9 +1727,9 @@ pub(super) fn ago_wait(then: u64, now: u64) -> u64 {
     next * 1000 - elapsed
 }
 
-fn sidebar_resize(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+fn sidebar_resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let active = desk.dragging_sidebar();
-    let accent = from_hex(&colors.theme.accent);
+    let accent = from_hex(&look.chrome.theme.accent);
     div()
         .id("sidebar-resize")
         .absolute()
@@ -1904,7 +1760,7 @@ fn main_column(
         .flex_col()
         .child(workspace_body(desk, look, window, cx))
         .when(status > 0., |column| {
-            column.child(status_bar(desk, status, &look.skin, &look.colors, cx))
+            column.child(status_bar(desk, status, look, cx))
         })
 }
 
@@ -1914,7 +1770,7 @@ fn workspace_body(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let colors = &look.colors;
+    let colors = &look.chrome;
     let gutter = look.skin.shape.gutter;
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
@@ -1925,7 +1781,10 @@ fn workspace_body(
         .pt(px(gutter))
         .px(px(gutter))
         .child(if let Some(id) = zoomed {
-            zoomed_pane(desk, &id, window, cx).into_any_element()
+            desk.placement(&id).cloned().map_or_else(
+                || div().into_any_element(),
+                |placement| pane_view(desk, &placement, window, cx),
+            )
         } else if let Some(root) = root {
             split_tree(desk, &root, look, window, cx).into_any_element()
         } else {
@@ -1944,47 +1803,26 @@ fn empty_state(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl In
     let pending = desk
         .link
         .as_ref()
-        .map(|link| link.workspace.pending())
-        .unwrap_or(0)
-        > 0;
-    let muted = from_hex(&colors.muted);
+        .is_some_and(|link| link.workspace.pending() > 0);
+    let new = if pending {
+        "Starting terminal…"
+    } else {
+        "New terminal"
+    };
     let body = match status {
-        Some(Status::Attached) => div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(8.))
-            .child(empty_action(
-                desk,
-                "empty-new",
-                if pending {
-                    "Starting terminal…"
-                } else {
-                    "New terminal"
-                },
-                "new",
-                true,
-                cx,
-            ))
-            .child(empty_action(
-                desk,
-                "empty-folder",
-                "Open folder…",
-                "folder",
-                false,
-                cx,
-            ))
-            .child(empty_action(
-                desk,
-                "empty-palette",
-                "Command palette",
-                "palette",
-                false,
-                cx,
-            )),
+        Some(Status::Attached) => div().flex().flex_col().items_center().gap(px(8.)).children(
+            [
+                ("empty-new", new, "new", true),
+                ("empty-folder", "Open folder…", "folder", false),
+                ("empty-palette", "Command palette", "palette", false),
+            ]
+            .map(|(id, label, command, primary)| {
+                empty_action(desk, id, label, command, primary, cx)
+            }),
+        ),
         Some(Status::Idle | Status::Connecting | Status::Negotiated) => div()
             .text_sm()
-            .text_color(muted)
+            .text_color(from_hex(&colors.muted))
             .child(match desk.remote.as_deref() {
                 Some(host) => format!("Connecting to {host}…"),
                 None => format!("Connecting to {}…", desk.socket.display()),
@@ -2034,7 +1872,7 @@ fn empty_action(
     command: &'static str,
     primary: bool,
     cx: &mut Context<Desk>,
-) -> impl IntoElement {
+) -> gpui::Div {
     let kbd = command_kbd(desk, command);
     let button = Button::new(id)
         .label(label.to_owned())
@@ -2055,19 +1893,6 @@ fn command_kbd(desk: &Desk, id: &str) -> Option<Kbd> {
     Some(Kbd::new(keystroke))
 }
 
-fn zoomed_pane(
-    desk: &mut Desk,
-    id: &str,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    let presence = desk.motion.presence(id, Instant::now());
-    desk.placement(id)
-        .cloned()
-        .map(|placement| pane_view(desk, &placement, presence, window, cx))
-        .unwrap_or_else(|| div().into_any_element())
-}
-
 /// How present a split child is: a leaf follows its motion, a subtree is settled.
 fn node_presence(desk: &Desk, node: &LayoutNode, now: Instant) -> f32 {
     match node {
@@ -2084,10 +1909,7 @@ fn split_tree(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     match node {
-        LayoutNode::Leaf { placement } => {
-            let presence = desk.motion.presence(&placement.id, Instant::now());
-            pane_view(desk, placement, presence, window, cx).into_any_element()
-        }
+        LayoutNode::Leaf { placement } => pane_view(desk, placement, window, cx),
         LayoutNode::Split {
             id,
             axis,
@@ -2165,7 +1987,7 @@ fn split_divider(
 ) -> AnyElement {
     let horizontal = matches!(axis, Axis::Row);
     let active = desk.dragging_split() == Some(id.as_str());
-    let accent = from_hex(&look.colors.theme.accent);
+    let accent = from_hex(&look.chrome.theme.accent);
     let grip = look.ink.opacity(0.28);
     let divider = look.skin.shape.divider;
     let bar = div()
@@ -2228,14 +2050,14 @@ fn split_grab(
 fn pane_view(
     desk: &mut Desk,
     placement: &Placement,
-    presence: f32,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    let presence = desk.motion.presence(&placement.id, Instant::now());
     let focused =
         desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
     let look = desk.look();
-    let colors = &look.colors;
+    let colors = &look.chrome;
     let placement_id = placement.id.clone();
     let terminal = placement.terminal_id.clone();
     let view = placement.view_id;
@@ -2284,16 +2106,15 @@ fn pane_view(
     };
     let tab = desk.active_tab();
     let zoomed = tab.is_some_and(|tab| tab.zoomed_id.is_some());
-    let leaves = tab
-        .map(|tab| layout::placements(&tab.root).len())
-        .unwrap_or(1);
+    // Focus only shows among several visible panes.
+    let shared = !zoomed && tab.is_some_and(|tab| layout::placements(&tab.root).len() > 1);
     let find = desk
         .find
         .as_ref()
         .filter(|find| find.placement_id == placement.id)
         .map(|find| find.case_sensitive);
     let find_bar = find.map(|case| overlays::find_bar(desk, case, colors, cx));
-    let dim = (!focused && leaves > 1 && !zoomed)
+    let dim = (!focused && shared)
         .then_some(1. - desk.prefs.unfocused_opacity as f32)
         .filter(|amount| *amount > 0.);
     let fade = from_hex(&colors.theme.background);
@@ -2324,15 +2145,14 @@ fn pane_view(
         && (desk.chrome_hover.as_deref() == Some(id.as_str())
             || desk.controls_hover.as_deref() == Some(id.as_str())
             || desk.pane_menu_open.as_deref() == Some(id.as_str()));
-    let accent = from_hex(&colors.theme.accent);
     let edge = if dropping {
-        accent
+        from_hex(&colors.theme.accent)
     } else if urgent {
         agent
             .as_ref()
             .map(|info| from_hex(agent_swatch(info.state)).opacity(0.75))
             .unwrap_or(look.lit)
-    } else if focused && leaves > 1 && !zoomed {
+    } else if focused && shared {
         look.lit
     } else {
         look.edge
@@ -2340,19 +2160,14 @@ fn pane_view(
     let shine = look
         .lit
         .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin));
-    let radius = look.skin.shape.radius;
-    let controls_bar = if controls {
-        Some(pane_controls(desk, placement, zoomed, &look, cx).into_any_element())
-    } else {
-        None
-    };
+    let controls_bar =
+        controls.then(|| pane_controls(desk, placement, zoomed, &look, cx).into_any_element());
     let conversation_toggle =
         desk.conversation_eligible(&id) && !desk.conversation_visible(&id) && !controls;
     let conversation_id = id.clone();
     let drag_id = id.clone();
     let drop_id = id.clone();
     let exit_id = id.clone();
-    let hover_id = id.clone();
     div()
         .id(SharedString::from(format!("pane-card-{id}")))
         .size_full()
@@ -2403,7 +2218,7 @@ fn pane_view(
                     dim.map(|amount| div().absolute().inset_0().bg(Hsla { a: amount, ..fade })),
                 ),
         )
-        .children(specular(shine, radius))
+        .children(specular(shine, look.skin.shape.radius))
         .child(
             // Reveals the controls. It holds no other listener, so presses and
             // drags still reach the terminal under it.
@@ -2414,14 +2229,7 @@ fn pane_view(
                 .left_0()
                 .right_0()
                 .h(px(CONTROLS_EDGE))
-                .on_hover(cx.listener(move |desk, hovered: &bool, _, cx| {
-                    if *hovered {
-                        desk.chrome_hover = Some(hover_id.clone());
-                    } else if desk.chrome_hover.as_deref() == Some(hover_id.as_str()) {
-                        desk.chrome_hover = None;
-                    }
-                    cx.notify();
-                })),
+                .on_hover(track_hover(id.clone(), |desk| &mut desk.chrome_hover, cx)),
         )
         .when(fenced && !controls, |card| {
             card.child(div().absolute().top(px(8.)).right(px(10.)).child(pill(
@@ -2459,7 +2267,6 @@ fn pane_controls(
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let colors = &look.colors;
     let title = desk.pane_title(placement.terminal_id.as_ref());
     let agent = placement
         .terminal_id
@@ -2467,8 +2274,9 @@ fn pane_controls(
         .and_then(|id| desk.agent(id))
         .cloned();
     let id = placement.id.clone();
-    let hover_id = placement.id.clone();
     let focus_id = placement.id.clone();
+    let zoom = on_pane(id.clone(), "zoom");
+    let zoom_label = if zoomed { "Restore" } else { "Zoom" };
     div()
         .id(SharedString::from(format!("pane-controls-{id}")))
         .absolute()
@@ -2484,26 +2292,17 @@ fn pane_controls(
         .surface(look, Surface::Capsule)
         .occlude()
         .text_xs()
-        .on_hover(cx.listener(move |desk, hovered: &bool, _, cx| {
-            if *hovered {
-                desk.controls_hover = Some(hover_id.clone());
-            } else if desk.controls_hover.as_deref() == Some(hover_id.as_str()) {
-                desk.controls_hover = None;
-            }
-            cx.notify();
-        }))
-        .children(agent.as_ref().map(|info| {
-            div()
-                .flex_shrink_0()
-                .size(px(7.))
-                .rounded_full()
-                .bg(from_hex(agent_swatch(info.state)))
-        }))
+        .on_hover(track_hover(id.clone(), |desk| &mut desk.controls_hover, cx))
+        .children(
+            agent
+                .as_ref()
+                .map(|info| dot(7., from_hex(agent_swatch(info.state)))),
+        )
         .child(
             div()
                 .flex_shrink_0()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(from_hex(&colors.theme.foreground))
+                .text_color(look.ink)
                 .child(match agent.as_ref().map(|info| (info, info.word())) {
                     Some((info, "")) => info.name.clone(),
                     Some((info, word)) => format!("{} · {word}", info.name),
@@ -2528,18 +2327,22 @@ fn pane_controls(
                     })),
             )
         })
-        .child(header_button(
-            &id,
-            "zoom",
-            if zoomed {
-                IconName::Minimize
-            } else {
-                IconName::Maximize
-            },
-            if zoomed { "Restore" } else { "Zoom" },
-            on_pane(id.clone(), "zoom"),
-            cx,
-        ))
+        .child(
+            Button::new(SharedString::from(format!("zoom-{id}")))
+                .icon(if zoomed {
+                    IconName::Minimize
+                } else {
+                    IconName::Maximize
+                })
+                .ghost()
+                .xsmall()
+                .accessibility_label(zoom_label)
+                .tooltip(zoom_label)
+                .on_click(cx.listener(move |desk, _, window, cx| {
+                    cx.stop_propagation();
+                    zoom(desk, window, cx);
+                })),
+        )
         .child({
             let handle = cx.weak_entity();
             let placement = id.clone();
@@ -2597,8 +2400,16 @@ fn pane_controls(
 
 /// Shown over the pane a file drag from the OS is above.
 fn drop_hint(look: &Look, remote: bool) -> impl IntoElement {
-    let colors = &look.colors;
+    let colors = &look.chrome;
     let accent = from_hex(&colors.theme.accent);
+    let (title, detail) = if remote {
+        (
+            "Drop to upload",
+            "Sent to that machine, then its path is pasted",
+        )
+    } else {
+        ("Drop to attach", "Paths paste here, ready for your agent")
+    };
     div()
         .absolute()
         .inset_0()
@@ -2625,22 +2436,14 @@ fn drop_hint(look: &Look, remote: bool) -> impl IntoElement {
                     div()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(from_hex(&colors.theme.foreground))
-                        .child(if remote {
-                            "Drop to upload"
-                        } else {
-                            "Drop to attach"
-                        }),
+                        .text_color(look.ink)
+                        .child(title),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(from_hex(&colors.muted))
-                        .child(if remote {
-                            "Sent to that machine, then its path is pasted"
-                        } else {
-                            "Paths paste here, ready for your agent"
-                        }),
+                        .child(detail),
                 ),
         )
 }
@@ -2658,36 +2461,29 @@ fn on_pane(
     }
 }
 
-fn header_button(
-    placement: &str,
-    name: &str,
-    icon: IconName,
-    tooltip: &str,
-    run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
+/// Keep the desk field `slot` picks naming pane `id` while the pointer is over it.
+fn track_hover(
+    id: String,
+    slot: fn(&mut Desk) -> &mut Option<String>,
     cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    Button::new(SharedString::from(format!("{name}-{placement}")))
-        .icon(icon)
-        .ghost()
-        .xsmall()
-        .accessibility_label(tooltip.to_owned())
-        .tooltip(tooltip.to_owned())
-        .on_click(cx.listener(move |desk, _, window, cx| {
-            cx.stop_propagation();
-            run(desk, window, cx);
-        }))
+) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+    cx.listener(move |desk, hovered: &bool, _, cx| {
+        let slot = slot(desk);
+        if *hovered {
+            *slot = Some(id.clone());
+        } else if slot.as_deref() == Some(id.as_str()) {
+            *slot = None;
+        }
+        cx.notify();
+    })
 }
 
 /// Exceptions only: an unhealthy connection, agents that need a person, a
 /// terminal still starting, and a pane scrolled away from live output.
-fn status_bar(
-    desk: &Desk,
-    height: f32,
-    skin: &Skin,
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    let chip = chip_radius(skin);
+fn status_bar(desk: &Desk, height: f32, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let colors = &look.chrome;
+    let radius = chip_radius(&look.skin);
+    let chip = |id: &'static str| div().id(id).rounded(px(radius));
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
     let scrolled = desk.session_is_attached()
@@ -2695,28 +2491,19 @@ fn status_bar(
             .focused_view()
             .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
             .is_some_and(|frame| !frame.scrollbar.at_tail());
-    let pending = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.pending())
-        .unwrap_or(0);
-    let waiting = desk
-        .link
-        .as_ref()
-        .map(|link| {
-            link.connection
-                .agents
-                .values()
-                .filter(|info| info.needs_you())
-                .count()
-        })
-        .unwrap_or(0);
+    let (pending, waiting) = desk.link.as_ref().map_or((0, 0), |link| {
+        let agents = link.connection.agents.values();
+        (
+            link.workspace.pending(),
+            agents.filter(|info| info.needs_you()).count(),
+        )
+    });
     let tone_color = from_hex(match tone {
         Tone::Good => &colors.theme.success,
         Tone::Busy => &colors.theme.warning,
         Tone::Bad => &colors.theme.danger,
     });
-    let hover = from_hex(&colors.hover);
+    let hover = look.hover;
     div()
         .h(px(height))
         .w_full()
@@ -2730,14 +2517,12 @@ fn status_bar(
         .text_color(from_hex(&colors.muted))
         .when(tone != Tone::Good, |bar| {
             bar.child(
-                div()
-                    .id("status-connection")
+                chip("status-connection")
                     .flex()
                     .items_center()
                     .gap(px(6.))
                     .px(px(4.))
-                    .rounded(px(chip))
-                    .child(div().size(px(7.)).rounded_full().bg(tone_color))
+                    .child(dot(7., tone_color))
                     .child(div().text_color(tone_color).child(label))
                     .when(unhealthy, |status| {
                         status
@@ -2751,21 +2536,14 @@ fn status_bar(
         })
         .when(waiting > 0, |bar| {
             bar.child(
-                div()
-                    .id("status-agents")
+                chip("status-agents")
                     .flex()
                     .items_center()
                     .gap(px(4.))
                     .px(px(4.))
-                    .rounded(px(chip))
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
-                    .child(
-                        div()
-                            .size(px(6.))
-                            .rounded_full()
-                            .bg(from_hex(agent_swatch(AgentState::Blocked))),
-                    )
+                    .child(dot(6., from_hex(agent_swatch(AgentState::Blocked))))
                     .child(format!(
                         "{waiting} {} you",
                         if waiting == 1 { "needs" } else { "need" }
@@ -2779,10 +2557,8 @@ fn status_bar(
         .child(div().flex_grow(1.))
         .when(scrolled, |bar| {
             bar.child(
-                div()
-                    .id("status-scrolled")
+                chip("status-scrolled")
                     .px(px(6.))
-                    .rounded(px(chip))
                     .bg(from_hex(&colors.accent_wash))
                     .text_color(from_hex(&colors.theme.accent))
                     .cursor_pointer()
@@ -2855,7 +2631,7 @@ pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> Strin
 /// The newest agent or error entry, briefly, over the workspace. Everything
 /// else waits behind the bell.
 fn peek_card(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<impl IntoElement> {
-    let colors = &look.colors;
+    let colors = &look.chrome;
     if desk.modal == Modal::Notifications {
         return None;
     }
@@ -2891,7 +2667,7 @@ fn peek_card(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<impl In
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(from_hex(&colors.theme.foreground))
+                            .text_color(look.ink)
                             .child(entry.title.clone()),
                     )
                     .children(entry.body.clone().map(|body| {
@@ -3010,19 +2786,7 @@ pub(super) fn agent_swatch(state: AgentState) -> &'static str {
 
 #[cfg(test)]
 mod intake_tests {
-    use super::{intake_badge, is_intake_session};
-    use phux_protocol::ids::SessionKey;
-
-    #[test]
-    fn designated_intake_is_grouped_even_when_not_imported() {
-        let intake = SessionKey::new([1; 16]).unwrap();
-        let named = SessionKey::new([2; 16]).unwrap();
-        assert!(is_intake_session(Some(intake), false, Some(intake)));
-        assert!(is_intake_session(Some(named), true, Some(intake)));
-        assert!(!is_intake_session(Some(named), false, Some(intake)));
-        assert!(!is_intake_session(None, false, None));
-        assert!(!is_intake_session(Some(named), false, None));
-    }
+    use super::intake_badge;
 
     #[test]
     fn badges_distinguish_designated_intake_from_imported_sessions() {
