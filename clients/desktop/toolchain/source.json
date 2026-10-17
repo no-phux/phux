@@ -12,6 +12,14 @@
     "gpui-fast-macos": {
       "version": "0.1.9",
       "sha256": "c733dfacfc499748568f8fc0e2e268077259fcd4a2c306257c9dfda7c1a8a5fe"
+    },
+    "gpui-fast-linux": {
+      "version": "0.1.9",
+      "sha256": "908b5fc7b6225e9b5cb0ce0aec500a4ae643a5ecdaa838b224d4c8f5690546c9"
+    },
+    "gpui-fast-wgpu": {
+      "version": "0.1.9",
+      "sha256": "43832ede90bd5e924ad12774cf18f51ae288cc4a6f4f0c6888f8b14899590c39"
     }
   },
   "patches": {
@@ -21,6 +29,8 @@
     "patches/0004-native-glass-surfaces.patch": "d3a290e43ce908ff746005506237dc670a4011551d289b722b3ebbf8c69841d8",
     "patches/0005-element-input-key-repeat.patch": "288447b305952cfa6d4e29883ce7f7cac400d91535c145b839cd5de0fcd84ca8",
     "patches/0006-bulk-glyph-sprites.patch": "9f944c273e31992f974b7de8dd8043c95b7ad80afd08347eb105241ef6f3af6d",
-    "patches/0007-clearable-native-glass.patch": "6598b70cbb608f8aebaf1e07bf281e3be5507bce5f5ac1c92a401033ba9bf3c9"
+    "patches/0007-clearable-native-glass.patch": "6598b70cbb608f8aebaf1e07bf281e3be5507bce5f5ac1c92a401033ba9bf3c9",
+    "patches/0008-linux-submission-and-capture.patch": "2b1e51622cebe8df400e1f9dcc841a6c296f02472ccc7ec4cd6000519a1b48c0",
+    "patches/0009-straight-alpha-capture.patch": "8ce7d93db5f0675f85b0a4ddf5864a179641f9d321def284fa9573343b0f3885"
   }
 }
