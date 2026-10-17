@@ -169,6 +169,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// ADR-0168: out-channel for a dispatched `toggle-project-group`; the
     /// driver owns the collapsed set and its file.
     pub project_toggle_request: &'a mut Option<String>,
+    /// Out-channel for a dispatched `agents-filter`; the driver owns the
+    /// sidebar painter's filter and its file.
+    pub agents_filter_request: &'a mut Option<crate::render::chrome::sidebar::FilterRequest>,
     /// phux-foz.7 / ADR-0040: the driver's decoded `phux.agent/v1` records
     /// (`AgentMetaIndex::records`), kept live by the per-pane metadata
     /// subscriptions. The `agent-fleet` action projects them into the

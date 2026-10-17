@@ -396,12 +396,16 @@ fn sidebar_plugin_rows_commit_focus_pane() {
 #[test]
 fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     let t = targets(2, 2, 0);
-    let local = sidebar_click_action(strip(23), &t, 4, 1).expect("queue row 0");
+    // Row 1 is the filter chips: the `all` chip picks its scope.
+    let chip = sidebar_click_action(strip(23), &t, 2, 1).expect("filter chip");
+    assert_eq!(chip.action, "agents-filter");
+    assert_eq!(str_arg(&chip, "scope").as_deref(), Some("all"));
+    let local = sidebar_click_action(strip(23), &t, 4, 2).expect("queue row 0");
     assert_eq!(
         (local.action.as_str(), index_arg(&local)),
         ("select-window", Some(1))
     );
-    let peer = sidebar_click_action(strip(23), &t, 4, 2).expect("queue row 1");
+    let peer = sidebar_click_action(strip(23), &t, 4, 3).expect("queue row 1");
     assert_eq!(peer.action, "switch-session");
     assert_eq!(str_arg(&peer, "name").as_deref(), Some("peer-1"));
     assert_eq!(
@@ -418,7 +422,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         pane: None,
         resource: Some(ResourceId::local(10)),
     };
-    let click = sidebar_click_action(strip(23), &graph, 4, 2).expect("graph row");
+    let click = sidebar_click_action(strip(23), &graph, 4, 3).expect("graph row");
     assert_eq!(str_arg(&click, "resource").as_deref(), Some("@10"));
     assert!(
         !click.args.contains_key("window") && !click.args.contains_key("pane"),

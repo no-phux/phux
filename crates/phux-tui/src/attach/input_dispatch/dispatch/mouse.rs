@@ -676,12 +676,31 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
             let (window, pane) = *targets.plugin.get(s)?.get(j)?;
             return focus_pane_action(window, pane);
         }
+        SidebarHit::AgentFilter(chip) => return Some(agents_filter_action(chip)),
         SidebarHit::Sessions => "session-picker",
         SidebarHit::Fleet => "agent-fleet",
         SidebarHit::NewWindow => "new-window",
         SidebarHit::Collapse => "toggle-sidebar",
     };
     Some(bare_action(action))
+}
+
+/// A filter chip picks its scope; the `@` chip steps the machine.
+fn agents_filter_action(
+    chip: crate::render::chrome::sidebar::FilterChip,
+) -> phux_config::keybind::ResolvedAction {
+    use crate::render::chrome::sidebar::FilterChip;
+    let (key, value) = match chip {
+        FilterChip::Scope(scope) => ("scope", scope.name()),
+        FilterChip::Host => ("host", "next"),
+    };
+    phux_config::keybind::ResolvedAction {
+        action: "agents-filter".to_owned(),
+        args: std::collections::BTreeMap::from([(
+            key.to_owned(),
+            toml::Value::String(value.to_owned()),
+        )]),
+    }
 }
 
 /// Agent targets distinguish client-local focus from a cross-session attach.

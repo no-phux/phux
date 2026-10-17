@@ -3,7 +3,6 @@
 //! `main_loop`.
 
 use std::cell::RefCell;
-use std::io::{self, Write};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -266,15 +265,19 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     }
 }
 
-/// Re-handshake against `target` on the SAME connection, clear the glass,
-/// and return the new `ATTACHED` frame for the next `main_loop` entry.
+/// Re-handshake against `target` on the SAME connection and return the new
+/// `ATTACHED` frame for the next `main_loop` entry.
+///
+/// The glass is NOT cleared here: the previous session's frame stays up
+/// through the round trips, and the next entry's held first paint replaces
+/// it in one synchronized frame (`handover`). A bare `ED2` here blanked the
+/// screen and dragged the visible cursor home for the whole re-attach.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-async fn switch_session<W: crate::attach::RenderSink>(
+async fn switch_session(
     conn: &mut Connection,
-    out: &mut W,
     target: ReattachTarget,
     pick: &mut EntryPick,
     orphan_kills: &mut super::orphans::OrphanKills,
@@ -283,9 +286,7 @@ async fn switch_session<W: crate::attach::RenderSink>(
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
     tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    let attached = reattach_on_same_connection(conn, target, pick, orphan_kills, review).await?;
-    let _ = write_terminal_clear(out);
-    Ok(attached)
+    reattach_on_same_connection(conn, target, pick, orphan_kills, review).await
 }
 
 /// The attach session body shared by the production and test entry points.
@@ -354,8 +355,8 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let mut onboarding_claim = crate::attach::onboarding::begin_attach(&onboarding_path);
     // A one-step cross-session pick, consumed by the next `main_loop` entry.
     let mut pick = EntryPick::default();
-    // Sidebar runtime state carried across switches (never `take`n).
-    let mut carried_sidebar: Option<CarriedSidebar> = None;
+    // What the last entry handed a switch (`None` on first entry).
+    let mut carried: Option<SwitchCarry> = None;
     // First entry only: a session switch is not a reconnect.
     let mut initial_notice = initial_notice;
     // Stray satellite panes still owed a kill; connection-lifetime.
@@ -375,7 +376,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             claim,
             initial_notice.take(),
             std::mem::take(&mut pick),
-            carried_sidebar,
+            carried.take(),
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
             std::mem::take(&mut review),
@@ -418,20 +419,15 @@ async fn attach_session<W: crate::attach::RenderSink>(
                 sidebar,
                 orphan_kills: carried_orphans,
                 review: carried_review,
+                peers,
             } => {
                 // The sidebar is the human's chrome; carry it into the next entry.
-                carried_sidebar = Some(sidebar);
+                carried = Some(SwitchCarry { sidebar, peers });
                 orphan_kills = carried_orphans;
                 review = carried_review;
-                attached = switch_session(
-                    &mut conn,
-                    out,
-                    target,
-                    &mut pick,
-                    &mut orphan_kills,
-                    &mut review,
-                )
-                .await?;
+                attached =
+                    switch_session(&mut conn, target, &mut pick, &mut orphan_kills, &mut review)
+                        .await?;
             }
         }
     }
@@ -514,13 +510,6 @@ async fn detach_and_drain(
     }
 }
 
-/// Clear the alt screen between sessions so the old grid never shows under
-/// the new session's first paint.
-fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
-    out.write_all(b"\x1b[2J\x1b[H")?;
-    out.flush()
-}
-
 /// How a `main_loop` entry ended: `Detached` (the process then exits via
 /// `exit_after_detach`) or `SwitchTo` (the outer loop re-handshakes and
 /// re-enters with fresh session state).
@@ -548,6 +537,9 @@ pub(super) enum LoopExit {
         /// Per-identity review status for this connection. Session
         /// loops rebuild pane slots; this does not.
         review: crate::attach::review::ReviewIndex,
+        /// Server-wide peer caches, so the next entry's sidebar paints them
+        /// on its first frame.
+        peers: super::loop_state::CarriedPeers,
     },
 }
 
@@ -576,6 +568,14 @@ pub(super) struct EntryPick {
     /// The authoritative resource to focus, from a graph-discovered agent
     /// row. Wins over the indices and works before a TUI layout exists.
     pub(super) resource: Option<ResourceId>,
+}
+
+/// What one `main_loop` entry hands the next across a session switch.
+pub(super) struct SwitchCarry {
+    /// The sidebar's runtime state.
+    pub sidebar: CarriedSidebar,
+    /// Server-wide peer caches, so the first frame paints them.
+    pub peers: super::loop_state::CarriedPeers,
 }
 
 /// Sidebar state carried across an in-process session switch; runtime-only

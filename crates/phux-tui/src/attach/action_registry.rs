@@ -577,6 +577,20 @@ pub const ACTIONS: &[ActionSpec] = &[
         run: run::toggle_sidebar,
     },
     ActionSpec {
+        name: "agents-filter",
+        description: "Narrow the sidebar's Agents panel: every agent, this \
+                      session's, or the ones that need you, on one machine \
+                      or all of them. Bare, steps to the next scope",
+        params: "`scope` (`all`, `session`, `attention`, or `next`), `host` \
+                 (`all`, `here`, a satellite name, or `next`); both optional",
+        palette: Palette::Row {
+            title: "Cycle agents filter",
+            category: Category::View,
+            args: &[],
+        },
+        run: run::agents_filter,
+    },
+    ActionSpec {
         name: "agent-fleet",
         description: "Every agent, its state, and whether it needs you",
         params: "",

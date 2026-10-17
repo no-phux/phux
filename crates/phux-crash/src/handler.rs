@@ -155,6 +155,66 @@ mod imp {
         unsafe { restore_terminal_and_reraise(sig) };
     }
 
+    /// The bytes [`arm_interrupt_leave`] writes to stdout on SIGINT, SIGTERM,
+    /// or SIGHUP, and whether they are still owed.
+    static LEAVE_PTR: std::sync::atomic::AtomicPtr<u8> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+    static LEAVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static LEAVE_ARMED: AtomicBool = AtomicBool::new(false);
+
+    /// Write the armed leave bytes once, then die by `sig` as the default
+    /// action would.
+    unsafe extern "C" fn interrupt_leave_handler(
+        sig: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _ctx: *mut libc::c_void,
+    ) {
+        if LEAVE_ARMED.swap(false, Ordering::AcqRel) {
+            let ptr = LEAVE_PTR.load(Ordering::Acquire);
+            let len = LEAVE_LEN.load(Ordering::Acquire);
+            // SAFETY: `write(2)` is async-signal-safe; `ptr`/`len` describe
+            // the `'static` slice stored before the handler was registered.
+            unsafe {
+                libc::write(1, ptr.cast::<libc::c_void>(), len);
+            }
+        }
+        // SAFETY: `sigaction` and `raise` are async-signal-safe; resetting to
+        // `SIG_DFL` first makes the re-raise take the default action.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+            libc::raise(sig);
+        }
+    }
+
+    /// Write `leave` to stdout if SIGINT, SIGTERM, or SIGHUP kills the
+    /// process before [`disarm_interrupt_leave`]. Later handlers (tokio's
+    /// signal arms) replace these, which is what disarming wants anyway.
+    pub fn arm_interrupt_leave(leave: &'static [u8]) {
+        LEAVE_PTR.store(leave.as_ptr().cast_mut(), Ordering::Release);
+        LEAVE_LEN.store(leave.len(), Ordering::Release);
+        LEAVE_ARMED.store(true, Ordering::Release);
+        // SAFETY: `sa` is zero-initialised and fully populated, and
+        // `interrupt_leave_handler` has the SA_SIGINFO signature.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = interrupt_leave_handler as *const () as usize;
+            sa.sa_flags = libc::SA_SIGINFO;
+            libc::sigemptyset(&mut sa.sa_mask);
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+    }
+
+    /// Stop owing the leave bytes. The handlers stay installed until
+    /// something replaces them, and act as the default action meanwhile.
+    pub fn disarm_interrupt_leave() {
+        LEAVE_ARMED.store(false, Ordering::Release);
+    }
+
     /// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that restores termios
     /// on crash.
     ///
@@ -184,8 +244,15 @@ mod imp {
 
 #[cfg(unix)]
 pub use imp::{
-    disable_terminal_escape_restore, enable_terminal_escape_restore, install_terminal_restore_only,
+    arm_interrupt_leave, disable_terminal_escape_restore, disarm_interrupt_leave,
+    enable_terminal_escape_restore, install_terminal_restore_only,
 };
+
+#[cfg(not(unix))]
+pub fn arm_interrupt_leave(_leave: &'static [u8]) {}
+
+#[cfg(not(unix))]
+pub fn disarm_interrupt_leave() {}
 
 #[cfg(not(unix))]
 pub fn install_terminal_restore_only() {}

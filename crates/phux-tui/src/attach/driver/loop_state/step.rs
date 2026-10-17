@@ -20,7 +20,10 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         let sidebar = self.sidebar();
         self.settle_iteration(out, sidebar, needs_resync)?;
-        match self.select_next_event(conn, out, sidebar).await {
+        let stepped = self.select_next_event(conn, out, sidebar).await;
+        // Whatever woke the loop may have completed a held switch's view.
+        self.release_paint_hold_if_ready(out, self.sidebar());
+        match stepped {
             // Any write into a server that already hung up (a SIGWINCH
             // resize racing a server crash, say) defers to the read side,
             // exactly as `send_unless_peer_gone` does: the next `recv`
@@ -137,8 +140,14 @@ impl super::SessionLoop {
                 .as_ref()
                 .and_then(StatusBarPainter::min_poll_interval),
         );
-        // The pacer's settle deadline, armed only while a paint is owed.
-        let paint_sleep = sleep_until_or_pending(self.pacer.deadline());
+        // The pacer's settle deadline, armed only while a paint is owed, or
+        // a held switch's deadline: the release after this step paints it.
+        let paint_sleep = sleep_until_or_pending(
+            [self.pacer.deadline(), self.paint_hold_deadline()]
+                .into_iter()
+                .flatten()
+                .min(),
+        );
         let sync_output_sleep = sleep_until_or_pending(
             self.mirror
                 .panes
@@ -168,7 +177,8 @@ impl super::SessionLoop {
                 result
             },
 
-            // The pacer window expired: settle every withheld pane in one frame.
+            // The pacer window expired: settle every withheld pane in one frame
+            // (a no-op while a switch holds; its release paints them all).
             () = paint_sleep => {
                 self.settle_withheld_panes(out, sidebar);
                 Ok(Step::Continue)

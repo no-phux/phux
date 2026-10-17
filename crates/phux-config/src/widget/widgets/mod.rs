@@ -3,6 +3,7 @@
 //! Each submodule defines a `Widget`-implementing struct plus a
 //! `pub(crate) fn factory` that the [`super::WidgetRegistry`] calls.
 
+pub(super) mod button;
 pub(super) mod cwd;
 pub(super) mod exec;
 pub(super) mod exit_status;

@@ -157,8 +157,14 @@ const HOST_KITTY_KEYBOARD_POP: &[u8] = b"\x1b[<u";
 /// `?1002h` button-event tracking (not `?1003h`, which floods hover traffic)
 /// and `?1006h` SGR coordinates. A host without the kitty protocol ignores
 /// the push and keeps sending legacy bytes, which the parser still decodes.
+///
+/// A process exec'd by a `switch-host` hand-off is already on the alt screen
+/// with the previous frame up; it skips `?1049h` (which clears) so its first
+/// synchronized frame replaces that one with no blank in between.
 fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> {
-    out.write_all(b"\x1b[?1049h")?;
+    if !INHERITED_ALT_SCREEN.take() {
+        out.write_all(b"\x1b[?1049h")?;
+    }
     out.write_all(HOST_KITTY_KEYBOARD_PUSH)?;
     out.write_all(b"\x1b[?25l")?;
     out.write_all(b"\x1b[?2004h")?;
@@ -306,13 +312,123 @@ fn write_terminal_reset_and_finalize<W: Write>(
     }
 }
 
-/// Put the outer terminal back to cooked mode and the primary screen for a
-/// process hand-off (`switch-host` execs `phux attach`), the same restore a
-/// detach performs, without exiting.
-pub(super) fn restore_terminal_for_handoff() {
+/// Hand the outer terminal to the process a `switch-host` execs: cooked
+/// termios and every input mode dropped, exactly as a detach restores them,
+/// but the alt screen and the current frame stay up. The successor learns
+/// this from [`crate::attach::hosts::ALT_SCREEN_HANDOFF_ENV`] and paints over the frame instead of
+/// re-entering (and clearing) the alt screen; leaving it here flashed the
+/// shell's primary screen for the whole re-dial.
+fn restore_terminal_for_handoff() {
     restore_terminal_termios();
     let mut stdout = io::stdout().lock();
-    write_terminal_reset_and_finalize(&mut stdout, None);
+    // The successor owns the alt screen from here; nothing in this process
+    // may leave it.
+    ALT_SCREEN_ACTIVE.store(false, Ordering::SeqCst);
+    let _ = write_terminal_reset(&mut stdout);
+    let _ = stdout.write_all(HOST_KITTY_KEYBOARD_POP);
+    // The cursor stays hidden over the frame until the successor paints; a
+    // successor that never attaches shows it again as it leaves.
+    let _ = stdout.write_all(b"\x1b[?25l");
+    let _ = stdout.flush();
+}
+
+/// An alt screen this process inherited from a hand-off and has neither
+/// adopted (the raw-mode guard skips re-entering it) nor left.
+static INHERITED_ALT_SCREEN: InheritedAltScreen = InheritedAltScreen::new();
+
+/// The once-read hand-off flag. Read lazily so a process that never touches
+/// the terminal pays nothing; only a real terminal stdout counts, so a
+/// widget child that inherited the variable into a pipe writes nothing.
+struct InheritedAltScreen {
+    read: std::sync::Once,
+    pending: AtomicBool,
+}
+
+impl InheritedAltScreen {
+    const fn new() -> Self {
+        Self {
+            read: std::sync::Once::new(),
+            pending: AtomicBool::new(false),
+        }
+    }
+
+    /// Read the hand-off flag once; while it is owed, a terminating signal
+    /// still leaves the alt screen.
+    fn read_once(&self) {
+        self.read.call_once(|| {
+            let handed_off = std::env::var_os(crate::attach::hosts::ALT_SCREEN_HANDOFF_ENV)
+                .is_some_and(|v| v == "1");
+            let pending = handed_off && io::stdout().is_terminal();
+            self.pending.store(pending, Ordering::SeqCst);
+            if pending {
+                phux_crash::arm_interrupt_leave(LEAVE_HANDED_OFF_ALT_SCREEN);
+                // A panic (an abort in release) before the attach adopts the
+                // screen still leaves it, ahead of the message.
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    leave_inherited_alt_screen();
+                    previous(info);
+                }));
+            }
+        });
+    }
+
+    /// Claim the inherited alt screen; true at most once per process.
+    fn take(&self) -> bool {
+        self.read_once();
+        let claimed = self.pending.swap(false, Ordering::SeqCst);
+        if claimed {
+            phux_crash::disarm_interrupt_leave();
+        }
+        claimed
+    }
+}
+
+/// Note a `switch-host` hand-off at process start.
+///
+/// Arms the leave so that even a Ctrl-C or a panic during the successor's
+/// dial hands the shell its screen back. A no-op without one.
+pub fn adopt_alt_screen_handoff() {
+    INHERITED_ALT_SCREEN.read_once();
+}
+
+/// Leave an alt screen inherited from a `switch-host` hand-off.
+///
+/// The CLI calls this before it prints a cooked diagnostic, so the message
+/// lands where the shell will show it, and on the way out. A no-op once the
+/// attach adopted the alt screen, or without a hand-off.
+pub fn leave_inherited_alt_screen() {
+    if INHERITED_ALT_SCREEN.take() {
+        let mut stdout = io::stdout().lock();
+        let _ = stdout.write_all(LEAVE_HANDED_OFF_ALT_SCREEN);
+        let _ = stdout.flush();
+    }
+}
+
+/// Show the cursor the hand-off hid and leave the alt screen it kept.
+const LEAVE_HANDED_OFF_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l";
+
+/// Hand the terminal to `phux attach` against `host`'s `session`. Returns
+/// only if the exec failed: the alt screen is left again and the reason
+/// printed on the shell's screen before the process exits.
+#[allow(
+    clippy::print_stderr,
+    reason = "the TUI has already handed the terminal back; a failed exec \
+              reports on the cooked terminal, like a detach explanation"
+)]
+#[allow(
+    clippy::exit,
+    reason = "the attach state was handed off; there is nothing to return to"
+)]
+pub(super) fn hand_off_to_host(host: &str, session: &str) -> ! {
+    restore_terminal_for_handoff();
+    let err = crate::attach::hosts::exec_switch_host(host, session);
+    let mut stdout = io::stdout().lock();
+    let _ = stdout.write_all(LEAVE_HANDED_OFF_ALT_SCREEN);
+    let _ = stdout.flush();
+    drop(stdout);
+    eprintln!("phux: could not switch to {session} on {host}: {err}");
+    std::process::exit(1);
 }
 
 /// Clean client exit after a server-acknowledged DETACH (or a

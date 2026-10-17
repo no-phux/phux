@@ -17,6 +17,7 @@ mod status_bar;
 mod widgets;
 
 pub use status_bar::{StatusBar, merge_widget_contributions, row_to_string};
+pub use widgets::button::ButtonWidget;
 pub use widgets::cwd::CwdWidget;
 pub use widgets::exec::{ExecFeed, ExecWidget};
 pub use widgets::exit_status::ExitWidget;
@@ -432,6 +433,7 @@ impl WidgetKindSpec {
 
 /// Doc specs of every built-in widget kind, in ASCII order of kind.
 pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
+    &widgets::button::SPEC,
     &widgets::cwd::SPEC,
     &widgets::exec::SPEC,
     &widgets::exit_status::SPEC,
@@ -659,6 +661,7 @@ impl WidgetRegistry {
     #[must_use]
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
+        r.register("button", widgets::button::factory);
         r.register("cwd", widgets::cwd::factory);
         r.register("exec", widgets::exec::factory);
         r.register("exit", widgets::exit_status::factory);

@@ -92,6 +92,8 @@ pub(super) use super::viewport::{
     resize_cell_px, view_rects, viewport_resize_frame,
 };
 
+pub(super) use handover::CarriedPeers;
+
 #[cfg(test)]
 #[path = "../loop_state_tests.rs"]
 mod tests;
@@ -341,6 +343,17 @@ pub(super) fn undelivered_notices(
         .map(|report| Notice::warn(report.notice_line()))
 }
 
+/// What a whole-view paint drew: every tile at its rect, inside this viewport
+/// and sidebar reservation, with or without the floating box. Equal keys mean
+/// an in-place pane repaint covers every cell a clear would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ViewKey {
+    rects: HashMap<ResourceId, crate::layout::Rect>,
+    floating: Option<ResourceId>,
+    viewport: (u16, u16),
+    sidebar: Option<SidebarReservation>,
+}
+
 /// Every local the attach loop carries across `select!` iterations.
 #[allow(
     clippy::struct_excessive_bools,
@@ -502,6 +515,12 @@ pub(super) struct SessionLoop {
     /// Frame-rate governor: bursts inside the previous frame's window apply
     /// but withhold the paint until `paint_deadline` (see [`PaintPacer`]).
     pacer: PaintPacer,
+    /// `Some(deadline)` while a session switch keeps the previous session's
+    /// frame on the glass (see `handover`).
+    paint_hold: Option<tokio::time::Instant>,
+    /// The tiling the last whole-view paint drew; `None` before one, or once
+    /// an overlay drew over it. See [`ViewKey`].
+    painted_view: Option<ViewKey>,
     /// Which-key popup deadline, armed when the resolver sits in the
     /// pending-prefix state; anchored like `esc_deadline`.
     which_key_deadline: Option<tokio::time::Instant>,
@@ -514,6 +533,8 @@ pub(super) struct SessionLoop {
     host_switch_request: Option<(String, String)>,
     /// ADR-0168: a `toggle-project-group` committed in the last batch.
     project_toggle_request: Option<String>,
+    /// A dispatched `agents-filter`, applied after the batch.
+    agents_filter_request: Option<crate::render::chrome::sidebar::FilterRequest>,
     /// phux-c2td.3: did the server advertise
     /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
     /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
@@ -666,7 +687,8 @@ impl SessionLoop {
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme)
                 .with_plugin_specs(settings.plugin_sidebar.clone())
-                .with_agents_share(settings.sidebar.agents_share),
+                .with_agents_share(settings.sidebar.agents_share)
+                .with_agent_filter(crate::attach::agent_filter_state::load()),
             jobs: Jobs::new(),
             bind_reflow_owed: false,
             _hosts_tx: hosts_tx,
@@ -710,11 +732,14 @@ impl SessionLoop {
             detach_pending: false,
             esc_deadline: None,
             pacer: PaintPacer::default(),
+            paint_hold: None,
+            painted_view: None,
             which_key_deadline: None,
             switch_request: None,
             reload_request: false,
             host_switch_request: None,
             project_toggle_request: None,
+            agents_filter_request: None,
             onboarding_claim,
             settings,
             notifier: crate::attach::notify::Notifier::new(tokio::time::Instant::now()),
@@ -736,6 +761,7 @@ impl SessionLoop {
 mod arrangement;
 mod bootstrap;
 mod frames;
+mod handover;
 mod input;
 mod inventory;
 mod notify;

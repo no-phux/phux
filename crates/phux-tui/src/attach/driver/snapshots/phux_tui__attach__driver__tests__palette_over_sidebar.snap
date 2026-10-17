@@ -1,11 +1,10 @@
 ---
 source: crates/phux-tui/src/attach/driver/tests.rs
-assertion_line: 1099
 expression: all
 ---
  Agents            ├────────────────────────────────────────────────────────────
-   none need you   │PANE-BASE
-                   │
+ all this need     │PANE-BASE
+   none running    │
                    │
                    │
                    │

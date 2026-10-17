@@ -1464,11 +1464,37 @@ pub(in crate::attach) fn switch_session(
     });
 }
 
-/// ADR-0140: `switch-host { host, name }` — re-attach this terminal to
-/// session `name` on another machine. `host` is a `phux.hosts/v1` row name:
-/// a `[[remote]]` registry name, or `local` for this machine's own server.
-/// The sidebar's machine segments and the session picker's machine groups
-/// commit it.
+/// `agents-filter { scope?, host? }`: narrow the sidebar's Agents panel.
+/// The driver owns the painter's filter and its file; a value it cannot
+/// read bells and changes nothing.
+pub(in crate::attach) fn agents_filter(
+    ActionCall {
+        resolved, effects, ..
+    }: ActionCall<'_, '_>,
+) {
+    use crate::render::chrome::sidebar::{AgentScope, FilterRequest, HostFilter, Step};
+    let scope = match str_arg(resolved, "scope").as_deref() {
+        None => None,
+        Some("next") => Some(Step::Next),
+        Some(value) => {
+            let Some(scope) = AgentScope::parse(value) else {
+                tracing::warn!(scope = value, "agents-filter: unknown scope");
+                effects.bell = true;
+                return;
+            };
+            Some(Step::Set(scope))
+        }
+    };
+    let host = str_arg(resolved, "host").map(|value| {
+        if value == "next" {
+            Step::Next
+        } else {
+            Step::Set(HostFilter::parse(&value))
+        }
+    });
+    effects.agents_filter = Some(FilterRequest { scope, host });
+}
+
 /// ADR-0168: `toggle-project-group { project }` — collapse or expand one
 /// project group in the sidebar. The driver owns the collapsed set.
 pub(in crate::attach) fn toggle_project_group(
@@ -1484,6 +1510,11 @@ pub(in crate::attach) fn toggle_project_group(
     effects.toggle_project = Some(project);
 }
 
+/// ADR-0140: `switch-host { host, name }` — re-attach this terminal to
+/// session `name` on another machine. `host` is a `phux.hosts/v1` row name:
+/// a `[[remote]]` registry name, or `local` for this machine's own server.
+/// The sidebar's machine segments and the session picker's machine groups
+/// commit it.
 pub(in crate::attach) fn switch_host(
     ActionCall {
         resolved, effects, ..

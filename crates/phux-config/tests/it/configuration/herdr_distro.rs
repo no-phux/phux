@@ -56,7 +56,7 @@ fn the_curated_opinions_are_shipped_defaults() {
             bare.status.center.len(),
             bare.status.right.len()
         ),
-        (1, 0, 3)
+        (2, 0, 4)
     );
 
     let cfg = starter("");

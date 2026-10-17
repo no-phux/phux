@@ -1713,6 +1713,16 @@ fn dispatch(
 
 #[must_use]
 pub fn run() -> ExitCode {
+    // A `switch-host` successor starts on the alt screen its predecessor
+    // left up; until the attach adopts it, every way out (a diagnostic, a
+    // signal, a panic, a plain return) hands the shell its screen back.
+    phux_tui::attach::adopt_alt_screen_handoff();
+    let code = run_cli();
+    phux_tui::attach::leave_inherited_alt_screen();
+    code
+}
+
+fn run_cli() -> ExitCode {
     // A server about to hot-swap into this binary asks what kind of build it
     // is (`phux_config::instance::BuildKind`) before anything else runs.
     if std::env::var_os(phux_config::instance::PROBE_BUILD_KIND_ENV).is_some() {

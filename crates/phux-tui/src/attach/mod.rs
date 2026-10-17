@@ -34,6 +34,7 @@ mod path_picker;
 mod ghost_stress_tests;
 pub mod input_dispatch;
 // ADR-0172: background work that reports back as a toast.
+mod agent_filter_state;
 mod jobs;
 mod notify;
 mod onboarding;
@@ -72,8 +73,9 @@ pub use phux_client::attach::{
 };
 
 pub use driver::{
-    CompositedCapture, connect_for_attach, record_composited, run_connection, run_dial,
-    run_headless_rendered, run_with_stdout, write_terminal_reset,
+    CompositedCapture, adopt_alt_screen_handoff, connect_for_attach, leave_inherited_alt_screen,
+    record_composited, run_connection, run_dial, run_headless_rendered, run_with_stdout,
+    write_terminal_reset,
 };
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
