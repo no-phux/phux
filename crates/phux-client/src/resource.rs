@@ -6,7 +6,7 @@
 
 use phux_protocol::ids::{ResourceId, ResourceKind, SessionId};
 use phux_protocol::wire::frame::{CloseReason, ControlAction, ResourceLifecycle};
-use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionInfo, SessionSnapshot};
 
 use crate::agent_session::AgentSessionError;
 use crate::attach::AttachError;
@@ -150,6 +150,41 @@ pub fn find<'a>(snapshot: &'a SessionSnapshot, id: &ResourceId) -> Option<&'a Re
 #[must_use]
 pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<SessionId> {
     session_of_info(snapshot, find(snapshot, id)?)
+}
+
+/// The session's most recent input target as the server reports it, when it
+/// is still a Terminal in the session.
+///
+/// The one read of the legacy window surface left in this crate: the server
+/// carries a session's recent target only as its synthesized window's
+/// `active_resource` (ADR-0161 §7), and neither `ResourceInfo`, the
+/// session's snapshot facets, nor the organization records carry it. It
+/// needs a session-level field before the legacy windows can be removed
+/// (ADR-0161 §9).
+#[must_use]
+pub fn recent_terminal(snapshot: &SessionSnapshot, session: &SessionInfo) -> Option<ResourceId> {
+    session
+        .active_window
+        .and_then(|window| snapshot.windows.iter().find(|w| w.id == window))
+        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == session.id))
+        .and_then(|window| window.active_resource.clone())
+        .filter(|id| {
+            find(snapshot, id).is_some_and(is_terminal)
+                && session_of(snapshot, id) == Some(session.id)
+        })
+}
+
+/// Whether the snapshot's server reports each resource's session.
+///
+/// Some local resource carries the `RESOURCE_SESSION` facet (ADR-0161 §7).
+/// Such a server's legacy windows are synthesized, one per non-empty
+/// session, so a client reads nothing from them.
+#[must_use]
+pub fn reports_sessions(snapshot: &SessionSnapshot) -> bool {
+    snapshot
+        .resources
+        .iter()
+        .any(|info| info.id.is_local() && info.session.is_some())
 }
 
 /// [`session_of`] for a resource already in hand. A satellite resource's

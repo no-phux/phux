@@ -807,8 +807,10 @@ fn terminals_in_session(snapshot: &SessionSnapshot, session: SessionId) -> Vec<R
 }
 
 /// Terminals in the group `name`/`group` names: the group's leaves in
-/// depth-first order when the session's arrangement is known, else the
-/// legacy window's Terminals in snapshot order.
+/// depth-first order when the session's arrangement is known; else, from a
+/// server that reports resource sessions, group `0` is all the session's
+/// Terminals; else (an older server) the legacy window's Terminals in
+/// snapshot order.
 fn resolve_group(
     snapshot: &SessionSnapshot,
     context: &ResolveContext<'_>,
@@ -832,6 +834,15 @@ fn resolve_group(
                 crate::resource::find(snapshot, id).is_some_and(crate::resource::is_terminal)
             })
             .collect();
+    }
+    if crate::resource::reports_sessions(snapshot) {
+        // A server that reports each resource's session keeps no windows of
+        // its own: an unarranged session is one unnamed group, so only index
+        // 0 names it.
+        return match group {
+            GroupRef::Index(0) => terminals_in_session(snapshot, sid),
+            _ => Vec::new(),
+        };
     }
     let window_id = snapshot
         .windows
@@ -1543,6 +1554,35 @@ mod tests {
             }
         );
         assert_eq!(err.exit_code(), 2);
+    }
+
+    /// From a server that reports resource sessions, an unarranged session is
+    /// one unnamed group: its synthesized window is never read, so neither a
+    /// window name nor an index past 0 resolves.
+    #[test]
+    fn an_unarranged_session_on_a_facet_server_is_one_group() {
+        let work = SessionId::new(1);
+        let synthesized = WindowId::new(10);
+        let snap = SessionSnapshot::new(work, synthesized, ResourceId::local(100))
+            .with_sessions(vec![SessionInfo::new(work, "work")])
+            .with_windows(vec![WindowInfo::new(synthesized, work, "window-0")])
+            .with_resources(
+                [100, 101]
+                    .into_iter()
+                    .map(|id| {
+                        ResourceInfo::new(ResourceId::local(id), WindowId::new(999), 80, 24)
+                            .with_session(Some(work))
+                    })
+                    .collect(),
+            );
+        for (raw, expected) in [
+            ("work:0", ids(&[100, 101])),
+            ("work:0.1", ids(&[101])),
+            ("work:1", vec![]),
+            ("work:window-0", vec![]),
+        ] {
+            assert_eq!(resolve(&parse(raw).unwrap(), &snap), expected, "{raw}");
+        }
     }
 
     /// `name:N` and `name:N.M` resolve against the arrangement when it is

@@ -424,7 +424,6 @@ mod tests {
             sessions: vec![SessionDescriptor {
                 id: 1,
                 name: "work".to_owned(),
-                window_count: 1,
                 attached_client_count: 1,
                 keep_empty: true,
                 created_at_unix_secs: 42,

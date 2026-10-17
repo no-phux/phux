@@ -147,8 +147,8 @@ fn target_session<'a>(
 }
 
 /// The pane a session's input goes to without an explicit target (R14): the
-/// session's most recent input target, which the server reports as its
-/// legacy window's active resource, else `first_leaf` (the first leaf of the
+/// session's most recent input target ([`crate::resource::recent_terminal`]),
+/// else `first_leaf` (the first leaf of the
 /// session's first arrangement group), else its first Terminal.
 /// [`AttachTarget::Last`] is the server-wide `focused_resource`.
 fn resolve_focused_pane(
@@ -163,13 +163,7 @@ fn resolve_focused_pane(
         crate::resource::find(snapshot, id).is_some_and(crate::resource::is_terminal)
             && crate::resource::session_of(snapshot, id) == Some(session.id)
     };
-    let recent = session
-        .active_window
-        .and_then(|window| snapshot.windows.iter().find(|w| w.id == window))
-        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == session.id))
-        .and_then(|w| w.active_resource.clone())
-        .filter(|id| live(id));
-    recent
+    crate::resource::recent_terminal(snapshot, session)
         .or_else(|| first_leaf.filter(|id| live(id)).cloned())
         .or_else(|| {
             crate::resource::terminals_in(snapshot, session.id)

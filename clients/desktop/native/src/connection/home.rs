@@ -331,7 +331,6 @@ mod tests {
         SessionDescriptor {
             id,
             name: name.to_owned(),
-            window_count: 1,
             attached_client_count: 0,
             keep_empty: true,
             created_at_unix_secs: created,
