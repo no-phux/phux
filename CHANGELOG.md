@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.90.2](https://github.com/no-phux/phux/compare/v0.90.1...v0.90.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* **ffi:** follow renames without an attach and hold typed creates until seeded ([4197bb2](https://github.com/no-phux/phux/commit/4197bb2998b7739d19bec34db5470662093a1210))
+* **ffi:** stop using the legacy session surface against ORGANIZATION servers ([d3a00ac](https://github.com/no-phux/phux/commit/d3a00ac9f5c9de3e1343be46a015fcc0c3999131))
+
+
+### Build System
+
+* **web:** rebuild ghostty-vt.wasm from the official libghostty-vt ABI ([f1a90f4](https://github.com/no-phux/phux/commit/f1a90f4c88a7b0312c7da1abadf674b4330da964))
+
 ## [0.90.1](https://github.com/no-phux/phux/compare/v0.90.0...v0.90.1) (2026-10-17)
 
 
