@@ -239,7 +239,12 @@ behavior, and one surface. Work lists host-qualified sessions across the
 registered machines; typed search also discovers actions and preference pages.
 Settings opens focused live controls, with **All settings** to return, rather
 than a separate category sidebar. Host enrollment and recovery live under
-**Hosts & connections**. Hosts appear as session context, not sidebar roots.
+**Hosts & connections**, which lists This Mac and every saved machine, even
+when disconnected or empty, with its connected, connecting, or unavailable
+state and an Open, Retry, or Reconnect action. **Machines…** reaches it from the
+titlebar session label, the sidebar's **Machines** row, the File menu, and the
+palette; **Add Machine…** opens enrollment the same ways. Hosts appear as
+session context, not sidebar roots.
 The tab strip keeps New Terminal and the notification bell.
 
 Local and registered remote hosts open concurrently with host-qualified

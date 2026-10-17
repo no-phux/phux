@@ -226,12 +226,22 @@ fn host_chip(host: Option<&str>, online: bool, look: &Look) -> impl IntoElement 
         })
 }
 
-fn workspace_identity(desk: &Desk, look: &Look) -> impl IntoElement {
+/// The active session and machine. Clicking it lists every machine.
+fn workspace_identity(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let host = desk.remote.as_deref();
-    let full = format!("{} · Runs on {}", desk.session, host.unwrap_or("Local"));
+    let full = format!(
+        "{} · Runs on {} · Click for machines",
+        desk.session,
+        host.unwrap_or("Local")
+    );
     div()
         .id("workspace-identity")
         .debug_selector(|| "workspace-identity".into())
+        .occlude()
+        .cursor_pointer()
+        .rounded(px(6.))
+        .hover(|style| style.bg(look.hover))
+        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
         .w(px(180.))
         .min_w_0()
         .flex_shrink_0()
@@ -644,7 +654,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                 div()
                     .flex_shrink_0()
                     .when(fit < 1., |slot| slot.overflow_hidden().opacity(fit))
-                    .child(workspace_identity(desk, look)),
+                    .child(workspace_identity(desk, look, cx)),
             )
         })
         .when(top_tabs, |bar| {
@@ -1147,16 +1157,56 @@ fn session_groups(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyEl
     }
     for (host, error) in desk.fleet.failures() {
         let name = host.as_deref().unwrap_or("Local");
+        let tip = format!("{error} · Click to retry");
         rows.push(
-            muted(look, format!("{name} · unavailable"))
+            muted(look, format!("{name} · unavailable · Retry"))
                 .id(SharedString::from(format!("unavailable-{name}")))
+                .debug_selector({
+                    let selector = format!("unavailable-{name}");
+                    move || selector.clone()
+                })
                 .px(px(10.))
                 .py(px(6.))
-                .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx))
+                .cursor_pointer()
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .on_click(cx.listener(|desk, _, _, cx| desk.retry_fleet(cx)))
                 .into_any_element(),
         );
     }
+    rows.push(machines_row(desk, look, cx));
     rows
+}
+
+/// Every saved machine stays reachable here even with no sessions to list.
+fn machines_row(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let detail = match desk.hosts.len() {
+        0 => "Add one".to_owned(),
+        1 => "1 saved".to_owned(),
+        saved => format!("{saved} saved"),
+    };
+    sidebar_row("sidebar-machines", look)
+        .debug_selector(|| "sidebar-machines".into())
+        .mt(px(8.))
+        .child(row_icon(
+            gpui_kit::component::Icon::new(IconName::Server)
+                .size(px(14.))
+                .text_color(from_hex(&look.chrome.faint)),
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .child("Machines"),
+        )
+        .child(muted(look, detail).flex_shrink_0().text_xs())
+        .tooltip(|window, cx| {
+            Tooltip::new("This Mac and saved machines: open, retry, add or forget")
+                .build(window, cx)
+        })
+        .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))
+        .into_any_element()
 }
 
 /// A sidebar row: icon slot, label, trailing detail; washed on hover.

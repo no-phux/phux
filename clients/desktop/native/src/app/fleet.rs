@@ -110,6 +110,27 @@ impl Fleet {
     }
 }
 
+/// What a machine row says about its route right now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Negotiated; its sessions are listed in Work.
+    Connected,
+    /// Dialing, or not observed yet.
+    Connecting,
+    /// The last dial failed or the route closed, with the reason.
+    Unavailable(String),
+}
+
+impl Reach {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Connected => "Connected",
+            Self::Connecting => "Connecting…",
+            Self::Unavailable(_) => "Unavailable",
+        }
+    }
+}
+
 fn available(connection: &Connection) -> bool {
     matches!(connection.status, Status::Negotiated | Status::Attached)
         && connection.topology.is_some()
@@ -318,6 +339,71 @@ impl Desk {
             destination.authority,
             cx,
         );
+    }
+
+    /// One machine's state: this window's own link first, then its observer.
+    pub(crate) fn machine_reach(&self, host: Option<&str>) -> Reach {
+        if host == self.remote.as_deref() {
+            match &self.link {
+                Some(link) if available(&link.connection) => return Reach::Connected,
+                Some(link) if link.connection.status.is_terminal() => {
+                    return Reach::Unavailable(
+                        link.connection
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Disconnected. Reconnect this window.".into()),
+                    );
+                }
+                None => {
+                    if let Some(error) = &self.connect_error {
+                        return Reach::Unavailable(error.clone());
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        let Some(observer) = self.fleet.observers.get(&host.map(str::to_owned)) else {
+            return Reach::Connecting;
+        };
+        if let Some(error) = &observer.error {
+            return Reach::Unavailable(error.clone());
+        }
+        if observer.connection.as_ref().is_some_and(available) {
+            Reach::Connected
+        } else {
+            Reach::Connecting
+        }
+    }
+
+    /// Open a machine from its row: its intake, else its first live session.
+    /// A machine that cannot be opened says why; an unavailable one is retried.
+    pub(crate) fn open_machine(&mut self, host: Option<String>, cx: &mut Context<Self>) {
+        let target = self
+            .work_catalog()
+            .into_iter()
+            .filter(|work| work.destination.host == host && work.online)
+            .min_by_key(|work| !work.intake)
+            .map(|work| work.destination);
+        if let Some(destination) = target {
+            self.navigate_work(destination, cx);
+            return;
+        }
+        let name = host.as_deref().unwrap_or("Local");
+        match self.machine_reach(host.as_deref()) {
+            Reach::Unavailable(_) => {
+                self.post(Kind::Info, &format!("Retrying {name}"), None);
+                self.retry_fleet(cx);
+            }
+            Reach::Connecting => {
+                self.post(Kind::Info, &format!("{name} is still connecting"), None);
+            }
+            Reach::Connected => self.post(
+                Kind::Refusal,
+                &format!("{name} has no sessions"),
+                Some("Create one there with `phux new -s NAME`, then refresh.".into()),
+            ),
+        }
+        cx.notify();
     }
 
     pub(crate) fn retry_fleet(&mut self, cx: &mut Context<Self>) {

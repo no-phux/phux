@@ -1212,6 +1212,10 @@ impl Desk {
             "reload-config" => self.reload_ghostty(cx),
             "import-ghostty" => self.import_ghostty(cx),
             "reconnect" => self.reconnect(cx),
+            "machines" => {
+                self.show_settings_page(super::settings_panel::Page::Connections, window, cx)
+            }
+            "add-host" => self.modal = Modal::AddHost,
             "copy-diagnostics" => self.copy_diagnostics(cx),
             // Opening/closing windows must wait until this desk's window lease ends.
             "performance-monitor" => self.defer_desktop(cx, |desktop, cx| {
