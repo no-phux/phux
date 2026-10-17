@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.94.0](https://github.com/no-phux/phux/compare/v0.93.0...v0.94.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** confirm multi-line pastes into running commands and alert on background finishes ([#1541](https://github.com/no-phux/phux/issues/1541)) ([7b098eb](https://github.com/no-phux/phux/commit/7b098eb4e8b9b71ae00d8987247b42d2f620dc33))
+
 ## [0.93.0](https://github.com/no-phux/phux/compare/v0.92.0...v0.93.0) (2026-10-17)
 
 
