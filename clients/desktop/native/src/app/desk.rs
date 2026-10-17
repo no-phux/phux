@@ -2944,7 +2944,7 @@ impl Desk {
             let (query, case) = (find.query.clone(), find.case_sensitive);
             self.run_search(query, case, cx);
             if self.find_input.is_none() {
-                self.find_input = Some(super::overlays::find_input(self, "", window, cx));
+                self.find_input = Some(super::overlays::find_input("", window, cx));
             }
             return;
         }
@@ -2956,7 +2956,7 @@ impl Desk {
             matches: Vec::new(),
             index: 0,
         });
-        self.find_input = Some(super::overlays::find_input(self, "", window, cx));
+        self.find_input = Some(super::overlays::find_input("", window, cx));
     }
 
     /// Search for the first selected line, and show it in the field.
@@ -2996,7 +2996,7 @@ impl Desk {
                 let input = input.clone();
                 input.update(cx, |input, cx| input.set_value(query.clone(), window, cx));
             }
-            None => self.find_input = Some(super::overlays::find_input(self, &query, window, cx)),
+            None => self.find_input = Some(super::overlays::find_input(&query, window, cx)),
         }
         self.run_search(query, case, cx);
     }

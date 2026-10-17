@@ -180,7 +180,6 @@ fn modal_input(
 
 /// The find field, focused, reporting each edit and Enter / Shift-Enter.
 pub(crate) fn find_input(
-    _desk: &mut Desk,
     initial: &str,
     window: &mut Window,
     cx: &mut Context<Desk>,
@@ -545,13 +544,9 @@ fn path_presentation(picker: &paths::PickerState, has_rows: bool) -> PathPresent
     }
 }
 
-pub fn layer(
-    desk: &mut Desk,
-    colors: &Palette,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
+    let colors = &look.chrome;
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Commands
@@ -561,7 +556,7 @@ pub fn layer(
         | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
         Modal::Path => path_panel(desk, colors, &look, cx),
         Modal::Settings if desk.settings_page.is_some() => {
-            super::settings_panel::panel(desk, colors, window, cx)
+            super::settings_panel::panel(desk, window, cx)
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => notifications_panel(desk, colors, &look, cx),
@@ -678,12 +673,7 @@ fn inset_radius(look: &Look) -> gpui::Pixels {
     px((look.skin.shape.card_radius - 4.).max(0.))
 }
 
-pub fn find_bar(
-    desk: &Desk,
-    case_sensitive: bool,
-    colors: &Palette,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub fn find_bar(desk: &Desk, case_sensitive: bool, cx: &mut Context<Desk>) -> AnyElement {
     let Some((input, _)) = desk.find_input.as_ref() else {
         return div().into_any_element();
     };
@@ -708,9 +698,9 @@ pub fn find_bar(
                 .px(px(6.))
                 .py(px(3.))
                 .rounded(corner(&look, 5.))
-                .bg(from_hex(&colors.theme.foreground).opacity(0.045))
+                .bg(look.ink.opacity(0.045))
                 .text_xs()
-                .text_color(from_hex(&colors.muted))
+                .text_color(from_hex(&look.chrome.muted))
                 .child(desk.find_status()),
         )
         .child(

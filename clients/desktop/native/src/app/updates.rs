@@ -12,7 +12,6 @@ use gpui_kit::component::{Disableable, Sizable};
 use super::color::from_hex;
 use super::overlays::corner;
 use super::skin::Look;
-use crate::settings::theme::Palette;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
 
 pub(crate) struct Updater {
@@ -96,25 +95,13 @@ struct Header {
 }
 
 impl Header {
-    fn item(
-        self,
-        entity: &Entity<Updater>,
-        colors: &Palette,
-        look: &Rc<Look>,
-        mono: &SharedString,
-    ) -> SettingItem {
-        let (entity, colors, look, mono) =
-            (entity.clone(), colors.clone(), look.clone(), mono.clone());
-        SettingItem::render(move |_, _, _| self.render(&entity, &colors, &look, &mono))
+    fn item(self, entity: &Entity<Updater>, look: &Rc<Look>, mono: &SharedString) -> SettingItem {
+        let (entity, look, mono) = (entity.clone(), look.clone(), mono.clone());
+        SettingItem::render(move |_, _, _| self.render(&entity, &look, &mono))
     }
 
-    fn render(
-        &self,
-        entity: &Entity<Updater>,
-        colors: &Palette,
-        look: &Look,
-        mono: &SharedString,
-    ) -> AnyElement {
+    fn render(&self, entity: &Entity<Updater>, look: &Look, mono: &SharedString) -> AnyElement {
+        let colors = &look.chrome;
         let (status, tone) = self.status.clone();
         let (fg, bg) = match tone {
             Tone::Quiet => (&colors.muted, &colors.hover),
@@ -254,7 +241,6 @@ fn switch_item(
 /// The Updates page in a skin, with build strings in the terminal `font`.
 pub(crate) fn page(
     entity: &Entity<Updater>,
-    colors: &Palette,
     look: &Rc<Look>,
     font: &str,
     cx: &gpui::App,
@@ -327,26 +313,26 @@ pub(crate) fn page(
         .group(
             SettingGroup::new()
                 .title("Desktop")
-                .item(desktop.item(entity, colors, look, &mono))
+                .item(desktop.item(entity, look, &mono))
                 .item(switch_item(
                     entity,
                     "Automatic checks",
                     |prefs| &mut prefs.automatic,
                     "At launch and every six hours. Nothing downloads or restarts until you click.",
                 ))
-                .item(channel_item(entity, false, busy, updater.prefs.desktop, colors, look)),
+                .item(channel_item(entity, false, busy, updater.prefs.desktop, look)),
         )
         .group(
             SettingGroup::new()
                 .title("phux on this Mac")
-                .item(runtime.item(entity, colors, look, &mono))
+                .item(runtime.item(entity, look, &mono))
                 .item(switch_item(
                     entity,
                     "Manage phux updates",
                     |prefs| &mut prefs.manage_runtime,
                     "Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
                 ))
-                .item(channel_item(entity, true, busy, updater.prefs.runtime, colors, look)),
+                .item(channel_item(entity, true, busy, updater.prefs.runtime, look)),
         )
 }
 
@@ -356,11 +342,10 @@ fn channel_item(
     runtime: bool,
     busy: bool,
     selected: updates::Channel,
-    colors: &Palette,
     look: &Look,
 ) -> SettingItem {
     let entity = entity.clone();
-    let colors = colors.clone();
+    let colors = look.chrome.clone();
     let outer = corner(look, 7.);
     let inner = corner(look, 5.);
     let lifts = !look.popover_shadow.is_empty();

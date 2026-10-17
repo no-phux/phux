@@ -63,7 +63,7 @@ fn keystroke(chord: &str) -> Option<Keystroke> {
 
 /// Whether the skin wants the compositor material behind the menu.
 fn wants_glass(skin: &Skin) -> bool {
-    matches!(skin.material.backdrop, Backdrop::Glass | Backdrop::Blur)
+    skin.material.backdrop == Backdrop::Glass
 }
 
 /// Foreground washes on the menu, softer than the sheet's because the
@@ -536,7 +536,7 @@ impl GlassMenu {
         // finish when the user switches Spaces or the app deactivates.
         let handle = window.window_handle();
         let exit = self.skin.motion.menu_exit();
-        if self.reduced(cx) {
+        if cx.reduce_motion() {
             window.remove_window();
         } else {
             cx.spawn(async move |_, cx| {
@@ -674,11 +674,6 @@ impl GlassMenu {
         }
     }
 
-    /// Motion is off: the platform asks for less, or the skin has none.
-    fn reduced(&self, cx: &App) -> bool {
-        cx.reduce_motion() || !self.skin.motion.enabled
-    }
-
     fn opacity(&self, now: Instant, reduced: bool) -> (f32, bool) {
         if reduced {
             return (if self.closing.is_some() { 0. } else { 1. }, false);
@@ -695,7 +690,7 @@ impl GlassMenu {
     /// Called only during render, where GPUI permits animation frame requests.
     fn animate_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let reduced = self.reduced(cx);
+        let reduced = cx.reduce_motion();
         let moving = self.surface.advance(now, reduced, spring(&self.skin));
         let height = self.surface.height.position;
         if (window.viewport_size().height.as_f32() - height).abs() > 0.5 {

@@ -325,12 +325,7 @@ fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     });
 }
 
-pub(crate) fn panel(
-    desk: &mut Desk,
-    colors: &Palette,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
+pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     sync_controls(desk, window, cx);
     let handle = cx.weak_entity();
     let page = desk.settings_page.unwrap_or(Page::Appearance);
@@ -341,9 +336,7 @@ pub(crate) fn panel(
         Page::Keyboard => keyboard_page(desk, &handle),
         Page::Spacing => advanced_page(desk, &handle),
         Page::Ghostty => ghostty_page(desk, &handle),
-        Page::Updates => {
-            super::updates::page(&desk.updates, colors, &look, &desk.prefs.font_family, cx)
-        }
+        Page::Updates => super::updates::page(&desk.updates, &look, &desk.prefs.font_family, cx),
         Page::Connections => connection_page(desk, &handle),
     };
     let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
@@ -372,7 +365,11 @@ pub(crate) fn panel(
         .flex()
         .flex_col()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(super::overlays::launcher::hub_header(desk, colors, cx))
+        .child(super::overlays::launcher::hub_header(
+            desk,
+            &look.chrome,
+            cx,
+        ))
         .child(
             div().h(px(40.)).px(px(14.)).flex().items_center().child(
                 Button::new("settings-back")

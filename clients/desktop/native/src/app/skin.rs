@@ -33,8 +33,6 @@ pub struct Look {
     pub raised: Hsla,
     /// Floating capsule backing.
     pub capsule: Hsla,
-    /// A quiet pane's edge. No skin paints one.
-    pub edge: Hsla,
     /// A focused pane's edge.
     pub lit: Hsla,
     /// Popover rim.
@@ -74,7 +72,6 @@ impl Look {
             card: from_hex(&with_alpha(&theme.background, card_alpha)),
             raised: raised.opacity(m.raised),
             capsule: raised.opacity(m.capsule),
-            edge: gpui::transparent_black(),
             lit: ink.opacity(m.lit),
             rim: ink.opacity(tone(RIM, light)),
             hover: from_hex(&chrome.hover),
@@ -114,7 +111,7 @@ pub enum Surface {
     /// A dialog, palette or popover card: card radius, raised backing, rim,
     /// popover shadow.
     Popover,
-    /// A pane card: pane radius, terminal background, quiet edge, pane
+    /// A pane card: pane radius, terminal background, clear edge, pane
     /// shadow. Set a focused edge with `border_color` after.
     Pane,
     /// A floating pill of controls.
@@ -144,7 +141,12 @@ pub trait Surfaced: Styled + Sized {
                 look.rim,
                 &look.popover_shadow,
             ),
-            Surface::Pane => (Some(shape.radius), look.card, look.edge, &look.pane_shadow),
+            Surface::Pane => (
+                Some(shape.radius),
+                look.card,
+                gpui::transparent_black(),
+                &look.pane_shadow,
+            ),
             Surface::Capsule => (None, look.capsule, look.border, &look.capsule_shadow),
             Surface::Tab => (
                 Some(shape.tab_radius[0]),
@@ -176,7 +178,7 @@ impl<T: Styled + Sized> Surfaced for T {}
 /// glass is unavailable and before [`apply_backdrop`] installs it.
 fn background_appearance(backdrop: Backdrop) -> WindowBackgroundAppearance {
     match backdrop {
-        Backdrop::Glass | Backdrop::Blur => WindowBackgroundAppearance::Blurred,
+        Backdrop::Glass => WindowBackgroundAppearance::Blurred,
         Backdrop::Opaque => WindowBackgroundAppearance::Opaque,
     }
 }
@@ -228,7 +230,6 @@ mod tests {
                     prefs.terminal_opacity
                 ))
             );
-            assert_eq!(look.edge, gpui::transparent_black());
             assert_eq!(look.lit, ink.opacity(0.22));
             assert_eq!(look.rim, ink.opacity(if light { 0.12 } else { 0.14 }));
             assert_eq!(look.raised, from_hex(&colors.raised).opacity(0.97));

@@ -81,8 +81,6 @@ macro_rules! blended {
 pub enum Backdrop {
     /// Native glass where the platform has it; blur otherwise.
     Glass,
-    /// The desktop, blurred.
-    Blur,
     /// Nothing: the sheet is the window.
     Opaque,
 }
@@ -91,8 +89,7 @@ impl Backdrop {
     /// How much of the desktop shows through, for picking the clearer of two.
     fn clarity(self) -> u8 {
         match self {
-            Self::Glass => 2,
-            Self::Blur => 1,
+            Self::Glass => 1,
             Self::Opaque => 0,
         }
     }
@@ -212,8 +209,6 @@ blended! {
 blended! {
     /// Spans and springs.
     pub struct Motion {
-        /// Whether chrome animates at all, beyond the reduced-motion setting.
-        pub enabled: bool,
         pub pane_enter_ms: u32,
         pub pane_leave_ms: u32,
         pub menu_enter_ms: u32,
@@ -307,7 +302,6 @@ pub const GLASS: Skin = Skin {
         sheen: true,
     },
     motion: Motion {
-        enabled: true,
         pane_enter_ms: 260,
         pane_leave_ms: 190,
         menu_enter_ms: 150,
@@ -360,7 +354,6 @@ pub const TERMINAL: Skin = Skin {
         sheen: false,
     },
     motion: Motion {
-        enabled: true,
         pane_enter_ms: 120,
         pane_leave_ms: 90,
         menu_enter_ms: 90,
@@ -444,7 +437,7 @@ impl Shift {
     /// A shift over the target's own span, or none when `instant`.
     #[must_use]
     pub fn new(from: Skin, to: Skin, start: Instant, instant: bool) -> Self {
-        let span = if instant || !to.motion.enabled {
+        let span = if instant {
             Duration::ZERO
         } else {
             to.motion.shift()

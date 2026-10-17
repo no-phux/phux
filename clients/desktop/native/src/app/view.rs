@@ -376,8 +376,7 @@ fn build_tab_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> An
 }
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    let look = desk.look();
-    overlays::layer(desk, &look.chrome, window, cx)
+    overlays::layer(desk, window, cx)
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -2113,7 +2112,7 @@ fn pane_view(
         .as_ref()
         .filter(|find| find.placement_id == placement.id)
         .map(|find| find.case_sensitive);
-    let find_bar = find.map(|case| overlays::find_bar(desk, case, colors, cx));
+    let find_bar = find.map(|case| overlays::find_bar(desk, case, cx));
     let dim = (!focused && shared)
         .then_some(1. - desk.prefs.unfocused_opacity as f32)
         .filter(|amount| *amount > 0.);
@@ -2155,7 +2154,7 @@ fn pane_view(
     } else if focused && shared {
         look.lit
     } else {
-        look.edge
+        gpui::transparent_black()
     };
     let shine = look
         .lit
