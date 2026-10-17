@@ -9,6 +9,25 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.101.0](https://github.com/no-phux/phux/compare/v0.100.0...v0.101.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** align picker titles, toast titles and which-key legend with the modal house style ([64506f8](https://github.com/no-phux/phux/commit/64506f87b48e51c71ad460bb847078bfa8e43139))
+* **tui:** fleet rows address an unnamed tab by its index alone ([799427a](https://github.com/no-phux/phux/commit/799427a83e4e9e10b659a6fb6f506891f63052fb))
+* **tui:** status bar follows the theme via theme.&lt;slot&gt; colours and themed chips ([86ac1b5](https://github.com/no-phux/phux/commit/86ac1b5315985127a4d7d0de27f144d49da9b6e0))
+
+
+### Bug Fixes
+
+* **tui:** a job's result replaces its running notice, and modals are opaque ([130b706](https://github.com/no-phux/phux/commit/130b7064c3bb110bb1870bbbb5cbc04ef61b86f0))
+
+
+### Documentation
+
+* **reference:** regenerate config.md for the themed status bar ([b78571f](https://github.com/no-phux/phux/commit/b78571f21e09a13e6d58866071bcb208dd82e8d8))
+
 ## [0.100.0](https://github.com/no-phux/phux/compare/v0.99.0...v0.100.0) (2026-10-17)
 
 
