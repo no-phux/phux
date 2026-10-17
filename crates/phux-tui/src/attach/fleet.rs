@@ -270,6 +270,17 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
     item
 }
 
+/// A pane's address in a row: `w:name.p` for a user-named tab, `w.p` for
+/// an auto-numbered one (whose stored name would read as a second,
+/// disagreeing index: tab 0 is never called "1" anywhere else).
+fn pane_address(w: usize, window_name: &str, p: usize) -> String {
+    if crate::attach::pane_state::auto_named(window_name) {
+        format!("{w}.{p}")
+    } else {
+        format!("{w}:{window_name}.{p}")
+    }
+}
+
 /// The attached session's pane rows, committing `focus-pane`.
 fn current_session_pane_rows(
     workspace: &ArrangementDoc,
@@ -356,7 +367,7 @@ fn pane_row(
     let attention = meta.attention
         || session.is_some_and(|s| s.state == AgentMetaState::Blocked)
         || record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
-    let label = format!("{glyph} {w}:{window_name}.{p} {who}");
+    let label = format!("{glyph} {} {who}", pane_address(w, window_name, p));
     let place = meta
         .branch
         .clone()
@@ -477,7 +488,7 @@ fn foreign_pane_row(
         },
     );
     let attention = record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
-    let label = format!("{glyph} {w}:{window_name}.{p} {who}");
+    let label = format!("{glyph} {} {who}", pane_address(w, window_name, p));
     let mut args = BTreeMap::new();
     args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
     args.insert(
@@ -735,10 +746,10 @@ mod tests {
         );
         let items = local_items(&workspace, &agents, &meta);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].label, "● 0:1.0 reviewer [claude]");
+        assert_eq!(items[0].label, "● 0.0 reviewer [claude]");
         assert_eq!(items[0].secondary.as_deref(), Some("blocked"));
         assert!(items[0].attention, "a blocked stream highlights");
-        assert_eq!(items[1].label, "◐ 0:1.0 reviewer");
+        assert_eq!(items[1].label, "◐ 0.0 reviewer");
         assert_eq!(items[1].secondary.as_deref(), Some("working"));
         assert!(!items[1].attention);
         assert!(
@@ -766,7 +777,7 @@ mod tests {
             },
         );
         let items = local_items(&workspace, &HashMap::new(), &meta);
-        assert_eq!(items[0].label, "◆ 0:1.0 codex");
+        assert_eq!(items[0].label, "◆ 0.0 codex");
         assert_eq!(items[0].secondary.as_deref(), Some("done"));
     }
 
@@ -792,11 +803,11 @@ mod tests {
             },
         );
         let items = local_items(&workspace, &HashMap::new(), &meta);
-        assert_eq!(items[0].label, "○ 0:1.0 vim src/main.rs");
+        assert_eq!(items[0].label, "○ 0.0 vim src/main.rs");
         assert_eq!(items[0].secondary, None, "no record => no state word");
         // Without a title: the placeholder.
         let items = local_items(&workspace, &HashMap::new(), &HashMap::new());
-        assert_eq!(items[0].label, "○ 0:1.0 no agent");
+        assert_eq!(items[0].label, "○ 0.0 no agent");
     }
 
     #[test]
@@ -832,7 +843,7 @@ mod tests {
         );
         let items = local_items(&workspace, &agents, &meta);
         assert_eq!(
-            items[0].label, "○ 0:1.0 reviewer",
+            items[0].label, "○ 0.0 reviewer",
             "ADR-0040 decision 3: the record must outrank the OSC title"
         );
     }
