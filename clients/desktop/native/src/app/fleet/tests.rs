@@ -329,3 +329,58 @@ fn a_drain_that_changes_no_work_reports_nothing(cx: &mut TestAppContext) {
         assert_eq!(desk.fleet.revision, revision);
     });
 }
+
+#[gpui::test]
+fn machine_rows_report_reach_and_open_the_machines_own_work(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (desk, _) = fixture(cx);
+    desk.update(cx, |desk, cx| {
+        install(desk, connection(1, vec![session(7, "main")]));
+        for name in ["mini", "empty", "gone", "pending"] {
+            desk.hosts.push(super::super::host::RemoteHost {
+                name: name.into(),
+                endpoint: format!("quic://{name}.invalid:1"),
+            });
+        }
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            connection(2, vec![session(8, "other"), session(9, "more")]),
+        );
+        let mut empty = connection(3, vec![session(10, "placeholder")]);
+        empty.topology.as_mut().unwrap().sessions.clear();
+        observe(&mut desk.fleet, Some("empty"), empty);
+        desk.fleet.observers.insert(
+            Some("gone".into()),
+            Observer {
+                connection: None,
+                last: Vec::new(),
+                error: Some("connection refused".into()),
+                _wake: None,
+            },
+        );
+
+        assert_eq!(desk.machine_reach(None), Reach::Connected);
+        assert_eq!(desk.machine_reach(Some("mini")), Reach::Connected);
+        assert_eq!(desk.machine_reach(Some("empty")), Reach::Connected);
+        assert_eq!(
+            desk.machine_reach(Some("gone")),
+            Reach::Unavailable("connection refused".into())
+        );
+        assert_eq!(desk.machine_reach(Some("pending")), Reach::Connecting);
+
+        // An empty or still-connecting machine never replaces the active work.
+        desk.open_machine(Some("empty".into()), cx);
+        assert!(desk.remote.is_none());
+        desk.open_machine(Some("pending".into()), cx);
+        assert!(desk.remote.is_none());
+
+        // Without an intake, the machine's first session in catalog order opens.
+        desk.open_machine(Some("mini".into()), cx);
+        assert_eq!(desk.remote.as_deref(), Some("mini"));
+        assert_eq!(
+            desk.link.as_ref().unwrap().connection.home_key(),
+            Some(key(9))
+        );
+    });
+}

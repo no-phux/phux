@@ -201,7 +201,9 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Offline inventory stays visible and cannot be opened until it is refreshed.
-**Settings > Hosts & connections** adds or forgets machines and refreshes inventory.
+**Settings > Hosts & connections** (also **Machines…** from the titlebar session
+label, the sidebar, the File menu and the palette) lists This Mac and every saved
+machine with its state, opens, retries, adds or forgets machines, and refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an
 empty session keeps it empty. Tabs and splits still belong to the selected
 session, not to a new cross-server Workspace record.
