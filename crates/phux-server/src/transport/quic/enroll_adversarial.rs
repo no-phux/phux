@@ -76,7 +76,6 @@ impl Paired {
     fn trust(&self) -> CertTrust {
         CertTrust::Authority {
             ca: crate::workload::ca_fingerprint(&self.paths.ca_cert).unwrap(),
-            leaf: None,
         }
     }
 

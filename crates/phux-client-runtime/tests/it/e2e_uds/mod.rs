@@ -331,13 +331,14 @@ fn ipv6_websocket_attaches_exchanges_output_and_joins_on_close() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let config = phux_server::ServerConfig {
+        let mut config = phux_server::ServerConfig {
             socket_path: socket.clone(),
             pre_seeded_session: Some("main".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..phux_server::ServerConfig::with_default_socket()
         };
+        phux_server_testkit::embedder::embed_owner_engine(&mut config);
         let (shutdown, stop) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::task::spawn_local(async move {
             phux_server::ServerRuntime::new(config)

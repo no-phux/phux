@@ -1418,7 +1418,10 @@ pub(crate) fn run_install(
         }
     };
 
-    if let Err(err) = write_unit_files(manager, &plan, &unit_path) {
+    // The policy first: a unit that could never start is never written.
+    if let Err(err) = ensure_paired_policy(&plan, &phux_config::loader::config_path())
+        .and_then(|()| write_unit_files(manager, &plan, &unit_path))
+    {
         error!("service: {err}");
         return ExitCode::FAILURE;
     }
@@ -1455,6 +1458,43 @@ pub(crate) fn run_install(
 
     report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
+}
+
+/// A unit with a remote listener runs a server that starts only under
+/// `[policy] mode = "paired"` (ADR-0179). With no mode in `config` that is
+/// what the operator asked for by naming a listener, so write it, and say
+/// so; `local` contradicts the listener and is refused, leaving the config
+/// alone. Nothing changes for a unit with no remote listener.
+fn ensure_paired_policy(plan: &ServicePlan, config: &Path) -> Result<(), String> {
+    if plan.quic.is_none() && plan.listen.is_none() {
+        return Ok(());
+    }
+    let current = phux_config::loader::load_from(config)
+        .map_err(|err| format!("{}: {err}; run `phux config check`", config.display()))?
+        .policy
+        .mode;
+    match current {
+        Some(phux_config::PolicyMode::Paired) => Ok(()),
+        Some(phux_config::PolicyMode::Local) => Err(format!(
+            "{} sets [policy] mode = \"local\", which admits no remote listener; set it to \
+             \"paired\" (enrolled client certificates only) or install without --quic/--listen",
+            config.display()
+        )),
+        None => {
+            phux_config::settings::write_edit(
+                config,
+                "policy.mode",
+                phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
+            )
+            .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
+            info!(
+                "service: set [policy] mode = \"paired\" in {}: the remote listener serves only \
+                 clients holding an enrolled certificate (`phux host add`, `phux pair --enroll`)",
+                config.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Put the unit in front of the init system without starting it. launchd
@@ -2274,12 +2314,12 @@ mod tests {
     use super::{
         HubEnsure, Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV,
         START_LIMIT_BURST, ServicePlan, SupervisionState, adoption_marker_is_spent, arm_unit,
-        config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from,
-        launchd_policy_lines, modernize_wrapper, reconcile_unit, render_launchd_plist,
-        render_systemd_unit, render_unit, render_wrapper_script, report_policy_reach_with,
-        resolve_plan, rewrite_unit_binary, status_report, systemd_escape, systemd_policy_lines,
-        systemd_quote, systemd_unquote, unit_socket_override, unit_supervises, xml_escape,
-        xml_unescape,
+        config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper,
+        ensure_paired_policy, home_dir_from, launchd_policy_lines, modernize_wrapper,
+        reconcile_unit, render_launchd_plist, render_systemd_unit, render_unit,
+        render_wrapper_script, report_policy_reach_with, resolve_plan, rewrite_unit_binary,
+        status_report, systemd_escape, systemd_policy_lines, systemd_quote, systemd_unquote,
+        unit_socket_override, unit_supervises, xml_escape, xml_unescape,
     };
     use std::path::Path;
     use std::path::PathBuf;
@@ -2520,6 +2560,40 @@ StandardOutput=append:/home/u/.local/state/phux/server.log
 [Install]
 WantedBy=default.target
 ";
+
+    /// A unit with a remote listener writes `paired` where no mode is set,
+    /// keeps an existing `paired`, and refuses `local`; a unit without one
+    /// leaves the config alone (ADR-0179).
+    #[test]
+    fn a_remote_listener_unit_settles_the_policy_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+
+        let mut local_only = plan();
+        local_only.quic = None;
+        local_only.listen = None;
+        ensure_paired_policy(&local_only, &config).expect("no listener, nothing to settle");
+        assert!(!config.exists(), "the config is left alone");
+
+        std::fs::write(&config, "[sidebar]\nwidth = 30\n").expect("config");
+        ensure_paired_policy(&plan(), &config).expect("an unset mode becomes paired");
+        let written = std::fs::read_to_string(&config).expect("config");
+        assert!(
+            written.contains("width = 30") && written.contains("mode = \"paired\""),
+            "{written}"
+        );
+        ensure_paired_policy(&plan(), &config).expect("paired stays");
+        assert_eq!(std::fs::read_to_string(&config).expect("config"), written);
+
+        std::fs::write(&config, "[policy]\nmode = \"local\"\n").expect("config");
+        let refused = ensure_paired_policy(&plan(), &config).expect_err("local refuses");
+        assert!(refused.contains("\"local\""), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("config"),
+            "[policy]\nmode = \"local\"\n",
+            "a refused install changes nothing"
+        );
+    }
 
     /// Unwrap a `Patched`, failing loudly on any other outcome.
     fn patched(outcome: Reconcile) -> String {

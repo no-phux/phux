@@ -492,7 +492,8 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
 
 /// Enroll a workload certificate with the link's single-use ticket, when it
 /// carries one (ADR-0154). A failure is a warning, as for `host add`: the
-/// host is still paired, and a server outside `paired` mode admits it.
+/// host is still registered, though a `paired` server, the only kind with a
+/// remote listener (ADR-0179), admits no dial without a certificate.
 fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::ClientIdentityFiles> {
     let ticket = link.enrollment_ticket.as_deref()?;
     let Some(quic) = link

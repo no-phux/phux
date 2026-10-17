@@ -1293,9 +1293,9 @@ impl DialPlan {
         self
     }
 
-    /// Pin the server's certificate authority beside the leaf pin this plan
-    /// was built with (ADR-0153), or learn it on the first handshake while
-    /// none is pinned. A plan with no leaf pin (loopback) is left as it is.
+    /// Pin the server's certificate authority in place of the leaf pin this
+    /// plan was built with (ADR-0153), when pairing recorded one. A plan with
+    /// no leaf pin (loopback) is left as it is.
     pub(crate) fn with_authority(
         mut self,
         pin: &phux_client_runtime::target::AuthorityPin,

@@ -148,8 +148,10 @@ pub struct ServerConfig {
     /// HELLO authorization engine override (ADR-0072). `None` lets
     /// [`Self::policy_mode`] choose; tests and embedders inject one here.
     pub policy_engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
-    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is the
-    /// transitional posture (every connection holds the owner's grant).
+    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is `local`
+    /// unless a remote entry point or authority location is configured,
+    /// which refuses to start (ADR-0179); with an injected
+    /// [`Self::policy_engine`] it leaves that engine in charge.
     pub policy_mode: Option<phux_config::PolicyMode>,
     /// Event-hook catalog; empty means no dispatcher task runs.
     pub hook_catalog: crate::hooks::HookCatalog,
@@ -982,9 +984,9 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
 /// The engine a posture calls for; `None` keeps the state's current engine.
 type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
 
-/// Resolve the startup posture from `[policy] mode`, `PHUX_WORKLOAD_MTLS`,
-/// and the configured entry points, refuse the contradictions
-/// (`docs/spec/workload-auth.md` §8), and build the engine it calls for.
+/// Resolve the startup posture from `[policy] mode` and the configured entry
+/// points, refuse the contradictions (`docs/spec/workload-auth.md` §8), and
+/// build the engine it calls for.
 fn startup_policy(
     cfg: &ServerConfig,
     ws_addr: Option<SocketAddr>,
@@ -992,20 +994,19 @@ fn startup_policy(
     webtransport: bool,
     connectors: bool,
 ) -> Result<(crate::policy::PolicyPosture, PostureEngine), ServerError> {
-    let remote = remote_listener_configured(ws_addr, quic_addr, webtransport, connectors);
-    let posture = crate::policy::PolicyPosture::resolve(
-        cfg.policy_mode,
-        cfg.env.workload_mtls,
-        remote,
-        cfg.env.workload_authority_configured(),
-    )?;
+    let posture = crate::policy::PolicyPosture::resolve(crate::policy::PostureInputs {
+        mode: cfg.policy_mode,
+        retired_workload_mtls_env: cfg.env.retired_workload_mtls,
+        remote_listener: remote_listener_configured(ws_addr, quic_addr, webtransport, connectors),
+        workload_authority_configured: cfg.env.workload_authority_configured(),
+        embedder_engine: cfg.policy_engine.is_some(),
+    })?;
     let engine = posture_policy_engine(cfg, posture)?;
     Ok((posture, engine))
 }
 
-/// The engine the posture calls for, or `None` when the state's default
-/// ([`crate::policy::PermissivePolicy`]) already is it or the embedder
-/// injected one through [`ServerConfig::policy_engine`].
+/// The engine the posture calls for, or `None` when the embedder injected
+/// one through [`ServerConfig::policy_engine`].
 ///
 /// `paired` loads the workload authority here, before anything binds, so
 /// missing, malformed, or unsafe material refuses to start
@@ -1020,8 +1021,9 @@ fn posture_policy_engine(
         return Ok(None);
     }
     let engine: std::sync::Arc<dyn crate::policy::PolicyEngine> = match posture {
-        PolicyPosture::Transitional { .. } => return Ok(None),
-        PolicyPosture::Local => std::sync::Arc::new(ScopedPolicy::local()),
+        PolicyPosture::Local | PolicyPosture::Embedded => {
+            std::sync::Arc::new(ScopedPolicy::local())
+        }
         PolicyPosture::Paired => {
             let authority = workload_auth::WorkloadAuth::configured(&cfg.env)
                 .map_err(ServerError::PolicyMaterial)?;
@@ -1032,9 +1034,9 @@ fn posture_policy_engine(
 }
 
 /// Whether a remote entry point is configured: a WebSocket, QUIC, or
-/// WebTransport listener (flag or environment) or a relay connector. The
-/// `local` posture refuses to start beside one, and the transitional posture
-/// warns about it (`docs/spec/workload-auth.md` §8).
+/// WebTransport listener (flag or environment) or a relay connector. With no
+/// mode, or `local`, the server refuses to start beside one
+/// (`docs/spec/workload-auth.md` §8).
 const fn remote_listener_configured(
     ws_addr: Option<SocketAddr>,
     quic_addr: Option<SocketAddr>,
@@ -1057,15 +1059,6 @@ fn install_policy_posture(
             s.set_policy_engine(engine);
         }
     });
-    if posture.warns_remote_owner_grant() {
-        warn!(
-            target: crate::policy::POLICY_TARGET,
-            "no [policy] mode is configured and a remote listener or relay connector is: \
-             remote consumers hold the owner's full grant (transitional posture, \
-             docs/spec/workload-auth.md section 8); set [policy] mode = \"paired\" to \
-             require enrolled workload certificates and enforce their scope ceilings"
-        );
-    }
 }
 
 /// Whether the auto-bound overlay listener may run: some overlay port is
@@ -1595,17 +1588,6 @@ async fn serve_auto_overlay_listeners(
         debug!("no auto-bound overlay listener; nothing detected or nothing to bind");
         root_token.cancelled().await;
         return Ok(());
-    }
-    if state
-        .with(crate::state::ServerState::policy_posture)
-        .is_transitional()
-    {
-        warn!(
-            target: crate::policy::POLICY_TARGET,
-            "an overlay listener bound with no [policy] mode configured: remote consumers \
-             hold the owner's full grant (transitional posture, docs/spec/workload-auth.md \
-             section 8); set [policy] mode = \"paired\" to enforce workload scopes"
-        );
     }
 
     drive_accept_loops(accepts, &root_token).await

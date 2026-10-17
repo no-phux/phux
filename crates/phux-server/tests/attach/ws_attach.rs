@@ -77,13 +77,16 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
     run_local(async move {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let cfg = ServerConfig {
+        let mut cfg = ServerConfig {
             socket_path: socket_path.clone(),
             pre_seeded_session: Some("default".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..ServerConfig::with_default_socket()
         };
+        // A transport test: an embedder engine admits the loopback socket
+        // (ADR-0072); no `phux server` mode does (ADR-0179).
+        phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let (_shutdown, stop) = oneshot::channel::<()>();
         let _server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)

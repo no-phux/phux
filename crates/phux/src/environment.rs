@@ -213,8 +213,9 @@ pub(crate) fn environment_section() -> String {
         }
     }
     section.push_str(
-        "\nRun `phux server --listen 127.0.0.1:8787` to expose a port; see\n\
-         `phux server --help` for the remote and TLS details.\n",
+        "\nRun `phux server --listen 127.0.0.1:8787` to expose a port, with\n\
+         `[policy] mode = \"paired\"` in config.toml; see `phux server --help`\n\
+         for the remote and TLS details.\n",
     );
     section
 }

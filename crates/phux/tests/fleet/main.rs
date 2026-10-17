@@ -7,6 +7,8 @@ mod runner;
 mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 mod host_enroll;
 mod host_lifecycle;

@@ -24,8 +24,9 @@ pub(crate) fn page() -> Page {
         let _ = writeln!(body, "| `{}` | {meaning} |", spec.name);
     }
     body.push_str(
-        "\nRun `phux server --listen 127.0.0.1:8787` to expose a port; see \
-         `phux server --help` for the remote and TLS details.\n",
+        "\nRun `phux server --listen 127.0.0.1:8787` to expose a port, with \
+         `[policy] mode = \"paired\"` in config.toml; see `phux server --help` \
+         for the remote and TLS details.\n",
     );
 
     Page {

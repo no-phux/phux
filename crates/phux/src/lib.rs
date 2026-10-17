@@ -1658,7 +1658,6 @@ fn dispatch(
             host,
             name,
             json,
-            migrate_legacy,
             replace_token,
             relay_route,
             relay,
@@ -1675,7 +1674,6 @@ fn dispatch(
             host,
             name,
             json,
-            migrate_legacy,
             replace_token,
             relay_route.map_or(commands::pair::Door::Listener { enroll }, |route| {
                 commands::pair::Door::Relay {

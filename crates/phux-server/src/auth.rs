@@ -109,9 +109,13 @@ pub enum AuthError {
     /// The structured store could not be decoded or violates its invariants.
     #[error("malformed credential store: {0}")]
     Malformed(String),
-    /// Anonymous token lines require an explicit one-time conversion.
-    #[error("legacy token store requires explicit migration")]
-    LegacyMigrationRequired,
+    /// The file holds anonymous token lines, the store format before
+    /// versioning. Their migration is retired (ADR-0179): such a store
+    /// admits nobody until it is removed and its devices pair again.
+    #[error(
+        "unsupported legacy token store (anonymous token lines, retired by ADR-0179): remove it and pair devices again with `phux pair`"
+    )]
+    LegacyStore,
     /// A requested credential does not exist.
     #[error("credential {0} not found")]
     CredentialNotFound(String),
@@ -375,8 +379,8 @@ impl std::fmt::Debug for TokenStore {
 }
 
 impl TokenStore {
-    /// Load a versioned store. Missing files are empty; legacy token lines are
-    /// rejected until [`migrate_legacy_store`] is called explicitly.
+    /// Load a versioned store. Missing files are empty; a store of legacy
+    /// token lines is refused as [`AuthError::LegacyStore`].
     pub fn load(path: &Path) -> Result<Self, AuthError> {
         let raw = read_secure_store(path)?.unwrap_or_default();
         if raw.trim().is_empty() {
@@ -385,7 +389,7 @@ impl TokenStore {
             });
         }
         if !raw.trim_start().starts_with('{') {
-            return Err(AuthError::LegacyMigrationRequired);
+            return Err(AuthError::LegacyStore);
         }
         let file: CredentialFile =
             serde_json::from_str(&raw).map_err(|error| AuthError::Malformed(error.to_string()))?;
@@ -638,7 +642,7 @@ enum StoreCondition {
     Empty,
     /// Failed its ownership or mode check.
     Insecure,
-    /// Does not parse (or is a legacy store awaiting migration).
+    /// Does not parse (or is a retired legacy store).
     Unparseable,
     /// Could not be read, or kept changing while read.
     Unreadable,
@@ -662,7 +666,7 @@ impl StoreCondition {
                 "the credential store failed its integrity check; make it a regular file owned by this user with mode 0600"
             }
             Self::Unparseable => {
-                "the credential store does not parse; restore it, or run `phux pair --migrate-legacy` for a legacy store"
+                "the credential store does not parse; restore it, or remove it and pair devices again with `phux pair`"
             }
             Self::Unreadable => "the credential store could not be read; retrying",
         }
@@ -1215,55 +1219,6 @@ pub fn revoke_credential(path: &Path, id: &str) -> Result<CommitOutcome, AuthErr
     })
 }
 
-/// Explicitly convert anonymous token lines to generation-one structured
-/// records. The old bearer values are read once and replaced by verifiers.
-pub fn migrate_legacy_store(path: &Path) -> Result<MigrationOutcome, AuthError> {
-    with_store_lock(path, || {
-        let raw = read_secure_store(path)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "credential store does not exist")
-        })?;
-        if raw.trim_start().starts_with('{') {
-            TokenStore::load(path)?;
-            let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            let durable = FileSync::sync_directory(parent).is_ok();
-            return Ok(MigrationOutcome {
-                migrated: 0,
-                durable,
-            });
-        }
-        let now = Utc::now();
-        let mut file = CredentialFile::default();
-        let mut migrated_ids = std::collections::HashSet::new();
-        for line in raw.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let secret = decode_secret(line)?;
-            let id = legacy_peer_id(&secret);
-            if !migrated_ids.insert(id.clone()) {
-                continue;
-            }
-            file.credentials.push(CredentialRecord {
-                id: id.clone(),
-                verifier: verifier(&secret),
-                principal: format!("legacy-remote-consumer:{id}"),
-                scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
-                issued_at: now,
-                expires_at: None,
-                revoked_at: None,
-                generation: 1,
-                last_seen: None,
-            });
-        }
-        let count = file.credentials.len();
-        let commit = atomic_write(path, &file)?;
-        Ok(MigrationOutcome {
-            migrated: count,
-            durable: commit.is_durable(),
-        })
-    })
-}
-
 fn load_file_for_update(path: &Path) -> Result<CredentialFile, AuthError> {
     Ok(TokenStore::load(path)?.file)
 }
@@ -1276,43 +1231,17 @@ fn random_identity_and_secret() -> Result<(String, [u8; TOKEN_LEN]), AuthError> 
     Ok((hex::encode(id), secret))
 }
 
-fn legacy_peer_id(secret: &[u8]) -> String {
-    let digest = Sha256::digest(secret);
-    hex::encode(&digest[..8])
-}
-
 fn decode_secret(encoded: &str) -> Result<[u8; TOKEN_LEN], AuthError> {
-    let bytes = hex::decode(encoded)
-        .map_err(|_| AuthError::Malformed("legacy token is not hex".to_owned()))?;
+    let bytes =
+        hex::decode(encoded).map_err(|_| AuthError::Malformed("token is not hex".to_owned()))?;
     <[u8; TOKEN_LEN]>::try_from(bytes.as_slice())
-        .map_err(|_| AuthError::Malformed("legacy token has wrong length".to_owned()))
+        .map_err(|_| AuthError::Malformed("token has wrong length".to_owned()))
 }
 
 /// Outcome of an atomic store replacement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitOutcome {
     durable: bool,
-}
-
-/// Result of an idempotent legacy conversion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MigrationOutcome {
-    migrated: usize,
-    durable: bool,
-}
-
-impl MigrationOutcome {
-    /// Number of anonymous token lines converted by this call.
-    #[must_use]
-    pub const fn migrated(self) -> usize {
-        self.migrated
-    }
-
-    /// Whether the converted directory entry reached stable storage.
-    #[must_use]
-    pub const fn is_durable(self) -> bool {
-        self.durable
-    }
 }
 
 impl CommitOutcome {
@@ -1442,8 +1371,8 @@ fn with_store_lock<T>(
     path: &Path,
     operation: impl FnOnce() -> Result<T, AuthError>,
 ) -> Result<T, AuthError> {
-    // Every mutation of a store (mint, rotate, revoke, prune, last-seen,
-    // migration) takes this lock first, so this is the store's one guard.
+    // Every mutation of a store (mint, rotate, revoke, prune, last-seen)
+    // takes this lock first, so this is the store's one guard.
     phux_config::production::refuse_dev_on_production_state(path)
         .map_err(AuthError::ProductionStore)?;
     let parent = credential_parent(path);
@@ -1689,29 +1618,33 @@ mod tests {
         assert_eq!(auth.generation, 1);
     }
 
+    /// A store of anonymous token lines (the format before versioning) is
+    /// refused by name, admits nobody, and is never rewritten (ADR-0179).
     #[test]
-    fn legacy_store_requires_and_survives_explicit_migration() {
+    fn legacy_store_is_refused_and_left_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials");
         let token = "ab".repeat(TOKEN_LEN);
-        fs::write(&path, format!("# old\n{token}\n")).unwrap();
+        let legacy = format!("# old\n{token}\n");
+        fs::write(&path, &legacy).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(matches!(
             TokenStore::load(&path),
-            Err(AuthError::LegacyMigrationRequired)
+            Err(AuthError::LegacyStore)
         ));
-        assert_eq!(migrate_legacy_store(&path).unwrap().migrated(), 1);
-        assert_eq!(
-            migrate_legacy_store(&path).unwrap().migrated(),
-            0,
-            "migration is idempotent"
+        let message = AuthError::LegacyStore.to_string();
+        assert!(
+            message.contains("remove it") && message.contains("phux pair"),
+            "the refusal names the remedy: {message}"
         );
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains(&token));
-        let store = TokenStore::load(&path).unwrap();
-        let secret = hex::decode(token).unwrap();
-        let authenticated = store.authenticate(&secret).unwrap();
-        assert_eq!(authenticated.id, legacy_peer_id(&secret));
+        let (store, error) = ReloadingTokenStore::load_deferred(path.clone());
+        assert!(matches!(error, Some(AuthError::LegacyStore)));
+        assert!(!store.verify(&hex::decode(&token).unwrap()));
+        assert!(
+            matches!(mint_token(&path), Err(AuthError::LegacyStore)),
+            "minting refuses rather than replacing the legacy file"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
     }
 
     /// A store that will not load at boot starts empty and is adopted once
@@ -1720,24 +1653,23 @@ mod tests {
     fn deferred_store_admits_nobody_until_the_file_loads_then_adopts_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials");
-        let token = "ab".repeat(TOKEN_LEN);
-        fs::write(&path, format!("# old\n{token}\n")).unwrap();
+        fs::write(&path, "{\"version\":1").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let bearer = hex::decode(&token).unwrap();
+        let bearer = [0x6c; TOKEN_LEN];
 
         let (store, error) = ReloadingTokenStore::load_deferred(path.clone());
         assert!(
-            matches!(error, Some(AuthError::LegacyMigrationRequired)),
+            matches!(error, Some(AuthError::Malformed(_))),
             "the boot-time error comes back so the caller can report it"
         );
         assert!(store.is_empty());
         assert!(!store.verify(&bearer), "a deferred store admits nobody");
 
-        // The operator runs `phux pair --migrate-legacy`; no restart follows.
-        migrate_legacy_store(&path).unwrap();
+        // The operator repairs the store; no restart follows.
+        write_test_credential(&path, &bearer);
         assert!(
             store.verify(&bearer),
-            "the store adopts the migrated file on its next read"
+            "the store adopts the repaired file on its next read"
         );
         assert_eq!(store.reloads(), 1);
     }

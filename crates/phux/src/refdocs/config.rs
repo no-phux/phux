@@ -177,8 +177,8 @@ const TRISTATE_ROWS: &[(&str, &str)] = &[
     ),
     (
         "policy.mode",
-        "unset — transitional: every admitted connection holds the owner's \
-         full grant, and a remote listener is warned about at startup. \
+        "unset — `local`, and a configured remote listener, relay connector, \
+         or workload authority location refuses to start the server. \
          `local` admits the owner socket only; `paired` requires an enrolled \
          workload certificate on every TLS connection",
     ),

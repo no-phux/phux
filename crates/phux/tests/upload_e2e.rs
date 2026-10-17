@@ -287,27 +287,30 @@ fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutatio
     let input_log = dir.path().join("terminal-input");
     let ready = dir.path().join("recorder-ready");
     let baseline = b"upload-calibration-no-newline";
+    // The hub reaches the leaf over `ssh://`: a fake ssh runs the leaf's
+    // `phux stdio-bridge`, the owner-socket route. A network satellite would
+    // need `paired` and a hub certificate (ADR-0179); the upload path is the
+    // same either way.
     let leaf = ServerGuard::builder("upload-leaf")
         .env_clear()
         .env("PHUX_UPLOAD_DIR", &leaf_root)
-        .env("PHUX_WS_ADDR", listeners::LOOPBACK_ANY_PORT)
         .seed_command(format!(
             "/bin/sh -c '/bin/stty -icanon -echo min 1 time 0 && : > \"{}\" && printf ready > \"{}\" && exec /bin/cat >> \"{}\"'",
             input_log.display(), ready.display(), input_log.display()
         ))
         .start();
-    let addr =
-        listeners::bound_listener_addr(&leaf.socket, listeners::RemoteListenerTransport::Wss);
+    let fake_ssh = fake_ssh_to(dir.path(), &leaf.socket);
     let config = dir.path().join("hub-config");
     std::fs::create_dir_all(config.join("phux")).unwrap();
     std::fs::write(
         config.join("phux/config.toml"),
-        format!("[[satellites]]\nname = \"leaf\"\nendpoint = \"ws://{addr}\"\n"),
+        "[[satellites]]\nname = \"leaf\"\nendpoint = \"ssh://leaf\"\n",
     )
     .unwrap();
     let hub = ServerGuard::builder("upload-hub")
         .env_clear()
         .env("XDG_CONFIG_HOME", &config)
+        .env("PHUX_SSH", &fake_ssh)
         .env("PHUX_UPLOAD_DIR", &hub_root)
         .seed_command("/bin/cat")
         .start_with(|cmd| {
@@ -517,4 +520,24 @@ fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::
     assert_eq!(reply["id"], 1);
     assert_eq!(reply["result"]["isError"], false, "{reply}");
     serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// A fake `ssh` that runs `phux stdio-bridge` on `socket`, whatever host it
+/// is asked for: the hub's `ssh://` link to a local leaf.
+fn fake_ssh_to(dir: &std::path::Path, socket: &std::path::Path) -> std::path::PathBuf {
+    let fake_ssh = dir.join("fake-ssh");
+    std::fs::write(
+        &fake_ssh,
+        format!(
+            "#!/bin/sh\nexec \"{}\" stdio-bridge --socket \"{}\"\n",
+            runner::phux_bin(),
+            socket.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fake_ssh
 }

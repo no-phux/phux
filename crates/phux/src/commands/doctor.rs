@@ -568,11 +568,13 @@ fn token_store_check(path: &std::path::Path, error: Option<phux_server::auth::Au
             format!("credential store at {} loads", path.display()),
         );
     };
-    let remedy = if error.to_string().contains("legacy") {
-        "the server refuses to guess at a pre-versioned store: convert it with \
-         `phux pair --migrate-legacy`; the running server re-reads it on the next \
-         connection, or restart / `phux upgrade` it if it disabled its listeners at boot"
-            .to_owned()
+    let remedy = if matches!(error, phux_server::auth::AuthError::LegacyStore) {
+        format!(
+            "a pre-versioned store is no longer read (ADR-0179): remove {} and pair \
+             every device again with `phux pair`, then restart or `phux upgrade` a server \
+             that disabled its listeners at boot",
+            path.display()
+        )
     } else {
         format!(
             "no device can authenticate until this loads; fix the file at {} (or point \
@@ -617,7 +619,7 @@ fn workload_authority_check(ca_cert: &std::path::Path, registry: &std::path::Pat
                     "workload CA at {} cannot be read ({error})",
                     ca_cert.display()
                 ),
-                "a server with PHUX_WORKLOAD_MTLS set disables its remote listeners until the CA loads; fix the file's owner and mode, or remove the pair deliberately and re-enroll every client",
+                "a server in [policy] mode = \"paired\" refuses to start until the CA loads; fix the file's owner and mode, or remove the pair deliberately and re-enroll every client",
             );
         }
     };
@@ -832,7 +834,7 @@ fn remote_listeners_check(
         slot.disabled_reason
             == Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed)
     }) {
-        "fix the credential store (`phux pair --migrate-legacy` for a pre-versioned file), \
+        "fix the credential store (remove a pre-versioned file and pair again), \
          then restart or `phux upgrade` the server"
             .to_owned()
     } else {
@@ -1329,7 +1331,7 @@ fn report_json(checks: &[Check]) -> ExitCode {
 mod tests {
     use super::*;
 
-    /// An unloadable (pre-versioned) store fails and names the migration.
+    /// An unloadable (pre-versioned) store fails and names the remedy.
     #[test]
     fn an_unloadable_credential_store_fails_and_names_the_fix() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1360,8 +1362,8 @@ mod tests {
         );
         let hint = check.hint.expect("a failure must carry a remedy");
         assert!(
-            hint.contains("phux pair --migrate-legacy"),
-            "the remedy for a pre-versioned store must name the migration command: {hint}"
+            hint.contains("remove") && hint.contains("phux pair"),
+            "the remedy for a pre-versioned store must say to remove it and pair again: {hint}"
         );
         assert!(
             hint.contains("restart") || hint.contains("upgrade"),

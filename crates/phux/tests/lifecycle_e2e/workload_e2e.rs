@@ -1,7 +1,7 @@
 //! `phux workload` (ADR-0116, `docs/spec/workload-auth.md` §8): the
 //! authority prints only its fingerprint and no key bytes reach stdout or
 //! stderr; a revoked credential's next connection is refused with no restart;
-//! workload mode refuses to start beside WebTransport.
+//! and the startup refusals of workload-auth §8 (ADR-0179).
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -548,11 +548,23 @@ fn bound_quic_port(socket: &Path) -> u16 {
 /// bound.
 fn register_loopback_remote(dir: &Path) {
     let port = bound_quic_port(&dir.join("s.sock"));
+    let config = dir.join("config/phux/config.toml");
+    let body = format!(
+        "{}[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n",
+        std::fs::read_to_string(&config).unwrap_or_default()
+    );
+    std::fs::write(config, body).expect("write registry");
+}
+
+/// `[policy] mode = "paired"` in the hermetic config, the one switch that
+/// serves enrolled workloads (workload-auth §8; `PHUX_WORKLOAD_MTLS` is
+/// retired, ADR-0179).
+fn paired(dir: &Path) {
     std::fs::write(
         dir.join("config/phux/config.toml"),
-        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+        "[policy]\nmode = \"paired\"\n",
     )
-    .expect("write registry");
+    .expect("write paired config");
 }
 
 fn server_command(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> std::process::Command {
@@ -604,6 +616,7 @@ fn await_success(dir: &Path, args: &[&str], extra: &[(&str, &Path)]) -> Output {
 fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired(dir.path());
     init_authority(dir.path());
     let client = client_key();
     let cert = dir.path().join("client.pem");
@@ -612,11 +625,7 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
     let id = enroll(dir.path(), &client, &cert, &["*@global"]);
 
-    let _server = start_server(
-        dir.path(),
-        &["--quic", listeners::LOOPBACK_ANY_PORT],
-        &[("PHUX_WORKLOAD_MTLS", "1")],
-    );
+    let _server = start_server(dir.path(), &["--quic", listeners::LOOPBACK_ANY_PORT], &[]);
     register_loopback_remote(dir.path());
     let identity = [
         ("PHUX_WORKLOAD_CERT", cert.as_path()),
@@ -657,12 +666,13 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
 fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired(dir.path());
     // Secure, so the loopback listener asks for the bearer token the link
     // carries, as a routable one does.
     let _server = start_server(
         dir.path(),
         &["--quic", listeners::LOOPBACK_ANY_PORT],
-        &[("PHUX_WORKLOAD_MTLS", "1"), ("PHUX_WS_SECURE", "1")],
+        &[("PHUX_WS_SECURE", "1")],
     );
     let socket = dir.path().join("s.sock");
     let socket_arg = socket.to_str().expect("utf-8 socket");
@@ -807,6 +817,7 @@ fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
 fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired(dir.path());
     init_authority(dir.path());
     let client = client_key();
     let needles = key_needles(&client.key_pem);
@@ -829,7 +840,6 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
             "120",
         ],
         &[
-            ("PHUX_WORKLOAD_MTLS", "1"),
             ("RUST_LOG", trace),
             ("PHUX_LOG", log.to_str().expect("utf-8 path")),
         ],
@@ -889,11 +899,12 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
 fn workload_mode_starts_with_webtransport_and_reports_it_bound() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired(dir.path());
     init_authority(dir.path());
     let _server = start_server(
         dir.path(),
         &["--webtransport", listeners::LOOPBACK_ANY_PORT],
-        &[("PHUX_WORKLOAD_MTLS", "1")],
+        &[],
     );
     let bound = listeners::bound_listener_addr(
         &dir.path().join("s.sock"),
@@ -930,6 +941,63 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
     );
 }
 
+/// No `[policy] mode` beside a remote listener is a startup error naming the
+/// remedy (ADR-0179): the transitional owner grant for remote consumers is
+/// gone, so nothing would authorize what the listener admits.
+#[test]
+#[ignore = "runs a real server start; runs in the e2e lane"]
+fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    let out = server_command(
+        dir.path(),
+        &[
+            "--quic",
+            listeners::LOOPBACK_ANY_PORT,
+            "--exit-after-idle",
+            "5",
+        ],
+        &[],
+    )
+    .output()
+    .expect("run phux server");
+    let stderr = text(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an unset mode beside a listener must refuse: {stderr}"
+    );
+    assert!(
+        stderr.contains("[policy] mode") && stderr.contains("paired"),
+        "the refusal names the setting and the remedy: {stderr}"
+    );
+}
+
+/// The retired `PHUX_WORKLOAD_MTLS` refuses to start, naming its
+/// replacement, rather than quietly choosing a mode (ADR-0179).
+#[test]
+#[ignore = "runs a real server start; runs in the e2e lane"]
+fn the_retired_workload_mtls_variable_refuses_to_start() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    paired(dir.path());
+    let out = server_command(
+        dir.path(),
+        &["--exit-after-idle", "5"],
+        &[("PHUX_WORKLOAD_MTLS", "1")],
+    )
+    .output()
+    .expect("run phux server");
+    let stderr = text(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "the retired variable must refuse: {stderr}"
+    );
+    assert!(
+        stderr.contains("PHUX_WORKLOAD_MTLS is retired") && stderr.contains("[policy] mode"),
+        "the refusal names the replacement: {stderr}"
+    );
+}
+
 /// Poll `child` until it exits or `deadline` passes, then collect it.
 fn wait_exit(mut child: Child, deadline: Duration) -> Output {
     let start = Instant::now();
@@ -957,6 +1025,7 @@ impl HeldWorld {
     fn start() -> Self {
         let dir = TempDir::new().expect("tempdir");
         prepare_dirs(dir.path());
+        paired(dir.path());
         init_authority(dir.path());
         let client = client_key();
         let cert = dir.path().join("client.pem");
@@ -969,11 +1038,7 @@ impl HeldWorld {
             &cert,
             &["inventory,observe,?signal@global"],
         );
-        let server = start_server(
-            dir.path(),
-            &["--quic", listeners::LOOPBACK_ANY_PORT],
-            &[("PHUX_WORKLOAD_MTLS", "1")],
-        );
+        let server = start_server(dir.path(), &["--quic", listeners::LOOPBACK_ANY_PORT], &[]);
         register_loopback_remote(dir.path());
         let world = Self {
             dir,

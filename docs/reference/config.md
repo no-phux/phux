@@ -79,7 +79,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `notifications.terminal-protocol` | `"auto"` |
 | `organize.jev-key-command` | unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is the key, run when the variable is unset |
 | `organize.offline` | `false` |
-| `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
+| `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |
@@ -794,9 +794,11 @@ right = [
 # Authorization posture (docs/spec/workload-auth.md section 8). Read once
 # at server start; a change needs a restart.
 #
-# Unset is the transitional posture: every connection the server admits
-# holds the owner's full grant, and a remote listener is logged as a
-# warning at startup.
+# Unset is `local`, except that a configured remote listener, relay
+# connector, or workload authority location (`PHUX_WORKLOAD_CA`, ...)
+# refuses to start the server and names `paired` as the remedy: nothing
+# ever grants a remote connection the owner's authority (ADR-0179).
+# The overlay listener is auto-bound only under `paired`.
 #
 # `local`: the owner's Unix socket only. A configured remote listener
 # (`--listen`, `--quic`, `--webtransport`, their environment variables,

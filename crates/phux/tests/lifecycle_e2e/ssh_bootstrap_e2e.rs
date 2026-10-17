@@ -5,13 +5,17 @@
 //! and a fake `ssh` via `$PHUX_SSH` that runs the remote half on this machine,
 //! the way sshd would run it on the far end. `ssh -G` answers
 //! `hostname 127.0.0.1`, so the QUIC dial that follows is a real loopback dial
-//! to a real on-demand listener on a real auto-spawned server.
+//! to a real on-demand listener on a real auto-spawned server. That server
+//! runs `paired` (with no mode it is `local` and opens no door, ADR-0179),
+//! and the client presents a certificate enrolled into it.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::io::Read as _;
 use std::net::SocketAddr;
@@ -47,6 +51,7 @@ enum Remote {
 /// fake remote's `PATH` that is this build.
 struct Home {
     dir: TempDir,
+    enrolled: Option<paired::Enrolled>,
 }
 
 impl Home {
@@ -90,7 +95,18 @@ impl Home {
             std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod fake ssh");
         }
-        Self { dir }
+        paired::write_paired_policy(&root.join("config/phux/config.toml"));
+        let mut home = Self {
+            dir,
+            enrolled: None,
+        };
+        let enrolled = paired::enroll_client(home.dir.path(), |args, stdin| {
+            let mut command = common::phux_cmd(crate::runner::phux_bin());
+            command.envs(home.env()).args(args);
+            paired::output_with_stdin(command, stdin)
+        });
+        home.enrolled = Some(enrolled);
+        home
     }
 
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
@@ -105,6 +121,9 @@ impl Home {
             ("PHUX_TAILSCALE", root.join("no-such-tailscale")),
             ("PHUX_SSH", root.join("fake-ssh")),
         ]
+        .into_iter()
+        .chain(self.enrolled.iter().flat_map(paired::Enrolled::env))
+        .collect()
     }
 
     /// Run `phux ARGS` on a PTY until `needle` appears or [`DEADLINE`]
@@ -238,7 +257,13 @@ fn bootstrap_prints_one_line_that_is_enough_to_dial() {
         server_name: "localhost".to_owned(),
         token: Some(unhex(token)),
         trust: CertTrust::Pinned(fingerprint.to_owned()),
-        identity: None,
+        identity: home
+            .enrolled
+            .as_ref()
+            .map(|enrolled| phux_dial::TlsClientIdentity::PemFiles {
+                certificate: enrolled.cert.clone(),
+                private_key: enrolled.key.clone(),
+            }),
         inner: None,
     });
     let features = rt.block_on(async {

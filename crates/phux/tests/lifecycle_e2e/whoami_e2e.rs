@@ -1,9 +1,10 @@
 //! `phux whoami` against a real server, end to end (ADR-0106).
 //!
 //! Two routes. The local socket, where the server reports the kernel's peer
-//! uid and no credential. And a loopback QUIC listener forced onto the secure
-//! path with `PHUX_WS_SECURE=1`, so the `--remote` dial must present a bearer
-//! token minted by `phux pair` and the server reports that credential back.
+//! uid and no credential. And a `paired` server's loopback QUIC listener
+//! forced onto the secure path with `PHUX_WS_SECURE=1`, so the `--remote`
+//! dial presents an enrolled certificate and a bearer token minted by `phux
+//! pair`, and the server reports the certificate's credential back.
 //!
 //! Hermetic, like `remote_session_verbs_e2e`: private config, state, and
 //! runtime dirs; no ssh and no overlay detection.
@@ -15,6 +16,8 @@
 mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 
 use std::path::Path;
 use std::process::{Child, Output, Stdio};
@@ -41,12 +44,33 @@ impl Drop for Server {
 }
 
 fn phux(dir: &Path, args: &[&str]) -> Output {
-    common::phux_cmd(crate::runner::phux_bin())
+    phux_with(dir, args, b"", &[])
+}
+
+fn phux_with(
+    dir: &Path,
+    args: &[&str],
+    stdin: &[u8],
+    extra: &[(&str, std::path::PathBuf)],
+) -> Output {
+    use std::io::Write as _;
+    let mut child = common::phux_cmd(crate::runner::phux_bin())
         .envs(hermetic_env(dir))
+        .envs(extra.iter().cloned())
         .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run phux");
+    let _ = child.stdin.take().expect("stdin").write_all(stdin);
+    child.wait_with_output().expect("wait for phux")
+}
+
+/// `[policy] mode = "paired"` in the hermetic config: the only mode that
+/// serves a remote listener (ADR-0179).
+fn paired_policy(dir: &Path) {
+    paired::write_paired_policy(&dir.join("config/phux/config.toml"));
 }
 
 /// Start `phux server --socket DIR/s.sock EXTRA...` under the hermetic env.
@@ -71,9 +95,13 @@ fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
 
 /// Run `phux ARGS` until it succeeds, failing after [`READY_DEADLINE`].
 fn await_success(dir: &Path, args: &[&str]) -> Output {
+    await_success_with(dir, args, &[])
+}
+
+fn await_success_with(dir: &Path, args: &[&str], extra: &[(&str, std::path::PathBuf)]) -> Output {
     let start = Instant::now();
     loop {
-        let out = phux(dir, args);
+        let out = phux_with(dir, args, b"", extra);
         if out.status.success() {
             return out;
         }
@@ -139,6 +167,7 @@ fn whoami_reports_the_local_socket_peer() {
 fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired_policy(dir.path());
     let _server = start_server(
         dir.path(),
         &["--quic", listeners::LOOPBACK_ANY_PORT],
@@ -183,14 +212,18 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
     }
 }
 
-/// Over `--remote`: a secure loopback QUIC listener admits the dial by the
-/// token `phux pair` minted, and whoami reports that credential back with
-/// no peer uid.
+/// Over `--remote`: a `paired` secure loopback QUIC listener admits the dial
+/// by an enrolled certificate behind the token `phux pair` minted, and
+/// whoami reports the certificate's credential back with no peer uid.
 #[test]
 #[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
-fn whoami_over_remote_reports_the_bearer_credential() {
+fn whoami_over_remote_reports_the_workload_credential() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
+    paired_policy(dir.path());
+    let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
+        phux_with(dir.path(), args, stdin, &[])
+    });
 
     // Start the listener first: `phux pair` mints only against a server
     // with a bound remote listener (ADR-0141), and the server re-reads its
@@ -211,7 +244,6 @@ fn whoami_over_remote_reports_the_bearer_credential() {
     ));
     assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
     let token = paired["token"].as_str().expect("token");
-    let credential_id = paired["credential_id"].as_str().expect("credential_id");
     let token_file = dir.path().join("loop.token");
     std::fs::write(&token_file, format!("{token}\n")).expect("write token");
 
@@ -225,12 +257,10 @@ fn whoami_over_remote_reports_the_bearer_credential() {
     )
     .expect("write registry");
 
-    let doc = json_doc(&await_success(
-        dir.path(),
-        &["whoami", "--remote", REMOTE, "--json"],
-    ));
+    let whoami = ["whoami", "--remote", REMOTE, "--json"];
+    let doc = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(doc["auth_route"], "bearer-quic", "{doc}");
-    assert_eq!(doc["credential_id"], credential_id, "{doc}");
+    assert_eq!(doc["credential_id"], enrolled.credential_id, "{doc}");
     assert!(doc["principal"].is_string(), "{doc}");
     assert_eq!(
         doc["peer_uid"],

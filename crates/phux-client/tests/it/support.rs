@@ -43,10 +43,27 @@ pub struct Server {
     handle: Option<JoinHandle<Result<(), phux_server::ServerError>>>,
 }
 
+/// An embedder engine (ADR-0072) granting every connection the owner's
+/// authority. These cases test the QUIC dial and its streams, not who may
+/// act; `phux server` has no mode that does this (ADR-0179).
+#[derive(Debug)]
+struct OwnerEngine;
+
+impl phux_server::policy::PolicyEngine for OwnerEngine {
+    fn authorize_hello<'a>(
+        &'a self,
+        _peer_identity: &'a phux_protocol::policy::PeerIdentity,
+        _credential: Option<&'a phux_server::auth::AuthenticatedCredential>,
+    ) -> phux_server::policy::GrantFuture<'a> {
+        Box::pin(async { Ok(phux_server::policy::ConnectionGrant::owner()) })
+    }
+}
+
 impl Server {
     /// Run `config` on the current `LocalSet`, listening on a loopback QUIC
     /// port the kernel picks; [`Self::quic_addr`] is the one it bound.
-    pub async fn start(config: ServerConfig) -> Self {
+    pub async fn start(mut config: ServerConfig) -> Self {
+        config.policy_engine = Some(std::sync::Arc::new(OwnerEngine));
         let socket = config.socket_path.clone();
         let (shutdown, stopped) = oneshot::channel();
         let handle = tokio::task::spawn_local(async move {

@@ -131,20 +131,13 @@ impl RemoteClient {
             .then_some(phux_protocol::wire::frame::RolePolicy::VIEWER)
     }
 
-    /// The pin `connect` dials with: the stored authority, or a learner that
-    /// records the one a leaf-pinned server presents.
+    /// The pin `connect` dials with: the stored authority. Nothing is
+    /// learned from a connection (ADR-0179).
     fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
-        let ca = self.authority.lock().unwrap().clone();
-        let route = self.route.lock().unwrap().clone();
-        // A relayed server's CA is never learned: the relay's leaf does not
-        // authenticate it (ADR-0154).
-        let learner = (ca.is_none() && route.is_none()).then(|| {
-            let slot = Arc::clone(&self.learned_authority);
-            phux_client_runtime::AuthorityLearner::new(move |authority| {
-                *slot.lock().unwrap() = Some(authority.to_owned());
-            })
-        });
-        phux_client_runtime::target::AuthorityPin { ca, learner, route }
+        phux_client_runtime::target::AuthorityPin {
+            ca: self.authority.lock().unwrap().clone(),
+            route: self.route.lock().unwrap().clone(),
+        }
     }
 }
 
@@ -161,8 +154,6 @@ pub struct RemoteClient {
     /// The relay route the server is reached through (ADR-0149), set by
     /// [`RemoteClient::set_relay_route`].
     route: Mutex<Option<String>>,
-    /// The CA a leaf-pinned connection learned, for the embedder to store.
-    learned_authority: Arc<Mutex<Option<String>>>,
     /// The workload identity every dial presents (ADR-0154), once enrolled.
     client_identity: Mutex<phux_client_runtime::TlsClientIdentity>,
     /// Whether every `ATTACH` declares the watch-only role (ADR-0127), set
@@ -281,22 +272,14 @@ impl RemoteClient {
         *self.authority.lock().unwrap() = authority.filter(|pin| !pin.trim().is_empty());
     }
 
-    /// The certificate authority (`sha256:` fingerprint) the server presented
-    /// on a connection authenticated by the leaf pin alone, once one has.
-    /// Store it beside the leaf pin and pass it to `set_authority_pin` from
-    /// then on (trust on first connect, ADR-0153). `None` until then, and
-    /// while an authority is pinned.
-    pub fn learned_authority(&self) -> Option<String> {
-        self.learned_authority.lock().unwrap().clone()
-    }
-
     /// Enroll `key` as this device's workload identity with the single-use
     /// `ticket` a pairing link carried (`enroll=`), over this client's
     /// `quic://` endpoint and pins. Blocks for at most the dial timeout; call
     /// it off the main thread, before `connect`. Returns the issued chain
     /// (public PEM): store it beside the key and hand both to
-    /// `set_device_identity` on later launches. The server's CA is pinned
-    /// for this client too ([`Self::learned_authority`]).
+    /// `set_device_identity` on later launches. The server's CA must be
+    /// pinned first ([`Self::set_authority_pin`], the link's `ca`); an
+    /// unpinned client is refused rather than learning it (ADR-0179).
     pub fn enroll_device(
         &self,
         ticket: String,
@@ -310,9 +293,6 @@ impl RemoteClient {
                 .map_err(|reason| WireError::Runtime { reason })?;
         *self.client_identity.lock().unwrap() =
             phux_client_runtime::TlsClientIdentity::Held(enrolled.identity);
-        if self.authority.lock().unwrap().is_none() {
-            *self.learned_authority.lock().unwrap() = Some(enrolled.authority);
-        }
         Ok(enrolled.chain_pem)
     }
 
@@ -845,7 +825,6 @@ impl RemoteClient {
             token,
             authority: Mutex::new(None),
             route: Mutex::new(tls_server_name),
-            learned_authority: Arc::new(Mutex::new(None)),
             client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
             attach_viewer: Mutex::new(false),
             terminal_theme: Mutex::new(None),
@@ -1352,10 +1331,7 @@ mod tests {
                 target.authority.route.as_deref(),
                 Some("mini-route.example")
             );
-            assert!(
-                target.authority.learner.is_none(),
-                "relay leaf cannot authenticate the server CA"
-            );
+            assert_eq!(target.authority.ca, None, "a relay leaf pins no server CA");
             assert_eq!(
                 target.client_identity,
                 phux_client_runtime::TlsClientIdentity::None

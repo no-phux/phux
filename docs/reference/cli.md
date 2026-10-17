@@ -2401,9 +2401,6 @@ Flags:
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
-      --migrate-legacy       Explicitly convert legacy anonymous token lines
-                             before pairing. Conversion preserves each bearer
-                             secret but stores only its verifier.
       --replace-token <HEX>  When minting, revoke any live credential whose
                              bearer matches this hex token first. `phux host
                              add` passes the previously enrolled token so
@@ -3705,16 +3702,18 @@ Flags:
                                   `phux attach <name>` will request.
                                   (default: default)
       --listen <HOST:PORT>        Also accept WebSocket clients on this
-                                  `HOST:PORT` (the UDS stays on). Loopback (e.g.
-                                  `127.0.0.1:8787`) is plaintext for local
-                                  browser dev; any routable address (e.g.
-                                  `0.0.0.0:8787`) auto-provisions TLS and
-                                  requires a `phux pair` token. Overrides
-                                  `$PHUX_WS_ADDR`.
+                                  `HOST:PORT` (the UDS stays on). Needs
+                                  `[policy] mode = "paired"`, without which the
+                                  server refuses to start: every connection then
+                                  presents an enrolled client certificate over
+                                  TLS, and a routable address (e.g.
+                                  `0.0.0.0:8787`) also requires a `phux pair`
+                                  token. Overrides `$PHUX_WS_ADDR`.
       --quic <HOST:PORT>          Also accept QUIC clients on this `HOST:PORT`
-                                  (the UDS stays on). QUIC is always TLS
-                                  1.3-encrypted; a loopback address skips token
-                                  auth (local dev), while any routable address
+                                  (the UDS stays on). Needs `[policy] mode =
+                                  "paired"`: every connection presents an
+                                  enrolled client certificate. QUIC is always
+                                  TLS 1.3-encrypted; a routable address also
                                   requires a `phux pair` token sent as the
                                   stream's opening preamble. Overrides
                                   `$PHUX_QUIC_ADDR`.
@@ -3722,10 +3721,13 @@ Flags:
                                   clients on this `HOST:PORT` (the UDS stays on)
                                   — the browser's door to QUIC-class transport;
                                   the browser client dials it, falling back to
-                                  WebSocket. Always TLS 1.3-encrypted; a
-                                  loopback address skips token auth (local dev),
-                                  while any routable address requires a `phux
-                                  pair` token carried in the CONNECT request
+                                  WebSocket. Needs `[policy] mode = "paired"`,
+                                  under which a session is admitted only through
+                                  an end-to-end TLS session presenting an
+                                  enrolled certificate, which a browser cannot
+                                  open yet. Always TLS 1.3-encrypted; a routable
+                                  address also requires a `phux pair` token
+                                  carried in the CONNECT request
                                   (`Authorization: Bearer` from native
                                   consumers, `?token=<hex>` on the session URL
                                   from browsers). Overrides `$PHUX_WT_ADDR`.
@@ -3733,8 +3735,9 @@ Flags:
                                   matching `[[connector]]` entry exists, its
                                   token file and certificate pin are used;
                                   otherwise only a loopback endpoint is accepted
-                                  for unauthenticated development. Without this
-                                  flag, every configured connector is supervised
+                                  for unauthenticated development. Needs
+                                  `[policy] mode = "paired"`. Without this flag,
+                                  every configured connector is supervised
                                   independently.
       --hub                       Run as a federation hub: consume the
                                   `[[satellites]]` registry from `config.toml`
@@ -3823,7 +3826,9 @@ Flags:
       --quic <HOST:PORT>    Accept QUIC clients on this `HOST:PORT`. A routable
                             address (e.g. `0.0.0.0:8788`) engages TLS and
                             requires a `phux pair` token. Prefer this over
-                            `--listen` where UDP is open.
+                            `--listen` where UDP is open. A remote listener
+                            needs `[policy] mode = "paired"`: with no mode set,
+                            install writes it; `local` is refused.
       --listen <HOST:PORT>  Accept WebSocket clients on this `HOST:PORT`. The
                             fallback for networks that block UDP.
       --restore             Keep a session archive beside the server. The server

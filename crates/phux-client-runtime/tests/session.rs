@@ -268,7 +268,7 @@ async fn quic_server(
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
     phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("self-signed cert");
-    let config = ServerConfig {
+    let mut config = ServerConfig {
         socket_path: socket.to_path_buf(),
         pre_seeded_session: Some("main".to_owned()),
         seed_with_pty: false,
@@ -281,6 +281,9 @@ async fn quic_server(
         },
         ..ServerConfig::with_default_socket()
     };
+    // A transport test: an embedder engine admits the loopback dial
+    // (ADR-0072); no `phux server` mode does (ADR-0179).
+    phux_server_testkit::embedder::embed_owner_engine(&mut config);
     let (shutdown, stopped) = oneshot::channel::<()>();
     let server = tokio::task::spawn_local(async move {
         ServerRuntime::new(config)
@@ -362,13 +365,14 @@ fn a_websocket_session_round_trips() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("w.sock");
-        let config = ServerConfig {
+        let mut config = ServerConfig {
             socket_path: socket.clone(),
             pre_seeded_session: Some("main".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..ServerConfig::with_default_socket()
         };
+        phux_server_testkit::embedder::embed_owner_engine(&mut config);
         let (shutdown, stopped) = oneshot::channel::<()>();
         let server = tokio::task::spawn_local(async move {
             ServerRuntime::new(config)
