@@ -211,6 +211,16 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, events)
     }
 
+    /// Whether the terminal's shell is running a command, as this
+    /// connection's shell events report it: `Some(true)` after a start
+    /// (OSC 133 C), `Some(false)` after a finish (OSC 133 D) or the shell's
+    /// exit, `None` before either. A start that predates the connection is
+    /// `None`; [`crate::Client::command_running`] then reads the replica.
+    #[must_use]
+    pub fn command_state(&self, terminal_id: &ResourceId) -> Option<bool> {
+        self.command_states.get(terminal_id).copied()
+    }
+
     /// Whether raw input for the terminal would pass the server's gate
     /// right now: attached with no `DETACHED` since, a published replica, no
     /// delivery fence, and either the attached session's terminal or a

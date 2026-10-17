@@ -204,6 +204,29 @@ impl Client {
             .is_some_and(|engine| engine.is_alt_screen(terminal_id))
     }
 
+    /// Whether the terminal's shell is running a command. This connection's
+    /// shell events answer first; before any (a start that predates the
+    /// connection, as after a reconnect or a late attach) the replica's
+    /// OSC 133 marks do. `false` is at a prompt *or unknown* (no shell
+    /// integration, the alternate screen, no replica), so a caller that
+    /// guards input on it fails open.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn command_running(&self, terminal_id: &ResourceId) -> bool {
+        let (state, engine) = {
+            let control = lock(&self.inner.control);
+            (
+                control.command_state(terminal_id),
+                control.engine().cloned(),
+            )
+        };
+        state.unwrap_or_else(|| {
+            engine.is_some_and(|engine| {
+                engine.replica_prompt(terminal_id) == crate::engine::ReplicaPrompt::Running
+            })
+        })
+    }
+
     /// Whether the kernel holds a live (or retained) replica.
     #[must_use]
     pub fn has_projection(&self, terminal_id: &ResourceId) -> bool {

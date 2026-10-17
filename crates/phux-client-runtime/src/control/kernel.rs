@@ -240,12 +240,16 @@ impl ControlPlane {
                 exit_status,
                 signal,
                 reason,
-            } => self.push_event(Event::Exited {
-                terminal_id,
-                exit_status,
-                signal,
-                reason,
-            }),
+            } => {
+                // An exited shell runs nothing; a retained resource is not busy.
+                self.command_states.insert(terminal_id.clone(), false);
+                self.push_event(Event::Exited {
+                    terminal_id,
+                    exit_status,
+                    signal,
+                    reason,
+                });
+            }
             // Folded from the agent event itself, for every terminal the
             // subscription covers rather than only the kernel's.
             KernelStatus::Cwd { .. }

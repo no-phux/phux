@@ -767,3 +767,48 @@ fn present_view_catches_up_and_agrees_with_its_replica_in_one_turn() {
     owner.destroy_view(view).unwrap();
     assert!(owner.present_view(view).is_err());
 }
+
+/// The replica's own OSC 133 marks say whether a command has the screen,
+/// with no shell event on this connection.
+#[test]
+fn the_replica_reads_its_prompt_cycle_from_osc_133_marks() {
+    let (owner, _publication) = owner();
+    let at_prompt = id(201);
+    let running = id(202);
+    let scrolled = id(203);
+    let plain = id(204);
+    let full_screen = id(205);
+    let mut long = b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07".to_vec();
+    for line in 0..12 {
+        long.extend_from_slice(format!("cc {line}\r\n").as_bytes());
+    }
+    attach_many(
+        &owner,
+        &[
+            (
+                &at_prompt,
+                b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07a b\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07",
+            ),
+            (
+                &running,
+                b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07building",
+            ),
+            (&scrolled, &long),
+            (&plain, b"$ make\r\nbuilding"),
+            (
+                &full_screen,
+                b"\x1b]133;A\x07$ \x1b]133;B\x07vim\r\n\x1b]133;C\x07\x1b[?1049h~",
+            ),
+        ],
+    );
+    assert_eq!(owner.replica_prompt(&at_prompt), ReplicaPrompt::AtPrompt);
+    assert_eq!(owner.replica_prompt(&running), ReplicaPrompt::Running);
+    assert_eq!(
+        owner.replica_prompt(&scrolled),
+        ReplicaPrompt::Running,
+        "a prompt scrolled into history still counts"
+    );
+    assert_eq!(owner.replica_prompt(&plain), ReplicaPrompt::Unknown);
+    assert_eq!(owner.replica_prompt(&full_screen), ReplicaPrompt::Unknown);
+    assert_eq!(owner.replica_prompt(&id(299)), ReplicaPrompt::Unknown);
+}

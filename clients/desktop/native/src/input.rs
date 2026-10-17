@@ -160,6 +160,42 @@ pub enum InputEvent {
     Notice(InputNotice),
     /// Upload these local bytes, then paste only the server path.
     Upload(crate::attach::UploadBatch),
+    /// A line-breaking paste into a running command, held until the person
+    /// confirms it. Nothing was pasted; [`TerminalInput::paste_confirmed`]
+    /// sends it.
+    ConfirmPaste(HeldPaste),
+}
+
+/// Clipboard text held back from a terminal that is running a command.
+/// `Debug` shows its size, never its contents.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HeldPaste {
+    /// The text the person pasted.
+    pub text: String,
+}
+
+impl HeldPaste {
+    /// How many lines the paste would type.
+    #[must_use]
+    pub fn lines(&self) -> usize {
+        self.text.lines().count().max(1)
+    }
+}
+
+impl std::fmt::Debug for HeldPaste {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "HeldPaste({} bytes)", self.text.len())
+    }
+}
+
+/// A paste that would type a line break into a terminal whose shell is
+/// running a command (OSC 133 C without D, from this connection's events or
+/// else the replica's marks) needs confirmation: each line reaches the
+/// running program, not a prompt. Unknown command state, as without shell
+/// integration, never holds a paste.
+#[must_use]
+pub fn paste_needs_confirmation(command_running: bool, text: &str) -> bool {
+    command_running && text.contains(['\n', '\r'])
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
@@ -721,16 +757,45 @@ impl TerminalInput {
     /// The user's own clipboard paste, trusted (the runtime's
     /// `apply_user_paste`). The sole FFI event owner receives InputDelivery
     /// for a returned correlation; `None` is one atomic paste event too large
-    /// for acknowledged input, with no receipt. Neither the native adapter nor
-    /// its caller may auto-retry Unknown.
+    /// for acknowledged input, with no receipt, or a paste held for
+    /// confirmation ([`InputEvent::ConfirmPaste`]). Neither the native adapter
+    /// nor its caller may auto-retry Unknown.
     pub fn paste_text(
         &mut self,
         text: &str,
         window: &Window,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Result<Option<u64>, InputError> {
         let focused = self.focused(window, cx);
+        if focused && self.hold_paste(text, cx) {
+            return Ok(None);
+        }
         self.paste(text, focused)
+    }
+
+    /// Send a paste the person confirmed after [`InputEvent::ConfirmPaste`].
+    /// Like the shell's Paste command it is addressed by placement, and it
+    /// is not held a second time.
+    pub fn paste_confirmed(&mut self, text: &str) {
+        let result = self.paste_requested(text).map(|_| ());
+        self.record(result);
+    }
+
+    /// Hold a line-breaking paste the terminal would accept while its shell
+    /// runs a command, and ask the shell to confirm it. True when held.
+    fn hold_paste(&self, text: &str, cx: &mut Context<Self>) -> bool {
+        let Ok(client) = self.client() else {
+            return false;
+        };
+        let held = text.contains(['\n', '\r'])
+            && client.with_control(|control| self.validate(control, true).is_ok())
+            && paste_needs_confirmation(client.command_running(&self.terminal), text);
+        if held {
+            cx.emit(InputEvent::ConfirmPaste(HeldPaste {
+                text: text.to_owned(),
+            }));
+        }
+        held
     }
 
     /// The shell's Paste command, addressed to this terminal by placement.
@@ -1010,6 +1075,9 @@ impl TerminalInput {
         let item = cx.read_from_clipboard()?;
         match self.clipboard_attach(&item) {
             Some(crate::attach::PathAttach::Paste(text)) => {
+                if self.hold_paste(&text, cx) {
+                    return None;
+                }
                 let result = self.paste_requested(&text);
                 self.record(result.map(|_| ()));
                 None
@@ -1102,8 +1170,9 @@ fn nonempty_text(text: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Admit, Identity, InputError, InputMetrics, admit_delayed_fit, admit_presentation, capacity,
-        cell_px, echo_guess, pending_fit, upgrade_client,
+        Admit, HeldPaste, Identity, InputError, InputMetrics, admit_delayed_fit,
+        admit_presentation, capacity, cell_px, echo_guess, paste_needs_confirmation, pending_fit,
+        upgrade_client,
     };
     use gpui::{Bounds, point, px, size};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -1214,6 +1283,24 @@ mod tests {
             admit_presentation(&bound, Some(first), 3, &swapped),
             Admit::Replaced
         );
+    }
+
+    #[test]
+    fn only_a_line_break_into_a_running_command_needs_confirmation() {
+        assert!(paste_needs_confirmation(true, "make\nmake install"));
+        assert!(paste_needs_confirmation(true, "rm -rf build\r"));
+        assert!(!paste_needs_confirmation(true, "one line"));
+        assert!(!paste_needs_confirmation(false, "make\nmake install"));
+    }
+
+    #[test]
+    fn a_held_paste_counts_lines_and_never_prints_its_text() {
+        let held = HeldPaste {
+            text: "secret\nmore".into(),
+        };
+        assert_eq!(held.lines(), 2);
+        assert_eq!(HeldPaste { text: "\n".into() }.lines(), 1);
+        assert_eq!(format!("{held:?}"), "HeldPaste(11 bytes)");
     }
 
     #[test]
@@ -2053,6 +2140,148 @@ mod delivery {
             });
             assert!(client.take_outbound().is_empty(), "no raw paste or upload");
         });
+    }
+
+    fn shell(client: &Client, event: phux_protocol::wire::frame::AgentEvent) {
+        client
+            .feed(FrameKind::Event {
+                terminal: Some(terminal()),
+                event,
+                stamp: None,
+            })
+            .expect("shell status");
+        let _ = client.take_events();
+    }
+
+    /// The paste bytes each acknowledged input carried, in order.
+    fn pasted(client: &Client) -> Vec<String> {
+        client
+            .take_outbound()
+            .iter()
+            .filter_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+                FrameKind::Command {
+                    command: Command::ApplyInput { events, .. },
+                    ..
+                } => events.into_iter().find_map(|event| match event {
+                    phux_protocol::input::InputEvent::Paste(paste) => {
+                        Some(String::from_utf8(paste.data).expect("utf-8"))
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn paste_held(
+        client: &Arc<Client>,
+        view: ViewId,
+        text: &str,
+        cx: &mut TestAppContext,
+    ) -> (Entity<TerminalInput>, Rc<std::cell::RefCell<Vec<String>>>) {
+        let held = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let cx = cx.add_empty_window();
+        let input = cx.update(|window, cx| {
+            let input = bind(client, view, window, cx);
+            arm(&input, false, 160., 68., window, cx);
+            let seen = held.clone();
+            cx.subscribe(&input, move |_, event: &super::InputEvent, _| {
+                if let super::InputEvent::ConfirmPaste(paste) = event {
+                    seen.borrow_mut().push(paste.text.clone());
+                }
+            })
+            .detach();
+            input
+        });
+        let _ = client.take_outbound();
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
+            input.update(cx, |state, cx| {
+                assert_eq!(state.paste_command(cx), None);
+            });
+        });
+        cx.run_until_parked();
+        (input, held)
+    }
+
+    /// A line-breaking paste into a running command is held for the shell to
+    /// confirm, and goes only once confirmed.
+    #[gpui::test]
+    fn a_multi_line_paste_into_a_running_command_waits_for_confirmation(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        shell(
+            &client,
+            phux_protocol::wire::frame::AgentEvent::CommandStarted,
+        );
+        let text = "make\nmake install";
+        let (input, held) = paste_held(&client, view, text, cx);
+        assert_eq!(*held.borrow(), vec![text.to_owned()], "the shell is asked");
+        assert!(
+            pasted(&client).is_empty(),
+            "nothing reaches the program yet"
+        );
+        cx.update(|cx| input.update(cx, |state, _| state.paste_confirmed(text)));
+        assert_eq!(pasted(&client), vec![text.to_owned()]);
+    }
+
+    /// At a prompt, as after the command finishes, the same paste goes at once.
+    #[gpui::test]
+    fn a_multi_line_paste_at_a_prompt_is_sent_directly(cx: &mut TestAppContext) {
+        let client = session(None);
+        let view = client.create_view(&terminal()).expect("view");
+        shell(
+            &client,
+            phux_protocol::wire::frame::AgentEvent::CommandStarted,
+        );
+        shell(
+            &client,
+            phux_protocol::wire::frame::AgentEvent::CommandFinished { exit_code: Some(0) },
+        );
+        let text = "make\nmake install";
+        let (_input, held) = paste_held(&client, view, text, cx);
+        assert!(held.borrow().is_empty(), "nothing to confirm at a prompt");
+        assert_eq!(pasted(&client), vec![text.to_owned()]);
+    }
+
+    /// A screen whose shell started `make` and has not come back to a prompt.
+    const RUNNING: &[u8] = b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07building";
+    /// A screen whose shell is back at its prompt.
+    const AT_PROMPT: &[u8] =
+        b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+
+    /// A start the new connection never saw, as across a reconnect, is still
+    /// read from the replica: the cursor is off the prompt row.
+    #[gpui::test]
+    fn a_command_running_across_a_reconnect_still_holds_a_multi_line_paste(
+        cx: &mut TestAppContext,
+    ) {
+        let client = session_with(None, RUNNING);
+        shell(
+            &client,
+            phux_protocol::wire::frame::AgentEvent::CommandStarted,
+        );
+        open_session_with(&client, 2, RUNNING);
+        let view = client
+            .create_view(&terminal())
+            .expect("view after reconnect");
+        let text = "make\nmake install";
+        let (_input, held) = paste_held(&client, view, text, cx);
+        assert_eq!(*held.borrow(), vec![text.to_owned()], "the shell is asked");
+        assert!(pasted(&client).is_empty(), "nothing reaches the program");
+    }
+
+    /// The replica at a prompt, or with no marks at all, never holds a paste.
+    #[gpui::test]
+    fn a_reconnected_prompt_or_unmarked_screen_sends_a_paste_directly(cx: &mut TestAppContext) {
+        for screen in [AT_PROMPT, b"$ make\r\nbuilding".as_slice()] {
+            let client = session_with(None, screen);
+            let view = client.create_view(&terminal()).expect("view");
+            let text = "make\nmake install";
+            let (_input, held) = paste_held(&client, view, text, cx);
+            assert!(held.borrow().is_empty(), "nothing to confirm");
+            assert_eq!(pasted(&client), vec![text.to_owned()]);
+        }
     }
 
     #[gpui::test]
