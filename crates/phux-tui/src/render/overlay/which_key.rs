@@ -18,9 +18,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::widgets::{Modal, centered_panel, is_compact};
+use super::widgets::Modal;
 use super::{OverlayCommand, RenderOverlay};
-use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::Theme;
 
 /// The sections the legend groups bindings under, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -142,8 +142,6 @@ pub struct WhichKeyOverlay {
     rows: Vec<Row>,
     /// Color slots snapshotted from the active [`Theme`] at construction.
     theme: Theme,
-    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
-    breakpoints: ChromeBreakpoints,
 }
 
 impl WhichKeyOverlay {
@@ -177,7 +175,6 @@ impl WhichKeyOverlay {
             prefix: cfg.prefix.clone(),
             rows,
             theme: *theme,
-            breakpoints: ChromeBreakpoints::default(),
         }
     }
 }
@@ -328,6 +325,8 @@ enum Cell {
     Header(Group),
     Binding(usize),
     Gap,
+    /// The count of bindings the viewport has no room to show.
+    Overflow(usize),
 }
 
 /// The laid-out legend: columns of cells, and the shared cell widths.
@@ -442,18 +441,64 @@ impl WhichKeyOverlay {
             .map(|h| flow(&groups, h, true))
             .find(fits)
             .or_else(|| {
-                (shortest..=total)
+                (shortest..=max_height)
                     .map(|h| flow(&groups, h, false))
                     .find(fits)
             })
-            .unwrap_or_else(|| flow(&groups, total.max(1), false));
+            .unwrap_or_else(|| self.truncated(&groups, max_height, max_columns));
         grid
+    }
+
+    /// The layout for a viewport too small for every binding: groups flow
+    /// at the full height, only the columns that fit the width stay, and
+    /// the last cell says how many bindings the rest of the table holds.
+    fn truncated(
+        &self,
+        groups: &[(Group, Vec<usize>)],
+        height: usize,
+        max_columns: usize,
+    ) -> Vec<Vec<Cell>> {
+        let mut columns = flow(groups, height, false);
+        if columns.len() <= max_columns {
+            return columns;
+        }
+        columns.truncate(max_columns);
+        // The note takes the place of the last cell, so a binding that cell
+        // held counts among the hidden; a header or gap left stranded above
+        // the note goes too, since it would introduce nothing.
+        let Some(last_column) = columns.last_mut() else {
+            return columns;
+        };
+        last_column.pop();
+        while matches!(last_column.last(), Some(Cell::Header(_) | Cell::Gap)) {
+            last_column.pop();
+        }
+        let shown = columns
+            .iter()
+            .flatten()
+            .filter(|cell| matches!(cell, Cell::Binding(_)))
+            .count();
+        let hidden = self.rows.len().saturating_sub(shown);
+        if let Some(last_column) = columns.last_mut() {
+            last_column.push(Cell::Overflow(hidden));
+        }
+        columns
     }
 
     fn cell_spans(&self, grid: &Grid, cell: Cell) -> Vec<Span<'static>> {
         let blank = || vec![Span::raw(" ".repeat(grid.cell_w()))];
         match cell {
             Cell::Gap => blank(),
+            Cell::Overflow(n) => {
+                let note = crate::render::clip_text(&format!("+ {n} more"), grid.cell_w());
+                let pad = grid
+                    .cell_w()
+                    .saturating_sub(crate::render::display_width(&note));
+                vec![
+                    Span::styled(note, Style::default().fg(self.theme.dim)),
+                    Span::raw(" ".repeat(pad)),
+                ]
+            }
             Cell::Header(group) => {
                 let pad = grid.label_w.saturating_sub(group.header().len());
                 vec![
@@ -529,7 +574,8 @@ impl RenderOverlay for WhichKeyOverlay {
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
         // Sized to content and anchored to the bottom, above the work the
-        // prefix is about to act on.
+        // prefix is about to act on. `grid` already fits the content to the
+        // viewport, so a cramped screen needs no separate layout.
         let grid = self.grid(area);
         let chrome = 2 + super::widgets::MODAL_PAD * 2;
         let (content_w, content_h) = if self.rows.is_empty() {
@@ -548,15 +594,7 @@ impl RenderOverlay for WhichKeyOverlay {
         let x = area.x + (area.width - w) / 2;
         let y = area.y + area.height.saturating_sub(h + 1);
         let rect = Rect::new(x, y, w, h);
-        Some(if is_compact(area, self.breakpoints) {
-            centered_panel(area, 5, 36, 8, self.breakpoints)
-        } else {
-            rect
-        })
-    }
-
-    fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
-        self.breakpoints = bp;
+        Some(rect)
     }
 
     fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
@@ -774,6 +812,85 @@ mod tests {
             let label = sentence_case(&action.replace('-', " "));
             assert!(text.contains(&label), "{label} missing:\n{text}");
         }
+    }
+
+    /// The count in the overflow note, if the text carries one.
+    fn overflow_count(text: &str) -> Option<usize> {
+        let rest = text.split("+ ").nth(1)?;
+        let (count, tail) = rest.split_once(' ')?;
+        tail.starts_with("more").then_some(())?;
+        count.parse().ok()
+    }
+
+    fn shipped_overlay() -> WhichKeyOverlay {
+        let cfg = phux_config::parse_str(
+            phux_config::DEFAULT_CONFIG_TOML,
+            std::path::Path::new("default.toml"),
+        )
+        .expect("shipped config parses")
+        .keybindings;
+        WhichKeyOverlay::from_config(&cfg, &Theme::default())
+    }
+
+    /// Rows of the shipped table whose label is absent from `text`.
+    fn unrendered(overlay: &WhichKeyOverlay, area: Rect, text: &str) -> usize {
+        let label_w = overlay.grid(area).label_w;
+        overlay
+            .rows
+            .iter()
+            .filter(|row| !text.contains(&crate::render::clip_text(&row.label, label_w)))
+            .count()
+    }
+
+    /// A viewport too small for the shipped table still paints inside the
+    /// screen and counts the bindings it left out.
+    fn assert_short_viewport_says_what_it_left_out(width: u16, height: u16) {
+        let overlay = shipped_overlay();
+        let area = Rect::new(0, 0, width, height);
+        let bounds = overlay.bounds(area).expect("bounds");
+        assert!(
+            bounds.height <= height && bounds.width <= width,
+            "{bounds:?}"
+        );
+        let text = render_to_string(&overlay, width, height);
+        let hidden = unrendered(&overlay, area, &text);
+        assert!(hidden > 0, "viewport was meant to be too small:\n{text}");
+        assert_eq!(overflow_count(&text), Some(hidden), "{text}");
+        let last_column = overlay
+            .grid(area)
+            .columns
+            .into_iter()
+            .last()
+            .expect("a column");
+        assert!(
+            matches!(last_column.last(), Some(Cell::Overflow(_))),
+            "the note ends the last column"
+        );
+        assert!(
+            matches!(
+                last_column.get(last_column.len().wrapping_sub(2)),
+                Some(Cell::Binding(_))
+            ),
+            "no header or gap is stranded above the note: {last_column:?}"
+        );
+    }
+
+    #[test]
+    fn short_viewport_80x24_says_what_it_left_out() {
+        assert_short_viewport_says_what_it_left_out(80, 24);
+    }
+
+    #[test]
+    fn short_viewport_60x20_says_what_it_left_out() {
+        assert_short_viewport_says_what_it_left_out(60, 20);
+    }
+
+    #[test]
+    fn tall_wide_viewport_has_no_overflow_note() {
+        let overlay = shipped_overlay();
+        let text = render_to_string(&overlay, 120, 36);
+        assert_eq!(overflow_count(&text), None, "{text}");
+        assert_eq!(unrendered(&overlay, Rect::new(0, 0, 120, 36), &text), 0);
     }
 
     /// Two keys for one action are one row; a directional family is one row
