@@ -2,7 +2,7 @@
 //! filesystem.
 //!
 //! 1. The checksum gates everything: nothing is unpacked or replaced unless the
-//!    sidecar digest matches the file on disk.
+//!    published digest matches the file on disk.
 //! 2. Nothing downloaded is executed to decide whether to install it; the
 //!    archive's member list and extracted tree are both validated.
 //! 3. Publication is a recoverable transaction: a persistent lock serializes
@@ -104,20 +104,6 @@ pub(crate) fn expected_digest(sidecar: &str, archive: &str) -> Result<String, Up
         }
     }
     Ok(digest.to_ascii_lowercase())
-}
-
-/// Verify `archive` against `sidecar`, returning the agreed digest. Used for
-/// an explicit `--version` pin, which the channel manifest does not name.
-pub(crate) fn verify_archive(
-    archive: &Path,
-    sidecar: &str,
-    archive_name: &str,
-) -> Result<String, UpdateError> {
-    verify_digest(
-        archive,
-        &expected_digest(sidecar, archive_name)?,
-        archive_name,
-    )
 }
 
 /// Verify `archive` against a published digest (the channel manifest's, or a
@@ -297,8 +283,6 @@ pub(crate) struct Replaced {
     pub(crate) binaries: Vec<String>,
     /// Where the previous binaries were saved.
     pub(crate) backup: PathBuf,
-    /// The version the saved binaries are.
-    pub(crate) previous_version: String,
 }
 
 /// Fault-injection boundaries in an install publication transaction.
@@ -418,7 +402,6 @@ fn replace_binaries_with_checkpoint(
         Ok(Replaced {
             binaries: moved,
             backup,
-            previous_version: previous_version.to_owned(),
         })
     })();
 
@@ -984,7 +967,7 @@ mod tests {
         BACKUP_DIR, InstallCheckpoint, PREPARING_DIR, RollbackCheckpoint, Staging, TRANSACTION_DIR,
         UpdateError, UpdateLock, expected_digest, replace_binaries,
         replace_binaries_with_checkpoint, rollback, rollback_with_checkpoint, sha256_file,
-        unpack_verified, verify_archive,
+        unpack_verified, verify_digest,
     };
 
     /// The SHA-256 of the empty input, the standard published vector.
@@ -1043,16 +1026,14 @@ mod tests {
         fs::write(&archive, b"the real bytes").unwrap();
         let good = sha256_file(&archive).unwrap();
 
-        // Matching sidecar: accepted, and the digest is handed back.
-        let sidecar = format!("{good}  phux-v1.0.0-t.tar.gz\n");
         assert_eq!(
-            verify_archive(&archive, &sidecar, "phux-v1.0.0-t.tar.gz").unwrap(),
+            verify_digest(&archive, &good, "phux-v1.0.0-t.tar.gz").unwrap(),
             good
         );
 
-        // Someone swapped the archive after the sidecar was published.
+        // Someone swapped the archive after the digest was published.
         fs::write(&archive, b"tampered bytes").unwrap();
-        let err = verify_archive(&archive, &sidecar, "phux-v1.0.0-t.tar.gz").unwrap_err();
+        let err = verify_digest(&archive, &good, "phux-v1.0.0-t.tar.gz").unwrap_err();
         match err {
             UpdateError::ChecksumMismatch {
                 expected, actual, ..
@@ -1160,7 +1141,6 @@ mod tests {
 
         let replaced = replace_binaries(&bin, &staged, "0.12.1").unwrap();
         assert_eq!(replaced.binaries, vec!["phux-mcp", "phux"]);
-        assert_eq!(replaced.previous_version, "0.12.1");
         assert_eq!(replaced.backup, bin.join(BACKUP_DIR));
 
         assert_eq!(

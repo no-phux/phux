@@ -1,86 +1,83 @@
 #!/usr/bin/env python3
-"""Run the release sentinel against disposable GitHub responses, never the network."""
+"""The release drift check, against a fake `gh`."""
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+FAKE_GH = """#!/usr/bin/env python3
+import json, os, sys
+state = json.load(open(os.environ["DRIFT_STATE"]))
+if sys.argv[1:3] == ["release", "download"]:
+    print(json.dumps(state["stable"]))
+elif sys.argv[2].endswith("/releases"):
+    for row in state["releases"]:
+        print(json.dumps(row))
+elif "/issues?" not in sys.argv[2]:
+    raise SystemExit("unexpected gh call: " + repr(sys.argv))
+"""
 
 
 class ReleaseDriftTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="phux-release-drift-")
-        self.addCleanup(temporary.cleanup)
-        self.directory = Path(temporary.name)
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.bin = Path(scratch.name)
+        (self.bin / "gh").write_text(FAKE_GH)
+        (self.bin / "git").write_text("#!/bin/sh\necho 2020-01-01T00:00:00Z\n")
+        for name in ("gh", "git"):
+            (self.bin / name).chmod(0o755)
         config = json.loads((ROOT / "release-please-config.json").read_text())
         manifest = json.loads((ROOT / ".release-please-manifest.json").read_text())
         self.releases = []
         for path, version in manifest.items():
             component = config["packages"][path].get("component")
-            tag = f"{component}-v{version}" if component else f"v{version}"
-            self.releases.append(self.release(tag, False, version))
-        self.write_binary("git", "#!/bin/sh\necho 2020-01-01T00:00:00Z\n")
-        self.write_binary("gh", """#!/usr/bin/env python3
-import json, os, sys
-from pathlib import Path
-if sys.argv[2].endswith('/releases'):
-    for row in json.loads(Path(os.environ['RELEASE_FIXTURE']).read_text()):
-        print(json.dumps(row))
-elif '/issues?' not in sys.argv[2]:
-    raise SystemExit('unexpected GitHub call: ' + repr(sys.argv))
-""")
+            self.releases.append(self.release(f"{component}-v{version}" if component else f"v{version}"))
+        self.stable = {"products": {"phux": {"version": manifest["."]},
+                                    "desktop": {"version": manifest["clients/desktop"]}}}
 
-    def write_binary(self, name, content):
-        binary = self.directory / name
-        binary.write_text(content)
-        binary.chmod(0o755)
-
-    def release(self, tag, draft, version="0.1.0"):
-        return {"tag": tag, "draft": draft, "prerelease": False, "assets": 2,
-                "assetNames": [f"phux-desktop-{version}-macos-arm64.zip", "SHA256SUMS"],
+    @staticmethod
+    def release(tag, draft=False, assets=2):
+        return {"tag": tag, "draft": draft, "prerelease": False, "assets": assets,
                 "created": "2020-01-01T00:00:00Z"}
 
-    def check_drift(self):
-        fixture = self.directory / "releases.json"
-        fixture.write_text(json.dumps(self.releases))
+    def drift(self):
+        state = self.bin / "state.json"
+        state.write_text(json.dumps({"releases": self.releases, "stable": self.stable}))
         return subprocess.run(
-            ["node", str(ROOT / "scripts/check-release-drift.mjs")], cwd=ROOT,
-            env={**os.environ, "PATH": f"{self.directory}:{os.environ['PATH']}",
-                 "GITHUB_REPOSITORY": "example/disposable", "GITHUB_ACTIONS": "true",
-                 "GRACE_MINUTES": "0", "RELEASE_FIXTURE": str(fixture)},
-            text=True, capture_output=True, timeout=15,
-        )
+            ["node", str(ROOT / "scripts/check-release-drift.mjs")], cwd=ROOT, text=True,
+            capture_output=True, timeout=15,
+            env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "GITHUB_ACTIONS": "true",
+                 "GITHUB_REPOSITORY": "example/repo", "GRACE_MINUTES": "0", "DRIFT_STATE": str(state)})
 
-    def test_retired_drafts_and_assetless_releases_are_not_repair_candidates(self):
-        self.releases.extend([
-            self.release("cockpit-v0.28.0", True),
-            {**self.release("cockpit-v0.16.1", False), "assets": 0, "assetNames": []},
-        ])
-        result = self.check_drift()
+    def assertStuck(self, message):
+        result = self.drift()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(message, result.stderr)
+
+    def test_a_finished_pipeline_passes(self):
+        result = self.drift()
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_surviving_draft_still_reports_its_publication_recovery(self):
-        self.releases.append(self.release("desktop-v99.0.0", True))
-        result = self.check_drift()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("gh workflow run publish.yml --repo example/disposable -f tag=desktop-v99.0.0", result.stderr)
+    def test_an_old_draft_names_its_recovery(self):
+        self.releases.append(self.release("desktop-v99.0.0", draft=True))
+        self.assertStuck("gh workflow run publish.yml --repo example/repo -f tag=desktop-v99.0.0")
 
-    def test_manifest_still_requires_active_component_release(self):
+    def test_a_public_release_needs_assets(self):
+        self.releases.append(self.release("v0.0.9", assets=0))
+        self.assertStuck("v0.0.9 is published with no assets")
+
+    def test_every_manifest_version_needs_a_release(self):
         missing = self.releases.pop()
-        result = self.check_drift()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(f"{missing['tag']} has no GitHub release", result.stderr)
+        self.assertStuck(f"{missing['tag']} has no release")
 
-    def test_active_assetless_publish_is_still_a_failure(self):
-        self.releases.append({**self.release("v99.0.0", False), "assets": 0})
-        result = self.check_drift()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("v99.0.0 is published with zero assets", result.stderr)
+    def test_the_stable_manifest_names_the_newest_release(self):
+        self.releases.append(self.release("v99.0.0"))
+        self.assertStuck("but v99.0.0 is published")
 
 
 if __name__ == "__main__":

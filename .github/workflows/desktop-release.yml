@@ -141,17 +141,6 @@ jobs:
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           shasum -a 256 -c "$ARCHIVE.sha256"
           cp "$ARCHIVE.sha256" SHA256SUMS
-          SOURCE_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" python3 - <<'PY'
-          import datetime, hashlib, json, os
-          from pathlib import Path
-          archive = os.environ['ARCHIVE']
-          version = json.loads(Path(os.environ['GITHUB_WORKSPACE'], 'source/clients/desktop/package.json').read_text())['version']
-          metadata = dict(schema_version=1, channel=os.environ['PHUX_BUILD_CHANNEL'], product='desktop',
-                          sha=os.environ['SOURCE_SHA'], version=version, archive=archive,
-                          sha256=hashlib.sha256(Path(archive).read_bytes()).hexdigest(),
-                          minimum_macos='27.0', published_at=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
-          Path('desktop-channel.json').write_text(json.dumps(metadata, indent=2) + '\n')
-          PY
       - name: Qualify the archived app against an isolated same-checkout server
         env:
           ARCHIVE: ${{ steps.version.outputs.archive }}
@@ -180,11 +169,10 @@ jobs:
           ARCHIVE: ${{ steps.version.outputs.archive }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/SHA256SUMS" "$RUNNER_TEMP/desktop-release/desktop-channel.json" --clobber
-          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --pattern desktop-channel.json --dir "$RUNNER_TEMP/desktop-download"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/$ARCHIVE.sha256" "$RUNNER_TEMP/desktop-release/SHA256SUMS" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --dir "$RUNNER_TEMP/desktop-download"
           cd "$RUNNER_TEMP/desktop-download"
           cmp SHA256SUMS "$RUNNER_TEMP/desktop-release/SHA256SUMS"
-          cmp desktop-channel.json "$RUNNER_TEMP/desktop-release/desktop-channel.json"
           shasum -a 256 -c SHA256SUMS
       - name: Publish as stable, never latest
         if: inputs.channel == 'stable'
@@ -208,5 +196,4 @@ jobs:
           path: |
             ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip
             ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip.sha256
-            ${{ runner.temp }}/desktop-release/desktop-channel.json
           if-no-files-found: error

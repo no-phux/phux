@@ -15,7 +15,7 @@ unrecognized location rather than overwriting it.
 
 Status: Accepted
 Date: 2026-08-07
-Amended by [ADR-0175](./0175-one-release-manifest-per-channel.md): decision 1's trust anchor is the channel manifest's digest; a pinned release still uses its sidecar.
+Superseded in part by [ADR-0176](./0176-the-release-pipeline.md): decision 1; the channel manifest digest is the anchor, and a pin verifies against its sidecar.
 
 ## Context
 

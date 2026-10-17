@@ -1,55 +1,12 @@
-# Release agent integration — the publish lane for public host adapters.
+# Publish one agent integration tag. publish.yml dispatches this once ci is
+# green for the tag; it re-tests that tree, packs one artifact, publishes npm
+# packages with provenance, attaches the artifact, then flips the draft public.
 #
-# Flow: publish.yml dispatches this workflow once ci.yml is green for the
-# component tag. This file re-tests that exact tree, packs one artifact,
-# publishes it to npm where applicable, attaches it to the draft, and only
-# then flips the draft public.
-#
-# npm trusted publishing matches the entry workflow filename. This file is
-# that filename. Do not turn the publish into a workflow_call from
-# publish.yml: npm would see publish.yml and answer 404.
-#
-# THIS LANE WAS DEAD ON ARRIVAL. Its first four invocations all failed, leaving
-# four permanent 0-asset drafts (opencode-plugin-v0.2.0, pi-extension-v0.2.0,
-# claude-plugin-v0.2.0/v0.2.1) and nothing on npm. It failed silently: the root
-# `vX.Y.Z` lane is self-announcing because a missing release is obvious, but a
-# component release that never leaves draft looks exactly like one nobody cut.
-# The four independent defects, all fixed here — do not reintroduce any of them:
-#
-#   1. `npm pack` in JSON mode piped into a JSON parser. `npm pack` runs the `prepack`
-#      lifecycle script, whose stdout is interleaved with the JSON on the same
-#      fd. integrations/opencode's prepack prints a colourised
-#      "CLI Building entry..." banner, so the parse died on
-#      `Unexpected token '^[', "^[[34mCLI^[["...`. integrations/pi survived only
-#      because its prepack is a silent `tsc`. Never parse npm's stdout: pack to
-#      a known directory and glob for the artifact.
-#
-#   2. The publish job had no `actions/checkout` and no `GH_REPO`, so every
-#      `gh release ...` call died on "failed to run git: fatal: not a git
-#      repository". gh resolves the target repo from the git remote unless told
-#      otherwise, and downloading an artifact does not make a git repo. The job
-#      deliberately stays checkout-free — it must publish only the bytes the
-#      package job built — so GH_REPO is set at job level instead.
-#
-#   3. `npm publish "release/foo.tgz"`. A relative path containing a `/` and no
-#      leading `./` is parsed by npm as the GitHub shorthand `owner/repo`, so
-#      npm tried `git ls-remote ssh://git@github.com/release/phux-pi-0.2.0.tgz.git`
-#      and exited 128. Tarball arguments are resolved to absolute paths here.
-#
-#   4. Nothing checked that npm credentials existed. With NPM_TOKEN unset the
-#      lane ran all the way to the publish step before failing, and the failure
-#      surfaced as an unrelated-looking git error. The first releases were
-#      bootstrapped interactively; subsequent publishes use npm trusted
-#      publishing, so no long-lived npm credential exists to go missing.
-#
-# npm trusted publishing accepts GitHub-hosted runners only. Build/test stays on
-# standard hosted Linux, and the publish job stays on ubuntu-latest so npm accepts
-# its OIDC assertion. The package repository URLs must also exactly match this
-# repository; npm validates them during the token exchange.
-#
-# `find` note: the artifact globs are parenthesised. `-type f -name a -o -name b`
-# binds as `(-type f -a -name a) -o (-name b)`, which silently drops the type
-# filter from the second branch.
+# npm trusted publishing trusts the entry workflow filename and GitHub-hosted
+# runners only, and checks each package's repository URL; so this stays a
+# dispatch target, never a workflow_call, and publishes from ubuntu-latest.
+# Never parse `npm pack` stdout (prepack output shares it), and pass npm
+# tarballs as absolute paths (`dir/x.tgz` reads as GitHub shorthand).
 
 name: Release agent integration
 
@@ -183,10 +140,7 @@ jobs:
       - name: Install and run component gates
         working-directory: ${{ needs.prepare.outputs.directory }}
         env:
-          # npm stops project-config discovery at the nearest package.json, so
-          # the repo-root .npmrc is invisible from here; the env vars are the
-          # switch that reaches every npm call the gate scripts spawn (see
-          # .npmrc: the live audit endpoint 503s must not fail a release).
+          # The root .npmrc is invisible below a package.json; see .npmrc.
           npm_config_audit: "false"
           npm_config_fund: "false"
           COMPONENT: ${{ needs.prepare.outputs.component }}
@@ -214,11 +168,7 @@ jobs:
           set -euo pipefail
           mkdir release
           if [[ "$PUBLISH_NPM" == true ]]; then
-            # Pack straight into release/ and discover the artifact by glob.
-            # npm's stdout is NOT parseable: `npm pack` runs `prepack`, and that
-            # script's output shares the fd (the bundler's colourised banner is what
-            # broke opencode-plugin-v0.2.0). The directory is ours and empty, so
-            # exactly one .tgz can land in it.
+            # Find the tarball by glob in an empty directory, never from npm's stdout.
             (cd "$DIRECTORY" && npm pack --pack-destination "$GITHUB_WORKSPACE/release")
             mapfile -t packed < <(find release -maxdepth 1 -type f -name '*.tgz')
             if [[ "${#packed[@]}" -ne 1 ]]; then
@@ -259,17 +209,12 @@ jobs:
   publish:
     name: Publish validated component
     needs: [prepare, package]
-    # npm trusted publishing accepts GitHub-hosted runners only. Keep this
-    # supported OIDC identity even if a future migration moves the build gates;
-    # self-hosted publication would strand the release at the token exchange.
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
-    # This job never checks out: it must publish exactly the bytes the package
-    # job built, and nothing else. That leaves gh with no git remote to infer
-    # the repository from, so name it explicitly — without this every
-    # `gh release ...` call dies on "fatal: not a git repository".
+    # No checkout: this job publishes only the bytes the package job built, so
+    # gh has no git remote and needs the repository named.
     env:
       GH_REPO: ${{ github.repository }}
     steps:
@@ -291,15 +236,9 @@ jobs:
           mapfile -t tarballs < <(find release -maxdepth 1 -type f \( -name '*.tgz' -o -name '*.tar.gz' \))
           test "${#tarballs[@]}" -eq 1
           (cd release && sha256sum --check "$(basename "${tarballs[0]}").sha256")
-          # Absolute, always. `npm publish release/foo.tgz` is read by npm as the
-          # GitHub shorthand `owner/repo` — a relative path with a `/` and no
-          # leading `./` is indistinguishable from one — and npm goes looking for
-          # ssh://git@github.com/release/foo.tgz.git.
           echo "tarball=$(cd "$(dirname "${tarballs[0]}")" && pwd)/$(basename "${tarballs[0]}")" >> "$GITHUB_OUTPUT"
 
-      # Proves repository resolution and release existence on the dry-run path
-      # too, so a dispatch with dry_run=true actually exercises the gh wiring
-      # instead of skipping straight past it.
+      # Also on dry runs, so they exercise the gh wiring.
       - name: Verify the draft release exists
         env:
           GH_TOKEN: ${{ github.token }}
@@ -321,17 +260,8 @@ jobs:
         run: |
           set -euo pipefail
           npm install --global npm@11.5.1
-          # An npm version is immutable, so a re-run against an already-published
-          # version must verify the registry holds the same bytes and move on —
-          # that is what keeps the whole lane replayable.
-          #
-          # The replay key is the tarball CONTENT, not its byte shasum. npm pack
-          # does not guarantee file ordering across builds: the same tree can
-          # tarball to different bytes with identical contents (observed
-          # 2026-09-07 — @phux/pi packed to 1acb1de5 locally vs 684bade9 on the
-          # registry, same files in a different order). A byte-shasum check
-          # would turn every legitimate replay into a republish attempt, and a
-          # republish of an immutable version fails as E404.
+          # npm versions are immutable, so a replay compares contents (npm pack
+          # does not order files reproducibly) and moves on.
           if npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum >/dev/null 2>&1; then
             existing="$(mktemp -d)"
             npm pack "${PACKAGE_NAME}@${VERSION}" --pack-destination "${existing}" --silent
@@ -362,6 +292,5 @@ jobs:
           mapfile -t expected < <(find release -maxdepth 1 -type f -exec basename {} \; | sort)
           mapfile -t actual < <(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
           diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}")
-          # Never "Latest": releases/latest must keep naming the CLI release
-          # for pre-manifest binaries (ADR-0175).
+          # Only CLI releases are Latest (ADR-0176).
           gh release edit "$TAG" --draft=false --latest=false

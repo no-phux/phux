@@ -1,340 +1,236 @@
 #!/usr/bin/env bash
+# scripts/install.sh for the CLI, through dash where the host has it (Debian
+# and Ubuntu pipe it to dash; macOS /bin/sh forgives bashisms): release
+# resolution from the channel manifest, the install transaction, PATH
+# handling, and the install-desktop shim. The network is a fake curl.
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-# The installer edits a shell profile when its directory is off PATH; never
-# let a test run touch the real one.
-export HOME="$TMP/home" SHELL=/bin/zsh
-unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH
-mkdir -p "$HOME"
-
-# The installer is served at https://phux.sh/install and users pipe it to `sh`,
-# so every case below drives it through a real POSIX shell rather than bash.
-# Prefer dash where the host has it: macOS `/bin/sh` is bash in POSIX mode and
-# forgives most bashisms, while Debian and Ubuntu — including the CI runners —
-# resolve `/bin/sh` to dash, which does not.
-INSTALLER_SH="$(command -v dash || echo /bin/sh)"
-echo "installer shell: $INSTALLER_SH"
-
-VERSION=v9.8.7
+SH="$(command -v dash || echo /bin/sh)"
+GOLDEN="$ROOT/scripts/fixtures/release-manifest"
+BASE=https://github.com/no-phux/phux/releases/download
 TARGET=x86_64-unknown-linux-gnu
-BINS="$TMP/bins"
-FIXTURE="$TMP/fixture"
-FAKE_BIN="$TMP/fake-bin"
-mkdir -p "$BINS" "$FIXTURE" "$FAKE_BIN"
-printf 'new phux\n' > "$BINS/phux"
-printf 'new phux-mcp\n' > "$BINS/phux-mcp"
-chmod 755 "$BINS/phux" "$BINS/phux-mcp"
-bash "$ROOT/scripts/pack-release.sh" \
-  --id "$VERSION" --target "$TARGET" --bin-dir "$BINS" --out-dir "$FIXTURE"
+export HOME="$TMP/home" SHELL=/bin/zsh
+unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
+mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
+export SERVED="$TMP/served" CALLS="$TMP/calls"
 
-cat > "$FAKE_BIN/curl" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-url=""
-out=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -o) out=$2; shift 2 ;;
-    -fsSL|-fsSLI|-f|-s|-S|-L|-I|-q) shift ;;
-    -w) shift 2 ;;
-    http*) url=$1; shift ;;
-    *) shift ;;
-  esac
+# Serves channels/*.json and release assets from $SERVED by basename.
+cat > "$TMP/bin/curl" <<'EOF'
+#!/bin/sh
+out="" url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o | -O) out="$2"; shift ;; https://*) url="$1" ;; esac
+  shift
 done
-case "$url" in
-  *.sha256) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz.sha256" "$out" ;;
-  *) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz" "$out" ;;
-esac
+printf '%s\n' "$url" >> "$CALLS"
+[ "${FAIL_NETWORK:-0}" = 0 ] || exit 22
+[ -f "$SERVED/${url##*/}" ] || exit 22
+if [ -n "$out" ] && [ "$out" != - ]; then cp "$SERVED/${url##*/}" "$out"; else cat "$SERVED/${url##*/}"; fi
 EOF
-chmod 755 "$FAKE_BIN/curl"
+chmod 755 "$TMP/bin/curl"
 
-run_install() {
-  local install_dir=$1
-  local path=$2
-  PATH="$FAKE_BIN:$path" INSTALL_FIXTURE="$FIXTURE" \
-    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-      --install-dir "$install_dir" "${@:3}"
-}
-
-ON_PATH="$TMP/on-path"
-mkdir "$ON_PATH"
-ON_PATH_CANON="$(cd "$ON_PATH" && pwd -P)"
-output="$(run_install "$ON_PATH" "$ON_PATH:/usr/bin:/bin")"
-grep -Fq 'next: phux' <<<"$output"
-if grep -Fq 'PATH remedy:' <<<"$output"; then
-  echo "installer printed a PATH remedy for a discoverable destination" >&2
-  exit 1
-fi
-cmp "$BINS/phux" "$ON_PATH/phux"
-cmp "$BINS/phux-mcp" "$ON_PATH/phux-mcp"
-
-SHADOW="$TMP/shadow"
-mkdir "$SHADOW"
-printf '#!/bin/sh\nexit 0\n' > "$SHADOW/phux"
-chmod 755 "$SHADOW/phux"
-output="$(run_install "$ON_PATH" "$SHADOW:$ON_PATH:/usr/bin:/bin")"
-grep -Fq "next: $ON_PATH_CANON/phux" <<<"$output"
-grep -Fq 'PATH remedy:' <<<"$output"
-
-OFF_PATH="$TMP/off-path"
-output="$(run_install "$OFF_PATH" "/usr/bin:/bin")"
-OFF_PATH_CANON="$(cd "$OFF_PATH" && pwd -P)"
-grep -Fq "next: $OFF_PATH_CANON/phux" <<<"$output"
-grep -Fq "PATH remedy: export PATH=$OFF_PATH_CANON:\"\$PATH\"" <<<"$output"
-grep -Fq "added $OFF_PATH_CANON to PATH in $HOME/.zshrc" <<<"$output"
-grep -Fxq "export PATH=$OFF_PATH_CANON:\"\$PATH\"" "$HOME/.zshrc"
-# A rerun leaves exactly one profile line; an on-PATH or shadowed install
-# never edits the profile at all.
-run_install "$OFF_PATH" "/usr/bin:/bin" >/dev/null
-[[ $(grep -c 'PATH=' "$HOME/.zshrc") -eq 1 ]]
-SHELL=/usr/bin/fish run_install "$OFF_PATH" "/usr/bin:/bin" >/dev/null
-grep -Fxq "fish_add_path -g $OFF_PATH_CANON" "$HOME/.config/fish/conf.d/phux.fish"
-rm -rf "$HOME/.zshrc" "$HOME/.config"
-run_install "$ON_PATH" "$ON_PATH:/usr/bin:/bin" >/dev/null
-run_install "$ON_PATH" "$SHADOW:$ON_PATH:/usr/bin:/bin" >/dev/null
-[[ ! -e $HOME/.zshrc ]] || { echo "installer edited a profile for an on-PATH directory" >&2; exit 1; }
-output="$(PHUX_NO_MODIFY_PATH=1 run_install "$OFF_PATH" "/usr/bin:/bin")"
-grep -Fq 'PATH remedy:' <<<"$output"
-output="$(run_install "$OFF_PATH" "/usr/bin:/bin" --no-modify-path)"
-grep -Fq 'PATH remedy:' <<<"$output"
-[[ ! -e $HOME/.zshrc ]] || { echo "installer edited a profile despite opting out" >&2; exit 1; }
-
-# Fail only the second publish rename. The EXIT trap must restore both old
-# binaries and remove its lock and transaction directory.
-cat > "$FAKE_BIN/mv" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-src=${@: -2:1}
-dst=${@: -1}
-if [[ ${SIGNAL_AFTER_FIRST_PUBLISH:-0} == 1 && $src == */.phux-install.*/phux && $dst == "$SIGNAL_INSTALL_DIR/phux" && ! -e $SIGNAL_MARKER ]]; then
-  /bin/mv "$@"
-  : > "$SIGNAL_MARKER"
-  kill -"${SIGNAL_NAME:-TERM}" "$PPID"
-  exit 0
-fi
-if [[ $src == */.phux-install.*/phux-mcp && $dst == "${FAIL_INSTALL_DIR:-/nonexistent}/phux-mcp" && ! -e $FAIL_MARKER ]]; then
-  : > "$FAIL_MARKER"
-  exit 1
-fi
-exec /bin/mv "$@"
-EOF
-chmod 755 "$FAKE_BIN/mv"
-
-cat > "$FAKE_BIN/mkdir" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ ${SIGNAL_AFTER_LOCK_MKDIR:-0} == 1 && ${1:-} != -* && ! -e ${SIGNAL_MARKER:-/nonexistent} ]]; then
-  case "$1" in
-    */.phux-install.lock.*)
-      /bin/mkdir "$@"
-      : > "$SIGNAL_MARKER"
-      kill -"${SIGNAL_NAME:-TERM}" "$PPID"
-      exit 0
-      ;;
-  esac
-fi
-exec /bin/mkdir "$@"
-EOF
-chmod 755 "$FAKE_BIN/mkdir"
-
-ROLLBACK="$TMP/rollback"
-mkdir "$ROLLBACK"
-printf 'old phux\n' > "$ROLLBACK/phux"
-printf 'old phux-mcp\n' > "$ROLLBACK/phux-mcp"
-if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-  FAIL_INSTALL_DIR="$ROLLBACK" FAIL_MARKER="$TMP/failed-once" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-    --install-dir "$ROLLBACK" >"$TMP/rollback.out" 2>"$TMP/rollback.err"; then
-  echo "installer unexpectedly succeeded after forced second publish failure" >&2
-  exit 1
-fi
-grep -Fxq 'old phux' "$ROLLBACK/phux"
-grep -Fxq 'old phux-mcp' "$ROLLBACK/phux-mcp"
-if find "$ROLLBACK" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
-  echo "installer left transaction artifacts after rollback" >&2
-  exit 1
-fi
-
-# Interrupt a fresh install immediately after the first publish rename. The
-# destination must contain the complete pair or neither binary, never half.
-for signal in TERM HUP; do
-  INTERRUPTED="$TMP/interrupted-$signal"
-  mkdir "$INTERRUPTED"
-  marker="$TMP/signaled-once-$signal"
-  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-    SIGNAL_AFTER_FIRST_PUBLISH=1 SIGNAL_NAME="$signal" SIGNAL_INSTALL_DIR="$INTERRUPTED" \
-    SIGNAL_MARKER="$marker" FAIL_INSTALL_DIR=/nonexistent \
-    FAIL_MARKER="$TMP/not-failed-$signal" \
-    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-      --install-dir "$INTERRUPTED" >"$TMP/interrupted-$signal.out" 2>"$TMP/interrupted-$signal.err"; then
-    echo "installer unexpectedly succeeded after a $signal publish interruption" >&2
-    exit 1
-  fi
-  [[ -e $marker ]] || { echo "$signal publish interruption was not reached" >&2; exit 1; }
-  if [[ -e $INTERRUPTED/phux || -e $INTERRUPTED/phux-mcp ]]; then
-    echo "installer left a partial binary pair after $signal interruption" >&2
-    exit 1
-  fi
-  if find "$INTERRUPTED" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
-    echo "installer left transaction artifacts after $signal interruption" >&2
-    exit 1
-  fi
-done
-
-# Refusing a concurrent install must never remove the active installer's lock.
-LOCKED="$TMP/locked"
-mkdir -p "$LOCKED/.phux-install.lock"
-if run_install "$LOCKED" "/usr/bin:/bin" >"$TMP/locked.out" 2>"$TMP/locked.err"; then
-  echo "installer unexpectedly ignored an active publish lock" >&2
-  exit 1
-fi
-[[ -d $LOCKED/.phux-install.lock ]] || {
-  echo "refused installer removed another installer's lock" >&2
-  exit 1
-}
-
-# A signal after the lock mkdir succeeds, before lock_acquired=1, must not
-# strand the lock. A later install has to be able to proceed.
-for signal in TERM HUP; do
-  dest="$TMP/lock-interrupt-$signal"
-  marker="$TMP/lock-interrupt-$signal-reached"
-  mkdir "$dest"
-  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-    SIGNAL_AFTER_LOCK_MKDIR=1 SIGNAL_NAME="$signal" SIGNAL_MARKER="$marker" \
-    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-      --install-dir "$dest" >"$TMP/lock-interrupt-$signal.out" 2>"$TMP/lock-interrupt-$signal.err"; then
-    echo "installer unexpectedly succeeded after a $signal lock interruption" >&2
-    exit 1
-  fi
-  [[ -e $marker ]] || { echo "$signal lock interruption was not reached" >&2; exit 1; }
-  if find "$dest" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
-    echo "installer stranded a lock after $signal lock interruption" >&2
-    exit 1
-  fi
-  run_install "$dest" "/usr/bin:/bin" >/dev/null
-  cmp "$BINS/phux" "$dest/phux"
-  cmp "$BINS/phux-mcp" "$dest/phux-mcp"
-done
-
-echo "installer transaction tests passed"
-
-# The rollback tests leave a wrapping `mv` in FAKE_BIN. The next-channel
-# path uses a real rename and must not inherit that harness.
-rm -f "$FAKE_BIN/mv"
-
-# Unpinned installs resolve from the channel manifest (ADR-0175) and verify
-# against its digest; the sidecar is never fetched. The fixture is the golden
-# manifest with this run's real artifact digest, re-rendered in the
-# generator's exact form.
-write_manifest() {
-  local channel=$1 out=$2 sha=$3 digest=$4
-  python3 - "$ROOT/scripts/fixtures/release-manifest/$channel.json" "$out" "$sha" "$digest" "$TARGET" <<'PY'
+fail() { echo "FAIL: $*" >&2; exit 1; }
+installer() { PATH="$TMP/bin:${TEST_PATH:-/usr/bin:/bin}" "$SH" "$ROOT/scripts/install.sh" "$@"; }
+serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$SERVED/"; }
+# Rewrite a served manifest with a Python statement over `m`.
+mutate() {
+  python3 - "$SERVED/$1.json" "$2" <<'PY'
 import json, sys
-golden, out, sha, digest, target = sys.argv[1:]
-m = json.load(open(golden))
-phux = m["products"]["phux"]
-phux["sha"] = sha
-artifact = phux["artifacts"][target]
-if m["channel"] == "next":
-    artifact["name"] = f"phux-next.{sha}-{target}.tar.gz"
-    artifact["url"] = f"https://github.com/no-phux/phux/releases/download/next/{artifact['name']}"
-artifact["sha256"] = digest
-open(out, "w").write(json.dumps(m, indent=2) + "\n")
+m = json.load(open(sys.argv[1]))
+exec(sys.argv[2])
+open(sys.argv[1], "w").write(json.dumps(m, indent=2) + "\n")
 PY
 }
+refused() {
+  local message="$1"
+  shift
+  if installer "$@" >"$TMP/out" 2>"$TMP/err"; then fail "accepted: $* -> $(cat "$TMP/out")"; fi
+  [[ -z $message ]] || grep -Fq -- "$message" "$TMP/err" || fail "expected '$message', got: $(cat "$TMP/err")"
+}
+plan() { installer --dry-run --os darwin --arch arm64 "$@"; }
 
-cat > "$FAKE_BIN/curl" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-url=""
-out=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -o) out=$2; shift 2 ;;
-    http*) url=$1; shift ;;
-    *) shift ;;
-  esac
+# --- resolution ----------------------------------------------------------------
+
+serve_golden
+: > "$CALLS"
+out="$(plan)"
+grep -Fxq "url: $BASE/v9.8.7/phux-v9.8.7-aarch64-apple-darwin.tar.gz" <<<"$out" || fail "stable url: $out"
+grep -Fxq "sha256: $(printf '1%.0s' {1..64})" <<<"$out" || fail "stable digest: $out"
+[[ $(cat "$CALLS") == "$BASE/channels/stable.json" ]] || fail "stable is one manifest read"
+grep -Fxq 'channel: stable' <<<"$(plan --channel latest)" || fail "latest is stable"
+grep -Fxq "sha256: $(printf '2%.0s' {1..64})" <<<"$(installer --dry-run --os linux --arch x86_64)" || fail "linux digest"
+sha_a="$(printf 'a%.0s' {1..40})"
+grep -Fxq "url: $BASE/next/phux-next.$sha_a-aarch64-apple-darwin.tar.gz" <<<"$(plan --channel next)" || fail "next url"
+grep -Fxq 'channel: next' <<<"$(PHUX_CHANNEL=next plan)" || fail "PHUX_CHANNEL"
+
+# A pin reads no manifest and is verified against its sidecar.
+for pin in 1.2.3 v1.2.3; do
+  out="$(FAIL_NETWORK=1 plan --version "$pin")"
+  grep -Fxq "sidecar: $BASE/v1.2.3/phux-v1.2.3-aarch64-apple-darwin.tar.gz.sha256" <<<"$out" || fail "pin: $out"
 done
-printf '%s\n' "$url" >> "$INSTALL_FIXTURE/calls"
-case "$url" in
-  https://github.com/no-phux/phux/releases/download/channels/*.json) file="$INSTALL_FIXTURE/${url##*/}" ;;
-  *.tar.gz) file="$INSTALL_FIXTURE/${url##*/}" ;;
-  *) echo "unexpected url: $url" >&2; exit 22 ;;
+grep -Fxq "url: $BASE/next/phux-next.$sha_a-aarch64-apple-darwin.tar.gz" \
+  <<<"$(FAIL_NETWORK=1 plan --channel next --revision "$sha_a")" || fail "revision pin"
+for bad in v1.2.3/evil 1.2.3.4 01.2.3 1.2.3-alpha.1 $'1.2.3\nx'; do
+  refused 'pin a release with --version' --dry-run --os darwin --arch arm64 --version "$bad"
+done
+refused 'pin a build with --revision' --dry-run --channel next --version 1.2.3
+refused 'pin a release with --version' --dry-run --revision "$sha_a"
+refused '--sha256 needs' --dry-run --sha256 "$(printf 'd%.0s' {1..64})"
+refused 'no phux release for darwin/x86_64' --dry-run --os darwin --arch x86_64
+
+# A manifest that cannot be trusted is refused, not interpreted.
+refuse_manifest() {
+  serve_golden
+  mutate "$1" "$2"
+  refused "$3" --dry-run --os darwin --arch arm64 --channel "$1"
+}
+refuse_manifest stable 'm["schema_version"] = 2' 'unsupported schema'
+refuse_manifest stable 'm["channel"] = "next"' 'names another channel'
+refuse_manifest stable 'del m["products"]["phux"]' 'no phux release is published'
+refuse_manifest stable 'del m["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]' 'no phux digest for aarch64-apple-darwin'
+refuse_manifest stable 'm["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]["sha256"] = "F" * 64' 'no phux digest'
+refuse_manifest stable 'm["products"]["phux"]["version"] = "09.8.7"' 'invalid phux version'
+refuse_manifest next 'm["products"]["phux"]["sha"] = "A" * 40' 'invalid phux commit'
+for value in '[1]' 'True' '{}' '"has space"'; do
+  refuse_manifest stable "m['products']['phux']['extra'] = $value" 'malformed'
+done
+serve_golden
+head -n 12 "$GOLDEN/stable.json" > "$SERVED/stable.json"
+refused 'malformed' --dry-run --os darwin --arch arm64
+{ cat "$GOLDEN/stable.json"; echo '{}'; } > "$SERVED/stable.json"
+refused 'malformed' --dry-run --os darwin --arch arm64
+head -c 1048577 /dev/zero | tr '\0' ' ' > "$SERVED/stable.json"
+refused 'exceeds 1 MiB' --dry-run --os darwin --arch arm64
+rm "$SERVED/stable.json"
+refused 'could not download the stable release manifest' --dry-run --os darwin --arch arm64
+
+# Without curl, wget fetches the manifest; every awk the installer meets
+# flattens it the same way.
+serve_golden
+mkdir "$TMP/wget-bin"
+cp "$TMP/bin/curl" "$TMP/wget-bin/wget"
+for tool in awk cat cp grep mktemp rm rmdir wc dirname basename sed; do
+  ln -s "$(command -v "$tool")" "$TMP/wget-bin/$tool"
+done
+out="$(PATH="$TMP/wget-bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os darwin --arch arm64)"
+grep -Fq '/v9.8.7/phux-v9.8.7-aarch64-apple-darwin.tar.gz' <<<"$out" || fail "wget: $out"
+for awk in mawk gawk original-awk busybox; do
+  program="$(command -v "$awk")" || continue
+  mkdir -p "$TMP/awk-$awk"
+  if [[ $awk == busybox ]]; then
+    printf '#!/bin/sh\nexec %s awk "$@"\n' "$program" > "$TMP/awk-$awk/awk"
+    chmod 755 "$TMP/awk-$awk/awk"
+  else
+    ln -sf "$program" "$TMP/awk-$awk/awk"
+  fi
+  grep -Fxq "sha256: $(printf '1%.0s' {1..64})" <<<"$(TEST_PATH="$TMP/awk-$awk:/usr/bin:/bin" plan)" || fail "$awk"
+done
+if installer --help | grep -Fq '\'; then fail "--help prints an escape"; fi
+
+# --- installing ----------------------------------------------------------------
+
+package() { # ID: pack a release whose binaries say ID, and serve it
+  mkdir -p "$TMP/build-$1"
+  for binary in phux phux-mcp; do printf '%s %s\n' "$binary" "$1" > "$TMP/build-$1/$binary"; done
+  chmod 755 "$TMP/build-$1/"*
+  bash "$ROOT/scripts/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1
+  awk '{ print $1 }' "$SERVED/phux-$1-$TARGET.tar.gz.sha256"
+}
+digest_stable="$(package v9.8.7)"
+digest_next="$(package "next.$sha_a")"
+serve_golden
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+mutate next "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_next'"
+install_to() { local dir="$1"; shift; installer --os linux --arch x86_64 --install-dir "$dir" "$@"; }
+
+: > "$CALLS"
+install_to "$TMP/stable" 2>"$TMP/err" >/dev/null
+grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "stable install: $(cat "$TMP/err")"
+grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phux-channel" || fail "stable files"
+if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
+
+install_to "$TMP/next" --channel next >/dev/null 2>&1
+grep -Fxq "phux next.$sha_a" "$TMP/next/phux" && grep -Fxq next "$TMP/next/.phux-channel" || fail "next install"
+
+: > "$CALLS"
+FAIL_MANIFEST=1 install_to "$TMP/pinned" --version 9.8.7 >/dev/null 2>&1
+grep -Fq "phux-v9.8.7-$TARGET.tar.gz.sha256" "$CALLS" || fail "a pin must verify its sidecar"
+
+# A digest the archive does not match installs nothing.
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
+printf 'old phux\n' > "$TMP/stable/phux"
+refused 'checksum mismatch' --os linux --arch x86_64 --install-dir "$TMP/stable"
+grep -Fxq 'old phux' "$TMP/stable/phux" || fail "a mismatch replaced the binary"
+mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+
+no_leftovers() {
+  if find "$1" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then fail "$2 left transaction state"; fi
+}
+no_leftovers "$TMP/stable" "a refused install"
+
+# A failed or interrupted publish restores the previous pair, never half.
+cat > "$TMP/bin/mv" <<'EOF'
+#!/bin/sh
+for last; do :; done
+case "$last" in
+  "${FAIL_DIR:-/none}/phux-mcp") [ -e "$FAIL_DIR.failed" ] || { : > "$FAIL_DIR.failed"; exit 1; } ;;
+  "${SIGNAL_DIR:-/none}/phux") /bin/mv "$@"; kill -"$SIGNAL" "$PPID"; exit 0 ;;
 esac
-[[ -f $file ]] || exit 22
-if [[ -n "$out" ]]; then cp "$file" "$out"; else cat "$file"; fi
+exec /bin/mv "$@"
 EOF
-chmod 755 "$FAKE_BIN/curl"
+chmod 755 "$TMP/bin/mv"
+mkdir "$TMP/rollback"
+printf 'old phux\n' > "$TMP/rollback/phux"
+printf 'old phux-mcp\n' > "$TMP/rollback/phux-mcp"
+FAIL_DIR="$TMP/rollback" refused '' --os linux --arch x86_64 --install-dir "$TMP/rollback"
+grep -Fxq 'old phux' "$TMP/rollback/phux" && grep -Fxq 'old phux-mcp' "$TMP/rollback/phux-mcp" || fail "rollback"
+no_leftovers "$TMP/rollback" "a rolled-back install"
+for signal in TERM HUP; do
+  dir="$TMP/signal-$signal"
+  mkdir "$dir"
+  SIGNAL_DIR="$dir" SIGNAL="$signal" refused '' --os linux --arch x86_64 --install-dir "$dir"
+  [[ ! -e $dir/phux && ! -e $dir/phux-mcp ]] || fail "$signal left a partial pair"
+  no_leftovers "$dir" "a $signal interruption"
+done
+rm "$TMP/bin/mv"
 
-digest_of() { awk '{ print $1 }' "$1.sha256"; }
+# A concurrent install is refused, and its lock is left alone.
+mkdir -p "$TMP/locked/.phux-install.lock"
+refused 'if none is running, remove' --os linux --arch x86_64 --install-dir "$TMP/locked"
+[[ -d $TMP/locked/.phux-install.lock ]] || fail "a refused install removed another's lock"
 
-STABLE_DIR="$TMP/stable-install"
-mkdir "$STABLE_DIR"
-STABLE_ARCHIVE="$FIXTURE/phux-${VERSION}-${TARGET}.tar.gz"
-write_manifest stable "$FIXTURE/stable.json" "$(printf 'a%.0s' {1..40})" "$(digest_of "$STABLE_ARCHIVE")"
-: > "$FIXTURE/calls"
-PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 \
-    --install-dir "$STABLE_DIR" >"$TMP/stable.out" 2>"$TMP/stable.err"
-grep -Fq "phux: ok: installed phux ${VERSION}" "$TMP/stable.err"
-grep -Fxq stable "$STABLE_DIR/.phux-channel"
-cmp "$BINS/phux" "$STABLE_DIR/phux"
-if grep -Fq '.sha256' "$FIXTURE/calls"; then echo "manifest install fetched a sidecar" >&2; exit 1; fi
+# PATH: no remedy when phux is found, a remedy when shadowed, and one
+# idempotent profile line when the directory is off PATH.
+rm -rf "$HOME" && mkdir "$HOME"
+mkdir -p "$TMP/on-path" "$TMP/shadow"
+on="$(cd "$TMP/on-path" && pwd -P)"
+out="$(TEST_PATH="$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
+grep -Fxq 'next: phux' <<<"$out" && ! grep -Fq 'PATH remedy' <<<"$out" || fail "on PATH: $out"
+printf '#!/bin/sh\n' > "$TMP/shadow/phux"
+chmod 755 "$TMP/shadow/phux"
+out="$(TEST_PATH="$TMP/shadow:$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
+grep -Fq "next: $on/phux" <<<"$out" && grep -Fq 'PATH remedy' <<<"$out" || fail "shadowed: $out"
+[[ ! -e $HOME/.zshrc ]] || fail "an on-PATH install edited the profile"
+mkdir -p "$TMP/off-path"
+off="$(cd "$TMP/off-path" && pwd -P)"
+install_to "$off" >/dev/null 2>&1
+install_to "$off" >/dev/null 2>&1
+[[ $(grep -cFx "export PATH=$off:\"\$PATH\"" "$HOME/.zshrc") -eq 1 ]] || fail "zsh profile line"
+SHELL=/usr/bin/fish install_to "$off" >/dev/null 2>&1
+grep -Fxq "fish_add_path -g $off" "$HOME/.config/fish/conf.d/phux.fish" || fail "fish profile line"
+rm -rf "$HOME/.zshrc"
+PHUX_NO_MODIFY_PATH=1 install_to "$off" >/dev/null 2>&1
+install_to "$off" --no-modify-path >/dev/null 2>&1
+[[ ! -e $HOME/.zshrc ]] || fail "an opted-out install edited the profile"
 
-# A digest the archive does not hash to installs nothing and keeps the old pair.
-write_manifest stable "$FIXTURE/stable.json" "$(printf 'a%.0s' {1..40})" "$(printf '0%.0s' {1..64})"
-printf 'old phux\n' > "$STABLE_DIR/phux"
-if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 \
-    --install-dir "$STABLE_DIR" >"$TMP/tampered.out" 2>"$TMP/tampered.err"; then
-  echo "installer accepted an archive that does not match the manifest digest" >&2
-  exit 1
-fi
-grep -Fq 'checksum mismatch' "$TMP/tampered.err"
-grep -Fxq 'old phux' "$STABLE_DIR/phux"
-if find "$STABLE_DIR" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
-  echo "installer left transaction artifacts after a digest mismatch" >&2
-  exit 1
-fi
+# The website's install-desktop shim runs the installer with --desktop.
+printf '#!/bin/sh\necho "args: $*"\n' > "$SERVED/install"
+out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" --channel next)"
+[[ $out == 'args: --desktop --channel next' ]] || fail "shim: $out"
+rm "$SERVED/install"
+if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
+grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
 
-NEXT_SHA=0123456789abcdef0123456789abcdef01234567
-NEXT_BINS="$TMP/next-bins"
-NEXT_FIXTURE="$TMP/next-fixture"
-mkdir -p "$NEXT_BINS" "$NEXT_FIXTURE"
-printf 'next phux\n' > "$NEXT_BINS/phux"
-printf 'next phux-mcp\n' > "$NEXT_BINS/phux-mcp"
-chmod 755 "$NEXT_BINS/phux" "$NEXT_BINS/phux-mcp"
-bash "$ROOT/scripts/pack-release.sh" \
-  --id "next.${NEXT_SHA}" --target "$TARGET" --bin-dir "$NEXT_BINS" --out-dir "$NEXT_FIXTURE"
-write_manifest next "$NEXT_FIXTURE/next.json" "$NEXT_SHA" \
-  "$(digest_of "$NEXT_FIXTURE/phux-next.${NEXT_SHA}-${TARGET}.tar.gz")"
-
-NEXT_DIR="$TMP/next-install"
-mkdir "$NEXT_DIR"
-PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --os linux --arch x86_64 \
-    --install-dir "$NEXT_DIR" >"$TMP/next.out" 2>"$TMP/next.err"
-grep -Fq "phux: ok: installed phux next.${NEXT_SHA}" "$TMP/next.err"
-! grep -Fq "installed phux" "$TMP/next.out"
-grep -Fxq next "$NEXT_DIR/.phux-channel"
-cmp "$NEXT_BINS/phux" "$NEXT_DIR/phux"
-cmp "$NEXT_BINS/phux-mcp" "$NEXT_DIR/phux-mcp"
-
-if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --version "$VERSION" \
-    --os linux --arch x86_64 --install-dir "$NEXT_DIR" \
-    >"$TMP/next-conflict.out" 2>"$TMP/next-conflict.err"; then
-  echo "installer accepted --channel next with --version" >&2
-  exit 1
-fi
-grep -Fq -- '--version pins a stable tag' "$TMP/next-conflict.err"
-
-output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel latest --version "$VERSION" \
-    --os linux --arch x86_64 --install-dir "$NEXT_DIR" --dry-run)"
-grep -Fxq 'channel: stable' <<<"$output"
-
-echo "manifest installer tests passed"
+echo "installer tests passed"

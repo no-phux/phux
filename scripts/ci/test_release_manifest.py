@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""The release manifest generator (ADR-0175) and its rendered contract."""
+"""The channel manifest generator (ADR-0176)."""
 
+import hashlib
 import json
 import re
-import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,147 +13,83 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import release_manifest as rm  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
-# The only line shapes the POSIX installers accept.
+# Every line shape the POSIX installers' awk parser accepts.
 LINE = re.compile(
     r'^(\{|\s*\},?|\s*"[A-Za-z0-9_-]+": \{|\s*"[A-Za-z0-9_-]+": ("[A-Za-z0-9._:/+-]*"|[0-9]+),?)$'
 )
 
 
-def digests(value="e" * 64):
-    return {target: value for target in rm.PHUX_TARGETS}
+def row(tag, assets=(), draft=False, prerelease=False):
+    return {"tag_name": tag, "draft": draft, "prerelease": prerelease,
+            "assets": [{"name": name, "digest": digest} for name, digest in assets]}
 
 
-class RenderTests(unittest.TestCase):
-    def test_committed_fixtures_are_current(self):
+class ManifestTests(unittest.TestCase):
+    def test_fixtures_are_current_and_line_parseable(self):
         self.assertEqual(rm.main(["fixtures", "--check"]), 0)
-
-    def test_rendered_form_is_line_parseable(self):
         for channel in rm.CHANNELS:
             text = rm.render(rm.fixture(channel))
-            self.assertNotIn("[", text)
-            for line in text.splitlines():
-                self.assertRegex(line, LINE)
-            self.assertEqual(json.loads(text), rm.fixture(channel))
+            self.assertTrue(all(LINE.match(line) for line in text.splitlines()), text)
 
-    def test_unsafe_values_and_empty_objects_are_refused(self):
-        manifest = rm.fixture("stable")
-        manifest["products"]["phux"]["version"] = "1.2.3 evil"
-        with self.assertRaises(rm.ManifestError):
-            rm.render(manifest)
-        with self.assertRaises(rm.ManifestError):
-            rm.render(rm.build("stable", {}, "2026-01-01T00:00:00Z"))
-        with self.assertRaises(rm.ManifestError):
-            rm.render({"flag": True})
+    def test_render_refuses_what_the_installers_cannot_parse(self):
+        bad = rm.fixture("stable")
+        bad["products"]["phux"]["version"] = "1.2.3 evil"
+        for document in (bad, {"flag": True}, {"list": [1]}, {"empty": {}}):
+            with self.assertRaises(rm.ManifestError):
+                rm.render(document)
 
-
-class EntryTests(unittest.TestCase):
-    def test_stable_and_next_names_and_urls_are_derived(self):
-        stable = rm.product_entry("phux", "stable", "1.2.3", "a" * 40, "0.9", digests())
-        artifact = stable["artifacts"]["x86_64-unknown-linux-gnu"]
-        self.assertEqual(stable["release"], "v1.2.3")
-        self.assertEqual(artifact["name"], "phux-v1.2.3-x86_64-unknown-linux-gnu.tar.gz")
-        self.assertEqual(
-            artifact["url"],
-            "https://github.com/no-phux/phux/releases/download/v1.2.3/"
-            "phux-v1.2.3-x86_64-unknown-linux-gnu.tar.gz",
-        )
-        desktop = rm.product_entry(
-            "desktop", "next", "0.4.0", "b" * 40, "0.9",
-            {rm.DESKTOP_TARGET: "f" * 64}, "27.0")
-        artifact = desktop["artifacts"][rm.DESKTOP_TARGET]
-        self.assertEqual(desktop["release"], "next")
-        self.assertEqual(artifact["name"], f"phux-desktop-next.{'b' * 40}-macos-arm64.zip")
-        self.assertTrue(artifact["url"].endswith(f"/download/next/{artifact['name']}"))
-        self.assertEqual(list(desktop), ["version", "release", "sha", "protocol",
-                                         "minimum_macos", "artifacts"])
-
-    def test_malformed_inputs_are_refused(self):
-        good = ("phux", "stable", "1.2.3", "a" * 40, "0.9", digests())
-        for index, bad in [(2, "1.02.3"), (2, "1.2"), (3, "A" * 40), (4, "0.09")]:
+    def test_entry_refuses_malformed_facts(self):
+        digests = {t: "e" * 64 for t in rm.TARGETS["phux"]}
+        good = ["phux", "stable", "1.2.3", "a" * 40, "0.9", digests]
+        for index, value in [(2, "1.02.3"), (3, "A" * 40), (4, "0.09"),
+                             (5, {"aarch64-apple-darwin": "e" * 64}),
+                             (5, {t: "E" * 64 for t in rm.TARGETS["phux"]})]:
             args = list(good)
-            args[index] = bad
-            with self.assertRaises(rm.ManifestError, msg=bad):
-                rm.product_entry(*args)
-        with self.assertRaises(rm.ManifestError):
-            rm.product_entry(*good[:5], {"aarch64-apple-darwin": "e" * 64})
-        with self.assertRaises(rm.ManifestError):
-            rm.product_entry(*good[:5], digests("E" * 64))
+            args[index] = value
+            with self.assertRaises(rm.ManifestError, msg=value):
+                rm.entry(*args)
 
 
-class PublishedStateTests(unittest.TestCase):
-    def test_newest_stable_is_numeric_and_ignores_other_streams(self):
-        rows = [
-            ["v0.9.0", False, False],
-            ["v0.10.0", False, False],
-            ["v0.11.0", True, False],
-            ["v0.12.0-rc.1", False, True],
-            ["desktop-v0.3.0", False, False],
-            ["desktop-v0.20.0", False, False],
-            ["desktop-v0.21.0-alpha.1", False, False],
-            ["pi-extension-v9.0.0", False, False],
-            ["next", False, True],
-            ["channels", False, True],
-        ]
-        self.assertEqual(rm.newest_stable(rows), {
-            "phux": ("0.10.0", "v0.10.0"),
-            "desktop": ("0.20.0", "desktop-v0.20.0"),
-        })
+class StableTests(unittest.TestCase):
+    def test_newest_published_release_per_product(self):
+        rows = [row("v0.9.0"), row("v0.10.0"), row("v0.11.0", draft=True),
+                row("desktop-v0.3.0"), row("desktop-v0.20.0"),
+                row("desktop-v0.1.0-alpha.17"), row("pi-extension-v9.0.0"),
+                row("next", prerelease=True), row("channels", prerelease=True)]
+        newest = rm.newest_stable(rows)
+        self.assertEqual({p: r["tag_name"] for p, r in newest.items()},
+                         {"phux": "v0.10.0", "desktop": "desktop-v0.20.0"})
 
-    def test_sidecars_name_their_artifact(self):
-        name = "phux-v1.2.3-x86_64-unknown-linux-gnu.tar.gz"
-        self.assertEqual(rm.sidecar_digest(f"{'e' * 64}  {name}\n", name), "e" * 64)
-        self.assertEqual(rm.sidecar_digest(f"{'e' * 64} *{name}\n", name), "e" * 64)
-        with self.assertRaises(rm.ManifestError):
-            rm.sidecar_digest(f"{'e' * 64}  other.tar.gz\n", name)
-
-    def test_generated_at_alone_is_not_a_change(self):
-        left = rm.fixture("next")
-        right = dict(left, generated_at="2030-01-01T00:00:00Z")
-        self.assertTrue(rm.same_content(left, right))
-        right["channel"] = "stable"
-        self.assertFalse(rm.same_content(left, right))
-
-    def test_protocol_is_read_from_the_source_it_ships(self):
-        self.assertEqual(rm.protocol_at("HEAD", "desktop"),
-                         (ROOT / "clients/desktop/phux-protocol").read_text().strip())
-        self.assertRegex(rm.protocol_at("HEAD", "phux"), rm.PROTOCOL)
+    def test_digests_come_from_github_and_must_exist(self):
+        name = rm.asset_name("phux", "stable", "1.2.3", None, "x86_64-unknown-linux-gnu")
+        self.assertEqual(name, "phux-v1.2.3-x86_64-unknown-linux-gnu.tar.gz")
+        assets = [{"name": name, "digest": "sha256:" + "e" * 64}]
+        self.assertEqual(rm.asset_digests(assets, [name]), {name: "e" * 64})
+        for broken in ([], [{"name": name, "digest": None}]):
+            with self.assertRaises(rm.ManifestError):
+                rm.asset_digests(broken, [name])
 
 
-class WorkflowTests(unittest.TestCase):
-    def test_both_channels_regenerate_and_publish(self):
-        publish = (ROOT / ".github/workflows/publish.yml").read_text()
-        self.assertIn("needs: [plan, phux, desktop]", publish)
-        self.assertIn("python3 scripts/ci/release_manifest.py stable --out", publish)
-        nxt = (ROOT / ".github/workflows/next-release.yml").read_text()
-        self.assertIn("needs: [gate, publish]", nxt)
-        self.assertIn("python3 scripts/ci/release_manifest.py next --out", nxt)
-        for workflow in (publish, nxt):
-            self.assertIn('.json" --publish', workflow)
+class NextTests(unittest.TestCase):
+    def test_built_assets_must_match_their_sidecars(self):
+        sha = "c" * 40
+        with tempfile.TemporaryDirectory() as dist:
+            name = rm.asset_name("desktop", "next", None, sha, "aarch64-apple-darwin")
+            Path(dist, name).write_bytes(b"app")
+            digest = hashlib.sha256(b"app").hexdigest()
+            Path(dist, f"{name}.sha256").write_text(f"{digest}  {name}\n")
+            self.assertEqual(rm.verified_dist("desktop", sha, dist)["aarch64-apple-darwin"][1], digest)
+            Path(dist, f"{name}.sha256").write_text(f"{'0' * 64}  {name}\n")
+            with self.assertRaises(rm.ManifestError):
+                rm.verified_dist("desktop", sha, dist)
 
-
-class FailureTests(unittest.TestCase):
-    def test_a_failure_is_recorded_not_mistaken_for_absence(self):
-        def broken():
-            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
-
-        products, failures = rm.gather([
-            ("phux", broken),
-            ("desktop", lambda: None),
-        ])
-        self.assertEqual(products, {})
-        self.assertEqual(list(failures), ["phux"])
-        self.assertIn("HTTP 502", failures["phux"])
-
-    def test_a_failed_product_keeps_its_published_entry(self):
-        previous = rm.fixture("stable")
-        fresh_desktop = dict(previous["products"]["desktop"], version="1.2.4")
-        kept = rm.carry_forward({"desktop": fresh_desktop}, {"phux": "HTTP 502"}, previous)
-        self.assertEqual(list(kept), ["phux", "desktop"])
-        self.assertEqual(kept["phux"], previous["products"]["phux"])
-        self.assertEqual(kept["desktop"]["version"], "1.2.4")
-        # With nothing published before, the failed product stays absent.
-        self.assertEqual(list(rm.carry_forward({}, {"phux": "x"}, None)), [])
+    def test_bridge_records_keep_the_pre_manifest_shape(self):
+        name, text = rm.bridge_record("desktop", "c" * 40, "1.2.3",
+                                      {"aarch64-apple-darwin": "d" * 64})
+        record = json.loads(text)
+        self.assertEqual(name, "desktop-channel.json")
+        self.assertEqual(record["archive"], f"phux-desktop-next.{'c' * 40}-macos-arm64.zip")
+        self.assertEqual(rm.bridge_record("phux", "c" * 40, "1.2.3", {})[0], "channel.json")
 
 
 if __name__ == "__main__":

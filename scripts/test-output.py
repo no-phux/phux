@@ -107,22 +107,19 @@ class OutputTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 7)
                 self.assertEqual(result.stdout, b"")
 
-    def test_standalone_embeds_are_fresh_and_errors_keep_stdout_empty(self):
-        subprocess.run(["bash", str(ROOT / "scripts/sync-install-resolver.sh"), "--check"], check=True)
-        for name in ("install.sh", "install-desktop.sh"):
-            for shell in SHELLS:
-                with self.subTest(script=name, shell=shell):
-                    # Copy just the served script, proving there is no repo helper dependency.
-                    with tempfile.TemporaryDirectory() as directory:
-                        script = Path(directory) / name
-                        shutil.copyfile(ROOT / "scripts" / name, script)
-                        result = subprocess.run([shell, str(script), "--not-a-flag"],
-                                                cwd=directory, env=environment(), capture_output=True)
-                    self.assertEqual(result.returncode, 1)
-                    self.assertEqual(result.stdout, b"")
-                    self.assertTrue(result.stderr.startswith(b"phux: error: "), result.stderr)
-                    self.assertNotIn(b"\x1b", result.stderr)
-
+    def test_the_served_installer_stands_alone_and_errors_keep_stdout_empty(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                # Copy just the served script, proving there is no repo helper dependency.
+                with tempfile.TemporaryDirectory() as directory:
+                    script = Path(directory) / "install.sh"
+                    shutil.copyfile(ROOT / "scripts/install.sh", script)
+                    result = subprocess.run([shell, str(script), "--not-a-flag"],
+                                            cwd=directory, env=environment(), capture_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertTrue(result.stderr.startswith(b"phux: error: "), result.stderr)
+                self.assertNotIn(b"\x1b", result.stderr)
 
 if __name__ == "__main__":
     unittest.main()

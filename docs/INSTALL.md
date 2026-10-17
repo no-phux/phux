@@ -105,14 +105,18 @@ curl -fsSL https://phux.sh/install | sh -s -- --channel next     # follow green 
 
 | Option | Effect |
 |---|---|
-| `--version vX.Y.Z` | Install a tag from the [releases page](https://github.com/no-phux/phux/releases) instead of the latest. |
+| `--version X.Y.Z` | Install a release from the [releases page](https://github.com/no-phux/phux/releases) instead of the latest. |
 | `--channel next` (or `PHUX_CHANNEL=next`) | Install the moving `next` prerelease built from green `main`. |
+| `--revision SHA` | With `--channel next`, install the build of that commit. |
 | `--install-dir DIR` (or `PHUX_INSTALL_DIR`) | Install somewhere other than `~/.local/bin`. |
 | `--no-modify-path` (or `PHUX_NO_MODIFY_PATH=1`) | Leave shell profiles alone; print the `PATH` line instead. |
+| `--desktop` | Also install Phux Desktop; `--applications-dir DIR` picks where. |
+| `--dry-run` | Print what would be downloaded and where it would go. |
 
 The script is POSIX `sh`; read it at
 [phux.sh/install](https://phux.sh/install) before running it. It is this
-repository's `scripts/install.sh`, served unchanged.
+repository's `scripts/install.sh`, served unchanged, and
+`phux.sh/install-desktop` runs it with `--desktop`.
 
 For coding agents that load Agent Skills, add the phux skills with
 `npx skills add no-phux/skills`. See [Agents](./consumers/agents.md).

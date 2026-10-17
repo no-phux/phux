@@ -3,7 +3,7 @@ target/
 # out of `target/` to avoid clobbering a build. Same regenerable artifacts,
 # same reason to ignore them -- one had grown to 1.3G untracked.
 target-*/
-# Release tarballs staged by scripts/dist.sh before upload.
+# Packaging output (pack-release.sh, desktop-package).
 dist/
 # Local checkout of the no-phux/skills publish mirror.
 .skills-mirror/

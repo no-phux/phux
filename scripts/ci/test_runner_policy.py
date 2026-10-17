@@ -10,19 +10,12 @@ import stat
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
-RELEASE = (WORKFLOWS / "release.yml").read_text()
-NEXT_RELEASE = (WORKFLOWS / "next-release.yml").read_text()
-LINUX_RELEASE_SETUP = (ROOT / "scripts/ci/setup-linux-release-userspace.sh").read_text()
 STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "xcode-27"}
-RETIRED_UBUNTU_2204 = re.compile(
-    r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
-)
 
 # Darwin <sys/attr.h>. Extended common attributes live in forkattr and are
 # returned only when FSOPT_ATTR_CMN_EXTENDED is set. Asking for
@@ -580,74 +573,6 @@ class RunnerPolicyTests(unittest.TestCase):
             self.assertEqual(kept_run.returncode, 0, kept_run.stderr)
             self.assertNotIn("not saving this store", kept_run.stderr)
             self.assertEqual(receipt.read_text(), "still-pending")
-
-    def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
-        for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):
-            with self.subTest(workflow=name):
-                self.assertNotRegex(body, RETIRED_UBUNTU_2204)
-                self.assertRegex(
-                    body,
-                    r"os: ubuntu-24\.04\s+"
-                    r"""container: '\{"image":"ubuntu:22\.04"\}'\s+"""
-                    r"target: x86_64-unknown-linux-gnu",
-                )
-                self.assertRegex(
-                    body,
-                    r"os: ubuntu-24\.04-arm\s+"
-                    r"""container: '\{"image":"ubuntu:22\.04"\}'\s+"""
-                    r"target: aarch64-unknown-linux-gnu",
-                )
-                self.assertIn("container: ${{ fromJSON(matrix.container) }}", body)
-                self.assertIn("scripts/ci/setup-linux-release-userspace.sh", body)
-                self.assertIn(
-                    "scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp",
-                    body,
-                )
-                self.assertIn("name: ${{ matrix.target }}", body)
-                self.assertIn("test \"$(getconf GNU_LIBC_VERSION)\" = 'glibc 2.35'", body)
-        self.assertIn("needs.build.result == 'success'", RELEASE)
-
-    def test_linux_release_container_trusts_the_host_mounted_workspace(self):
-        command = 'git config --global --add safe.directory "$GITHUB_WORKSPACE"'
-        self.assertRegex(LINUX_RELEASE_SETUP, rf"(?m)^\s+{re.escape(command)}$")
-        self.assertLess(
-            LINUX_RELEASE_SETUP.index("apt-get install"),
-            LINUX_RELEASE_SETUP.index(command),
-        )
-
-        build_job = RELEASE.split("\n  build:\n", 1)[1].split("\n  release:\n", 1)[0]
-        self.assertLess(
-            build_job.index("scripts/ci/setup-linux-release-userspace.sh"),
-            build_job.index('git fetch --force --tags origin'),
-        )
-
-    def test_release_platform_guard_rejects_wrong_arch_and_newer_glibc(self):
-        block = RELEASE.split("- name: Verify native release platform and Linux baseline", 1)[1]
-        script = textwrap.dedent(block.split("run: |\n", 1)[1].split("\n      - ", 1)[0])
-        cases = [
-            ("aarch64-apple-darwin", "Darwin", "arm64", "22.04", "2.35", True),
-            ("aarch64-unknown-linux-gnu", "Linux", "aarch64", "22.04", "2.35", True),
-            ("x86_64-unknown-linux-gnu", "Linux", "x86_64", "22.04", "2.35", True),
-            ("x86_64-unknown-linux-gnu", "Linux", "aarch64", "22.04", "2.35", False),
-            ("aarch64-unknown-linux-gnu", "Darwin", "arm64", "22.04", "2.35", False),
-            ("aarch64-unknown-linux-gnu", "Linux", "aarch64", "24.04", "2.39", False),
-            ("aarch64-unknown-linux-gnu", "Linux", "aarch64", "22.04", "2.39", False),
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "uname").write_text('#!/bin/sh\ncase "$1" in -s) echo "$TEST_OS";; -m) echo "$TEST_ARCH";; esac\n')
-            (root / "getconf").write_text('#!/bin/sh\necho "glibc $TEST_GLIBC"\n')
-            (root / "uname").chmod(0o755)
-            (root / "getconf").chmod(0o755)
-            script = script.replace("/etc/os-release", f"{tmp}/os-release")
-            for target, system, arch, version, glibc, success in cases:
-                with self.subTest(target=target, system=system, arch=arch, version=version, glibc=glibc):
-                    (root / "os-release").write_text(f'ID=ubuntu\nVERSION_ID="{version}"\n')
-                    env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "TARGET": target,
-                           "TEST_OS": system, "TEST_ARCH": arch, "TEST_GLIBC": glibc}
-                    result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env,
-                                            capture_output=True, text=True, check=False)
-                    self.assertEqual(result.returncode == 0, success, result.stderr)
 
 
 if __name__ == "__main__":

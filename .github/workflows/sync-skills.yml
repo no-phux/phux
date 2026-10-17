@@ -59,9 +59,6 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          # v3 deprecated `app-id` in favor of `client-id`. The JWT issuer claim
-          # accepts the numeric App ID and the Iv1-style Client ID alike, so the
-          # existing RELEASE_APP_ID variable works unchanged.
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: no-phux

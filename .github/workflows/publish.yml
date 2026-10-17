@@ -1,17 +1,8 @@
-# publish — the only workflow that turns a draft release into a public one.
-#
-# Release Please cuts the tag and the draft notes. ci.yml is the proof the
-# commit is good. Those two finish in either order, so this workflow runs
-# when either of them completes and does nothing until both are true. Every
-# run sweeps all drafts whose own commit's ci is green, so a publish run
-# cancelled under push concurrency cannot strand one. A daily reconcile
-# catches an event that never arrived, and dispatch is the manual door. Leaf
-# workflows (release.yml, desktop-release.yml, the FFI
-# builds, agent-integration-release.yml) are called from here. They are not
-# separate buttons.
-#
-# A draft older than an already published version of the same component is
-# deleted. The tag stays, so release-please will not cut that version again.
+# The only workflow that turns a draft public. Release Please cuts the tag and
+# notes, and ci proves the commit; they finish in either order, so every run
+# ships every draft whose tagged commit has a green ci. The daily run catches a
+# missed event and checks for drift. A draft older than a published version of
+# its component is deleted; its tag stays, so Release Please never re-cuts it.
 
 name: publish
 
@@ -28,7 +19,6 @@ on:
         type: string
         default: ""
   schedule:
-    # 15:05 UTC, ahead of the 15:20 drift alarm, off the top of the hour.
     - cron: "5 15 * * *"
 
 permissions:
@@ -48,7 +38,6 @@ jobs:
       phux_tag: ${{ steps.plan.outputs.phux_tag }}
       desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
       integration_tags: ${{ steps.plan.outputs.integration_tags }}
-      blocked: ${{ steps.plan.outputs.blocked }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,36 +56,29 @@ jobs:
   phux:
     name: publish phux
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    if: needs.plan.outputs.phux_tag != ''
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
-    secrets: inherit
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
 
   desktop:
     name: publish desktop
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != ''
+    if: needs.plan.outputs.desktop_tag != ''
     uses: ./.github/workflows/desktop-release.yml
     permissions:
       contents: write
     with:
       tag: ${{ needs.plan.outputs.desktop_tag }}
 
-  # The stable manifest (ADR-0175) is a function of what is published, so it
-  # is rebuilt on every run, including the daily reconcile, after both product
-  # lanes settle. A failed lane leaves its draft unpublished, and the manifest
-  # keeps naming that product's previous release.
   channel-manifest:
     name: publish stable manifest
     needs: [plan, phux, desktop]
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,18 +88,13 @@ jobs:
       - name: Build and publish stable.json
         env:
           GH_TOKEN: ${{ github.token }}
-        # A product that cannot be resolved keeps its published entry and
-        # turns this job red; the other product still publishes.
         run: python3 scripts/ci/release_manifest.py stable --out "$RUNNER_TEMP/stable.json" --publish
 
-  # Mobile artifacts ride on the root release. They do not gate it: release.yml
-  # publishes the CLI tarballs, and a failed framework build is repaired by
-  # re-running publish against the same tag.
-
+  # Mobile artifacts ride on the root release without gating it.
   ffi-xcframework:
     name: attach xcframework
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    if: needs.plan.outputs.phux_tag != ''
     uses: ./.github/workflows/ffi-xcframework.yml
     permissions:
       contents: write
@@ -127,20 +104,18 @@ jobs:
   ffi-android:
     name: attach android zip
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    if: needs.plan.outputs.phux_tag != ''
     uses: ./.github/workflows/ffi-android.yml
     permissions:
       contents: write
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
 
-  # Dispatch, do not workflow_call. npm trusted publishing checks the
-  # entry workflow filename. A reusable call publishes as publish.yml, npm
-  # does not trust that name, and the registry answers 404.
+  # Dispatched, not called: npm trusted publishing trusts the entry workflow.
   integration:
     name: publish integration
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.integration_tags != '[]'
+    if: needs.plan.outputs.integration_tags != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -164,3 +139,26 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
+
+  drift:
+    name: check for stuck releases
+    needs: channel-manifest
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the API lists drafts only to a token that can push
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Check for stuck releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-release-drift.mjs

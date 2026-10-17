@@ -449,7 +449,7 @@ from that discrepancy.
 ## Implementation evidence (2026-09-09)
 
 The follow-up changes preserve the baseline above and change the ownership
-boundaries described in [the release guide](../docs/RELEASING.md#monorepo-ci-routing).
+boundaries described in [the release guide](../docs/CI.md#routing).
 
 | Boundary | Implemented change | Acceptance evidence |
 |---|---|---|

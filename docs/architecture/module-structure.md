@@ -269,7 +269,9 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
   `ControlPlane`, the engine owner thread, grid publication,
   `Runtime::connect`, and the one-shot `session::Session` that verbs ride
-  (ADR-0171). Rust API only. `control/organization.rs` is the
+  (ADR-0171). Rust API only. `release.rs` is the release model `phux update`
+  and Desktop share: channels, builds, the one asset name derivation, and
+  the channel manifest parser (ADR-0176). `control/organization.rs` is the
   organization replica: seeded by paged `GetOrganization`, advanced by
   journal events in sequence, refetched on a gap; it retries pending
   operations with the same operation id after reconnect, reports the

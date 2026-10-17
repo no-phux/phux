@@ -81,7 +81,7 @@ route, firewall, and credential failures.
 ## Working on the project
 
 [Contributor setup](./SETUP.md) · [Contributor guide](../CONTRIBUTING.md) ·
-[Documentation conventions](./CONVENTIONS.md) · [Release process](./RELEASING.md)
+[Documentation conventions](./CONVENTIONS.md) · [Release process](./RELEASING.md) · [CI](./CI.md)
 
 The public site at https://phux.sh is generated from this tree. Documentation
 is served at https://docs.phux.sh, with the primary documentation home at

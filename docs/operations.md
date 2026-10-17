@@ -77,9 +77,8 @@ Rendering helpers do not exit, count failures, or execute a remedy. Keep
 structured logic in its native language instead of launching another runtime
 just to print status.
 
-The three standalone installers embed the same POSIX helper. After changing
-it, run `bash scripts/sync-install-resolver.sh --write`; the install-surface
-gate checks freshness. No installer fetches or sources a second file.
+The served installer, `scripts/install.sh`, carries its own copy of the
+status format, because it must run standalone from `curl | sh`.
 `python3 -B scripts/test-output.py` verifies the shared stream and color rules
 in POSIX sh, Bash, Python, and Node, including real terminal destinations.
 
@@ -752,7 +751,7 @@ guarantees:
   same `@N`, same `phux agent log` history, same record sequence
   ([L1 §4.8](./spec/L1.md)). `phux update` is the user-facing verb
   built on that handoff: it resolves the release from the channel manifest
-  ([ADR-0175](./adr/0175-one-release-manifest-per-channel.md)), verifies the
+  ([ADR-0176](./adr/0176-the-release-pipeline.md)), verifies the
   download against its SHA-256, replaces the binaries atomically, then calls
   `phux upgrade`. Default is the latest `vX.Y.Z`; `phux channel next` follows
   green `main`, and `phux channel latest` returns to numbered releases. It writes only to installs it maintains — a Homebrew,

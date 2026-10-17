@@ -115,7 +115,6 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | doc system | `just docs-check` | same recipe |
 | generated glyph table | `just font-check` | same recipe |
 | e2e lane coverage | `just e2e-lane-check` | same recipe |
-| Homebrew formula | `just formula-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
 | unit tests | `NEXTEST_PROFILE=ci just test`, split across the `test` and `test (integration)` jobs by `PHUX_UNIT_PART=lib`/`integration` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test` (both halves); `just test-cargo` if nextest is unavailable |
 | workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
@@ -150,8 +149,7 @@ no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
 mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
 `just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
 workflow (run `just stress` locally; 2-core runners starve the current-thread
-runtime), commit-message linting, and the release/publish lanes
-(`just release-preflight <tag>` runs their offline parts).
+runtime), commit-message linting, and the release/publish lanes.
 
 `just milestone-check` is local-only and advisory: it asserts every non-closed
 bead carries exactly one of `rc-1.0` / `post-1.0` by querying the live Dolt
