@@ -202,12 +202,15 @@ class RunnerPolicyTests(unittest.TestCase):
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", prune)
-        self.assertIn("needs: [check, test, test-integration, e2e, uniffi, perf-icount]", prune)
+        self.assertIn("needs: [check, test-build, uniffi, perf-icount]", prune)
         self.assertIn("actions: write", prune)
         self.assertIn("keep_newest check linux-arm64-mbx-phux-check-", prune)
         self.assertIn("drop_all test-mbx linux-arm64-mbx-phux-test-", prune)
-        for lane in ("test", "test-integration", "e2e", "uniffi"):
-            self.assertIn(f"v0-rust-phux-{lane}-Linux-", prune)
+        for lane in ("test", "uniffi"):
+            self.assertIn(f"keep_newest {lane}-deps v0-rust-phux-{lane}-Linux-", prune)
+        # The run jobs restore no cache; their former entries go.
+        for lane in ("test-integration", "e2e"):
+            self.assertIn(f"drop_all {lane}-deps v0-rust-phux-{lane}-Linux-", prune)
         self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
         self.assertIn("drop_all sccache sccache", prune)
         self.assertIn("drop_all xcframework-deps v0-rust-mini-v1-ffi-xcframework-", prune)
@@ -237,13 +240,14 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("linux-arm64", lane)
         self.assertIn("linux-x64", lane)
 
-    def test_test_lanes_cache_dependencies_and_split_the_build(self):
-        """The test profile's restore and compile were the required check's long pole.
+    def test_test_lanes_compile_once_and_run_from_the_archive(self):
+        """The test profile compiles once; the run jobs only execute.
 
         Run 38503810705 spent 6m 28s unpacking a 6.1 GB mbx archive (27.8 GiB
-        on disk) and then 7m 51s compiling the workspace crates anyway. The
-        test lanes restore only third-party artifacts and split the workspace
-        compile across four runners, each keeping --workspace.
+        on disk), so the test build restores only third-party artifacts. Run
+        38982580303 then compiled the workspace crates three times in
+        parallel lanes (4m 52s, 3m 38s, 2m 21s); one archive build serves the
+        unit halves and e2e, which restore no build cache.
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
         self.assertIn("default: mbx", lane)
@@ -252,18 +256,35 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("shared-key: phux-${{ inputs.cache-lane }}", lane)
         self.assertIn('cache-on-failure: "true"', lane)
         ci = (WORKFLOWS / "ci.yml").read_text()
-        self.assertEqual(ci.count("          build-cache: deps\n"), 4)
+        # The test build and uniffi compile; the three run jobs do not.
+        self.assertEqual(ci.count("          build-cache: deps\n"), 2)
+        self.assertEqual(ci.count("          build-cache: none\n"), 3)
+        build = ci.split("\n  test-build:\n", 1)[1].split("\n  test:\n", 1)[0]
+        self.assertIn("cache-lane: test\n", build)
+        self.assertIn("just test-archive", build)
+        self.assertIn("uses: actions/upload-artifact@", build)
+        self.assertIn("compression-level: 0", build)
+        self.assertEqual(ci.count("needs: [changes, test-build]"), 3)
+        self.assertEqual(ci.count("uses: actions/download-artifact@"), 3)
+        self.assertEqual(ci.count("PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst"), 4)
         self.assertIn("PHUX_UNIT_PART: lib", ci)
         self.assertIn("PHUX_UNIT_PART: integration", ci)
         self.assertIn(
-            "needs: [changes, check, test, test-integration, e2e, uniffi, "
+            "needs: [changes, check, test-build, test, test-integration, e2e, uniffi, "
             "workflow-gate, integrations, perf-icount]",
             ci,
         )
         recipe = (ROOT / "just/test.just").read_text()
-        self.assertIn("lib) targets=(--lib --bins) ;;", recipe)
-        self.assertIn('select(((."required-features" // []) - $default) == [])', recipe)
-        self.assertIn("--workspace ${targets[@]+", recipe)
+        self.assertIn('lib) targets=(--lib --bins); kind="kind(lib) + kind(bin) + kind(proc-macro)" ;;', recipe)
+        self.assertIn('select(((((."required-features" // []) - $default) == []) | tostring) == $want)', recipe)
+        self.assertIn("source=(--workspace {{TEST_FEATURES}} ${targets[@]+", recipe)
+        self.assertIn("targets=(--lib --bins --tests)", recipe)
+        self.assertIn("cargo nextest archive --workspace {{TEST_FEATURES}}", recipe)
+        # One feature set: the unit pool, e2e, and stress share a build.
+        self.assertIn("source=(--workspace {{TEST_FEATURES}} {{E2E_TARGETS}})", recipe)
+        self.assertIn("{{TEST_FEATURES}} --features phux-server/stress", recipe)
+        self.assertIn('TEST_FEATURES := "--features phux-server/measure"', recipe)
+        self.assertNotIn("E2E_FEATURES", recipe)
 
     def test_failed_main_lane_saves_the_objects_archive(self):
         """A red assertion must not throw away a finished compile.

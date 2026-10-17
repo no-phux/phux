@@ -355,8 +355,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("setup-rust-lane", cheap_jobs)
         self.assertIn("nix shell --inputs-from .", cheap_jobs)
         self.assertIn("if: needs.changes.outputs.integrations_needed == 'true'", cheap_jobs)
-        # check and the four test-profile lanes.
-        self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 5)
+        # check, the test build, its three run jobs, and uniffi.
+        self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 6)
 
     def test_pr_unit_lane_uses_classifier_rdeps_filterset(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -394,11 +394,14 @@ class WorkflowTests(unittest.TestCase):
     def test_aggregate_rejects_failed_and_cancelled_new_lanes(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         javascript = workflow.split("node -e '", 1)[1].split("\n          '\n", 1)[0]
-        baseline = {name: {"result": "skipped"} for name in ("check", "test", "integrations")}
+        baseline = {
+            name: {"result": "skipped"} for name in ("check", "test-build", "test", "integrations")
+        }
         baseline.update({name: {"result": "success"} for name in ("changes", "workflow-gate")})
         for job, result, expected in [
             ("check", "skipped", 0), ("integrations", "success", 0),
             ("integrations", "failure", 1), ("test", "cancelled", 1),
+            ("test-build", "failure", 1), ("test-build", "skipped", 0),
             ("workflow-gate", "failure", 1), ("workflow-gate", "skipped", 1),
             ("changes", "skipped", 1), ("changes", "failure", 1),
         ]:

@@ -1,7 +1,8 @@
 # Root validation: compile-free guards, independently routed Node integrations,
-# and two Rust lanes. All compile/run phases retain their own target directory:
-# check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. Native
-# compilations, build scripts, and links restore from setup-rust-lane's mbx cache.
+# and the Rust lanes. check shares Clippy/rustdoc artifacts in its own target
+# directory; test build compiles the unit and e2e binaries once for the test
+# run jobs. check and perf-icount restore native compilations, build scripts,
+# and links from setup-rust-lane's mbx cache.
 # The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
@@ -191,52 +192,18 @@ jobs:
           path: ${{ runner.temp }}/phux-mbx-objects
           key: ${{ steps.setup.outputs.cache-key }}
 
-  # The test profile runs on four parallel runners instead of one serial
-  # job (run 38503810705, 21 minutes: 6m 28s cache restore, 7m 51s compile,
-  # then unit, uniffi, and e2e back to back). The workspace crates are about
-  # 1500 CPU-seconds of compile that every code PR pays, so the two halves of
-  # the unit pool, the e2e set, and the UniFFI binding each build only their
-  # own targets on top of a dependency-only cache (setup-rust-lane
-  # `build-cache: deps`). Every half keeps --workspace, so the feature union
-  # and the classifier's rdeps filterset are unchanged. Pushes keep the full
-  # pool even when the classifier says skip.
-  test:
-    name: test
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    needs: changes
-    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || (needs.changes.outputs.unit_mode != 'skip' && needs.changes.outputs.unit_mode != 'narrow'))
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup-rust-lane
-        id: setup
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          cache-lane: test
-          build-cache: deps
-      - name: lib and bin unit tests
-        env:
-          # PRs and merge groups use the classifier's rdeps filterset; empty
-          # means run everything.
-          PHUX_NEXTEST_FILTERSET: ${{ github.event_name != 'push' && needs.changes.outputs.test_filterset || '' }}
-          PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
-          PHUX_UNIT_PART: lib
-        run: |
-          nix develop -c bash -euo pipefail <<'EOF'
-          source scripts/ci/timed.sh
-          timed unit-lib env NEXTEST_PROFILE=ci just test
-          EOF
-      - name: lane signal
-        if: always()
-        env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
-          PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          PHUX_JUNIT: target/nextest/ci/junit.xml
-        run: bash scripts/ci/summarize-job.sh
-
-  # A tests/-only diff (unit_mode=narrow) runs here alone.
-  test-integration:
-    name: test (integration)
+  # One compile of the test profile serves the unit pool and e2e. Each lane
+  # compiling its own targets on top of the dependency-only cache cost three
+  # runners about 11 minutes of workspace compile per code PR (run
+  # 38982580303: 4m 52s lib, 3m 38s integration, 2m 21s e2e, much of it the
+  # same crates). This job compiles the union once into a nextest archive; the
+  # run jobs download it and only execute. TEST_FEATURES keeps one feature set
+  # for every lane, so the classifier's rdeps filterset selects the same tests.
+  # Pushes build the full pool even when the classifier says skip; a
+  # tests/-only diff (unit_mode=narrow) builds only the targets it touched,
+  # plus the e2e set when e2e runs.
+  test-build:
+    name: test build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     needs: changes
@@ -247,14 +214,97 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          cache-lane: test-integration
+          cache-lane: test
           build-cache: deps
+      - name: build the test archive
+        env:
+          PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
+          PHUX_UNIT_TARGETS: ${{ needs.changes.outputs.unit_targets }}
+          PHUX_E2E: ${{ github.event_name == 'push' && 'true' || needs.changes.outputs.e2e_needed }}
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+        run: |
+          nix develop -c bash -euo pipefail <<'EOF'
+          source scripts/ci/timed.sh
+          timed test-archive just test-archive
+          ls -l "$PHUX_TEST_ARCHIVE"
+          EOF
+      # The archive is already zstd; zip compression would only cost time.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phux-tests
+          path: ${{ runner.temp }}/phux-tests.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: lane signal
+        if: always()
+        env:
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
+          PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+        run: bash scripts/ci/summarize-job.sh
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    needs: [changes, test-build]
+    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || (needs.changes.outputs.unit_mode != 'skip' && needs.changes.outputs.unit_mode != 'narrow'))
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          build-cache: none
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: phux-tests
+          path: ${{ runner.temp }}
+      - name: lib and bin unit tests
+        env:
+          # PRs and merge groups use the classifier's rdeps filterset; empty
+          # means run everything.
+          PHUX_NEXTEST_FILTERSET: ${{ github.event_name != 'push' && needs.changes.outputs.test_filterset || '' }}
+          PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
+          PHUX_UNIT_PART: lib
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+        run: |
+          nix develop -c bash -euo pipefail <<'EOF'
+          source scripts/ci/timed.sh
+          timed unit-lib env NEXTEST_PROFILE=ci just test
+          EOF
+      - name: lane signal
+        if: always()
+        env:
+          PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          PHUX_JUNIT: target/nextest/ci/junit.xml
+        run: bash scripts/ci/summarize-job.sh
+
+  # A tests/-only diff (unit_mode=narrow) runs here alone.
+  test-integration:
+    name: test (integration)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    needs: [changes, test-build]
+    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode != 'skip')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          build-cache: none
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: phux-tests
+          path: ${{ runner.temp }}
       - name: integration tests
         env:
           PHUX_NEXTEST_FILTERSET: ${{ github.event_name != 'push' && needs.changes.outputs.test_filterset || '' }}
           PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
           PHUX_UNIT_TARGETS: ${{ needs.changes.outputs.unit_targets }}
           PHUX_UNIT_PART: integration
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
@@ -263,7 +313,6 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
@@ -271,8 +320,8 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    needs: changes
+    timeout-minutes: 20
+    needs: [changes, test-build]
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.e2e_needed == 'true')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -280,9 +329,14 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          cache-lane: e2e
-          build-cache: deps
+          build-cache: none
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: phux-tests
+          path: ${{ runner.temp }}
       - name: e2e and perf gates
+        env:
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
@@ -291,7 +345,6 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
@@ -396,7 +449,7 @@ jobs:
   # become skipped-green; only product lanes may be intentionally skipped.
   ci:
     name: ci
-    needs: [changes, check, test, test-integration, e2e, uniffi, workflow-gate, integrations, perf-icount]
+    needs: [changes, check, test-build, test, test-integration, e2e, uniffi, workflow-gate, integrations, perf-icount]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -439,7 +492,7 @@ jobs:
   # test archive out from under the 4.9 GB zig cache (2026-10-13).
   prune-build-cache:
     name: prune superseded build cache entries
-    needs: [check, test, test-integration, e2e, uniffi, perf-icount]
+    needs: [check, test-build, uniffi, perf-icount]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -479,11 +532,12 @@ jobs:
             done
           }
           keep_newest check linux-arm64-mbx-phux-check-
-          # The test lanes keep dependency-only rust-cache entries.
+          # The test build keeps one dependency-only rust-cache entry; the run
+          # jobs restore none.
           drop_all test-mbx linux-arm64-mbx-phux-test-
           keep_newest test-deps v0-rust-phux-test-Linux-
-          keep_newest test-integration-deps v0-rust-phux-test-integration-Linux-
-          keep_newest e2e-deps v0-rust-phux-e2e-Linux-
+          drop_all test-integration-deps v0-rust-phux-test-integration-Linux-
+          drop_all e2e-deps v0-rust-phux-e2e-Linux-
           keep_newest uniffi-deps v0-rust-phux-uniffi-Linux-
           keep_newest icount linux-x64-mbx-phux-icount-
           keep_newest android-ffi v0-rust-ffi-android-Linux-x64-

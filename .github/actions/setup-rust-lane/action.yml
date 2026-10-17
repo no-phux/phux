@@ -1,4 +1,7 @@
-# Shared setup for the Linux Rust compile lanes (ci.yml check/test, stress).
+# Shared setup for the Linux Rust lanes (ci.yml check/test build/test runs,
+# stress). The test run jobs take `build-cache: none`: they execute a
+# downloaded nextest archive and compile nothing, so they need the devshell's
+# tools but no build cache.
 #
 # This block was copy-pasted across three jobs, and the copies had already
 # drifted once (the stress lane carried no compiler cache while the ci lanes
@@ -46,10 +49,11 @@ inputs:
     description: Cachix auth token (secrets are not implicitly visible to composite actions).
     required: true
   cache-lane:
-    description: Build-cache series; one GitHub entry per lane (check, icount, test, e2e, uniffi).
-    required: true
+    description: Build-cache series; one GitHub entry per lane (check, icount, test, uniffi). Unused with build-cache none.
+    required: false
+    default: ""
   build-cache:
-    description: mbx (content-keyed objects store) or deps (third-party dependency artifacts only).
+    description: mbx (content-keyed objects store), deps (third-party dependency artifacts only), or none (a lane that runs prebuilt test binaries).
     required: false
     default: mbx
 
@@ -160,7 +164,7 @@ runs:
         # this stays in front of it.
         mbx gc --max-size 40GiB
 
-    # Dependency-only cache for the test lanes (test, e2e, uniffi). The mbx
+    # Dependency-only cache for the test build and uniffi lanes. The mbx
     # objects entry for the test profile grew to 6.1 GB compressed / 27.8 GiB
     # restored, and a pull request spent 6m 28s unpacking it (run
     # 38503810705) to save about 2.5 minutes of compile: every code PR
