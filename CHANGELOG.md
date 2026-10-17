@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.88.1](https://github.com/no-phux/phux/compare/v0.88.0...v0.88.1) (2026-10-17)
+
+
+### Performance
+
+* **runtime:** refill retired frame buffers a consumer has released ([82024cb](https://github.com/no-phux/phux/commit/82024cb91b0884212daf9d7ec3eeb4075a8c8a08))
+
 ## [0.88.0](https://github.com/no-phux/phux/compare/v0.87.0...v0.88.0) (2026-10-17)
 
 
