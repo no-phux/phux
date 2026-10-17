@@ -82,15 +82,16 @@ pub(super) struct PendingDirectory {
     pub(super) host: ListingHost,
 }
 
-/// The picker's modal title: the action, naming the host whenever it is
-/// not simply the attached server's. The directory itself is the footer
-/// status ([`picker_status`]), where a long path clips from the left
-/// instead of pushing the title off the border.
+/// The picker's modal title: the label its chord and palette row carry,
+/// naming the host whenever it is not simply the attached server's. The
+/// directory itself is the footer status ([`picker_status`]), where a
+/// long path clips from the left instead of pushing the title off the
+/// border.
 pub(super) fn picker_title(host: &ListingHost) -> String {
     match host {
-        ListingHost::Attached => "Go to directory".to_owned(),
-        ListingHost::Satellite(satellite) => format!("Go to directory on {satellite}"),
-        ListingHost::AttachedInsteadOf(_) => "Go to directory on this host".to_owned(),
+        ListingHost::Attached => "New tab in folder".to_owned(),
+        ListingHost::Satellite(satellite) => format!("New tab in folder on {satellite}"),
+        ListingHost::AttachedInsteadOf(_) => "New tab in folder on this host".to_owned(),
     }
 }
 
@@ -300,7 +301,7 @@ mod tests {
             ("go-to-directory", Some("/home/u/src"))
         );
         assert_eq!(items[3].secondary.as_deref(), Some("symlink"));
-        assert_eq!(picker_title(&ListingHost::Attached), "Go to directory");
+        assert_eq!(picker_title(&ListingHost::Attached), "New tab in folder");
         assert_eq!(
             picker_status(&result, &ListingHost::Attached, Some("/home/u")),
             "~"
@@ -367,7 +368,7 @@ mod tests {
 
         let items = picker_items(&result, &host);
 
-        assert_eq!(picker_title(&host), "Go to directory on edge");
+        assert_eq!(picker_title(&host), "New tab in folder on edge");
         assert_eq!(
             picker_status(&result, &host, Some("/home/e")),
             "/home/e",
@@ -417,7 +418,7 @@ mod tests {
         );
         assert_eq!(items[1].label, "Open a new tab here");
         assert!(items.iter().all(|item| arg(item, "host").is_none()));
-        assert_eq!(picker_title(&host), "Go to directory on this host");
+        assert_eq!(picker_title(&host), "New tab in folder on this host");
         assert_eq!(picker_status(&result, &host, None), "/home/hub");
     }
 

@@ -129,7 +129,7 @@ impl RenderOverlay for KillConfirmOverlay {
             .iter()
             .map(|line| Line::styled(line.clone(), text))
             .collect();
-        Modal::new(&self.theme, "Kill?".to_owned(), lines)
+        Modal::new(&self.theme, "Kill tab?".to_owned(), lines)
             .footer("", "⏎ kill · esc cancel")
             .render_into(self.modal_area(area, self.breakpoints), buf);
     }

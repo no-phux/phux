@@ -1290,7 +1290,7 @@ pub(in crate::attach) fn push_window_picker(
         return;
     }
     ctx.overlays
-        .push(Box::new(SelectList::new("Windows", items, ctx.theme)));
+        .push(Box::new(SelectList::new("Tabs", items, ctx.theme)));
 }
 
 /// Push the session picker (grouped by host when a hub satellite or another

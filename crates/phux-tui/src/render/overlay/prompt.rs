@@ -11,7 +11,7 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 use super::line_edit::LineEdit;
 use super::widgets::{Modal, centered_panel};
@@ -25,6 +25,10 @@ pub struct PromptOverlay {
     title: String,
     /// The action name to run on commit (e.g. `"rename-window"`).
     action: String,
+    /// What Enter does, for the border legend (`rename`, `create`).
+    verb: &'static str,
+    /// Dim text shown while the input is empty, saying what it wants.
+    placeholder: &'static str,
     /// The arg key the typed text is bound to (e.g. `"name"`).
     arg_key: String,
     /// Current input buffer and cursor.
@@ -44,6 +48,8 @@ impl PromptOverlay {
         Self {
             title: title.to_owned(),
             action: action.to_owned(),
+            verb: "ok",
+            placeholder: "",
             arg_key: arg_key.to_owned(),
             input: LineEdit::new(initial),
             theme: *theme,
@@ -55,25 +61,35 @@ impl PromptOverlay {
     /// name and styled with `theme`.
     #[must_use]
     pub fn rename_window(current_name: &str, theme: &Theme) -> Self {
-        Self::new("Rename tab", "rename-window", "name", current_name, theme)
+        Self {
+            verb: "rename",
+            ..Self::new("Rename tab", "rename-window", "name", current_name, theme)
+        }
     }
 
     /// The `rename-session` prompt, pre-filled with the current name.
     #[must_use]
     pub fn rename_session(current_name: &str, theme: &Theme) -> Self {
-        Self::new(
-            "Rename session",
-            "rename-session",
-            "name",
-            current_name,
-            theme,
-        )
+        Self {
+            verb: "rename",
+            ..Self::new(
+                "Rename session",
+                "rename-session",
+                "name",
+                current_name,
+                theme,
+            )
+        }
     }
 
     /// The `new-session` prompt; committing re-attaches to the new session.
     #[must_use]
     pub fn new_session(theme: &Theme) -> Self {
-        Self::new("New session", "new-session", "name", "", theme)
+        Self {
+            verb: "create",
+            placeholder: "a name for it",
+            ..Self::new("New session", "new-session", "name", "", theme)
+        }
     }
 
     fn committed_action(&self) -> ResolvedAction {
@@ -102,9 +118,16 @@ impl PromptOverlay {
 impl RenderOverlay for PromptOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
-        let line = Line::from(self.input.spans(Style::default().fg(self.theme.text)));
+        let mut spans = self.input.spans(Style::default().fg(self.theme.text));
+        if self.input.as_str().is_empty() && !self.placeholder.is_empty() {
+            spans.push(Span::styled(
+                self.placeholder,
+                Style::default().fg(self.theme.dim),
+            ));
+        }
+        let line = Line::from(spans);
         Modal::new(&self.theme, self.title.clone(), vec![line])
-            .footer("", "⏎ ok · esc")
+            .footer("", format!("⏎ {} · esc", self.verb))
             .render_into(modal_area, buf);
     }
 
@@ -165,6 +188,36 @@ mod tests {
     fn typ(p: &mut PromptOverlay, ch: char) -> OverlayCommand {
         // PhysicalKey is irrelevant for text input; the buffer reads `text`.
         p.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())))
+    }
+
+    /// The border legend names what Enter does in each prompt.
+    #[test]
+    fn the_legend_names_the_verb() {
+        let rendered = |p: &PromptOverlay| {
+            let area = Rect::new(0, 0, 60, 10);
+            let mut buf = Buffer::empty(area);
+            p.render(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_owned())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let theme = Theme::default();
+        assert!(rendered(&PromptOverlay::rename_window("a", &theme)).contains("⏎ rename · esc"));
+        assert!(rendered(&PromptOverlay::rename_session("a", &theme)).contains("⏎ rename · esc"));
+        let fresh = rendered(&PromptOverlay::new_session(&theme));
+        assert!(fresh.contains("⏎ create · esc"));
+        assert!(fresh.contains("a name for it"), "placeholder:\n{fresh}");
+        let mut typed = PromptOverlay::new_session(&theme);
+        typ(&mut typed, 'x');
+        assert!(
+            !rendered(&typed).contains("a name for it"),
+            "the placeholder goes with the first character"
+        );
     }
 
     #[test]

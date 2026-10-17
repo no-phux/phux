@@ -35,7 +35,7 @@ impl PendingOverlay {
     pub fn listing(path: &str, request_id: u32, theme: &Theme) -> Self {
         let shown = if path.is_empty() { "~" } else { path };
         Self {
-            title: "Go to directory".to_owned(),
+            title: "New tab in folder".to_owned(),
             line: format!("Listing {shown}\u{2026}"),
             request_id,
             theme: *theme,
@@ -66,9 +66,6 @@ impl RenderOverlay for PendingOverlay {
         // The same box as a toast: half the viewport wide, only as tall as
         // its one line needs, so a placeholder is not a mostly empty frame.
         let panel = centered_panel(area, 5, 32, 6, self.breakpoints);
-        if self.breakpoints.is_row_starved(area.height) {
-            return Some(panel);
-        }
         let height = self.modal().height_for(panel.width).min(panel.height);
         let y = area.y + area.height.saturating_sub(height) / 2;
         Some(Rect { y, height, ..panel })
@@ -134,7 +131,7 @@ mod tests {
             OverlayCommand::Dismiss
         );
         assert_eq!(pending.line, "Listing ~\u{2026}");
-        assert_eq!(pending.title, "Go to directory");
+        assert_eq!(pending.title, "New tab in folder");
     }
 
     #[test]
@@ -154,7 +151,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Go to directory"), "title:\n{text}");
+        assert!(text.contains("New tab in folder"), "title:\n{text}");
         assert!(text.contains("esc cancel"), "legend:\n{text}");
     }
 
