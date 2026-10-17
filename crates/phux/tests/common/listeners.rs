@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub use phux_protocol::wire::RemoteListenerTransport;
+pub use phux_protocol::wire::{RemoteListenerTransport, RemoteListenersReport};
 
 /// How long a freshly spawned server has to answer `GET_STATE`.
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -28,6 +28,25 @@ pub const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
 /// retrying until the server answers. Panics when it never answers, or when
 /// that listener was not configured or did not bind.
 pub fn bound_listener_addr(socket: &Path, transport: RemoteListenerTransport) -> SocketAddr {
+    let report = listener_report(socket);
+    let slot = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == transport)
+        .unwrap_or_else(|| panic!("no {transport} listener in {report:?}"));
+    assert!(
+        slot.bound,
+        "the {transport} listener did not bind: {slot:?}"
+    );
+    slot.addr
+        .as_deref()
+        .and_then(|addr| addr.parse().ok())
+        .unwrap_or_else(|| panic!("the {transport} listener reported no address: {slot:?}"))
+}
+
+/// The remote-listener report of the server at `socket`, retrying until the
+/// server answers. Panics when it never answers or reports none.
+pub fn listener_report(socket: &Path) -> RemoteListenersReport {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -44,21 +63,8 @@ pub fn bound_listener_addr(socket: &Path, transport: RemoteListenerTransport) ->
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let report = view
-        .snapshot()
+    view.snapshot()
         .listeners()
-        .unwrap_or_else(|| panic!("the server reported no remote listeners"));
-    let slot = report
-        .listeners
-        .iter()
-        .find(|slot| slot.transport == transport)
-        .unwrap_or_else(|| panic!("no {transport} listener in {report:?}"));
-    assert!(
-        slot.bound,
-        "the {transport} listener did not bind: {slot:?}"
-    );
-    slot.addr
-        .as_deref()
-        .and_then(|addr| addr.parse().ok())
-        .unwrap_or_else(|| panic!("the {transport} listener reported no address: {slot:?}"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the server reported no remote listeners"))
 }

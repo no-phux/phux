@@ -597,9 +597,11 @@ fn live_listeners(
     Err(format!(
         "the server at {} {NO_BOUND_LISTENER}{why}, so nothing would accept a \
          credential and none was minted.\n  \
-         give it one: restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
-         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or join an overlay network so the default-profile \
-         server auto-binds one (`phux upgrade` restarts it with panes intact); \
+         give it one: first set `[policy] mode = \"paired\"` in config.toml (a remote \
+         listener serves only enrolled clients, and with no mode the server binds none), \
+         then restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
+         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or let the default-profile server auto-bind \
+         one on an overlay network (`phux upgrade` re-binds with panes intact); \
          `phux doctor` names the cause",
         socket.display()
     ))

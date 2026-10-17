@@ -1079,7 +1079,16 @@ The server reads it once at start
   `mode = "paired"` to enforce that authority, or unset the variables. A
   registry at the default location, such as one `phux host add` enrolled
   into, refuses nothing. The retired `PHUX_WORKLOAD_MTLS` refuses to start
-  in every mode and names `[policy] mode`.
+  in every mode and names `[policy] mode`. On a default-profile server with
+  no mode, the overlay listener is not auto-bound, and the server log says
+  so once at info.
+- **An upgrade into a refused mode keeps the panes.** `phux upgrade` or
+  `phux update` into a build whose posture check refuses the configuration
+  does not exit: the resumed server runs `local`, leaves every remote
+  listener and connector unbound, logs the refusal, and `phux doctor`
+  reports each listener as `policy_mode_refused`. Set the mode, then
+  `phux upgrade` again to bind them with the panes intact. Only a cold start
+  (a restart, or a service unit) refuses.
 - **`local`** admits the owner's Unix socket only, from the serving user's
   uid. A configured remote listener (`--listen`, `--quic`, `--webtransport`,
   their environment variables, or a `[[connector]]`) refuses to start the

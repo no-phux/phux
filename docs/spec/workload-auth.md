@@ -744,6 +744,14 @@ non-UDS listener is a startup error. `paired` with missing, malformed, or unsafe
 CA or registry material is a startup error. Runtime corruption after a
 successful start applies the empty-snapshot revocation rule in §7.
 
+A server resumed across a graceful upgrade SHALL NOT exit for a mode error:
+the previous process is gone, and exiting would end every terminal it handed
+over. It runs `local` with no non-UDS listener or relay connector bound, and
+reports each listener it left unbound with `disabled_reason:
+"policy_mode_refused"` ([L1.md](./L1.md) §9.1 remote-listeners report). A
+retired-setting error alone is ignored when the rest of the configuration
+resolves.
+
 <!-- impl-status: shipped; probe: PolicyPosture,UnsetWithRemoteListener,UnsetWithWorkloadAuthority,RetiredWorkloadMtlsEnv -->
 > **Status: shipped (ADR-0179).** The reference server reads the mode from
 > `[policy] mode` and enforces `local`, `paired`, and every startup error
@@ -758,7 +766,9 @@ successful start applies the empty-snapshot revocation rule in §7.
 > overlay listener is auto-bound only under `paired`, and `local` refuses
 > `OPEN_LISTENER`. An embedder that injects its own engine through
 > `ServerConfig::policy_engine` (ADR-0072) decides every HELLO itself; `phux
-> server` never does, so no configuration reaches that.
+> server` never does, so no configuration reaches that. A `phux upgrade`
+> into a refused configuration keeps its panes as above and logs the
+> refusal; setting the mode and upgrading again binds the listeners.
 
 TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports

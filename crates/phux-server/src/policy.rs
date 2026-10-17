@@ -675,6 +675,17 @@ pub struct PostureInputs {
     pub embedder_engine: bool,
 }
 
+/// What [`PolicyPosture::resume_fallback`] decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeFallback {
+    /// The posture the resumed server runs.
+    pub posture: PolicyPosture,
+    /// Why a cold start would have refused.
+    pub refusal: PostureError,
+    /// Whether every remote listener and relay connector stays unbound.
+    pub remote_dropped: bool,
+}
+
 impl PolicyPosture {
     /// Decide the posture (`docs/spec/workload-auth.md` §8). With no mode
     /// the server is `local`, and anything that would reach past the owner's
@@ -700,6 +711,34 @@ impl PolicyPosture {
             }
             None if inputs.remote_listener => Err(PostureError::UnsetWithRemoteListener),
             Some(phux_config::PolicyMode::Local) | None => Ok(Self::Local),
+        }
+    }
+
+    /// The posture a resumed image runs when [`Self::resolve`] refused
+    /// `inputs` with `refusal` (ADR-0032 graceful upgrade).
+    ///
+    /// Exiting there would end every pane the previous image handed over, so
+    /// a resume fails closed instead of failing to start: the retired
+    /// `PHUX_WORKLOAD_MTLS` is reported and ignored, and when the rest still
+    /// refuses, the server runs `local` with every remote entry point left
+    /// unbound. A cold start never takes this path.
+    #[must_use]
+    pub const fn resume_fallback(inputs: PostureInputs, refusal: PostureError) -> ResumeFallback {
+        let without_env = PostureInputs {
+            retired_workload_mtls_env: false,
+            ..inputs
+        };
+        if let Ok(posture) = Self::resolve(without_env) {
+            return ResumeFallback {
+                posture,
+                refusal,
+                remote_dropped: false,
+            };
+        }
+        ResumeFallback {
+            posture: Self::Local,
+            refusal,
+            remote_dropped: inputs.remote_listener,
         }
     }
 

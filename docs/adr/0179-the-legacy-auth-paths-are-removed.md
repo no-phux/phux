@@ -38,9 +38,10 @@ Phones now enroll; the owner decided (2026-10-17) to remove all of it.
    (`UnsetWithRemoteListener`) naming `[policy] mode = "paired"`, as a named
    workload authority location already was. The overlay listener auto-binds
    only under `paired`. `PermissivePolicy` is deleted; the default engine is
-   the `local` `ScopedPolicy`. `phux service install` with a remote listener
-   (and so `phux host add`) writes `mode = "paired"` when none is set and
-   refuses `local`, so the unit it installs can start.
+   the `local` `ScopedPolicy`. `phux service install` for a server that
+   opens a remote listener or `[[connector]]` (and so `phux host add`)
+   writes `mode = "paired"` when none is set and refuses `local`, so the
+   unit it installs can start.
 2. **One switch.** `PHUX_WORKLOAD_MTLS` is retired: a server that sees it
    refuses to start (`RetiredWorkloadMtlsEnv`) and names `[policy] mode`.
 3. **No legacy store.** A token store of anonymous lines is refused as
@@ -62,6 +63,13 @@ Phones now enroll; the owner decided (2026-10-17) to remove all of it.
    whose listeners require no certificate. `phux server` never injects one,
    so no configuration reaches it. Transport and routing tests and the
    browser demo server use it (`phux_server_testkit::embedder`).
+7. **An upgrade never exits on its posture.** A server resumed across
+   `phux upgrade` (ADR-0032) whose configuration a cold start refuses
+   keeps every pane: it ignores a retired `PHUX_WORKLOAD_MTLS` when the
+   rest resolves, and otherwise runs `local` with every remote listener
+   and connector unbound, logging the refusal and reporting each listener
+   as `policy_mode_refused` for `phux doctor`. Setting the mode and
+   upgrading again binds them. A cold start still refuses.
 
 The bearer token stays what ADR-0116 made it: outer admission inside
 `paired`, never authority. No wire byte changes.
@@ -104,6 +112,8 @@ The bearer token stays what ADR-0116 made it: outer admission inside
 
 - Supersedes in part [ADR-0153](./0153-clients-pin-the-workload-ca.md)
   (items 1, 4, 5) and [ADR-0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
-  (item 5's plain stream outside `paired`).
+  (item 5's plain stream outside `paired`), and
+  [ADR-0031](./0031-remote-consumer-auth-and-encryption.md) (the legacy
+  token-store migration).
 - [ADR-0116](./0116-workload-auth-is-mtls.md), [ADR-0072](./0072-prune-policy-vocabulary-keep-the-seam.md).
 - `docs/spec/workload-auth.md` §2, §8, §8.2.

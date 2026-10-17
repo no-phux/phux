@@ -821,31 +821,40 @@ fn remote_listeners_check(
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let needs_restart = token_store_ok
-        && unhealthy.iter().any(|slot| {
-            slot.disabled_reason
-                == Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed)
-        });
-    let hint = if needs_restart {
-        "the credential store loads now, but this server disabled the listeners at boot — \
-         restart or `phux upgrade` so they re-bind"
-            .to_owned()
-    } else if unhealthy.iter().any(|slot| {
-        slot.disabled_reason
-            == Some(phux_protocol::wire::ListenerDisabledReason::TokenStoreLoadFailed)
-    }) {
-        "fix the credential store (remove a pre-versioned file and pair again), \
-         then restart or `phux upgrade` the server"
-            .to_owned()
-    } else {
-        "check the server log for the bind error, then restart or `phux upgrade` after fixing it"
-            .to_owned()
-    };
     Check::fail(
         "remote-listeners",
         format!("remote surface down: {detail}"),
-        hint,
+        remote_listeners_hint(&unhealthy, token_store_ok),
     )
+}
+
+/// The remedy for the listeners `unhealthy` names, most specific cause first.
+fn remote_listeners_hint(
+    unhealthy: &[&phux_protocol::wire::RemoteListenerSlot],
+    token_store_ok: bool,
+) -> &'static str {
+    use phux_protocol::wire::ListenerDisabledReason;
+    let any = |reason: ListenerDisabledReason| {
+        unhealthy
+            .iter()
+            .any(|slot| slot.disabled_reason == Some(reason))
+    };
+    if any(ListenerDisabledReason::PolicyModeRefused) {
+        return "the server resumed across an upgrade with no [policy] mode admitting a remote \
+                listener, and kept its panes by leaving them unbound: set [policy] mode = \
+                \"paired\" in config.toml (or remove the listener), then `phux upgrade` so they \
+                bind with panes intact";
+    }
+    if any(ListenerDisabledReason::TokenStoreLoadFailed) {
+        return if token_store_ok {
+            "the credential store loads now, but this server disabled the listeners at boot — \
+             restart or `phux upgrade` so they re-bind"
+        } else {
+            "fix the credential store (remove a pre-versioned file and pair again), \
+             then restart or `phux upgrade` the server"
+        };
+    }
+    "check the server log for the bind error, then restart or `phux upgrade` after fixing it"
 }
 
 /// Does traffic to this server's routable wss listener actually reach it?
@@ -1057,6 +1066,11 @@ fn remote_reachable_check(
                      load at boot — fix the store, then restart or `phux upgrade`"
                         .to_owned()
                 }
+                Some(phux_protocol::wire::ListenerDisabledReason::PolicyModeRefused) => {
+                    "the running server left wss unbound because no [policy] mode admits it — \
+                     set [policy] mode = \"paired\" in config.toml, then `phux upgrade`"
+                        .to_owned()
+                }
                 Some(reason) => {
                     format!(
                         "the running server reports wss disabled ({}) — check the server log, \
@@ -1064,8 +1078,9 @@ fn remote_reachable_check(
                         reason.as_str()
                     )
                 }
-                None => "expected remote access? run `phux pair` — the listener only auto-binds \
-                     once a device credential exists"
+                None => "expected remote access? set [policy] mode = \"paired\" in config.toml — \
+                     with no mode the server binds no remote listener, configured or \
+                     auto-bound — then `phux pair`"
                     .to_owned(),
             };
             Check::warn(
@@ -1568,6 +1583,35 @@ mod tests {
             Status::Pass
         );
         assert_eq!(remote_listeners_check(None, true).status, Status::Pass);
+    }
+
+    /// A listener a resumed server left unbound for its policy names the
+    /// mode as the remedy, not a bind error (ADR-0179).
+    #[test]
+    fn a_policy_refused_listener_names_the_mode() {
+        use phux_protocol::wire::{
+            ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport,
+            RemoteListenersReport,
+        };
+
+        let report =
+            RemoteListenersReport::new().with_listeners(vec![RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Quic,
+                Some("0.0.0.0:8788".into()),
+                ListenerDisabledReason::PolicyModeRefused,
+            )]);
+        let check = remote_listeners_check(Some(&report), true);
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("policy_mode_refused"),
+            "{}",
+            check.detail
+        );
+        let hint = check.hint.expect("hint");
+        assert!(
+            hint.contains("mode = \"paired\"") && hint.contains("phux upgrade"),
+            "{hint}"
+        );
     }
 
     /// `workload-authority` fingerprints the CA and reports the registry

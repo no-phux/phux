@@ -1951,6 +1951,10 @@ fn posture_follows_the_mode_and_the_listeners() {
         // An embedder's own engine with no mode owns the decision.
         (None, true, false, true, Ok(PolicyPosture::Embedded)),
         (None, false, true, true, Ok(PolicyPosture::Embedded)),
+        // A mode wins over an embedder's engine: the posture follows the
+        // mode, and the runtime keeps the injected engine authorizing.
+        (Some(Paired), false, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Local), false, false, true, Ok(PolicyPosture::Local)),
     ];
     for (mode, remote, located, embedded, want) in cases {
         let inputs = PostureInputs {
@@ -1980,6 +1984,47 @@ fn posture_follows_the_mode_and_the_listeners() {
     assert!(!PolicyPosture::Local.requires_workload_mtls());
     assert!(!PolicyPosture::Embedded.requires_workload_mtls());
     assert!(!PolicyPosture::Embedded.is_local());
+}
+
+/// A resumed image never exits on its posture (ADR-0032): the retired
+/// variable is ignored when the rest resolves, and anything else still
+/// refused runs `local` with the remote entry points unbound.
+#[test]
+fn a_resume_falls_back_instead_of_refusing() {
+    use phux_config::PolicyMode::{Local, Paired};
+    // (mode, retired env, remote listener, workload location) -> (posture, dropped)
+    let cases = [
+        (None, false, true, false, PolicyPosture::Local, true),
+        (None, true, true, false, PolicyPosture::Local, true),
+        (
+            Some(Paired),
+            true,
+            true,
+            false,
+            PolicyPosture::Paired,
+            false,
+        ),
+        (Some(Local), true, false, false, PolicyPosture::Local, false),
+        (Some(Local), false, true, false, PolicyPosture::Local, true),
+        (None, false, false, true, PolicyPosture::Local, false),
+        (None, true, false, false, PolicyPosture::Local, false),
+    ];
+    for (mode, retired, remote, located, posture, dropped) in cases {
+        let inputs = PostureInputs {
+            mode,
+            retired_workload_mtls_env: retired,
+            remote_listener: remote,
+            workload_authority_configured: located,
+            embedder_engine: false,
+        };
+        let refusal = PolicyPosture::resolve(inputs).expect_err("a cold start refuses");
+        let fallback = PolicyPosture::resume_fallback(inputs, refusal);
+        assert_eq!(
+            (fallback.posture, fallback.remote_dropped, fallback.refusal),
+            (posture, dropped, refusal),
+            "{mode:?} retired={retired} remote={remote} located={located}"
+        );
+    }
 }
 
 #[test]
