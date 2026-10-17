@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.93.0](https://github.com/no-phux/phux/compare/v0.92.0...v0.93.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** project server-held approvals into the Inbox ([#1542](https://github.com/no-phux/phux/issues/1542)) ([8fa3405](https://github.com/no-phux/phux/commit/8fa34057e0159880af61cce3fc25e3a3df4f4e39))
+
 ## [0.92.0](https://github.com/no-phux/phux/compare/v0.91.0...v0.92.0) (2026-10-17)
 
 
