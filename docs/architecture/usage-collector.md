@@ -18,6 +18,12 @@ a collector, reads a usage snapshot, or defines `[usage]`. Three
 choices are still open for Patrick; they are the Open decisions
 section of that ADR. The answers below are the draft.
 
+[ADR-0177](../adr/0177-non-terminal-resources-have-declared-producers.md),
+also Proposed, would replace this page's Lifecycle, Delivery, and
+"Who can see the reading" sections: the collector becomes the usage
+feed's declared producer. Its other sections carry over;
+[declared-producers.md](./declared-producers.md) lists what changes.
+
 ## Ownership
 
 | Fact | Owner |
