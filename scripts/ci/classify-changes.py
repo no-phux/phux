@@ -51,8 +51,10 @@ ROUTES = DOC_INPUTS + (
       "scripts/ci/agent-integrations.sh", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),
     # The golden release manifests (ADR-0175) are include_str! inputs of the
-    # updater's tests; the installers that also read them route on their own.
-    (("scripts/fixtures/release-manifest/*",), RUST),
+    # root and desktop updaters' tests; the installers that also read them
+    # route on their own. classify-changes-test.py checks every desktop file
+    # input outside clients/desktop against this table.
+    (("scripts/fixtures/release-manifest/*",), RUST | {"desktop"}),
     # Browser Rust consumers plus the live demo server and local-owner CLI
     # fixture dependency closures (including Cargo dev dependencies). The test checks this
     # against manifests so a new local dependency cannot silently lose coverage.
@@ -106,6 +108,11 @@ ROUTES = DOC_INPUTS + (
     (("scripts/build-ffi-xcframework.sh", "scripts/build-mobile-ffi-android.sh",
       "scripts/ci/setup-android-ndk.sh"), set()),
 )
+# A lane's own workflow runs its lane, so an edit to it is proven on the PR
+# that makes it. Checked before the compile-free WORKFLOWS short-circuit.
+SELF_ROUTES = (
+    ((".github/workflows/desktop-test.yml",), {"desktop"}),
+)
 WORKFLOWS = (
     ".github/workflows/*.yml", ".github/workflows/*.yaml",
     ".github/actions/*", ".github/actionlint.yaml", ".github/dependabot.yml",
@@ -144,6 +151,9 @@ def is_doc(path):
 
 
 def surfaces_for(path):
+    for patterns, surfaces in SELF_ROUTES:
+        if matches(path, patterns):
+            return set(surfaces)
     if is_doc(path) or matches(path, WORKFLOWS):
         return set()
     selected = set()
