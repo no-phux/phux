@@ -110,9 +110,11 @@ pub(in crate::attach) const fn rect_contains(rect: Rect, x: u16, y: u16) -> bool
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// Draw the box border with `title` set into its top edge, in the focused
-/// divider tone. Clears the interior only through the pane paint that
-/// follows; the caller paints the Terminal into `inner` afterwards.
+/// Draw the box border with `title` set into its top edge, in the modal
+/// tones (`border` for the frame, `accent` for the title) so it reads as
+/// the same kind of floating panel as a picker. Clears the interior only
+/// through the pane paint that follows; the caller paints the Terminal
+/// into `inner` afterwards.
 ///
 /// # Errors
 /// Forwards any `io::Error` from `out`.
@@ -128,7 +130,7 @@ pub(in crate::attach) fn paint_floating_frame<W: Write>(
     }
     let inner_w = usize::from(outer.w - 2);
     out.write_all(b"\x1b[0m")?;
-    crate::render::write_sgr_color(out, theme.divider_focus, true)?;
+    crate::render::write_sgr_color(out, theme.border, true)?;
     crate::render::write_sgr_color(out, theme.surface, false)?;
     let label = if title.is_empty() || inner_w < 4 {
         String::new()
@@ -136,9 +138,15 @@ pub(in crate::attach) fn paint_floating_frame<W: Write>(
         format!(" {} ", crate::render::clip_text(title, inner_w - 2))
     };
     let label_w = crate::render::display_width(&label);
-    let top = format!("╭{label}{}╮", "─".repeat(inner_w.saturating_sub(label_w)));
     crate::attach::render::write_cup(out, outer.y, outer.x)?;
-    out.write_all(top.as_bytes())?;
+    out.write_all("╭".as_bytes())?;
+    if !label.is_empty() {
+        crate::render::write_sgr_color(out, theme.accent, true)?;
+        out.write_all(label.as_bytes())?;
+        crate::render::write_sgr_color(out, theme.border, true)?;
+    }
+    let rule = format!("{}╮", "─".repeat(inner_w.saturating_sub(label_w)));
+    out.write_all(rule.as_bytes())?;
     for row in 1..outer.h - 1 {
         crate::attach::render::write_cup(out, outer.y + row, outer.x)?;
         out.write_all("│".as_bytes())?;
@@ -207,7 +215,25 @@ mod tests {
         let frame = floating_box(rect(0, 0, 30, 10));
         paint_floating_frame(&mut out, frame, "Agent Board", &Theme::default()).expect("paint");
         let text = String::from_utf8(out).expect("utf8");
-        assert!(text.contains("╭ Agent Board ─"), "{text:?}");
+        let glyphs: String = {
+            // Drop the SGR runs that colour the title apart from the rule.
+            let mut s = String::new();
+            let mut chars = text.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' && chars.peek() == Some(&'[') {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if ('@'..='~').contains(&n) {
+                            break;
+                        }
+                    }
+                } else {
+                    s.push(c);
+                }
+            }
+            s
+        };
+        assert!(glyphs.contains("╭ Agent Board ─"), "{glyphs:?}");
         assert!(text.contains('╮') && text.contains('╰') && text.contains('╯'));
         assert_eq!(
             text.matches('│').count(),
