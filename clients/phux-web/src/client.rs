@@ -1466,16 +1466,21 @@ impl App {
     }
 
     /// Scroll the current match into view, if it is off screen, and repaint.
-    fn reveal_current_match(&self) {
+    /// Returns whether the viewport moved, so the caller can demand older
+    /// history once the borrow is released.
+    fn reveal_current_match(&self) -> bool {
         let current = self.search.borrow().current();
+        let mut moved = false;
         if let (Some(found), Some(terminal)) = (current, self.session.terminal()) {
             let bar = terminal.scrollbar();
             if let Some(top) = reveal_row(found.row, bar.offset, bar.len, bar.total) {
                 terminal.scroll_to_row(top);
                 self.clear_selection();
+                moved = true;
             }
         }
         self.request_paint();
+        moved
     }
 
     /// Row-major indices of the selected cells, empty without a selection.
@@ -3443,9 +3448,6 @@ fn typed_keys(app: &Rc<RefCell<App>>, mut keys: Vec<KeyEvent>) -> Vec<InputEvent
     keys.into_iter().map(InputEvent::Key).collect()
 }
 
-/// Send input the user typed or pointed: as [`send_events`], and when any
-/// was sent, return a scrolled-back view to the live screen and end the
-/// selection, as in a local terminal.
 /// Request older history when a scroll nears the oldest loaded row; a
 /// transport failure closes the connection.
 fn demand_history(app: &Rc<RefCell<App>>) {
@@ -3457,6 +3459,9 @@ fn demand_history(app: &Rc<RefCell<App>>) {
     }
 }
 
+/// Send input the user typed or pointed: as [`send_events`], and when any
+/// was sent, return a scrolled-back view to the live screen and end the
+/// selection, as in a local terminal.
 fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
     let sent = send_events(app, events);
     let app = app.borrow();
