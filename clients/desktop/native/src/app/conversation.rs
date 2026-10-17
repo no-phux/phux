@@ -203,12 +203,12 @@ impl Desk {
     fn conversation_binding(&self, placement: &str) -> Option<Binding> {
         let terminal = self.placement(placement)?.terminal_id.as_ref()?;
         let connection = &self.link.as_ref()?.connection;
+        let conversation = connection.conversation(terminal)?;
         Some(Binding {
             server: connection.server_id()?,
             terminal: terminal.clone(),
-            session: connection.conversation(terminal)?.resource.clone(),
-            activation: connection
-                .conversation(terminal)?
+            session: conversation.resource.clone(),
+            activation: conversation
                 .native
                 .as_ref()
                 .map(|view| view.activation.clone()),
