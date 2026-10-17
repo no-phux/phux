@@ -499,7 +499,13 @@ fn the_titlebar_toggle_switches_to_a_plain_terminal_and_back(cx: &mut TestAppCon
     let strip = crate::settings::skin::TERMINAL.chrome.titlebar;
     let tab = cx.debug_bounds("tab-fixture-b").expect("two tabs show");
     assert!(tab.bottom() <= px(strip));
-    run(&desk, "plain-terminal", cx);
+    // The way back is the same button, revealed by hovering the strip.
+    let toggle = cx.debug_bounds("skin-toggle").expect("toggle in the strip");
+    assert!(toggle.bottom() <= px(strip));
+    cx.simulate_mouse_move(toggle.center(), None, Modifiers::none());
+    draw(cx);
+    cx.simulate_click(toggle.center(), Modifiers::none());
+    draw(cx);
     desk.read_with(cx, |desk, _| {
         assert!(!desk.prefs.plain);
         assert_eq!(desk.skin().id, "glass");
