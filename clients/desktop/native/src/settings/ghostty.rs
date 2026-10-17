@@ -1,7 +1,8 @@
 //! Ghostty config: font, colour, padding, and keybinds mapped onto this app.
 //!
-//! Parsing is total. Unknown keys are ignored; a malformed line or a value a
-//! known key rejects is skipped with a [`Diagnostic`], and every other line still
+//! Parsing is total. Unknown keys are ignored. A malformed line is skipped
+//! with a [`Diagnostic`] in `diagnostics`; a value Ghostty accepts but this app
+//! cannot represent is skipped with one in `unsupported`. Every other line still
 //! applies. Later lines win. The theme file is read first so the config's own
 //! lines override it. Each applied key and bind keeps the file and line that set it.
 
@@ -55,8 +56,13 @@ pub struct GhosttyConfig {
     /// Every applied `keybind` line in config order, unbinds included. Later
     /// entries for the same chord win; see [`super::keymap::keymap_conflicts`].
     pub binds: Vec<Bind>,
-    /// Lines skipped because they are malformed or a known key rejects the value.
+    /// Lines skipped because they are malformed: no `=`, or a value Ghostty
+    /// itself would not parse.
     pub diagnostics: Vec<Diagnostic>,
+    /// Valid Ghostty lines for a key this app reads, with a value it cannot
+    /// represent (a palette slot above 15, a named colour, a pixel cell
+    /// adjustment, a value outside this app's range).
+    pub unsupported: Vec<Diagnostic>,
 }
 
 /// The file and 1-based line a Ghostty value came from.
@@ -140,6 +146,7 @@ impl Default for GhosttyConfig {
             origins: HashMap::new(),
             binds: Vec::new(),
             diagnostics: Vec::new(),
+            unsupported: Vec::new(),
         }
     }
 }
@@ -196,10 +203,15 @@ fn parse_line(config: &mut GhosttyConfig, font_reset: &mut bool, line: &str, ori
         Applied::Yes => {
             config.origins.insert(key.to_owned(), origin.clone());
         }
-        Applied::Rejected => config.diagnostics.push(Diagnostic {
+        Applied::Malformed => config.diagnostics.push(Diagnostic {
             origin: origin.clone(),
             text: line.to_owned(),
-            reason: "value is malformed or out of range",
+            reason: "value is malformed",
+        }),
+        Applied::Unsupported(reason) => config.unsupported.push(Diagnostic {
+            origin: origin.clone(),
+            text: line.to_owned(),
+            reason,
         }),
         Applied::Unknown => {}
     }
@@ -226,58 +238,59 @@ fn set_font_family(
 }
 
 /// Whether a line's key took its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Applied {
     /// Stored.
     Yes,
-    /// A key this app reads, with a value it cannot use.
-    Rejected,
+    /// A key this app reads, with a value Ghostty would not parse either.
+    Malformed,
+    /// A value Ghostty accepts that this app cannot represent, and why.
+    Unsupported(&'static str),
     /// A key this app does not read, or a keybind (whose origin `binds` keeps).
     Unknown,
 }
 
-impl From<bool> for Applied {
-    fn from(stored: bool) -> Self {
-        if stored { Self::Yes } else { Self::Rejected }
-    }
-}
+const OUT_OF_RANGE: &str = "valid in Ghostty, outside this app's range";
+const NAMED_COLOR: &str = "valid in Ghostty; this app reads hex colours only";
+const PALETTE_SLOT: &str = "valid in Ghostty; this app keeps palette slots 0-15";
+const PIXEL_CELL: &str = "valid in Ghostty; this app reads percent cell adjustments only";
 
 fn apply(config: &mut GhosttyConfig, key: &str, value: &str, origin: &Origin) -> Applied {
     match key {
-        "font-size" => set_number(value, 4.0, 72.0, |size| config.font_size = Some(size)).into(),
-        "adjust-cell-width" => set_percent(value, |scale| config.cell_width = Some(scale)).into(),
-        "adjust-cell-height" => set_percent(value, |scale| config.cell_height = Some(scale)).into(),
+        "font-size" => set_number(value, 4.0, 72.0, |size| config.font_size = Some(size)),
+        "adjust-cell-width" => set_percent(value, |scale| config.cell_width = Some(scale)),
+        "adjust-cell-height" => set_percent(value, |scale| config.cell_height = Some(scale)),
         "background"
         | "foreground"
         | "cursor-color"
         | "selection-background"
         | "selection-foreground"
-        | "split-divider-color" => set_color(config, key, value).into(),
-        "palette" => set_palette(config, value).into(),
+        | "split-divider-color" => set_color(config, key, value),
+        "palette" => set_palette(config, value),
         "window-padding-x" => set_number(first_number(value), 0.0, 64.0, |pad| {
             config.padding_x = Some(pad);
-        })
-        .into(),
+        }),
         "window-padding-y" => set_number(first_number(value), 0.0, 64.0, |pad| {
             config.padding_y = Some(pad);
-        })
-        .into(),
-        "unfocused-split-opacity" => set_number(value, 0.15, 1.0, |opacity| {
-            config.unfocused_split_opacity = Some(opacity);
-        })
-        .into(),
+        }),
+        // Ghostty clamps this one rather than rejecting it.
+        "unfocused-split-opacity" => set_number(value, f64::MIN, f64::MAX, |opacity| {
+            config.unfocused_split_opacity = Some(opacity.clamp(0.15, 1.0));
+        }),
         "macos-option-as-alt" => {
             config.option_as_alt = Some(matches!(value, "true" | "left" | "right"));
             Applied::Yes
         }
         "keybind" if set_keybind(config, value, origin) => Applied::Unknown,
-        "keybind" => Applied::Rejected,
+        "keybind" => Applied::Malformed,
         _ => Applied::Unknown,
     }
 }
 
-fn set_color(config: &mut GhosttyConfig, key: &str, value: &str) -> bool {
-    let Some(color) = hex_color(value) else {
-        return false;
+fn set_color(config: &mut GhosttyConfig, key: &str, value: &str) -> Applied {
+    let color = match parse_color(value) {
+        Ok(color) => color,
+        Err(skipped) => return skipped,
     };
     let slot = match key {
         "background" => &mut config.background,
@@ -286,27 +299,50 @@ fn set_color(config: &mut GhosttyConfig, key: &str, value: &str) -> bool {
         "selection-background" => &mut config.selection_background,
         "selection-foreground" => &mut config.selection_foreground,
         "split-divider-color" => &mut config.split_divider_color,
-        _ => return false,
+        _ => return Applied::Unknown,
     };
     *slot = Some(color);
-    true
+    Applied::Yes
 }
 
-fn set_palette(config: &mut GhosttyConfig, value: &str) -> bool {
+/// Ghostty has 256 palette slots; this app keeps the first 16.
+fn set_palette(config: &mut GhosttyConfig, value: &str) -> Applied {
     let Some((index, color)) = value.split_once('=') else {
-        return false;
+        return Applied::Malformed;
     };
-    let Ok(index) = index.trim().parse::<usize>() else {
-        return false;
+    let Ok(index) = index.trim().parse::<u8>() else {
+        return Applied::Malformed;
     };
-    let Some(color) = hex_color(color) else {
-        return false;
+    let color = match parse_color(color) {
+        Ok(color) => color,
+        Err(skipped) => return skipped,
     };
-    let Some(slot) = config.palette.get_mut(index) else {
-        return false;
+    let Some(slot) = config.palette.get_mut(usize::from(index)) else {
+        return Applied::Unsupported(PALETTE_SLOT);
     };
     *slot = Some(color);
-    true
+    Applied::Yes
+}
+
+/// A hex colour, or why the value is skipped. Ghostty also accepts X11
+/// colour names, which this app does not resolve.
+fn parse_color(value: &str) -> Result<String, Applied> {
+    if let Some(color) = hex_color(value) {
+        return Ok(color);
+    }
+    if is_color_name(value) {
+        return Err(Applied::Unsupported(NAMED_COLOR));
+    }
+    Err(Applied::Malformed)
+}
+
+/// Shaped like an X11 colour name: a letter, then letters, digits and spaces.
+fn is_color_name(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with(|first: char| first.is_ascii_alphabetic())
+        && value
+            .chars()
+            .all(|part| part.is_ascii_alphanumeric() || part == ' ')
 }
 
 fn hex_color(value: &str) -> Option<String> {
@@ -322,31 +358,43 @@ fn hex_color(value: &str) -> Option<String> {
     None
 }
 
-fn set_number(value: &str, low: f64, high: f64, set: impl FnOnce(f64)) -> bool {
+fn set_number(value: &str, low: f64, high: f64, set: impl FnOnce(f64)) -> Applied {
     let Ok(number) = value.parse::<f64>() else {
-        return false;
+        return Applied::Malformed;
     };
-    let usable = !value.is_empty() && number.is_finite() && (low..=high).contains(&number);
-    if usable {
-        set(number);
+    if !number.is_finite() {
+        return Applied::Malformed;
     }
-    usable
+    if !(low..=high).contains(&number) {
+        return Applied::Unsupported(OUT_OF_RANGE);
+    }
+    set(number);
+    Applied::Yes
 }
 
-fn set_percent(value: &str, set: impl FnOnce(f64)) -> bool {
+/// Ghostty takes a percent (`10%`) or a whole number of pixels (`2`); this
+/// app scales cells, so only the percent form applies.
+fn set_percent(value: &str, set: impl FnOnce(f64)) -> Applied {
     let value = value.trim();
     let Some(body) = value.strip_suffix('%') else {
-        return false;
+        return if value.parse::<i32>().is_ok() {
+            Applied::Unsupported(PIXEL_CELL)
+        } else {
+            Applied::Malformed
+        };
     };
     let Ok(percent) = body.parse::<f64>() else {
-        return false;
+        return Applied::Malformed;
     };
-    let scale = 1.0 + percent / 100.0;
-    let usable = percent.is_finite() && (0.5..=2.0).contains(&scale);
-    if usable {
-        set(scale);
+    if !percent.is_finite() {
+        return Applied::Malformed;
     }
-    usable
+    let scale = 1.0 + percent / 100.0;
+    if !(0.5..=2.0).contains(&scale) {
+        return Applied::Unsupported(OUT_OF_RANGE);
+    }
+    set(scale);
+    Applied::Yes
 }
 
 fn first_number(value: &str) -> &str {
@@ -919,6 +967,28 @@ pub fn ghostty_prefs(base: &DisplayPrefs, config: &GhosttyConfig) -> DisplayPref
     next
 }
 
+/// The notice a reload posts when malformed lines were skipped, as
+/// `(title, body)`. `None` when every line parsed; values Ghostty accepts but
+/// this app cannot use are listed in Settings without a notice.
+#[must_use]
+pub fn skipped_lines_notice(config: &GhosttyConfig) -> Option<(String, String)> {
+    let first = config.diagnostics.first()?;
+    let skipped = config.diagnostics.len();
+    let body = format!(
+        "{}: {} ({}). Settings > Ghostty integration lists {}.",
+        first.origin.label(),
+        first.text,
+        first.reason,
+        if skipped == 1 { "it" } else { "all of them" },
+    );
+    let title = if skipped == 1 {
+        "Skipped 1 Ghostty config line".to_owned()
+    } else {
+        format!("Skipped {skipped} Ghostty config lines")
+    };
+    Some((title, body))
+}
+
 /// Read the user's Ghostty config files, theme file first, from disk each call
 /// so an external edit shows on the next reload. `None` when Ghostty is not configured.
 #[must_use]
@@ -1037,7 +1107,7 @@ mod tests {
     use super::super::keymap::{KeyChord, key_chord};
     use super::{
         GhosttySource, ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty,
-        parse_ghostty_sources, read_ghostty_sources_in, zig_string,
+        parse_ghostty_sources, read_ghostty_sources_in, skipped_lines_notice, zig_string,
     };
 
     const CONFIG: &str = r#"
@@ -1155,7 +1225,7 @@ keybind = f12=set_font_size:15
     fn malformed_lines_are_reported_and_the_rest_still_apply() {
         let config = parse_ghostty(
             "font-size = 14\nthis line has no equals\nbackground = #zzzzzz\n\
-             font-size = 900\nkeybind = nonsense\nforeground = #c5d0cd\r\nbackground = #071012\n",
+             font-size = big\nkeybind = nonsense\nforeground = #c5d0cd\r\nbackground = #071012\n",
         );
         assert_eq!(config.font_size, Some(14.0));
         assert_eq!(config.foreground.as_deref(), Some("#c5d0cd"));
@@ -1170,13 +1240,46 @@ keybind = f12=set_font_size:15
             vec![
                 (2, "this line has no equals"),
                 (3, "background = #zzzzzz"),
-                (4, "font-size = 900"),
+                (4, "font-size = big"),
                 (5, "keybind = nonsense"),
             ]
         );
         assert_eq!(config.origins["font-size"].line, 1);
         assert_eq!(config.origins["background"].line, 7);
         assert!(ghostty_theme(&config).is_some());
+    }
+
+    #[test]
+    fn valid_ghostty_values_this_app_cannot_use_are_not_malformed() {
+        let config = parse_ghostty(
+            "palette = 200=#ffffff\nadjust-cell-height = 2\nadjust-cell-width = -1\n\
+             background = black\nfont-size = 900\nadjust-cell-height = 300%\n\
+             unfocused-split-opacity = 0.1\npalette = 3=#00ff00\n",
+        );
+        assert!(config.diagnostics.is_empty(), "{:?}", config.diagnostics);
+        let unsupported: Vec<usize> = config
+            .unsupported
+            .iter()
+            .map(|diagnostic| diagnostic.origin.line)
+            .collect();
+        assert_eq!(unsupported, vec![1, 2, 3, 4, 5, 6]);
+        assert!(config.unsupported[0].reason.contains("palette slots"));
+        assert!(config.unsupported[3].reason.contains("hex"));
+        // Ghostty clamps the opacity, so the app does too.
+        assert_eq!(config.unfocused_split_opacity, Some(0.15));
+        assert_eq!(config.origins["unfocused-split-opacity"].line, 7);
+        assert_eq!(config.palette[3].as_deref(), Some("#00ff00"));
+        assert!(config.cell_height.is_none());
+        assert!(config.background.is_none());
+
+        let broken = parse_ghostty("palette = 300=#ffffff\nadjust-cell-height = tall\n");
+        assert_eq!(broken.diagnostics.len(), 2);
+        assert!(broken.unsupported.is_empty());
+        assert_eq!(skipped_lines_notice(&config), None);
+        let (title, body) = skipped_lines_notice(&broken).expect("notice");
+        assert_eq!(title, "Skipped 2 Ghostty config lines");
+        assert!(body.starts_with("line 1: palette = 300=#ffffff (value is malformed)"));
+        assert!(body.ends_with("lists all of them."));
     }
 
     #[test]
@@ -1245,5 +1348,15 @@ keybind = f12=set_font_size:15
         assert!(second.binds.is_empty());
         assert_eq!(second.diagnostics.len(), 1);
         assert_eq!(second.diagnostics[0].origin.line, 2);
+        // The reload notice names the skipped line; the first read had none.
+        assert_eq!(skipped_lines_notice(&first), None);
+        let (title, body) = skipped_lines_notice(&second).expect("notice");
+        assert_eq!(title, "Skipped 1 Ghostty config line");
+        assert!(
+            body.ends_with(
+                ":2: broken (expected key = value). Settings > Ghostty integration lists it."
+            ),
+            "{body}"
+        );
     }
 }
