@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.89.0](https://github.com/no-phux/phux/compare/v0.88.2...v0.89.0) (2026-10-17)
+
+
+### Features
+
+* **desktop:** laser cursor, swappable skins, and a plain terminal toggle ([728c5de](https://github.com/no-phux/phux/commit/728c5dea599dc25b9c7b2f7e8b7d129d3b08ca64))
+
 ## [0.88.2](https://github.com/no-phux/phux/compare/v0.88.1...v0.88.2) (2026-10-17)
 
 
