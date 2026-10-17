@@ -73,20 +73,25 @@ fn keys(cx: &mut VisualTestContext, keystrokes: &str) {
     }
 }
 
+/// Type `character` without drawing a frame after it.
+fn press(cx: &mut VisualTestContext, character: char) {
+    cx.update(|window, cx| {
+        let key = character.to_string();
+        window.dispatch_keystroke(
+            gpui::Keystroke {
+                modifiers: gpui::Modifiers::default(),
+                key: key.clone(),
+                key_char: Some(key),
+            },
+            cx,
+        );
+    });
+}
+
 fn type_text(cx: &mut VisualTestContext, text: &str) {
     render(cx);
     for character in text.chars() {
-        cx.update(|window, cx| {
-            let key = character.to_string();
-            window.dispatch_keystroke(
-                gpui::Keystroke {
-                    modifiers: gpui::Modifiers::default(),
-                    key: key.clone(),
-                    key_char: Some(key),
-                },
-                cx,
-            );
-        });
+        press(cx, character);
         render(cx);
     }
 }
@@ -112,6 +117,23 @@ fn selected_command(desk: &Entity<Desk>, cx: &VisualTestContext) -> Option<&'sta
             .get(selected.row)?
             .command
     })
+}
+
+fn modal(desk: &Entity<Desk>, cx: &VisualTestContext) -> Modal {
+    desk.read_with(cx, |desk, _| desk.modal.clone())
+}
+
+fn sidebar(desk: &Entity<Desk>, cx: &VisualTestContext) -> bool {
+    desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible)
+}
+
+/// Click the element `selector` names and let the next frames land.
+fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("no {selector} on screen"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    render(cx);
 }
 
 fn assert_desk_focus(desk: &Entity<Desk>, cx: &mut VisualTestContext) {
@@ -151,13 +173,8 @@ fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut 
         Some(crate::app::settings_panel::Page::Spacing)
     );
     assert!(cx.debug_bounds("settings-panel").is_some());
-    let back = cx.debug_bounds("palette-mode-commands").unwrap();
-    cx.simulate_click(back.center(), gpui::Modifiers::none());
-    render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Commands
-    );
+    click(cx, "palette-mode-commands");
+    assert_eq!(modal(&desk, cx), Modal::Commands);
     keys(cx, "escape");
     assert_desk_focus(&desk, cx);
     keys(cx, "cmd-,");
@@ -182,10 +199,7 @@ fn palette_query_ranks_a_title_before_incidental_metadata_and_dispatches_it(
     assert_eq!(query(&desk, cx), "settings");
     assert_eq!(selected_command(&desk, cx), Some("settings"));
     keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Settings
-    );
+    assert_eq!(modal(&desk, cx), Modal::Settings);
     keys(cx, "escape");
     assert_desk_focus(&desk, cx);
 }
@@ -195,45 +209,21 @@ fn palette_mode_controls_row_click_and_backdrop_keep_native_focus(cx: &mut TestA
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-shift-p");
-    let goto = cx
-        .debug_bounds("palette-mode-goto")
-        .expect("native mode button");
-    cx.simulate_click(goto.center(), gpui::Modifiers::none());
-    render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Goto
-    );
+    click(cx, "palette-mode-goto");
+    assert_eq!(modal(&desk, cx), Modal::Goto);
     type_text(cx, ">settings");
     assert_eq!(query(&desk, cx), "settings");
-    let commands = cx
-        .debug_bounds("palette-mode-commands")
-        .expect("native mode button");
-    cx.simulate_click(commands.center(), gpui::Modifiers::none());
-    render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Commands
-    );
-    let row = cx
-        .debug_bounds("palette-result-settings")
-        .expect("native result row");
-    cx.simulate_click(row.center(), gpui::Modifiers::none());
-    render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Settings
-    );
+    click(cx, "palette-mode-commands");
+    assert_eq!(modal(&desk, cx), Modal::Commands);
+    click(cx, "palette-result-settings");
+    assert_eq!(modal(&desk, cx), Modal::Settings);
     keys(cx, "escape cmd-shift-p");
     cx.simulate_click(
         gpui::point(gpui::px(8.), gpui::px(8.)),
         gpui::Modifiers::none(),
     );
     render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::None
-    );
+    assert_eq!(modal(&desk, cx), Modal::None);
     assert_desk_focus(&desk, cx);
 }
 
@@ -241,29 +231,16 @@ fn palette_mode_controls_row_click_and_backdrop_keep_native_focus(cx: &mut TestA
 fn typing_and_confirming_before_the_next_frame_uses_the_current_query(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    let before = desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible);
+    let before = sidebar(&desk, cx);
     keys(cx, "cmd-shift-p");
     for character in "sidebar".chars() {
-        cx.update(|window, cx| {
-            let key = character.to_string();
-            window.dispatch_keystroke(
-                gpui::Keystroke {
-                    modifiers: gpui::Modifiers::default(),
-                    key: key.clone(),
-                    key_char: Some(key),
-                },
-                cx,
-            );
-        });
+        press(cx, character);
     }
     cx.update(|window, cx| {
         window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx);
     });
     render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible),
-        !before
-    );
+    assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);
 }
 
@@ -327,10 +304,7 @@ fn palette_confirm_transfers_typing_to_the_command_dialog(cx: &mut TestAppContex
         assert!(input.focus_handle(cx).is_focused(window));
     });
     keys(cx, "escape");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::None
-    );
+    assert_eq!(modal(&desk, cx), Modal::None);
     assert_desk_focus(&desk, cx);
 }
 
@@ -340,13 +314,10 @@ fn palette_escape_clears_query_before_dismissing_and_can_reopen_cleanly(cx: &mut
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-shift-p");
     type_text(cx, "sidebar");
-    let before = desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible);
+    let before = sidebar(&desk, cx);
     keys(cx, "escape");
     assert_eq!(query(&desk, cx), "");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Commands
-    );
+    assert_eq!(modal(&desk, cx), Modal::Commands);
     cx.update(|window, cx| {
         assert!(
             !desk.read(cx).focus.is_focused(window),
@@ -354,19 +325,13 @@ fn palette_escape_clears_query_before_dismissing_and_can_reopen_cleanly(cx: &mut
         );
     });
     keys(cx, "escape");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::None
-    );
+    assert_eq!(modal(&desk, cx), Modal::None);
     assert_desk_focus(&desk, cx);
     keys(cx, "cmd-shift-p");
     assert_eq!(query(&desk, cx), "");
     type_text(cx, "sidebar");
     keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible),
-        !before
-    );
+    assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);
 }
 
@@ -374,29 +339,20 @@ fn palette_escape_clears_query_before_dismissing_and_can_reopen_cleanly(cx: &mut
 fn goto_leading_marker_hands_the_remaining_query_and_focus_to_commands(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    let before = desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible);
+    let before = sidebar(&desk, cx);
     keys(cx, "cmd-p");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Goto
-    );
+    assert_eq!(modal(&desk, cx), Modal::Goto);
     // Pasting delivers the marker and remainder in one real Input edit; typing
     // a bare `>` followed by characters would not prove query preservation.
     cx.update(|_, cx| {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("> sidebar".into()));
     });
     keys(cx, "cmd-v");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Commands
-    );
+    assert_eq!(modal(&desk, cx), Modal::Commands);
     assert_eq!(query(&desk, cx), "sidebar");
     assert_eq!(selected_command(&desk, cx), Some("sidebar"));
     keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible),
-        !before
-    );
+    assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);
 }
 
@@ -404,7 +360,7 @@ fn goto_leading_marker_hands_the_remaining_query_and_focus_to_commands(cx: &mut 
 fn empty_palette_results_never_dispatch_the_previous_selection(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    let before = desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible);
+    let before = sidebar(&desk, cx);
     keys(cx, "cmd-shift-p");
     type_text(cx, "sidebar");
     assert_eq!(selected_command(&desk, cx), Some("sidebar"));
@@ -429,10 +385,7 @@ fn empty_palette_results_never_dispatch_the_previous_selection(cx: &mut TestAppC
     keys(cx, "escape");
     type_text(cx, "sidebar");
     keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.prefs.sidebar_visible),
-        !before
-    );
+    assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);
 }
 
@@ -499,10 +452,7 @@ fn pending_path_search_does_not_leave_command_mode_loading(cx: &mut TestAppConte
         desk.update(cx, |desk, cx| desk.execute("palette", window, cx));
     });
     render(cx);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.modal.clone()),
-        Modal::Commands
-    );
+    assert_eq!(modal(&desk, cx), Modal::Commands);
     assert!(
         !palette.read_with(cx, |state, _| state.is_loading()),
         "the new mode must not retain an abandoned path request's spinner"
@@ -528,9 +478,7 @@ fn command_palette_starts_small_but_search_and_expansion_keep_every_command(
     };
     assert_eq!(count(&desk, cx), 5);
     assert!(cx.debug_bounds("palette-result-settings").is_none());
-    let all = cx.debug_bounds("palette-all-commands").unwrap();
-    cx.simulate_click(all.center(), gpui::Modifiers::none());
-    render(cx);
+    click(cx, "palette-all-commands");
     assert!(count(&desk, cx) > 20);
     type_text(cx, "settings");
     assert_eq!(selected_command(&desk, cx), Some("settings"));
@@ -591,11 +539,7 @@ fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppCon
         filter.right() <= details_bounds.left(),
         "filter and details do not overlap"
     );
-    let details = cx
-        .debug_bounds("palette-details")
-        .expect("optional details control");
-    cx.simulate_click(details.center(), gpui::Modifiers::none());
-    render(cx);
+    click(cx, "palette-details");
     assert!(cx.debug_bounds("palette-facts").is_some());
     let panel = cx.debug_bounds("palette-panel").unwrap();
     assert!(panel.origin.x >= gpui::px(0.) && panel.right() <= gpui::px(320.));
