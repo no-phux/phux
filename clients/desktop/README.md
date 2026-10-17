@@ -58,7 +58,11 @@ does **not** promise process survival after a server crash or machine reboot.
 Only **Terminate Terminal Process** and **Kill Session** intentionally end
 terminals.
 
-`just desktop-package` builds the app without installing it.
+`just desktop-package` builds the app without installing it. The app's
+`Contents/Resources` carries the repository `LICENSE` and `NOTICE` and a
+`THIRD-PARTY-NOTICES.txt` generated from the desktop's Cargo graph: every
+shipped crate with its declared license, then the license texts the crates
+ship. Packaging fails if any shipped crate declares no license.
 `just desktop-install-app` builds and installs `/Applications/Phux.app`.
 Release ownership and qualification are in [Releasing](../../docs/RELEASING.md).
 
