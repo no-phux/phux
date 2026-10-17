@@ -18,7 +18,7 @@ pub use display::{
 pub use ghostty::{
     Bind, Diagnostic, GhosttyConfig, GhosttySource, Origin, ghostty_action, ghostty_chord,
     ghostty_prefs, ghostty_theme, parse_ghostty, parse_ghostty_sources, read_ghostty_sources,
-    read_ghostty_sources_in, zig_string,
+    read_ghostty_sources_in, skipped_lines_notice, zig_string,
 };
 pub use keymap::{
     BoundAction, ChordSource, CommandSpec, KeyChord, KeyConflict, app_chords, builtin_commands,
