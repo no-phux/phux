@@ -265,7 +265,9 @@ Focus, zoom, and the sidebar stay local to this client.
 Panes share dividers, so each split costs one cell rather than two adjacent
 borders. A 2×2 window has one `│` column and one `─` row crossing at `┼`.
 The rail reserves a row above the pane area for top-row pane titles.
-Splitting a window never moves the panes already displayed.
+Splitting a window never moves the panes already displayed. Where the rail
+or a divider meets the sidebar's rule, the rule tees into it (`├`, or `┤`
+with the sidebar on the right), so grid and strip read as one frame.
 
 Focused dividers and titles use `divider_focus` and bold; other dividers use
 `divider`. Titles come from OSC-2 and remain blank until the program sets one.
