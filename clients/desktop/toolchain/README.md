@@ -162,7 +162,8 @@ lavapipe (`phux-9ddi1`). The desktop does not enable that composition path.
 
 The script verifies/materializes pinned sources, copies wgpu into a disposable
 standalone Cargo workspace with the patched GPUI dependency, and reuses the
-native lockfile's versions in a temporary lockfile. It provisions shared
+repository's Rust toolchain pin and native lockfile's versions in temporary
+copies. It provisions shared
 rounded-clip fixtures and downloads the three inherited font fixtures at an
 immutable Zed revision. Additional arguments are forwarded to
 `cargo test --workspace --lib --features test-support`; no committed lockfile

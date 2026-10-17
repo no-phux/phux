@@ -40,6 +40,8 @@ def fetch_fonts(workspace: Path) -> None:
 
 
 def prepare_workspace(workspace: Path) -> None:
+    # rustup otherwise chooses the machine default outside the checkout.
+    shutil.copy2(TOOLCHAIN.parents[2] / "rust-toolchain.toml", workspace / "rust-toolchain.toml")
     shutil.copytree(
         TOOLCHAIN / "gpui" / "gpui-fast-wgpu",
         workspace / "gpui" / "gpui-fast-wgpu",
