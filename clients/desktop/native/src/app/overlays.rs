@@ -1608,43 +1608,13 @@ fn notification_rows(
                 .items_start()
                 .gap(px(10.))
                 .cursor_pointer()
-                .hover(|style| style.bg(from_hex(&colors.hover)))
-                .child(
-                    dot(
-                        7.,
-                        if entry.read {
-                            gpui::transparent_black()
-                        } else {
-                            edge
-                        },
-                    )
-                    .mt(px(5.))
-                    .when(entry.read, |dot| dot.border_1().border_color(edge)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .text_sm()
-                                .when(!entry.read, |title| {
-                                    title.font_weight(gpui::FontWeight::MEDIUM)
-                                })
-                                .text_color(from_hex(&colors.theme.foreground))
-                                .child(entry.title.clone()),
-                        )
-                        .children(
-                            entry
-                                .body
-                                .clone()
-                                .map(|body| muted(look, body).line_clamp(2)),
-                        )
-                        .children(decide),
-                )
+                .hover(|style| style.bg(look.hover))
+                .child(dot(7., edge).mt(px(5.)).when(entry.read, |dot| {
+                    dot.bg(gpui::transparent_black())
+                        .border_1()
+                        .border_color(edge)
+                }))
+                .child(super::view::notification_text(entry, look, !entry.read, 2).children(decide))
                 .child(
                     div()
                         .flex_shrink_0()

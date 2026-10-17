@@ -2577,6 +2577,35 @@ pub(super) fn notification_edge(entry: &Notification, look: &Look) -> Hsla {
     })
 }
 
+/// A notification's title over up to `lines` of its body; `strong` sets the
+/// title in medium weight.
+pub(super) fn notification_text(
+    entry: &Notification,
+    look: &Look,
+    strong: bool,
+    lines: usize,
+) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .text_sm()
+                .when(strong, |title| title.font_weight(gpui::FontWeight::MEDIUM))
+                .text_color(look.ink)
+                .child(entry.title.clone()),
+        )
+        .children(
+            entry
+                .body
+                .clone()
+                .map(|body| muted(look, body).line_clamp(lines)),
+        )
+}
+
 /// The newest agent or error entry, briefly, over the workspace. Everything
 /// else waits behind the bell.
 fn peek_card(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<impl IntoElement> {
@@ -2603,33 +2632,14 @@ fn peek_card(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<impl In
             .flex()
             .gap(px(8.))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(
+                notification_text(entry, look, true, 3).when(more > 0, |text| {
+                    text.child(
                         div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(look.ink)
-                            .child(entry.title.clone()),
+                            .text_xs()
+                            .text_color(from_hex(&colors.subtext))
+                            .child(format!("+{more} unread alerts")),
                     )
-                    .children(
-                        entry
-                            .body
-                            .clone()
-                            .map(|body| muted(look, body).line_clamp(3)),
-                    )
-                    .when(more > 0, |text| {
-                        text.child(
-                            div()
-                                .text_xs()
-                                .text_color(from_hex(&colors.subtext))
-                                .child(format!("+{more} unread alerts")),
-                        )
-                    }),
+                }),
             )
             .child(
                 ghost_icon(

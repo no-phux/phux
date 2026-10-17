@@ -188,16 +188,13 @@ impl Header {
                         .child(detail),
                 )
             });
-        match self.note.clone() {
-            Some(note) => div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(header)
-                .child(muted(look, note))
-                .into_any_element(),
-            None => header.into_any_element(),
-        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(header)
+            .children(self.note.clone().map(|note| muted(look, note)))
+            .into_any_element()
     }
 }
 
@@ -332,13 +329,9 @@ fn channel_item(
     runtime: bool,
     busy: bool,
     selected: updates::Channel,
-    look: &Look,
+    look: &Rc<Look>,
 ) -> SettingItem {
-    let entity = entity.clone();
-    let colors = look.chrome.clone();
-    let outer = corner(look, 7.);
-    let inner = corner(look, 5.);
-    let lifts = !look.popover_shadow.is_empty();
+    let (entity, look) = (entity.clone(), look.clone());
     let pref: fn(&mut Preferences) -> &mut updates::Channel = if runtime {
         |prefs| &mut prefs.runtime
     } else {
@@ -351,8 +344,8 @@ fn channel_item(
                 .flex()
                 .p(px(2.))
                 .gap(px(2.))
-                .rounded(outer)
-                .bg(from_hex(&colors.hover))
+                .rounded(corner(&look, 7.))
+                .bg(look.hover)
                 .children(
                     [updates::Channel::Stable, updates::Channel::Next]
                         .into_iter()
@@ -368,21 +361,23 @@ fn channel_item(
                                 .id(SharedString::from(id))
                                 .px(px(12.))
                                 .py(px(3.))
-                                .rounded(inner)
+                                .rounded(corner(&look, 5.))
                                 .text_sm()
                                 .when(on, |segment| {
                                     segment
-                                        .bg(from_hex(&colors.raised))
-                                        .when(lifts, |segment| segment.shadow_sm())
-                                        .text_color(from_hex(&colors.theme.foreground))
+                                        .bg(from_hex(&look.chrome.raised))
+                                        .when(!look.popover_shadow.is_empty(), |segment| {
+                                            segment.shadow_sm()
+                                        })
+                                        .text_color(look.ink)
                                 })
-                                .when(!on, |segment| segment.text_color(from_hex(&colors.muted)))
+                                .when(!on, |segment| {
+                                    segment.text_color(from_hex(&look.chrome.muted))
+                                })
                                 .when(!busy && !on, |segment| {
                                     segment
                                         .cursor_pointer()
-                                        .hover(|style| {
-                                            style.text_color(from_hex(&colors.theme.foreground))
-                                        })
+                                        .hover(|style| style.text_color(look.ink))
                                         .on_click(move |_, _, cx| {
                                             entity.update(cx, |updater, cx| {
                                                 updater
