@@ -290,3 +290,46 @@ fn switching_tabs_never_resizes_the_chrome(cx: &mut TestAppContext) {
         assert_eq!(main.size.width, px(1000.) - width, "{tab} fills the rest");
     }
 }
+
+#[gpui::test]
+fn the_find_count_never_moves_the_find_field(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            let workspace = &mut desk.link.as_mut().unwrap().workspace;
+            workspace.tabs = tabs(1);
+            workspace.active_id = "fixture-a".into();
+            desk.find = Some(crate::app::desk::FindState {
+                placement_id: "fixture-a".into(),
+                ..Default::default()
+            });
+            desk.find_input = Some(crate::app::overlays::find_input("", window, cx));
+            cx.notify();
+        })
+    });
+    draw(cx);
+    let field = cx.debug_bounds("find-input").expect("find field");
+    let slot = cx
+        .debug_bounds("find-status")
+        .expect("an empty count keeps its slot");
+    for (query, matches, index) in [("zz", 0, 0), ("a", 12, 8), ("a", 12, 9), ("a", 4096, 4095)] {
+        desk.update(cx, |desk, cx| {
+            let find = desk.find.as_mut().unwrap();
+            find.query = query.into();
+            find.matches = vec![(0, 0); matches];
+            find.index = index;
+            cx.notify();
+        });
+        draw(cx);
+        let status = desk.read_with(cx, |desk, _| desk.find_status());
+        assert_eq!(
+            cx.debug_bounds("find-input"),
+            Some(field),
+            "{status:?} moves the find field"
+        );
+        assert_eq!(cx.debug_bounds("find-status"), Some(slot), "{status:?}");
+    }
+}

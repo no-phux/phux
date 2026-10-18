@@ -297,22 +297,38 @@ fn pane_controls(
                     None => title,
                 }),
         )
-        .child(div().w(px(2.)))
+        .child(div().w(px(2.)).flex_shrink_0())
         .when(desk.conversation_eligible(&id), |row| {
             let conversation_id = id.clone();
+            // The wider label sizes the slot, so the toggle never moves the
+            // capsule under the pointer that clicked it.
             row.child(
-                ghost_button(
-                    format!("pane-conversation-{id}"),
-                    if desk.conversation_visible(&id) {
-                        "Terminal"
-                    } else {
-                        "Conversation"
-                    },
-                )
-                .on_click(cx.listener(move |desk, _, window, cx| {
-                    cx.stop_propagation();
-                    desk.toggle_conversation(&conversation_id, window, cx);
-                })),
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .child(
+                        ghost_button(format!("pane-conversation-width-{id}"), "Conversation")
+                            .invisible(),
+                    )
+                    .child(
+                        div().absolute().inset_0().child(
+                            ghost_button(
+                                format!("pane-conversation-{id}"),
+                                if desk.conversation_visible(&id) {
+                                    "Terminal"
+                                } else {
+                                    "Conversation"
+                                },
+                            )
+                            .w_full()
+                            .on_click(cx.listener(
+                                move |desk, _, window, cx| {
+                                    cx.stop_propagation();
+                                    desk.toggle_conversation(&conversation_id, window, cx);
+                                },
+                            )),
+                        ),
+                    ),
             )
         })
         .child(
