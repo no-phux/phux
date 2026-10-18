@@ -21,11 +21,14 @@ jobs, 5 of them macOS. Concurrency groups use the `mini-v1-` namespace, and
 
 ## Routing
 
-[`scripts/ci/classify-changes.py`](../scripts/ci/classify-changes.py) owns the
-routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
+[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts) owns the
+routes, and `bun tools/main.ts detect-changes` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
-`.github/actions/classify-changes`, with no outer path filters.
+`.github/actions/classify-changes`, with no outer path filters. Root crates
+are not listed: the web and desktop lanes route the closure of what their
+builds compile (`LANE_BUILDS`), read from the Cargo manifests, so a
+dependency added or dropped re-routes on its own.
 `desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
 jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
@@ -66,8 +69,8 @@ request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
 unrelated crates. A `tests/`-only diff builds just that test. Pushes to
 `main` run the full pool. A release PR's version-only hunks
-(`scripts/ci/release_metadata.py`) skip compile lanes.
-`bash scripts/ci/check-classify-changes.sh` tests the routes.
+(`tools/src/routing/release-metadata.ts`) skip compile lanes.
+`just tools-check` tests the routes.
 
 The required `ci` aggregate rejects failed or cancelled lanes. The test
 profile compiles once per run: `test build` runs `just test-archive`, which
