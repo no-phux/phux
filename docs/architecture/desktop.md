@@ -196,8 +196,8 @@ conversation that may be revealed automatically. When its authenticated
 button and a matching control in its pane capsule. Passive discovery never
 switches faces or keyboard focus. Project open passes `--prefer-native` to the same CLI.
 
-**Native Agents** (`native-agents`, ⌃⌘A, the titlebar toggle and the View
-menu) is the one explicit exception. It is a window preference
+**Native Agents** (`native-agents`, ⌃⌘A, the titlebar toggle, the View menu
+and Settings → Look) is the one explicit exception. It is a window preference
 (`nativeAgents` in the layout's display object) that snaps every face the
 window holds to its conversation, or every one back to its terminal. While it
 is on, a pane whose agent publishes a conversation later opens on it; each pane
