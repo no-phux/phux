@@ -21,6 +21,7 @@ const NO_LANES: Classification = {
   docsOnly: false,
   perfIcountNeeded: false,
   mobileFfiNeeded: false,
+  uniffiNeeded: false,
   testFilterset: "",
   unitMode: "skip",
   unitTargets: "",
