@@ -157,7 +157,7 @@ jobs:
           # presented drawable; the evidence records `submitted` instead.
           bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence" --allow-unconfirmed-present
       - name: Exercise installer transactions
-        run: python3 harness/scripts/test-install-desktop.py
+        run: bun test ./harness/tools/src/install/desktop.e2e.ts
       - name: Retain packaged runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
