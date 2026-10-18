@@ -7,23 +7,42 @@
 # or `linguist-vendored=true`) to exempt them; files whose header says
 # "@generated", "Code generated", or "DO NOT EDIT" are exempt automatically.
 #
-# A merge commit stages the other parent's files too. It may not introduce an
-# oversized file, but a file already over the limit in any parent is not the
-# merge's to split: ordinary commits keep that ratchet.
+# A merge may carry an oversized blob unchanged at the same path from either
+# parent. New content, including manual resolutions and automatic combinations,
+# must meet the limit; ordinary commits keep the same ratchet.
 set -euo pipefail
 
 max_tokens=5000
 max_bytes=$((max_tokens * 4))
 
-# The commits being merged, if this commit is a merge; empty otherwise.
+# MERGE_HEAD contains full commit object IDs, not refs or abbreviated IDs.
+is_commit_oid() {
+    [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+    [[ "$(git cat-file -t "$1" 2>/dev/null)" == commit ]]
+}
+
+read_merge_heads() {
+    local parent
+    while IFS= read -r parent || [[ -n "$parent" ]]; do
+        is_commit_oid "$parent" || return 1
+        merge_parents+=("$parent")
+    done <"$1"
+    ((${#merge_parents[@]} > 0))
+}
+
+load_merge_parents() {
+    local merge_head head
+    merge_head="$(git rev-parse --git-path MERGE_HEAD)"
+    [[ -f "$merge_head" ]] || return 1
+    read_merge_heads "$merge_head" || return 1
+    head="$(git rev-parse --verify HEAD)" || return 1
+    is_commit_oid "$head" || return 1
+    merge_parents+=("$head")
+}
+
+# Invalid or absent merge metadata grants no exclusions, including from HEAD.
 merge_parents=()
-merge_head="$(git rev-parse --git-path MERGE_HEAD)"
-if [[ -f "$merge_head" ]]; then
-    merge_parents+=(HEAD)
-    while IFS= read -r parent; do
-        [[ -n "$parent" ]] && merge_parents+=("$parent")
-    done <"$merge_head"
-fi
+load_merge_parents || merge_parents=()
 
 is_lockfile() {
     case "${1##*/}" in
@@ -45,20 +64,26 @@ has_generated_header() {
         LC_ALL=C grep -qiE '@generated|code generated|auto-?generated|do not edit'
 }
 
-# Already over the limit in a parent of the merge in progress.
-oversized_in_a_parent() {
-    local parent bytes
+parent_has_blob() {
+    local parent="$1" path="$2" staged_blob="$3" parent_blob
+    parent_blob=$(git rev-parse --verify "${parent}:$path" 2>/dev/null) || return 1
+    [[ "$staged_blob" == "$parent_blob" ]]
+}
+
+# Only byte-identical staged content at the same path is inherited.
+inherited_from_a_parent() {
+    local parent staged_blob
     ((${#merge_parents[@]} > 0)) || return 1
+    staged_blob=$(git rev-parse --verify ":$1") || return 1
     for parent in "${merge_parents[@]}"; do
-        bytes=$(git cat-file -s "${parent}:$1" 2>/dev/null) || continue
-        ((bytes > max_bytes)) && return 0
+        parent_has_blob "$parent" "$1" "$staged_blob" && return 0
     done
     return 1
 }
 
 is_exempt() {
     is_lockfile "$1" || has_exempt_attribute "$1" || has_generated_header "$1" ||
-        oversized_in_a_parent "$1"
+        inherited_from_a_parent "$1"
 }
 
 oversized=()
