@@ -2412,15 +2412,17 @@ Mint, rotate, revoke, list, or prune remote credentials
 With no subcommand, mint one credential into the server's store and print its
 stable ID, one-time bearer secret, and certificate fingerprint. On a terminal
 the connect link is followed by a scannable QR of it (`--no-qr` leaves it out).
-`--qr` is the camera form: a large terminal QR and a clear expiry line, with the
-bearer and connect link omitted from the text (they exist only inside the QR).
-`--secret-file PATH` is the off-camera pre-pair: the bearer is written to a new
-mode-0600 file and is not printed. `--json` still prints the bearer for `phux
-host add` and cannot combine with `--qr` or `--secret-file`. `ls` lists ids with
-mint time, last seen, and revoked status; `prune --unused-for DURATION` revokes
-idle credentials; `rotate` replaces the bearer with a bounded overlap; `revoke`
-denies all generations on future connections. These operations update the store
-directly and take effect without restarting the server.
+Both forms include phone enrollment when a QR is shown; they refuse before
+minting if the phone cannot enroll. `--qr` is the camera form: a large terminal
+QR and a clear expiry line, with the bearer and connect link omitted from the
+text (they exist only inside the QR). `--secret-file PATH` is the off-camera
+pre-pair: the bearer is written to a new mode-0600 file and is not printed.
+`--json` still prints the bearer for `phux host add` and cannot combine with
+`--qr` or `--secret-file`. `ls` lists ids with mint time, last seen, and revoked
+status; `prune --unused-for DURATION` revokes idle credentials; `rotate`
+replaces the bearer with a bounded overlap; `revoke` denies all generations on
+future connections. These operations update the store directly and take effect
+without restarting the server.
 
 Minting first asks the running server (`--socket`) which remote listeners it has
 bound, and mints nothing when none would accept the credential: no server, no
@@ -2450,10 +2452,13 @@ Flags:
                              The expiry line says when the credential stops
                              working, or that it does not expire. Needs a server
                              address: pass `--host`, or let it derive one from
-                             the running server's bound wss listener. Refused,
-                             with nothing minted, when neither yields an address
-                             a device can dial. Cannot combine with `--json`,
-                             which prints the bearer.
+                             the running server's bound wss listener. Also
+                             includes a single-use phone enrollment ticket (as
+                             `--enroll` does): needs a device-dialable QUIC
+                             listener and a server certificate issued by its
+                             workload CA. Refused before minting if any of these
+                             are missing. Cannot combine with `--json`, which
+                             prints the bearer.
       --secret-file <PATH>   Write the bearer and connect link to PATH (mode
                              0600, created anew) and do not print them. PATH
                              must not already exist. This is the off-camera
@@ -2503,9 +2508,10 @@ Flags:
                              link, so a device without ssh (a phone) enrolls a
                              workload certificate for a key it generates and
                              keeps. Needed to reach a server in `paired` policy
-                             mode. The ticket expires in ten minutes. With
-                             `--relay-route` the device enrolls end to end
-                             through the relay.
+                             mode. A QR shown on a terminal implies this,
+                             including through a relay. The ticket expires in
+                             ten minutes. With `--relay-route` the device
+                             enrolls end to end through the relay.
   -h, --help                 Print help
 
 Global flags:
