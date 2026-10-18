@@ -1,10 +1,11 @@
-// The workflows consume the classifier the way its outputs promise.
+// ci.yml runs the plan the way plan.ts promises: one job per lane, gated on
+// the plan's own output, running the recipes `just check` runs locally.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
-import { str, table } from "../lib/value.ts";
+import { capture } from "../lib/process.ts";
+import { list, str, table } from "../lib/value.ts";
 import {
-  action,
   job,
   jobs,
   needs,
@@ -13,15 +14,28 @@ import {
   uses,
   withInput,
   workflow,
-  workflowNames,
   workflowText,
 } from "../policy/workflows.ts";
+import { classifyEvent } from "./detect.ts";
+import { LANE_RECIPES, LANES, plan, planOutputs } from "./plan.ts";
 
-const CLASSIFY = "./.github/actions/classify-changes";
-const OUTPUTS = new Set(Object.keys(table(action("classify-changes")["outputs"])));
-const LANES = ["ci.yml", "native-setup.yml", "web-check.yml", "desktop-test.yml"];
+const CI = workflow("ci.yml");
 const FFI = ["ffi-xcframework.yml", "ffi-android.yml"];
-const classified = workflowNames().filter((name) => workflowText(name).includes(CLASSIFY));
+const AFTER_LANES = ["ci", "content", "prune-build-cache"];
+
+/** Recipe name to its one-line bodies, from just's own parser. */
+const RECIPES: Record<string, string[]> = Object.fromEntries(
+  Object.entries(
+    table(
+      table(
+        JSON.parse(capture(["just", "--dump", "--dump-format", "json"], { cwd: repoPath(".") })),
+      )["recipes"],
+    ),
+  ).map(([name, recipe]) => [
+    name,
+    list(table(recipe)["body"]).map((line) => list(line).map(String).join("")),
+  ]),
+);
 
 test("the root justfile holds only imports and default", () => {
   // A product recipe there would classify as cheap and skip its lane.
@@ -32,141 +46,117 @@ test("the root justfile holds only imports and default", () => {
   expect(recipes).toEqual([]);
 });
 
-/** Output names `text` reads as `<prefix>.outputs.<name>`. */
-function referenced(text: string, prefix: string): string[] {
-  return [...text.matchAll(new RegExp(`${prefix}\\.outputs\\.(\\w+)`, "g"))].map(
-    (match) => match[1] ?? "",
-  );
-}
+test("ci.yml routes every event through plan, with no path filter or merge queue", () => {
+  const on = table(CI["on"]);
+  expect(Object.keys(on).toSorted()).toEqual(["pull_request", "push", "workflow_dispatch"]);
+  for (const trigger of Object.values(on)) {
+    expect(Object.keys(table(trigger)).filter((key) => key.startsWith("paths"))).toEqual([]);
+  }
+  expect(list(table(on["pull_request"])["types"])).toContain("closed");
+  const gate = str(job(CI, "plan")["if"]) ?? "";
+  expect(gate).toContain("github.event.action != 'closed'");
+  expect(gate).toContain("draft != true");
+  const checkout = steps(job(CI, "plan")).find((s) => uses(s).startsWith("actions/checkout@"));
+  expect(withInput(checkout ?? {}, "fetch-depth")).toBe(0);
+});
 
-test("classified workflows read real outputs, from full history, with no path filter", () => {
-  expect(classified.toSorted()).toEqual([...LANES, ...FFI].toSorted());
-  const consumed = new Set<string>();
-  for (const name of classified) {
-    const document = workflow(name);
-    const text = workflowText(name);
-    // An outer path filter would skip the fail-closed classifier.
-    const filters = Object.values(table(document["on"])).flatMap((trigger) =>
-      Object.keys(table(trigger)),
+test("plan declares every output the planner writes, and jobs read only those", () => {
+  const c = classifyEvent("workflow_dispatch", undefined);
+  const written = [
+    ...Object.keys(planOutputs(plan(c, "pull_request"), c)),
+    "validated",
+    "receipt",
+    "receipt_name",
+  ];
+  const declared = Object.keys(table(job(CI, "plan")["outputs"]));
+  const read = [...workflowText("ci.yml").matchAll(/needs\.plan\.outputs\.(\w+)/g)].map(
+    (m) => m[1],
+  );
+  expect(declared.filter((key) => !written.includes(key))).toEqual([]);
+  expect(read.filter((key) => !declared.includes(key ?? ""))).toEqual([]);
+});
+
+test("each lane is one job gated on its plan output that runs the lane's recipes", () => {
+  for (const lane of LANES) {
+    const gated = Object.entries(jobs(CI)).filter(([, lane_job]) =>
+      (str(lane_job["if"]) ?? "").includes(`needs.plan.outputs.${lane} == 'true'`),
     );
-    expect([name, filters.filter((key) => key.startsWith("paths"))]).toEqual([name, []]);
-    const [id, changes = {}] =
-      Object.entries(jobs(document)).find(([, lane]) =>
-        steps(lane).some((s) => uses(s) === CLASSIFY),
-      ) ?? [];
-    const checkout = steps(changes).find((step) => uses(step).startsWith("actions/checkout@"));
-    expect([name, withInput(checkout ?? {}, "fetch-depth")]).toEqual([name, 0]);
-    // A misspelled output reads as empty and silently skips its lane.
-    const step = steps(changes).find((candidate) => uses(candidate) === CLASSIFY)?.["id"];
-    const read = referenced(text, `steps\\.${String(step)}`);
-    for (const key of read) consumed.add(key);
-    expect([name, read.filter((key) => !OUTPUTS.has(key))]).toEqual([name, []]);
-    const declared = Object.keys(table(changes["outputs"]));
-    expect([
-      name,
-      referenced(text, `needs\\.${id}`).filter((key) => !declared.includes(key)),
-    ]).toEqual([name, []]);
-  }
-  // Every output has a reader.
-  expect([...OUTPUTS].filter((key) => !consumed.has(key))).toEqual([]);
-});
-
-test("validation lanes run on merge groups, PRs latest-wins, desktop-test one main run", () => {
-  for (const name of LANES) {
-    const document = workflow(name);
-    expect([name, "merge_group" in table(document["on"])]).toEqual([name, true]);
-    const cancel = name === "desktop-test.yml" ? "${{ github.ref != 'refs/heads/main' }}" : true;
-    expect([name, table(document["concurrency"])["cancel-in-progress"]]).toEqual([name, cancel]);
-  }
-  // Per-SHA main runs stacked xcode-27 jobs ahead of the release lanes.
-  expect(table(workflow("desktop-test.yml")["concurrency"])["group"]).toBe(
-    "mini-v1-desktop-test-${{ github.ref }}",
-  );
-});
-
-test("cheap changes allocate no Rust setup", () => {
-  const gate = steps(job(workflow("ci.yml"), "workflow-gate"));
-  expect(
-    gate.some(
-      (step) => uses(step).includes("setup-rust-lane") || run(step).includes("nix develop"),
-    ),
-  ).toBe(false);
-});
-
-test("the ci aggregate needs every lane and rejects failed and cancelled ones", () => {
-  const ci = workflow("ci.yml");
-  const aggregate = job(ci, "ci");
-  // prune-build-cache is main-only cleanup that runs after the lanes.
-  const lanes = Object.keys(jobs(ci)).filter((name) => !["ci", "prune-build-cache"].includes(name));
-  expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
-  const script =
-    run(steps(aggregate)[0] ?? {})
-      .split("node -e '")[1]
-      ?.split("\n'")[0] ?? "";
-  const baseline = {
-    ...Object.fromEntries(lanes.map((lane) => [lane, "skipped"])),
-    changes: "success",
-    "workflow-gate": "success",
-  };
-  for (const [lane, result, code] of [
-    ["check", "skipped", 0],
-    ["integrations", "success", 0],
-    ["integrations", "failure", 1],
-    ["test", "cancelled", 1],
-    ["workflow-gate", "failure", 1],
-    ["workflow-gate", "skipped", 1],
-    ["changes", "skipped", 1],
-    ["changes", "failure", 1],
-  ] as const) {
-    const results = Object.entries({ ...baseline, [lane]: result }).map(([job, value]) => [
-      job,
-      { result: value },
-    ]);
-    const exit = Bun.spawnSync([process.execPath, "-e", script], {
-      env: { ...process.env, RESULTS: JSON.stringify(Object.fromEntries(results)) },
-    }).exitCode;
-    expect([lane, result, exit]).toEqual([lane, result, code]);
-  }
-});
-
-test("UniFFI main pushes retain full qualification; PRs use the binding closure", () => {
-  const condition = str(job(workflow("ci.yml"), "uniffi")["if"]) ?? "";
-  for (const [event, phux, validated, binding, mode, wanted] of [
-    ["push", "true", "true", "false", "rdeps", true],
-    ["push", "false", "true", "true", "workspace", false],
-    ["pull_request", "true", "false", "false", "rdeps", false],
-    ["pull_request", "true", "false", "true", "rdeps", true],
-    ["merge_group", "true", "false", "true", "workspace", true],
-    ["pull_request", "true", "false", "true", "narrow", false],
-    ["pull_request", "true", "true", "true", "rdeps", false],
-  ] as const) {
-    let expression = condition;
-    for (const [key, value] of Object.entries({
-      "github.event_name": event,
-      "needs.changes.outputs.phux_needed": phux,
-      "needs.changes.outputs.validated": validated,
-      "needs.changes.outputs.uniffi_needed": binding,
-      "needs.changes.outputs.unit_mode": mode,
-    })) {
-      expression = expression.replaceAll(key, JSON.stringify(value));
+    const owner = gated.find(([id]) => id !== "test-build");
+    expect([lane, owner === undefined]).toEqual([lane, false]);
+    const commands = steps(owner?.[1] ?? {})
+      .map(run)
+      .join("\n");
+    for (const argv of LANE_RECIPES[lane]) {
+      const [recipe] = argv;
+      expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
+      // A job without just installed runs the recipe's one-line body instead.
+      const body = RECIPES[recipe] ?? [];
+      const runs =
+        commands.includes(`just ${argv.join(" ")}`) ||
+        (argv.length === 1 && body.length === 1 && commands.includes(body[0] ?? "\0"));
+      expect([lane, recipe, runs]).toEqual([lane, recipe, true]);
     }
-    const result = Bun.spawnSync([process.execPath, "-e", `process.exit((${expression}) ? 0 : 1)`]);
-    expect([event, phux, validated, binding, mode, result.exitCode]).toEqual([
-      event,
-      phux,
-      validated,
-      binding,
-      mode,
-      wanted ? 0 : 1,
-    ]);
   }
+});
+
+test("the ci aggregate needs every lane and accepts only success or a skip", () => {
+  const aggregate = job(CI, "ci");
+  const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
+  expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
+  const script = run(steps(aggregate)[0] ?? {});
+  const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
+  baseline["plan"] = { result: "success" };
+  for (const [id, result, code] of [
+    ["lint", "skipped", 0],
+    ["lint", "success", 0],
+    ["integrations", "failure", 1],
+    ["tests", "cancelled", 1],
+    ["guards", "failure", 1],
+    ["plan", "skipped", 1],
+    ["plan", "failure", 1],
+  ] as const) {
+    const results = JSON.stringify({ ...baseline, [id]: { result } });
+    const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      env: { ...process.env, RESULTS: results },
+      stdout: "ignore",
+    }).exitCode;
+    expect([id, result, exit]).toEqual([id, result, code]);
+  }
+});
+
+test("only pull requests write receipts; content publishes after a green push", () => {
+  for (const step of steps(job(CI, "ci")).slice(1)) {
+    expect(str(step["if"])).toBe("github.event_name == 'pull_request'");
+  }
+  const content = job(CI, "content");
+  expect(needs(content)).toContain("ci");
+  expect(str(content["if"])).toContain("needs.ci.result == 'success'");
+  expect(str(content["if"])).toContain("github.event_name == 'push'");
 });
 
 test("both FFI workflows build on mobile_ffi_needed or a failed classification", () => {
-  // phux-mobile pins one revision and fetches both artifacts at it.
+  // phux-mobile pins one revision and fetches both artifacts at it, by
+  // push run of these two file names.
   for (const name of FFI) {
-    const condition = str(job(workflow(name), "build")["if"]) ?? "";
+    const document = workflow(name);
+    expect(Object.keys(table(document["on"]))).toContain("push");
+    const condition = str(job(document, "build")["if"]) ?? "";
     expect(condition).toContain("needs.changes.result == 'failure'");
     expect(condition).toContain("needs.changes.outputs.mobile_ffi_needed == 'true'");
+    const detect = steps(job(document, "changes"));
+    expect(detect.some((step) => run(step).includes("bun tools/main.ts detect-changes"))).toBe(
+      true,
+    );
+    const checkout = detect.find((step) => uses(step).startsWith("actions/checkout@"));
+    expect(withInput(checkout ?? {}, "fetch-depth")).toBe(0);
+  }
+});
+
+test("post-merge workflows follow ci on main pushes only", () => {
+  for (const name of ["release.yml", "next.yml"]) {
+    const trigger = table(table(workflow(name)["on"])["workflow_run"]);
+    expect(trigger["workflows"]).toEqual(["ci"]);
+    expect(trigger["branches"]).toEqual(["main"]);
+    expect(workflowText(name)).toContain("github.event.workflow_run.event == 'push'");
   }
 });

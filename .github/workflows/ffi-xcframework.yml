@@ -8,7 +8,7 @@
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
 # verified assets to an existing release, the same contract release.yml and
-# desktop-release.yml follow, and publish.yml dispatches it once each root
+# desktop-release.yml follow, and release.yml dispatches it once each root
 # release is public. It never gates the draft's publication: the CLI tarballs
 # are the release contract; the xcframework is the mobile pin's input.
 #
@@ -32,12 +32,6 @@ on:
   # output, so phux-mobile's pin always finds the pair at the same commit.
   push:
     branches: [main]
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing root release tag (vX.Y.Z) to build from and attach the xcframework to.
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -60,7 +54,7 @@ permissions:
 # though phux-mobile may pin it. Per-commit groups only serialize a replay of
 # the same commit; nothing is cancelled.
 concurrency:
-  group: mini-v1-ffi-xcframework-${{ inputs.tag || inputs.commit || github.sha }}
+  group: ffi-xcframework-${{ inputs.tag || inputs.commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -75,8 +69,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
       - id: detect
-        uses: ./.github/actions/classify-changes
+        run: bun tools/main.ts detect-changes >> "$GITHUB_OUTPUT"
 
   build:
     name: build native xcframeworks
@@ -140,9 +135,7 @@ jobs:
 
       # After the Rust setup: check-release-version.sh runs `cargo metadata`,
       # and the pinned toolchain must come from scripts/setup-rust.sh, not
-      # from whatever the runner image auto-installs on first use. The tag
-      # pattern is release.yml's, so both asset workflows agree on what a
-      # root tag is (a prerelease suffix included).
+      # from whatever the runner image auto-installs on first use.
       - name: Validate release tag
         if: env.RELEASE_TAG != ''
         env:
@@ -242,7 +235,7 @@ jobs:
           cd "$ARTIFACTS"
           # `gh release upload` adds assets only; it never rewrites the name or
           # body release-please generated. --clobber keeps a replay against
-          # the same tag idempotent, as release.yml's backfill path is.
+          # the same tag idempotent.
           gh release upload "$RELEASE_TAG" \
             "${STEM}.xcframework.zip" "${STEM}.xcframework.zip.sha256" "${STEM}.provenance" --clobber
           gh release upload "$RELEASE_TAG" \

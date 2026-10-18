@@ -390,17 +390,11 @@ was cancelled as a redundant automatic repeat, but its measurement and artifact
 upload had already succeeded. All 20 observations are retained rather than
 discarding the run because of its workflow status.
 
-To repeat the pinned macOS 27 experiment on a disposable runner, with repository
-Actions permission:
-
-```sh
-gh workflow run docs-native-benchmark.yml \
-  --repo no-phux/phux --ref bench/cmux-docs-2026-09-30-macos27-b
-```
-
-The workflow is manual-only on `main`; it is not an ongoing PR performance gate.
-Its `cmux-native-observations` artifact includes the raw result and screenshots.
-The script refuses to launch outside a GitHub-hosted macOS runner environment.
+The harness ran once, on a disposable GitHub-hosted macOS 27 runner, and is
+no longer on `main`. To repeat it, restore `scripts/bench/cmux-native.py` and
+`.github/workflows/docs-native-benchmark.yml` from commit `ec795fcc` onto a
+branch and dispatch the workflow there. The script refuses to launch outside a
+GitHub-hosted macOS runner.
 
 ### Why the user's desktop was not used
 

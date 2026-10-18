@@ -1,0 +1,106 @@
+# The next channel: release builds of green main on the moving `next`
+# prerelease, recorded in channels/next.json (ADR-0176). Each product rebuilds
+# only when its inputs moved since the commit next.json names
+# (tools/src/release/next-plan.ts). One run at a time; a newer commit queues
+# instead of cancelling, so a busy main still ships its tip and the next.json
+# read-modify-write never races.
+name: next
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit to publish (default the head of main). Must already be on main.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: next
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: choose products
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      phux: ${{ steps.plan.outputs.phux }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SHA" origin/main || { echo "::error::$SHA is not on main"; exit 1; }
+          bun tools/main.ts next-plan "$SHA"
+
+  cli:
+    needs: plan
+    if: needs.plan.outputs.phux == 'true'
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      id: next.${{ needs.plan.outputs.sha }}
+      channel: next
+
+  desktop:
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      tag: next
+      channel: next
+      sha: ${{ needs.plan.outputs.sha }}
+
+  publish:
+    name: publish next
+    needs: [plan, cli, desktop]
+    if: ${{ !cancelled() && (needs.cli.result == 'success' || needs.desktop.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      # Products only: the desktop jobs also upload runtime evidence.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "{cli-*,desktop-macos-*,desktop-linux-*}"
+          path: dist
+          merge-multiple: true
+      # `release-manifest next` refuses an unsigned build (ADR-0178).
+      - name: Sign the checksums
+        env:
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
+        run: bash scripts/ci/sign-release.sh dist/*.sha256
+      # Each product publishes on its own success; a failed one keeps its
+      # previous next.json entry.
+      - name: Publish phux
+        if: needs.cli.result == 'success'
+        run: bun tools/main.ts release-manifest next --product phux --sha "$SHA" --dist dist
+      - name: Publish desktop
+        if: ${{ !cancelled() && needs.desktop.result == 'success' }}
+        run: bun tools/main.ts release-manifest next --product desktop --sha "$SHA" --dist dist

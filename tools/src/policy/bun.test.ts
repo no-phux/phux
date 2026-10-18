@@ -59,19 +59,20 @@ test("every job and composite action that calls the tools package installs Bun f
   expect(callers).toBeGreaterThan(2);
 });
 
-test("the workflow gate installs Bun unconditionally for tools-check", () => {
-  // `just workflow-check` runs `just tools-check` in a `nix shell` without
-  // Bun; the docs-only path's install-surface check needs it too.
-  const all = steps(job(workflow("ci.yml"), "workflow-gate"));
+test("guards install Bun unconditionally for tools-check", () => {
+  // `just guards` runs `just tools-check` in a `nix shell` without Bun; the
+  // docs-only path's install-surface check needs it too.
+  const all = steps(job(workflow("ci.yml"), "guards"));
   const setup = all.findIndex(providesBun);
   expect(setup).toBeGreaterThanOrEqual(0);
-  expect(all.findIndex((step) => run(step).includes("just workflow-check"))).toBeGreaterThan(setup);
+  expect(all.findIndex((step) => run(step).includes("just guards"))).toBeGreaterThan(setup);
   expect(all[setup]?.["if"]).toBeUndefined();
 });
 
-test("perf-icount runs inside the devshell, which pins Bun", () => {
-  const counts = steps(job(workflow("ci.yml"), "perf-icount")).find((step) =>
-    run(step).includes("just perf-icount"),
-  );
-  expect(run(counts ?? {})).toStartWith("nix develop -c");
+test("devshell lanes run their recipes inside it, which pins Bun", () => {
+  for (const id of ["lint", "icount", "tests", "e2e", "ffi"]) {
+    for (const step of steps(job(workflow("ci.yml"), id)).filter((s) => run(s).includes("just "))) {
+      expect([id, run(step).startsWith("nix develop -c just ")]).toEqual([id, true]);
+    }
+  }
 });

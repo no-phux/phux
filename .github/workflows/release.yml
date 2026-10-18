@@ -1,71 +1,382 @@
-# Build a stable CLI release onto its Release Please draft and publish it.
-# Called by publish.yml once ci is green for the tag. Release Please owns the
-# tag and notes; this workflow only attaches assets and flips the draft, and
-# only after every target built. The Homebrew tap follows Latest on its own.
-
+# Everything that follows a green main: the release PRs, then every draft
+# whose own commit passed ci. Release Please owns versions, changelogs, tags,
+# and drafts; this workflow attaches assets and flips drafts public. The next
+# channel is next.yml. docs/RELEASING.md is the runbook.
+#
+# Rules this file keeps:
+# - Push as the release App, never GITHUB_TOKEN: its pushes trigger no ci, so
+#   a release PR or its lockfile commit would never become mergeable.
+# - Release Please force-pushes a release branch and drops the lockfile
+#   commit, and main's ruleset accepts the previous head's green ci. A ready
+#   PR is held as draft in the same job until its lockfile push lands.
+# - Release PRs open as drafts and accumulate changes; nothing merges them.
+#   Marking one ready runs ci; squash-merging it cuts the stable release.
+# - A draft ships only on a green ci push run for its own commit
+#   (tools/src/release/publish-plan.ts). Every run reconciles every draft, so
+#   a run superseded while pending loses nothing.
+# - Only the CLI is GitHub Latest: the Homebrew tap and pre-manifest binaries
+#   resolve through it. Nothing publishes unsigned (ADR-0178).
 name: release
 
 on:
-  workflow_call:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  # Backstop for a missed event, and the stuck-release check.
+  schedule:
+    - cron: "5 15 * * *"
+  workflow_dispatch:
     inputs:
       tag:
-        description: "Existing vX.Y.Z draft."
-        required: true
+        description: Draft tag to publish. Empty reconciles every ready draft.
+        required: false
         type: string
-    secrets:
-      PHUX_MINISIGN_SECRET_KEY:
-        description: "minisign secret key that signs each checksum (ADR-0178)."
-        required: true
+        default: ""
 
 permissions:
-  contents: write
+  actions: read
+  contents: read
 
 concurrency:
-  group: mini-v1-release-${{ inputs.tag }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  build:
+  release-please:
+    name: release PRs and tags
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      prs: ${{ steps.hold.outputs.prs }}
+      held: ${{ steps.hold.outputs.held }}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # No last-release-sha (the changelog would grow from it forever) and no
+      # root package-name (it aborts root-only releases with no tag).
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      # PR number 0 is a change-less candidate with no branch. A ready PR this
+      # run rewrote goes back to draft until release-prs syncs its lockfiles.
+      - name: Hold rewritten ready release PRs
+        id: hold
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PRS: ${{ steps.rp.outputs.prs || '[]' }}
+        run: |
+          set -euo pipefail
+          prs="$(jq -c '[.[] | select(.number > 0)]' <<<"$PRS")"
+          held=()
+          for num in $(jq -r '.[].number' <<<"$prs"); do
+            if [ "$(gh pr view "$num" --json state,isDraft --jq '"\(.state) \(.isDraft)"')" = "OPEN false" ]; then
+              gh pr ready "$num" --undo
+              held+=("$num")
+            fi
+          done
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          echo "held=${held[*]}" >> "$GITHUB_OUTPUT"
+
+  # Release Please cannot select workspace members in Cargo.lock (its rust
+  # strategy rejects a virtual workspace), so cargo re-resolves the locks:
+  # metadata only, no build. Then a held PR is ready again.
+  release-prs:
+    name: sync ${{ matrix.pr.headBranchName }}
+    needs: release-please
+    # always(): a failed hold after Release Please's force-push still syncs.
+    if: always() && needs.release-please.outputs.prs != '' && needs.release-please.outputs.prs != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.release-please.outputs.prs) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.pr.headBranchName }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+      - name: Detect a root workspace release
+        id: root
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if git diff --quiet "$(git merge-base HEAD origin/main)" HEAD -- Cargo.toml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the pinned Rust
+        if: steps.root.outputs.changed == 'true'
+        run: bash scripts/setup-rust.sh core
+      - uses: ./.github/actions/setup-bun
+        if: steps.root.outputs.changed == 'true'
+      # The browser lock records the root path crates' versions too. The
+      # desktop host lock does as well, but its parent-managed GPUI snapshot
+      # is absent here, so the tools package rewrites those entries.
+      - name: Re-resolve and push the lockfiles
+        if: steps.root.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ matrix.pr.headBranchName }}
+        run: |
+          set -euo pipefail
+          cargo update --workspace
+          (cd clients/phux-web && cargo update --workspace)
+          bun tools/main.ts sync-path-lock-versions Cargo.lock clients/desktop/native/Cargo.lock
+          locks=(Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock)
+          if git diff --quiet -- "${locks[@]}"; then echo "lockfiles already in sync"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${locks[@]}"
+          git commit -m "chore: sync Cargo lockfiles with the release version"
+          git push origin "HEAD:${BRANCH}"
+      # Only after the lockfile push: an earlier ready lets a non-strict
+      # ruleset merge the unsynced head.
+      - name: Release the hold
+        if: contains(format(' {0} ', needs.release-please.outputs.held), format(' {0} ', matrix.pr.number))
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          NUM: ${{ matrix.pr.number }}
+        run: |
+          set -euo pipefail
+          read -r state draft < <(gh pr view "$NUM" --json state,isDraft --jq '"\(.state) \(.isDraft)"')
+          if [ "$state" = OPEN ] && [ "$draft" = true ]; then gh pr ready "$NUM"; fi
+
+  plan:
+    name: choose drafts
+    needs: release-please
+    if: ${{ !cancelled() && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write # lists and deletes drafts
+    outputs:
+      phux_tag: ${{ steps.plan.outputs.phux_tag }}
+      desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
+      integration_tags: ${{ steps.plan.outputs.integration_tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: bun tools/main.ts publish-plan
+
+  # Every job below the plan states its own status check: an implicit
+  # success() also requires release-please, which schedule and dispatch skip.
+  cli-build:
+    name: build ${{ needs.plan.outputs.phux_tag }}
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.phux_tag != '' }}
     uses: ./.github/workflows/build-cli.yml
     with:
-      ref: ${{ inputs.tag }}
-      id: ${{ inputs.tag }}
+      ref: ${{ needs.plan.outputs.phux_tag }}
+      id: ${{ needs.plan.outputs.phux_tag }}
       channel: stable
 
-  publish:
-    name: publish ${{ inputs.tag }}
-    needs: build
+  cli:
+    name: publish ${{ needs.plan.outputs.phux_tag }}
+    needs: [plan, cli-build]
+    if: ${{ !cancelled() && needs.cli-build.result == 'success' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: cli-*
           path: dist
           merge-multiple: true
-
-      # The signature over each sidecar is the trust root `phux update` and
-      # the installer check (ADR-0178); nothing publishes unsigned.
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
         run: bash scripts/ci/sign-release.sh dist/phux-*.tar.gz.sha256
-
-      # `gh release upload` adds assets and never touches the notes. Only the
-      # CLI is Latest: the tap and pre-manifest binaries resolve through it.
-      - name: Attach every target and publish
+      # `gh release upload` adds assets and never touches the notes.
+      - name: Attach every target and publish as Latest
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.plan.outputs.phux_tag }}
         run: |
           set -euo pipefail
           for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            test -f "dist/phux-${TAG}-${target}.tar.gz"
-            test -f "dist/phux-${TAG}-${target}.tar.gz.sha256"
-            test -f "dist/phux-${TAG}-${target}.tar.gz.sha256.minisig"
+            for suffix in "" .sha256 .sha256.minisig; do test -f "dist/phux-${TAG}-${target}.tar.gz${suffix}"; done
           done
           gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig --clobber
           gh release edit "$TAG" --draft=false --latest
+
+  desktop:
+    name: publish ${{ needs.plan.outputs.desktop_tag }}
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != '' }}
+    uses: ./.github/workflows/desktop-release.yml
+    permissions:
+      contents: write
+    secrets:
+      PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
+    with:
+      tag: ${{ needs.plan.outputs.desktop_tag }}
+
+  # npm trusted publishing trusts the entry workflow file, so the integration
+  # release is dispatched, never called.
+  integrations:
+    name: publish integrations
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.integration_tags != '[]' && needs.plan.outputs.integration_tags != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.plan.outputs.integration_tags }}
+        run: bun tools/main.ts dispatch-integration-publishes
+
+  manifest:
+    name: publish stable.json
+    needs: [plan, cli, desktop]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.cli.result == 'success' || needs.desktop.result == 'success' || github.event_name != 'workflow_run') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun tools/main.ts release-manifest stable --out "$RUNNER_TEMP/stable.json" --publish
+
+  # After the CLI is public: mobile artifacts ride on the root release without
+  # gating it. phux.sh reads the release list at build time, and a
+  # GITHUB_TOKEN publish fires no release event, so tell the site here.
+  announce:
+    name: mobile FFI, phux.sh, and Linear
+    needs: [plan, cli, desktop, manifest]
+    if: ${{ !cancelled() && (needs.cli.result == 'success' || needs.desktop.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.plan.outputs.phux_tag }}
+    steps:
+      - name: Dispatch the mobile FFI builds for the CLI tag
+        if: needs.cli.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in ffi-xcframework.yml ffi-android.yml; do
+            gh workflow run "$workflow" --ref main -f tag="$TAG"
+          done
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: website
+      - name: Rebuild phux.sh
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh api repos/no-phux/website/dispatches \
+            -f event_type=phux-content -f "client_payload[sha]=${GITHUB_SHA}"
+      # Linear finds the issues a release carried in its commit range.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.cli.result == 'success'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+        if: needs.cli.result == 'success'
+      - name: Write the release notes and range
+        id: range
+        if: needs.cli.result == 'success'
+        run: |
+          set -euo pipefail
+          bun tools/main.ts changelog-section --tag "$TAG" --output "$RUNNER_TEMP/release-notes.md"
+          git checkout --quiet "refs/tags/$TAG"
+          base="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+        if: needs.cli.result == 'success'
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: sync
+          name: ${{ env.TAG }}
+          version: ${{ env.TAG }}
+          base_ref: ${{ steps.range.outputs.base }}
+          no_branch_ref_detection: true
+          release_notes: ${{ runner.temp }}/release-notes.md
+          links: |
+            GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.TAG }}
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+        if: needs.cli.result == 'success'
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: update
+          stage: Released
+          version: ${{ env.TAG }}
+
+  drift:
+    name: check for stuck releases
+    needs: manifest
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the API lists drafts only to a token that can push
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun tools/main.ts release-drift

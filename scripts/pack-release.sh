@@ -2,8 +2,8 @@
 # Package phux + phux-mcp + the release docs into phux-<id>-<target>.tar.gz
 # and a matching .sha256 sidecar.
 #
-# This is the only writer of that member list. release.yml, next-release.yml,
-# and dist.sh call it; the install tests pack stub binaries the same way so
+# This is the only writer of that member list. build-cli.yml and dist.sh
+# call it; the install tests pack stub binaries the same way so
 # a packaging change cannot silently diverge from what curl | sh accepts.
 set -euo pipefail
 # shellcheck source=scripts/lib/output.sh

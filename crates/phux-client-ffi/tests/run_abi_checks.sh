@@ -31,7 +31,8 @@ for source in "$crate_dir"/tests/*_abi.c; do
     flags=(-std=c11 -Wall -Wextra -Werror -I "$crate_dir/include")
     if ! grep -q 'int main' "$source"; then
         # Static asserts only: compiling is the check.
-        if cc "${flags[@]}" -fsyntax-only "$source"; then
+        # Toolchain wrappers (Nix) inject link flags a syntax-only pass never uses.
+        if cc "${flags[@]}" -Wno-unused-command-line-argument -fsyntax-only "$source"; then
             echo "ok   $name"
         else
             echo "FAIL $name" >&2

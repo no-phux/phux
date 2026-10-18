@@ -1,5 +1,5 @@
 // Commitlint contract for phux, enforced on every PR by
-// .github/workflows/conventional-commits.yml (all commits AND the PR title).
+// .github/workflows/commitlint.yml (authored commits AND the PR title).
 //
 // release-please computes the next version and the changelog from this
 // commit log (see docs/RELEASING.md), so a malformed message either drops

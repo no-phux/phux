@@ -1,12 +1,6 @@
 # Developer builds and install-dev/rebuild.
 
 
-# Quick type-check across the workspace.
-[group('build')]
-check: worktree-claim
-    cargo check --workspace --all-targets
-
-
 # Build the developer executables (debug).
 [group('build')]
 build: worktree-claim
@@ -58,15 +52,6 @@ install-dev: worktree-claim
 rebuild: worktree-claim
     just install-dev
     "${CARGO_HOME:-$HOME/.cargo}/bin/phux" upgrade
-
-
-# Compile opt-out consumers separately: workspace feature unification masks them.
-[group('build')]
-[private]
-build-features-compile:
-    cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
-    cargo check --locked -p phux --no-default-features --bin phux
-    cargo check --locked -p phux-tui --all-targets --no-default-features
 
 
 # Watch loop — re-check + test on every save.

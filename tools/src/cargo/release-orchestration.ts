@@ -11,8 +11,8 @@ import { syncLocks } from "./lock.ts";
 const STANDALONE_LOCKS = ["clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock"];
 
 const SETTINGS: [path: string[], expected: unknown, why: string][] = [
-  [["draft"], true, "publish.yml ships drafts; Release Please must create them"],
-  [["force-tag-creation"], true, "a draft needs its tag before publish.yml can build it"],
+  [["draft"], true, "release.yml ships drafts; Release Please must create them"],
+  [["force-tag-creation"], true, "a draft needs its tag before release.yml can build it"],
   [["bootstrap-sha"], undefined, "bootstrap-sha is a one-time setting"],
   [["include-component-in-tag"], false, "the root tag must be a bare vX.Y.Z"],
   [["bump-minor-pre-major"], true, "a breaking change must not bump 0.x to 1.0.0"],

@@ -11,7 +11,7 @@
 # The cockpit-imported workflows already pinned this way; the phux ones
 # floated on major tags, so a compromise of any action maintainer's tag
 # would have landed code here silently. One policy, enforced, for all of
-# them. Runs in `just workflow-check`.
+# them. Runs in `just guards`.
 set -euo pipefail
 # shellcheck source=scripts/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"

@@ -73,9 +73,8 @@ nothing is installed implicitly. The pin lives in `tools/src/mutation/runner.ts`
   five seconds for cargo-mutants to unwind, then kills tracked descendants
   across process groups (needs `ps`).
 
-The [scoped-mutation workflow](../.github/workflows/mutation.yml) runs the
-pilot on manual dispatch only, outside required PR checks, keeping artifacts
-for 14 days. There is no score threshold; baseline and tool errors fail it.
+No workflow runs the pilot: run `just mutation-rust` locally. There is no
+score threshold; baseline and tool errors fail it.
 
 ## Boundaries
 

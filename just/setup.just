@@ -14,13 +14,6 @@ native-smoke: worktree-claim
     bash scripts/native-smoke.sh
 
 
-# Setup helper behavior, including missing tools and rejected compiler downloads.
-[group('setup')]
-[private]
-setup-check:
-    bash scripts/test-dev-setup.sh
-
-
 # Scaffold a commented starter config into a worktree-local XDG dir
 # (./.phux-xdg) so you can test config changes without touching your real
 # ~/.config/phux. Re-run freely: `phux config init` refuses to clobber.
@@ -34,7 +27,7 @@ scaffold-config:
 # Rust's native manifest, verified Zig manifest, Mise, the Nix flake, CI,
 # standalone WASM workspaces, and pinned container builders agree on their
 # toolchains. Static: reads files, so it runs on a CI checkout with no Nix, no
-# Mise and no compilers, which is why it can be a `ci` gate.
+# Mise and no compilers, which is why it runs in the `guards` lane.
 [group('setup')]
 [doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
@@ -42,7 +35,7 @@ toolchain-check:
 
 
 # Runtime half of toolchain-check: both environments, actual binaries.
-# Not in `ci` (no Mise on a CI checkout). Skips if either env is missing.
+# Local only (no Mise on a CI checkout). Skips if either env is missing.
 [group('setup')]
 toolchain-parity:
     bash scripts/check-toolchain-parity.sh

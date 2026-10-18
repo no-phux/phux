@@ -1,12 +1,6 @@
-# Shared setup for the Linux Rust lanes (ci.yml check/test build/test runs,
-# stress). The test run jobs take `build-cache: none`: they execute a
-# downloaded nextest archive and compile nothing, so they need the devshell's
-# tools but no build cache.
-#
-# This block was copy-pasted across three jobs, and the copies had already
-# drifted once (the stress lane carried no compiler cache while the ci lanes
-# did). One definition keeps the cache-key policy and the disk-headroom trim
-# the same everywhere they run.
+# Shared setup for ci.yml's Linux Rust lanes. The tests and e2e jobs take
+# `build-cache: none`: they execute a downloaded nextest archive and compile
+# nothing, so they need the devshell's tools but no build cache.
 #
 # Steps, in order:
 #   1. Drop unused preinstalled toolchains only when the disk is actually tight.
@@ -89,10 +83,6 @@ runs:
         authToken: ${{ inputs.cachix-auth-token }}
         pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
-    - name: verify pinned shell prerequisites
-      shell: bash
-      run: nix develop -c bash scripts/doctor.sh ci
-
     # The mbx action runs outside `nix develop`: it finds mbx on PATH and keys
     # the cache on `rustc -vV`, so hand it the devshell's pinned binaries (the
     # mise.toml mbx release, the rust-toolchain.toml compiler) rather than let
@@ -166,7 +156,7 @@ runs:
         # this stays in front of it.
         mbx gc --max-size 40GiB
 
-    # Dependency-only cache for the uniffi lane and stress. rust-cache keeps only
+    # Dependency-only cache for the ffi lane. rust-cache keeps only
     # third-party artifacts and build-script outputs, drops workspace crates
     # and incremental state before saving, and keys on rustc, Cargo.lock,
     # flake.lock, and every CARGO_* variable set here.

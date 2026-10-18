@@ -3,9 +3,14 @@ import { beforeEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Table } from "../lib/value.ts";
-import { artifactName, findValidation, type Receipt, type Source } from "./validation-receipt.ts";
+import { artifactName, findValidation, type Receipt, type Source } from "./receipt.ts";
 
-const expected: Receipt = { schema: 1, tree: "a".repeat(40), workflow: ".github/workflows/ci.yml" };
+const expected: Receipt = {
+  schema: 2,
+  tree: "a".repeat(40),
+  workflow: ".github/workflows/ci.yml",
+  coverage: "guards,lint",
+};
 let run: Table;
 let artifact: Table;
 let files: Record<string, string>;
@@ -51,6 +56,11 @@ test.each<[string, () => void]>([
   ["a failed run", () => (run["conclusion"] = "failure")],
   ["an in-flight run", () => (run["conclusion"] = null)],
   ["a dispatched run", () => (run["event"] = "workflow_dispatch")],
+  ["a main push run", () => (run["event"] = "push")],
+  [
+    "different lane coverage",
+    () => (files["receipt.json"] = JSON.stringify({ ...expected, coverage: "guards" })),
+  ],
   ["another workflow", () => (run["path"] = "other.yml")],
   ["a fork run", () => (run["head_repository"] = { full_name: "fork/project" })],
   ["an expired artifact", () => (artifact["expired"] = true)],
