@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! work (current)                                   <- session header
-//!   ● 0:main.0 reviewer [claude]  blocked - main   <- pane row
+//!   ● 0:main.0 reviewer [claude]  blocked · main   <- pane row
 //!   ○ 1:logs.0 tail -f                       logs
 //! scratch                                          <- foreign session
 //!   ◐ 0:main.0 packer [codex]     working
@@ -328,7 +328,7 @@ fn current_session_pane_rows(
 
 /// One pane's row, or one of its `AgentSession` rows. The stream (or else
 /// the `phux.agent/v1` record) supplies state and name; with neither, the
-/// OSC title and `○`. The secondary is `state - place` (branch, else cwd
+/// OSC title and `○`. The secondary is `state · place` (branch, else cwd
 /// leaf). Asked, blocked, or high declared attention highlight the row.
 fn pane_row(
     w: usize,
@@ -341,11 +341,10 @@ fn pane_row(
 ) -> SelectItem {
     let (glyph, who, state_word) = match (session, record) {
         (Some(session), record) => {
-            let who = match (record, session.provider.as_deref()) {
-                (Some(r), Some(provider)) => format!("{} [{provider}]", r.name),
-                (Some(r), None) => r.name.clone(),
-                (None, _) => session.name().to_owned(),
-            };
+            let who = record.map_or_else(
+                || session.name().to_owned(),
+                |r| who_label(&r.name, session.provider.as_deref()),
+            );
             (
                 agent_state_glyph(session.state),
                 who,
@@ -353,10 +352,7 @@ fn pane_row(
             )
         }
         (None, Some(r)) => {
-            let who = r
-                .kind
-                .as_ref()
-                .map_or_else(|| r.name.clone(), |kind| format!("{} [{kind}]", r.name));
+            let who = who_label(&r.name, r.kind.as_deref());
             (agent_state_glyph(r.state), who, Some(r.state.as_str()))
         }
         (None, None) => (
@@ -374,11 +370,11 @@ fn pane_row(
         .clone()
         .or_else(|| meta.cwd.as_deref().map(short_cwd));
     let secondary = match (state_word, place, host) {
-        (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} - {place}")),
+        (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} \u{b7} {place}")),
         (Some(state), None, Some(host)) => Some(format!("{host} {state}")),
         (None, Some(place), Some(host)) => Some(format!("{host} {place}")),
         (None, None, Some(host)) => Some(host.to_owned()),
-        (Some(state), Some(place), None) => Some(format!("{state} - {place}")),
+        (Some(state), Some(place), None) => Some(format!("{state} \u{b7} {place}")),
         (Some(state), None, None) => Some(state.to_owned()),
         (None, place, None) => place,
     };
@@ -481,10 +477,7 @@ fn foreign_pane_row(
     let (glyph, who, state_word) = record.map_or_else(
         || (AGENT_IDLE_GLYPH, "no agent".to_owned(), None),
         |r| {
-            let who = r
-                .kind
-                .as_ref()
-                .map_or_else(|| r.name.clone(), |kind| format!("{} [{kind}]", r.name));
+            let who = who_label(&r.name, r.kind.as_deref());
             (agent_state_glyph(r.state), who, Some(r.state.as_str()))
         },
     );
@@ -521,6 +514,15 @@ fn foreign_pane_row(
         item = item.attention();
     }
     item
+}
+
+/// The agent as the row names it: `name [kind]`, or the name alone when
+/// the kind would only repeat it (`claude [claude]` says nothing twice).
+fn who_label(name: &str, kind: Option<&str>) -> String {
+    match kind {
+        Some(kind) if !kind.eq_ignore_ascii_case(name) => format!("{name} [{kind}]"),
+        _ => name.to_owned(),
+    }
 }
 
 /// Shorten a cwd to its last path component for the secondary column
@@ -836,6 +838,14 @@ mod tests {
     }
 
     #[test]
+    fn the_kind_is_shown_only_when_it_adds_to_the_name() {
+        assert_eq!(who_label("reviewer", Some("claude")), "reviewer [claude]");
+        assert_eq!(who_label("claude", Some("claude")), "claude");
+        assert_eq!(who_label("Claude", Some("claude")), "Claude");
+        assert_eq!(who_label("packer", None), "packer");
+    }
+
+    #[test]
     fn secondary_prefers_branch_over_cwd_and_shortens_cwd() {
         let workspace = two_window_workspace();
         let mut agents = HashMap::new();
@@ -858,8 +868,8 @@ mod tests {
             },
         );
         let items = local_items(&workspace, &agents, &meta);
-        assert_eq!(items[0].secondary.as_deref(), Some("working - main"));
-        assert_eq!(items[1].secondary.as_deref(), Some("idle - dir"));
+        assert_eq!(items[0].secondary.as_deref(), Some("working \u{b7} main"));
+        assert_eq!(items[1].secondary.as_deref(), Some("idle \u{b7} dir"));
     }
 
     #[test]
