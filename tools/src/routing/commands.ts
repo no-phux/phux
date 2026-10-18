@@ -14,6 +14,7 @@ export const RELEASE_METADATA: Classification = {
   ) as Classification["needed"],
   docsOnly: false,
   perfIcountNeeded: false,
+  mobileFfiNeeded: false,
   testFilterset: "",
   unitMode: "skip",
   unitTargets: "",

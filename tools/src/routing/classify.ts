@@ -11,7 +11,7 @@
 // instead. Pushes to main ignore `unit_mode` and keep the full pool.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readManifest, workspaceMembers } from "../lib/cargo.ts";
+import { pathClosure, readManifest, workspaceMembers } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 import { strings, table } from "../lib/value.ts";
 import { isDoc, matchesAny, routes, SURFACES, type Route, type Surface } from "./routes.ts";
@@ -22,6 +22,7 @@ export interface Classification {
   readonly needed: Record<Surface, boolean>;
   readonly docsOnly: boolean;
   readonly perfIcountNeeded: boolean;
+  readonly mobileFfiNeeded: boolean;
   readonly testFilterset: string;
   readonly unitMode: UnitMode;
   readonly unitTargets: string;
@@ -60,12 +61,34 @@ const PERF_ICOUNT_PATHS = [
   ".github/workflows/ci.yml",
 ];
 
+/**
+ * The mobile FFI artifacts, which ffi-xcframework.yml and ffi-android.yml
+ * build on main: phux-mobile pins one revision and fetches both, so both
+ * workflows read this one output. phux-client-ffi's build closure, its
+ * builders, and the two workflows. Not a lane: an unknown path does not
+ * rebuild the artifacts.
+ */
+function mobileFfiPaths(root: string): string[] {
+  const crates = [...pathClosure([{ dir: "crates/phux-client-ffi", dev: false }], root)];
+  return [
+    ...crates.toSorted().map((dir) => `${dir}/**`),
+    "scripts/build-ffi-xcframework.sh",
+    "scripts/build-mobile-ffi-xcframework.sh",
+    "scripts/build-mobile-ffi-android.sh",
+    "scripts/ci/setup-android-ndk.sh",
+    ".github/workflows/ffi-android.yml",
+    ".github/workflows/ffi-xcframework.yml",
+  ];
+}
+
 export class Classifier {
   private readonly table: Route[];
   private readonly packages: Package[];
+  private readonly mobileFfi: string[];
 
   constructor(private readonly root = ROOT) {
     this.table = routes(root);
+    this.mobileFfi = mobileFfiPaths(root);
     this.packages = workspaceMembers(".", root)
       .flatMap(({ name, dir }) => (name && CRATE_NAME.test(name) ? [{ name, dir }] : []))
       // Longest directory first, so a nested crate wins over its parent.
@@ -101,6 +124,7 @@ export class Classifier {
       docsOnly: files.length > 0 && files.every(isDoc),
       perfIcountNeeded:
         files.length === 0 || files.some((path) => matchesAny(path, PERF_ICOUNT_PATHS)),
+      mobileFfiNeeded: files.length === 0 || files.some((path) => matchesAny(path, this.mobileFfi)),
       testFilterset: this.testFilterset(files),
       ...this.unitPlan(files),
     };
@@ -210,6 +234,7 @@ export function toOutputs(result: Classification): Record<string, string | boole
     ...Object.fromEntries(SURFACES.map((surface) => [`${surface}_needed`, result.needed[surface]])),
     docs_only: result.docsOnly,
     perf_icount_needed: result.perfIcountNeeded,
+    mobile_ffi_needed: result.mobileFfiNeeded,
     test_filterset: result.testFilterset,
     unit_mode: result.unitMode,
     unit_targets: result.unitTargets,
