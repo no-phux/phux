@@ -110,7 +110,7 @@ old PTY or its scrollback. There are two different agent restore lanes:
 
 The [saved recipe path](../crates/phux-server/src/runtime/organization.rs)
 and [ACP process startup](../crates/phux-agent-host/src/session/acp.rs) define
-that current limitation; [ACP usage](./agents.md#acp-owned-sessions) covers
+that current limitation; [ACP usage](./acp.md) covers
 readiness and operation receipts.
 
 The [archive resolver](../crates/phux/src/commands/archive.rs) and

@@ -140,19 +140,10 @@ example `switching_tabs_never_resizes_the_chrome` and
 
 ## Frames, wakes, and input
 
-One listener and one event drain exist per runtime client. Drain, then
-invalidate affected terminals. A removed slot clears stale presentation even
-when its generation equals the cached number. Never publish a cached frame as
-evidence of recovery.
-
-Raw-send success is a local queue result, not delivery. Unknown delivery is
-terminal-wide. In Phux Desktop (the `patched-gpui` product build),
-`acknowledge_projection` runs only from the drawable-presented callback on
-a visible, unclipped terminal. Paint and `on_next_frame` do not clear its
-fence; a late callback must not clear a newer fence. Unpatched embedders
-use a weaker next-frame-start receipt, not presentation proof; that lane
-does not meet this product guarantee. See the
-[feature qualification](../clients/desktop/native/phux-gpui/PRESENTATION.md).
+The runtime owns client orchestration; the [renderer contract](./embedding.md#frames-wakes-and-input)
+owns drain/invalidation and unknown-input recovery. Phux Desktop requires
+visible, unclipped drawable presentation before clearing an unknown-input
+fence. The unpatched embedding lane does not provide that product guarantee.
 
 ## Agents, authority, work
 

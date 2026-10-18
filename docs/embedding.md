@@ -49,14 +49,26 @@ a view on a shared `Client`, the host calls `client.destroy_view(view)`;
 dropping the GPUI entity alone leaves that view registered. Sibling views
 and their shared client remain alive.
 
-It builds on the published gpui-fast. Its `patched-gpui` feature adds the
-retained glyph sprites, drawable-presented receipts and macOS key repeat
-that phux's own GPUI patches provide. Phux Desktop enables it and requires
-the [drawable-presented product guarantee](./architecture.md#frames-wakes-and-input).
-An unpatched embedder instead gets the weaker next-frame-start receipt,
-not proof of visible presentation; see the
+It builds on the published gpui-fast. Its `patched-gpui` feature adds retained
+glyph sprites, drawable-presented receipts and macOS key repeat. Phux Desktop
+enables it; the contract below distinguishes the product guarantee from the
+unpatched compatibility lane.
+
+### Frames, wakes, and input
+
+One listener and one event drain exist per runtime client. Drain, then
+invalidate affected terminals. A removed slot clears stale presentation even
+when its generation equals the cached number. Never publish a cached frame as
+evidence of recovery.
+
+Raw-send success is a local queue result, not delivery. Unknown delivery is
+terminal-wide. In Phux Desktop (the `patched-gpui` product build),
+`acknowledge_projection` runs only from the drawable-presented callback on
+a visible, unclipped terminal. Paint and `on_next_frame` do not clear its
+fence; a late callback must not clear a newer fence. Unpatched embedders
+use a weaker next-frame-start receipt, not presentation proof; that lane
+does not meet this product guarantee. See the
 [feature qualification](../clients/desktop/native/phux-gpui/PRESENTATION.md).
-Do not claim the product's unknown-delivery recovery guarantee on that lane.
 
 ## Any Rust toolkit
 
