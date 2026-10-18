@@ -34,7 +34,7 @@ bun tools/main.ts release-manifest fixtures --check
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
-# The Desktop installer tests skip themselves off their platform.
+# The macOS Desktop installer test skips itself off macOS 27+ arm64.
 bun test ./tools/src/install/desktop.e2e.ts
-python3 scripts/test-install-desktop-linux.py
+bun test ./tools/src/install/desktop-linux.e2e.ts
 phux_ok "install surface check passed"

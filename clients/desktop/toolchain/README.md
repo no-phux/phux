@@ -153,10 +153,10 @@ capture/PNG-compositing tests. Run the shipping regression gate on Linux:
 mise exec -- just desktop-renderer-test
 # Optional: retain build outputs in a caller-owned, isolated directory.
 CARGO_TARGET_DIR=/path/to/isolated/target mise exec -- \
-  python3 clients/desktop/toolchain/test-wgpu.py wgpu_renderer::tests
+  bun tools/main.ts desktop-wgpu-test wgpu_renderer::tests
 ```
 
-The gate selects the low-level `wgpu_` modules. Running the script without a
+The gate selects the low-level `wgpu_` modules. Running the command without a
 filter also exercises upstream's opt-in composed-window tile suite: four
 composed-path equivalence failures reproduce unchanged with pristine 0.1.9 on
 lavapipe (`phux-9ddi1`). The desktop does not enable that composition path.
