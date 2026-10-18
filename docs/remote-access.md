@@ -566,7 +566,10 @@ For a phone or tablet `phux pair` also prints a one-tap
 link so only the app owning the domain receives the bearer token) and a
 `phux://connect?…` spelling for older app builds. Treat both like the token.
 On a terminal the link is followed by a scannable QR of it; `--no-qr` leaves
-the QR out, and piped output never carries one.
+the QR out, and piped output never carries one. A QR shown by default also
+includes phone enrollment; if that is unavailable, the mint refuses rather
+than displaying an unusable QR. Piped, `--json`, `--no-qr`, and `--secret-file`
+mints retain their existing opt-in `--enroll` behavior.
 `phux pair --qr` is the form to film: it scales a terminal QR to the window,
 prints whether the credential expires, and does not print the bearer or the
 link (both exist only inside the QR). It includes a single-use enrollment

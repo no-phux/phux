@@ -2395,7 +2395,9 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
     /// On a terminal the connect link is followed by a scannable QR of it
-    /// (`--no-qr` leaves it out). `--qr` is the camera form: a large terminal QR and a clear expiry line,
+    /// (`--no-qr` leaves it out). Both forms include phone enrollment when a
+    /// QR is shown; they refuse before minting if the phone cannot enroll.
+    /// `--qr` is the camera form: a large terminal QR and a clear expiry line,
     /// with the bearer and connect link omitted from the text (they exist only
     /// inside the QR). `--secret-file PATH` is the off-camera pre-pair: the
     /// bearer is written to a new mode-0600 file and is not printed. `--json`
@@ -2505,9 +2507,9 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         /// Also mint a single-use enrollment ticket into the link, so a
         /// device without ssh (a phone) enrolls a workload certificate for a
         /// key it generates and keeps. Needed to reach a server in `paired`
-        /// policy mode. `--qr` implies this for direct phone pairing. The
-        /// ticket expires in ten minutes. With `--relay-route` the device
-        /// enrolls end to end through the relay.
+        /// policy mode. A QR shown on a terminal implies this, including
+        /// through a relay. The ticket expires in ten minutes. With
+        /// `--relay-route` the device enrolls end to end through the relay.
         #[usage(long)]
         enroll: bool,
     },
