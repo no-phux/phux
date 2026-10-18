@@ -250,7 +250,7 @@ records explain history; [look them up deliberately](#historical-decisions).
 
 The 189 numbered ADRs are preserved unchanged at the last integrated
 ADR-bearing main snapshot,
-[`9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23`](https://github.com/no-phux/phux/tree/9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23/docs/adr).
+[`d21db2e345aeaff43a681b3a04dfd43f2cc082ca`](https://github.com/no-phux/phux/tree/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr).
 This is main history, not an ephemeral PR-branch commit. Current contracts
 remain in the live guides and the constraints above; history supplies the
 original trade-offs, rejected alternatives, and context.
@@ -258,16 +258,16 @@ original trade-offs, rejected alternatives, and context.
 From a Git checkout, browse the index or search the complete archive:
 
 ```sh
-git show 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23:docs/adr/README.md
-git grep -n -i 'lease' 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23 -- docs/adr/
-git show 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23:docs/adr/0187-agents-coordinate-through-phux.md
+git show d21db2e345aeaff43a681b3a04dfd43f2cc082ca:docs/adr/README.md
+git grep -n -i 'lease' d21db2e345aeaff43a681b3a04dfd43f2cc082ca -- docs/adr/
+git show d21db2e345aeaff43a681b3a04dfd43f2cc082ca:docs/adr/0187-agents-coordinate-through-phux.md
 ```
 
 A shallow clone may not have that object. Fetch the exact snapshot, then use
 the same commands (or browse the pinned link without a local checkout):
 
 ```sh
-git fetch origin 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23
+git fetch origin d21db2e345aeaff43a681b3a04dfd43f2cc082ca
 ```
 
 Do not revive historical constraints merely because a search found them. Check

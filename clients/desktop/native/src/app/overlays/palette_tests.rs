@@ -166,6 +166,7 @@ fn path_picker() -> crate::connection::path::PickerState {
     )
 }
 
+mod capture;
 mod modals;
 mod navigation;
 mod search;

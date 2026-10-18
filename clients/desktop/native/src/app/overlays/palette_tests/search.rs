@@ -19,45 +19,6 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn capture_prefix_takes_typing_and_retains_a_refused_draft(cx: &mut TestAppContext) {
-    let (handle, desk) = fixture(cx);
-    let cx = &mut VisualTestContext::from_window(handle, cx);
-    keys(cx, "cmd-shift-p");
-    type_text(cx, "!fix the sidebar");
-    assert_eq!(modal(&desk, cx), Modal::Capture);
-    assert!(cx.debug_bounds("capture-panel").is_some());
-    keys(cx, "enter");
-    desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.capture.draft, "fix the sidebar");
-        assert!(desk.capture.error.is_some());
-    });
-    keys(cx, "escape cmd-shift-p");
-    click(cx, "palette-mode-capture");
-    desk.read_with(cx, |desk, cx| {
-        let input = desk.input_entity(InputSlot::Capture).unwrap();
-        assert_eq!(input.read(cx).value().as_str(), "fix the sidebar");
-    });
-    keys(cx, "shift-enter");
-    assert_eq!(modal(&desk, cx), Modal::Capture);
-    desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.capture.draft, "fix the sidebar")
-    });
-}
-
-#[gpui::test]
-fn goto_also_accepts_capture_prefix_and_escape_restores_focus(cx: &mut TestAppContext) {
-    let (handle, desk) = fixture(cx);
-    let cx = &mut VisualTestContext::from_window(handle, cx);
-    keys(cx, "cmd-p");
-    type_text(cx, "!");
-    assert_eq!(modal(&desk, cx), Modal::Capture);
-    type_text(cx, "next thought");
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
-    desk.read_with(cx, |desk, _| assert_eq!(desk.capture.draft, "next thought"));
-}
-
-#[gpui::test]
 fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
