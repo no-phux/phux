@@ -193,7 +193,7 @@ case "$scope" in
     ci)
         native_tools
         node_tools
-        for tool in just actionlint shellcheck jq python3 curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#full-root-validation')"; done
+        for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#full-root-validation')"; done
         if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for workflow routing checks' 'brew install bash; put Homebrew bin on PATH'; fi
         for tool in nextest deny; do
             if cargo "$tool" --version >/dev/null 2>&1; then ok "cargo-$tool"; else
