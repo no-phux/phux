@@ -11,14 +11,9 @@ mod conversation;
 mod desk;
 mod diagnostics;
 mod fleet;
-#[cfg(feature = "ui-fixtures")]
-#[allow(
-    dead_code,
-    reason = "standalone material fixture, not shipping desktop navigation"
-)]
-mod glass_menu;
 mod host;
 mod keys;
+mod menus;
 mod motion;
 mod native_launch;
 mod notifications;
@@ -31,6 +26,7 @@ mod session;
 mod settings_panel;
 mod skin;
 mod typed;
+mod ui;
 mod updates;
 mod view;
 
@@ -85,13 +81,13 @@ pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Ro
 /// Open the real menu material in a standalone native fixture.
 #[cfg(feature = "ui-fixtures")]
 pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
-    glass_menu::preview(cx)
+    ui::menu::preview(cx)
 }
 
 /// Measure native menu creation without opening visible windows.
 #[cfg(feature = "ui-fixtures")]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
-    glass_menu::benchmark(cx)
+    ui::menu::benchmark(cx)
 }
 
 /// Command ids the palette, menus, and key bindings dispatch through [`Run`].

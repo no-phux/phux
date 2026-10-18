@@ -160,7 +160,11 @@ const CATALOG: &str = "\
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
-    tabs-side | Tabs on Side | View |  | Place workspace tabs in a scrollable left rail. | layout vertical placement
+    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar, under their session. | layout vertical placement side rail
+    group-projects | Group Sessions by Project | View |  | List sessions under their repository in the navigator. | view organize
+    group-machines | Group Sessions by Machine | View |  | List sessions under the machine they run on in the navigator. | view hosts organize
+    group-none | Ungroup Sessions | View |  | List every session in one navigator list without headings. | view flat
+    main-menu | Show Main Menu | General |  | Open the session menu beside the window controls. | hub workspace switch machine
     font-up | Increase Font Size | View | cmd+= cmd+shift+= | Make terminal text larger. |
     font-down | Decrease Font Size | View | cmd+- | Make terminal text smaller. |
     font-reset | Reset Font Size | View | cmd+0 | Restore the default terminal text size. |

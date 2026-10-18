@@ -12,7 +12,7 @@ use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
 use super::overlays::{card, corner};
 use super::skin::Look;
-use super::view::{ghost_button, muted};
+use super::ui::{ghost_button, muted};
 use crate::connection::Connection;
 
 #[derive(Default)]
