@@ -6,10 +6,24 @@
 # Mark generated or vendored paths in .gitattributes (`linguist-generated=true`
 # or `linguist-vendored=true`) to exempt them; files whose header says
 # "@generated", "Code generated", or "DO NOT EDIT" are exempt automatically.
+#
+# A merge commit stages the other parent's files too. It may not introduce an
+# oversized file, but a file already over the limit in any parent is not the
+# merge's to split: ordinary commits keep that ratchet.
 set -euo pipefail
 
 max_tokens=5000
 max_bytes=$((max_tokens * 4))
+
+# The commits being merged, if this commit is a merge; empty otherwise.
+merge_parents=()
+merge_head="$(git rev-parse --git-path MERGE_HEAD)"
+if [[ -f "$merge_head" ]]; then
+    merge_parents+=(HEAD)
+    while IFS= read -r parent; do
+        [[ -n "$parent" ]] && merge_parents+=("$parent")
+    done <"$merge_head"
+fi
 
 is_lockfile() {
     case "${1##*/}" in
@@ -31,8 +45,20 @@ has_generated_header() {
         LC_ALL=C grep -qiE '@generated|code generated|auto-?generated|do not edit'
 }
 
+# Already over the limit in a parent of the merge in progress.
+oversized_in_a_parent() {
+    local parent bytes
+    ((${#merge_parents[@]} > 0)) || return 1
+    for parent in "${merge_parents[@]}"; do
+        bytes=$(git cat-file -s "${parent}:$1" 2>/dev/null) || continue
+        ((bytes > max_bytes)) && return 0
+    done
+    return 1
+}
+
 is_exempt() {
-    is_lockfile "$1" || has_exempt_attribute "$1" || has_generated_header "$1"
+    is_lockfile "$1" || has_exempt_attribute "$1" || has_generated_header "$1" ||
+        oversized_in_a_parent "$1"
 }
 
 oversized=()
