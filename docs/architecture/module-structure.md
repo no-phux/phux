@@ -231,7 +231,7 @@ AgentSession has no replica and derives state from its records.
 
 ## `phux-config-core`
 
-The client-neutral half of `config.toml` (ADR-0183). Embedders depend on
+The client-neutral half of `config.toml` (ADR-0186). Embedders depend on
 this crate, not on `phux-config`.
 
 ```
@@ -314,11 +314,15 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   relay bound to phux's ALPNs, `phxT` tunnel tag, and state directory
   (ADR-0181); never parses phux frames.
 - **`quictun`** — the blind QUIC tunnel relay, with no phux dependency
-  (ADR-0181). `relay/` is the endpoint, SNI gate, route-token store, and
-  splice; `tunnel.rs` the wire (preamble, close codes, connection-ID tag);
-  `connect.rs` the service's tunnel and consumer's dial; `pin.rs` leaf
-  pinning; `window.rs`, `cert.rs`, and `secret_file.rs` the modules
-  `phux-dial` re-exports.
+  (ADR-0181, ADR-0183, ADR-0185). `relay/` is the endpoint, SNI gate, route-token
+  store, per-source and per-route shares (`shares.rs`), and the TCP ingress
+  (`ingress.rs`); `splice.rs` the byte pumps and their half-close rule;
+  `tunnel.rs` the wire (preamble, close codes, connection-ID tag);
+  `connect.rs` the service's tunnel and consumer's dial; `forward.rs` TCP
+  forwarding with TLS at the service and multiplexed `connect`; `acme/`
+  the ACME client (TLS-ALPN-01, ADR-0185); `main.rs` the `quictun` binary;
+  `pin.rs` leaf pinning; `window.rs`, `cert.rs`, and `secret_file.rs` the
+  modules `phux-dial` re-exports.
 - **`phux-record`** — offline recording codec and exporter (ADR-0060), pure
   and synchronous.
 - **`phux-mcp`** — hand-rolled JSON-RPC/stdio MCP adapter over

@@ -166,6 +166,17 @@ mod tests {
 
     use phux_config_core::{ClientConfig, loader::parse_client};
 
+    #[test]
+    fn client_view_ignores_invalid_tui_schema_but_full_loader_still_rejects_it() {
+        let path = Path::new("config.toml");
+        let input = "[keybindings]\nprefix = 42\n";
+        assert_eq!(
+            parse_client(input, path).expect("client does not read keybindings"),
+            ClientConfig::default()
+        );
+        assert!(super::parse_with_defaults(input, path).is_err());
+    }
+
     /// `phux-config-core`'s client view starts from an empty stack, which is
     /// right only while the shipped defaults set none of its tables.
     #[test]

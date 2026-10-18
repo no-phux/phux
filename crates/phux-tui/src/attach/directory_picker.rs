@@ -111,7 +111,7 @@ pub(super) fn picker_status(
     match host {
         ListingHost::Satellite(_) => path.to_owned(),
         ListingHost::Attached | ListingHost::AttachedInsteadOf(_) => {
-            crate::render::overlay::path_picker::home_to_tilde(path, home)
+            crate::render::home_to_tilde(path, home)
         }
     }
 }

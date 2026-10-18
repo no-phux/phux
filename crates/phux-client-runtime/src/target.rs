@@ -666,6 +666,25 @@ mod tests {
     }
 
     #[test]
+    fn resolves_layered_remotes_without_reading_tui_tables() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("shared.toml"),
+            "[[remote]]\nname = 'mini'\nendpoint = 'quic://127.0.0.1:8788'\n",
+        )
+        .expect("shared registry");
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "extends = ['shared.toml']\n[keybindings]\nprefix = 42\n",
+        )
+        .expect("config with invalid TUI schema");
+        let resolved = resolve("mini", Some(&config)).expect("client-neutral resolution");
+        assert_eq!(resolved.name, "mini");
+        assert_eq!(resolved.endpoint, "quic://127.0.0.1:8788");
+    }
+
+    #[test]
     fn a_relay_routed_entry_resolves_with_its_tls_server_name() {
         let mut routed = entry("mini", "quic://relay.example:4433");
         routed.tls_server_name = Some("mini-route".to_owned());

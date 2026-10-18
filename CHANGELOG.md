@@ -9,6 +9,71 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.106.0](https://github.com/no-phux/phux/compare/v0.105.1...v0.106.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** get public certificates by ACME TLS-ALPN-01 and multiplex consumers ([#1623](https://github.com/no-phux/phux/issues/1623)) ([c5e03b7](https://github.com/no-phux/phux/commit/c5e03b726d20d373825b69e526226934946eea57))
+
+## [0.105.1](https://github.com/no-phux/phux/compare/v0.105.0...v0.105.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **server:** preserve PTY output order during inline writes ([#1618](https://github.com/no-phux/phux/issues/1618)) ([aac312b](https://github.com/no-phux/phux/commit/aac312bdf23c704d8855927a39a1e3acf921ff9e))
+
+## [0.105.0](https://github.com/no-phux/phux/compare/v0.104.0...v0.105.0) (2026-10-18)
+
+
+### Features
+
+* **tui:** fleet rows name the kind only when it adds to the name ([e326ecf](https://github.com/no-phux/phux/commit/e326ecf83b66753ff7770b9c700e1d3835134610))
+
+
+### Bug Fixes
+
+* **opencode:** prepare host-compatible dependency release 0.6.2 ([#1616](https://github.com/no-phux/phux/issues/1616)) ([78341ce](https://github.com/no-phux/phux/commit/78341ce743883d03a6da0ce815e46e433cf7c219))
+* **tui:** one agent-state glyph vocabulary across the sidebar, tab bar and fleet ([605dfe2](https://github.com/no-phux/phux/commit/605dfe2eb4defdba24f206b24f0db4e756e0d69f))
+
+
+### Refactors
+
+* **tui:** one home-to-tilde rule for the Settings path and the pickers ([1f1859b](https://github.com/no-phux/phux/commit/1f1859b666895574665bf875c0612d0c35082fe4))
+
+## [0.104.0](https://github.com/no-phux/phux/compare/v0.103.0...v0.104.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** a standalone tunnel: binary, TCP ingress, half-close, per-route caps ([#1612](https://github.com/no-phux/phux/issues/1612)) ([2df25c3](https://github.com/no-phux/phux/commit/2df25c32adcdad354269c54e502a1814a24811c0))
+
+
+### Bug Fixes
+
+* **ci:** a desktop-test dispatch on main never cancels the running main run ([ea62987](https://github.com/no-phux/phux/commit/ea62987f3fa30e9d4b4721cc69cae884d3dfc9c0))
+
+## [0.103.0](https://github.com/no-phux/phux/compare/v0.102.0...v0.103.0) (2026-10-18)
+
+
+### Features
+
+* **desktop:** ship native Linux desktop on X11 and Wayland ([#1602](https://github.com/no-phux/phux/issues/1602)) ([1d77164](https://github.com/no-phux/phux/commit/1d771648c37eaf395576b46b9e50f912f13553a3))
+* **federation:** reverse enrollment, satellites dial out and the hub adopts the link ([#1592](https://github.com/no-phux/phux/issues/1592)) ([7c8a9ff](https://github.com/no-phux/phux/commit/7c8a9ffe5b44f0b2130a53d1fd5623bb0d11b8bb))
+* **tui:** context menus name what they act on ([0b5587d](https://github.com/no-phux/phux/commit/0b5587d1917289e246e7dcb11c35780b56175da1))
+* **tui:** pickers, prompts and the kill confirm say what their chord says ([479b8f8](https://github.com/no-phux/phux/commit/479b8f847f7776fa7cd4bec5cc0baf5c238e5c94))
+* **tui:** the copy-mode strip reads as a sentence and keeps a key legend when narrow ([a970ad7](https://github.com/no-phux/phux/commit/a970ad72d12ad920a50582303ea1f8f46a604ea5))
+
+
+### Bug Fixes
+
+* **relay:** keep direct QUIC uploads direct and tighten the blind-relay refusals ([#1596](https://github.com/no-phux/phux/issues/1596)) ([ac360b4](https://github.com/no-phux/phux/commit/ac360b4071515dfce22e550a2a976817eff00cf6))
+* **release:** stop macOS queue starvation from stranding drafts ([#1608](https://github.com/no-phux/phux/issues/1608)) ([3f6d2b5](https://github.com/no-phux/phux/commit/3f6d2b56c7a963bd5a5caccf1bd5c2d5a7098479))
+* **tui:** modal footers stay apart on a narrow box and a filtered picker says no matches ([c17fb56](https://github.com/no-phux/phux/commit/c17fb56a6fd69b73c6495a3c1ec4b0d9d573ea19))
+* **tui:** narrow and short viewports keep the ends of what they show ([cfa0074](https://github.com/no-phux/phux/commit/cfa0074999f27f1779d490497a708d8483bff98a))
+* **tui:** right-aligned widgets move left of the prefix chip whole ([e4051da](https://github.com/no-phux/phux/commit/e4051daea129a0f2d1d14981cf5f3aed1e8d02fb))
+* **tui:** the which-key panel fits a short viewport and says what it left out ([3bbb23f](https://github.com/no-phux/phux/commit/3bbb23f33abd589677a2deeb7e65a54e1df8269c))
+
 ## [0.102.0](https://github.com/no-phux/phux/compare/v0.101.0...v0.102.0) (2026-10-17)
 
 

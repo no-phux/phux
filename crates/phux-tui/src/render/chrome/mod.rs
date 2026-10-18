@@ -31,6 +31,20 @@ pub(crate) const AGENT_BLOCKED_GLYPH: &str = "●";
 pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";
 /// Filled diamond: finished, and nobody has looked yet.
 pub(crate) const AGENT_DONE_GLYPH: &str = "◆";
+/// Hollow ring: idle or unknown.
+pub(crate) const AGENT_IDLE_GLYPH: &str = "○";
+
+/// The one glyph for a declared agent state, shared by the sidebar, the tab
+/// bar, pane titles and the fleet picker.
+#[must_use]
+pub(crate) const fn agent_state_glyph(state: AgentMetaState) -> &'static str {
+    match state {
+        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
+        AgentMetaState::Working => AGENT_WORKING_GLYPH,
+        AgentMetaState::Done => AGENT_DONE_GLYPH,
+        AgentMetaState::Idle | AgentMetaState::Unknown => AGENT_IDLE_GLYPH,
+    }
+}
 
 /// Resolve the badge for one agent pane.
 ///
@@ -40,6 +54,10 @@ pub(crate) const AGENT_DONE_GLYPH: &str = "◆";
 /// ◐ working
 /// ○ done+seen / idle / unknown
 /// ```
+///
+/// The glyphs are `agent_state_glyph`'s, with one exception: a `done` the
+/// user has already looked at needs no one, so it relaxes to the idle ring
+/// instead of keeping the diamond.
 #[must_use]
 pub fn agent_badge(
     theme: &Theme,
@@ -55,12 +73,10 @@ pub fn agent_badge(
         AgentMetaState::Unknown => theme.dim,
     };
     let unreviewed_done = state == AgentMetaState::Done && !seen;
-    let glyph = match state {
-        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
-        // "look at me": finished, unread.
-        AgentMetaState::Done if !seen => AGENT_DONE_GLYPH,
-        AgentMetaState::Working => AGENT_WORKING_GLYPH,
-        AgentMetaState::Done | AgentMetaState::Idle | AgentMetaState::Unknown => "○",
+    let glyph = if state == AgentMetaState::Done && seen {
+        AGENT_IDLE_GLYPH
+    } else {
+        agent_state_glyph(state)
     };
     AgentBadge {
         glyph,

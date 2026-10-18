@@ -2,9 +2,10 @@
 //!
 //! The writer thread still owns every queued request. A legacy printable
 //! key may write the master on the receive task when nothing is queued and
-//! the writer is blocked in `recv`, then nonblocking-read the kernel echo
-//! and hand it to the actor on the same channel the reader uses. The two
-//! sides share one phase bit so a queued byte is never written second.
+//! the writer is blocked in `recv`. Output stays with the authoritative PTY
+//! reader: two descriptors reading and enqueueing independently can reorder
+//! bytes before the actor assigns sequence numbers. The two write paths
+//! share one phase bit so a queued byte is never written second.
 //!
 //! A key that missed the inline path is counted in `lane_ahead` before it
 //! is handed to the input lane. `pending` stays zero until that lane
@@ -16,20 +17,17 @@
     reason = "pub(crate) module: unreachable_pub wants pub(crate) items, and redundant_pub_crate wants pub"
 )]
 
-use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
-use bytes::Bytes;
 use portable_pty::MasterPty;
 use tokio::sync::mpsc;
 
 use super::EncodedInputRequest;
 use super::INPUT_CREDITS;
-use super::park::note_read;
-use super::spawn::{self, PtyEvent, WriterLoopControl, send_pty_chunk, service_write_request};
+use super::spawn::{self, WriterLoopControl, service_write_request};
 
 const IDLE: u8 = 0;
 const BUSY: u8 = 1;
@@ -37,8 +35,7 @@ const BUSY: u8 = 1;
 /// What [`PtyFastPath::try_direct`] did with the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectWrite {
-    /// `write(2)` and `flush` succeeded, and the echo was stolen if it was
-    /// already sitting in the master.
+    /// `write(2)` and `flush` succeeded; the PTY reader owns the echo.
     Wrote,
     /// Refused or failed before a retry would help. The caller drops the key.
     Handled,
@@ -115,16 +112,12 @@ pub(crate) struct PtyFastPath {
     cv: Condvar,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     io: Mutex<WriterSlot>,
-    echo_read: Mutex<File>,
-    pty_tx: mpsc::Sender<PtyEvent>,
 }
 
 impl PtyFastPath {
     pub(super) fn new(
         input_tx: mpsc::Sender<EncodedInputRequest>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-        echo_read: File,
-        pty_tx: mpsc::Sender<PtyEvent>,
         writer: Box<dyn Write + Send>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -138,8 +131,6 @@ impl PtyFastPath {
             io: Mutex::new(WriterSlot {
                 writer: Some(std::mem::ManuallyDrop::new(writer)),
             }),
-            echo_read: Mutex::new(echo_read),
-            pty_tx,
         })
     }
 
@@ -208,9 +199,6 @@ impl PtyFastPath {
             }
         }
         let outcome = self.write_direct(bytes);
-        if outcome == DirectWrite::Wrote {
-            self.steal_echo();
-        }
         self.release_busy();
         outcome
     }
@@ -315,26 +303,10 @@ impl PtyFastPath {
         }
     }
 
-    /// Nonblocking read of the echo just written. The hot reader uses the
-    /// other dup; exactly one `read(2)` consumes the bytes.
-    fn steal_echo(&self) {
-        let mut file = lock(&self.echo_read);
-        let mut buf = [0_u8; 1024];
-        match file.read(&mut buf) {
-            Ok(n) if n > 0 => {
-                note_read(n);
-                let chunk = Bytes::copy_from_slice(&buf[..n]);
-                let _ = send_pty_chunk(&self.pty_tx, chunk, Instant::now());
-            }
-            _ => {}
-        }
-    }
-
     /// Refuse further direct writes and enqueues, and give up this path's
     /// sender so the writer thread drains what is queued and ends once the
     /// actor drops its own. Without this the writer would wait on a channel
-    /// this struct keeps open, and keep the master and the echo descriptor
-    /// alive with it.
+    /// this struct keeps open, and keep the master alive with it.
     pub(super) fn close(&self) {
         let sender = lock(&self.admit).take();
         drop(sender);

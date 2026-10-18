@@ -98,6 +98,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Federation and transport
 
+- [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) `quictun expose --acme-domain` obtains and renews a public certificate by TLS-ALPN-01 through the relay's TCP ingress; `Protocol::consumer_streams` lets one consumer connection carry many bridged streams (phux keeps one), and `connect` multiplexes every local connection onto one.
+- [0183](./0183-quictun-is-a-standalone-tunnel-product.md) `quictun` ships `relay`/`pair`/`expose`/`connect` with TLS ending at the service, a TCP ingress routed by ClientHello server name, per-route consumer caps, and a protocol-chosen half-close; accounts stay in the backend that writes the route-token store.
 - [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
 - [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is `crates/quictun`, which depends on no phux crate: a deployment supplies its ALPNs and connection-ID tag as a `Protocol`, and `phux-relay` is phux's binding.
 - [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) `phux attach --ssh` bootstraps over ssh: the host's server opens a QUIC listener for one attach on a local-socket-only `OPEN_LISTENER`, admits only an in-memory token, and closes it after its linger; `ssh://` entries try this before `ssh -t`.
@@ -200,7 +202,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Config
 
-- [0183](./0183-the-client-neutral-config-is-its-own-crate.md) `phux-config-core` holds the config path, layer merge, `[[remote]]`, `[organize]` and instance paths; embedders depend on it, not on the TUI's `phux-config`.
+- [0186](./0186-the-client-neutral-config-is-its-own-crate.md) `phux-config-core` holds the config path, layer merge, `[[remote]]`, `[organize]` and instance paths; embedders depend on it, not on the TUI's `phux-config`.
 - [0101](./0101-the-settings-page-edits-the-file.md) The settings page edits one key per change in `config.toml`; running state never writes back.
 - [0041](./0041-managed-plugin-installs.md) `phux plugin install` fetches into one managed directory with system tools and one `plugins.lock`.
 - [0039](./0039-layered-config.md) Config is an ordered `extends` stack; arrays replace unless a key opts into `-append`.
@@ -208,6 +210,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Release, CI, and docs
 
+- [0184](./0184-build-and-ci-logic-is-one-bun-package.md) Build, release and CI logic is one TypeScript package, `tools/`, on the pinned Bun; crate facts come from the Cargo manifests, and no build or CI decision is made in Python.
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
 - [0178](./0178-release-checksums-are-minisign-signed.md) CI minisign-signs every release sidecar with one Actions-held key; `phux update` verifies it against embedded current and next keys and refuses an unsigned or foreign checksum.

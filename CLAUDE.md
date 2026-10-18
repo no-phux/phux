@@ -87,7 +87,7 @@ ADR-0133), `phux-client-ffi` (the one binding crate: `projection/` plus the
 `c-abi` encoder for native embedders and the
 `uniffi` encoder for phux-mobile; ADR-0135), `phux-config` (TOML + widgets + the settings
 catalogue), `phux-config-core` (its client-neutral half: path, layer merge,
-`[[remote]]`, `[organize]`; what embedders depend on, ADR-0183), `phux-work` (the work store and its single-writer keeper),
+`[[remote]]`, `[organize]`; what embedders depend on, ADR-0186), `phux-work` (the work store and its single-writer keeper),
 `phux-mission` (mission control documents over it), `phux` (binary). Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
 — read it before assuming a capability is missing. `phux-protocol` is

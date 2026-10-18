@@ -3,10 +3,11 @@
 //!
 //! Names and URLs are derived from the product, the build, and the target,
 //! never read from the network, so a manifest vouches for an asset only
-//! through its digest. `scripts/ci/release_manifest.py` writes the manifest
-//! and `scripts/install.sh` derives the same names; the golden manifests in
-//! `scripts/fixtures/release-manifest/` keep all three in step. A digest is
-//! trusted only once [`signature`] verifies that a release key signed it.
+//! through its digest. `tools/src/release/release-manifest.ts` writes the
+//! manifest and `scripts/install.sh` derives the same names; the golden
+//! manifests in `scripts/fixtures/release-manifest/` keep all three in step.
+//! A digest is trusted only once [`signature`] verifies that a release key
+//! signed it.
 
 pub mod signature;
 

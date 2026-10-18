@@ -1,0 +1,182 @@
+//! The relay's entire data path: two opaque byte pumps.
+//!
+//! Read, forward, nothing else: the relay decodes nothing it forwards, by
+//! construction. What should cross is each consumer's end-to-end TLS session
+//! with the service: ciphertext to the relay.
+
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
+
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+
+use crate::HalfClose;
+
+/// A reader that appends what it yields to `sink`, when there is one: the
+/// relay's tap for tests, a plain pass-through in production.
+pub(crate) struct Tee<R> {
+    inner: R,
+    sink: Option<Arc<Mutex<Vec<u8>>>>,
+}
+
+impl<R> Tee<R> {
+    pub(crate) const fn new(inner: R, sink: Option<Arc<Mutex<Vec<u8>>>>) -> Self {
+        Self { inner, sink }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Tee<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let (Poll::Ready(Ok(())), Some(sink)) = (&polled, &this.sink) {
+            sink.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(&buf.filled()[before..]);
+        }
+        polled
+    }
+}
+
+/// Splice `a_recv -> b_send` and `b_recv -> a_send` concurrently. When a
+/// direction reaches end of stream (or fails), its writer is shut down,
+/// propagating a FIN; `half_close` decides whether the other direction
+/// keeps flowing. Unused halves drop with the caller.
+pub(crate) async fn splice<AR, AW, BR, BW>(
+    mut a_recv: AR,
+    mut b_send: BW,
+    mut b_recv: BR,
+    mut a_send: AW,
+    half_close: HalfClose,
+) where
+    AR: AsyncRead + Unpin,
+    AW: AsyncWrite + Unpin,
+    BR: AsyncRead + Unpin,
+    BW: AsyncWrite + Unpin,
+{
+    let a_to_b = async {
+        let _ = tokio::io::copy(&mut a_recv, &mut b_send).await;
+        let _ = b_send.shutdown().await;
+    };
+    let b_to_a = async {
+        let _ = tokio::io::copy(&mut b_recv, &mut a_send).await;
+        let _ = a_send.shutdown().await;
+    };
+    match half_close {
+        HalfClose::EndsBridge => {
+            tokio::select! {
+                () = a_to_b => {}
+                () = b_to_a => {}
+            }
+        }
+        HalfClose::Propagate => {
+            tokio::join!(a_to_b, b_to_a);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, duplex, split};
+
+    #[tokio::test]
+    async fn bytes_flow_in_both_directions() {
+        // consumer end <-> (a side | splice | b side) <-> tunnel end
+        let (mut consumer, a_side) = duplex(64);
+        let (mut tunnel, b_side) = duplex(64);
+        let (a_recv, a_send) = split(a_side);
+        let (b_recv, b_send) = split(b_side);
+        let bridge = tokio::spawn(splice(
+            a_recv,
+            b_send,
+            b_recv,
+            a_send,
+            HalfClose::EndsBridge,
+        ));
+
+        consumer.write_all(b"to-tunnel").await.unwrap();
+        let mut buf = [0u8; 9];
+        tunnel.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"to-tunnel");
+
+        tunnel.write_all(b"to-consumer").await.unwrap();
+        let mut buf = [0u8; 11];
+        consumer.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"to-consumer");
+
+        drop(consumer);
+        bridge.await.unwrap();
+    }
+
+    /// A tee forwards exactly what it reads and records the same bytes.
+    #[tokio::test]
+    async fn a_tee_records_what_it_forwards() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mut tee = Tee::new(&b"ciphertext"[..], Some(Arc::clone(&sink)));
+        let mut read = Vec::new();
+        tee.read_to_end(&mut read).await.unwrap();
+        assert_eq!(read, b"ciphertext");
+        assert_eq!(*sink.lock().unwrap(), b"ciphertext");
+    }
+
+    /// Whichever side half-closes first, its last bytes and FIN reach the
+    /// other side and the whole bridge ends.
+    #[tokio::test]
+    async fn half_close_from_either_side_propagates_and_ends_the_bridge() {
+        for consumer_closes in [true, false] {
+            let (mut consumer, a_side) = duplex(64);
+            let (mut tunnel, b_side) = duplex(64);
+            let (a_recv, a_send) = split(a_side);
+            let (b_recv, b_send) = split(b_side);
+            let bridge = tokio::spawn(splice(
+                a_recv,
+                b_send,
+                b_recv,
+                a_send,
+                HalfClose::EndsBridge,
+            ));
+
+            let (closer, reader) = if consumer_closes {
+                (&mut consumer, &mut tunnel)
+            } else {
+                (&mut tunnel, &mut consumer)
+            };
+            closer.write_all(b"final").await.unwrap();
+            closer.shutdown().await.unwrap();
+            let mut received = Vec::new();
+            reader.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, b"final");
+            bridge.await.unwrap();
+        }
+    }
+
+    /// Under [`HalfClose::Propagate`] a side that half-closes still reads
+    /// everything the other side sends afterwards.
+    #[tokio::test]
+    async fn propagated_half_close_keeps_the_other_direction_flowing() {
+        let (mut consumer, a_side) = duplex(64);
+        let (mut tunnel, b_side) = duplex(64);
+        let (a_recv, a_send) = split(a_side);
+        let (b_recv, b_send) = split(b_side);
+        let bridge = tokio::spawn(splice(a_recv, b_send, b_recv, a_send, HalfClose::Propagate));
+
+        consumer.write_all(b"request").await.unwrap();
+        consumer.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        tunnel.read_to_end(&mut request).await.unwrap();
+        assert_eq!(request, b"request", "the FIN arrives after the bytes");
+
+        tunnel.write_all(b"reply after the FIN").await.unwrap();
+        tunnel.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        consumer.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply, b"reply after the FIN");
+        bridge.await.unwrap();
+    }
+}

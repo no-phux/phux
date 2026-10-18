@@ -17,19 +17,21 @@ The repository is public, so standard hosted runners are free. Workflows use
 `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`, with no
 larger or self-hosted runners. The account allows 20 concurrent standard
 jobs, 5 of them macOS. Concurrency groups use the `mini-v1-` namespace, and
-`pr-janitor` cancels a closed PR's live runs.
+`pr-janitor` cancels a closed PR's live runs. The tests in `tools/src/policy/`
+(part of `just tools-check`) hold every workflow to these rules, the cache
+rules below, and artifact provenance.
 
 ## Routing
 
-[`scripts/ci/classify-changes.py`](../scripts/ci/classify-changes.py) owns the
-routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
+[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts) owns the
+routes, and `bun tools/main.ts detect-changes` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
-`.github/actions/classify-changes`, with no outer path filters.
-The web and desktop lanes' `crates/*` routes are not listed: the classifier
-walks the Cargo manifests from each lane's entry points (`LANE_ROOTS`) and
-follows an optional dependency only when an enabled feature turns it on, so
-a dependency added or dropped re-routes without a table edit.
+`.github/actions/classify-changes`, with no outer path filters. Root crates
+are not listed: the web and desktop lanes route the closure of what their
+builds compile (`LANE_BUILDS`), read from the Cargo manifests. Optional
+dependencies count only when an enabled feature turns them on, so a
+dependency added or dropped re-routes on its own.
 `desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
 jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
@@ -41,8 +43,10 @@ ceilings catch only gross regressions. `package` builds the debug CLI and
 `just desktop-package`, then runs `smoke-app.ts` with
 `--allow-unconfirmed-present` and uploads the evidence directory. Neither job
 holds a build cache, so each run is two cold GPUI and libghostty builds on the
-5 macOS slots shared with the release lanes; a burst of core-crate merges to
-`main` can queue a release behind them. A hosted virtual display never
+5 macOS slots shared with the release lanes. So `main` keeps one running and
+one pending desktop-test run, not one per merge: per-SHA runs once stacked
+~35 macOS jobs ahead of the release builds and left drafts unpublished for
+hours. A hosted virtual display never
 confirms a presented drawable, so real-GPU qualification stays manual:
 `just desktop-native-test` on an Apple silicon Mac with a graphical login
 requires `confirmed` presentation.
@@ -68,8 +72,8 @@ request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
 unrelated crates. A `tests/`-only diff builds just that test. Pushes to
 `main` run the full pool. A release PR's version-only hunks
-(`scripts/ci/release_metadata.py`) skip compile lanes.
-`bash scripts/ci/check-classify-changes.sh` tests the routes.
+(`tools/src/routing/release-metadata.ts`) skip compile lanes.
+`just tools-check` tests the routes.
 
 The required `ci` aggregate rejects failed or cancelled lanes. The test
 profile compiles once per run: `test build` runs `just test-archive`, which
