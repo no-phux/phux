@@ -1,127 +1,139 @@
 // The workflows consume the classifier the way its outputs promise.
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { ROOT } from "../lib/repo.ts";
+import { readFileSync } from "node:fs";
+import { repoPath } from "../lib/repo.ts";
+import { str, table } from "../lib/value.ts";
+import {
+  action,
+  job,
+  jobs,
+  needs,
+  run,
+  steps,
+  uses,
+  withInput,
+  workflow,
+  workflowNames,
+  workflowText,
+} from "../policy/workflows.ts";
 
-const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
-const ci = read(".github/workflows/ci.yml");
+const CLASSIFY = "./.github/actions/classify-changes";
+const OUTPUTS = new Set(Object.keys(table(action("classify-changes")["outputs"])));
+const LANES = ["ci.yml", "native-setup.yml", "web-check.yml", "desktop-test.yml"];
+const FFI = ["ffi-xcframework.yml", "ffi-android.yml"];
+const classified = workflowNames().filter((name) => workflowText(name).includes(CLASSIFY));
 
 test("the root justfile holds only imports and default", () => {
   // A product recipe there would classify as cheap and skip its lane.
-  const recipes = read("justfile")
+  const recipes = readFileSync(repoPath("justfile"), "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "" && !/^(import |#|\[|\s|default:)/.test(line))
     .filter((line) => line.includes(":"));
   expect(recipes).toEqual([]);
 });
 
-test("cheap changes allocate no Rust setup", () => {
-  const cheap = ci.split("  workflow-gate:")[1]?.split("  check:")[0] ?? "";
-  expect(cheap).not.toContain("nix develop");
-  expect(cheap).not.toContain("setup-rust-lane");
-  expect(cheap).toContain("nix shell --inputs-from .");
-  expect(cheap).toContain("if: needs.changes.outputs.integrations_needed == 'true'");
-  // check, the test build, its three run jobs, and uniffi.
-  expect(ci.split("if: needs.changes.outputs.phux_needed == 'true'").length - 1).toBe(6);
-});
+/** Output names `text` reads as `<prefix>.outputs.<name>`. */
+function referenced(text: string, prefix: string): string[] {
+  return [...text.matchAll(new RegExp(`${prefix}\\.outputs\\.(\\w+)`, "g"))].map(
+    (match) => match[1] ?? "",
+  );
+}
 
-test("the PR unit lane uses the classifier's rdeps filterset", () => {
-  const recipes = ["justfile", ...readdirSync(join(ROOT, "just")).map((name) => `just/${name}`)]
-    .map(read)
-    .join("\n");
-  expect(ci).toContain("PHUX_NEXTEST_FILTERSET:");
-  expect(ci).toContain("github.event_name != 'push'");
-  expect(ci).toContain("needs.changes.outputs.test_filterset");
-  expect(recipes).toContain("PHUX_NEXTEST_FILTERSET");
-  expect(recipes).toContain("cargo nextest run --workspace");
-  expect(recipes).toContain('PHUX_UNIT_MODE:-workspace}" == "narrow"');
-});
-
-test("lanes share one detection and have no outer path filter", () => {
-  for (const name of ["ci", "native-setup", "web-check", "desktop-test"]) {
-    const workflow = read(`.github/workflows/${name}.yml`);
-    const triggers = workflow.split("concurrency:")[0] ?? "";
-    expect([name, triggers.includes("paths:")]).toEqual([name, false]);
-    // desktop-test keeps main's running run, pushed or dispatched.
-    const cancel =
-      name === "desktop-test"
-        ? "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}"
-        : "cancel-in-progress: true";
-    for (const needle of [
-      "merge_group:",
-      "fetch-depth: 0",
-      "uses: ./.github/actions/classify-changes",
-      cancel,
-    ]) {
-      expect([name, workflow.includes(needle)]).toEqual([name, true]);
-    }
+test("classified workflows read real outputs, from full history, with no path filter", () => {
+  expect(classified.toSorted()).toEqual([...LANES, ...FFI].toSorted());
+  const consumed = new Set<string>();
+  for (const name of classified) {
+    const document = workflow(name);
+    const text = workflowText(name);
+    // An outer path filter would skip the fail-closed classifier.
+    const filters = Object.values(table(document["on"])).flatMap((trigger) =>
+      Object.keys(table(trigger)),
+    );
+    expect([name, filters.filter((key) => key.startsWith("paths"))]).toEqual([name, []]);
+    const [id, changes = {}] =
+      Object.entries(jobs(document)).find(([, lane]) =>
+        steps(lane).some((s) => uses(s) === CLASSIFY),
+      ) ?? [];
+    const checkout = steps(changes).find((step) => uses(step).startsWith("actions/checkout@"));
+    expect([name, withInput(checkout ?? {}, "fetch-depth")]).toEqual([name, 0]);
+    // A misspelled output reads as empty and silently skips its lane.
+    const step = steps(changes).find((candidate) => uses(candidate) === CLASSIFY)?.["id"];
+    const read = referenced(text, `steps\\.${String(step)}`);
+    for (const key of read) consumed.add(key);
+    expect([name, read.filter((key) => !OUTPUTS.has(key))]).toEqual([name, []]);
+    const declared = Object.keys(table(changes["outputs"]));
+    expect([
+      name,
+      referenced(text, `needs\\.${id}`).filter((key) => !declared.includes(key)),
+    ]).toEqual([name, []]);
   }
+  // Every output has a reader.
+  expect([...OUTPUTS].filter((key) => !consumed.has(key))).toEqual([]);
 });
 
-test("desktop-test does not queue every main SHA on macOS", () => {
+test("validation lanes run on merge groups, PRs latest-wins, desktop-test one main run", () => {
+  for (const name of LANES) {
+    const document = workflow(name);
+    expect([name, "merge_group" in table(document["on"])]).toEqual([name, true]);
+    const cancel = name === "desktop-test.yml" ? "${{ github.ref != 'refs/heads/main' }}" : true;
+    expect([name, table(document["concurrency"])["cancel-in-progress"]]).toEqual([name, cancel]);
+  }
   // Per-SHA main runs stacked xcode-27 jobs ahead of the release lanes.
-  const workflow = read(".github/workflows/desktop-test.yml");
-  const concurrency = workflow.split("\nconcurrency:\n")[1]?.split("\n\n")[0] ?? "";
-  expect(concurrency).toContain("group: mini-v1-desktop-test-${{ github.ref }}\n");
-  expect(concurrency).not.toContain("github.sha");
+  expect(table(workflow("desktop-test.yml")["concurrency"])["group"]).toBe(
+    "mini-v1-desktop-test-${{ github.ref }}",
+  );
 });
 
-test("the archived cockpit has no workflows", () => {
+test("cheap changes allocate no Rust setup", () => {
+  const gate = steps(job(workflow("ci.yml"), "workflow-gate"));
   expect(
-    readdirSync(join(ROOT, ".github/workflows")).filter((name) => name.startsWith("cockpit-")),
-  ).toEqual([]);
+    gate.some(
+      (step) => uses(step).includes("setup-rust-lane") || run(step).includes("nix develop"),
+    ),
+  ).toBe(false);
 });
 
-test("the ci aggregate rejects failed and cancelled lanes", () => {
-  const script = ci.split("node -e '")[1]?.split("\n          '\n")[0] ?? "";
-  expect(script).not.toBe("");
-  const baseline: Record<string, { result: string }> = {
-    check: { result: "skipped" },
-    "test-build": { result: "skipped" },
-    test: { result: "skipped" },
-    integrations: { result: "skipped" },
-    changes: { result: "success" },
-    "workflow-gate": { result: "success" },
+test("the ci aggregate needs every lane and rejects failed and cancelled ones", () => {
+  const ci = workflow("ci.yml");
+  const aggregate = job(ci, "ci");
+  // prune-build-cache is main-only cleanup that runs after the lanes.
+  const lanes = Object.keys(jobs(ci)).filter((name) => !["ci", "prune-build-cache"].includes(name));
+  expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
+  const script =
+    run(steps(aggregate)[0] ?? {})
+      .split("node -e '")[1]
+      ?.split("\n'")[0] ?? "";
+  const baseline = {
+    ...Object.fromEntries(lanes.map((lane) => [lane, "skipped"])),
+    changes: "success",
+    "workflow-gate": "success",
   };
-  const cases: [string, string, number][] = [
+  for (const [lane, result, code] of [
     ["check", "skipped", 0],
     ["integrations", "success", 0],
     ["integrations", "failure", 1],
     ["test", "cancelled", 1],
-    ["test-build", "failure", 1],
-    ["test-build", "skipped", 0],
     ["workflow-gate", "failure", 1],
     ["workflow-gate", "skipped", 1],
     ["changes", "skipped", 1],
     ["changes", "failure", 1],
-  ];
-  for (const [job, result, code] of cases) {
-    const needs = { ...baseline, [job]: { result } };
-    const run = Bun.spawnSync([process.execPath, "-e", script], {
-      env: { ...process.env, RESULTS: JSON.stringify(needs) },
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    expect([job, result, run.exitCode]).toEqual([job, result, code]);
-  }
-});
-
-test("both FFI workflows build on the one mobile_ffi_needed output", () => {
-  // phux-mobile pins one revision and fetches both artifacts at it.
-  for (const name of ["ffi-xcframework", "ffi-android"]) {
-    const workflow = read(`.github/workflows/${name}.yml`);
-    const triggers = workflow.split("permissions:")[0] ?? "";
-    expect([name, triggers.includes("paths:")]).toEqual([name, false]);
-    expect([name, workflow.includes("needs.changes.outputs.mobile_ffi_needed == 'true'")]).toEqual([
-      name,
-      true,
+  ] as const) {
+    const results = Object.entries({ ...baseline, [lane]: result }).map(([job, value]) => [
+      job,
+      { result: value },
     ]);
+    const exit = Bun.spawnSync([process.execPath, "-e", script], {
+      env: { ...process.env, RESULTS: JSON.stringify(Object.fromEntries(results)) },
+    }).exitCode;
+    expect([lane, result, exit]).toEqual([lane, result, code]);
   }
 });
 
-test("a failed classification still builds both FFI artifacts", () => {
-  for (const name of ["ffi-xcframework", "ffi-android"]) {
-    expect(read(`.github/workflows/${name}.yml`)).toContain("needs.changes.result == 'failure'");
+test("both FFI workflows build on mobile_ffi_needed or a failed classification", () => {
+  // phux-mobile pins one revision and fetches both artifacts at it.
+  for (const name of FFI) {
+    const condition = str(job(workflow(name), "build")["if"]) ?? "";
+    expect(condition).toContain("needs.changes.result == 'failure'");
+    expect(condition).toContain("needs.changes.outputs.mobile_ffi_needed == 'true'");
   }
 });

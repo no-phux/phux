@@ -4,11 +4,12 @@
 import { expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
+import { type Table } from "../lib/value.ts";
 import {
   action,
   actionText,
+  everyJob,
   job,
-  jobs,
   run,
   steps,
   uses,
@@ -18,110 +19,59 @@ import {
   workflowText,
 } from "./workflows.ts";
 
-const SETUP_BUN = "./.github/actions/setup-bun";
-const SETUP_RUST_LANE = "./.github/actions/setup-rust-lane";
+const ACTIONS = readdirSync(repoPath(".github/actions")).filter((name) => name !== "setup-bun");
+// scripts/ci/mbx-export-headroom.sh runs `bun tools/main.ts` itself.
+const CALLS_TOOLS = /(^|[\s;(])bun tools\/main\.ts|scripts\/ci\/mbx-export-headroom\.sh/m;
 
-function firstIndex(
-  list: Record<string, unknown>[],
-  predicate: (step: Record<string, unknown>) => boolean,
-): number {
-  return list.findIndex(predicate);
+/** setup-bun, or setup-rust-lane's mbx variant, which puts the devshell's Bun on PATH. */
+function providesBun(step: Table): boolean {
+  if (uses(step) === "./.github/actions/setup-bun") return true;
+  const mbx = (withInput(step, "build-cache") ?? "mbx") === "mbx";
+  return uses(step) === "./.github/actions/setup-rust-lane" && mbx;
 }
 
-test("setup-bun installs the mise pin", () => {
-  const text = actionText("setup-bun");
-  expect(text).toContain(`sed -n 's/^bun = "\\([^"]*\\)"/\\1/p' mise.toml`);
+test("setup-bun installs the mise pin, and is the only reader of it", () => {
+  expect(actionText("setup-bun")).toContain("mise.toml");
   const install = steps(action("setup-bun")).find((step) =>
     uses(step).startsWith("oven-sh/setup-bun@"),
   );
   expect(withInput(install ?? {}, "bun-version")).toBe("${{ steps.pin.outputs.version }}");
-});
-
-test("setup-bun is the only reader of the Bun pin", () => {
-  const actions = readdirSync(repoPath(".github/actions")).filter((name) => name !== "setup-bun");
-  const texts = [
-    ...workflowNames().map((name) => [name, workflowText(name)]),
-    ...actions.map((name) => [name, actionText(name)]),
+  const pin = /oven-sh\/setup-bun@|\^bun = |engines\.bun/;
+  const readers = [
+    ...workflowNames().filter((name) => pin.test(workflowText(name))),
+    ...ACTIONS.filter((name) => pin.test(actionText(name))),
   ];
-  for (const [name, text] of texts) {
-    expect([name, /oven-sh\/setup-bun@|\^bun = |engines\.bun/.test(text ?? "")]).toEqual([
-      name,
-      false,
-    ]);
-  }
+  expect(readers).toEqual([]);
 });
 
-test("the classifier gets Bun before it routes", () => {
-  const all = steps(action("classify-changes"));
-  const setup = firstIndex(all, (step) => uses(step) === SETUP_BUN);
-  const detect = firstIndex(all, (step) => run(step).includes("bun tools/main.ts detect-changes"));
-  expect(setup).toBeGreaterThanOrEqual(0);
-  expect(detect).toBeGreaterThan(setup);
-});
-
-test("workflow jobs that call the tools package install Bun first", () => {
+test("every job and composite action that calls the tools package installs Bun first", () => {
+  expect(actionText("setup-rust-lane")).toMatch(/for tool in [^;]*\bbun\b[^;]*; do dirname/);
+  const owners = [...everyJob(), ...ACTIONS.map((name): [string, Table] => [name, action(name)])];
   let callers = 0;
-  for (const name of workflowNames()) {
-    for (const [jobName, lane] of Object.entries(jobs(workflow(name)))) {
-      const all = steps(lane);
-      // A step under `nix develop` gets the devshell's pinned Bun instead.
-      const call = firstIndex(
-        all,
-        (step) =>
-          /(^|[\s;(])bun tools\/main\.ts/m.test(run(step)) && !run(step).includes("nix develop"),
-      );
-      if (call < 0) continue;
-      callers++;
-      const setup = firstIndex(all, (step) => uses(step) === SETUP_BUN);
-      expect([name, jobName, setup >= 0 && setup < call]).toEqual([name, jobName, true]);
-    }
+  for (const [name, owner] of owners) {
+    // A step under `nix develop` gets the devshell's pinned Bun instead.
+    const all = steps(owner).filter((step) => !run(step).includes("nix develop"));
+    const call = all.findIndex((step) => CALLS_TOOLS.test(run(step)));
+    if (call < 0) continue;
+    callers++;
+    expect([name, all.slice(0, call).some(providesBun)]).toEqual([name, true]);
   }
-  expect(callers).toBeGreaterThan(0);
+  expect(callers).toBeGreaterThan(2);
 });
 
-test("the workflow gate installs Bun for tools-check", () => {
-  // `just workflow-check` runs `just tools-check` inside a `nix shell` that
-  // brings no Bun of its own; the runner's Bun has to be on PATH already.
+test("the workflow gate installs Bun unconditionally for tools-check", () => {
+  // `just workflow-check` runs `just tools-check` in a `nix shell` without
+  // Bun; the docs-only path's install-surface check needs it too.
   const all = steps(job(workflow("ci.yml"), "workflow-gate"));
-  const setup = firstIndex(all, (step) => uses(step) === SETUP_BUN);
-  const guards = firstIndex(all, (step) => run(step).includes("just workflow-check"));
+  const setup = all.findIndex(providesBun);
   expect(setup).toBeGreaterThanOrEqual(0);
-  expect(guards).toBeGreaterThan(setup);
-  // Unconditional: the docs-only path's install-surface check needs it too.
+  expect(all.findIndex((step) => run(step).includes("just workflow-check"))).toBeGreaterThan(setup);
   expect(all[setup]?.["if"]).toBeUndefined();
 });
 
-test("mbx export headroom runs where setup-rust-lane exposed the devshell's Bun", () => {
-  // scripts/ci/mbx-export-headroom.sh runs outside `nix develop` and calls
-  // `bun tools/main.ts mbx-collapse-target-copies`. The mbx variant of
-  // setup-rust-lane appends the devshell's mbx, rustc and bun to PATH.
-  const lane = actionText("setup-rust-lane");
-  expect(lane).toMatch(/for tool in mbx rustc bun; do dirname "\$\(command -v "\$tool"\)"; done/);
-  expect(lane).toContain('cat "$RUNNER_TEMP/mbx-path" >> "$GITHUB_PATH"');
-  let callers = 0;
-  for (const name of workflowNames()) {
-    for (const [jobName, lane] of Object.entries(jobs(workflow(name)))) {
-      const all = steps(lane);
-      const call = firstIndex(all, (step) =>
-        run(step).includes("scripts/ci/mbx-export-headroom.sh"),
-      );
-      if (call < 0) continue;
-      callers++;
-      const setup = all.findIndex((step) => uses(step) === SETUP_RUST_LANE);
-      const cache = withInput(all[setup] ?? {}, "build-cache") ?? "mbx";
-      expect([name, jobName, setup >= 0 && setup < call, cache]).toEqual([
-        name,
-        jobName,
-        true,
-        "mbx",
-      ]);
-    }
-  }
-  expect(callers).toBe(3);
-});
-
 test("perf-icount runs inside the devshell, which pins Bun", () => {
-  const all = steps(job(workflow("ci.yml"), "perf-icount"));
-  const counts = all.find((step) => run(step).includes("just perf-icount"));
-  expect(run(counts ?? {})).toStartWith("nix develop -c bash");
+  const counts = steps(job(workflow("ci.yml"), "perf-icount")).find((step) =>
+    run(step).includes("just perf-icount"),
+  );
+  expect(run(counts ?? {})).toStartWith("nix develop -c");
 });

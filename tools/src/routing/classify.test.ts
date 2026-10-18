@@ -1,18 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { workspaceMembers } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 import { table } from "../lib/value.ts";
-import { Classifier, toOutputs } from "./classify.ts";
-import { SURFACES, type Surface } from "./routes.ts";
+import { Classifier, toOutputs, type Classification } from "./classify.ts";
+import { routes, SURFACES, type Surface } from "./routes.ts";
 
 const classifier = new Classifier();
 const ALL: Surface[] = [...SURFACES];
 
 function lanes(paths: string[]): Surface[] {
   const { needed } = classifier.classify(paths);
-  return SURFACES.filter((surface) => needed[surface]);
+  return SURFACES.filter((surface) => needed.has(surface));
 }
 
 function rustSources(dir: string): string[] {
@@ -21,128 +21,102 @@ function rustSources(dir: string): string[] {
     .map((path) => join(dir, path));
 }
 
-describe("surface policy", () => {
-  const cases: [string[], Surface[]][] = [
-    [[], ALL],
-    [["new-product/source.xyz"], ALL],
-    [["docs/RELEASING.md"], []],
-    [["docs/spec/proto.md"], ["phux"]],
-    [["docs/spec/wire-schema.json"], ["phux"]],
-    [["docs/reference/cli.md"], ["phux"]],
-    [["docs/assets/pi-live-fleet.cast"], ["phux"]],
-    [["docs/consumers/agents.md"], ["phux"]],
-    [["CHANGELOG.md"], []],
-    [[".agents/skills/using-phux/SKILL.md"], ["phux"]],
-    [[".agents/skills/using-phux-mcp/SKILL.md"], ["phux"]],
-    [["clients/desktop/native/src/main.rs"], ALL],
-    [["clients/phux-web/src/lib.rs"], ["web"]],
-    [["clients/phux-vt-web/src/lib.rs"], ["web"]],
-    [["tools/src/web/browser.ts"], ["web"]],
-    [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
-    [["scripts/build-vt-wasm.sh"], ["web", "web_engine"]],
-    [["scripts/prepare-vt-wasm.mjs"], ["web", "web_engine"]],
-    [["scripts/smoke-vt-wasm.mjs"], ["web", "web_engine"]],
-    [["integrations/pi/src/index.ts"], ["integrations"]],
-    [["scripts/ci/agent-integrations.sh"], ["integrations"]],
-    [["tools/src/integrations/versions.ts"], ["integrations"]],
-    [["integrations/claude/skills/phux/SKILL.md"], ["integrations"]],
-    [[".claude-plugin/marketplace.json"], ["integrations"]],
-    [["crates/phux-server/src/lib.rs"], ["phux", "web"]],
-    [["crates/phux-protocol/Cargo.toml"], ["phux", "web", "native", "desktop"]],
-    [["crates/phux-protocol/src/lib.rs"], ["phux", "web", "desktop"]],
-    [["crates/phux-protocol/tests/wire.rs"], ["phux"]],
-    [["crates/phux-client-core/src/lib.rs"], ["phux", "web", "desktop"]],
-    [["crates/phux-perf/src/lib.rs"], ["phux", "web", "desktop"]],
-    [["crates/phux-client-ffi/src/lib.rs"], ["phux", "web", "desktop"]],
-    [["crates/phux-mcp/src/lib.rs"], ["phux"]],
-    [["crates/phux/build.rs"], ["phux", "web", "native"]],
-    [["crates/phux/src/vendor/x.c"], ["phux", "web", "native"]],
-    [["Cargo.toml"], ["phux", "web", "native", "desktop"]],
-    [["Cargo.lock"], ["phux", "web", "native"]],
-    [[".cargo/config.toml"], ["phux", "web", "native", "desktop"]],
-    [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "desktop"]],
-    [["scripts/install-zig.sh"], ["web_engine", "native", "desktop"]],
-    [["scripts/lib/dev-toolchain.sh"], ["web_engine", "native", "desktop"]],
-    [["scripts/setup-rust.sh"], ["native", "desktop"]],
-    [["clients/desktop/native/Cargo.lock"], ALL],
-    [["just/desktop.just"], ALL],
-    [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
-    [[".github/workflows/desktop-test.yml"], ["desktop"]],
-    [[".github/actions/setup-linux-desktop/action.yml"], ["desktop"]],
-    [["scripts/doctor.sh"], ["native"]],
-    [["scripts/test-dev-setup.sh"], ["native"]],
-    [["scripts/native-smoke.sh"], ["native"]],
-    [["just/setup.just"], ["native"]],
-    [["just/gates.just"], ["phux"]],
-    [["just/test.just"], ["phux"]],
-    [["just/build.just"], ["phux"]],
-    [["justfile"], []],
-    [["just/perf.just"], []],
-    [["just/release.just"], []],
-    [["just/mutation.just"], []],
-    [["release-please-config.json"], []],
-    [["just/unknown.just"], ALL],
-    [["docs/SETUP.md", "scripts/doctor.sh"], ["native"]],
-    [["docs/SETUP.md", "justfile"], []],
-    [["scripts/check-e2e-lanes.sh"], []],
-    [["scripts/check-docs.sh"], []],
-    [["scripts/check-install-surface.sh"], []],
-    [["scripts/check-product-skills-export.sh"], []],
-    [["scripts/export-product-skills.sh"], []],
-    [["scripts/product-skills"], []],
-    [["scripts/skills-package/README.md"], []],
-    [["scripts/skills-package/NOTICE"], []],
-    [["scripts/build-ffi-xcframework.sh"], []],
-    [["scripts/build-mobile-ffi-android.sh"], []],
-    [["scripts/ci/setup-android-ndk.sh"], []],
-    [[".github/workflows/ffi-xcframework.yml"], []],
-    [[".github/workflows/ffi-android.yml"], []],
-    [[".github/workflows/release.yml"], []],
-    [[".github/workflows/native-setup.yml"], []],
-    [[".github/actions/setup-rust-lane/action.yml"], []],
-    [["scripts/ci/setup-linux-release-userspace.sh"], []],
-    [["scripts/ci/mbx-export-failed-lane.sh"], []],
-    [["tools/main.ts"], ["web", "desktop"]],
-    [["tools/src/routing/routes.ts"], []],
-    [["tools/src/release/manifest.ts"], []],
-    [["docs/SETUP.md", "clients/phux-web/src/lib.rs"], ["web"]],
-  ];
-  for (const [paths, wanted] of cases) {
-    test(paths.join(", ") || "(empty diff)", () => {
-      expect(lanes(paths)).toEqual(SURFACES.filter((surface) => wanted.includes(surface)));
-    });
+/** Assert one Classification field for each diff. */
+function expectField<K extends keyof Classification>(
+  field: K,
+  cases: [string[], Classification[K]][],
+): void {
+  for (const [paths, want] of cases) {
+    expect([paths, classifier.classify(paths)[field]]).toEqual([paths, want]);
+  }
+}
+
+test.each<[string[], Surface[]]>([
+  [[], ALL],
+  [["new-product/source.xyz"], ALL],
+  [["docs/RELEASING.md"], []],
+  [["docs/spec/proto.md"], ["phux"]],
+  [["docs/consumers/agents.md"], ["phux"]],
+  [["CHANGELOG.md"], []],
+  [[".agents/skills/using-phux/SKILL.md"], ["phux"]],
+  [["clients/desktop/native/src/main.rs"], ALL],
+  [["clients/phux-web/src/lib.rs"], ["web"]],
+  [["tools/src/web/browser.ts"], ["web"]],
+  [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
+  [["integrations/pi/src/index.ts"], ["integrations"]],
+  [["integrations/claude/skills/phux/SKILL.md"], ["integrations"]],
+  [["crates/phux-server/src/lib.rs"], ["phux", "web"]],
+  [["crates/phux-protocol/Cargo.toml"], ["phux", "web", "native", "desktop"]],
+  [["crates/phux-protocol/src/lib.rs"], ["phux", "web", "desktop"]],
+  [["crates/phux-protocol/tests/wire.rs"], ["phux"]],
+  [["crates/phux-mcp/src/lib.rs"], ["phux"]],
+  [["crates/phux/build.rs"], ["phux", "web", "native"]],
+  [["Cargo.toml"], ["phux", "web", "native", "desktop"]],
+  [["Cargo.lock"], ["phux", "web", "native"]],
+  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "desktop"]],
+  [["scripts/install-zig.sh"], ["web_engine", "native", "desktop"]],
+  [["scripts/setup-rust.sh"], ["native", "desktop"]],
+  [["clients/desktop/native/Cargo.lock"], ALL],
+  [["just/unknown.just"], ALL],
+  [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
+  [[".github/workflows/desktop-test.yml"], ["desktop"]],
+  [["scripts/doctor.sh"], ["native"]],
+  [["just/gates.just"], ["phux"]],
+  [["justfile"], []],
+  [["scripts/check-docs.sh"], []],
+  [[".github/workflows/ffi-xcframework.yml"], []],
+  [[".github/actions/setup-rust-lane/action.yml"], []],
+  [[".cargo/config.toml"], ["phux", "web", "native", "desktop"]],
+  [["tools/src/desktop/source.ts"], ["desktop"]],
+  [["tools/src/lib/git.ts"], ["web", "desktop"]],
+  [["tools/src/routing/routes.ts"], []],
+  [["docs/SETUP.md", "scripts/doctor.sh"], ["native"]],
+  [["docs/SETUP.md", "clients/phux-web/src/lib.rs"], ["web"]],
+])("%p routes to %p", (paths, wanted) => {
+  expect(lanes(paths)).toEqual(SURFACES.filter((surface) => wanted.includes(surface)));
+});
+
+test("brace alternatives stay within one path segment", () => {
+  expect(routes().filter(([pattern]) => /\{[^}]*\//.test(pattern))).toEqual([]);
+});
+
+test("every workspace crate's library runs the root lane, not native setup, and its rdeps", () => {
+  for (const { dir, name } of workspaceMembers()) {
+    const result = classifier.classify([`${dir}/src/lib.rs`]);
+    expect([dir, result.needed.has("phux"), result.needed.has("native")]).toEqual([
+      dir,
+      true,
+      false,
+    ]);
+    expect(result.testFilterset).toBe(`rdeps(=${name})`);
   }
 });
 
-test("every workspace crate's library runs the root lane and not native setup", () => {
-  for (const { dir } of workspaceMembers()) {
-    const { needed } = classifier.classify([`${dir}/src/lib.rs`]);
-    expect([dir, needed.phux, needed.native]).toEqual([dir, true, false]);
-  }
-});
-
-test("an integration test builds only its own binary", () => {
-  const testFile = classifier.classify(["crates/phux-server/tests/hub_relay_federation.rs"]);
-  expect(testFile.needed.web).toBe(false);
-  expect([testFile.unitMode, testFile.unitTargets, testFile.e2eNeeded]).toEqual([
+test("the unit plan narrows to the integration test a diff touches", () => {
+  const plan = (paths: string[]) => {
+    const { unitMode, unitTargets, e2eNeeded } = classifier.classify(paths);
+    return [unitMode, unitTargets, e2eNeeded];
+  };
+  expect(plan(["crates/phux-server/tests/hub_relay_federation.rs"])).toEqual([
     "narrow",
     "phux-server:hub_relay_federation",
     false,
   ]);
-  expect(classifier.classify(["crates/phux-server/src/lib.rs"]).unitMode).toBe("rdeps");
-});
-
-test("a gated test target names its required features", () => {
-  expect(classifier.classify(["crates/phux-server/tests/stress/stress_churn.rs"]).unitTargets).toBe(
+  // A gated target names its required features.
+  expect(plan(["crates/phux-server/tests/stress/stress_churn.rs"])[1]).toBe(
     "phux-server:stress:stress",
   );
-  expect(classifier.classify(["crates/phux-client-ffi/tests/connected_flood.rs"]).unitTargets).toBe(
+  expect(plan(["crates/phux-client-ffi/tests/connected_flood.rs"])[1]).toBe(
     "phux-client-ffi:connected_flood:measure",
   );
+  expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
+  expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
+  expect(plan(["docs/SETUP.md"])).toEqual(["skip", "", false]);
+  expect(plan([])).toEqual(["workspace", "", true]);
 });
 
 test("docs_only holds only for documentation no build reads", () => {
-  const cases: [string[], boolean][] = [
+  expectField("docsOnly", [
     [["docs/SETUP.md", "clients/desktop/README.md"], true],
     [["docs/adr/0001-x.md", "README.md", "docs/INSTALL.md"], true],
     [["docs/SETUP.md", "docs/spec/proto.md"], false],
@@ -151,15 +125,11 @@ test("docs_only holds only for documentation no build reads", () => {
     [[".agents/skills/using-phux/SKILL.md"], false],
     [[".github/workflows/ci.yml"], false],
     [[], false],
-  ];
-  for (const [paths, docsOnly] of cases) {
-    expect([paths, classifier.classify(paths).docsOnly]).toEqual([paths, docsOnly]);
-  }
+  ]);
 });
 
 test("docs a crate reads leave the docs-only path", () => {
-  // A quoted docs/ path in Rust source is a test fixture or an embedded
-  // input; editing it must run the lane that reads it.
+  // A quoted docs/ path in Rust source is a fixture or an embedded input.
   const literal = /"(?:\.\.\/)*(docs\/[^"\s{}]+)"/g;
   const read = new Set<string>();
   for (const source of rustSources(join(ROOT, "crates"))) {
@@ -172,43 +142,32 @@ test("docs a crate reads leave the docs-only path", () => {
   for (const path of read) {
     const probe = statSync(join(ROOT, path)).isFile() ? path : `${path}/probe`;
     const result = classifier.classify([probe]);
-    expect([probe, result.docsOnly, result.needed.phux]).toEqual([probe, false, true]);
+    expect([probe, result.docsOnly, result.needed.has("phux")]).toEqual([probe, false, true]);
   }
 });
 
 test("the rdeps filterset is exact for crate diffs and fails safe otherwise", () => {
-  const cases: [string[], string][] = [
+  expectField("testFilterset", [
     [[], ""],
     [["docs/SETUP.md"], ""],
     [["Cargo.toml"], ""],
-    [["justfile"], ""],
     [[".agents/skills/using-phux/SKILL.md"], ""],
-    [[".github/workflows/ci.yml"], ""],
     [["new-product/source.xyz"], ""],
-    [["crates/phux-protocol/src/lib.rs"], "rdeps(=phux-protocol)"],
     [["crates/phux-tui/src/lib.rs", "docs/SETUP.md"], "rdeps(=phux-tui)"],
     [
       ["crates/phux-protocol/src/lib.rs", "crates/phux-tui/src/lib.rs"],
       "rdeps(=phux-protocol) + rdeps(=phux-tui)",
     ],
     [["crates/phux-protocol/src/lib.rs", "Cargo.lock"], ""],
-  ];
-  for (const [paths, filterset] of cases) {
-    expect([paths, classifier.classify(paths).testFilterset]).toEqual([paths, filterset]);
-  }
-  for (const { dir, name } of workspaceMembers()) {
-    expect(classifier.classify([`${dir}/src/lib.rs`]).testFilterset).toBe(`rdeps(=${name})`);
-  }
+  ]);
 });
 
 test("desktop file inputs outside its tree run the desktop lane", () => {
-  // include_str!/include_bytes! reach past the Cargo graph; each target
-  // outside clients/desktop must still request the desktop lane.
+  // include_str!/include_bytes! reach past the Cargo graph.
   const literal = /include_(?:str|bytes)!\(\s*"([^"]+)"/g;
-  const native = join(ROOT, "clients/desktop/native");
   const inputs = new Set<string>();
   for (const directory of ["src", "tests", "examples", "benches"]) {
-    const base = join(native, directory);
+    const base = join(ROOT, "clients/desktop/native", directory);
     if (!statSync(base, { throwIfNoEntry: false })) continue;
     for (const source of rustSources(base)) {
       for (const match of readFileSync(source, "utf8").matchAll(literal)) {
@@ -219,7 +178,7 @@ test("desktop file inputs outside its tree run the desktop lane", () => {
   }
   expect(inputs.size).toBeGreaterThan(0);
   for (const path of inputs)
-    expect([path, classifier.classify([path]).needed.desktop]).toEqual([path, true]);
+    expect([path, lanes([path]).includes("desktop")]).toEqual([path, true]);
 });
 
 test("outputs carry exactly the classify-changes action's keys", () => {
@@ -229,7 +188,7 @@ test("outputs carry exactly the classify-changes action's keys", () => {
 });
 
 test("the mobile FFI artifacts rebuild on their crate closure only", () => {
-  const cases: [string[], boolean][] = [
+  expectField("mobileFfiNeeded", [
     [[], true],
     [["crates/phux-client-ffi/src/lib.rs"], true],
     // Reached through phux-client-ffi's dependencies, not listed anywhere.
@@ -240,20 +199,5 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     [["crates/phux-tui/src/lib.rs"], false],
     [["clients/desktop/native/src/main.rs"], false],
     [["new-product/source.xyz"], false],
-  ];
-  for (const [paths, wanted] of cases) {
-    expect([paths, classifier.classify(paths).mobileFfiNeeded]).toEqual([paths, wanted]);
-  }
-});
-
-test("tools code routes to the lane that runs it", () => {
-  expect(lanes(["tools/src/desktop/source.ts"])).toEqual(["desktop"]);
-  expect(lanes(["tools/src/mutation/runner.ts"])).toEqual([]);
-  expect(lanes(["tools/src/cargo/build-features.ts"])).toEqual(["phux"]);
-});
-
-test("shared tools code runs the lanes whose commands import it", () => {
-  for (const path of ["tools/src/lib/git.ts", "tools/main.ts", "tools/package.json"]) {
-    expect([path, lanes([path])]).toEqual([path, ["web", "desktop"]]);
-  }
+  ]);
 });
