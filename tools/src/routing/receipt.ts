@@ -1,14 +1,11 @@
-// Reuse successful validation only for an identical Git tree and workflow.
-//
-// Receipts contain metadata, never executable artifacts. API/network failure
-// is a cache miss. A main push without matching PR/main evidence runs normal
-// validation.
+// A main push skips ci when a pull request already validated the identical
+// tree with the same lane coverage. A pull request's aggregate uploads the
+// receipt; the push's plan looks it up. Receipts are metadata, never
+// executable artifacts, and any API failure is a cache miss.
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { writeOutputs } from "../lib/actions.ts";
-import { describe, Failure } from "../lib/command.ts";
-import { git } from "../lib/git.ts";
+import { describe } from "../lib/command.ts";
 import { api, gh } from "../lib/github.ts";
 import { deepEqual, list, table, type Table } from "../lib/value.ts";
 
@@ -16,6 +13,8 @@ export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
+  /** The pull-request lane set that ran; a push reuses only an equal one. */
+  readonly coverage: string;
 }
 
 /** GitHub as the lookup reads it; tests stand in a fake. */
@@ -41,7 +40,7 @@ export function artifactName(receipt: Receipt): string {
 function trustedRun(run: Table, repository: string, workflow: string): boolean {
   return (
     run["conclusion"] === "success" &&
-    (run["event"] === "pull_request" || run["event"] === "push") &&
+    run["event"] === "pull_request" &&
     run["path"] === workflow &&
     typeof run["head_sha"] === "string" &&
     table(run["head_repository"])["full_name"] === repository &&
@@ -91,26 +90,14 @@ export function findValidation(
   return found === undefined ? undefined : Number(table(found["workflow_run"])["id"]);
 }
 
-function check(receipt: Receipt): boolean {
-  if (process.env["GITHUB_EVENT_NAME"] !== "push") return false;
-  const repository = process.env["GITHUB_REPOSITORY"];
-  if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
+/** Whether a pull request already validated `receipt`; failures are a miss. */
+export function alreadyValidated(receipt: Receipt, repository: string): boolean {
   try {
     const run = findValidation(receipt, repository);
-    if (run !== undefined) console.log(`Identical tree already validated by workflow run ${run}`);
+    if (run !== undefined) console.error(`Identical tree already validated by workflow run ${run}`);
     return run !== undefined;
   } catch (error) {
-    console.log(`Validation receipt unavailable; running checks: ${describe(error)}`);
+    console.error(`Validation receipt unavailable; running checks: ${describe(error)}`);
     return false;
   }
-}
-
-export async function run(mode: "check" | "write", workflow: string): Promise<void> {
-  const tree = git(["rev-parse", "HEAD^{tree}"], process.cwd()).trim();
-  const coverage = process.env["VALIDATION_COVERAGE"] ?? "";
-  const receipt: Receipt = { schema: 1, tree, workflow, coverage };
-  if (mode === "write") {
-    await Bun.write("target/validation-receipt/receipt.json", `${JSON.stringify(receipt)}\n`);
-  }
-  writeOutputs({ name: artifactName(receipt), validated: mode === "check" && check(receipt) });
 }

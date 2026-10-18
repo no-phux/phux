@@ -36,6 +36,7 @@ pub struct WorkspaceOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Destination {
     Tab,
+    Background,
     Split {
         tab_id: String,
         target_id: String,
@@ -245,6 +246,18 @@ impl Workspace {
     /// A validated new connection must restore visible foreign-session streams too.
     /// Existing views keep their last frame while admission/bootstrap is renewed.
     fn rearm_views(&mut self, connection: &Connection) {
+        // An acknowledged spawn can reconnect before it has a placement.
+        // Its exact id is known even when the home snapshot omits the foreign
+        // session. Runtime admission deduplicates this without respawning.
+        for terminal in self
+            .awaiting
+            .keys()
+            .filter_map(|label| parse_terminal(label))
+        {
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(&terminal);
+        }
         let epoch = connection.connection_epoch();
         if self.views_epoch == Some(epoch) {
             return;
@@ -406,6 +419,26 @@ impl Workspace {
     /// Spawn a tab in `session_id`. Does not substitute another session.
     pub fn new_terminal_in(&mut self, connection: &Connection, session_id: u32, cwd: Option<&str>) {
         self.request(connection, Destination::Tab, cwd, Some(session_id));
+    }
+
+    /// Queue an agent capture using the normal acknowledged spawn path.
+    /// Background captures remain in server topology, without a local placement.
+    pub(crate) fn launch_capture(
+        &mut self,
+        connection: &Connection,
+        request: SpawnRequest,
+        follow: bool,
+    ) -> Result<u32, crate::connection::CommandError> {
+        let id = connection.spawn(request)?;
+        self.spawns.insert(
+            id,
+            if follow {
+                Destination::Tab
+            } else {
+                Destination::Background
+            },
+        );
+        Ok(id)
     }
 
     /// The active tab id and its focused placement.
@@ -645,7 +678,9 @@ impl Workspace {
         };
         match (terminal, error) {
             (Some(terminal), None) => {
-                self.awaiting.insert(terminal_label(terminal), destination);
+                if destination != Destination::Background {
+                    self.awaiting.insert(terminal_label(terminal), destination);
+                }
             }
             _ => self.error(
                 "Could not start a terminal",
@@ -999,7 +1034,7 @@ pub fn create_session_error(name: &str, directory: &str) -> Option<&'static str>
 }
 
 #[cfg(test)]
-mod view_tests;
+pub(crate) mod view_tests;
 
 #[cfg(test)]
 mod home_tests {

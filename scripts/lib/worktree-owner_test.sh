@@ -155,9 +155,9 @@ else
     # Every recipe that builds, tests or formats the tree (core-check reaches
     # it through crate-check). A new one belongs here and on worktree-claim.
     dump="$(just --justfile "${ROOT}/justfile" --dump --dump-format json)"
-    for recipe in ci precommit check build build-all build-lean build-release install-dev rebuild \
+    for recipe in check rust-lint build build-all build-lean build-release install-dev rebuild \
         fmt lint crate-check integration-check native-smoke \
-        test test-archive test-cargo e2e stress e2e-repro examples-smoke agents-fleet-smoke agents-fleet-live \
+        test test-archive test-cargo e2e stress e2e-repro agents-fleet-smoke agents-fleet-live \
         ffi-build desktop-check desktop-lint desktop-test desktop-native-build desktop-app; do
         if jq -e --arg r "$recipe" '.recipes[$r].dependencies | any(.recipe == "worktree-claim")' <<<"$dump" >/dev/null; then
             ok "just ${recipe} claims the worktree first"
@@ -165,7 +165,7 @@ else
             bad "just ${recipe} must depend on worktree-claim"
         fi
     done
-    for recipe in ci test e2e; do
+    for recipe in test e2e; do
         if jq -e --arg r "$recipe" '.recipes[$r].dependencies | any(.recipe == "worktree-verify" and .arguments == [$r])' <<<"$dump" >/dev/null; then
             ok "just ${recipe} verifies HEAD after the run"
         else

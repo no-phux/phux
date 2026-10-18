@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Native harness typecheck, unit, loader, pack, and npm audit gates.
-# `just agent-integrations-check` and ci.yml's integrations job both call
-# this so the required lane cannot drift from the local recipe. Runtime
+# The `integrations` lane (`just agent-integrations-check`). Runtime
 # is first: pi bundles it, and the committed dist must match a fresh build.
 set -euo pipefail
 
@@ -9,7 +8,6 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
 bash scripts/doctor.sh integrations
-bun tools/main.ts integration-versions-check
 node --test integrations/grok/test/package.test.mjs
 
 # Incidental install audits are off; the explicit audit inside each

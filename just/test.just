@@ -11,56 +11,21 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 # Workspace unit pool via nextest. Same --workspace feature union as e2e/stress
 # (CONTRIBUTING.md). Optional profiler surfaces compile under lint/doc instead.
 #
-# PHUX_UNIT_PART splits the pool by target kind so CI can run the halves on
-# two runners: `lib` is every lib and bin unit-test harness, `integration` is
-# every tests/ target whose `required-features` the default features meet:
-# Cargo refuses a gated target named by `--test '*'`, so the names come from
-# `cargo metadata`. Examples hold no tests; `just lint` (clippy --all-targets)
-# type-checks them. Unset runs both in one invocation. Either half keeps
-# --workspace and TEST_FEATURES, so the feature union and the rdeps filterset
-# are the same as the whole pool's, and one `just test-archive` build serves
-# both halves and `just e2e`.
-#
-# PHUX_TEST_ARCHIVE names a `just test-archive` output: the recipe then runs
-# from it without compiling and selects each half with a nextest filterset
-# instead of Cargo target flags.
+# CI's plan sets the scope: PHUX_UNIT_MODE (workspace, rdeps, narrow, skip),
+# PHUX_UNIT_TARGETS for narrow, and PHUX_NEXTEST_FILTERSET for rdeps.
+# PHUX_TEST_ARCHIVE names a `just test-archive` output to run without
+# compiling; its e2e binaries hold only #[ignore]d tests, so they select none.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
 test: worktree-claim && (worktree-verify "test")
     #!/usr/bin/env bash
     set -euo pipefail
-    part="${PHUX_UNIT_PART:-all}"
     archive="${PHUX_TEST_ARCHIVE:-}"
-    gated() {
-      cargo metadata --no-deps --format-version 1 | jq -r --arg want "$1" '
-        .packages[] | .name as $pkg | (.features.default // []) as $default | .targets[]
-        | select(.kind == ["test"])
-        | select(((((."required-features" // []) - $default) == []) | tostring) == $want)
-        | "\($pkg) \(.name)"' | sort -u
-    }
-    kind=""
-    case "$part" in
-      all) targets=() ;;
-      lib) targets=(--lib --bins); kind="kind(lib) + kind(bin) + kind(proc-macro)" ;;
-      integration)
-        targets=()
-        while read -r _ name; do targets+=(--test "$name"); done < <(gated true)
-        if [[ ${#targets[@]} -eq 0 ]]; then echo "found no integration test targets" >&2; exit 1; fi
-        # The archive also holds the e2e lane's feature-gated targets.
-        kind="kind(test)"
-        while read -r pkg name; do kind+=" - binary_id(${pkg}::${name})"; done < <(gated false)
-        ;;
-      *) echo "PHUX_UNIT_PART must be lib, integration, or unset (got: $part)" >&2; exit 2 ;;
-    esac
     # Build selection stays --workspace for main and for library changes (see
     # the e2e note). A tests/-only PR sets PHUX_UNIT_MODE=narrow and builds
-    # that integration test, not the other binaries; that belongs to the
-    # integration half. rdeps still only filters execution after the build.
+    # that integration test, not the other binaries. rdeps only filters
+    # execution after the build.
     if [[ "${PHUX_UNIT_MODE:-workspace}" == "narrow" ]]; then
-      if [[ "$part" == "lib" ]]; then
-        echo "lib unit half skipped: a tests/-only diff runs in the integration half"
-        exit 0
-      fi
       IFS=',' read -ra specs <<< "${PHUX_UNIT_TARGETS:?PHUX_UNIT_TARGETS is required}"
       if [[ -n "$archive" ]]; then
         filter=""
@@ -96,13 +61,12 @@ test: worktree-claim && (worktree-verify "test")
     filter="${PHUX_NEXTEST_FILTERSET:-}"
     if [[ -n "$archive" ]]; then
       source=(--archive-file "$archive" --workspace-remap "{{justfile_directory()}}")
-      if [[ -n "$kind" ]]; then filter="${filter:+(${filter}) & }(${kind})"; fi
     else
-      source=(--workspace {{TEST_FEATURES}} ${targets[@]+"${targets[@]}"})
+      source=(--workspace {{TEST_FEATURES}})
     fi
     extra=()
     if [[ -n "$filter" ]]; then extra+=(-E "$filter"); fi
-    # An rdeps filterset can select nothing in one half; the other still runs.
+    # An rdeps filterset can select nothing; that is a pass, not an error.
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --no-tests=warn ${extra[@]+"${extra[@]}"}
 
 # `phux-server/measure` builds the e2e lane's `perf` target, which a
@@ -112,8 +76,8 @@ TEST_FEATURES := "--features phux-server/measure"
 
 
 # Compile every target `just test` and `just e2e` run into one nextest archive
-# (PHUX_TEST_ARCHIVE, default target/nextest/phux-tests.tar.zst) for CI's run
-# jobs. It holds the test binaries, the `phux` and `phux-mcp` executables the
+# (PHUX_TEST_ARCHIVE, default target/nextest/phux-tests.tar.zst) for CI's
+# tests and e2e jobs. It holds the test binaries, the `phux` and `phux-mcp` executables the
 # tests spawn, and the libraries those link at run time. PHUX_UNIT_MODE=narrow
 # builds only PHUX_UNIT_TARGETS, plus the e2e set unless PHUX_E2E=false.
 [group('test')]
@@ -150,7 +114,7 @@ test-archive: worktree-claim
 # Fast e2e + perf gates (every PR). #[ignore]d out of `just test`; serial +
 # retries because these spin a real server+PTY. Keep --workspace so the
 # feature union matches `test` (a `-p` selection recompiles tokio). Filterset
-# names binaries; `just e2e-lane-check` fails if an ignored *_e2e.rs is in
+# names binaries; `scripts/check-e2e-lanes.sh` (in `just guards`) fails if an ignored *_e2e.rs is in
 # no lane. Flag-stability story: CONTRIBUTING.md.
 #
 # The `--test` targets limit a local build to the binaries the filtersets
@@ -179,12 +143,12 @@ e2e: worktree-claim && (worktree-verify "e2e")
 E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test perf --test discovery"
 
 
-# Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
-# Starvation-sensitive on 2-core runners; run locally. Also hosts
+# Heavy stress storms — off CI entirely: starvation-sensitive on 2-core
+# runners, so run them locally on a multi-core box before risky merges. Also hosts
 # perf_bursty_output (~110s, allocation count, not wall time). The `stress`
 # feature builds the target, which the default test build skips.
 [group('test')]
-[doc('Heavy stress storms; off the PR path (post-merge + nightly).')]
+[doc('Heavy stress storms; local only, off CI.')]
 stress: worktree-claim
     cargo nextest run --workspace --run-ignored ignored-only \
       {{TEST_FEATURES}} --features phux-server/stress --test-threads=1 --retries=2 \
@@ -200,18 +164,6 @@ stress: worktree-claim
 [group('test')]
 e2e-repro: worktree-claim
     cargo run -p phux-server --example e2e-repro
-
-
-# Smoke-test the examples/agents/ scripts against a throwaway server, so
-# they cannot rot silently against CLI changes (phux-wiv). Builds `phux`
-# once, pins SHELL=/bin/sh for a banner-free seed pane (no p10k/direnv
-# noise in snapshots), then runs every example and fails on any non-zero
-# exit. Like `e2e` it spawns real PTY-backed servers, so it stays OUT of
-# the parallel `ci` pool and runs on demand or as its own CI step.
-[group('test')]
-[doc('Smoke-test the examples/agents/ scripts against a throwaway server.')]
-examples-smoke: worktree-claim
-    bash scripts/examples-smoke.sh
 
 
 # Hermetic argv/control-flow gate for the placed-fleet worked example. Uses a
@@ -251,20 +203,6 @@ plugin-demo:
     demo config run com.phux.demo.agent-tools status-integrations
     demo config run com.phux.demo.agent-tools smoke-integrations
     demo config run com.phux.demo.agent-tools detect-agents
-
-
-# List and verify the herdr parity QA gate without running heavy surfaces.
-[group('test')]
-parity-check-list:
-    bash scripts/parity-gate.sh --check-list
-
-
-# Run the herdr parity QA gate. With no args, runs every parity scenario;
-# pass scenario names to run a subset, e.g. `just parity-gate plugin-demo`.
-[group('test')]
-[doc('Run the herdr parity QA gate: all scenarios, or the named subset.')]
-parity-gate *SCENARIOS:
-    bash scripts/parity-gate.sh --run {{SCENARIOS}}
 
 
 # Stable-cargo test for environments without nextest.

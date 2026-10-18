@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-17
+last-reviewed: 2026-10-18
 ---
 
 # Performance CI
@@ -9,14 +9,14 @@ last-reviewed: 2026-10-17
 **TL;DR.** The required perf-icount job counts instructions on a fixed set of
 hot paths, one organization commit at automation scale among them, and fails
 when a count rises more than five percent. A 16 MiB flood test bounds server
-counters. An org-store scale test bounds pages, batches, writes, and receipts. Nightly wall-time scripts upload artifacts and do
-not gate merges. Update a baseline only with just perf-icount --update plus
+counters. An org-store scale test bounds pages, batches, writes, and receipts.
+Update a baseline only with just perf-icount --update plus
 the Perf-Baseline: update trailer or the perf-baseline label.
 
 ## Instruction counts
 
-`perf-icount` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is a
-required lane of the `ci` aggregate. The ruleset still checks the `ci` and
+The `rust icount` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+is a lane of the required `ci` aggregate. The ruleset still checks the `ci` and
 `commitlint` contexts. The lane runs on `ubuntu-24.04` (x86_64) when the
 classifier marks `perf_icount_needed`. Docs-only diffs and crates outside the
 hot path skip it. An empty diff runs it.
@@ -96,9 +96,8 @@ also refuses the file change unless one of these is true:
 
 That check runs before the bench, so an unauthorized edit fails in seconds.
 
-Pushes to `main` and merge-queue runs do not repeat the trailer check. Squash
-and the merge queue can drop trailers; the pull request already authorized
-the file. The percentage check still runs, so a number that does not match
+Pushes to `main` do not repeat the trailer check. A squash merge can drop
+trailers; the pull request already authorized the file. The percentage check still runs, so a number that does not match
 the measurement fails even with the trailer.
 
 ## Counter tripwires
@@ -131,16 +130,6 @@ attached. It asserts:
 
 It prints p50 and p99 commit latency for triage and does not gate on wall
 time; the instruction count is the gate.
-
-## Nightly wall time
-
-[`.github/workflows/perf-nightly.yml`](../.github/workflows/perf-nightly.yml)
-runs on a schedule and on `workflow_dispatch`. It is not part of `ci.yml` and
-it is not a required check. `scripts/bench/perf-nightly.sh` runs a short
-attach, echo, and throughput sample (`scripts/bench/mux-compare.sh`), a quiet
-echo (`scripts/bench/tui-load.sh`), and session-create timings at 1, 10, and
-50 sessions. The run fails when a harness crashes. It uploads `target/perf-nightly`
-and does not compare the timings to a budget.
 
 Published host comparisons on the performance page are observations, not
 these budgets.

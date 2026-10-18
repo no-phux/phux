@@ -326,7 +326,7 @@
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just
-            # workflow-check`). This is release infrastructure, so it belongs
+            # guards`). This is release infrastructure, so it belongs
             # in the pinned shell rather than a developer's global tools.
             pkgs.actionlint
             # JSON plumbing for the CI observability scripts (scripts/ci/,
@@ -334,7 +334,7 @@
             # hosted runners ship jq, but the scripts must also run in the
             # devshell (`just dep-stats`, local dashboard renders).
             pkgs.jq
-            # The demo setup scripts and their test (just workflow-check), Rust
+            # The demo setup scripts and their test (just guards), Rust
             # test fixtures, examples and benchmarks. Python is a TOOLING
             # dependency only: no `cargo build` or CI decision needs it.
             pkgs.python3

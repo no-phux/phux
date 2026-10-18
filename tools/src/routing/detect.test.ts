@@ -38,13 +38,12 @@ function run(name: string, event: unknown): Detection {
 
 const push = (before: string, after: string) => run("push", { before, after });
 
-test("push, pull_request and merge_group resolve to the same paths", () => {
+test("push and pull_request resolve to the same paths", () => {
   const paths = ["crates/phux-server/src/lib.rs", "integrations/pi/src/index.ts"];
   const head = commitFiles(Object.fromEntries(paths.map((path) => [path, "fixture\n"])));
   const events = {
     push: { before: base, after: head },
     pull_request: { pull_request: { base: { sha: base }, head: { sha: head } } },
-    merge_group: { merge_group: { base_sha: base, head_sha: head } },
   };
   for (const [name, event] of Object.entries(events)) {
     expect(run(name, event)).toEqual({ kind: "paths", paths });

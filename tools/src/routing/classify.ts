@@ -28,6 +28,7 @@ export interface Classification {
   readonly perfIcountNeeded: boolean;
   readonly mobileFfiNeeded: boolean;
   readonly uniffiNeeded: boolean;
+  readonly contentNeeded: boolean;
   readonly testFilterset: string;
   readonly unitMode: UnitMode;
   readonly unitTargets: string;
@@ -50,6 +51,7 @@ const EVERYTHING: Classification = {
   perfIcountNeeded: true,
   mobileFfiNeeded: true,
   uniffiNeeded: true,
+  contentNeeded: true,
   testFilterset: "",
   ...WORKSPACE,
 };
@@ -65,6 +67,18 @@ const PERF_ICOUNT_PATHS = [
   "tools/main.ts",
   "just/perf.just",
   ".github/workflows/ci.yml",
+];
+
+/**
+ * What no-phux/website reads at build time and the no-phux/skills mirror
+ * exports: a green main push touching these republishes both.
+ */
+export const CONTENT_PATHS = [
+  "docs/**",
+  ".agents/skills/{using-phux,using-phux-mcp,using-phux-tools}/**",
+  "scripts/{install,install-desktop,export-product-skills}.sh",
+  "scripts/product-skills",
+  "scripts/skills-package/**",
 ];
 
 /**
@@ -113,6 +127,7 @@ export class Classifier {
       perfIcountNeeded: files.some((path) => matchesAny(path, PERF_ICOUNT_PATHS)),
       mobileFfiNeeded: files.some((path) => matchesAny(path, this.mobileFfi)),
       uniffiNeeded: this.uniffiNeeded(productive),
+      contentNeeded: files.some((path) => matchesAny(path, CONTENT_PATHS)),
       testFilterset,
       ...this.unitPlan(productive, testFilterset),
     };
@@ -128,7 +143,7 @@ export class Classifier {
 
   private surfaces(path: string): readonly Surface[] {
     const matched = this.table.filter(([pattern]) => matches(path, pattern));
-    // An explicit empty route is cheap (workflow gate only); an unknown path
+    // An explicit empty route is cheap (guards only); an unknown path
     // fails closed into every surface.
     const surfaces = matched.length === 0 ? SURFACES : matched.flatMap(([, lanes]) => lanes);
     if (nonLibraryKind(path) === undefined) return surfaces;
@@ -209,7 +224,7 @@ function gatingFeatures(dir: string, binary: string, root: string): string {
     .join("+");
 }
 
-/** The step outputs `.github/actions/classify-changes` declares. */
+/** `detect-changes` and `classify` output lines, one per classification field. */
 export function toOutputs(result: Classification): Record<string, string | boolean> {
   return {
     ...Object.fromEntries(
@@ -219,6 +234,7 @@ export function toOutputs(result: Classification): Record<string, string | boole
     perf_icount_needed: result.perfIcountNeeded,
     mobile_ffi_needed: result.mobileFfiNeeded,
     uniffi_needed: result.uniffiNeeded,
+    content_needed: result.contentNeeded,
     test_filterset: result.testFilterset,
     unit_mode: result.unitMode,
     unit_targets: result.unitTargets,

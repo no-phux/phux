@@ -31,6 +31,8 @@ flamegraph.svg
 # bv (beads viewer) local config and caches
 .bv/
 .claude/worktrees/
+# Regenerable Pi Fabric session state, never product inputs or shared config.
+/.pi/fabric/
 
 # dhat heap profiler output (emitted when built with --features dhat-heap)
 dhat-heap.json

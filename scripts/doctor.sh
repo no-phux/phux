@@ -193,14 +193,14 @@ case "$scope" in
     ci)
         native_tools
         node_tools
-        for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#full-root-validation')"; done
-        if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for the workflow gate scripts' 'brew install bash; put Homebrew bin on PATH'; fi
+        for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#the-pr-bar')"; done
+        if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for the guards scripts' 'brew install bash; put Homebrew bin on PATH'; fi
         for tool in nextest deny; do
             if cargo "$tool" --version >/dev/null 2>&1; then ok "cargo-$tool"; else
                 if [[ "$tool" == nextest ]]; then
                     fail "cargo-nextest" 'Install the official prebuilt binary: https://nexte.st/docs/installation/pre-built-binaries/ (Mise has no registry entry; Nix provides it)'
                 else
-                    fail "cargo-$tool" "$(env_remedy "Install the prebuilt cargo-$tool binary; see docs/SETUP.md#full-root-validation")"
+                    fail "cargo-$tool" "$(env_remedy "Install the prebuilt cargo-$tool binary; see docs/SETUP.md#the-pr-bar")"
                 fi
             fi
         done

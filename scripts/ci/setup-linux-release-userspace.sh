@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap an Ubuntu 22.04 job container so release.yml / next-release.yml
+# Bootstrap an Ubuntu 22.04 job container so build-cli.yml
 # can keep a native glibc 2.35 floor on ubuntu-24.04 / ubuntu-24.04-arm hosts
 # after the hosted ubuntu-22.04 labels retire (actions/runner-images#14254).
 #

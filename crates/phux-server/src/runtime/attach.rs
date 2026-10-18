@@ -2161,7 +2161,7 @@ pub(crate) async fn handle_spawn_terminal(
     };
 
     let Some((wire_terminal_id, handle, client_caps)) =
-        subscribe_spawning_client(state, client_id, core_terminal_id)
+        subscribe_spawning_client(state, client_id, core_terminal_id, out_tx)
     else {
         refuse_vanished_pane_handle(state, out_tx, client_id, request_id, core_terminal_id).await;
         return;
@@ -2449,10 +2449,17 @@ fn resolve_spawn_ownership(
 
 /// Auto-subscribe the spawning client to the new pane (or input to it would
 /// be refused) and clone out its wire id, handle, and capabilities.
+///
+/// The subscription carries the spawner's mailbox, as `ATTACH_RESOURCE` and
+/// an `AgentSession` spawn do: a spawner with no session `ATTACH` behind it (a
+/// window browsing a session with per-terminal subscriptions, a headless
+/// tool) is still pumped the pane's output, so it must pass the input gate
+/// and receive terminal-scoped fanout the same way.
 fn subscribe_spawning_client(
     state: &SharedState,
     client_id: ClientId,
     core_terminal_id: ResourceId,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> Option<(
     phux_protocol::ids::ResourceId,
     ResourceHandle,
@@ -2467,11 +2474,8 @@ fn subscribe_spawning_client(
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
-        // A detached spawner has no `attached` slot to subscribe from.
-        if s.attached().contains_key(&client_id) {
-            s.subscribe_terminal(client_id, core_terminal_id, None);
-            s.mark_if_viewer_session(client_id, &wire_terminal_id);
-        }
+        s.subscribe_terminal(client_id, core_terminal_id, Some(out_tx.clone()));
+        s.mark_if_viewer_session(client_id, &wire_terminal_id);
         s.resource_handle(core_terminal_id)
             .cloned()
             .map(|h| (wire_terminal_id, h, client_caps))

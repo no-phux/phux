@@ -38,7 +38,7 @@ fn bootstrap() -> BootstrapId {
 }
 
 /// A connection attached to one 20x4 terminal with two lines of history.
-fn attached() -> Connection {
+pub(crate) fn attached() -> Connection {
     let mut connection = Connection::connect("/views.sock".into(), SESSION.into()).unwrap();
     let client = Arc::clone(&connection.client);
     client.with_control(ControlPlane::connection_opened);
@@ -113,7 +113,7 @@ fn attached() -> Connection {
 }
 
 /// A workspace showing the session's home terminal in one placement.
-fn opened(connection: &mut Connection) -> Workspace {
+pub(crate) fn opened(connection: &mut Connection) -> Workspace {
     let mut workspace = Workspace::new(SESSION.into(), WorkspaceOptions::default());
     workspace.restore(None);
     let events = connection.drain();
@@ -147,6 +147,106 @@ fn leaves(workspace: &Workspace) -> Vec<Placement> {
 
 fn view(placement: &Placement) -> ViewId {
     placement.view_id.expect("placement owns a view")
+}
+
+#[test]
+fn awaiting_foreign_capture_rearms_a_stream_without_respawning_or_needing_inventory() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let mut workspace = opened(&mut connection);
+    let before = workspace.tabs.clone();
+    let foreign = ResourceId::local(9);
+    // State after a same-incarnation reconnect: spawn was acknowledged,
+    // but no bootstrap/placement arrived and own-spawn admission was reset.
+    // The home-session snapshot does not include the foreign terminal.
+    workspace
+        .awaiting
+        .insert(terminal_label(&foreign), Destination::Tab);
+    assert!(connection.pane(&foreign).is_none());
+    let _ = connection.client.take_outbound();
+    workspace.settle(&connection);
+    let outbound: Vec<_> = connection
+        .client
+        .take_outbound()
+        .iter()
+        .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+        .collect();
+    assert!(
+        outbound.iter().any(|frame| matches!(frame,
+            FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. }
+                if terminal_id == &foreign
+        )),
+        "must recover the acknowledged stream: {outbound:?}"
+    );
+    assert!(
+        outbound
+            .iter()
+            .all(|frame| !matches!(frame, FrameKind::SpawnResource { .. }))
+    );
+    assert_eq!(
+        workspace.tabs, before,
+        "no premature placement or focus change"
+    );
+    workspace.settle(&connection);
+    assert!(
+        connection.client.take_outbound().is_empty(),
+        "pending attach is deduplicated"
+    );
+    let request_id = outbound
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::AttachResource { terminal_id, .. },
+            } if terminal_id == &foreign => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
+    let stream_id = StreamId::new(2).unwrap();
+    let bootstrap_id = BootstrapId::new(2).unwrap();
+    for frame in [
+        FrameKind::CommandResult {
+            request_id,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+        FrameKind::BootstrapBegin {
+            terminal_id: foreign.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: foreign.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: b"recovered agent".to_vec().into(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: foreign.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+    ] {
+        connection.client.feed(frame).unwrap();
+    }
+    let events = connection.drain();
+    workspace.handle(&events, &connection);
+    workspace.settle(&connection);
+    assert!(
+        connection.ready(&foreign),
+        "successful explicit attach is admitted before inventory"
+    );
+    assert!(
+        connection.pane(&foreign).is_none(),
+        "no inventory update was needed"
+    );
+    assert_eq!(workspace.views_of(&foreign), 1);
+    assert!(workspace.awaiting.is_empty());
 }
 
 fn frame(

@@ -161,6 +161,56 @@ fn spawn_placement_follows_the_attached_session_or_the_named_owner() {
     });
 }
 
+/// A spawner with no session `ATTACH` behind it (a window browsing a session
+/// through per-terminal subscriptions, a headless tool) is pumped its spawn's
+/// output, so it is a subscriber: its keys pass the input gate and its
+/// `RESOURCE_CLOSED` reaches it.
+#[test]
+fn a_detached_spawner_types_into_and_outlives_its_own_spawn() {
+    phux_server_testkit::run_local(async {
+        let server = Server::start(None, |_| {});
+        let mut attached = server.connect().await;
+        let owner = attach_create(&mut attached, "home", None, None)
+            .await
+            .focused_resource;
+
+        let mut detached = server.connect().await;
+        let spawn = Spawn {
+            owner_terminal: Some(owner),
+            ..Spawn::command(&["/bin/cat"])
+        };
+        let pane = spawned(&mut detached, 70, spawn).await;
+        let key = FrameKind::InputKey {
+            terminal_id: pane.clone(),
+            event: ascii_key('z', PhysicalKey::Z),
+        };
+        send_frame(&mut detached, &key).await;
+        release(&mut detached, &pane).await;
+        output_containing(&mut detached, &pane, b"z").await;
+
+        let kill = phux_protocol::wire::frame::Command::KillResource {
+            terminal_id: pane.clone(),
+            operation_id: None,
+        };
+        send_frame(
+            &mut detached,
+            &FrameKind::Command {
+                request_id: 71,
+                command: kill,
+            },
+        )
+        .await;
+        wait_frame(&mut detached, "RESOURCE_CLOSED", |frame| match frame {
+            FrameKind::ResourceClosed { terminal_id, .. } if terminal_id == pane => Some(()),
+            _ => None,
+        })
+        .await;
+
+        drop((attached, detached));
+        server.stop().await;
+    });
+}
+
 /// `TERM` precedence: wire `env` > the `term` field > `defaults.term`
 /// (`xterm-256color`).
 #[test]

@@ -16,7 +16,7 @@ test("each broken setting is reported", () => {
     packages: { ".": { "release-type": "rust", "package-name": "phux" } },
   };
   expect(configViolations(config)).toEqual([
-    "publish.yml ships drafts; Release Please must create them (expected true, found false)",
+    "release.yml ships drafts; Release Please must create them (expected true, found false)",
     'bootstrap-sha is a one-time setting (expected nothing, found "abc")',
     'the rust strategy rejects a virtual workspace (expected "simple", found "rust")',
     'package-name aborts root-only releases with no tag (expected nothing, found "phux")',
