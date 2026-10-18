@@ -119,7 +119,7 @@ export function infoPlist(
  * Fails when any shipped crate declares no license, or ships no license text
  * and offers no license whose canonical text is in packaging/licenses.
  */
-function thirdPartyNotices(): string {
+export function thirdPartyNotices(target = "aarch64-apple-darwin"): string {
   const metadata = run([
     "cargo",
     "metadata",
@@ -127,7 +127,7 @@ function thirdPartyNotices(): string {
     "--format-version",
     "1",
     "--filter-platform",
-    "aarch64-apple-darwin",
+    target,
     "--manifest-path",
     resolve(root, "native/Cargo.toml"),
   ]);

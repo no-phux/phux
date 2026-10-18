@@ -50,9 +50,10 @@ Terminate Terminal ends execution.
 |---|---|
 | `native/src` | GPUI application, connection, workspace, terminal, settings, platform integration. |
 | `native/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
-| `scripts`, `packaging` | Checkout build, isolated smoke/perf, and `Phux.app` preparation. |
+| `scripts`, `packaging` | Checkout build, isolated smoke/perf, and macOS/Linux package preparation. |
 | `toolchain` | Parent-managed GPUI snapshot pin and patch. |
 | `dist/app/Phux.app` | Release executable, fonts, icon, ad-hoc signature. No `.node` addon. |
+| `dist/linux/phux-desktop` | Linux executable, desktop entry, icon and license notices. No bundled coordinator. |
 
 `Phux.app/Contents/MacOS/phux-desktop` is the Rust binary. Dock launch omits
 `--phux`; the binary resolves an installed CLI and never replaces it. Isolated

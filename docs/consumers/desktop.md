@@ -10,23 +10,32 @@ last-reviewed: 2026-10-17
 shipping implementation. It specifies terminal work organized by projects,
 folders, and worktrees, agent state shown where agents run, and independent
 views across panes and windows. Closing a view preserves execution.
-Apple-silicon macOS is the first target.
+Targets are Apple-silicon macOS and x86-64/ARM64 Linux.
 
 <!-- impl-status: partial; probe: GridFrame -->
 > **Status: partial.** Tabs, split trees, independent views, the command
 > palette, agent attention, themes, and restore are the implemented product.
 > The host is now GPUI; a presented-frame qualification is still required.
-> Accessibility, notarization, and Linux are open. The Status table tracks each gap.
+> Accessibility, notarization, and physical-display Linux qualification remain
+> separate gates. The Status table tracks each gap.
 
 The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
 This is the maintained native client. The Zig [Cockpit](./cockpit.md) is
 archived outside main ([ADR-0169](../adr/0169-zig-cockpit-lives-in-an-archive.md)). The first release requires
-independent same-terminal views; Linux follows, Intel macOS is not required.
+independent same-terminal views; Intel macOS is not required.
 
-[Install the Desktop](../INSTALL.md#desktop-app-macos)
+[Install the Desktop](../INSTALL.md#desktop-app)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
 later. It downloads a published `Phux.app`, installing the CLI first if it is
 missing.
+
+The same installer supports Linux x86-64 and ARM64; see
+[Linux desktop installation](../INSTALL.md#linux-desktop). X11 and Wayland use
+GPUI's shared application and runtime rather than a separate Linux client.
+Linux adds `Ctrl-Shift-P` (palette), `Ctrl-Shift-T` (terminal),
+`Ctrl-Shift-W` (close pane), `Ctrl-Shift-F` (find), and `Ctrl-Shift-C/V`
+(clipboard). Command bindings elsewhere in this guide use Super on Linux;
+ordinary Control keys continue to reach the shell.
 
 To build the same app from a checkout instead, install the CLI, set up the
 desktop tools from [Contributor setup](../SETUP.md), quit any running
@@ -191,6 +200,11 @@ received it. Acknowledged actions distinguish **Delivered**, **Refused**, and
 authoritative output has actually been presented; it never triggers blind
 replay by the UI. An offscreen acquired frame is not that evidence.
 
+Linux currently reports submitted frames, not confirmed compositor presentation.
+If an acknowledged write becomes **Unknown**, its input fence therefore stays
+set even after fresh output arrives. Inspect the terminal before quitting and
+relaunching the app; never retry the uncertain command automatically.
+
 Shell integration (OSC 133) marks a terminal as running a command from its
 start to its finish. The connection's shell events say so first; before any
 (a command started before a reconnect or before the window attached), the
@@ -304,7 +318,7 @@ notarization, accessibility journeys, and Linux remain separate gaps.
 | Connections, settings, and agents | One active authority-specific session projection plus passive inventories of registered hosts. Same-window navigation, a shared Work/Actions/Settings panel, display preferences, Ghostty import with per-line provenance and shortcut conflicts, and an active-session Inbox of agent attention and server-held approvals. Mixed-authority tab trees are not built; the inspector (bounded agent event and detail view) is not built. | phux-d4x9.10–.12, phux-d4x9.23 (inspector) |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
-| Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
+| Linux | Native build, package and X11 software-renderer smoke are separate from physical GPU, compositor/IME and screen-reader qualification. | phux-d4x9.19 |
 
 ## Where to go next
 

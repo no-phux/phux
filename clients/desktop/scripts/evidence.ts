@@ -19,6 +19,13 @@ export interface PlacementEvidence {
  */
 export type Presentation = "confirmed" | "submitted";
 
+/** The adapter the native renderer actually selected, not a requested driver. */
+export function selectedWgpuBackend(stderr: string): "Vulkan" | "Gl" | undefined {
+  const backend = stderr.match(/Selected GPU adapter:[^\n]*\((Vulkan|Gl)\)/)?.[1];
+  if (backend === "Vulkan" || backend === "Gl") return backend;
+  return undefined;
+}
+
 export interface LayoutEvidence {
   session: string;
   presentation: Presentation;

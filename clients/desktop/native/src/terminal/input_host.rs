@@ -112,9 +112,11 @@ pub(super) fn chord(keystroke: &gpui::Keystroke) -> String {
 }
 
 fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {
-    event.keystroke.modifiers.platform
-        && !event.keystroke.modifiers.shift
-        && event.keystroke.key == key
+    let modifiers = event.keystroke.modifiers;
+    // Linux Ctrl-Shift clipboard commands belong to the effective app keymap
+    // and bubble there before this fallback. Do not recapture an unbound chord.
+    let clipboard = modifiers.platform && !modifiers.shift && !modifiers.alt;
+    clipboard && event.keystroke.key == key
 }
 
 pub(super) fn paint_preedit(
@@ -146,4 +148,23 @@ pub(super) fn paint_preedit(
         window,
         cx,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut;
+
+    #[test]
+    fn clipboard_shortcuts_do_not_capture_shell_interrupts() {
+        let event = |stroke| gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(stroke).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        assert!(!shortcut(&event("ctrl-c"), "c"));
+        assert!(shortcut(&event("cmd-c"), "c"));
+        assert!(!shortcut(&event("ctrl-shift-c"), "c"));
+        assert!(!shortcut(&event("ctrl-shift-v"), "v"));
+        assert!(!shortcut(&event("ctrl-alt-shift-c"), "c"));
+    }
 }

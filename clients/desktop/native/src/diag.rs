@@ -1,6 +1,6 @@
 //! Diagnostics: one place every layer reports into.
 //!
-//! - **Log.** `log` records go to stderr and to `~/Library/Logs/phux-desktop.log`
+//! - **Log.** `log` records go to stderr and the platform's state/log directory
 //!   (`PHUX_DESKTOP_LOG` overrides the path; `RUST_LOG`-style level in
 //!   `PHUX_DESKTOP_LOG_LEVEL`, default `info`). Every line is [`redact`]ed
 //!   first, and the file rotates to one `.1` backup at [`LOG_CAP`] bytes.
@@ -122,7 +122,54 @@ fn log_path() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     let home = std::env::var_os("HOME")?;
-    Some(Path::new(&home).join("Library/Logs/phux-desktop.log"))
+    Some(default_log_path(
+        Path::new(&home),
+        std::env::var_os("XDG_STATE_HOME"),
+    ))
+}
+
+fn default_log_path(home: &Path, state: Option<std::ffi::OsString>) -> PathBuf {
+    if cfg!(target_os = "linux") {
+        state
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".local/state"))
+            .join("phux-desktop/desktop.log")
+    } else {
+        home.join("Library/Logs/phux-desktop.log")
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::default_log_path;
+    use std::path::Path;
+
+    #[test]
+    fn logs_use_the_platform_directory() {
+        let home = Path::new("/home/person");
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                default_log_path(home, None),
+                home.join(".local/state/phux-desktop/desktop.log")
+            );
+            assert_eq!(
+                default_log_path(home, Some("/state".into())),
+                Path::new("/state/phux-desktop/desktop.log")
+            );
+            for invalid in ["", "relative/state"] {
+                assert_eq!(
+                    default_log_path(home, Some(invalid.into())),
+                    default_log_path(home, None)
+                );
+            }
+        } else {
+            assert_eq!(
+                default_log_path(home, None),
+                home.join("Library/Logs/phux-desktop.log")
+            );
+        }
+    }
 }
 
 /// Install the process logger once. A log file that cannot be opened leaves
@@ -213,7 +260,7 @@ pub fn may_activate() -> bool {
 /// keeps working in another app.
 #[must_use]
 pub fn window_kind() -> gpui::WindowKind {
-    if EVIDENCE_MODE.load(Ordering::Relaxed) {
+    if cfg!(target_os = "macos") && EVIDENCE_MODE.load(Ordering::Relaxed) {
         gpui::WindowKind::PopUp
     } else {
         gpui::WindowKind::Normal

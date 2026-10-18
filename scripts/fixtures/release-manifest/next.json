@@ -37,6 +37,16 @@
           "name": "phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-macos-arm64.zip",
           "url": "https://github.com/no-phux/phux/releases/download/next/phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-macos-arm64.zip",
           "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "x86_64-unknown-linux-gnu": {
+          "name": "phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-linux-x64.tar.gz",
+          "url": "https://github.com/no-phux/phux/releases/download/next/phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-linux-x64.tar.gz",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "name": "phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-linux-arm64.tar.gz",
+          "url": "https://github.com/no-phux/phux/releases/download/next/phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-linux-arm64.tar.gz",
+          "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         }
       }
     }

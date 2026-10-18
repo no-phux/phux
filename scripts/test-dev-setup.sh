@@ -91,7 +91,7 @@ IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/scripts/doct
 rm -f "$bin/uname"
 cat >"$bin/uname" <<'SH'
 #!/bin/sh
-case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
+case "$1" in -s) echo Linux ;; -m) echo "${SETUP_TEST_ARCH:-x86_64}" ;; esac
 SH
 cat >"$bin/rustc" <<SH
 #!/bin/sh
@@ -157,6 +157,39 @@ expect_fail 'found: 0.0.0' "$repo/scripts/doctor.sh" native
 sed "s/0.0.0/$ZIG_VERSION/" "$bin/zig" >"$scratch/zig"
 cp "$scratch/zig" "$bin/zig"
 expect_pass "$repo/scripts/doctor.sh" native
+# Linux desktop checks libraries, not Apple's Metal tools. Missing a development
+# package is diagnosed even when the machine has no graphical login.
+cp "$bin/npm" "$bin/python3"
+bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
+cat >"$bin/bun" <<SH
+#!/bin/sh
+echo '$bun_version'
+SH
+chmod +x "$bin/bun"
+expect_pass "$repo/scripts/doctor.sh" desktop
+grep -Fq 'xkbcommon-x11' "$scratch/output"
+if grep -Fq 'Metal' "$scratch/output"; then exit 1; fi
+SETUP_TEST_ARCH=aarch64 expect_pass "$repo/scripts/doctor.sh" desktop
+SETUP_TEST_ARCH=ppc64le expect_fail 'unsupported desktop platform' "$repo/scripts/doctor.sh" desktop
+cat >"$bin/pkg-config" <<'SH'
+#!/bin/sh
+test "$2" != xkbcommon-x11
+SH
+expect_fail 'xkbcommon-x11 development libraries' "$repo/scripts/doctor.sh" desktop
+cp "$bin/npm" "$bin/pkg-config"
+
+# Linux builds must retain native/Nix compiler flags and runtime library paths;
+# sourcing the Apple normalizer would silently unset all three.
+cp "$bin/cargo" "$scratch/cargo-good"
+cat >"$bin/cargo" <<'SH'
+#!/bin/sh
+test "$CC" = linux-cc && test "$NIX_LDFLAGS" = linux-flags && test "$LD_LIBRARY_PATH" = linux-libs || exit 1
+mkdir -p "$CARGO_TARGET_DIR/debug"
+printf '#!/bin/sh\nexit 0\n' >"$CARGO_TARGET_DIR/debug/phux-desktop"
+chmod +x "$CARGO_TARGET_DIR/debug/phux-desktop"
+SH
+CC=linux-cc NIX_LDFLAGS=linux-flags LD_LIBRARY_PATH=linux-libs expect_pass "$repo/clients/desktop/scripts/build-host.sh"
+cp "$scratch/cargo-good" "$bin/cargo"
 # Browser-client work reuses its committed engine; Zig must not be required.
 export SETUP_TEST_SYSROOT="$scratch/sysroot"
 mkdir -p "$SETUP_TEST_SYSROOT/lib/rustlib/wasm32-unknown-unknown/lib" "$repo/clients/phux-web" "$repo/clients/phux-vt-web/vendor"

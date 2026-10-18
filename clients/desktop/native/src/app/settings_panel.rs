@@ -1377,7 +1377,7 @@ fn machine_item(
     let disconnect = !current && !matches!(reach, Reach::Unavailable(_));
     let handle = handle.clone();
     SettingItem::new(
-        host.unwrap_or("This Mac").to_owned(),
+        host.unwrap_or("This computer").to_owned(),
         SettingField::render(move |_, _, _| {
             let (open, drop) = (target.clone(), target.clone());
             div()
@@ -1444,7 +1444,7 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         }),
     )
     .description("Sessions from every registered machine appear together in Work.");
-    let local = machine_item(desk, handle, None, "Local server on this Mac");
+    let local = machine_item(desk, handle, None, "Local server on this computer");
     let hosts = desk
         .hosts
         .iter()
