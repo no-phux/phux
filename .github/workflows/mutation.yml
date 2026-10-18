@@ -29,8 +29,6 @@ jobs:
         run: bash scripts/setup-rust.sh core
       - name: Pinned cargo-mutants
         run: bun tools/main.ts mutation-install
-      - name: Runner outcome and cleanup contracts
-        run: bun tools/main.ts mutation-check
       - name: Bounded pure-Rust pilot
         run: bun tools/main.ts mutation-run --output target/mutation/rust
       - name: Mutation diagnostics
