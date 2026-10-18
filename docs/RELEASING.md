@@ -76,7 +76,7 @@ CLI releases are GitHub's Latest. The Homebrew tap
 The build source is the tag, and the build harness is `main`, because
 `workflow_run` and `schedule` run the default branch. So a release
 infrastructure fix applies to an older tag on the next `publish` run.
-`scripts/check-release-orchestration.mjs` pins this wiring.
+`bun tools/main.ts release-orchestration-check` pins this wiring.
 
 ## Next
 
@@ -131,7 +131,7 @@ Release Please cannot update `Cargo.lock`. Its `sync-lockfile` job commits the
 root, browser, and Desktop lockfiles. It force-pushes the release branch on
 every `main` commit, so `release-please.yml` returns the PR to draft until
 the lockfile push lands. Do not merge a release PR while it is a draft.
-`node scripts/check-agent-integration-versions.mjs` checks integration
+`bun tools/main.ts integration-versions-check` checks integration
 versions after any version-bearing change.
 
 ## Build rules

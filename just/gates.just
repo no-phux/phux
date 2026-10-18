@@ -124,7 +124,7 @@ workflow-check: shellcheck tools-check
     node --test scripts/test-npm-audit-gate.mjs
     python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh
-    node scripts/check-release-orchestration.mjs
+    bun tools/main.ts release-orchestration-check
 
 
 # Dependency hygiene: licenses, advisories, bans.
@@ -137,7 +137,7 @@ deny:
 [group('gates')]
 [private]
 build-features-check:
-    python3 scripts/check-build-features.py
+    bun tools/main.ts build-features-check
 
 
 # Build rustdoc with warnings denied — mirrors the CI `doc` gate.

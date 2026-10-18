@@ -16,13 +16,13 @@ SHELLS = list(dict.fromkeys(filter(None, ["/bin/sh", "/bin/bash", shutil.which("
 STATUS = '. "$1"; phux_error "bad %s \\path"; phux_warn "careful"; phux_info "working"; phux_ok "done"; phux_hint "  try this\n  second line"; printf "data\\n"'
 PLAIN = b"phux: error: bad %s \\path\nphux: warn: careful\nphux: info: working\nphux: ok: done\n  hint: try this\n  hint: second line\n"
 COMMANDS = {shell: [shell, "-eu", "-c", STATUS, "test", str(HELPER)] for shell in SHELLS}
-COMMANDS["python"] = [sys.executable, "-B", "-c", r'''from lib.output import status, hint
-status("error", r"bad %s \path")
-status("warn", "careful")
-status("info", "working")
-status("ok", "done")
-hint("  try this\n  second line")
-print("data")''']
+COMMANDS["bun"] = ["bun", "-e", r'''import { status, hint } from "../tools/src/lib/output.ts";
+status("error", String.raw`bad %s \path`);
+status("warn", "careful");
+status("info", "working");
+status("ok", "done");
+hint("  try this\n  second line");
+process.stdout.write("data\n");''']
 COMMANDS["node"] = ["node", "--input-type=module", "-e", r'''import { status, hint } from "./lib/output.mjs";
 status("error", String.raw`bad %s \path`);
 status("warn", "careful");

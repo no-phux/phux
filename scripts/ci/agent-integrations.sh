@@ -9,7 +9,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
 bash scripts/doctor.sh integrations
-node scripts/check-agent-integration-versions.mjs
+bun tools/main.ts integration-versions-check
 node --test integrations/grok/test/package.test.mjs
 
 # Incidental install audits are off; the explicit audit inside each

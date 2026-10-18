@@ -2,9 +2,11 @@
 // Build and CI logic for phux: `bun tools/main.ts <command> [args]`.
 // Each area owns its commands; this file only lists them.
 import type { Command } from "./src/lib/command.ts";
+import { commands as cargo } from "./src/cargo/commands.ts";
+import { commands as integrations } from "./src/integrations/commands.ts";
 import { commands as routing } from "./src/routing/commands.ts";
 
-const COMMANDS: Record<string, Command> = { ...routing };
+const COMMANDS: Record<string, Command> = { ...cargo, ...integrations, ...routing };
 
 function usage(): string {
   const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));

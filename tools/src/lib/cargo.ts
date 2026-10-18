@@ -52,7 +52,8 @@ function workspaceRoot(dir: string, root: string): Manifest | undefined {
   }
 }
 
-function dependencyTables(document: Table): Table[] {
+/** The top-level table and every `[target.*]` table: where dependencies are declared. */
+export function dependencyTables(document: Table): Table[] {
   return [document, ...Object.values(table(document["target"])).map(table)];
 }
 

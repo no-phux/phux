@@ -159,6 +159,10 @@ jobs:
           test -n "$channel"
           rustup toolchain install "$channel" --profile minimal
 
+      # The desktop host lock sync runs from the tools package.
+      - uses: ./.github/actions/setup-bun
+        if: steps.root-release.outputs.changed == 'true'
+
       - name: Re-resolve workspace member versions
         if: steps.root-release.outputs.changed == 'true'
         run: |
@@ -168,7 +172,7 @@ jobs:
           (cd clients/phux-web && cargo update --workspace)
           # The desktop host lock records them too, but its pinned GPUI snapshot
           # is parent-managed and not present here, so cargo cannot resolve it.
-          python3 scripts/sync-path-lock-versions.py Cargo.lock clients/desktop/native/Cargo.lock
+          bun tools/main.ts sync-path-lock-versions Cargo.lock clients/desktop/native/Cargo.lock
 
       - name: Commit Cargo.lock
         shell: bash
