@@ -443,7 +443,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("uses: ./.github/actions/classify-changes", workflow)
                 if name == "desktop-test":
                     # main keeps its running run; only pull requests cancel.
-                    self.assertIn("cancel-in-progress: ${{ github.event_name != 'push' }}", workflow)
+                    self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", workflow)
                 else:
                     self.assertIn("cancel-in-progress: true", workflow)
 

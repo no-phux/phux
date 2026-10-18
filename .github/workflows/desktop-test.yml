@@ -29,9 +29,10 @@ concurrency:
   # Pull requests are latest-wins. main is one running and one pending run:
   # nothing gates on a per-SHA desktop-test, and keying main on the SHA queued
   # two hour-long xcode-27 jobs per merge, ~35 deep, in front of the release
-  # lanes' own macOS builds. The running main run is never cancelled.
+  # lanes' own macOS builds. Nothing on main, push or dispatch, ever cancels
+  # the running main run.
   group: mini-v1-desktop-test-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   changes:
