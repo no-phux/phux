@@ -16,6 +16,8 @@ repeating it.
 - [Coding agents](./agents.md): agent state, host integrations, MCP, safety.
 - [Remote machines](./remote.md): `phux host add`, what is exposed, relays, linking machines.
 - [Clients](./clients.md): terminal UI, desktop, browser, phones.
+  - [Desktop Changes](./desktop-changes.md): review, stage, and commit the focused checkout.
+  - [Desktop agent panes](./desktop-panes.md): identity, harness marks, and stable geometry.
 - [Embedding](./embedding.md): GPUI, other Rust toolkits, C and Swift.
 - [Troubleshooting](./troubleshooting.md): doctor, logs, known failures.
 

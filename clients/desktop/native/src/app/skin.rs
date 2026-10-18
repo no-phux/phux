@@ -16,6 +16,8 @@ use super::color::from_hex;
 #[derive(Clone)]
 pub struct Look {
     pub skin: Skin,
+    /// The theme is light; picks the light half of `[light, dark]` pairs.
+    pub light: bool,
     /// The palette with the skin's translucent washes and hairlines, so
     /// hovered and selected chrome tints the sheet instead of covering it.
     pub chrome: Palette,
@@ -66,6 +68,7 @@ impl Look {
         let lift = |layers: &[Shadow]| shadows(layers, light);
         Self {
             skin: *skin,
+            light,
             ink,
             sheet: from_hex(&theme.background).opacity(tone(m.sheet_alpha, light)),
             sheen: ink.opacity(tone(m.sheen, light)),
@@ -85,10 +88,33 @@ impl Look {
             chrome,
         }
     }
+
+    /// A pane card's shadows `depth` of the way back (0 raised, 1 recessed):
+    /// the pane shadow lowering into the skin's softer lift, plus the inner
+    /// well under its top edge.
+    pub fn pane_depth_shadows(&self, depth: f32) -> Vec<BoxShadow> {
+        let m = &self.skin.material;
+        let depth = depth.clamp(0., 1.);
+        let mut layers = shadows(&[m.pane_shadow.lerp(m.depth.lift, depth)], self.light);
+        layers.extend(inset_shadows(
+            &[Shadow::NONE.lerp(m.depth.well, depth)],
+            self.light,
+        ));
+        layers
+    }
 }
 
 /// GPUI shadows for `layers`. Fully transparent layers are left out.
 fn shadows(layers: &[Shadow], light: bool) -> Vec<BoxShadow> {
+    cast(layers, light, false)
+}
+
+/// Inner shadows for `layers`, as [`shadows`] casts outer ones.
+fn inset_shadows(layers: &[Shadow], light: bool) -> Vec<BoxShadow> {
+    cast(layers, light, true)
+}
+
+fn cast(layers: &[Shadow], light: bool, inset: bool) -> Vec<BoxShadow> {
     layers
         .iter()
         .filter(|layer| tone(layer.alpha, light) > 0.)
@@ -97,7 +123,7 @@ fn shadows(layers: &[Shadow], light: bool) -> Vec<BoxShadow> {
             offset: point(px(0.), px(layer.y)),
             blur_radius: px(layer.blur),
             spread_radius: px(layer.spread),
-            inset: false,
+            inset,
         })
         .collect()
 }
@@ -261,6 +287,22 @@ mod tests {
             background_appearance(TERMINAL.material.backdrop),
             WindowBackgroundAppearance::Opaque
         );
+    }
+
+    #[test]
+    fn a_raised_pane_keeps_its_shadow_and_a_recessed_one_lowers_and_sinks() {
+        let colors = palette(&theme_by_id(default_theme_id(), &[]));
+        let look = Look::of(&GLASS, &colors, &default_display());
+        assert_eq!(look.pane_depth_shadows(0.), look.pane_shadow);
+        let back = look.pane_depth_shadows(1.);
+        let (outer, inner): (Vec<_>, Vec<_>) = back.iter().partition(|shadow| !shadow.inset);
+        assert_eq!(outer.len(), 1);
+        assert_eq!(inner.len(), 1);
+        assert!(outer[0].blur_radius < look.pane_shadow[0].blur_radius);
+        assert!(outer[0].offset.y < look.pane_shadow[0].offset.y);
+        // Plain casts nothing at any depth: the veil is its only cue.
+        let plain = Look::of(&TERMINAL, &colors, &default_display());
+        assert!(plain.pane_depth_shadows(1.).is_empty());
     }
 
     #[test]

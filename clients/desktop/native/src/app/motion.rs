@@ -20,6 +20,29 @@ pub struct Motion {
     seen: HashSet<String>,
     entering: HashMap<String, Instant>,
     leaving: HashMap<String, Instant>,
+    /// How far back each agent-driven placement sits, moving toward its target.
+    depths: HashMap<String, Depth>,
+    /// The placement the pointer is anywhere over; a recessed one comes forward.
+    pub hover: Option<String>,
+}
+
+/// One placement's depth, 0 (forward) to 1 (recessed), easing from `from`
+/// toward `to` since `start`.
+#[derive(Debug, Clone, Copy)]
+struct Depth {
+    from: f32,
+    to: f32,
+    start: Instant,
+}
+
+impl Depth {
+    fn at(&self, span: Duration, now: Instant) -> f32 {
+        let t = progress(self.start, span, now);
+        if t >= 1. {
+            return self.to;
+        }
+        self.from + (self.to - self.from) * ease_out(t)
+    }
 }
 
 impl Default for Motion {
@@ -31,6 +54,8 @@ impl Default for Motion {
             seen: HashSet::new(),
             entering: HashMap::new(),
             leaving: HashMap::new(),
+            depths: HashMap::new(),
+            hover: None,
         }
     }
 }
@@ -65,6 +90,7 @@ impl Motion {
             self.tab = tab.map(str::to_owned);
             self.seen = placements.iter().map(|id| (*id).to_owned()).collect();
             self.leaving.retain(|id, _| self.seen.contains(id));
+            self.depths.retain(|id, _| self.seen.contains(id));
         }
         let enter = self.enter;
         self.entering
@@ -101,12 +127,43 @@ impl Motion {
         1.
     }
 
+    /// How far back `id` sits now, 0 (forward) to 1 (recessed), as it eases
+    /// toward `recessed` over the enter span. A placement first seen, or any
+    /// change while `instant` (reduced motion), lands at once.
+    pub fn depth(&mut self, id: &str, recessed: bool, instant: bool, now: Instant) -> f32 {
+        let to = if recessed { 1. } else { 0. };
+        let span = self.enter;
+        let depth = self.depths.entry(id.to_owned()).or_insert(Depth {
+            from: to,
+            to,
+            start: now,
+        });
+        if instant {
+            *depth = Depth {
+                from: to,
+                to,
+                start: now,
+            };
+        } else if depth.to != to {
+            *depth = Depth {
+                from: depth.at(span, now),
+                to,
+                start: now,
+            };
+        }
+        depth.at(span, now)
+    }
+
     /// Whether a frame is still moving.
     pub fn active(&self, now: Instant) -> bool {
         self.entering
             .values()
             .any(|at| now.duration_since(*at) < self.enter)
             || !self.leaving.is_empty()
+            || self
+                .depths
+                .values()
+                .any(|depth| depth.at(self.enter, now) != depth.to)
     }
 }
 
@@ -205,6 +262,40 @@ mod tests {
         assert_eq!(motion.presence("b", now + Duration::from_millis(100)), 1.);
         assert!(motion.leave("a", now));
         assert_eq!(motion.presence("a", now), 0.);
+    }
+
+    #[test]
+    fn depth_lands_at_first_sight_then_eases_between_targets() {
+        let start = Instant::now();
+        let mut motion = Motion::default();
+        motion.observe(Some("t"), &ids(&["a"]), start);
+        assert_eq!(motion.depth("a", true, false, start), 1.);
+        assert!(!motion.active(start));
+        // Focus brings it forward over the enter span.
+        assert_eq!(motion.depth("a", false, false, start), 1.);
+        let mid = start + ENTER / 2;
+        let halfway = motion.depth("a", false, false, mid);
+        assert!(halfway > 0. && halfway < 1., "{halfway}");
+        assert!(motion.active(mid));
+        // Reversing mid-flight starts from where it is, not from an end.
+        let back = motion.depth("a", true, false, mid);
+        assert!((back - halfway).abs() < 1e-6);
+        let later = mid + ENTER;
+        assert_eq!(motion.depth("a", true, false, later), 1.);
+        assert!(!motion.active(later));
+    }
+
+    #[test]
+    fn reduced_motion_moves_depth_at_once_and_gone_placements_forget_it() {
+        let now = Instant::now();
+        let mut motion = Motion::default();
+        motion.observe(Some("t"), &ids(&["a", "b"]), now);
+        assert_eq!(motion.depth("b", true, false, now), 1.);
+        assert_eq!(motion.depth("b", false, true, now), 0.);
+        assert!(!motion.active(now));
+        motion.depth("b", true, false, now);
+        motion.observe(Some("t"), &ids(&["a"]), now);
+        assert!(!motion.active(now));
     }
 
     #[test]

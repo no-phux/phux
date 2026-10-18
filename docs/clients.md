@@ -33,6 +33,9 @@ the CLI first (the desktop installer does this if you have not). It never
 creates sessions on its own and never stops the server; quitting the app
 detaches.
 
+For task details, see the [Changes panel](./desktop-changes.md) and
+[agent pane presentation](./desktop-panes.md).
+
 Released alongside the CLI, with its own version number. The macOS build is
 ad-hoc signed, not notarized. Expect rough edges; the terminal UI is ahead
 of it. [`clients/desktop`](../clients/desktop) has the details.

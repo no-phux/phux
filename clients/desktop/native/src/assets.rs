@@ -16,7 +16,20 @@ gpui_kit::assets::icon_assets!(
         Layers,
         ListTree,
         Pencil,
-        Trash
+        Trash,
+        GitBranch,
+        // Agent harness marks (`app::pane_identity::Harness::glyph`); Asterisk
+        // and Bot ship in Kit's component bundle.
+        CodeXml,
+        Braces,
+        Pi,
+        SquarePi,
+        Orbit,
+        Zap,
+        MousePointer2,
+        Sparkle,
+        Feather,
+        WandSparkles
     ]
 );
 
@@ -59,6 +72,8 @@ mod tests {
             IconName::ListTree,
             IconName::Pencil,
             IconName::Trash,
+            IconName::GitBranch,
+            IconName::Minus,
             IconName::ChevronLeft,
             IconName::ChevronRight,
             IconName::Folder,

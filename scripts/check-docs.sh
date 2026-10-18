@@ -274,15 +274,17 @@ check_named_crate() {
         violate crates "$page" "$name is not a crate in this tree"
 }
 
-# The crate table in docs/architecture.md is the one hand-written list that
-# must track the tree. A backticked `name` in that file counts as naming it.
+# The root-crate table under "Crates" is the maintained inventory.
+# Prose and other sections may name standalone client-workspace packages.
 gate_crates() {
     local page="$ROOT/docs/architecture.md" dir name named
     [[ -f "$page" ]] || return 0
-    named="$(awk -F'`' '{
-        for (i = 2; i <= NF; i += 2)
-            if ($i ~ /^[a-z][a-z0-9-]*$/) print $i
-    }' "$page" | sort -u)"
+    named="$(awk -F'`' '
+        /^## / { inventory = ($0 == "## Crates"); next }
+        inventory && /^[[:space:]]*\|[[:space:]]*`/ {
+            if ($2 ~ /^[a-z][a-z0-9-]*$/) print $2
+        }
+    ' "$page" | sort -u)"
     for dir in "$ROOT"/crates/*/; do
         name="$(basename "$dir")"
         [[ -f "$dir/Cargo.toml" ]] || continue

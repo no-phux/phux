@@ -45,7 +45,8 @@ and gets the server's view, which is what `phux snapshot` does.
 ## Crates
 
 All under `crates/`. Every crate is `publish = false` except
-`phux-protocol`. Lower rows depend on nothing above them.
+`phux-protocol`. Rows describe responsibilities, not a dependency ordering;
+Cargo manifests define the actual edges.
 
 | Crate                 | Role                                                                                                                                                  |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -79,8 +80,8 @@ All under `crates/`. Every crate is `publish = false` except
 bridges their id spaces. Where both are in scope, import the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
-Outside the workspace, each with its own `Cargo.toml`: `clients/desktop`
-(GPUI app), `clients/phux-web` (browser client), `clients/phux-vt-web`
+Outside the root workspace: `clients/desktop/native` (the desktop and
+`phux-gpui` workspace), `clients/phux-web` (browser client), `clients/phux-vt-web`
 (driver for libghostty compiled to wasm). `integrations/` holds the npm
 packages for agent hosts; they run the `phux` CLI and never speak the wire.
 
@@ -102,6 +103,11 @@ decoration rules across GPUI and the C ABI's `c/draw_list.rs`; other
 toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi` derives one binding
 vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
 for Swift and Kotlin.
+
+The [pane identity seam](./desktop-panes.md#classification-and-extension)
+keeps the same classification across cards, tabs, and navigator rows. The
+[Changes panel seam](./desktop-changes.md#implementation-guarantees) keeps
+local Git work off the UI thread and rejects results for a stale folder.
 
 ## Layout stability
 
@@ -173,15 +179,11 @@ and not built.
 
 ## Decisions
 
-The choices that shape the code, stated as they stand. Code comments cite
-them as `ADR-NNNN`; those records live in the
-[latest main snapshot](https://github.com/no-phux/phux/tree/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/adr).
-This private Git-only deletion experiment has no approved archive choice.
-Owner choice is pending; this snapshot accounts for all 189 numbered records,
-including the current coordination, quick-capture and embedding decisions.
-Accepted record bodies remain unchanged in that tree.
-A new decision that closes off a design space gets a bullet here, with the
-PR that made it.
+These are current constraints, not a claim that every existing implementation
+is correct. A change that conflicts with one needs an explicit decision and
+updated tests and guidance—not a quiet rewrite that blesses a bug. A lasting
+trade-off belongs here with its reason and the PR that made it. Older numbered
+records explain history; [look them up deliberately](#historical-decisions).
 
 **Process and runtime**
 
@@ -243,3 +245,33 @@ PR that made it.
 - Release Please versions from conventional commits. Checksums are minisign
   signed and the installer verifies them. One manifest per channel.
 - Generated reference pages are byte-pinned by a test; hand edits fail CI.
+
+## Historical decisions
+
+The 189 numbered ADRs are preserved unchanged at the last integrated
+ADR-bearing main snapshot,
+[`9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23`](https://github.com/no-phux/phux/tree/9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23/docs/adr).
+This is main history, not an ephemeral PR-branch commit. Current contracts
+remain in the live guides and the constraints above; history supplies the
+original trade-offs, rejected alternatives, and context.
+
+From a Git checkout, browse the index or search the complete archive:
+
+```sh
+git show 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23:docs/adr/README.md
+git grep -n -i 'lease' 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23 -- docs/adr/
+git show 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23:docs/adr/0187-agents-coordinate-through-phux.md
+```
+
+A shallow clone may not have that object. Fetch the exact snapshot, then use
+the same commands (or browse the pinned link without a local checkout):
+
+```sh
+git fetch origin 9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23
+```
+
+Do not revive historical constraints merely because a search found them. Check
+supersession, proposals, current code/tests, and the live contract. Conversely,
+if a still-operative constraint exists only in history, promote it to its live
+home with evidence. New decisions extend the current architecture and link
+their PR rather than creating a second competing source of authority.

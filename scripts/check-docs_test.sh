@@ -79,8 +79,12 @@ mkdir -p "$repo/crates/phux-fixture"
 printf '[package]\n' >"$repo/crates/phux-fixture/Cargo.toml"
 printf '# Architecture\n' >"$repo/docs/architecture.md"
 expect_fail 'crates/phux-fixture is not in the crate table' --only=crates
-printf '`phux-fixture`\n' >>"$repo/docs/architecture.md"
+printf '\n## Crates\n\nA prose mention of `phux-fixture` is not an inventory row.\n' >>"$repo/docs/architecture.md"
+expect_fail 'crates/phux-fixture is not in the crate table' --only=crates
+printf '\n| Crate | Role |\n|---|---|\n| `phux-fixture` | Fixture |\n' >>"$repo/docs/architecture.md"
 expect_pass --only=crates
-printf '`phux-missing`\n' >>"$repo/docs/architecture.md"
+printf '\nThe standalone client workspace includes `phux-gpui`.\n' >>"$repo/docs/architecture.md"
+expect_pass --only=crates
+printf '\n| `phux-missing` | Stale root crate |\n' >>"$repo/docs/architecture.md"
 expect_fail 'phux-missing is not a crate in this tree' --only=crates
 printf 'docs fixtures: all cases passed\n'

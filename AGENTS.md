@@ -4,6 +4,12 @@ Rules for coding agents working in this repository. Humans: see
 [CONTRIBUTING](./CONTRIBUTING.md). Architecture and conventions are in
 [docs/architecture.md](./docs/architecture.md); setup and gates in
 [docs/development.md](./docs/development.md).
+Live contracts and their rationale belong in the current docs. For an old
+`ADR-NNNN` citation, use the [searchable historical snapshot](./docs/architecture.md#historical-decisions).
+Do not treat an obsolete proposal as shipping behavior; if an operative
+constraint is missing from the live docs, verify it against code/tests and
+restore that constraint rather than silently dropping it.
+
 <!-- bd-doctor-divergence: ok -->
 
 ## Build and validate
