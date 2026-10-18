@@ -35,8 +35,7 @@ The Zig Cockpit is archived outside `main`; see the
 your diff against `origin/main` exactly as `ci.yml` does and runs the same
 recipes, so there is no run-everything recipe and no reason to run lanes your
 change cannot affect. Only `rust icount` and `native setup` are CI-only. See
-[docs/CI.md](./docs/CI.md). `commitlint` lints every commit in the PR, not
-just the title.
+[docs/CI.md](./docs/CI.md). `commitlint` lints every authored (non-merge) commit in the PR and the title.
 
 ## How work reaches `main`
 

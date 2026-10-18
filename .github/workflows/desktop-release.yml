@@ -98,25 +98,20 @@ jobs:
       - uses: ./harness/.github/actions/setup-bun
         with:
           source: source
-      - name: Contributor Rust, Zig and Metal setup
-        working-directory: source
-        run: |
-          bash scripts/setup-rust.sh native
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-          brew install just
-          xcodebuild -downloadComponent MetalToolchain
-          xcrun metal --version
+      - uses: ./harness/.github/actions/setup-macos-desktop
+        with:
+          source: source
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: source -> target
           shared-key: mini-v1-desktop-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build same-checkout qualification CLI and compiled desktop app
+      - name: Build same-checkout qualification CLI
         working-directory: source
-        run: |
-          set -euo pipefail
-          cargo build --locked --release -p phux
-          just desktop-package
+        run: cargo build --locked --release -p phux
+      - name: Package optimized desktop
+        working-directory: source
+        run: just desktop-package
       - name: Verify signature and create checksummed release archive
         working-directory: source
         env:
@@ -276,16 +271,19 @@ jobs:
       - uses: ./harness/.github/actions/setup-bun
         with:
           source: source
-      - name: Build and test native desktop and same-checkout CLI
+      - name: Native desktop lint
         working-directory: source
-        run: |
-          set -euo pipefail
-          just desktop-lint
-          xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
-          just desktop-renderer-test
-          cargo build --locked --release -p phux
-          just desktop-native-build
-          bun clients/desktop/scripts/package-linux.ts
+        run: just desktop-lint
+      - name: Native desktop tests and renderer
+        # The harness owns orchestration; nested just calls read the immutable
+        # source's recipes, including tags older than desktop-tests itself.
+        run: just --justfile "$GITHUB_WORKSPACE/harness/justfile" --working-directory "$GITHUB_WORKSPACE/source" desktop-tests
+      - name: Build same-checkout qualification CLI
+        working-directory: source
+        run: cargo build --locked --release -p phux
+      - name: Package optimized desktop
+        working-directory: source
+        run: just desktop-package
       - name: Checksum and qualify the archived Linux package
         env:
           ARCHIVE: ${{ steps.version.outputs.archive }}

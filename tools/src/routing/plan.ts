@@ -27,17 +27,22 @@ export type Trigger = "pull_request" | "push";
  * Bun leaves a shared stdout non-blocking, and a Cargo build that follows it
  * in one process panics on EAGAIN (os error 35).
  */
-export const LANE_RECIPES: Record<Lane, readonly string[]> = {
-  guards: ["guards"],
-  lint: ["rust-lint"],
-  tests: ["test"],
-  e2e: ["e2e"],
-  ffi: ["binding-uniffi-test", "ffi-abi"],
-  icount: ["perf-icount"],
-  integrations: ["agent-integrations-check"],
-  web: ["web-check"],
-  desktop: ["desktop-lint", "desktop-tests", "desktop-check", "desktop-framework-check"],
-  native: ["native-smoke"],
+export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]])[]> = {
+  guards: [["guards"]],
+  lint: [["rust-lint"]],
+  tests: [["test"]],
+  e2e: [["e2e"]],
+  ffi: [["binding-uniffi-test"], ["ffi-abi"]],
+  icount: [["perf-icount"]],
+  integrations: [["agent-integrations-check"]],
+  web: [["web-check"]],
+  desktop: [
+    ["desktop-lint"],
+    ["desktop-tests"],
+    ["desktop-check"],
+    ["desktop-framework-check", "debug"],
+  ],
+  native: [["native-smoke"]],
 };
 
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */

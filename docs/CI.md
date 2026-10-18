@@ -18,7 +18,7 @@ work follows a green `main`: `release.yml` and `next.yml`. Releasing is
 | Workflow | Fires on | Does |
 |---|---|---|
 | `ci.yml` | every non-draft PR, every `main` push, dispatch | routed lanes and the required `ci` aggregate; on a green push, republishes changed docs and skills |
-| `commitlint.yml` | PRs, including title edits | lints every commit and the PR title |
+| `commitlint.yml` | PRs, including title edits | lints every authored (non-merge) commit and the PR title |
 | `release.yml` | green `main` ci, daily, dispatch | release PRs, then publishes every draft whose commit is green |
 | `next.yml` | green `main` ci, dispatch | the moving `next` prerelease |
 | `build-cli.yml`, `desktop-release.yml` | called by the two above | release builds |
@@ -36,7 +36,9 @@ lanes and lanes to recipes. The web and desktop lanes route the Cargo
 closure their builds compile, read from the manifests with features resolved,
 so a dependency added or dropped reroutes on its own. A path no route names
 requests every lane, so an unknown input fails closed. A change to `ci.yml` or `.github/actions/` reruns
-every lane too.
+every lane too. Maintainer-only `.beads/` changes run guards, not product
+builds. Regenerable `.pi/fabric/` state is ignored so it cannot widen a local
+`just check` plan.
 
 | Lane | Job | Recipe | Runs when |
 |---|---|---|---|
@@ -48,7 +50,7 @@ every lane too.
 | icount | `rust icount` | `just perf-icount` | hot-path crates and the baseline ([performance CI](./performance-ci.md)) |
 | integrations | `agent integrations` | `just agent-integrations-check` | `integrations/` and plugin manifests |
 | web | `web` | `just web-check` | the browser clients and the Cargo closure they build |
-| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-lint`, `desktop-tests`, `desktop-check`, `desktop-framework-check` | the desktop host and the Cargo closure it builds; PRs only |
+| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-lint`, `desktop-tests`, `desktop-check`, `desktop-framework-check debug` | the desktop host and the Cargo closure it builds; PRs only |
 | native | `native setup` | `just native-smoke` | toolchain, setup, and link inputs on a clean runner |
 
 On a pull request, a library change runs only its reverse dependencies
@@ -67,6 +69,12 @@ in CI.
 The test profile compiles once per run: `rust test build` archives the unit
 and e2e binaries (about 410 MB, kept one day), and `rust tests` and `rust e2e`
 download it and compile nothing.
+
+Desktop PRs package and smoke-test a production-feature debug binary instead
+of compiling an additional optimized copy. The same packaging and runtime
+checks run; `desktop-release.yml` still builds and qualifies optimized binaries
+on macOS and both Linux architectures before publication. Native setup and
+Linux test orchestration are shared by the PR and release jobs.
 
 ## Cancellation and reuse
 

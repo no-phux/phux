@@ -86,13 +86,14 @@ test("each lane is one job gated on its plan output that runs the lane's recipes
     const commands = steps(owner?.[1] ?? {})
       .map(run)
       .join("\n");
-    for (const recipe of LANE_RECIPES[lane]) {
+    for (const argv of LANE_RECIPES[lane]) {
+      const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
       // A job without just installed runs the recipe's one-line body instead.
       const body = RECIPES[recipe] ?? [];
       const runs =
-        new RegExp(`\\bjust ${recipe}\\b`).test(commands) ||
-        (body.length === 1 && commands.includes(body[0] ?? "\0"));
+        commands.includes(`just ${argv.join(" ")}`) ||
+        (argv.length === 1 && body.length === 1 && commands.includes(body[0] ?? "\0"));
       expect([lane, recipe, runs]).toEqual([lane, recipe, true]);
     }
   }

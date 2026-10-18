@@ -216,7 +216,7 @@ If your change conflicts with these, open a [Discussion] before a PR.
   [`docs/RELEASING.md`](./docs/RELEASING.md)): `feat:` bumps the minor,
   `fix:` the patch, and a non-conventional subject is omitted from both.
 - **Conventional commits are machine-enforced.** The required `commitlint`
-  check lints every commit in a PR *and* the PR title against
+  check lints every authored (non-merge) commit in a PR *and* the PR title against
   [`commitlint.config.mjs`](./commitlint.config.mjs). Subjects may run to 120
   chars; body lines are unlimited.
 - **Never `--no-verify`.** If a hook fails, fix the root cause.

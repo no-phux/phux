@@ -37,6 +37,8 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/ci/setup-linux-release-userspace.sh": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
+  // Passive maintainer task exports/configuration are not product inputs.
+  ".beads/**": [],
   "tools/{main.ts,package.json}": ["web", "desktop"],
   "tools/src/lib/**": ["web", "desktop"],
   "tools/src/desktop/**": ["desktop"],

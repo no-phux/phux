@@ -1,10 +1,12 @@
 # commitlint — the PR gate for the conventional-commit contract.
 #
-# Lints EVERY commit in the PR (base..head) and the PR TITLE against
+# Lints every authored (non-merge) commit in the PR and the PR TITLE against
 # commitlint.config.mjs (config-conventional, tuned there). Both surfaces
 # matter because main allows both squash and rebase merges:
 #   * squash merge -> the PR title becomes the commit subject on main
-#   * rebase merge -> the PR commits land on main verbatim
+#   * rebase merge -> authored PR commits land on main verbatim
+# Integration merges do not land in linear main history. Select by Git parent
+# count, never by a message prefix that could hide malformed authored commits.
 # release-please parses that log to decide the next version and the
 # changelog (docs/RELEASING.md), so a malformed message silently drops the
 # change from the release notes or skips a version bump.
@@ -58,9 +60,9 @@ jobs:
           # Cockpit's one-time history import is intentionally reachable as a
           # merge parent. Its 199 historical commits predate this repository's
           # commitlint contract; exclude exactly that immutable ancestry while
-          # continuing to lint the import merge and every authored PR commit.
+          # continuing to lint every authored PR commit.
           import_tip="$(< .github/cockpit-history-tip)"
-          mapfile -t commits < <(git rev-list --reverse "$BASE_SHA..$HEAD_SHA" --not "$import_tip")
+          mapfile -t commits < <(git rev-list --no-merges --reverse "$BASE_SHA..$HEAD_SHA" --not "$import_tip")
           for commit in "${commits[@]}"; do
             git show -s --format=%B "$commit" | npx commitlint --verbose
           done

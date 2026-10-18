@@ -134,7 +134,7 @@ while IFS= read -r path; do
     phux_hint "Fix by adding it to the fast PR lane in just/test.just (recipe \`e2e\`):"
     phux_hint "  -E '... + binary_id(${binary_id})'"
     phux_hint "or, if it is too slow for the PR critical path, to the \`stress\`"
-    phux_hint "recipe (run locally with `just stress`)."
+    phux_hint "recipe (run locally with \`just stress\`)."
     echo "" >&2
 done < <(find crates -type f -path '*/tests/*_e2e.rs' | sort)
 

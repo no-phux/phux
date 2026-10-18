@@ -337,16 +337,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # desktop-release.yml provisions the same way.
-      - name: Rust, Zig and Metal setup
+      - uses: ./.github/actions/setup-macos-desktop
         if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          bash scripts/setup-rust.sh native
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-          brew install just
-          xcodebuild -downloadComponent MetalToolchain
-          xcrun metal --version
       - uses: ./.github/actions/setup-linux-desktop
         if: runner.os == 'Linux'
       - uses: ./.github/actions/setup-bun
@@ -355,12 +347,14 @@ jobs:
       - run: just desktop-lint
       - run: just desktop-tests
       - run: just desktop-check
+      # PRs qualify production features in the warm debug profile. Optimized
+      # shipping builds remain in desktop-release.yml.
       # Hosted macOS never confirms a presented drawable; Linux must render
       # through lavapipe's Vulkan.
       - name: just desktop-framework-check
         env:
           PHUX_DESKTOP_SMOKE_ARGS: --output ${{ runner.temp }}/desktop-evidence ${{ matrix.smoke }}
-        run: just desktop-framework-check
+        run: just desktop-framework-check debug
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

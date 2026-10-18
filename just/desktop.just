@@ -6,12 +6,7 @@ desktop-source:
     bun tools/main.ts desktop-source
 
 [private]
-desktop-host-debug: desktop-source
-    bash clients/desktop/scripts/build-host.sh --debug
-
-[group('desktop')]
-[doc('Build the release GPUI desktop from the pinned snapshot')]
-desktop-source-build: desktop-native-build
+desktop-host-debug: (desktop-native-build "debug")
 
 [group('desktop')]
 [doc('Install the desktop script toolchain from the frozen package lock')]
@@ -77,7 +72,7 @@ desktop-demo: desktop-host-debug desktop-cli
 # PHUX_DESKTOP_SMOKE_ARGS passes extra smoke flags (evidence dir, backend).
 [group('desktop')]
 [doc('Package the desktop and qualify it against an isolated same-checkout server')]
-desktop-framework-check: desktop-cli desktop-package
+desktop-framework-check profile="release": desktop-cli (desktop-package profile)
     #!/usr/bin/env bash
     set -euo pipefail
     phux="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
@@ -107,8 +102,8 @@ desktop-tests:
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]
-desktop-native-build: worktree-claim desktop-source
-    bash clients/desktop/scripts/build-host.sh --release
+desktop-native-build profile="release": worktree-claim desktop-source
+    bash clients/desktop/scripts/build-host.sh "--{{profile}}"
 
 [group('desktop')]
 [doc('Qualify the packaged app: presented evidence, OCR, and session survival')]
@@ -116,10 +111,11 @@ desktop-native-test: desktop-framework-check
 
 [group('desktop')]
 [doc('Package the release desktop for the native platform under clients/desktop/dist')]
-desktop-package: desktop-native-build
+desktop-package profile="release": (desktop-native-build profile)
     #!/usr/bin/env bash
     set -euo pipefail
     cd clients/desktop
+    export PHUX_DESKTOP_BIN="$PWD/native/target/{{profile}}/phux-desktop"
     if [[ "$(uname -s)" == Linux ]]; then
         bun scripts/package-linux.ts
     else

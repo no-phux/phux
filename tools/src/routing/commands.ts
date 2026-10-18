@@ -97,9 +97,9 @@ export const commands: Record<string, Command> = {
       const env = { ...process.env, ...testEnv(p) };
       for (const lane of local) {
         for (const recipe of LANE_RECIPES[lane]) {
-          console.log(`\n== ${lane}: just ${recipe}`);
-          if (inherit(["just", recipe], { cwd: ROOT, env }) !== 0) {
-            throw new Failure(`lane ${lane} failed at just ${recipe}`);
+          console.log(`\n== ${lane}: just ${recipe.join(" ")}`);
+          if (inherit(["just", ...recipe], { cwd: ROOT, env }) !== 0) {
+            throw new Failure(`lane ${lane} failed at just ${recipe.join(" ")}`);
           }
         }
       }
