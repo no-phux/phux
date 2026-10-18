@@ -70,6 +70,9 @@ function writePin(patchSha = sha256(PATCH)): void {
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "phux-desktop-source-test-"));
+  // Inside a repository, as the real toolchain is: `git apply` must still
+  // resolve patch paths against the scratch tree, not the enclosing checkout.
+  git(["init", "-q"], scratch);
   paths = layout(join(scratch, "desktop/toolchain"));
   write(join(paths.toolchain, "patches/0001-answer.patch"), PATCH);
   requests = 0;
@@ -113,6 +116,7 @@ test("--check needs a tree; materialize writes one that verifies and --edit adop
   expect(existsSync(paths.output)).toBe(false);
   expect(await bootstrap("materialize", paths)).toContain("materialized demo 0.1.0 with 1 patch");
   expect(readFileSync(join(paths.output, "demo/src/lib.rs"), "utf8")).toContain("{ 42 }");
+  expect(existsSync(join(paths.output, ".git"))).toBe(false);
   expect(await bootstrap("check", paths)).toContain("verified pinned GPUI source");
   expect(() => exportSeries(readPin(paths), paths)).toThrow("is not an --edit checkout");
   await bootstrap("edit", paths);

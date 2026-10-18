@@ -97,12 +97,16 @@ async function materialize(pin: Pin, into: string, paths: Layout, commits: boole
     git(into, "add", "-A");
     git(into, "commit", "-qm", message);
   };
-  if (commits) git(into, "init", "-q");
+  // Its own repository, so `git apply` resolves paths here rather than
+  // against the phux checkout the scratch directory sits in (where it would
+  // silently skip every hunk outside its cwd).
+  git(into, "init", "-q");
   commit("base: pinned crates.io sources");
   for (const patch of pinnedPatches(pin, paths.toolchain)) {
     git(into, "apply", "--whitespace=nowarn", patch);
     commit(basename(patch, ".patch"));
   }
+  if (!commits) rmSync(join(into, ".git"), { recursive: true, force: true });
 }
 
 /** Write an `--edit` checkout's commits back as `patches/` and their pins. */
