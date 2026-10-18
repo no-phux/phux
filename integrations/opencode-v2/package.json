@@ -30,25 +30,25 @@
     "./tui": "./tui.js"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outfile index.js --target bun --format esm --external @opencode/plugin && bun build src/tui.tsx --outfile tui.js --target bun --format esm --external @opencode/plugin/tui --external solid-js --external @opentui/solid --external @opentui/core --production",
+    "compile": "bun scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
-    "gates": "bun run typecheck && bun run build && bun test"
+    "gates": "bun run typecheck && bun run compile && bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.26"
+    "@opencode/plugin": "2.0.32"
   },
   "devDependencies": {
     "@opentui/core": "0.5.17",
     "@opentui/solid": "0.5.17",
     "@types/bun": "1.4.2",
-    "solid-js": "1.9.15",
+    "solid-js": "1.9.12",
     "typescript": "7.0.2"
   },
   "peerDependencies": {
-    "solid-js": ">=1.9.0",
-    "@opentui/core": ">=0.5.17",
-    "@opentui/solid": ">=0.5.17"
+    "solid-js": "1.9.12",
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17"
   },
   "publishConfig": {
     "access": "public",
