@@ -7,7 +7,7 @@ import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { classifyEvent, diffPaths } from "./detect.ts";
-import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, type Plan } from "./plan.ts";
+import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, reused, type Plan } from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
@@ -66,8 +66,11 @@ export const commands: Record<string, Command> = {
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =
         event === "push" && repository !== "" && alreadyValidated(receipt, repository);
-      const outputs = planOutputs(validated ? { ...p, lanes: new Set() } : p, c);
-      console.error(validated ? "Skipping every lane" : `Lanes: ${[...p.lanes].join(" ")}`);
+      const run = validated ? reused(p) : p;
+      const outputs = planOutputs(run, c);
+      console.error(
+        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}`,
+      );
       writeOutputs({
         ...outputs,
         validated,

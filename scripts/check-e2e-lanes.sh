@@ -42,7 +42,7 @@
 # path and in a job that never builds the workspace.
 #
 # Usage:
-#   bash scripts/check-e2e-lanes.sh     # or: just e2e-lane-check
+#   bash scripts/check-e2e-lanes.sh     # also part of `just guards`
 #
 # Exit codes:
 #   0   every e2e binary runs in some lane

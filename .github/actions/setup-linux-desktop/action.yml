@@ -30,6 +30,8 @@ runs:
         set -euo pipefail
           bash scripts/setup-rust.sh native
           bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+    # The release binary, checked against the release's SHA256SUMS; building
+    # it with cargo install cost a minute of every desktop job.
     - name: Install the repository-pinned command runner
       shell: bash
       working-directory: ${{ inputs.source }}
@@ -37,6 +39,13 @@ runs:
         set -euo pipefail
         version="$(sed -n 's/^just = "\([^"]*\)"/\1/p' mise.toml)"
         test -n "$version"
-        cargo install --locked --version "$version" --root "$RUNNER_TEMP/phux-desktop-tools" just
-        echo "$RUNNER_TEMP/phux-desktop-tools/bin" >> "$GITHUB_PATH"
-        "$RUNNER_TEMP/phux-desktop-tools/bin/just" --version
+        archive="just-${version}-$(uname -m)-unknown-linux-musl.tar.gz"
+        base="https://github.com/casey/just/releases/download/${version}"
+        dir="$RUNNER_TEMP/phux-desktop-tools"
+        mkdir -p "$dir/bin"
+        curl -fsSL --retry 3 -o "$dir/$archive" "$base/$archive"
+        curl -fsSL --retry 3 -o "$dir/SHA256SUMS" "$base/SHA256SUMS"
+        (cd "$dir" && grep " ${archive}\$" SHA256SUMS | sha256sum -c -)
+        tar -xzf "$dir/$archive" -C "$dir/bin" just
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        "$dir/bin/just" --version

@@ -59,7 +59,10 @@ PR's version-only hunks skip every compile lane. A `main` push runs the full
 Rust pool, because two green PRs can still merge into a red tree. The desktop
 lane is the exception: on `main`, `next.yml` qualifies every desktop change on
 the same macOS and Linux targets, and per-merge macOS jobs once starved the
-five-slot macOS pool the release builds share.
+five-slot macOS pool the release builds share. The PR lane packages and smokes
+a debug host; the full-LTO release build, 17 minutes cold, is qualified by
+`next.yml` and `release.yml` before anything ships, and locally by
+`just desktop-framework-check`.
 
 `just check` runs the pull-request plan for your working tree against
 `origin/main`, through the same recipes. `--dry-run` prints the lanes without

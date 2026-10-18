@@ -95,7 +95,8 @@ jobs:
   release-prs:
     name: sync ${{ matrix.pr.headBranchName }}
     needs: release-please
-    if: needs.release-please.outputs.prs != '[]'
+    # always(): a failed hold after Release Please's force-push still syncs.
+    if: always() && needs.release-please.outputs.prs != '' && needs.release-please.outputs.prs != '[]'
     strategy:
       fail-fast: false
       matrix:
@@ -188,10 +189,12 @@ jobs:
           DISPATCH_TAG: ${{ inputs.tag }}
         run: bun tools/main.ts publish-plan
 
+  # Every job below the plan states its own status check: an implicit
+  # success() also requires release-please, which schedule and dispatch skip.
   cli-build:
     name: build ${{ needs.plan.outputs.phux_tag }}
     needs: plan
-    if: needs.plan.outputs.phux_tag != ''
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.phux_tag != '' }}
     uses: ./.github/workflows/build-cli.yml
     with:
       ref: ${{ needs.plan.outputs.phux_tag }}
@@ -201,6 +204,7 @@ jobs:
   cli:
     name: publish ${{ needs.plan.outputs.phux_tag }}
     needs: [plan, cli-build]
+    if: ${{ !cancelled() && needs.cli-build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -235,7 +239,7 @@ jobs:
   desktop:
     name: publish ${{ needs.plan.outputs.desktop_tag }}
     needs: plan
-    if: needs.plan.outputs.desktop_tag != ''
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != '' }}
     uses: ./.github/workflows/desktop-release.yml
     permissions:
       contents: write
@@ -249,7 +253,7 @@ jobs:
   integrations:
     name: publish integrations
     needs: plan
-    if: needs.plan.outputs.integration_tags != '[]' && needs.plan.outputs.integration_tags != ''
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.integration_tags != '[]' && needs.plan.outputs.integration_tags != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -267,7 +271,7 @@ jobs:
   manifest:
     name: publish stable.json
     needs: [plan, cli, desktop]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.cli.result == 'success' || needs.desktop.result == 'success' || github.event_name == 'schedule') }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.cli.result == 'success' || needs.desktop.result == 'success' || github.event_name != 'workflow_run') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

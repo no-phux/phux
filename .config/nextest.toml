@@ -222,9 +222,7 @@ threads-required = 'num-cpus'
 # integration tests run 2 at a time on the 4-vCPU hosted runners, not 4.
 # nextest consults the selected profile's overrides first and falls back to
 # profile.default, so everything else above (retries, the threads-required
-# clears) still applies. It also emits a junit report that
-# scripts/ci/summarize-job.sh folds into the CI job's step summary (slowest
-# tests, flaky-retry counts). CI lanes opt in with NEXTEST_PROFILE=ci; local
+# clears) still applies. It also emits a junit report. CI lanes opt in with NEXTEST_PROFILE=ci; local
 # runs never select it.
 [[profile.ci.overrides]]
 filter = 'package(phux-server) & kind(test)'
