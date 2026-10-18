@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.106.0](https://github.com/no-phux/phux/compare/v0.105.1...v0.106.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** get public certificates by ACME TLS-ALPN-01 and multiplex consumers ([#1623](https://github.com/no-phux/phux/issues/1623)) ([c5e03b7](https://github.com/no-phux/phux/commit/c5e03b726d20d373825b69e526226934946eea57))
+
 ## [0.105.1](https://github.com/no-phux/phux/compare/v0.105.0...v0.105.1) (2026-10-18)
 
 
