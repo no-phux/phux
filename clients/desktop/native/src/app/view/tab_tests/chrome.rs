@@ -109,6 +109,66 @@ fn the_titlebar_toggle_switches_to_a_plain_terminal_and_back(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn plain_terminal_tabs_toggle_top_bottom_and_persist(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, path) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(2);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    run(&desk, "plain-terminal", cx);
+    run(&desk, "tabs-bottom", cx);
+    let bottom = cx.debug_bounds("bottom-tab-bar").expect("bottom strip");
+    assert_eq!(bottom.bottom(), px(500.));
+    assert!(cx.debug_bounds("top-tabs").is_none());
+    let a = cx.debug_bounds("tab-fixture-a").expect("plain bottom tab");
+    assert!(a.origin.y >= bottom.origin.y);
+    assert!(a.bottom() <= bottom.bottom());
+    desk.read_with(cx, |desk, _| {
+        assert!(desk.prefs.plain);
+        assert!(!desk.sidebar_shown());
+        assert_eq!(desk.tab_position(), TabPosition::Bottom);
+    });
+    run(&desk, "tabs-top", cx);
+    assert!(cx.debug_bounds("bottom-tab-bar").is_none());
+    let a = cx.debug_bounds("tab-fixture-a").expect("plain top tab");
+    assert!(a.bottom() <= px(crate::settings::skin::TERMINAL.chrome.titlebar));
+    run(&desk, "tabs-bottom", cx);
+    desk.update(cx, |desk, cx| {
+        desk.role = desk::WindowRole::Quick;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("bottom-tab-bar").is_none());
+    assert!(cx.debug_bounds("top-tabs").is_some());
+    desk.update(cx, |desk, cx| {
+        desk.role = desk::WindowRole::Main;
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(1);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("bottom-tab-bar").is_none(),
+        "plain hides a lone tab"
+    );
+    run(&desk, "plain-terminal", cx);
+    assert!(
+        cx.debug_bounds("bottom-tab-bar").is_some(),
+        "glass shows a lone tab"
+    );
+    run(&desk, "plain-terminal", cx);
+    desk.update(cx, |desk, cx| desk.prepare_close(cx));
+    let saved = serde_json::from_slice(&std::fs::read(path.join("layout.json")).unwrap()).unwrap();
+    let display = persist::parse_layout(&saved).unwrap().display;
+    assert!(display.plain);
+    assert_eq!(display.tab_position, TabPosition::Bottom);
+}
+
+#[gpui::test]
 fn the_paint_is_built_once_until_preferences_change(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (_, desk, _) = fixture(cx);

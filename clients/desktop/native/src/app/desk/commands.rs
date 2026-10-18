@@ -89,6 +89,9 @@ impl Desk {
             }
             "plain-terminal" => self.update_prefs(|prefs| prefs.plain = !prefs.plain, cx),
             "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
+            "tabs-bottom" => {
+                self.update_prefs(|prefs| prefs.tab_position = TabPosition::Bottom, cx)
+            }
             "tabs-side" => self.update_prefs(
                 |prefs| {
                     prefs.tab_position = TabPosition::Side;

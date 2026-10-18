@@ -1,4 +1,4 @@
-//! Tabs on the top and side axes: switching, scrolling and reordering.
+//! Top, bottom and side tabs: switching, scrolling and reordering.
 
 use super::*;
 
@@ -9,7 +9,7 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
     let cx = &mut VisualTestContext::from_window(handle, cx);
     cx.simulate_resize(gpui::size(px(1000.), px(500.)));
     let original = tabs(3);
-    for command in ["tabs-top", "tabs-side"] {
+    for command in ["tabs-top", "tabs-bottom", "tabs-side"] {
         desk.update(cx, |desk, cx| {
             let workspace = &mut desk.link.as_mut().unwrap().workspace;
             workspace.tabs = original.clone();
@@ -41,7 +41,13 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
         } else {
             assert!(a.origin.x < c.origin.x);
             assert_eq!(a.origin.y, c.origin.y);
-            assert!(a.bottom() <= px(TITLEBAR));
+            if command == "tabs-bottom" {
+                let strip = cx.debug_bounds("bottom-tab-bar").unwrap();
+                assert!(a.origin.y >= strip.origin.y);
+                assert!(a.bottom() <= strip.bottom());
+            } else {
+                assert!(a.bottom() <= px(TITLEBAR));
+            }
         }
         cx.simulate_click(a.center(), Modifiers::none());
         draw(cx);
@@ -277,6 +283,60 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
 }
 
 #[gpui::test]
+fn plain_bottom_tabs_scroll_reorder_and_cancel_drag_on_placement_change(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(800.), px(360.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(12);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    run(&desk, "plain-terminal", cx);
+    run(&desk, "tabs-bottom", cx);
+    let strip = cx.debug_bounds("bottom-tabs").expect("bottom scroller");
+    assert!(cx.debug_bounds("tab-fixture-h").unwrap().right() > px(800.));
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: strip.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(-560.), px(0.))),
+        ..Default::default()
+    });
+    draw(cx);
+    let g = cx.debug_bounds("tab-fixture-g").unwrap();
+    let h = cx.debug_bounds("tab-fixture-h").unwrap();
+    assert!(g.origin.x >= px(0.));
+    assert!(h.right() < px(800.));
+    cx.simulate_mouse_down(g.center(), MouseButton::Left, Modifiers::none());
+    draw(cx);
+    let target = point(h.right() - px(2.), h.center().y);
+    cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    let order = ids(&desk, cx);
+    assert_eq!(&order[6..8], ["fixture-h", "fixture-g"]);
+    let g = cx.debug_bounds("tab-fixture-g").unwrap();
+    cx.simulate_mouse_down(g.center(), MouseButton::Left, Modifiers::none());
+    draw(cx);
+    run(&desk, "tabs-top", cx);
+    desk.read_with(cx, |desk, _| assert!(desk.drag_cursor().is_none()));
+    cx.simulate_mouse_move(
+        point(px(790.), px(15.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        point(px(790.), px(15.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    draw(cx);
+    assert_eq!(ids(&desk, cx), order, "a moved strip invalidates the drag");
+}
+
+#[gpui::test]
 fn unified_settings_changes_tab_placement_without_changing_work(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
@@ -290,6 +350,7 @@ fn unified_settings_changes_tab_placement_without_changing_work(cx: &mut TestApp
     });
     for (selector, position) in [
         ("tab-position-side", TabPosition::Side),
+        ("tab-position-bottom", TabPosition::Bottom),
         ("tab-position-top", TabPosition::Top),
     ] {
         cx.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("settings", window, cx)));

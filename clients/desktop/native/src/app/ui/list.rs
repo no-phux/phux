@@ -14,6 +14,13 @@ use super::atoms::muted;
 pub(crate) const ROW: f32 = 30.;
 /// A row's leading slot width.
 pub(crate) const ICON: f32 = 16.;
+/// The row's breathing room at either edge and between its slots.
+pub(crate) const ROW_INSET: f32 = 8.;
+pub(crate) const ROW_GAP: f32 = 8.;
+/// A child begins one icon column beyond its session's leading edge.
+pub(crate) const CHILD_INSET: f32 = ROW_INSET + ICON;
+/// The shared text column of child tabs, terminals and their section captions.
+pub(crate) const CHILD_LABEL: f32 = CHILD_INSET + ICON + ROW_GAP;
 
 /// List row corners: just inside the kit's.
 pub(crate) fn row_radius(skin: &Skin) -> f32 {
@@ -37,13 +44,18 @@ pub(crate) fn row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful
         .id(id)
         .relative()
         .min_h(px(ROW))
-        .px(px(8.))
+        .px(px(ROW_INSET))
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(px(ROW_GAP))
         .rounded(px(row_radius(&look.skin)))
         .cursor_pointer()
         .hover(move |style| style.bg(hover))
+}
+
+/// A tab or terminal nested under its session, with the same label column.
+pub(crate) fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
+    row(id, look).pl(px(CHILD_INSET))
 }
 
 /// A row's centred leading slot.

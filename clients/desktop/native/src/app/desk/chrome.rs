@@ -48,7 +48,11 @@ impl Desk {
     }
 
     pub fn set_viewport(&mut self, size: gpui::Size<gpui::Pixels>) {
+        // Use the last painted strip, not a newly toggled panel's desired
+        // placement, so every responsive move retires an old drag.
+        let placement = self.tab_geometry.borrow().position;
         self.viewport = size;
+        self.refresh_tab_placement(placement);
     }
 
     pub fn frame_report(&self, cx: &gpui::App) -> crate::diag::FrameReport {
@@ -120,11 +124,43 @@ impl Desk {
     /// titlebar while the sidebar is hidden, so they never disappear; quick
     /// windows keep their compact titlebar regardless of the main layout.
     pub(crate) fn tab_position(&self) -> TabPosition {
-        if self.sidebar_shown() {
-            self.prefs.tab_position
-        } else {
-            TabPosition::Top
+        if self.role == WindowRole::Quick {
+            return TabPosition::Top;
         }
+        match self.prefs.tab_position {
+            TabPosition::Side if !self.sidebar_shown() => TabPosition::Top,
+            TabPosition::Bottom if !self.bottom_tabs_fit() => TabPosition::Top,
+            position => position,
+        }
+    }
+
+    /// Side panels must not squeeze the tab scroller and its hit targets away.
+    fn bottom_tabs_fit(&self) -> bool {
+        let skin = self.skin();
+        let sidebar = if self.sidebar_shown() {
+            self.prefs.sidebar_width as f32 * skin.chrome.sidebar
+        } else {
+            0.
+        };
+        let changes = if self.changes.open {
+            crate::app::view::CHANGES_WIDTH
+        } else {
+            0.
+        };
+        self.viewport.width.as_f32() - sidebar - changes
+            >= crate::app::view::MIN_STRIP_WIDTH + 2. * skin.shape.gutter
+    }
+
+    /// A strip that moved cannot continue a drag using its old painted bounds.
+    pub(super) fn refresh_tab_placement(&mut self, previous: TabPosition) {
+        let position = self.tab_position();
+        if position == previous {
+            return;
+        }
+        if matches!(self.drag, Some(Drag::Tab { .. })) {
+            self.drag = None;
+        }
+        self.tab_geometry.borrow_mut().prepare(position, 0);
     }
 
     pub fn begin_tab_drag(&mut self, id: String, x: f32, y: f32, cx: &mut Context<Self>) {
