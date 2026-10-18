@@ -57,6 +57,8 @@ const PERF_ICOUNT_PATHS = [
   "benchmarks/icount-baseline.json",
   "scripts/ci/perf-icount.sh",
   "tools/src/perf/**",
+  "tools/src/lib/**",
+  "tools/main.ts",
   "just/perf.just",
   ".github/workflows/ci.yml",
 ];
