@@ -37,6 +37,9 @@ outputs:
   perf_icount_needed:
     description: Instruction-count guard. True for hot-path crates, the baseline, and an empty diff.
     value: ${{ steps.detect.outputs.perf_icount_needed }}
+  mobile_ffi_needed:
+    description: Rebuild the mobile FFI artifacts on main. phux-client-ffi's build closure, its builders, and their workflows; true for an empty diff.
+    value: ${{ steps.detect.outputs.mobile_ffi_needed }}
 runs:
   using: composite
   steps:

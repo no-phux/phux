@@ -93,3 +93,16 @@ test("the ci aggregate rejects failed and cancelled lanes", () => {
     expect([job, result, run.exitCode]).toEqual([job, result, code]);
   }
 });
+
+test("both FFI workflows build on the one mobile_ffi_needed output", () => {
+  // phux-mobile pins one revision and fetches both artifacts at it.
+  for (const name of ["ffi-xcframework", "ffi-android"]) {
+    const workflow = read(`.github/workflows/${name}.yml`);
+    const triggers = workflow.split("permissions:")[0] ?? "";
+    expect([name, triggers.includes("paths:")]).toEqual([name, false]);
+    expect([name, workflow.includes("needs.changes.outputs.mobile_ffi_needed == 'true'")]).toEqual([
+      name,
+      true,
+    ]);
+  }
+});

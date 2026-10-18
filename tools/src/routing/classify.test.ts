@@ -226,3 +226,21 @@ test("outputs carry exactly the classify-changes action's keys", () => {
   const keys = Object.keys(table(table(Bun.YAML.parse(action))["outputs"])).toSorted();
   expect(Object.keys(toOutputs(classifier.classify([]))).toSorted()).toEqual(keys);
 });
+
+test("the mobile FFI artifacts rebuild on their crate closure only", () => {
+  const cases: [string[], boolean][] = [
+    [[], true],
+    [["crates/phux-client-ffi/src/lib.rs"], true],
+    // Reached through phux-client-ffi's dependencies, not listed anywhere.
+    [["crates/phux-core/src/lib.rs"], true],
+    [["crates/quictun/src/lib.rs"], true],
+    [["scripts/build-mobile-ffi-android.sh"], true],
+    [[".github/workflows/ffi-xcframework.yml"], true],
+    [["crates/phux-tui/src/lib.rs"], false],
+    [["clients/desktop/native/src/main.rs"], false],
+    [["new-product/source.xyz"], false],
+  ];
+  for (const [paths, wanted] of cases) {
+    expect([paths, classifier.classify(paths).mobileFfiNeeded]).toEqual([paths, wanted]);
+  }
+});
