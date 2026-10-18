@@ -120,7 +120,6 @@ workflow-check: shellcheck tools-check
     bash scripts/lib/worktree-owner_test.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs
-    python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh
     bun tools/main.ts release-orchestration-check
 

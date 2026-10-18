@@ -90,6 +90,8 @@ export function routes(root = ROOT): Route[] {
       paths: [".github/workflows/desktop-test.yml", ".github/actions/setup-linux-desktop/**"],
       surfaces: ["desktop"],
     },
+    // `just desktop-source` fetches and patches GPUI on every desktop build.
+    { paths: ["tools/src/desktop/**"], surfaces: ["desktop"] },
     { paths: PRODUCT_PROSE.slice(0, 2), surfaces: RUST },
     {
       paths: ["clients/phux-web/**", "clients/phux-vt-web/**", "tools/src/web/**"],

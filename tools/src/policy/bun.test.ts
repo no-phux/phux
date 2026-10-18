@@ -2,7 +2,6 @@
 // the setup-bun composite, or from the Nix devshell that pins the same
 // release (flake.nix reads mise.toml).
 import { expect, test } from "bun:test";
-import { str } from "../lib/value.ts";
 import {
   action,
   actionText,
@@ -48,7 +47,12 @@ test("workflow jobs that call the tools package install Bun first", () => {
   for (const name of workflowNames()) {
     for (const [jobName, lane] of Object.entries(jobs(workflow(name)))) {
       const all = steps(lane);
-      const call = firstIndex(all, (step) => /(^|[\s;(])bun tools\/main\.ts/m.test(run(step)));
+      // A step under `nix develop` gets the devshell's pinned Bun instead.
+      const call = firstIndex(
+        all,
+        (step) =>
+          /(^|[\s;(])bun tools\/main\.ts/m.test(run(step)) && !run(step).includes("nix develop"),
+      );
       if (call < 0) continue;
       callers++;
       const setup = firstIndex(all, (step) => uses(step) === SETUP_BUN);
@@ -66,7 +70,8 @@ test("the workflow gate installs Bun for tools-check", () => {
   const guards = firstIndex(all, (step) => run(step).includes("just workflow-check"));
   expect(setup).toBeGreaterThanOrEqual(0);
   expect(guards).toBeGreaterThan(setup);
-  expect(str(all[setup]?.["if"])).toBe(str(all[guards]?.["if"]));
+  // Unconditional: the docs-only path's install-surface check needs it too.
+  expect(all[setup]?.["if"]).toBeUndefined();
 });
 
 test("mbx export headroom runs where setup-rust-lane exposed the devshell's Bun", () => {
