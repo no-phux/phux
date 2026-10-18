@@ -11,13 +11,10 @@ use gpui::{
     Bounds, ContentMask, FontFeatures, Hsla, Pixels, ShapedLine, SharedString, fill, point, px,
     size,
 };
-use phux_client_core::grid::{
-    CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
-    CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
-};
-use phux_client_runtime::publication::{
-    Cell, CellMetadata, CursorStyle, CursorWidth, GridDamage, GridFrame, Rgb,
-};
+use phux_client_core::grid::{CELL_OVERLINE, CELL_STRIKETHROUGH};
+pub(super) use phux_client_runtime::draw::cursor_span;
+use phux_client_runtime::draw::{self, BlockRegion, Theme, block_regions, cursor_head};
+use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, GridDamage, GridFrame};
 
 #[derive(Clone, Default)]
 pub struct Observation {
@@ -1075,6 +1072,8 @@ fn opacity_layers(
 struct Builder {
     scene: Scene,
     fonts: Rc<Fonts>,
+    /// `scene.settings` as the runtime's paint rules read them.
+    theme: Theme<Hsla>,
     /// Default foreground and background after theme and reverse video.
     defaults: (Hsla, Hsla),
     /// The cell under a solid block cursor, whose glyph takes the background.
@@ -1115,11 +1114,13 @@ impl Builder {
         (bounds, scale, raster): (Bounds<Pixels>, f32, Option<crate::platform::Raster>),
         fonts: Option<Rc<Fonts>>,
     ) -> Self {
-        let defaults = defaults(&frame, &settings);
+        let theme = settings.theme();
+        let defaults = draw::default_colors(&frame, &theme);
         let solid_cursor = solid_cursor(&frame, &settings).then(|| cursor_head(&frame));
         let fonts = fonts.unwrap_or_else(|| Rc::new(Fonts::new(&settings.font)));
         Self {
             fonts: Rc::clone(&fonts),
+            theme,
             defaults,
             solid_cursor,
             run: None,
@@ -1234,7 +1235,7 @@ impl Builder {
         if row < frame.rows && !bounds.intersects(&geometry.bounds) {
             return;
         }
-        let colors = cell_colors(cell, metadata, frame, &self.scene.settings, self.defaults);
+        let colors = cell_colors(cell, metadata, frame, &self.theme, self.defaults);
         self.background_cell(row, col, colors.background);
         if hidden(cell, &self.scene.settings) {
             return;
@@ -1304,10 +1305,10 @@ impl Builder {
             .glyph_foreground(row, col, colors)
             .opacity(colors.opacity);
         self.observe(row, col, bounds, None, foreground);
-        for &(x, y, width, height) in regions {
+        for &region in regions {
             self.scene.decorations.push(RowQuad {
                 row,
-                bounds: block_bounds(bounds, (x, y, width, height), self.scene.geometry.scale),
+                bounds: block_bounds(bounds, region, self.scene.geometry.scale),
                 color: foreground,
             });
         }
@@ -1672,22 +1673,15 @@ impl Builder {
 fn prepare_cursor(scene: &mut Scene) {
     scene.cursor_blocks.clear();
     scene.cursor_overlays.clear();
-    let frame = Arc::clone(&scene.frame);
     let settings = &scene.settings;
-    if !cursor_visible(&frame, settings) {
+    let Some(cursor) = draw::cursor(&scene.frame, &settings.theme(), settings.visibility()) else {
         return;
-    }
-    let geometry = scene.geometry;
-    let (row, col) = cursor_head(&frame);
-    let bounds = geometry.cell_bounds(row, col, if frame.cursor.width.is_wide() { 2 } else { 1 });
-    let color = cursor_color(&frame, settings);
-    let thickness = px(1. / geometry.scale);
-    let style = if settings.focused {
-        frame.cursor.style
-    } else {
-        CursorStyle::BlockHollow
     };
-    match style {
+    let geometry = scene.geometry;
+    let bounds = geometry.cell_bounds(cursor.row, cursor.col, cursor.width);
+    let color = cursor.color;
+    let thickness = px(1. / geometry.scale);
+    match cursor.style {
         CursorStyle::Block => scene.cursor_blocks.push((bounds, color)),
         CursorStyle::Bar => scene.cursor_overlays.push((
             Bounds::new(bounds.origin, size(thickness * 2., bounds.size.height)),
@@ -2030,198 +2024,53 @@ fn paint_glyphs(
     })
 }
 
-fn rgb(color: Rgb) -> Hsla {
-    gpui::rgb(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)).into()
-}
-
-/// Solid Unicode blocks describe cell coverage, not font ink. Drawing them
-/// from the cell edges avoids font side bearings and line-height gaps in
-/// terminal UIs that use half blocks for smooth panels.
-fn block_regions(text: &[u8]) -> Option<&'static [(u8, u8, u8, u8)]> {
-    Some(match std::str::from_utf8(text).ok()? {
-        "▀" => &[(0, 0, 8, 4)],
-        "▁" => &[(0, 7, 8, 1)],
-        "▂" => &[(0, 6, 8, 2)],
-        "▃" => &[(0, 5, 8, 3)],
-        "▄" => &[(0, 4, 8, 4)],
-        "▅" => &[(0, 3, 8, 5)],
-        "▆" => &[(0, 2, 8, 6)],
-        "▇" => &[(0, 1, 8, 7)],
-        "█" => &[(0, 0, 8, 8)],
-        "▉" => &[(0, 0, 7, 8)],
-        "▊" => &[(0, 0, 6, 8)],
-        "▋" => &[(0, 0, 5, 8)],
-        "▌" => &[(0, 0, 4, 8)],
-        "▍" => &[(0, 0, 3, 8)],
-        "▎" => &[(0, 0, 2, 8)],
-        "▏" => &[(0, 0, 1, 8)],
-        "▐" => &[(4, 0, 4, 8)],
-        "▔" => &[(0, 0, 8, 1)],
-        "▕" => &[(7, 0, 1, 8)],
-        "▖" => &[(0, 4, 4, 4)],
-        "▗" => &[(4, 4, 4, 4)],
-        "▘" => &[(0, 0, 4, 4)],
-        "▙" => &[(0, 0, 4, 8), (4, 4, 4, 4)],
-        "▚" => &[(0, 0, 4, 4), (4, 4, 4, 4)],
-        "▛" => &[(0, 0, 8, 4), (0, 4, 4, 4)],
-        "▜" => &[(0, 0, 8, 4), (4, 4, 4, 4)],
-        "▝" => &[(4, 0, 4, 4)],
-        "▞" => &[(4, 0, 4, 4), (0, 4, 4, 4)],
-        "▟" => &[(4, 0, 4, 8), (0, 4, 4, 4)],
-        _ => return None,
-    })
-}
-
-fn block_bounds(
-    bounds: Bounds<Pixels>,
-    (x, y, width, height): (u8, u8, u8, u8),
-    scale: f32,
-) -> Bounds<Pixels> {
+fn block_bounds(bounds: Bounds<Pixels>, region: BlockRegion, scale: f32) -> Bounds<Pixels> {
     let edge = |origin: Pixels, length: Pixels, fraction: u8| {
         px(
             ((f32::from(origin) + f32::from(length) * f32::from(fraction) / 8.) * scale).round()
                 / scale,
         )
     };
-    let left = edge(bounds.left(), bounds.size.width, x);
-    let top = edge(bounds.top(), bounds.size.height, y);
-    let right = edge(bounds.left(), bounds.size.width, x + width);
-    let bottom = edge(bounds.top(), bounds.size.height, y + height);
+    let left = edge(bounds.left(), bounds.size.width, region.x);
+    let top = edge(bounds.top(), bounds.size.height, region.y);
+    let right = edge(bounds.left(), bounds.size.width, region.x + region.width);
+    let bottom = edge(bounds.top(), bounds.size.height, region.y + region.height);
     Bounds::new(point(left, top), size(right - left, bottom - top))
 }
 
-/// The theme's colour for one of the 16 ANSI slots, when a theme names them.
-fn ansi(settings: &Settings, index: usize) -> Option<Hsla> {
-    settings.palette.as_ref()?.get(index).copied()
-}
-
-/// Background and underline colours arrive palette-resolved without their
-/// index. A colour equal to one of the frame's 16 ANSI entries was almost
-/// certainly that slot, so it takes the theme's colour; anything else (true
-/// colour, the 240 extended slots) paints as the application sent it.
-fn themed_rgb(frame: &GridFrame, settings: &Settings, color: Rgb) -> Hsla {
-    if settings.palette.is_some()
-        && let Some(index) = frame.colors.palette[..16]
-            .iter()
-            .position(|entry| *entry == color)
-        && let Some(themed) = ansi(settings, index)
-    {
-        return themed;
-    }
-    rgb(color)
-}
-
-fn defaults(frame: &GridFrame, settings: &Settings) -> (Hsla, Hsla) {
-    let (foreground, background) = if frame.colors.reversed {
-        (settings.background, settings.foreground)
-    } else {
-        (settings.foreground, settings.background)
-    };
-    (
-        if frame.colors.has_foreground {
-            rgb(frame.colors.foreground)
-        } else {
-            foreground.unwrap_or_else(|| rgb(frame.colors.foreground))
-        },
-        if frame.colors.has_background {
-            rgb(frame.colors.background)
-        } else {
-            background.unwrap_or_else(|| rgb(frame.colors.background))
-        },
-    )
-}
-
-/// One cell's colours; `defaults` is [`defaults`] for this frame and settings.
+/// One cell's colours under the runtime's rules; `defaults` is
+/// [`draw::default_colors`] for this frame and theme. Faint text paints at half alpha.
 fn cell_colors(
     cell: &Cell,
     metadata: CellMetadata,
     frame: &GridFrame,
-    settings: &Settings,
+    theme: &Theme<Hsla>,
     defaults: (Hsla, Hsla),
 ) -> CellColors {
-    let mut foreground = if metadata.foreground_kind == COLOR_KIND_DEFAULT {
-        defaults.0
-    } else if metadata.foreground_kind == COLOR_KIND_PALETTE
-        && let Some(themed) = ansi(settings, usize::from(metadata.foreground_palette_index))
-    {
-        themed
-    } else {
-        themed_rgb(
-            frame,
-            settings,
-            Rgb {
-                r: cell.foreground_r,
-                g: cell.foreground_g,
-                b: cell.foreground_b,
-            },
-        )
-    };
-    let mut background = if metadata.background_color_is_default {
-        defaults.1
-    } else {
-        themed_rgb(
-            frame,
-            settings,
-            Rgb {
-                r: cell.background_r,
-                g: cell.background_g,
-                b: cell.background_b,
-            },
-        )
-    };
-    if cell.flags & CELL_INVERSE != 0 {
-        std::mem::swap(&mut foreground, &mut background);
-    }
-    if cell.flags & CELL_SELECTED != 0 {
-        foreground = settings.selection_foreground;
-        background = settings.selection_background;
-    }
-    let opacity = if cell.flags & CELL_FAINT != 0 {
-        0.5
-    } else {
-        1.
-    };
-    let underline = if metadata.underline_color_is_default {
-        foreground
-    } else {
-        themed_rgb(
-            frame,
-            settings,
-            Rgb {
-                r: cell.underline_r,
-                g: cell.underline_g,
-                b: cell.underline_b,
-            },
-        )
-    };
+    let colors = draw::cell_colors(cell, metadata, frame, theme, defaults);
     CellColors {
-        foreground,
-        background,
-        underline,
-        opacity,
+        foreground: colors.foreground,
+        background: colors.background,
+        underline: colors.underline,
+        opacity: if colors.faint { 0.5 } else { 1. },
     }
 }
 
 /// The cell's face as an index into [`Fonts`]: bit 0 bold, bit 1 italic.
 fn style(cell: &Cell) -> usize {
-    usize::from(cell.flags & CELL_BOLD != 0) | usize::from(cell.flags & CELL_ITALIC != 0) << 1
+    draw::Face::of(cell).index()
 }
 
 fn hidden(cell: &Cell, settings: &Settings) -> bool {
-    cell.flags & CELL_INVISIBLE != 0 || (cell.flags & CELL_BLINK != 0 && !settings.blink_visible)
+    draw::hidden(cell, settings.visibility())
 }
 
 fn cursor_visible(frame: &GridFrame, settings: &Settings) -> bool {
-    frame.cursor.visible
-        && settings.cursor_visible
-        && (!frame.cursor.blinking || settings.blink_visible)
+    draw::cursor_visible(frame, settings.visibility())
 }
 
 fn cursor_color(frame: &GridFrame, settings: &Settings) -> Hsla {
-    settings
-        .cursor
-        .or_else(|| frame.colors.cursor.map(rgb))
-        .unwrap_or_else(|| defaults(frame, settings).0)
+    draw::cursor_color(frame, &settings.theme())
 }
 
 /// Where a laser beam lands, and its colour: the focused, visible cursor.
@@ -2234,24 +2083,7 @@ pub(super) fn laser_target(
 }
 
 fn solid_cursor(frame: &GridFrame, settings: &Settings) -> bool {
-    cursor_visible(frame, settings) && settings.focused && frame.cursor.style == CursorStyle::Block
-}
-
-fn cursor_head(frame: &GridFrame) -> (u16, u16) {
-    (
-        frame.cursor.row,
-        frame
-            .cursor
-            .col
-            .saturating_sub(u16::from(frame.cursor.width == CursorWidth::WideTail)),
-    )
-}
-
-/// Painted cursor as `(row, col, width)`. A wide tail reports the head cell.
-pub(super) fn cursor_span(frame: &GridFrame) -> (u16, u16, u16) {
-    let (row, col) = cursor_head(frame);
-    let width = if frame.cursor.width.is_wide() { 2 } else { 1 };
-    (row, col, width)
+    draw::solid_cursor(frame, settings.visibility())
 }
 
 fn outline(bounds: Bounds<Pixels>, thickness: Pixels) -> [Bounds<Pixels>; 4] {
@@ -2272,9 +2104,16 @@ fn outline(bounds: Bounds<Pixels>, thickness: Pixels) -> [Bounds<Pixels>; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_client_runtime::publication::{
-        Cursor, FrameColors, GridBuffer, GridDamage, Scrollbar,
+    use phux_client_core::grid::{
+        CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_SELECTED,
     };
+    use phux_client_runtime::publication::{
+        Cursor, CursorWidth, FrameColors, GridBuffer, GridDamage, Rgb, Scrollbar,
+    };
+
+    fn defaults(frame: &GridFrame, settings: &Settings) -> (Hsla, Hsla) {
+        draw::default_colors(frame, &settings.theme())
+    }
 
     fn frame() -> GridFrame {
         GridFrame {
@@ -2300,6 +2139,7 @@ mod tests {
         let fonts = Rc::new(Fonts::new(&settings.font));
         Builder {
             fonts: Rc::clone(&fonts),
+            theme: settings.theme(),
             defaults,
             solid_cursor: None,
             run: None,
@@ -2665,7 +2505,7 @@ mod tests {
             &cell,
             metadata,
             &frame,
-            &settings,
+            &settings.theme(),
             defaults(&frame, &settings),
         );
         assert_eq!(colors.foreground, gpui::rgb(0x0000ff).into());
@@ -2675,7 +2515,7 @@ mod tests {
             &cell,
             metadata,
             &frame,
-            &settings,
+            &settings.theme(),
             defaults(&frame, &settings),
         );
         assert_eq!(colors.background, settings.selection_background);
@@ -2704,7 +2544,7 @@ mod tests {
             &cell,
             metadata,
             &frame,
-            &settings,
+            &settings.theme(),
             defaults(&frame, &settings),
         );
         assert_eq!(colors.foreground, settings.foreground.expect("foreground"));
@@ -2714,7 +2554,7 @@ mod tests {
             &cell,
             metadata,
             &frame,
-            &settings,
+            &settings.theme(),
             defaults(&frame, &settings),
         );
         assert_eq!(colors.foreground, settings.background.expect("background"));
@@ -2725,7 +2565,7 @@ mod tests {
                 &cell,
                 metadata,
                 &frame,
-                &settings,
+                &settings.theme(),
                 defaults(&frame, &settings)
             )
             .foreground,
