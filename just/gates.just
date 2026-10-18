@@ -100,12 +100,19 @@ shellcheck:
       examples/plugins/*/scripts/*.sh
 
 
+# The tools package (build and CI logic, ADR-0182): format, types, lint, tests.
+[group('gates')]
+[doc('Format, typecheck, lint and test the build and CI tools package.')]
+tools-check:
+    cd tools && bun install --frozen-lockfile && bun run check
+
+
 # GitHub workflow + composite-action syntax, the fail-closed CI path-routing
 # truth table, and the SHA-pin policy for action references.
 [group('gates')]
 [private]
 [doc('Workflow syntax, the CI path-routing truth table, and action SHA pins.')]
-workflow-check: shellcheck
+workflow-check: shellcheck tools-check
     actionlint .github/workflows/*.yml
     bash scripts/check-release-cpu-baselines.sh
     python3 scripts/mutation/test_recipes.py
@@ -115,7 +122,6 @@ workflow-check: shellcheck
     bash scripts/lib/worktree-owner_test.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs
-    bash scripts/ci/check-classify-changes.sh
     python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh
     node scripts/check-release-orchestration.mjs
