@@ -14,7 +14,7 @@ use phux_client_runtime::draw::{
 
 use crate::c::error::{BridgeError, check_struct, terminal_id_in};
 use crate::c::grid_metadata::PhuxGridRgb;
-use crate::c::types::{ABI_VERSION, PhuxBytes, bytes_out};
+use crate::c::types::{ABI_VERSION, PhuxBytes, PhuxDocumentAnchor, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, PhuxResourceId, with_client_mut};
 
 /// What the renderer shows now. Initialize `size` and `version`.
@@ -391,10 +391,22 @@ pub unsafe extern "C" fn phux_client_terminal_draw_list(
         // SAFETY: forwards the caller's terminal-id span contract.
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         client.build_grid(&terminal_id)?;
+        // build_grid tracks a top anchor for the grid view's caller. This
+        // caller never sees it, so release it now instead of leaking one per
+        // call; the cached view then carries no anchor.
+        let anchor = client
+            .render
+            .get(&terminal_id)
+            .map(|cache| cache.view.top_anchor)
+            .filter(|anchor| anchor.opaque_id != 0);
+        if let Some(anchor) = anchor {
+            client.release_anchor(&terminal_id, anchor)?;
+        }
         let cache = client
             .render
             .get_mut(&terminal_id)
             .ok_or_else(|| BridgeError::state("terminal has no published grid"))?;
+        cache.view.top_anchor = PhuxDocumentAnchor::default();
         let visibility = Visibility {
             focused: options.focused,
             cursor_visible: options.cursor_visible,

@@ -168,6 +168,29 @@ fn options_and_output_are_validated() {
 }
 
 #[test]
+fn repeated_draws_hold_no_top_anchor() {
+    let client = client_showing(b"x");
+    let terminal = terminal();
+    let mut list = PhuxDrawList::default();
+    for _ in 0..3 {
+        // SAFETY: test-owned pointers.
+        let result = unsafe {
+            phux_client_terminal_draw_list(client, &raw const terminal, ptr::null(), &raw mut list)
+        };
+        assert_eq!(result, PhuxClientResult::Ok);
+        // SAFETY: the live test client, read between calls.
+        let render = unsafe { &(*client).inner.render };
+        let anchor = render[&ResourceId::local(1)].view.top_anchor;
+        assert_eq!(
+            anchor.opaque_id, 0,
+            "the grid's anchor is released, not lent"
+        );
+    }
+    // SAFETY: test-owned client.
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
 fn layouts_match_the_header() {
     // tests/draw_list_abi.c pins the same numbers against include/phux/client.h.
     assert_eq!(size_of::<PhuxDrawOptions>(), 24);
