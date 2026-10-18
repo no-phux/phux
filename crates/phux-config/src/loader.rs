@@ -1,27 +1,12 @@
 //! Config loader (`docs/consumers/tui.md` §4.1): a missing config file means
 //! the shipped defaults; a missing `extends` layer is an error.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 
-use crate::{Config, ConfigError, parse_with_defaults};
+pub use phux_config_core::loader::config_path;
 
-/// The config path: `$XDG_CONFIG_HOME/phux/config.toml`, else
-/// `$HOME/.config/phux/config.toml` (no I/O).
-#[must_use]
-pub fn config_path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map_or_else(
-            || {
-                std::env::var_os("HOME")
-                    .map_or_else(PathBuf::new, PathBuf::from)
-                    .join(".config")
-            },
-            PathBuf::from,
-        )
-        .join("phux")
-        .join("config.toml")
-}
+use crate::{Config, ConfigError, parse_with_defaults};
 
 /// Load the config from [`config_path`].
 ///

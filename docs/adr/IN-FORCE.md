@@ -202,6 +202,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Config
 
+- [0186](./0186-the-client-neutral-config-is-its-own-crate.md) `phux-config-core` holds the config path, layer merge, `[[remote]]`, `[organize]` and instance paths; embedders depend on it, not on the TUI's `phux-config`.
 - [0101](./0101-the-settings-page-edits-the-file.md) The settings page edits one key per change in `config.toml`; running state never writes back.
 - [0041](./0041-managed-plugin-installs.md) `phux plugin install` fetches into one managed directory with system tools and one `plugins.lock`.
 - [0039](./0039-layered-config.md) Config is an ordered `extends` stack; arrays replace unless a key opts into `-append`.

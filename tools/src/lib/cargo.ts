@@ -106,25 +106,124 @@ function normalize(path: string, root: string): string {
 export interface BuildRoot {
   readonly dir: string;
   readonly dev: boolean;
+  readonly features?: readonly string[];
+  readonly defaultFeatures?: boolean;
+}
+
+/** Optional dependency keys and dependency features enabled by a feature set. */
+function activated(
+  document: Table,
+  requested: ReadonlySet<string>,
+): {
+  dependencies: Set<string>;
+  forwarded: Map<string, Set<string>>;
+} {
+  const features = table(document["features"]);
+  const seen = new Set<string>();
+  const dependencies = new Set<string>();
+  const forwarded = new Map<string, Set<string>>();
+  const pending = [...requested];
+  for (let feature = pending.pop(); feature !== undefined; feature = pending.pop()) {
+    if (seen.has(feature)) continue;
+    seen.add(feature);
+    if (!(feature in features)) {
+      // An optional dependency's implicit feature.
+      dependencies.add(feature);
+      continue;
+    }
+    for (const item of strings(features[feature])) {
+      if (item.startsWith("dep:")) dependencies.add(item.slice(4));
+      else if (item.includes("/")) {
+        const [key = "", sub = ""] = item.split("/", 2);
+        if (!key.endsWith("?")) {
+          dependencies.add(key);
+          // Cargo also enables a feature with the dependency key's name.
+          pending.push(key);
+        }
+        const dependency = key.replace(/\?$/, "");
+        const enabled = forwarded.get(dependency) ?? new Set<string>();
+        enabled.add(sub);
+        forwarded.set(dependency, enabled);
+      } else pending.push(item);
+    }
+  }
+  return { dependencies, forwarded };
+}
+
+interface DependencyRequest {
+  readonly dir: string;
+  readonly features: Set<string>;
+}
+
+/** Features requested on an edge, including inherited and forwarded features. */
+function dependencyFeatures(
+  spec: Table,
+  base: Table,
+  forwarded: ReadonlySet<string> | undefined,
+): Set<string> {
+  const defaults = spec["default-features"] ?? base["default-features"] ?? true;
+  return new Set([
+    ...strings(base["features"]),
+    ...strings(spec["features"]),
+    ...(defaults ? ["default"] : []),
+    ...(forwarded ?? []),
+  ]);
+}
+
+/** Active local dependency edges in manifest order, across every target. */
+function activePathDependencies(
+  manifest: Manifest,
+  requested: ReadonlySet<string>,
+  kinds: readonly DependencyKind[],
+  root: string,
+): DependencyRequest[] {
+  const inherited = table(
+    table(workspaceRoot(manifest.dir, root)?.document["workspace"])["dependencies"],
+  );
+  const { dependencies, forwarded } = activated(manifest.document, requested);
+  const found: DependencyRequest[] = [];
+  for (const tables of dependencyTables(manifest.document)) {
+    for (const kind of kinds) {
+      for (const [key, value] of Object.entries(table(tables[kind]))) {
+        const spec = table(value);
+        if (spec["optional"] === true && !dependencies.has(key)) continue;
+        const path = dependencyPath(manifest, key, spec, () => inherited, root);
+        if (path === undefined) continue;
+        const base = spec["workspace"] === true ? table(inherited[key]) : {};
+        found.push({ dir: path, features: dependencyFeatures(spec, base, forwarded.get(key)) });
+      }
+    }
+  }
+  return found;
 }
 
 /**
- * Every local crate directory a build of `roots` compiles: the roots, their
- * path dependencies (dev ones too where `dev`), and from there the normal and
- * build dependencies.
+ * Every local crate directory a build compiles. Optional edges count only
+ * when enabled; dependency features are unified to a fixed point. Dev edges
+ * count only at roots, target-specific edges on every platform (fail closed).
  */
 export function pathClosure(roots: readonly BuildRoot[], root = ROOT): Set<string> {
-  const closure = new Set<string>();
-  const pending: string[] = [];
-  for (const { dir, dev } of roots) {
-    closure.add(dir);
-    const kinds = dev ? ALL_KINDS : TRANSITIVE_KINDS;
-    pending.push(...pathDependencies(readManifest(dir, root), kinds, root));
+  const manifests = new Map<string, Manifest>();
+  const manifestAt = (dir: string): Manifest => {
+    const manifest = manifests.get(dir) ?? readManifest(dir, root);
+    manifests.set(dir, manifest);
+    return manifest;
+  };
+  const devRoots = new Set(roots.filter(({ dev }) => dev).map(({ dir }) => dir));
+  const enabled = new Map<string, Set<string>>();
+  const pending = roots.map(({ dir, features = [], defaultFeatures = true }) => ({
+    dir,
+    features: new Set([...features, ...(defaultFeatures ? ["default"] : [])]),
+  }));
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const { dir, features } = next;
+    const previous = enabled.get(dir);
+    if (previous && [...features].every((feature) => previous.has(feature))) continue;
+    const requested = new Set([...(previous ?? []), ...features]);
+    enabled.set(dir, requested);
+    const manifest = manifestAt(dir);
+    const kinds = devRoots.has(dir) ? ALL_KINDS : TRANSITIVE_KINDS;
+    pending.push(...activePathDependencies(manifest, requested, kinds, root));
   }
-  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
-    if (closure.has(dir)) continue;
-    closure.add(dir);
-    pending.push(...pathDependencies(readManifest(dir, root), TRANSITIVE_KINDS, root));
-  }
-  return closure;
+  return new Set(enabled.keys());
 }

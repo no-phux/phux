@@ -32,9 +32,11 @@ measure = []
 # phux-mobile bridge at these exact specs (ADR-0133 moves that code here);
 # nothing new enters Cargo.lock.
 #
-# The `[[remote]]` registry is read through the CLI's own schema and loader,
-# so an entry means one thing to the CLI and to every embedder.
-phux-config.workspace = true
+# The `[[remote]]` registry and `[organize]` are read through the CLI's own
+# schema and layer merge, so an entry means one thing to the CLI and to
+# every embedder. The client-neutral crate only: the TUI's schema, defaults
+# and widgets in phux-config stay out of every embedder's build.
+phux-config-core.workspace = true
 # Project identity (ADR-0168) and its attribute names: the typed record the
 # repository discovery here produces. A leaf crate (serde, slotmap,
 # thiserror) already in every client's tree through phux-client.

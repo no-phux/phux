@@ -3627,7 +3627,6 @@ dependencies = [
  "bitflags 2.13.2",
  "int-enum",
  "libghostty-vt-sys",
- "png 0.18.1",
 ]
 
 [[package]]
@@ -4914,7 +4913,7 @@ dependencies = [
  "libghostty-vt",
  "minisign-verify",
  "phux-client-core",
- "phux-config",
+ "phux-config-core",
  "phux-core",
  "phux-dial",
  "phux-perf",
@@ -4934,21 +4933,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "phux-config"
+name = "phux-config-core"
 version = "0.108.1"
 dependencies = [
- "chrono",
  "nix",
- "phux-protocol",
  "serde",
- "serde_json",
- "serde_path_to_error",
- "smallvec",
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",
- "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
- "unicode-width",
 ]
 
 [[package]]
@@ -5019,7 +5011,6 @@ dependencies = [
  "flate2",
  "int-enum",
  "libghostty-vt",
- "png 0.18.1",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -6272,17 +6263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_path_to_error"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
-dependencies = [
- "itoa",
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "serde_repr"
 version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7096,7 +7076,6 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
- "toml_writer",
  "winnow 1.0.4",
 ]
 

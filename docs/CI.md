@@ -32,8 +32,10 @@ job's display name, not its id.
 
 [`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts) maps paths to
 surfaces, and [`plan.ts`](../tools/src/routing/plan.ts) maps surfaces to
-lanes and lanes to recipes. A path no route names requests every lane, so an
-unknown input fails closed. A change to `ci.yml` or `.github/actions/` reruns
+lanes and lanes to recipes. The web and desktop lanes route the Cargo
+closure their builds compile, read from the manifests with features resolved,
+so a dependency added or dropped reroutes on its own. A path no route names
+requests every lane, so an unknown input fails closed. A change to `ci.yml` or `.github/actions/` reruns
 every lane too.
 
 | Lane | Job | Recipe | Runs when |

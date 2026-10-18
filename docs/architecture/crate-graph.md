@@ -92,7 +92,10 @@ See ADR-0013 and `../../research/2026-05-25-libghostty-renderstate.md`
 for the renderer-side contract on both ends.
 
 `phux-config` is a sibling of `core` and is consumed by the binary, the
-server, the client, and the TUI.
+server, the client, and the TUI. It sits on `phux-config-core`, the
+client-neutral half (config path, layer merge, `[[remote]]`, `[organize]`,
+instance paths). `phux-client-runtime` depends on that half only, so no
+embedder builds the TUI's schema, defaults, or widgets (ADR-0186).
 
 `phux-client-ffi` is the one binding leaf above the runtime (ADR-0135),
 excluded on wasm: one `projection/` layer, a `c-abi` encoder for native

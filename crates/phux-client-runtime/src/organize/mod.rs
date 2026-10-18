@@ -49,7 +49,7 @@ const KEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often a blocking wait polls its child.
 const POLL: Duration = Duration::from_millis(20);
 
-pub use phux_config::instance::local_host_name;
+pub use phux_config_core::instance::local_host_name;
 pub use sequencer::{Records, Report, SKIPPED, Sequencer, Step, Submitter, UndoRefusal};
 
 /// One session record as the planner sees it; `intake` is the designated
@@ -169,7 +169,10 @@ impl Judge {
     /// with the key `organize.jev-key-command` prints; else the heuristic.
     /// The second value says why Jev was wanted but is not used.
     #[must_use]
-    pub fn configured(config: &phux_config::OrganizeCfg, offline: bool) -> (Self, Option<String>) {
+    pub fn configured(
+        config: &phux_config_core::OrganizeCfg,
+        offline: bool,
+    ) -> (Self, Option<String>) {
         let offline = offline || config.offline;
         let judge = Self::from_env(offline);
         let argv = config.jev_key_command.as_deref().unwrap_or_default();
@@ -189,7 +192,7 @@ impl Judge {
     /// config file (defaults when it does not load).
     #[must_use]
     pub fn from_config_file(offline: bool) -> (Self, Option<String>) {
-        let config = phux_config::loader::load().unwrap_or_default();
+        let config = phux_config_core::loader::load_client().unwrap_or_default();
         Self::configured(&config.organize, offline)
     }
 
@@ -460,7 +463,7 @@ fn read_jev_reply(stdout: &[u8], stderr: &[u8], ran: bool) -> Result<Value, Plan
 /// Where the last organize run's [`Journal`] is kept for this profile.
 #[must_use]
 pub fn journal_path() -> PathBuf {
-    phux_config::instance::state_dir()
+    phux_config_core::instance::state_dir()
         .join("organize")
         .join("last.json")
 }
@@ -595,7 +598,7 @@ mod tests {
 
     #[test]
     fn offline_never_runs_the_key_command() {
-        let config = phux_config::OrganizeCfg {
+        let config = phux_config_core::OrganizeCfg {
             jev_key_command: Some(vec!["false".to_owned()]),
             offline: true,
         };
