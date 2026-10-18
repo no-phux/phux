@@ -1,8 +1,8 @@
 //! The relay's entire data path: two opaque byte pumps.
 //!
-//! Read, forward, nothing else: no frame decoding, so ADR-0051 invariants 1
-//! and 5 hold by construction. What crosses is each consumer's end-to-end
-//! TLS session with the server (ADR-0180): ciphertext to the relay.
+//! Read, forward, nothing else: the relay decodes nothing it forwards, by
+//! construction. What should cross is each consumer's end-to-end TLS session
+//! with the service: ciphertext to the relay.
 
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};

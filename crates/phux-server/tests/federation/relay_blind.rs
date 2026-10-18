@@ -140,11 +140,8 @@ impl Relay {
         let tap = Arc::new(Mutex::new(Vec::new()));
         let harness = RelayHarness::start_tapped(
             RelayConfig {
-                listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-                cert_path: dir.join("relay-cert.pem"),
-                key_path: dir.join("relay-key.pem"),
-                tokens_path: dir.join("relay-tokens"),
                 max_conns: 16,
+                ..phux_relay::config_in(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), dir)
             },
             Arc::clone(&tap),
         );

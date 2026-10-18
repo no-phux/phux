@@ -360,6 +360,9 @@ pub enum ServerError {
     /// Outbound connector configuration was unsafe or malformed.
     #[error("connector: {0}")]
     Connector(#[from] crate::connector::ConnectorError),
+    /// An `[[uplink]]` entry was unsafe or malformed (ADR-0182).
+    #[error("{0}")]
+    Uplink(#[from] crate::uplink::UplinkError),
 
     /// A `[policy]` mode the rest of the configuration contradicts
     /// (`docs/spec/workload-auth.md` §8).
@@ -423,6 +426,10 @@ pub struct ServerRuntime {
     connectors: Vec<phux_config::ConnectorConfigEntry>,
     /// Raw `--connect` value, kept for the upgrade argv.
     connect_override: Option<String>,
+    /// Hubs this server dials out to as a satellite (ADR-0182).
+    uplinks: Vec<phux_config::UplinkConfigEntry>,
+    /// Where a config-reload doorbell re-reads `[[uplink]]`.
+    uplink_source: Option<crate::uplink::UplinkSource>,
     /// Overlay-address source for the auto-bound listener (ADR-0081). Never
     /// called on the startup path; see [`serve_auto_overlay_listeners`].
     overlay_detect: fn() -> Vec<std::net::IpAddr>,
@@ -466,6 +473,8 @@ impl ServerRuntime {
             satellite_source: None,
             connectors: Vec::new(),
             connect_override: None,
+            uplinks: Vec::new(),
+            uplink_source: None,
             overlay_detect: phux_config::overlay::detect,
             autosave: None,
             on_listening: ListeningHook(None),
@@ -601,6 +610,24 @@ impl ServerRuntime {
         self
     }
 
+    /// Keep an uplink to each enabled hub in `entries`, serving it as a
+    /// satellite (ADR-0182). A malformed entry fails startup with
+    /// [`ServerError::Uplink`].
+    #[must_use]
+    pub fn uplinks(mut self, entries: Vec<phux_config::UplinkConfigEntry>) -> Self {
+        self.uplinks = entries;
+        self
+    }
+
+    /// On each `phux.config.reload/v1` doorbell, re-read `[[uplink]]` from
+    /// `source` and start, stop, or redial exactly the uplinks that changed,
+    /// so `phux host join` needs no restart.
+    #[must_use]
+    pub fn uplink_reload(mut self, source: crate::uplink::UplinkSource) -> Self {
+        self.uplink_source = Some(source);
+        self
+    }
+
     /// Build a current-thread runtime and block on [`Self::run_async`].
     pub fn run<F>(self, shutdown: F) -> Result<(), ServerError>
     where
@@ -636,6 +663,7 @@ impl ServerRuntime {
         // Connector plans and the policy posture are startup gates: bad
         // configuration fails before anything is bound.
         let mut connector_specs = crate::connector::plan_connectors(&self.connectors)?;
+        let uplink_specs = crate::uplink::plan_uplinks(&self.uplinks)?;
         // Each opt-in address: the flag wins over the environment.
         let env = &self.cfg.env;
         let mut ws_addr = self.ws_addr.or(env.ws_addr);
@@ -714,6 +742,8 @@ impl ServerRuntime {
         let autosave_socket_path = socket_path.clone();
         let exit_after_idle = self.cfg.exit_after_idle;
         let satellite_source = self.satellite_source.clone();
+        let uplink_source = self.uplink_source.clone();
+        let uplink_socket = socket_path.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
         let input_lane = input_lane::spawn_input_lane(state.clone())?;
@@ -731,6 +761,13 @@ impl ServerRuntime {
                     s.arm_hub_reload(satellite_source.clone(), root_token.clone());
                 });
                 spawn_hub_links(&state, hub_table.as_ref(), satellite_source, &root_token);
+                // Satellite uplinks (ADR-0182): hub streams splice to the
+                // socket bound above.
+                state.with_mut(|s| {
+                    let uplinks = s.uplinks_mut();
+                    uplinks.arm(uplink_source, uplink_socket, root_token.clone());
+                    uplinks.apply(uplink_specs);
+                });
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);
                 // Off the runtime thread: a large upload directory is a
@@ -1227,7 +1264,9 @@ fn spawn_hub_links(
     };
     let relays = crate::hub::relay::HubRelays::default();
     let ssh_program = state.with(|s| s.server_env().ssh_program());
-    let mut links = crate::hub::link::HubLinks::new(relays.clone(), root_token, ssh_program);
+    let adopter = state.with(crate::state::ServerState::satellite_adopter);
+    let mut links =
+        crate::hub::link::HubLinks::new(relays.clone(), root_token, ssh_program, adopter);
     for (host, entry) in table.iter() {
         links.start(host, entry, state);
     }
@@ -1534,7 +1573,12 @@ impl RemoteListeners {
         let quic = quic_addr.and_then(|addr| {
             let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
             state.with_mut(|s| s.record_remote_listener(slot));
-            listener
+            // The configured listener adopts satellites that dial in
+            // (ADR-0182); it offers their ALPN only when it verifies
+            // workload certificates.
+            listener.map(|listener| {
+                listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+            })
         });
         Self { ws, quic }
     }

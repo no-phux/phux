@@ -1188,8 +1188,8 @@ pub(in crate::attach) fn report_bug(
         Ok(written) => {
             effects.clipboard = Some(written.dir.display().to_string());
             ctx.overlays.push(Box::new(ToastOverlay::passthrough(
-                "bug report",
-                vec!["Bug report saved (path copied)".to_owned()],
+                "Bug report",
+                vec!["Saved; path copied.".to_owned()],
                 ctx.theme,
             )));
         }
@@ -1197,7 +1197,7 @@ pub(in crate::attach) fn report_bug(
             tracing::warn!(error = %err, "report-bug: could not write bundle");
             effects.bell = true;
             ctx.overlays.push(Box::new(ToastOverlay::new(
-                "bug report failed",
+                "Bug report failed",
                 vec![err.to_string()],
                 ctx.theme,
             )));
@@ -1300,7 +1300,7 @@ pub(in crate::attach) fn push_session_picker(ActionCall { ctx, .. }: ActionCall<
     let items = session_picker_rows(&ctx.peers, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
-        SelectList::new("Sessions · Tab manage", items, ctx.theme)
+        SelectList::new("Sessions", items, ctx.theme)
             .with_live_key(SESSION_PICKER_LIVE_KEY)
             .with_session_management(),
     ));

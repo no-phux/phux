@@ -1429,6 +1429,7 @@ Commands:
   disable  Disable a satellite without forgetting it; a running hub drops its
            link.
   enable   Enable a satellite; a running local hub dials it now.
+  join     Join a hub as a satellite with the code `phux host ticket` printed.
   ls       List registered machines from both registries. [aliases: list]
   rename   Rename a registered machine without changing its route or
            credentials.
@@ -1437,6 +1438,7 @@ Commands:
            [aliases: remove]
   show     Show a registered machine, including its route and credential
            references.
+  ticket   Mint a one-time code a machine this hub cannot reach joins with.
   upgrade  Move registered remotes from `wss://` (or ssh) onto QUIC.
   help     Print this message or the help of the given subcommand(s)
 
@@ -1590,6 +1592,33 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux host join`
+
+```text
+Join a hub as a satellite with the code `phux host ticket` printed.
+
+Generates a key here (it never leaves this machine), enrolls it with the code's
+single-use ticket, records an `[[uplink]]` entry, and asks the running server to
+dial the hub. The server keeps that connection up, redialing after any drop, and
+needs no listener of its own: the hub reaches this machine's terminals through
+it.
+
+Usage: phux host join [--json] <CODE>
+
+Arguments:
+  <CODE>  The `phux://satellite?...` code from the hub, or `-` to read it from
+          stdin and keep it out of `ps` and shell history.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux host ls`
 
 ```text
@@ -1710,6 +1739,39 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host ticket`
+
+```text
+Mint a one-time code a machine this hub cannot reach joins with.
+
+For a sandbox or VM behind NAT, with no listener the hub could dial. Registers
+NAME as an `inbound://` satellite and prints a join code carrying this hub's
+QUIC address, the CA it is pinned by, and a single-use ticket. On that machine,
+`phux host join CODE` enrolls a key it keeps and dials out to this hub, which
+adopts the connection as NAME's link. The hub must run `[policy] mode =
+"paired"`. Revoke an unused code with `phux workload revoke t-…`, and the joined
+machine with `phux host rm NAME`.
+
+Usage: phux host ticket [FLAGS] <NAME>
+
+Arguments:
+  <NAME>  Satellite name: how this hub addresses the machine's terminals.
+
+Flags:
+      --hub <HOST:PORT>       `HOST:PORT` the satellite dials. Omitted: this
+                              server's live QUIC listener, as `phux pair`
+                              advertises it.
+      --expires-in <MINUTES>  Minutes the code stays redeemable.
+                              (default: 10)
+      --json                  Emit stable, versioned JSON on stdout instead of
+                              the human view. On failure, stdout stays empty and
+                              stderr carries one JSON error object.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host upgrade`
@@ -4932,12 +4994,15 @@ Revoke a credential: new connections are refused and live ones end.
 
 A running server observes the registry write and closes every connection the
 credential admitted; no restart is needed. `phux pair revoke` accepts the same
-`sha256:` ids.
+`sha256:` ids. A satellite's credential ends its link to this hub. A `t-...`
+ticket id withdraws an enrollment code nobody has used yet.
 
 Usage: phux workload revoke <CREDENTIAL_ID>
 
 Arguments:
-  <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`.
+  <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`,
+                   or an unspent enrollment ticket (`t-...`) printed by `phux
+                   pair --enroll` or `phux host ticket`.
 
 Flags:
   -h, --help           Print help

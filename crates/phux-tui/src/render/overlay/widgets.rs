@@ -65,8 +65,18 @@ impl<'a> Modal<'a> {
         self
     }
 
-    /// Paint the modal into `area` (the already-centered modal rect).
+    /// Paint the modal into `area` (the already-centered modal rect). The
+    /// box is opaque: every cell under it is reset first, so an overlay
+    /// painted over another (a job's result over its running notice) never
+    /// shows the glyphs beneath where its own text is shorter.
     pub fn render_into(&self, area: Rect, buf: &mut Buffer) {
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.reset();
+                }
+            }
+        }
         self.paragraph().render(area, buf);
     }
 
@@ -336,6 +346,32 @@ mod tests {
         // Full-bleed fills the inset rect it was given, never the sidebar.
         let content = Rect::new(20, 0, 40, 14);
         assert_eq!(centered_panel(content, 6, 30, 10, bp), content);
+    }
+
+    /// A modal is opaque: painted over a wider line in the same box, none
+    /// of the earlier glyphs show past the end of its own text.
+    #[test]
+    fn a_modal_resets_the_cells_under_it() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let long = Modal::new(
+            &theme,
+            "Job",
+            vec![Line::from("running, the result lands here.")],
+        );
+        long.render_into(area, &mut buf);
+        let short = Modal::new(&theme, "Job", vec![Line::from("done.")]);
+        short.render_into(area, &mut buf);
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, 1)].symbol().to_owned())
+            .collect();
+        assert_eq!(
+            row.trim_end_matches(['│', ' '])
+                .trim_start_matches(['│', ' ']),
+            "done.",
+            "{row:?}"
+        );
     }
 
     /// `centered` clamps to its outer rect and centers inside an inset one,

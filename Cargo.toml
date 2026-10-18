@@ -12,7 +12,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.100.0"
+version = "0.102.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -70,6 +70,8 @@ phux-work = { path = "crates/phux-work" }
 phux-dial = { path = "crates/phux-dial" }
 phux-perf = { path = "crates/phux-perf" }
 phux-relay = { path = "crates/phux-relay" }
+# The phux-independent QUIC tunnel relay; members opt into its features.
+quictun = { path = "crates/quictun", default-features = false }
 phux-plugin = { path = "crates/phux-plugin" }
 # Fatal-signal (SIGSEGV/SIGBUS/SIGABRT) terminal restore. Apache-2.0 ONLY —
 # derived from upstream code, unlike every other crate here; see

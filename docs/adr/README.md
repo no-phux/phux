@@ -88,7 +88,7 @@ column is the base status word plus at most one relationship clause, about
 | [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted |
 | [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Accepted (superseded in part by [0080](./0080-socket-lifecycle-and-instance-isolation.md), [0096](./0096-always-on-performance-telemetry.md); amended by [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md), [0150](./0150-the-server-keeps-the-restore-archive-current.md)) |
 | [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (superseded in part by [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md); builds on [0050](./0050-explicit-spawn-ownership.md)) |
-| [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md), [0052](./0052-connector-route-identity-and-config.md)) |
+| [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md), [0052](./0052-connector-route-identity-and-config.md); superseded in part by [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md)) |
 | [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
 | [0059](./0059-sandboxed-chunked-file-upload.md) | Sandboxed chunked file upload | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md), [0021](./0021-control-plane-commands.md), and [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0060](./0060-self-contained-session-recording.md) | Self-contained session recording | Accepted (builds on [0013](./0013-libghostty-bytes-on-wire.md)) |
@@ -212,6 +212,8 @@ column is the base status word plus at most one relationship clause, about
 | [0178](./0178-release-checksums-are-minisign-signed.md) | Release checksums are minisign-signed | Accepted (supersedes in part [0074](./0074-self-update-trust-boundary.md), [0176](./0176-the-release-pipeline.md)) |
 | [0179](./0179-the-legacy-auth-paths-are-removed.md) | The transitional and legacy authentication paths are removed | Accepted (supersedes in part [0153](./0153-clients-pin-the-workload-ca.md), [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)) |
 | [0180](./0180-the-relay-is-blind.md) | The relay is blind: every relayed session ends at the server | Accepted (supersedes in part [0051](./0051-outbound-dial-out-connector-transport.md), [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md)) |
+| [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) | The relay is a standalone QUIC tunnel crate | Accepted (supersedes in part [0057](./0057-minimal-reference-relay.md)) |
+| [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
 
 ## When to write an ADR
 

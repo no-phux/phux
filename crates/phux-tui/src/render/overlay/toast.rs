@@ -63,7 +63,12 @@ impl ToastOverlay {
                 ))
             })
             .collect();
-        Modal::new(&self.theme, self.title.clone(), body).wrap(true)
+        // A passthrough notice goes away on its own; only a toast that
+        // holds the keyboard says how to let go of it.
+        let keys = if self.passthrough { "" } else { "any key" };
+        Modal::new(&self.theme, self.title.clone(), body)
+            .wrap(true)
+            .footer("", keys)
     }
 }
 
@@ -151,18 +156,19 @@ mod tests {
     #[test]
     fn renders_title_and_body() {
         let toast = ToastOverlay::new(
-            "plugin: p a failed",
+            "Plugin action failed",
             vec!["exit code 2".to_owned(), "boom".to_owned()],
             &Theme::default(),
         );
         let text = render_to_string(&toast, 80, 24);
-        assert!(text.contains("plugin: p a failed"), "title:\n{text}");
+        assert!(text.contains("Plugin action failed"), "title:\n{text}");
         assert!(text.contains("exit code 2"), "body line 1:\n{text}");
         assert!(text.contains("boom"), "body line 2:\n{text}");
         assert!(
             !text.contains("Press any key"),
             "no teaching footer:\n{text}"
         );
+        assert!(text.contains("any key"), "border legend:\n{text}");
     }
 
     #[test]
@@ -175,6 +181,7 @@ mod tests {
             !text.contains("Start typing"),
             "no teaching footer:\n{text}"
         );
+        assert!(!text.contains("any key"), "no legend on a notice:\n{text}");
     }
 
     #[test]

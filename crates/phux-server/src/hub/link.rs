@@ -21,6 +21,11 @@
 //! satellite's `RelaySession`; while down it fails queued requests fast with
 //! `SatelliteUnreachable`.
 //!
+//! `inbound://` (ADR-0182) dials nothing: its supervisor's transport waits
+//! for the satellite to dial in and be adopted (`hub::adopt`), then runs
+//! the same relay session over a stream it opens. The dialing satellite owns
+//! the backoff, so the hub takes the next connection without delay.
+//!
 //! Liveness: QUIC has transport keepalive/idle, SSH uses
 //! `ServerAliveInterval`/`CountMax` derived from the same constants, and WS
 //! pings on `LINK_KEEPALIVE_INTERVAL` and drops after `LINK_IDLE_TIMEOUT` of
@@ -116,15 +121,18 @@ pub enum DialSpec {
         /// SSH port (`-p`), if configured.
         port: Option<u16>,
     },
+    /// Dial nothing: adopt the connection the satellite dials in with
+    /// (ADR-0182). Its certificate is the credential, so no token or pin.
+    Inbound,
 }
 
 impl DialSpec {
-    /// The token file this spec dials with (`None` for SSH).
+    /// The token file this spec dials with (`None` for SSH and inbound).
     #[must_use]
     pub fn token_file(&self) -> Option<&Path> {
         match self {
             Self::Quic { token_file, .. } | Self::Ws { token_file, .. } => token_file.as_deref(),
-            Self::Ssh { .. } => None,
+            Self::Ssh { .. } | Self::Inbound => None,
         }
     }
 }
@@ -149,6 +157,7 @@ impl core::fmt::Display for DialSpec {
                 }
                 Ok(())
             }
+            Self::Inbound => f.write_str(super::INBOUND_ENDPOINT),
         }
     }
 }
@@ -258,6 +267,8 @@ pub enum LinkStatus {
         /// 1-based attempt number since the last successful connection.
         attempt: u32,
     },
+    /// An `inbound://` satellite has not dialed in yet (ADR-0182).
+    Awaiting,
     /// The link is established and authenticated.
     Connected,
     /// The last attempt failed or the link dropped; redial after `retry_in`.
@@ -276,6 +287,7 @@ impl core::fmt::Display for LinkStatus {
         match self {
             Self::Refused { reason } => write!(f, "refused (fail closed): {reason}"),
             Self::Connecting { attempt } => write!(f, "connecting (attempt {attempt})"),
+            Self::Awaiting => f.write_str("awaiting the satellite's inbound connection"),
             Self::Connected => f.write_str("connected"),
             Self::Backoff {
                 attempt,
@@ -391,6 +403,7 @@ impl Backoff {
 /// A [`LinkRefusal`] naming the configuration gap.
 pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
     match &entry.target {
+        SatelliteTarget::Inbound => Ok(DialSpec::Inbound),
         SatelliteTarget::Ssh { user, host, port } => Ok(DialSpec::Ssh {
             user: user.clone(),
             host: host.clone(),
@@ -493,8 +506,14 @@ pub(crate) trait LinkTransport {
     /// The established-connection handle.
     type Conn: LinkConn;
 
-    /// Dial `spec`, authenticating with `token` when present.
-    async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<Self::Conn, String>;
+    /// Dial `host` at `spec` (or adopt its inbound connection), authenticating
+    /// with `token` when present.
+    async fn connect(
+        &self,
+        host: &SatelliteHost,
+        spec: &DialSpec,
+        token: Option<String>,
+    ) -> Result<Self::Conn, String>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,11 +610,19 @@ pub(crate) async fn run_link<T: LinkTransport>(
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
     loop {
         let attempt = backoff.failures().saturating_add(1);
-        statuses.set(&host, LinkStatus::Connecting { attempt });
+        let inbound = matches!(spec, DialSpec::Inbound);
+        statuses.set(
+            &host,
+            if inbound {
+                LinkStatus::Awaiting
+            } else {
+                LinkStatus::Connecting { attempt }
+            },
+        );
         let connect = async {
             // Re-read the token every attempt (rotation).
             let token = read_link_token(spec.token_file())?;
-            transport.connect(&spec, token).await
+            transport.connect(&host, &spec, token).await
         };
         // Fail relay requests fast while the dial is in flight.
         let Some(outcome) = inbox.drain_until(connect, "link is connecting").await else {
@@ -643,7 +670,13 @@ pub(crate) async fn run_link<T: LinkTransport>(
             }
         };
 
-        let retry_in = backoff.next_delay();
+        // An inbound satellite redials on its own backoff; waiting here too
+        // would only leave its new connection idle.
+        let retry_in = if inbound {
+            Duration::ZERO
+        } else {
+            backoff.next_delay()
+        };
         statuses.set(
             &host,
             LinkStatus::Backoff {
@@ -1194,6 +1227,8 @@ pub(crate) struct HubLinks {
     cancel: CancellationToken,
     transport: NetLinkTransport,
     links: BTreeMap<SatelliteHost, CancellationToken>,
+    /// Where the QUIC listener hands satellites that dial in (ADR-0182).
+    adopter: super::adopt::SatelliteAdopter,
 }
 
 impl HubLinks {
@@ -1203,13 +1238,15 @@ impl HubLinks {
         relays: super::relay::HubRelays,
         cancel: &CancellationToken,
         ssh_program: std::ffi::OsString,
+        adopter: super::adopt::SatelliteAdopter,
     ) -> Self {
         Self {
             statuses: HubLinkStatuses::default(),
             relays,
             cancel: cancel.clone(),
-            transport: NetLinkTransport::new(ssh_program),
+            transport: NetLinkTransport::new(ssh_program, adopter.clone()),
             links: BTreeMap::new(),
+            adopter,
         }
     }
 
@@ -1223,6 +1260,9 @@ impl HubLinks {
         journal: &crate::state::SharedState,
     ) {
         self.stop(host);
+        if matches!(entry.target, SatelliteTarget::Inbound) {
+            self.adopter.register(host);
+        }
         let (handle, mut mailbox) = super::relay::RelayHandle::new(host.clone());
         mailbox.journal = Some(journal.clone());
         self.relays.insert(handle);
@@ -1244,6 +1284,7 @@ impl HubLinks {
         if let Some(cancel) = self.links.remove(host) {
             cancel.cancel();
         }
+        self.adopter.unregister(host);
         self.relays.remove(host);
         self.statuses.remove(host);
     }
@@ -1254,14 +1295,23 @@ impl HubLinks {
 pub(crate) struct NetLinkTransport {
     /// Program for SSH dials: `ssh`, or `$PHUX_SSH`.
     ssh_program: std::ffi::OsString,
+    /// Where `inbound://` satellites' connections arrive (ADR-0182).
+    adopter: super::adopt::SatelliteAdopter,
 }
 
 impl NetLinkTransport {
     /// Build the production transport dialing SSH satellites with
     /// `ssh_program` (`ssh`, or `$PHUX_SSH` via the server's
-    /// [`crate::runtime::ServerEnv`]).
-    pub(crate) const fn new(ssh_program: std::ffi::OsString) -> Self {
-        Self { ssh_program }
+    /// [`crate::runtime::ServerEnv`]) and adopting inbound ones from
+    /// `adopter`.
+    pub(crate) const fn new(
+        ssh_program: std::ffi::OsString,
+        adopter: super::adopt::SatelliteAdopter,
+    ) -> Self {
+        Self {
+            ssh_program,
+            adopter,
+        }
     }
 }
 
@@ -1374,11 +1424,48 @@ impl NetLinkConn {
     }
 }
 
+impl NetLinkTransport {
+    /// Take `host`'s next inbound connection and open the link's stream on
+    /// it: the hub is the phux client, so it opens the stream and sends HELLO
+    /// first (ADR-0182).
+    async fn adopt_inbound(&self, host: &SatelliteHost) -> Result<NetLinkConn, String> {
+        let adopted = self
+            .adopter
+            .next(host)
+            .await
+            .ok_or_else(|| "the inbound satellite is no longer accepted".to_owned())?;
+        info!(
+            satellite = %host,
+            credential = %adopted.credential,
+            "adopting the satellite's inbound connection as its link"
+        );
+        let (send, recv) = adopted
+            .connection
+            .open_bi()
+            .await
+            .map_err(|err| format!("open a stream to the inbound satellite: {err}"))?;
+        Ok(NetLinkConn::Quic {
+            _endpoint: adopted.endpoint,
+            _connection: adopted.connection,
+            send,
+            recv,
+            buf: bytes::BytesMut::with_capacity(8192),
+            negotiated: None,
+        })
+    }
+}
+
 impl LinkTransport for NetLinkTransport {
     type Conn = NetLinkConn;
 
-    async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<NetLinkConn, String> {
+    async fn connect(
+        &self,
+        host: &SatelliteHost,
+        spec: &DialSpec,
+        token: Option<String>,
+    ) -> Result<NetLinkConn, String> {
         let result: Result<NetLinkConn, String> = match spec {
+            DialSpec::Inbound => self.adopt_inbound(host).await,
             DialSpec::Quic {
                 host, port, trust, ..
             } => {
@@ -1970,7 +2057,10 @@ mod tests {
                         Some(token_file.to_str().expect("utf8 path")),
                         None,
                     ),
-                    NetLinkTransport::new("ssh".into()),
+                    NetLinkTransport::new(
+                        "ssh".into(),
+                        crate::hub::adopt::SatelliteAdopter::default(),
+                    ),
                     statuses.clone(),
                     relay_rx,
                     cancel.child_token(),
@@ -2055,7 +2145,9 @@ mod tests {
             let spec = plan_link(&entry(endpoint, None, None)).expect("loopback carve-out");
             let trust = match spec {
                 DialSpec::Quic { trust, .. } | DialSpec::Ws { trust, .. } => trust,
-                DialSpec::Ssh { .. } => unreachable!("no ssh endpoints in this matrix"),
+                DialSpec::Ssh { .. } | DialSpec::Inbound => {
+                    unreachable!("no ssh or inbound endpoints in this matrix")
+                }
             };
             assert_eq!(trust, CertTrust::SkipVerify, "{endpoint}");
         }
@@ -2377,6 +2469,7 @@ mod tests {
         )]
         async fn connect(
             &self,
+            _host: &SatelliteHost,
             _spec: &DialSpec,
             token: Option<String>,
         ) -> Result<ScriptConn, String> {
@@ -3120,10 +3213,11 @@ mod tests {
             trust: CertTrust::SkipVerify,
             token_file: None,
         };
-        let conn = NetLinkTransport::new("ssh".into())
-            .connect(&spec, None)
-            .await
-            .unwrap();
+        let conn =
+            NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
+                .connect(&SatelliteHost::new("sat"), &spec, None)
+                .await
+                .unwrap();
         assert!(
             conn.server_features_ext()
                 .unwrap()
@@ -3177,7 +3271,10 @@ mod tests {
                 tokio::task::spawn_local(run_link(
                     host.clone(),
                     entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
-                    NetLinkTransport::new("ssh".into()),
+                    NetLinkTransport::new(
+                        "ssh".into(),
+                        crate::hub::adopt::SatelliteAdopter::default(),
+                    ),
                     statuses.clone(),
                     relay_rx,
                     cancel.child_token(),
@@ -3256,6 +3353,7 @@ mod tests {
                 );
                 let transport = NetLinkTransport {
                     ssh_program: stub.into(),
+                    adopter: crate::hub::adopt::SatelliteAdopter::default(),
                 };
                 let statuses = HubLinkStatuses::default();
                 let cancel = CancellationToken::new();
@@ -3310,6 +3408,7 @@ mod tests {
                 );
                 let transport = NetLinkTransport {
                     ssh_program: stub.into(),
+                    adopter: crate::hub::adopt::SatelliteAdopter::default(),
                 };
                 let statuses = HubLinkStatuses::default();
                 let cancel = CancellationToken::new();
@@ -3352,6 +3451,7 @@ mod tests {
                 );
                 let transport = NetLinkTransport {
                     ssh_program: stub.into(),
+                    adopter: crate::hub::adopt::SatelliteAdopter::default(),
                 };
                 let statuses = HubLinkStatuses::default();
                 let cancel = CancellationToken::new();
@@ -3383,6 +3483,7 @@ mod tests {
             .run_until(async {
                 let transport = NetLinkTransport {
                     ssh_program: "/nonexistent/phux-test-no-such-ssh".into(),
+                    adopter: crate::hub::adopt::SatelliteAdopter::default(),
                 };
                 let statuses = HubLinkStatuses::default();
                 let cancel = CancellationToken::new();

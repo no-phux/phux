@@ -31,6 +31,7 @@ pub mod settings;
 pub mod socket;
 pub mod theme;
 pub mod toml_registry;
+pub mod uplink;
 pub mod vocab;
 pub mod widget;
 
@@ -62,6 +63,7 @@ pub use session_name::{
 pub use settings::{
     Applies, CATALOG, Edit, EditOutcome, SettingKind, SettingSection, SettingSpec, SettingsSnapshot,
 };
+pub use uplink::UplinkConfigEntry;
 pub use widget::{
     Cell, CellStyle, SessionNameWidget, SpacerWidget, StatusBar, StatusWidget, TextWidget,
     TimeWidget, WidgetCells, WidgetContext, WidgetError, WidgetFactory, WidgetRegistry, WindowInfo,

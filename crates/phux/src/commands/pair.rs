@@ -484,6 +484,31 @@ fn resolve_quic_endpoint(
     resolve_bound_endpoint("quic", overlay, magic_dns, bound_quic)
 }
 
+/// The `HOST:PORT` another machine dials this server's live QUIC listener at,
+/// resolved as a pairing link's `quic` is (overlay address, `MagicDNS`
+/// name). `Ok(None)` when no QUIC listener is bound or it binds loopback.
+///
+/// # Errors
+///
+/// No server answers, or it has no remote listener bound.
+pub(crate) fn advertised_quic_endpoint(socket: &Path) -> Result<Option<String>, String> {
+    let live = query_live_listeners(socket)?;
+    let overlay = phux_config::overlay::detect();
+    let magic_dns = phux_config::overlay::detect_magic_dns();
+    Ok(
+        resolve_quic_endpoint(&overlay, magic_dns.as_ref(), live.quic_addr())
+            .map(|endpoint| endpoint.trim_start_matches("quic://").to_owned()),
+    )
+}
+
+/// The workload CA this server's certificate chains to (ADR-0153), what a
+/// machine joining it pins; `None` for a certificate no CA issued.
+pub(crate) fn presented_server_authority() -> Option<String> {
+    phux_server::transport::tls::presented_authority(&resolve_certificate_paths(None).cert)
+        .ok()
+        .flatten()
+}
+
 /// The words of the refusal when the server has no remote listener bound.
 /// `phux host add` recognizes them to restart a server that disabled its
 /// listeners at boot, so they are a contract with that caller.

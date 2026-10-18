@@ -533,8 +533,8 @@ impl Outcome {
             Some(applied) => {
                 planner::journal_summary(self.plan.judge, &applied.journal, applied.failures.len())
             }
-            None if self.plan.is_empty() => "organize: every pane is where it belongs".to_owned(),
-            None => format!("organize: {} moves planned", self.plan.moves.len()),
+            None if self.plan.is_empty() => "Every pane is already where it belongs.".to_owned(),
+            None => format!("{} moves planned.", self.plan.moves.len()),
         }
     }
 }
