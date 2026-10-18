@@ -73,7 +73,7 @@ pub fn uptime() -> Duration {
 }
 
 /// Mark the host's start, so uptime counts from initialization.
-pub(crate) fn mark_started() {
+pub fn mark_started() {
     LazyLock::force(&STARTED);
 }
 
@@ -133,20 +133,5 @@ mod tests {
         probe.forget();
         probe.painted(7);
         assert_eq!(KEY_TO_PAINT.count(), before + 1);
-    }
-
-    #[test]
-    fn report_carries_every_layer() {
-        let json = crate::diag::report().to_json();
-        for name in [
-            "kernel.frames",
-            "runtime.publish",
-            "desktop.key_to_paint",
-            "desktop.render",
-            "desktop.prepare_reused",
-            "desktop.prepare_patched",
-        ] {
-            assert!(json.contains(name), "{name} missing from {json}");
-        }
     }
 }

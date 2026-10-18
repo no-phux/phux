@@ -85,7 +85,8 @@ line is kept only when every character became one glyph from the cell fonts;
 otherwise its ASCII stretches are shaped again as lines and every other cell
 alone. Wide cells and graphemes of several characters are shaped alone.
 When a row is shaped, its glyphs are resolved against the window's sprite
-atlas (`Window::resolve_glyph`, toolchain patch 0006) and kept with the scene
+atlas (`Window::resolve_glyph`, toolchain patch 0006, under `patched-gpui`;
+without it every window is one without a retaining atlas) and kept with the scene
 as one sprite list per row. Painting a row is then one
 `Window::paint_glyph_sprites` call: no shaping, rasterizing or atlas lookup,
 and one GPUI paint operation for the whole row. A scroll moves a kept row's

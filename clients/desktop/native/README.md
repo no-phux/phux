@@ -6,8 +6,9 @@ last-reviewed: 2026-10-17
 
 # phux-desktop (native crate)
 
-**TL;DR.** One Rust crate, one executable: `phux-desktop`, a GPUI + GPUI Kit
-application over the shared client runtime (ADR-0165). It has its own Cargo
+**TL;DR.** One executable, `phux-desktop`: a GPUI + GPUI Kit application
+over the shared client runtime (ADR-0165), built on the embeddable terminal
+view in [`phux-gpui/`](phux-gpui/README.md). Both crates share their own Cargo
 workspace and lock so the GPUI graph never enters other phux consumers.
 `just desktop-source` once, then `just desktop-test` and `just desktop-app`.
 
@@ -25,14 +26,19 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |
 | `connection` | one runtime `Client` per window and its sole event/path-answer drain |
-| `terminal`, `input`, `presentation` | grid painter, input handler, drawable-presented fence receipts |
-| `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
 | `telemetry` | on-demand process CPU intervals and native current/peak resident memory |
-| `fonts`, `hotkeys`, `chrome` | bundled Paper Mono, global quick-terminal chords, titlebar drag |
+| `hotkeys`, `chrome` | global quick-terminal chords, titlebar drag |
+
+The terminal view is the `phux-gpui` crate, re-exported here under its old
+paths: `terminal` (grid painter), `input` (input handler), `attach`,
+`fonts` (bundled Paper Mono), `perf` (always-on painter/key-to-paint
+metrics), and the drawable-presented fence receipts. This host enables its
+`patched-gpui` feature.
 
 `workspace`, `settings` and `connection` hold no GPUI types, so their rules
-test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
-[INPUT.md](INPUT.md), [PRESENTATION.md](PRESENTATION.md).
+test without a window. Deeper contracts:
+[PAINTER.md](phux-gpui/PAINTER.md), [INPUT.md](phux-gpui/INPUT.md),
+[PRESENTATION.md](phux-gpui/PRESENTATION.md).
 
 ## ACP and attached conversations
 

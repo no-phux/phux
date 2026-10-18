@@ -48,8 +48,9 @@ Terminate Terminal ends execution.
 
 | Path | Owns |
 |---|---|
-| `native/src` | GPUI application, connection, workspace, terminal, settings, platform integration. |
-| `native/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
+| `native/src` | GPUI application, connection, workspace, settings, platform integration. |
+| `native/phux-gpui` | The embeddable terminal view the app is built on: painter, input, attachments, presentation receipts. |
+| `native/phux-gpui/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
 | `scripts`, `packaging` | Checkout build, isolated smoke/perf, and macOS/Linux package preparation. |
 | `toolchain` | Parent-managed GPUI snapshot pin and patch. |
 | `dist/app/Phux.app` | Release executable, fonts, icon, ad-hoc signature. No `.node` addon. |

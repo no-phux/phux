@@ -107,7 +107,7 @@ struct RowInk {
 struct RowSprites {
     row: u16,
     dy: Pixels,
-    sprites: Arc<[gpui::GlyphSprite]>,
+    sprites: Arc<[crate::platform::Sprite]>,
 }
 
 /// How one cell's text is drawn.
@@ -250,7 +250,7 @@ pub(super) struct Scene {
     fonts: Rc<Fonts>,
     /// What `sprites` were resolved under. `None` when the window cannot
     /// retain glyphs, and then every ink paints from its shaped line.
-    raster: Option<gpui::GlyphRaster>,
+    raster: Option<crate::platform::Raster>,
     background: Hsla,
     backgrounds: Vec<RowQuad>,
     inks: Vec<RowInk>,
@@ -273,7 +273,7 @@ impl Scene {
         &self,
         frame: &Arc<GridFrame>,
         bounds: Bounds<Pixels>,
-        (scale, raster): (f32, Option<gpui::GlyphRaster>),
+        (scale, raster): (f32, Option<crate::platform::Raster>),
         settings: &Settings,
     ) -> bool {
         Arc::ptr_eq(&self.frame, frame)
@@ -365,7 +365,7 @@ fn scene(
     window: &gpui::Window,
 ) -> Rc<Scene> {
     let scale = window.scale_factor();
-    let raster = window.glyph_raster();
+    let raster = crate::platform::glyph_raster(window);
     if let Some(scene) = cache.borrow().as_ref()
         && scene.reusable(&frame, bounds, (scale, raster), &settings)
     {
@@ -411,7 +411,7 @@ fn patch(
     frame: Arc<GridFrame>,
     settings: Settings,
     bounds: Bounds<Pixels>,
-    scale: (f32, Option<gpui::GlyphRaster>),
+    scale: (f32, Option<crate::platform::Raster>),
     window: &gpui::Window,
 ) -> Option<Scene> {
     if !can_patch(&previous, &frame, bounds, scale, &settings) {
@@ -825,7 +825,7 @@ fn can_patch(
     scene: &Scene,
     frame: &GridFrame,
     bounds: Bounds<Pixels>,
-    (scale, raster): (f32, Option<gpui::GlyphRaster>),
+    (scale, raster): (f32, Option<crate::platform::Raster>),
     settings: &Settings,
 ) -> bool {
     scene.bounds == bounds
@@ -1083,7 +1083,7 @@ struct Builder {
     run: Option<BackgroundRun>,
     pending: Option<PendingRun>,
     /// Glyphs resolved for the row being built.
-    row_sprites: Vec<gpui::GlyphSprite>,
+    row_sprites: Vec<crate::platform::Sprite>,
 }
 
 impl Builder {
@@ -1098,7 +1098,11 @@ impl Builder {
             frame,
             settings,
             geometry,
-            (bounds, window.scale_factor(), window.glyph_raster()),
+            (
+                bounds,
+                window.scale_factor(),
+                crate::platform::glyph_raster(window),
+            ),
             None,
         )
     }
@@ -1108,7 +1112,7 @@ impl Builder {
         frame: Arc<GridFrame>,
         settings: Settings,
         geometry: Geometry,
-        (bounds, scale, raster): (Bounds<Pixels>, f32, Option<gpui::GlyphRaster>),
+        (bounds, scale, raster): (Bounds<Pixels>, f32, Option<crate::platform::Raster>),
         fonts: Option<Rc<Fonts>>,
     ) -> Self {
         let defaults = defaults(&frame, &settings);
@@ -1192,17 +1196,17 @@ impl Builder {
         let geometry = self.scene.geometry;
         let resolved = each_glyph(line, bounds, colors, geometry, clip_cells, |glyph| {
             let clip = glyph.clip.map_or(bounds, |cell| cell.intersect(&bounds));
-            if let Some(sprite) = window
-                .resolve_glyph(
-                    glyph.origin,
-                    glyph.font_id,
-                    glyph.id,
-                    line.font_size,
-                    glyph.color,
-                    glyph.is_emoji,
-                    clip,
-                )
-                .map_err(|error| error.to_string())?
+            if let Some(sprite) = crate::platform::resolve_glyph(
+                window,
+                glyph.origin,
+                glyph.font_id,
+                glyph.id,
+                line.font_size,
+                glyph.color,
+                glyph.is_emoji,
+                clip,
+            )
+            .map_err(|error| error.to_string())?
             {
                 self.row_sprites.push(sprite);
             }
@@ -1754,7 +1758,11 @@ impl Prepared {
                         window.paint_quad(fill(moved(*bounds), *color));
                     }
                     for row in scene.sprites.iter().filter(|row| shown(row.row)) {
-                        window.paint_glyph_sprites(&row.sprites, point(px(0.), row.dy + shift));
+                        crate::platform::paint_glyph_sprites(
+                            window,
+                            &row.sprites,
+                            point(px(0.), row.dy + shift),
+                        );
                     }
                     let geometry = scene.geometry;
                     for ink in &scene.inks {
