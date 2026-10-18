@@ -32,7 +32,9 @@ Start with [Contributor setup](./docs/SETUP.md): `mise install` or
 `nix develop`, then the same `just` recipes. A GitHub issue or PR is enough
 to coordinate; you do not need Beads. Run `just hooks-install` once per clone:
 its pre-commit hook rejects a staged file over 5,000 tokens (bytes/4) and
-prints how to split it. A merge commit is held only to the files it
+prints how to split it. During a real merge, only an unchanged blob at the
+same path in an actual merge parent is inherited. Edited parent files, manual
+resolutions, and automatic combinations must still meet the size limit. A merge commit is held only to the files it
 introduces: one already over the limit in either parent is not the merge's
 to split.
 
