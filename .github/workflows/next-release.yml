@@ -72,7 +72,9 @@ jobs:
             if [ -z "$previous" ] || ! git cat-file -e "${previous}^{commit}" 2>/dev/null; then
               echo "$product: no usable previous commit" >&2; echo true; return
             fi
-            outputs="$(bun tools/main.ts classify --since "$previous" --until "$SHA")"
+            if ! outputs="$(bun tools/main.ts classify --since "$previous" --until "$SHA")"; then
+              echo "$product: classification failed" >&2; echo true; return
+            fi
             for key in "$@"; do
               if grep -qx "${key}=true" <<<"$outputs"; then
                 echo "$product: $key changed" >&2; echo true; return

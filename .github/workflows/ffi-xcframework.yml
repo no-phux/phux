@@ -28,8 +28,8 @@ name: ffi-xcframework
 
 on:
   # Main pushes build only when the classifier's mobile_ffi_needed says
-  # so. Both FFI workflows read that one output, so phux-mobile's pin
-  # always finds the pair at the same commit.
+  # so, or when classification failed. Both FFI workflows read that one
+  # output, so phux-mobile's pin always finds the pair at the same commit.
   push:
     branches: [main]
   workflow_call:
@@ -82,8 +82,9 @@ jobs:
     name: build native xcframeworks
     needs: changes
     if: >-
-      !cancelled() && needs.changes.result != 'failure' &&
-      (github.event_name != 'push' || needs.changes.outputs.mobile_ffi_needed == 'true')
+      !cancelled() &&
+      (github.event_name != 'push' || needs.changes.result == 'failure' ||
+       needs.changes.outputs.mobile_ffi_needed == 'true')
     # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
     # iOS SDK; device and simulator slices need both.
     runs-on: xcode-27

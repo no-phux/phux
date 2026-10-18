@@ -66,9 +66,10 @@ const PERF_ICOUNT_PATHS = [
 /**
  * The mobile FFI artifacts, which ffi-xcframework.yml and ffi-android.yml
  * build on main: phux-mobile pins one revision and fetches both, so both
- * workflows read this one output. phux-client-ffi's build closure, its
- * builders, and the two workflows. Not a lane: an unknown path does not
- * rebuild the artifacts.
+ * workflows read this one output. The workspace crates phux-client-ffi
+ * compiles, its builders, and the two workflows; lockfile-only bumps wait
+ * for the next release, which publish.yml builds anyway. Not a lane: an
+ * unknown path does not rebuild the artifacts.
  */
 function mobileFfiPaths(root: string): string[] {
   const crates = [...pathClosure([{ dir: "crates/phux-client-ffi", dev: false }], root)];

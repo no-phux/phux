@@ -102,7 +102,7 @@ describe("surface policy", () => {
     [[".github/actions/setup-rust-lane/action.yml"], []],
     [["scripts/ci/setup-linux-release-userspace.sh"], []],
     [["scripts/ci/mbx-export-failed-lane.sh"], []],
-    [["tools/main.ts"], []],
+    [["tools/main.ts"], ["web", "desktop"]],
     [["tools/src/routing/routes.ts"], []],
     [["tools/src/release/manifest.ts"], []],
     [["docs/SETUP.md", "clients/phux-web/src/lib.rs"], ["web"]],
@@ -250,4 +250,10 @@ test("tools code routes to the lane that runs it", () => {
   expect(lanes(["tools/src/desktop/source.ts"])).toEqual(["desktop"]);
   expect(lanes(["tools/src/mutation/runner.ts"])).toEqual([]);
   expect(lanes(["tools/src/cargo/build-features.ts"])).toEqual(["phux"]);
+});
+
+test("shared tools code runs the lanes whose commands import it", () => {
+  for (const path of ["tools/src/lib/git.ts", "tools/main.ts", "tools/package.json"]) {
+    expect([path, lanes([path])]).toEqual([path, ["web", "desktop"]]);
+  }
 });

@@ -7,12 +7,3 @@ export function formatOutputs(outputs: Outputs): string {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join("\n");
 }
-
-export function parseOutputs(text: string): Record<string, string> {
-  const parsed: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const split = line.indexOf("=");
-    if (split > 0) parsed[line.slice(0, split)] = line.slice(split + 1);
-  }
-  return parsed;
-}
