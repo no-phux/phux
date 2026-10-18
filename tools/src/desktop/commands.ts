@@ -3,6 +3,7 @@ import type { Command } from "../lib/command.ts";
 import { GitError } from "../lib/git.ts";
 import { status } from "../lib/output.ts";
 import { bootstrap, exportSeries, layout, readPin, SourceError } from "./source.ts";
+import { testWgpu } from "./wgpu.ts";
 
 const USAGE = `usage: bun tools/main.ts desktop-source [--check | --edit | --export]
 
@@ -54,6 +55,15 @@ export const commands: Record<string, Command> = {
         status("error", error.message);
         return 1;
       }
+    },
+  },
+  "desktop-wgpu-test": {
+    summary:
+      "Test the pinned wgpu renderer crate in a disposable workspace (args go to cargo test).",
+    async run(args) {
+      const paths = layout();
+      console.log(await bootstrap("materialize", paths));
+      return testWgpu(args, paths);
     },
   },
 };

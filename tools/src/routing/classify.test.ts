@@ -68,6 +68,7 @@ describe("surface policy", () => {
     [["just/desktop.just"], ALL],
     [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
     [[".github/workflows/desktop-test.yml"], ["desktop"]],
+    [[".github/actions/setup-linux-desktop/action.yml"], ["desktop"]],
     [["scripts/doctor.sh"], ["native"]],
     [["scripts/test-dev-setup.sh"], ["native"]],
     [["scripts/native-smoke.sh"], ["native"]],

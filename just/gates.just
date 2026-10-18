@@ -100,7 +100,7 @@ shellcheck:
       examples/plugins/*/scripts/*.sh
 
 
-# The tools package (build and CI logic, ADR-0182): format, types, lint, tests.
+# The tools package (build and CI logic, ADR-0183): format, types, lint, tests.
 [group('gates')]
 [doc('Format, typecheck, lint and test the build and CI tools package.')]
 tools-check:
