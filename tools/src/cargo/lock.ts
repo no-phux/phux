@@ -1,17 +1,14 @@
-// Cargo.lock text, edited in place. Both lock commands rewrite single lines and
-// must leave every other byte untouched, so packages are matched as text
-// blocks rather than parsed and re-serialized.
+// Cargo.lock text, edited in place: packages are matched as text blocks and
+// single lines rewritten, so every other byte survives.
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { Failure } from "../lib/command.ts";
+import { status } from "../lib/output.ts";
 
 /** One `[[package]]` block, through to the next block or the end of the file. */
-export const PACKAGE = /^\[\[package\]\]\n.*?(?=^\[\[package\]\]|(?![\s\S]))/gms;
-const NAME = /^name = "([^"]+)"$/m;
-export const VERSION = /^version = "([^"]+)"$/m;
-const SOURCE = /^source = /m;
+const PACKAGE = /^\[\[package\]\]\n.*?(?=^\[\[package\]\]|(?![\s\S]))/gms;
+const VERSION = /^version = "([^"]+)"$/m;
 export const DEPENDENCIES = /^dependencies = \[\n(.*?)^\]/ms;
-const DEPENDENCY_LINE = /^ "(.+)",$/gm;
-
-export class LockError extends Failure {}
 
 export interface Package {
   readonly block: string;
@@ -23,21 +20,20 @@ export interface Package {
   readonly dependencies: readonly string[];
 }
 
-function field(block: string, pattern: RegExp, label: string): string {
+function field(block: string, pattern: RegExp): string {
   const value = pattern.exec(block)?.[1];
-  if (value === undefined) throw new LockError(`lock package without a ${label}:\n${block}`);
+  if (value === undefined) throw new Failure(`malformed lock package:\n${block}`);
   return value;
 }
 
-export function parsePackage(block: string): Package {
-  const list = DEPENDENCIES.exec(block)?.[1];
+function parsePackage(block: string): Package {
+  const list = DEPENDENCIES.exec(block)?.[1] ?? "";
   return {
     block,
-    name: field(block, NAME, "name"),
-    version: field(block, VERSION, "version"),
-    isPath: !SOURCE.test(block),
-    dependencies:
-      list === undefined ? [] : [...list.matchAll(DEPENDENCY_LINE)].map(([, entry]) => entry ?? ""),
+    name: field(block, /^name = "([^"]+)"$/m),
+    version: field(block, VERSION),
+    isPath: !/^source = /m.test(block),
+    dependencies: [...list.matchAll(/^ "(.+)",$/gm)].map((match) => match[1] ?? ""),
   };
 }
 
@@ -45,7 +41,6 @@ export function parseLock(text: string): Package[] {
   return [...text.matchAll(PACKAGE)].map(([block]) => parsePackage(block));
 }
 
-/** Replace the first `version = "..."` line of a package block. */
 export function withVersion(block: string, version: string): string {
   return block.replace(VERSION, () => `version = "${version}"`);
 }
@@ -55,23 +50,42 @@ export function replaceOnce(text: string, from: string, to: string): string {
   return text.replace(from, () => to);
 }
 
-/** The version of every path package in a lock, by name. */
-export function pathVersions(text: string): Map<string, string> {
-  const versions = new Map<string, string>();
-  for (const { name, version, isPath } of parseLock(text)) {
-    if (isPath) versions.set(name, version);
-  }
-  return versions;
-}
-
-/**
- * Rewrite the version of every path package in `text` that `versions` names,
- * leaving every other byte untouched.
- */
+/** Rewrite the version of every path package `versions` names. */
 export function syncPathVersions(text: string, versions: ReadonlyMap<string, string>): string {
   return text.replace(PACKAGE, (block) => {
     const { name, isPath } = parsePackage(block);
     const version = versions.get(name);
     return isPath && version !== undefined ? withVersion(block, version) : block;
   });
+}
+
+/**
+ * Align each target lock's path crate versions with the root lock's (with
+ * `check`, only compare). A standalone workspace such as the desktop host
+ * cannot `cargo update` on a bare checkout, yet a release bump changes its
+ * root path crates. Returns whether every target was already in step.
+ */
+export function syncLocks(
+  rootLock: string,
+  targets: readonly string[],
+  check: boolean,
+  cwd = process.cwd(),
+): boolean {
+  const paths = parseLock(readFileSync(resolve(cwd, rootLock), "utf8")).filter((pkg) => pkg.isPath);
+  const versions = new Map(paths.map((pkg) => [pkg.name, pkg.version]));
+  let inStep = true;
+  for (const target of targets) {
+    const path = resolve(cwd, target);
+    const before = readFileSync(path, "utf8");
+    const after = syncPathVersions(before, versions);
+    if (after === before) continue;
+    if (check) {
+      status("error", `${target}: path crate versions differ from ${rootLock}`);
+      inStep = false;
+    } else {
+      writeFileSync(path, after);
+      status("ok", `updated ${target}`);
+    }
+  }
+  return inStep;
 }

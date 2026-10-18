@@ -5,11 +5,10 @@ import { integrationViolations } from "./versions.ts";
 export const commands: Record<string, Command> = {
   "integration-versions-check": {
     summary: "Check agent integration versions, publish settings and runtime ownership.",
-    run() {
-      return report(
+    run: () =>
+      report(
         integrationViolations(),
         "agent integration versions and neutral runtime ownership are coherent",
-      );
-    },
+      ),
   },
 };

@@ -19,25 +19,19 @@ export const commands: Record<string, Command> = {
     usage: "[--check | --edit | --export]",
     help: SOURCE_HELP,
     async run(args) {
-      const { values } = parseArgs({
-        args,
-        options: {
-          check: { type: "boolean" },
-          edit: { type: "boolean" },
-          export: { type: "boolean" },
-        },
-      });
-      if ([values.check, values.edit, values.export].filter(Boolean).length > 1) {
-        throw new UsageError("choose one of --check, --edit and --export");
-      }
+      const flag = { type: "boolean" } as const;
+      const { values } = parseArgs({ args, options: { check: flag, edit: flag, export: flag } });
+      const [mode, ...extra] = Object.keys(values);
+      if (extra.length > 0) throw new UsageError("choose one of --check, --edit and --export");
       const paths = layout();
-      if (values.export) {
+      if (mode === "export") {
         const count = exportSeries(readPin(paths), paths);
         console.log(`exported ${count} patch(es); review patches/ and source.json`);
-        return 0;
+      } else {
+        console.log(
+          await bootstrap(mode === "check" || mode === "edit" ? mode : "materialize", paths),
+        );
       }
-      const mode = values.check ? "check" : values.edit ? "edit" : "materialize";
-      console.log(await bootstrap(mode, paths));
       return 0;
     },
   },

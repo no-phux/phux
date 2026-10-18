@@ -1,64 +1,43 @@
-// Check production dependency boundaries without compiling or resolving dev
-// deps: Cargo's own feature-unified graph is the evidence, so nothing here
-// restates which crate enables what.
+// Production dependency feature boundaries, read from Cargo's own
+// feature-unified graph (`cargo tree`) without compiling.
+import { Failure } from "../lib/command.ts";
 import { Expectations } from "../lib/expect.ts";
+import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 
 /** Package name to the features Cargo enables on it. */
-export type FeatureGraph = ReadonlyMap<string, ReadonlySet<string>>;
+type FeatureGraph = ReadonlyMap<string, ReadonlySet<string>>;
+
+export type Graphs = Readonly<Record<"full" | "lean" | "mcp", FeatureGraph>>;
 
 /** Parse `cargo tree --prefix none --format {p}|{f}` output. */
 export function parseTree(output: string): FeatureGraph {
-  const graph = new Map<string, Set<string>>();
-  for (const line of output.split("\n")) {
-    if (line === "") continue;
-    const row = line.endsWith(" (*)") ? line.slice(0, -" (*)".length) : line;
-    const split = row.indexOf("|");
-    const pkg = split === -1 ? row : row.slice(0, split);
-    const features = split === -1 ? "" : row.slice(split + 1);
-    graph.set(pkg.split(" ")[0] ?? "", new Set(features.split(",")));
-  }
-  return graph;
+  return new Map(
+    output
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [pkg = "", features = ""] = line.replace(/ \(\*\)$/, "").split("|");
+        return [pkg.split(" ")[0] ?? "", new Set(features.split(","))];
+      }),
+  );
 }
 
-/** Read Cargo's target-specific, feature-unified production graph. */
-export function dependencyFeatures(selection: readonly string[], root = ROOT): FeatureGraph {
-  const command = [
-    "cargo",
-    "tree",
-    "--locked",
-    "--edges",
-    "normal,build",
-    "--prefix",
-    "none",
-    "--format",
-    "{p}|{f}",
-    ...selection,
-  ];
-  const result = Bun.spawnSync(command, { cwd: root, stdout: "pipe", stderr: "inherit" });
-  if (result.exitCode !== 0) {
-    throw new Error(`${command.join(" ")} exited with ${String(result.exitCode)}`);
-  }
-  return parseTree(result.stdout.toString());
-}
-
-export interface Graphs {
-  readonly full: FeatureGraph;
-  readonly lean: FeatureGraph;
-  readonly mcp: FeatureGraph;
-}
+const TREE = "cargo tree --locked --edges normal,build --prefix none --format {p}|{f}".split(" ");
 
 export function readGraphs(root = ROOT): Graphs {
+  const tree = (...selection: string[]) =>
+    parseTree(capture([...TREE, ...selection], { cwd: root }));
   return {
-    full: dependencyFeatures(["-p", "phux"], root),
-    lean: dependencyFeatures(["-p", "phux", "-p", "phux-mcp", "--no-default-features"], root),
-    mcp: dependencyFeatures(["-p", "phux-mcp"], root),
+    full: tree("-p", "phux"),
+    lean: tree("-p", "phux", "-p", "phux-mcp", "--no-default-features"),
+    mcp: tree("-p", "phux-mcp"),
   };
 }
 
 function enables(graph: FeatureGraph, pkg: string, feature: string, label: string): boolean {
   const features = graph.get(pkg);
-  if (features === undefined) throw new Error(`${label}: ${pkg} is not in the production graph`);
+  if (features === undefined) throw new Failure(`${label}: ${pkg} is not in the production graph`);
   return features.has(feature);
 }
 
