@@ -611,15 +611,14 @@ pub(super) fn note_read(n: usize) {
     tracing::debug!(n, "pty read");
 }
 
-/// One read. The master is `O_NONBLOCK`, so a direct echo steal that already
-/// consumed the byte returns [`ErrorKind::WouldBlock`] instead of parking
-/// the poller in `read(2)`.
+/// One nonblocking read: an empty master returns [`ErrorKind::WouldBlock`]
+/// instead of parking the poller in `read(2)`.
 fn read_available(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
     file.read(buf)
 }
 
 /// Mark `file`'s open file description nonblocking. Dups of that description
-/// (the writer, the echo steal) share the flag.
+/// (including the writer) share the flag.
 pub(super) fn set_nonblock(file: &File) -> io::Result<()> {
     let flags =
         nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_GETFL).map_err(io::Error::from)?;
@@ -835,8 +834,8 @@ fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
     let mut bufs = CoalesceBufs::new();
     loop {
         match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {
-            // The master is `O_NONBLOCK`. A direct echo steal already took
-            // the byte, so wait for the next wake instead of spinning.
+            // The nonblocking master is empty; wait for the next wake
+            // instead of spinning.
             Gathered::Pending => {
                 if matches!(poll_readable(file, CANCEL_SLICE), PollRead::Hungup) {
                     let _ = tx.blocking_send(PtyEvent::Eof);

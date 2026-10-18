@@ -27,24 +27,11 @@
 name: ffi-xcframework
 
 on:
+  # Main pushes build only when the classifier's mobile_ffi_needed says
+  # so, or when classification failed. Both FFI workflows read that one
+  # output, so phux-mobile's pin always finds the pair at the same commit.
   push:
     branches: [main]
-    paths:
-      # KEEP THIS LIST IDENTICAL TO ffi-android.yml's. phux-mobile pins one
-      # revision and fetches BOTH artifacts at it, so a commit that produces
-      # only one is unusable as a pin. Identical filters are what guarantee the
-      # pair; if these lists drift, the pin silently has nothing to land on.
-      - crates/phux-client-ffi/**
-      - crates/phux-client-runtime/**
-      - crates/phux-client-core/**
-      - crates/phux-protocol/**
-      - crates/phux-dial/**
-      - scripts/build-ffi-xcframework.sh
-      - scripts/build-mobile-ffi-xcframework.sh
-      - scripts/build-mobile-ffi-android.sh
-      - scripts/ci/setup-android-ndk.sh
-      - .github/workflows/ffi-android.yml
-      - .github/workflows/ffi-xcframework.yml
   workflow_call:
     inputs:
       tag:
@@ -77,8 +64,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    name: classify changes
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mobile_ffi_needed: ${{ steps.detect.outputs.mobile_ffi_needed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: detect
+        uses: ./.github/actions/classify-changes
+
   build:
     name: build native xcframeworks
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'push' || needs.changes.result == 'failure' ||
+       needs.changes.outputs.mobile_ffi_needed == 'true')
     # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
     # iOS SDK; device and simulator slices need both.
     runs-on: xcode-27

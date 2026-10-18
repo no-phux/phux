@@ -53,23 +53,43 @@ certificate, so even a plaintext service crosses the relay as ciphertext.
 With `--passthrough` on both ends the stream is forwarded raw, for a
 target that runs TLS itself.
 
+`connect` carries every local connection as its own stream on one QUIC
+connection to the relay: one handshake, and no head-of-line blocking
+between them.
+
 **Browsers and other clients without QUIC:** run the relay with
-`--tcp-listen 0.0.0.0:443 --domain tunnel.example.com`, point
-`*.tunnel.example.com` at it, and give `expose` a certificate valid for
-`laptop.tunnel.example.com` (`--cert`, `--key`). The relay reads only the
-TLS ClientHello's server name, routes `laptop.tunnel.example.com` to
-route `laptop`, and forwards the encrypted bytes. TLS still ends at the
-laptop.
+`--tcp-listen 0.0.0.0:443 --domain tunnel.example.com` and point
+`*.tunnel.example.com` at it. The relay reads only the TLS ClientHello's
+server name, routes `laptop.tunnel.example.com` to route `laptop`, and
+forwards the encrypted bytes; TLS still ends at the laptop, which needs a
+certificate browsers trust. Let `expose` get one from Let's Encrypt:
+
+```sh
+quictun expose --relay relay.example.com:4433 --relay-pin <RELAY_PIN> \
+               --token-file ~/.laptop-token --to 127.0.0.1:8080 \
+               --acme-domain laptop.tunnel.example.com --acme-email you@example.com
+curl https://laptop.tunnel.example.com/
+```
+
+Validation is TLS-ALPN-01: the CA connects to the name on port 443, the
+relay routes that connection to the laptop like any other, and the laptop
+answers. There is no inbound port at the laptop and no change at the
+relay, and the certificate's key never leaves the laptop. It is renewed
+once a third of its lifetime is left.
+`connect --service-name laptop.tunnel.example.com` then verifies the
+service the way a browser does, so renewal never breaks
+a pin. `--cert` and `--key` still take any certificate you already have.
 
 ## Shape
 
 | Piece | What it is |
 |---|---|
-| `Protocol` | The tunnel ALPN, the consumer ALPNs, the connection-ID tag, and the half-close rule. Nothing in the crate names an application; `Protocol::quictun()` is the binary's. |
+| `Protocol` | The tunnel ALPN, the consumer ALPNs, the connection-ID tag, the half-close rule, and how many streams one consumer connection may have bridged. Nothing in the crate names an application; `Protocol::quictun()` is the binary's. |
 | `tunnel` | The wire: the stream-0 token preamble, the close codes, the tagged connection ID. |
 | `connect` | The client legs: a service's `Tunnel` and a consumer's `dial_route`, pinning the relay's leaf. |
 | `relay` | The relay: the endpoint, the TLS-layer route gate, the route-token store, per-route caps, the optional TCP ingress, and the splice (feature `relay`, default). |
 | `forward` | TCP forwarding with TLS at the service: `expose` and `connect` (feature `forward`, default). |
+| `acme` | Public certificates for an exposed service by ACME TLS-ALPN-01, through the relay (feature `acme`, default). |
 | `pin` | Leaf-certificate pinning by SHA-256 fingerprint. |
 | `window` | A congestion-tracked QUIC send window for any quinn writer. |
 | `cert`, `secret_file` | Self-signed certificates and owner-only secret files (feature `provision`). |
@@ -142,10 +162,11 @@ let (_endpoint, _conn, _send, _recv) = dial_route(&relay, "laptop", b"myapp/1").
 
 ## Status
 
-quictun is phux's relay ([ADR-0181], [ADR-0183]). It depends on no phux
+quictun is phux's relay ([ADR-0181], [ADR-0183], [ADR-0185]). It depends on no phux
 crate. Its wire is stable within a major version.
 
 Licensed under Apache-2.0.
 
 [ADR-0181]: https://github.com/no-phux/phux/blob/main/docs/adr/0181-the-relay-is-a-standalone-quic-tunnel-crate.md
 [ADR-0183]: https://github.com/no-phux/phux/blob/main/docs/adr/0183-quictun-is-a-standalone-tunnel-product.md
+[ADR-0185]: https://github.com/no-phux/phux/blob/main/docs/adr/0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md

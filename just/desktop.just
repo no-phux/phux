@@ -3,7 +3,7 @@
 # `desktop-source` bootstraps the parent-managed GPUI snapshot.
 [group('desktop')]
 desktop-source:
-    python3 clients/desktop/toolchain/bootstrap.py
+    bun tools/main.ts desktop-source
 
 [private]
 desktop-host-debug: desktop-source
@@ -22,8 +22,7 @@ desktop-install:
 [doc('Check script tooling, qualification guards and the desktop host lock')]
 desktop-check: worktree-claim
     cd clients/desktop && bun run check:tooling
-    python3 scripts/check-desktop-host-lock.py
-    python3 scripts/test-check-desktop-host-lock.py
+    bun tools/main.ts desktop-host-lock
 
 [group('desktop')]
 [doc('Run the native desktop crate tests (model, painter, input, presentation, launch)')]
@@ -33,7 +32,7 @@ desktop-test: worktree-claim desktop-source
 [group('desktop')]
 [doc('Test the pinned Linux wgpu renderer, including native capture alpha')]
 desktop-renderer-test: worktree-claim desktop-source
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/clients/desktop/native/target}" python3 clients/desktop/toolchain/test-wgpu.py wgpu_
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/clients/desktop/native/target}" bun tools/main.ts desktop-wgpu-test wgpu_
 
 [group('desktop')]
 [doc('Measure GPUI terminal draws headlessly (pass release for optimized comparisons)')]
@@ -49,7 +48,7 @@ desktop-lint: worktree-claim desktop-source
 [group('desktop')]
 [doc('Repair repairable desktop host lock drift without resolving GPUI')]
 desktop-lock-fix:
-    python3 scripts/check-desktop-host-lock.py --fix
+    bun tools/main.ts desktop-host-lock --fix
 
 [group('desktop')]
 [doc('Re-resolve the desktop host lock against the pinned GPUI snapshot')]

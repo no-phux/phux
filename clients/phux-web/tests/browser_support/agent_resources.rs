@@ -9,7 +9,7 @@ use wasm_bindgen_futures::JsFuture;
 
 pub async fn action(action: &str) {
     let Some(url) = option_env!("PHUX_TEST_AGENT_URL") else {
-        panic!("run through scripts/ci/web-browser.py for the local owner fixture");
+        panic!("run through `bun tools/main.ts web-browser` for the local owner fixture");
     };
     let options = web_sys::RequestInit::new();
     options.set_method("POST");

@@ -7,7 +7,7 @@ last-reviewed: 2026-10-16
 # Local GPUI patches
 
 **TL;DR.** Ordered, reviewed patches over the pinned gpui-fast 0.1.9
-crates, applied by `../bootstrap.py`. `../source.json` records each
+crates, applied by `just desktop-source` (`tools/src/desktop/`). `../source.json` records each
 patch's SHA-256. Paths are relative to `toolchain/gpui/` (one directory per
 crate). None has been published upstream.
 
@@ -23,7 +23,7 @@ crate). None has been published upstream.
 
 ## Rules
 
-- Change patches through `bootstrap.py --edit` / `--export`, never by hand.
+- Change patches through `desktop-source --edit` / `--export`, never by hand.
 - A patch states its reason here and is the smallest change that works.
 - Upstream candidates: these are general GPUI features; propose them to Zed
   when their shape has settled.

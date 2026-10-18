@@ -39,6 +39,8 @@
     reason = "private modules keep pub(crate) items; conflicts with unreachable_pub"
 )]
 
+#[cfg(feature = "acme")]
+pub mod acme;
 #[cfg(feature = "provision")]
 pub mod cert;
 pub mod connect;
@@ -78,6 +80,10 @@ pub enum HalfClose {
     Propagate,
 }
 
+/// Streams one `quictun` consumer connection may have open at once: one
+/// per forwarded TCP connection in `connect`.
+pub const QUICTUN_CONSUMER_STREAMS: u32 = 256;
+
 /// What makes one relay deployment its own: the ALPN a service's tunnel
 /// offers, the ALPNs a consumer may offer, and the tag a tunnel's initial
 /// connection ID carries.
@@ -97,6 +103,13 @@ pub struct Protocol {
     pub cid_tag: CidTag,
     /// What a bridge does when one direction finishes.
     pub half_close: HalfClose,
+    /// How many streams one consumer connection may have bridged at once.
+    /// `1` bridges only its first stream and refuses the rest, for a
+    /// service that treats each tunnel stream as its own authenticated
+    /// consumer; above one, every stream is bridged onto its own tunnel
+    /// stream, so a client reuses one connection (and one handshake) for
+    /// many requests.
+    pub consumer_streams: u32,
 }
 
 impl Protocol {
@@ -109,6 +122,7 @@ impl Protocol {
             consumer_alpns: vec![consumer_alpn.to_vec()],
             cid_tag,
             half_close: HalfClose::EndsBridge,
+            consumer_streams: 1,
         }
     }
 
@@ -119,6 +133,7 @@ impl Protocol {
     pub fn quictun() -> Self {
         Self {
             half_close: HalfClose::Propagate,
+            consumer_streams: QUICTUN_CONSUMER_STREAMS,
             ..Self::new(b"quictun-tunnel/1", b"quictun/1", CidTag(*b"qtnT"))
         }
     }
@@ -141,6 +156,9 @@ impl Protocol {
         }
         if self.consumer_alpns.contains(&self.tunnel_alpn) {
             return Err("the tunnel ALPN is also a consumer ALPN");
+        }
+        if self.consumer_streams == 0 {
+            return Err("a consumer must be allowed at least one stream");
         }
         Ok(())
     }
