@@ -30,7 +30,7 @@ done
 
 [[ $failures -eq 0 ]] || { phux_error "install surface check failed"; exit 1; }
 
-python3 scripts/ci/release_manifest.py fixtures --check
+bun tools/main.ts release-manifest fixtures --check
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh

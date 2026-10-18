@@ -25,7 +25,7 @@ are in [CI](./CI.md).
 | Claude and Grok plugins | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | release tarball; repository marketplace | `agent-integration-release.yml` |
 | `phux-protocol` | `vX.Y.Z` | crates.io | `publish-crate.yml`, by hand |
 | Next | `next` | `phux-next.<sha>-<target>.tar.gz`, desktop ZIP/Linux tarballs at `next.<sha>`, signed sidecars | `next-release.yml` |
-| Manifests | `channels` | `stable.json`, `next.json` | `scripts/ci/release_manifest.py` |
+| Manifests | `channels` | `stable.json`, `next.json` | `bun tools/main.ts release-manifest` |
 
 CLI targets are `aarch64-apple-darwin` (`xcode-27`), `x86_64-unknown-linux-gnu`
 (`ubuntu-24.04`), and `aarch64-unknown-linux-gnu` (`ubuntu-24.04-arm`). Linux
@@ -83,7 +83,7 @@ infrastructure fix applies to an older tag on the next `publish` run.
 `next-release` runs after `ci` succeeds on a push to `main`, one run at a
 time; a newer commit queues. Each product rebuilds only when its inputs
 changed since the commit `next.json` names. After a build lands,
-`release_manifest.py next` uploads the assets, rewrites that product's entry
+`release-manifest next` uploads the assets, rewrites that product's entry
 in `next.json`, writes its bridge record (`channel.json` or
 `desktop-channel.json`), and prunes that product's assets to the current and
 previous commit.
@@ -106,11 +106,11 @@ procedure.
 
 Clients read only `releases/download/channels/{stable,next}.json`; see
 [ADR-0176](./adr/0176-the-release-pipeline.md) for the schema and the name
-table. `release_manifest.py` takes digests from GitHub's asset `digest`
+table. `release-manifest` takes digests from GitHub's asset `digest`
 field, uploads only when content changes, and keeps a product's previous
 entry when that product cannot be resolved. The golden manifests in
 `scripts/fixtures/release-manifest/` are read by the generator, CLI, Desktop,
-and installer tests. `python3 scripts/ci/release_manifest.py fixtures --check`
+and installer tests. `bun tools/main.ts release-manifest fixtures --check`
 keeps them in step with the generator.
 
 ## Versioning

@@ -4,7 +4,7 @@
 # Every non-closed bead carries exactly one of rc-1.0 / post-1.0 — advisory, local-only.
 [group('release')]
 milestone-check:
-    node scripts/check-milestone-labels.mjs
+    bun tools/main.ts milestone-labels
 
 
 # Stuck drafts, assetless releases, untagged release PRs, a stale stable
@@ -12,7 +12,7 @@ milestone-check:
 [group('release')]
 [doc('Report stuck releases: drafts, assetless publishes, untagged release PRs.')]
 release-drift grace="120":
-    GRACE_MINUTES={{ grace }} node scripts/check-release-drift.mjs
+    GRACE_MINUTES={{ grace }} bun tools/main.ts release-drift
 
 
 # Dry-run the crates.io publish of phux-protocol, the only publishable crate.
