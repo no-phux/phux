@@ -5,10 +5,12 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, SharedString, div, px,
+    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    SharedString, Window, div, px,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use phux_protocol::ids::ResourceKey;
 
 use crate::connection::AgentState;
 use crate::settings::TabPosition;
@@ -170,6 +172,60 @@ fn tab_more(desk: &Desk, id: &str, selected: bool, cx: &mut Context<Desk>) -> im
         )
 }
 
+/// The tab names its focused terminal, just as its title does. Modifier
+/// selection uses that terminal's organization key without activating or
+/// arming a tab reorder; keyless tabs retain their ordinary behavior.
+fn tab_press(
+    desk: &mut Desk,
+    id: &str,
+    key: Option<ResourceKey>,
+    event: &MouseDownEvent,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) {
+    if event.modifiers.platform
+        && let Some(key) = key
+    {
+        desk.toggle_resource_selection(key, cx);
+    } else {
+        desk.select_tab(id);
+        desk.begin_tab_drag(
+            id.to_owned(),
+            event.position.x.as_f32(),
+            event.position.y.as_f32(),
+            cx,
+        );
+    }
+    desk.after_command(window, cx);
+}
+
+fn tab_resource_key(desk: &Desk, tab: &DeskTab) -> Option<ResourceKey> {
+    let link = desk.link.as_ref()?;
+    let terminal = layout::focused_placement(tab)?.terminal_id.as_ref()?;
+    link.connection.pane(terminal)?.key
+}
+
+fn tab_detail(tab: &DeskTab, side: bool) -> Option<String> {
+    match (tab.zoomed_id.is_some(), layout::placements(&tab.root).len()) {
+        (true, _) => Some("⤢".to_owned()),
+        (false, 0 | 1) => None,
+        (false, count) if side => Some(count.to_string()),
+        _ => None,
+    }
+}
+
+/// Rename follows an ordinary double click, not an organization selection
+/// whose modifier happened to be released between press and release.
+fn rename_requested(event: &ClickEvent) -> bool {
+    if event.click_count() < 2 || event.modifiers().platform {
+        return false;
+    }
+    match event {
+        ClickEvent::Mouse(click) => !click.down.modifiers.platform,
+        _ => true,
+    }
+}
+
 fn tab_button(
     desk: &Desk,
     tab: &DeskTab,
@@ -182,8 +238,8 @@ fn tab_button(
     let id = &tab.id;
     let tab_selector = SharedString::from(format!("tab-{id}"));
     let selected = tab.id == active;
-    let panes = layout::placements(&tab.root).len();
-    let zoomed = tab.zoomed_id.is_some();
+    let key = tab_resource_key(desk, tab);
+    let organizing = key.is_some_and(|key| desk.organization.selected.contains(&key));
     let hover = look.hover;
     let attention = tab_attention(desk, tab);
     let agent = tab_agent(desk, tab);
@@ -194,12 +250,7 @@ fn tab_button(
         tab.id.clone(),
     );
     let side = position == TabPosition::Side;
-    let detail = match (zoomed, panes) {
-        (true, _) => Some("⤢".to_owned()),
-        (false, 0 | 1) => None,
-        (false, count) if side => Some(count.to_string()),
-        _ => None,
-    };
+    let detail = tab_detail(tab, side);
     div()
         .id(tab_selector.clone())
         .debug_selector(move || tab_selector.to_string())
@@ -238,6 +289,7 @@ fn tab_button(
         .when_some(attention.filter(|_| !selected), |tab, state| {
             tab.bg(attention_wash(state))
         })
+        .when(organizing, |tab| tab.bg(look.active))
         .block_mouse_except_scroll()
         .when(side, |tab| {
             tab.child(row_icon(side_lead(attention, agent, look)))
@@ -279,14 +331,7 @@ fn tab_button(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
-                desk.select_tab(&drag_id);
-                desk.begin_tab_drag(
-                    drag_id.clone(),
-                    event.position.x.as_f32(),
-                    event.position.y.as_f32(),
-                    cx,
-                );
-                desk.after_command(window, cx);
+                tab_press(desk, &drag_id, key, event, window, cx);
             }),
         )
         .on_mouse_down(
@@ -303,7 +348,7 @@ fn tab_button(
             }),
         )
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
-            if event.click_count() >= 2 {
+            if rename_requested(event) {
                 desk.open_modal(
                     Modal::Rename {
                         tab_id: rename_id.clone(),

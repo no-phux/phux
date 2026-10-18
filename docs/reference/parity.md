@@ -18,6 +18,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 
 | Tool | CLI verb | Runs | Read-only | Destructive |
 |---|---|---|---|---|
+| `phux_operation_status` | none (automation only) | in-process | yes | no |
 | `phux_ls` | `phux ls` | in-process | yes | no |
 | `phux_upload` | `phux upload` | in-process | no | yes |
 | `phux_snapshot` | `phux snapshot` | in-process | yes | no |
@@ -95,6 +96,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 
 ## Automation-only tools
 
+- `phux_operation_status`: observe an adapter-scoped mutation without blocking on approval.
 - `phux_plugin_profile`: lists the profiles configured plugin manifests declare; `phux plugin list` and `phux config plugins` list the manifests, not their profiles.
 
 ## CLI verbs without a tool

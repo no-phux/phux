@@ -334,6 +334,7 @@ async fn run(case: &Case) -> String {
     let result = crate::tools::dispatch(case.tool, &args).await;
     server.abort();
     let value = result.unwrap_or_else(|err| panic!("{} failed: {}", case.golden, err.0));
+    crate::contract_tests::validate_output(case.tool, &value);
     serde_json::to_string_pretty(&value).expect("pretty") + "\n"
 }
 
@@ -394,6 +395,7 @@ async fn kill_under_a_partial_view_still_kills() {
 fn sweep_args(tool: &str) -> Value {
     let dead = "/nonexistent/phux-mcp-sweep.sock";
     let mut args = match tool {
+        "phux_operation_status" => json!({ "idempotency_key": "0123456789abcdef0123456789abcdef" }),
         "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => json!({}),
         "phux_snapshot" | "phux_resource_methods" | "phux_resource_show" => {
             json!({ "target": "@1" })

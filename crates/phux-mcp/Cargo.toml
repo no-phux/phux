@@ -45,3 +45,7 @@ tokio = { workspace = true, features = ["io-std"] }
 # author believed the server does.
 phux-client = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
+phux-server.workspace = true
+phux-server-testkit.workspace = true
+# Reuse the workspace CLI's locked validator to pin input/output contracts.
+jsonschema = { version = "0.33", default-features = false }

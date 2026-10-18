@@ -1,0 +1,1691 @@
+{
+  "phux_ls": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sessions": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "hosts": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resources": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "hosts_complete": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "sessions",
+      "hosts",
+      "resources"
+    ]
+  },
+  "phux_snapshot": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "pane": {
+        "type": "integer"
+      },
+      "cols": {
+        "type": "integer"
+      },
+      "rows": {
+        "type": "integer"
+      },
+      "lines": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "scrollback": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cells": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "rendered": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "truncated": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "pane",
+      "cols",
+      "rows"
+    ]
+  },
+  "phux_send_keys": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "boolean"
+      },
+      "pane": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "sent",
+      "pane"
+    ]
+  },
+  "phux_upload": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "receipt": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "receipt"
+    ]
+  },
+  "phux_paste": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "boolean"
+      },
+      "pane": {
+        "type": "string"
+      },
+      "untrusted": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "sent",
+      "pane",
+      "untrusted"
+    ]
+  },
+  "phux_run": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "exit_code": {
+        "type": "integer"
+      },
+      "output": {
+        "type": "string"
+      },
+      "duration_ms": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "command": {
+        "type": "string"
+      },
+      "truncated": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "command",
+      "exit_code",
+      "output",
+      "duration_ms",
+      "truncated"
+    ]
+  },
+  "phux_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "polls": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "outcome",
+      "polls"
+    ]
+  },
+  "phux_new": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "session": {
+        "type": "string"
+      },
+      "terminal_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "name": {
+        "type": "string"
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "lifetime": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_kill": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "killed": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "string"
+      },
+      "report": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_detach": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "detached": {
+        "type": "integer"
+      },
+      "session": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "detached",
+      "session"
+    ]
+  },
+  "phux_watch": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "count": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "events",
+      "count"
+    ]
+  },
+  "phux_ask": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "event": {
+        "type": "string"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "question": {
+        "type": "string"
+      },
+      "suggestions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "elapsed_seconds": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "event",
+      "terminal",
+      "id",
+      "question",
+      "suggestions"
+    ]
+  },
+  "phux_launch": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "integration": {
+        "type": "string"
+      },
+      "integrations": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_spawn": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "satellite": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal_id"
+    ]
+  },
+  "phux_signal": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "signaled": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "string"
+      },
+      "signal": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "signaled",
+      "target",
+      "signal"
+    ]
+  },
+  "phux_tag": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "action": {
+        "type": "string"
+      },
+      "terminals": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "action",
+      "terminals"
+    ]
+  },
+  "phux_rename": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "renamed": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "renamed"
+    ]
+  },
+  "phux_insert_pane": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "integer"
+      },
+      "target_terminal_id": {
+        "type": "integer"
+      },
+      "new_terminal_id": {
+        "type": "integer"
+      },
+      "direction": {
+        "type": "string"
+      },
+      "ratio": {
+        "type": "number"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "operation",
+      "session_id",
+      "target_terminal_id",
+      "new_terminal_id"
+    ]
+  },
+  "phux_move_pane": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "integer"
+      },
+      "source_terminal_id": {
+        "type": "integer"
+      },
+      "target_terminal_id": {
+        "type": "integer"
+      },
+      "direction": {
+        "type": "string"
+      },
+      "ratio": {
+        "type": "number"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "operation",
+      "source_terminal_id",
+      "target_terminal_id"
+    ]
+  },
+  "phux_swap_pane": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "integer"
+      },
+      "first_terminal_id": {
+        "type": "integer"
+      },
+      "second_terminal_id": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "operation",
+      "session_id",
+      "first_terminal_id",
+      "second_terminal_id"
+    ]
+  },
+  "phux_archive": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sessions": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      },
+      "restored": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "skipped_existing": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "failed": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "phux_project_inspect": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "worktrees": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      },
+      "repo": {
+        "type": "object",
+        "required": [
+          "path",
+          "head",
+          "branch",
+          "detached"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detached": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "required": [
+      "schema_version",
+      "repo",
+      "worktrees"
+    ]
+  },
+  "phux_plugin_action": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "plugin_id": {
+        "type": "string"
+      },
+      "action_id": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "plugin_id",
+      "action_id",
+      "outcome"
+    ]
+  },
+  "phux_plugin_profile": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "profiles": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "count": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "profiles",
+      "count"
+    ]
+  },
+  "phux_rm": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "verb": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "key": {
+        "type": "string"
+      },
+      "revision": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "verb",
+      "target"
+    ]
+  },
+  "phux_relaunch": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "verb": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "terminal_id": {
+        "type": "string"
+      },
+      "key": {
+        "type": "string"
+      },
+      "revision": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "verb",
+      "target"
+    ]
+  },
+  "phux_organize": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "dry_run": {
+        "type": "boolean"
+      },
+      "plan": {
+        "type": "object"
+      },
+      "applied": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "judge_error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_agent_list": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "schema_version",
+      "agents"
+    ]
+  },
+  "phux_agent_show": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "schema_version",
+      "agents"
+    ]
+  },
+  "phux_agent_explain": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "schema_version",
+      "agents"
+    ]
+  },
+  "phux_agent_set": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "record": {
+        "type": "object"
+      },
+      "action": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "action",
+      "record"
+    ]
+  },
+  "phux_agent_clear": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "action": {
+        "type": "string"
+      },
+      "record": {
+        "type": "null"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "action",
+      "record"
+    ]
+  },
+  "phux_agent_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "satisfied": {
+        "type": "boolean"
+      },
+      "terminal": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "state": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "detection": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "edge": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "baseline": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "agent": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "observations": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "satisfied",
+      "terminal",
+      "edge"
+    ]
+  },
+  "phux_agent_send_keys": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "operation_id": {
+        "type": "string"
+      },
+      "agent": {
+        "type": "object"
+      },
+      "keys": {
+        "type": "integer"
+      },
+      "verified": {
+        "type": "boolean"
+      },
+      "delivery": {
+        "type": "string"
+      },
+      "attempts": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "delivery",
+      "operation_id"
+    ]
+  },
+  "phux_agent_prompt": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "delivery": {
+        "type": "string"
+      },
+      "operation_id": {
+        "type": "string"
+      },
+      "agent": {
+        "type": "object"
+      },
+      "pre_submit_state": {
+        "type": "string"
+      },
+      "transition_observed": {
+        "type": "boolean"
+      },
+      "edge": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "waited_ms": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "submit_ms": {
+        "type": "integer"
+      },
+      "attempts": {
+        "type": "integer"
+      },
+      "matched_by": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "degraded_to_polling": {
+        "type": "boolean"
+      },
+      "staleness_bound_ms": {
+        "type": "null"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "delivery",
+      "operation_id",
+      "transition_observed"
+    ]
+  },
+  "phux_agent_answer": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "operation_id": {
+        "type": "string"
+      },
+      "ask": {
+        "type": "object"
+      },
+      "answer": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      },
+      "delivered": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "ask",
+      "answer",
+      "delivered",
+      "operation_id"
+    ]
+  },
+  "phux_agent_start": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal": {
+        "type": "string"
+      },
+      "ready": {
+        "type": "boolean"
+      },
+      "name": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "integration": {
+        "type": "string"
+      },
+      "started": {
+        "type": "boolean"
+      },
+      "state": {
+        "type": "string"
+      },
+      "readiness": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "terminal",
+      "started",
+      "ready",
+      "readiness"
+    ]
+  },
+  "phux_agent_session_open": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "native_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "parent": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "parent",
+      "provider",
+      "native_id"
+    ]
+  },
+  "phux_agent_session_close": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "closed": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "closed"
+    ]
+  },
+  "phux_agent_emit": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "ts_ms": {
+        "type": "integer"
+      },
+      "type": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "seq",
+      "ts_ms",
+      "type"
+    ]
+  },
+  "phux_agent_log": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "records": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "parent": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "native_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "records"
+    ]
+  },
+  "phux_status": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "pid": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "socket": {
+        "type": "string"
+      },
+      "features": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "error": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "remedy": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "running"
+    ]
+  },
+  "phux_doctor": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "checks": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "failed": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "ok",
+      "checks"
+    ]
+  },
+  "phux_whoami": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "principal": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "auth_route": {
+        "type": "string"
+      },
+      "peer_uid": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "serving_user": {
+        "type": "object"
+      },
+      "host": {
+        "type": "string"
+      },
+      "server_version": {
+        "type": "string"
+      },
+      "ssh_client": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_resource_show": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "lifecycle": {
+        "type": "string"
+      },
+      "parent": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "exit": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "tags": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "type": "string"
+        }
+      },
+      "viewers": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "process": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "agent": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "program_status": {},
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "kind",
+      "lifecycle"
+    ]
+  },
+  "phux_resource_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "retained": {
+        "type": "boolean"
+      },
+      "exit": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "waited_ms": {
+        "type": "integer"
+      },
+      "evidence_lost": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "outcome",
+      "retained"
+    ]
+  },
+  "phux_resource_methods": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "methods": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_approvals": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "approvals": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "approvals"
+    ]
+  },
+  "phux_approve": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "id": {
+        "type": "string"
+      },
+      "decision": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "id",
+      "decision"
+    ]
+  },
+  "phux_operation_status": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "operation_id",
+      "state"
+    ],
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "const": 1
+      },
+      "operation_id": {
+        "type": "string"
+      },
+      "state": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "completed",
+          "failed"
+        ]
+      },
+      "result": {},
+      "error": {
+        "type": "object"
+      },
+      "approval_check": {
+        "type": "object"
+      },
+      "request": {
+        "type": "object",
+        "properties": {
+          "tool": { "type": "string" },
+          "arguments": { "type": "object" }
+        }
+      },
+      "status_tool": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  }
+}
