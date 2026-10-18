@@ -214,6 +214,7 @@ column is the base status word plus at most one relationship clause, about
 | [0180](./0180-the-relay-is-blind.md) | The relay is blind: every relayed session ends at the server | Accepted (supersedes in part [0051](./0051-outbound-dial-out-connector-transport.md), [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md)) |
 | [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) | The relay is a standalone QUIC tunnel crate | Accepted (supersedes in part [0057](./0057-minimal-reference-relay.md)) |
 | [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
+| [0182](./0182-build-and-ci-logic-is-one-bun-package.md) | Build and CI logic is one Bun package | Accepted |
 
 ## When to write an ADR
 

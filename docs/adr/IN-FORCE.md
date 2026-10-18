@@ -207,6 +207,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Release, CI, and docs
 
+- [0182](./0182-build-and-ci-logic-is-one-bun-package.md) Build, release and CI logic is one TypeScript package, `tools/`, on the pinned Bun; crate facts come from the Cargo manifests, and no build or CI decision is made in Python.
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
 - [0178](./0178-release-checksums-are-minisign-signed.md) CI minisign-signs every release sidecar with one Actions-held key; `phux update` verifies it against embedded current and next keys and refuses an unsigned or foreign checksum.
