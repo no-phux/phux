@@ -1,0 +1,246 @@
+diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
+index 21dc47a..0b00405 100644
+--- a/gpui-fast-wgpu/src/wgpu_renderer.rs
++++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
+@@ -2612,20 +2612,78 @@ impl HeadlessRenderTarget {
+         drop(mapped_data);
+         readback_buffer.unmap();
+ 
+-        if matches!(
+-            core.target_format,
+-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+-        ) {
+-            for pixel in pixels.chunks_exact_mut(4) {
+-                pixel.swap(0, 2);
+-            }
+-        }
++        normalize_capture_pixels(&mut pixels, core.target_format);
+ 
+         image::RgbaImage::from_raw(width, height, pixels)
+             .ok_or_else(|| anyhow::anyhow!("Failed to create image from headless pixel data"))
+     }
+ }
+ 
++/// GPU blending over a transparent target stores premultiplied RGB regardless
++/// of whether the source blend state expects straight or premultiplied alpha.
++/// RgbaImage/PNG consumers expect straight alpha. sRGB targets encode the
++/// blended linear RGB on storage, so unpremultiplication must happen in linear
++/// space rather than dividing their encoded bytes by alpha.
++#[cfg(not(target_family = "wasm"))]
++fn normalize_capture_pixels(pixels: &mut [u8], format: wgpu::TextureFormat) {
++    let bgra = matches!(
++        format,
++        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
++    );
++    for pixel in pixels.chunks_exact_mut(4) {
++        if bgra {
++            pixel.swap(0, 2);
++        }
++        straighten_capture_alpha(pixel, format.is_srgb());
++    }
++}
++
++#[cfg(not(target_family = "wasm"))]
++fn straighten_capture_alpha(pixel: &mut [u8], srgb: bool) {
++    match pixel[3] {
++        0 => {
++            pixel[..3].fill(0);
++            return;
++        }
++        255 => return,
++        _ => {}
++    }
++    let alpha = f32::from(pixel[3]) / 255.0;
++    for channel in &mut pixel[..3] {
++        let encoded = f32::from(*channel) / 255.0;
++        let premultiplied = if srgb {
++            decode_capture_srgb(encoded)
++        } else {
++            encoded
++        };
++        let straight = (premultiplied / alpha).clamp(0.0, 1.0);
++        let encoded = if srgb {
++            encode_capture_srgb(straight)
++        } else {
++            straight
++        };
++        *channel = (encoded * 255.0).round() as u8;
++    }
++}
++
++#[cfg(not(target_family = "wasm"))]
++fn decode_capture_srgb(encoded: f32) -> f32 {
++    if encoded <= 0.04045 {
++        encoded / 12.92
++    } else {
++        ((encoded + 0.055) / 1.055).powf(2.4)
++    }
++}
++
++#[cfg(not(target_family = "wasm"))]
++fn encode_capture_srgb(linear: f32) -> f32 {
++    if linear <= 0.0031308 {
++        linear * 12.92
++    } else {
++        1.055 * linear.powf(1.0 / 2.4) - 0.055
++    }
++}
++
+ #[cfg(not(target_family = "wasm"))]
+ fn map_readback_buffer(
+     device: &wgpu::Device,
+@@ -2783,6 +2841,154 @@ mod tests {
+         assert!(receiver.recv().is_err());
+     }
+ 
++    #[cfg(not(target_family = "wasm"))]
++    const CAPTURE_FORMATS: [wgpu::TextureFormat; 4] = [
++        wgpu::TextureFormat::Rgba8Unorm,
++        wgpu::TextureFormat::Bgra8Unorm,
++        wgpu::TextureFormat::Rgba8UnormSrgb,
++        wgpu::TextureFormat::Bgra8UnormSrgb,
++    ];
++
++    #[cfg(not(target_family = "wasm"))]
++    #[test]
++    fn capture_alpha_extremes_preserve_opaque_and_clear_transparent_rgb() {
++        for format in CAPTURE_FORMATS {
++            let mut pixels = [73, 16, 149, 0, 17, 50, 211, 255];
++            normalize_capture_pixels(&mut pixels, format);
++            assert_eq!(&pixels[..4], &[0, 0, 0, 0], "{format:?}");
++            let opaque = if matches!(
++                format,
++                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
++            ) {
++                [211, 50, 17, 255]
++            } else {
++                [17, 50, 211, 255]
++            };
++            assert_eq!(&pixels[4..], &opaque, "{format:?}");
++        }
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    #[test]
++    fn capture_alpha_normalization_respects_target_encoding() {
++        let mut unorm = [128, 0, 0, 128, 64, 0, 128, 192, 1, 0, 0, 1];
++        normalize_capture_pixels(&mut unorm, wgpu::TextureFormat::Rgba8Unorm);
++        assert_eq!(unorm, [255, 0, 0, 128, 85, 0, 170, 192, 255, 0, 0, 1]);
++
++        // sRGB encodes 0.5 as ~188, not 128. Dividing encoded bytes would
++        // produce a visibly brighter purple than the correct linear result.
++        let mut srgb = [188, 0, 0, 128, 137, 0, 188, 192];
++        normalize_capture_pixels(&mut srgb, wgpu::TextureFormat::Rgba8UnormSrgb);
++        assert_eq!(srgb, [255, 0, 0, 128, 156, 0, 213, 192]);
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    #[test]
++    fn translucent_capture_png_composites_without_double_darkening() -> anyhow::Result<()> {
++        for format in CAPTURE_FORMATS {
++            for premultiplied in [false, true] {
++                assert_translucent_capture(format, premultiplied, 13)?;
++                assert_translucent_capture(format, premultiplied, 17)?;
++            }
++        }
++        Ok(())
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    fn assert_translucent_capture(
++        format: wgpu::TextureFormat,
++        premultiplied: bool,
++        width: i32,
++    ) -> anyhow::Result<()> {
++        let renderer = WgpuHeadlessRenderer::new()?;
++        let mut generation = renderer.context.errors().current_generation();
++        let alpha_mode = if premultiplied {
++            wgpu::CompositeAlphaMode::PreMultiplied
++        } else {
++            wgpu::CompositeAlphaMode::Opaque
++        };
++        let mut core = WgpuRendererCore::new(
++            &renderer.context,
++            renderer.core.atlas.clone(),
++            format,
++            alpha_mode,
++        );
++        let mut scene = Scene::default();
++        scene.insert_primitive(solid_quad(1.0, 1.0, 6.0, 4.0, gpui::red().alpha(0.5)));
++        scene.insert_primitive(solid_quad(4.0, 1.0, 6.0, 4.0, gpui::blue().alpha(0.5)));
++        scene.finish();
++        let image = core.capture_scene(&scene, device_size(width, 7), premultiplied)?;
++        check_capture_gpu_errors(renderer.context.errors(), &mut generation)?;
++
++        let mut png = std::io::Cursor::new(Vec::new());
++        image.write_to(&mut png, image::ImageFormat::Png)?;
++        let image = image::load_from_memory(png.get_ref())?.into_rgba8();
++        assert_eq!(image.dimensions(), (width as u32, 7));
++        assert_straight_capture_pixels(&image, format.is_srgb());
++        assert_capture_composite(image, format.is_srgb());
++        Ok(())
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    fn assert_straight_capture_pixels(image: &image::RgbaImage, srgb: bool) {
++        assert_pixel(image, 2, 2, [255, 0, 0, 128]);
++        assert_pixel(image, 8, 2, [0, 0, 255, 128]);
++        assert_pixel(image, image.width() - 1, 6, [0, 0, 0, 0]);
++        let overlap = if srgb {
++            [156, 0, 213, 192]
++        } else {
++            [85, 0, 170, 192]
++        };
++        assert_pixel(image, 5, 2, overlap);
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    fn assert_capture_composite(image: image::RgbaImage, srgb: bool) {
++        let composite = composite_capture_over_white(image, srgb);
++        let red = if srgb {
++            [255, 187, 187, 255]
++        } else {
++            [255, 127, 127, 255]
++        };
++        let blue = if srgb {
++            [187, 187, 255, 255]
++        } else {
++            [127, 127, 255, 255]
++        };
++        let overlap = if srgb {
++            [188, 137, 225, 255]
++        } else {
++            [127, 63, 191, 255]
++        };
++        assert_pixel(&composite, 2, 2, red);
++        assert_pixel(&composite, 8, 2, blue);
++        assert_pixel(&composite, 5, 2, overlap);
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    fn composite_capture_over_white(mut image: image::RgbaImage, srgb: bool) -> image::RgbaImage {
++        for pixel in image.pixels_mut() {
++            let alpha = f32::from(pixel[3]) / 255.0;
++            for channel in &mut pixel.0[..3] {
++                let encoded = f32::from(*channel) / 255.0;
++                let straight = if srgb {
++                    decode_capture_srgb(encoded)
++                } else {
++                    encoded
++                };
++                let linear = straight * alpha + 1.0 - alpha;
++                let encoded = if srgb {
++                    encode_capture_srgb(linear)
++                } else {
++                    linear
++                };
++                *channel = (encoded * 255.0).round() as u8;
++            }
++            pixel[3] = 255;
++        }
++        image
++    }
++
+     #[cfg(not(target_family = "wasm"))]
+     #[test]
+     fn scene_capture_reuses_the_live_atlas_and_strips_row_padding() -> anyhow::Result<()> {

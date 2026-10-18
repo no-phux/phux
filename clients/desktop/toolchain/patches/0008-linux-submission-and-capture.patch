@@ -1,0 +1,758 @@
+diff --git a/gpui-fast-linux/Cargo.toml b/gpui-fast-linux/Cargo.toml
+index 9d30ec3..a9d3f42 100644
+--- a/gpui-fast-linux/Cargo.toml
++++ b/gpui-fast-linux/Cargo.toml
+@@ -150,6 +150,10 @@ package = "gpui-fast-wgpu"
+ version = "=0.3.9"
+ package = "gpui-pre-http-client"
+ 
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.image]
++version = "0.25.1"
++default-features = false
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.libc]
+ version = "0.2"
+ 
+diff --git a/gpui-fast-linux/Cargo.toml.orig b/gpui-fast-linux/Cargo.toml.orig
+index 1050b41..b2458ef 100644
+--- a/gpui-fast-linux/Cargo.toml.orig
++++ b/gpui-fast-linux/Cargo.toml.orig
+@@ -73,6 +73,10 @@ path = "../gpui_wgpu"
+ package = "gpui-pre-http-client"
+ version = "=0.3.9"
+ 
++[target."cfg(any(target_os = \"linux\", target_os = \"freebsd\"))".dependencies.image]
++version = "0.25.1"
++default-features = false
++
+ [target."cfg(any(target_os = \"linux\", target_os = \"freebsd\"))".dependencies.libc]
+ version = "0.2"
+ 
+diff --git a/gpui-fast-linux/src/linux/wayland/window.rs b/gpui-fast-linux/src/linux/wayland/window.rs
+index e232f70..58cac12 100644
+--- a/gpui-fast-linux/src/linux/wayland/window.rs
++++ b/gpui-fast-linux/src/linux/wayland/window.rs
+@@ -2023,11 +2023,37 @@ impl PlatformWindow for WaylandWindow {
+     }
+ 
+     fn draw(&self, scene: &Scene) {
++        let _ = self.draw_for_presentation(scene, None);
++    }
++
++    fn native_visibility(&self) -> gpui::NativeVisibility {
++        if !self.0.is_configured() {
++            return gpui::NativeVisibility::Obscured;
++        }
++        // xdg-shell suspended state is the compositor's visibility signal, when
++        // supported. This is not proof of presentation or complete occlusion data.
++        match self.visibility() {
++            WindowVisibility::Visible => gpui::NativeVisibility::Visible,
++            WindowVisibility::Hidden => gpui::NativeVisibility::Obscured,
++        }
++    }
++
++    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
++        self.borrow_mut()
++            .renderer
++            .as_mut()
++            .ok_or_else(|| anyhow::anyhow!("Wayland renderer is unavailable"))?
++            .render_to_image(scene)
++    }
++
++    fn draw_for_presentation(
++        &self,
++        scene: &Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
+         let mut state = self.borrow_mut();
+         let state = &mut *state;
+-        let Some(renderer) = &mut state.renderer else {
+-            return;
+-        };
++        let renderer = state.renderer.as_mut()?;
+ 
+         if renderer.device_lost() {
+             let raw_window = RawWindow {
+@@ -2052,7 +2078,7 @@ impl PlatformWindow for WaylandWindow {
+             }
+ 
+             state.redraw_requested = true;
+-            return;
++            return None;
+         }
+ 
+         // Surface state changed during this GPUI tick is included in this presentation.
+@@ -2061,7 +2087,8 @@ impl PlatformWindow for WaylandWindow {
+             let callback = state.surface.frame(&state.globals.qh, state.surface.id());
+             state.pending_frame_callback = Some(callback);
+         }
+-        if renderer.draw(scene) {
++        let receipt = renderer.draw_for_presentation(scene, on_presented);
++        if receipt.is_some() {
+             state.presentation = PresentationState::Presented;
+             self.0.frame_loop.set(FrameLoop::AwaitingCallback);
+         } else {
+@@ -2072,6 +2099,7 @@ impl PlatformWindow for WaylandWindow {
+         if renderer.needs_redraw() {
+             state.redraw_requested = true;
+         }
++        receipt
+     }
+ 
+     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {
+diff --git a/gpui-fast-linux/src/linux/x11/window.rs b/gpui-fast-linux/src/linux/x11/window.rs
+index a3b71f7..0028b86 100644
+--- a/gpui-fast-linux/src/linux/x11/window.rs
++++ b/gpui-fast-linux/src/linux/x11/window.rs
+@@ -1758,11 +1758,35 @@ impl PlatformWindow for X11Window {
+     }
+ 
+     fn draw(&self, scene: &Scene) {
++        let _ = self.draw_for_presentation(scene, None);
++    }
++
++    fn native_visibility(&self) -> gpui::NativeVisibility {
++        // MapNotify/UnmapNotify and VisibilityNotify jointly maintain this state.
++        match self.visibility() {
++            WindowVisibility::Visible => gpui::NativeVisibility::Visible,
++            WindowVisibility::Hidden => gpui::NativeVisibility::Obscured,
++        }
++    }
++
++    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .as_mut()
++            .ok_or_else(|| anyhow::anyhow!("X11 renderer is unavailable"))?
++            .render_to_image(scene)
++    }
++
++    fn draw_for_presentation(
++        &self,
++        scene: &Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
+         let mut inner = self.0.state.borrow_mut();
+         let inner = &mut *inner;
+-        let Some(renderer) = &mut inner.renderer else {
+-            return;
+-        };
++        let renderer = inner.renderer.as_mut()?;
+ 
+         if renderer.device_lost() {
+             let raw_window = RawWindow {
+@@ -1781,14 +1805,15 @@ impl PlatformWindow for X11Window {
+             }
+ 
+             inner.force_render_after_recovery = true;
+-            return;
++            return None;
+         }
+ 
+-        renderer.draw(scene);
++        let submitted = renderer.draw_for_presentation(scene, on_presented);
+ 
+         if renderer.needs_redraw() {
+             inner.force_render_after_recovery = true;
+         }
++        submitted
+     }
+ 
+     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {
+diff --git a/gpui-fast-wgpu/Cargo.toml b/gpui-fast-wgpu/Cargo.toml
+index 21e5ac0..a96376e 100644
+--- a/gpui-fast-wgpu/Cargo.toml
++++ b/gpui-fast-wgpu/Cargo.toml
+@@ -41,13 +41,11 @@ resolver = "2"
+ [features]
+ bench-support = [
+     "gpui/bench-support",
+-    "dep:image",
+ ]
+ default = []
+ font-kit = ["dep:font-kit"]
+ test-support = [
+     "gpui/test-support",
+-    "dep:image",
+ ]
+ 
+ [lib]
+@@ -105,7 +103,6 @@ features = [
+     "tiff",
+     "webp",
+ ]
+-optional = true
+ default-features = false
+ 
+ [dependencies.itertools]
+@@ -143,6 +140,16 @@ default-features = false
+ [dependencies.unicode-segmentation]
+ version = "1.10"
+ 
++[dev-dependencies.gpui]
++version = "=0.1.9"
++default-features = false
++features = ["test-support"]
++package = "gpui-fast"
++
++[dev-dependencies.naga]
++version = "29.0"
++features = ["wgsl-in"]
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wgpu]
+ version = "29.0"
+ features = [
+diff --git a/gpui-fast-wgpu/Cargo.toml.orig b/gpui-fast-wgpu/Cargo.toml.orig
+index 2bccc85..956d309 100644
+--- a/gpui-fast-wgpu/Cargo.toml.orig
++++ b/gpui-fast-wgpu/Cargo.toml.orig
+@@ -23,9 +23,9 @@ name = "gpui_wgpu"
+ 
+ [features]
+ default = []
+-bench-support = ["gpui/bench-support", "dep:image"]
++bench-support = ["gpui/bench-support"]
+ font-kit = ["dep:font-kit"]
+-test-support = ["gpui/test-support", "dep:image"]
++test-support = ["gpui/test-support"]
+ 
+ [dependencies]
+ cosmic-text = "0.19.0"
+@@ -56,7 +56,6 @@ version = "0.14.0"
+ version = "0.25.1"
+ default-features = false
+ features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "rayon", "tga", "tiff", "webp"]
+-optional = true
+ 
+ [dependencies.log]
+ version = "0.4"
+@@ -97,6 +96,16 @@ version = "0.14.1-zed"
+ default-features = false
+ optional = true
+ 
++[dev-dependencies.gpui]
++version = "=0.1.9"
++default-features = false
++features = ["test-support"]
++package = "gpui-fast"
++
++[dev-dependencies.naga]
++version = "29.0"
++features = ["wgsl-in"]
++
+ [target."cfg(any(target_os = \"linux\", target_os = \"freebsd\"))".dependencies.wgpu]
+ version = "29.0"
+ default-features = false
+diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
+index 0ae5fe7..21dc47a 100644
+--- a/gpui-fast-wgpu/src/wgpu_renderer.rs
++++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
+@@ -19,6 +19,28 @@ use std::sync::Arc;
+ 
+ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+ 
++/// A submission receipt, never a display-presentation receipt. Ids remain
++/// unique across windows and GPU recovery; exhaustion drops the receipt.
++fn report_submission(
++    submitted: bool,
++    on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++) -> Option<u64> {
++    use std::sync::atomic::{AtomicU64, Ordering};
++    static NEXT_SUBMISSION: AtomicU64 = AtomicU64::new(1);
++    if !submitted {
++        return None;
++    }
++    let id = NEXT_SUBMISSION
++        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
++        .ok()?;
++    if let Some(callback) = on_presented {
++        // wgpu present() queues a surface texture; it does not prove that the
++        // compositor displayed it. A Wayland frame callback is not proof either.
++        callback(id, false);
++    }
++    Some(id)
++}
++
+ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
+ 
+ /// Shader variant for backends with storage buffer support: the shared shader
+@@ -1127,6 +1149,45 @@ impl WgpuRenderer {
+         self.max_texture_size
+     }
+ 
++    /// Submit the scene and report the exact successful submission, never a
++    /// confirmed display presentation. Failed acquisition/render drops callbacks.
++    pub fn draw_for_presentation(
++        &mut self,
++        scene: &Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
++        if self.device_lost() {
++            return None;
++        }
++        let submitted = self.draw(scene)
++            && !self.device_lost()
++            && self.device_errors.current_generation() == self.observed_error_generation;
++        report_submission(submitted, on_presented)
++    }
++
++    /// Diagnostic scene capture using this window's GPU core and sprite atlas.
++    /// Never acquires or presents a swap-chain texture or emits a drawable receipt.
++    /// Readback waits for the GPU with the same bounds as headless capture.
++    #[cfg(not(target_family = "wasm"))]
++    pub fn render_to_image(&mut self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
++        // A separate observer must not consume errors needed by draw/recovery.
++        let mut generation = self.observed_error_generation;
++        let errors = Arc::clone(&self.device_errors);
++        check_capture_gpu_errors(&errors, &mut generation)?;
++        let size = Size {
++            width: DevicePixels(self.surface_config.width as i32),
++            height: DevicePixels(self.surface_config.height as i32),
++        };
++        let premultiplied_alpha =
++            self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied;
++        let RendererState::Ready { core, .. } = &mut self.state else {
++            anyhow::bail!("Cannot capture an unconfigured or released window renderer");
++        };
++        let image = core.capture_scene(scene, size, premultiplied_alpha)?;
++        check_capture_gpu_errors(&errors, &mut generation)?;
++        Ok(image)
++    }
++
+     pub fn draw(&mut self, scene: &Scene) -> bool {
+         #[cfg(target_family = "wasm")]
+         if self.device_lost() {
+@@ -2284,19 +2345,13 @@ impl WgpuRenderer {
+     }
+ }
+ 
+-#[cfg(all(
+-    not(target_family = "wasm"),
+-    any(test, feature = "bench-support", feature = "test-support")
+-))]
++#[cfg(not(target_family = "wasm"))]
+ struct HeadlessRenderTarget {
+     texture: wgpu::Texture,
+     view: wgpu::TextureView,
+ }
+ 
+-#[cfg(all(
+-    not(target_family = "wasm"),
+-    any(test, feature = "bench-support", feature = "test-support")
+-))]
++#[cfg(not(target_family = "wasm"))]
+ impl HeadlessRenderTarget {
+     fn size(&self) -> Size<DevicePixels> {
+         Size {
+@@ -2344,16 +2399,6 @@ impl WgpuHeadlessRenderer {
+     }
+ 
+     fn ensure_render_target(&mut self, size: Size<DevicePixels>) -> anyhow::Result<()> {
+-        anyhow::ensure!(
+-            size.width.0 > 0 && size.height.0 > 0,
+-            "invalid headless render target size: {size:?}"
+-        );
+-        anyhow::ensure!(
+-            size.width.0 as u32 <= self.core.max_texture_size
+-                && size.height.0 as u32 <= self.core.max_texture_size,
+-            "headless render target size {size:?} exceeds maximum texture dimension {}",
+-            self.core.max_texture_size
+-        );
+         if self
+             .render_target
+             .as_ref()
+@@ -2362,26 +2407,7 @@ impl WgpuHeadlessRenderer {
+             return Ok(());
+         }
+ 
+-        let texture = self
+-            .core
+-            .resources
+-            .device
+-            .create_texture(&wgpu::TextureDescriptor {
+-                label: Some("headless_render_target"),
+-                size: wgpu::Extent3d {
+-                    width: size.width.0 as u32,
+-                    height: size.height.0 as u32,
+-                    depth_or_array_layers: 1,
+-                },
+-                mip_level_count: 1,
+-                sample_count: 1,
+-                dimension: wgpu::TextureDimension::D2,
+-                format: self.core.target_format,
+-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+-                view_formats: &[],
+-            });
+-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+-        self.render_target = Some(HeadlessRenderTarget { texture, view });
++        self.render_target = Some(HeadlessRenderTarget::new(&self.core, size)?);
+         Ok(())
+     }
+ 
+@@ -2417,12 +2443,99 @@ impl WgpuHeadlessRenderer {
+     /// Copies the current render target back to the CPU. Dimensions come from the
+     /// target texture itself, so the copy can never disagree with what was rendered.
+     fn read_image(&mut self) -> anyhow::Result<image::RgbaImage> {
+-        let target = self
++        let image = self
+             .render_target
+             .as_ref()
+-            .ok_or_else(|| anyhow::anyhow!("Headless render target was not created"))?;
+-        let width = target.texture.width();
+-        let height = target.texture.height();
++            .ok_or_else(|| anyhow::anyhow!("Headless render target was not created"))?
++            .read_image(&self.core)?;
++        self.check_gpu_errors()?;
++        Ok(image)
++    }
++}
++
++#[cfg(not(target_family = "wasm"))]
++fn check_capture_gpu_errors(errors: &DeviceErrorState, generation: &mut u64) -> anyhow::Result<()> {
++    anyhow::ensure!(
++        !errors.device_lost(),
++        "GPU device was lost during scene capture"
++    );
++    if let Some(error) = errors.observe_error(generation) {
++        anyhow::bail!("GPU error during scene capture: {error}");
++    }
++    Ok(())
++}
++
++#[cfg(not(target_family = "wasm"))]
++impl WgpuRendererCore {
++    fn capture_scene(
++        &mut self,
++        scene: &Scene,
++        size: Size<DevicePixels>,
++        premultiplied_alpha: bool,
++    ) -> anyhow::Result<image::RgbaImage> {
++        let target = HeadlessRenderTarget::new(self, size)?;
++        self.render_frame(
++            scene,
++            &target.view,
++            target.size(),
++            premultiplied_alpha,
++            wgpu::Color::TRANSPARENT,
++        )?;
++        target.read_image(self)
++    }
++}
++
++#[cfg(not(target_family = "wasm"))]
++impl HeadlessRenderTarget {
++    fn new(core: &WgpuRendererCore, size: Size<DevicePixels>) -> anyhow::Result<Self> {
++        anyhow::ensure!(
++            matches!(
++                core.target_format,
++                wgpu::TextureFormat::Rgba8Unorm
++                    | wgpu::TextureFormat::Bgra8Unorm
++                    | wgpu::TextureFormat::Rgba8UnormSrgb
++                    | wgpu::TextureFormat::Bgra8UnormSrgb
++            ),
++            "Unsupported scene capture format: {:?}",
++            core.target_format
++        );
++        anyhow::ensure!(
++            size.width.0 > 0 && size.height.0 > 0,
++            "invalid headless render target size: {size:?}"
++        );
++        anyhow::ensure!(
++            size.width.0 as u32 <= core.max_texture_size
++                && size.height.0 as u32 <= core.max_texture_size,
++            "headless render target size {size:?} exceeds maximum texture dimension {}",
++            core.max_texture_size
++        );
++        let texture = core
++            .resources
++            .device
++            .create_texture(&wgpu::TextureDescriptor {
++                label: Some("headless_render_target"),
++                size: wgpu::Extent3d {
++                    width: size.width.0 as u32,
++                    height: size.height.0 as u32,
++                    depth_or_array_layers: 1,
++                },
++                mip_level_count: 1,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format: core.target_format,
++                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++                view_formats: &[],
++            });
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        Ok(Self { texture, view })
++    }
++
++    fn copy_to_buffer(
++        &self,
++        core: &WgpuRendererCore,
++    ) -> anyhow::Result<(wgpu::Buffer, wgpu::SubmissionIndex, u32)> {
++        let width = self.texture.width();
++        let height = self.texture.height();
+         let bytes_per_row = width
+             .checked_mul(4)
+             .ok_or_else(|| anyhow::anyhow!("Headless render target row size overflowed"))?;
+@@ -2433,12 +2546,11 @@ impl WgpuHeadlessRenderer {
+             .checked_mul(u64::from(height))
+             .ok_or_else(|| anyhow::anyhow!("Headless readback buffer size overflowed"))?;
+         anyhow::ensure!(
+-            buffer_size <= self.core.resources.device.limits().max_buffer_size,
++            buffer_size <= core.resources.device.limits().max_buffer_size,
+             "Headless readback buffer size {buffer_size} exceeds maximum buffer size {}",
+-            self.core.resources.device.limits().max_buffer_size
++            core.resources.device.limits().max_buffer_size
+         );
+-        let readback_buffer = self
+-            .core
++        let readback_buffer = core
+             .resources
+             .device
+             .create_buffer(&wgpu::BufferDescriptor {
+@@ -2448,15 +2560,14 @@ impl WgpuHeadlessRenderer {
+                 mapped_at_creation: false,
+             });
+         let mut encoder =
+-            self.core
+-                .resources
++            core.resources
+                 .device
+                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                     label: Some("headless_readback_encoder"),
+                 });
+         encoder.copy_texture_to_buffer(
+             wgpu::TexelCopyTextureInfo {
+-                texture: &target.texture,
++                texture: &self.texture,
+                 mip_level: 0,
+                 origin: wgpu::Origin3d::ZERO,
+                 aspect: wgpu::TextureAspect::All,
+@@ -2475,33 +2586,19 @@ impl WgpuHeadlessRenderer {
+                 depth_or_array_layers: 1,
+             },
+         );
+-        let submission = self
+-            .core
++        let submission = core
+             .resources
+             .queue
+             .submit(std::iter::once(encoder.finish()));
+-        let (sender, receiver) = std::sync::mpsc::channel();
+-        readback_buffer
+-            .slice(..)
+-            .map_async(wgpu::MapMode::Read, move |result| {
+-                if sender.send(result).is_err() {
+-                    log::error!("Headless readback receiver was dropped before mapping completed");
+-                }
+-            });
+-        self.core
+-            .resources
+-            .device
+-            .poll(wgpu::PollType::Wait {
+-                submission_index: Some(submission),
+-                timeout: Some(std::time::Duration::from_secs(30)),
+-            })
+-            .map_err(|error| anyhow::anyhow!("Failed to wait for headless rendering: {error}"))?;
+-        receiver
+-            .recv_timeout(std::time::Duration::from_secs(30))
+-            .map_err(|error| anyhow::anyhow!("Failed to receive headless mapping result: {error}"))?
+-            .map_err(|error| anyhow::anyhow!("Failed to map headless readback buffer: {error}"))?;
+-        self.check_gpu_errors()?;
++        Ok((readback_buffer, submission, padded_bytes_per_row))
++    }
+ 
++    fn read_image(&self, core: &WgpuRendererCore) -> anyhow::Result<image::RgbaImage> {
++        let width = self.texture.width();
++        let height = self.texture.height();
++        let (readback_buffer, submission, padded_bytes_per_row) = self.copy_to_buffer(core)?;
++        let bytes_per_row = width * 4; // Checked by copy_to_buffer before allocation.
++        map_readback_buffer(&core.resources.device, &readback_buffer, submission)?;
+         let mapped_data = readback_buffer.slice(..).get_mapped_range();
+         let pixel_capacity = usize::try_from(u64::from(bytes_per_row) * u64::from(height))
+             .map_err(|_| anyhow::anyhow!("Headless image size exceeds addressable memory"))?;
+@@ -2515,7 +2612,10 @@ impl WgpuHeadlessRenderer {
+         drop(mapped_data);
+         readback_buffer.unmap();
+ 
+-        if self.core.target_format == wgpu::TextureFormat::Bgra8Unorm {
++        if matches!(
++            core.target_format,
++            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
++        ) {
+             for pixel in pixels.chunks_exact_mut(4) {
+                 pixel.swap(0, 2);
+             }
+@@ -2526,6 +2626,33 @@ impl WgpuHeadlessRenderer {
+     }
+ }
+ 
++#[cfg(not(target_family = "wasm"))]
++fn map_readback_buffer(
++    device: &wgpu::Device,
++    readback_buffer: &wgpu::Buffer,
++    submission: wgpu::SubmissionIndex,
++) -> anyhow::Result<()> {
++    let (sender, receiver) = std::sync::mpsc::channel();
++    readback_buffer
++        .slice(..)
++        .map_async(wgpu::MapMode::Read, move |result| {
++            if sender.send(result).is_err() {
++                log::error!("Headless readback receiver was dropped before mapping completed");
++            }
++        });
++    device
++        .poll(wgpu::PollType::Wait {
++            submission_index: Some(submission),
++            timeout: Some(std::time::Duration::from_secs(30)),
++        })
++        .map_err(|error| anyhow::anyhow!("Failed to wait for headless rendering: {error}"))?;
++    receiver
++        .recv_timeout(std::time::Duration::from_secs(30))
++        .map_err(|error| anyhow::anyhow!("Failed to receive headless mapping result: {error}"))?
++        .map_err(|error| anyhow::anyhow!("Failed to map headless readback buffer: {error}"))?;
++    Ok(())
++}
++
+ #[cfg(all(
+     not(target_family = "wasm"),
+     any(test, feature = "bench-support", feature = "test-support")
+@@ -2625,7 +2752,91 @@ mod tests {
+     #[cfg(target_os = "linux")]
+     use gpui::{DevicePixels, PlatformHeadlessRenderer, Scene};
+ 
+-    #[cfg(target_os = "linux")]
++    #[test]
++    fn submission_receipts_are_unique_and_never_confirmed() {
++        let (sender, receiver) = std::sync::mpsc::channel();
++        let first = report_submission(
++            true,
++            Some(Box::new(move |id, confirmed| {
++                sender.send((id, confirmed)).unwrap();
++            })),
++        )
++        .expect("successful submission");
++        assert_eq!(receiver.recv().unwrap(), (first, false));
++        assert!(receiver.recv().is_err(), "callback must run exactly once");
++        let second = report_submission(true, None).expect("submission without observer");
++        assert_ne!(first, second, "ids must not alias across windows/recovery");
++    }
++
++    #[test]
++    fn failed_submission_drops_its_callback_without_a_receipt() {
++        let (sender, receiver) = std::sync::mpsc::channel();
++        assert!(
++            report_submission(
++                false,
++                Some(Box::new(move |id, confirmed| {
++                    sender.send((id, confirmed)).unwrap();
++                }))
++            )
++            .is_none()
++        );
++        assert!(receiver.recv().is_err());
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    #[test]
++    fn scene_capture_reuses_the_live_atlas_and_strips_row_padding() -> anyhow::Result<()> {
++        use gpui::{AtlasKey, ImageId, PlatformAtlas, RenderImageParams};
++        use std::borrow::Cow;
++
++        let mut renderer = WgpuHeadlessRenderer::new()?;
++        let tile = renderer
++            .core
++            .atlas
++            .get_or_insert_with(
++                AtlasKey::Image(RenderImageParams {
++                    image_id: ImageId(99),
++                    frame_index: 0,
++                }),
++                &mut || {
++                    Ok(Some((
++                        device_size(2, 2),
++                        Cow::Owned([0, 255, 0, 255].repeat(4)),
++                    )))
++                },
++            )?
++            .expect("sprite tile");
++        let bounds = solid_quad(2.0, 2.0, 4.0, 3.0, gpui::red()).bounds;
++        let mut scene = Scene::default();
++        scene.insert_primitive(PolychromeSprite {
++            order: 0,
++            pad: 0,
++            grayscale: false.into(),
++            opacity: 1.0,
++            bounds,
++            content_mask: ContentMask { bounds },
++            corner_radii: Corners::default(),
++            tile,
++        });
++        scene.finish();
++
++        let image = renderer
++            .core
++            .capture_scene(&scene, device_size(13, 7), false)?;
++        renderer.check_gpu_errors()?;
++        assert_eq!(image.dimensions(), (13, 7));
++        assert_pixel(&image, 3, 3, [0, 255, 0, 255]);
++        assert_pixel(&image, 12, 6, [0, 0, 0, 0]);
++        let image = renderer
++            .core
++            .capture_scene(&scene, device_size(17, 9), false)?;
++        renderer.check_gpu_errors()?;
++        assert_eq!(image.dimensions(), (17, 9));
++        assert_pixel(&image, 3, 3, [0, 255, 0, 255]);
++        Ok(())
++    }
++
++    #[cfg(not(target_family = "wasm"))]
+     fn device_size(width: i32, height: i32) -> Size<DevicePixels> {
+         Size {
+             width: DevicePixels(width),
+@@ -2633,7 +2844,7 @@ mod tests {
+         }
+     }
+ 
+-    #[cfg(target_os = "linux")]
++    #[cfg(not(target_family = "wasm"))]
+     fn solid_quad(x: f32, y: f32, width: f32, height: f32, color: Hsla) -> Quad {
+         let bounds = Bounds {
+             origin: Point {
+@@ -2659,7 +2870,7 @@ mod tests {
+ 
+     /// Channels are compared with a small tolerance so the assertions hold across
+     /// drivers without pinning exact rasterizer output.
+-    #[cfg(target_os = "linux")]
++    #[cfg(not(target_family = "wasm"))]
+     fn assert_pixel(image: &image::RgbaImage, x: u32, y: u32, expected: [u8; 4]) {
+         let actual = image.get_pixel(x, y).0;
+         assert!(
+diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
+index 246953c..9e5c180 100644
+--- a/gpui-fast/src/platform.rs
++++ b/gpui-fast/src/platform.rs
+@@ -1195,7 +1195,8 @@ pub enum TextInputStateChange {
+ /// visible. Query this on the UI thread.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeVisibility {
+-    /// The native window is visible, not miniaturized, and occlusion-visible.
++    /// Native window state permits display. Occlusion detection is platform-specific
++    /// (see [`WindowVisibility`]); this alone never confirms presentation.
+     Visible,
+     /// A real native window exists, but it is hidden, minimized, or occluded.
+     Obscured,
+@@ -1305,8 +1306,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+         NativeVisibility::Unavailable
+     }
+     fn draw(&self, scene: &Scene);
+-    /// Submit `scene`. When this exact drawable is later presented, call
+-    /// `on_presented` with its id and whether its presented time is nonzero.
++    /// Submit `scene` and report its exact drawable id. `true` requires native
++    /// confirmation that this drawable was displayed (a nonzero presented time).
++    /// A submission-only backend may report `false` after successful submission;
++    /// GPU completion, a frame callback, and offscreen capture are not confirmation.
+     ///
+     /// The default draws and never calls `on_presented`. A missing drawable,
+     /// failed render, or offscreen capture must drop the callback. Do not wait

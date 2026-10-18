@@ -26,7 +26,12 @@ CHANNELS = ("stable", "next")
 PRODUCTS = ("phux", "desktop")
 TARGETS = {
     "phux": ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
-    "desktop": ("aarch64-apple-darwin",),
+    "desktop": ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
+}
+DESKTOP_ARCHIVES = {
+    "aarch64-apple-darwin": "macos-arm64.zip",
+    "x86_64-unknown-linux-gnu": "linux-x64.tar.gz",
+    "aarch64-unknown-linux-gnu": "linux-arm64.tar.gz",
 }
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "scripts/fixtures/release-manifest"
@@ -70,7 +75,7 @@ def asset_name(product, channel, version, sha, target):
         identity = f"next.{sha}" if channel == "next" else f"v{version}"
         return f"phux-{identity}-{target}.tar.gz"
     identity = f"next.{sha}" if channel == "next" else version
-    return f"phux-desktop-{identity}-macos-arm64.zip"
+    return f"phux-desktop-{identity}-{DESKTOP_ARCHIVES[target]}"
 
 
 def entry(product, channel, version, sha, protocol, digests):
@@ -381,7 +386,8 @@ def fixture(channel):
     digests = {t: f"{i:x}" * 64 for i, t in enumerate(TARGETS["phux"], 1)}
     return manifest(channel, {
         "phux": entry("phux", channel, "9.8.7", "a" * 40, "0.9", digests),
-        "desktop": entry("desktop", channel, "1.2.3", "b" * 40, "0.9", {"aarch64-apple-darwin": "d" * 64}),
+        "desktop": entry("desktop", channel, "1.2.3", "b" * 40, "0.9",
+                         {t: f"{i:x}" * 64 for i, t in enumerate(TARGETS["desktop"], 13)}),
     }, "2026-01-01T00:00:00Z")
 
 

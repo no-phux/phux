@@ -41,20 +41,45 @@ hex = { version = "0.4", optional = true }
 subtle = { version = "2", optional = true }
 # OS CSPRNG for token minting; `std` for `std::error::Error` (`relay`).
 getrandom = { version = "0.4", features = ["std"], optional = true }
+# TCP keepalive on ingress sockets, so a vanished peer frees its slot
+# (`relay`); already in this graph through quinn and tokio.
+socket2 = { version = "0.6", optional = true }
+# The TLS session a forwarder runs inside a bridged stream (`forward`); the
+# same version and features phux-dial and phux-server already use.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "logging",
+], optional = true }
+# The binary's log output (`cli`); already in the tree through phux.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "fmt",
+    "env-filter",
+], optional = true }
 
 [features]
-default = ["relay"]
+default = ["relay", "forward", "cli"]
 # Certificate provisioning and secret-file checks, for whoever terminates TLS.
 provision = ["dep:rcgen", "dep:rustix"]
-# The relay itself: the endpoint, the SNI gate, and the route-token store.
-relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom"]
+# The relay itself: the endpoint, the SNI gate, the route-token store, and
+# the optional TCP ingress.
+relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom", "dep:socket2"]
+# TCP forwarding through a relay, TLS end to end: `expose` and `connect`.
+forward = ["provision", "dep:tokio-rustls"]
+# The `quictun` binary.
+cli = ["relay", "forward", "dep:tracing-subscriber"]
 # Test-only `testing::DropProxy` UDP impairment; off in shipped builds.
 testing = []
 
 [dev-dependencies]
 tempfile.workspace = true
 # Self dev-dependency so crate-scoped test runs build every module.
-quictun = { path = ".", features = ["relay", "testing"] }
+quictun = { path = ".", features = ["relay", "forward", "testing"] }
+
+[[bin]]
+name = "quictun"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [package.metadata.docs.rs]
 # Render every module, the relay and provisioning included.

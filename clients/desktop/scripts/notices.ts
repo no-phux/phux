@@ -151,6 +151,7 @@ export function licenseTexts(dir: string): Map<string, string> {
 export interface CanonicalLicenses {
   "Apache-2.0": string;
   MIT: string;
+  "CC0-1.0": string;
 }
 
 export function canonicalLicenses(
@@ -160,7 +161,7 @@ export function canonicalLicenses(
     readFileSync(join(dir, `${id}.txt`), "utf8")
       .replace(/^\n+/, "")
       .trimEnd();
-  return { "Apache-2.0": read("Apache-2.0"), MIT: read("MIT") };
+  return { "Apache-2.0": read("Apache-2.0"), MIT: read("MIT"), "CC0-1.0": read("CC0-1.0") };
 }
 
 /** One SPDX alternative per entry; `/` is the legacy crates.io spelling of OR. */
@@ -169,7 +170,7 @@ const ALTERNATIVE = /\s+OR\s+|\s*\/\s*/;
 /**
  * The license with a canonical text that `expression` lets the app be
  * distributed under: Apache-2.0 when offered (its text names no copyright
- * holder), else MIT. Compound terms (AND, WITH, parentheses) elect nothing.
+ * holder), else MIT or CC0. Compound terms (AND, WITH, parentheses) elect nothing.
  */
 export function electedLicense(expression: string): keyof CanonicalLicenses | undefined {
   const options = expression.trim().split(ALTERNATIVE);
@@ -177,7 +178,7 @@ export function electedLicense(expression: string): keyof CanonicalLicenses | un
   return ELECTABLE.find((id) => options.includes(id));
 }
 
-const ELECTABLE: (keyof CanonicalLicenses)[] = ["Apache-2.0", "MIT"];
+const ELECTABLE: (keyof CanonicalLicenses)[] = ["Apache-2.0", "MIT", "CC0-1.0"];
 
 function copyrightHolders(crate: Crate): string {
   const names = crate.authors.map((author) => author.replace(/\s*<[^>]*>/g, "").trim());

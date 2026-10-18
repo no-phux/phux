@@ -230,6 +230,7 @@ pub fn main() -> ExitCode {
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx| {
+            cx.set_app_identity("dev.phux.desktop", "phux");
             gpui_kit::init(cx);
             diag::install(evidence, cx);
             if let Err(error) = app::open(app_options, cx) {

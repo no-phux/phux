@@ -8,7 +8,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$root/scripts/lib/dev-toolchain.sh"
 check_desktop_toolchain
 # shellcheck source=scripts/lib/apple-toolchain-env.sh
-source "$root/scripts/lib/apple-toolchain-env.sh"
+if [[ "$(uname -s)" == Darwin ]]; then
+    source "$root/scripts/lib/apple-toolchain-env.sh"
+fi
 export RUSTUP_TOOLCHAIN="$RUST_CHANNEL"
 # Ignore an inherited CARGO_TARGET_DIR. The shipping path is this directory.
 export CARGO_TARGET_DIR="$root/clients/desktop/native/target"

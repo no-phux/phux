@@ -32,7 +32,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_rank, fuzzy_score};
-use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
+use super::widgets::{
+    Modal, centered_panel, footer_status_budget, modal_inner_width, paint_scrollbar,
+    scroll_into_view,
+};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
 use crate::render::{ChromeBreakpoints, Theme, clip_left, clip_text, display_width};
@@ -56,10 +59,23 @@ const DETAIL_ROWS_COMPACT: u16 = 2;
 /// panel.
 const FIXED_ROWS: u16 = 5;
 
-/// The key legend inset into the bottom border while browsing.
-const SETTINGS_KEYS: &str = "⏎ edit · ←→ step · tab section · del reset · esc";
+/// The key legends inset into the bottom border while browsing, longest
+/// first; the longest one that clears the position text is painted.
+const SETTINGS_KEYS: [&str; 3] = [
+    "⏎ edit · ←→ step · tab section · del reset · esc",
+    "⏎ edit · tab section · esc",
+    "⏎ edit · esc",
+];
 /// The legend while the value editor is open.
 const EDITOR_KEYS: &str = "⏎ save · esc cancel";
+/// The longest browsing legend that leaves `status` its room in a modal
+/// `modal_width` cells wide, else the shortest.
+fn settings_legend(modal_width: u16, status: &str) -> &'static str {
+    SETTINGS_KEYS
+        .into_iter()
+        .find(|keys| display_width(status) <= footer_status_budget(modal_width, keys))
+        .unwrap_or(SETTINGS_KEYS[SETTINGS_KEYS.len() - 1])
+}
 /// Width of the origin badge column, including its leading gap.
 const BADGE_COLS: usize = 9;
 
@@ -1398,15 +1414,14 @@ impl RenderOverlay for SettingsOverlay {
         }
         lines.extend(detail_lines);
 
+        let status = self.footer_status(specs.len());
+        let keys = if self.editor.is_some() {
+            EDITOR_KEYS
+        } else {
+            settings_legend(modal.width, &status)
+        };
         Modal::new(&self.theme, "Settings", lines)
-            .footer(
-                self.footer_status(specs.len()),
-                if self.editor.is_some() {
-                    EDITOR_KEYS
-                } else {
-                    SETTINGS_KEYS
-                },
-            )
+            .footer(status, keys)
             .render_into(modal, buf);
 
         // Scrollbar over the setting rows only.
@@ -1651,6 +1666,41 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    /// The bottom border row of the rendered modal.
+    fn bottom_border(page: &SettingsOverlay, cols: u16) -> String {
+        render_text(page, cols, 24)
+            .lines()
+            .rfind(|l| l.contains('\u{2570}'))
+            .expect("bottom border")
+            .to_owned()
+    }
+
+    #[test]
+    fn legend_tiers_shrink_with_the_box_and_keep_a_gap() {
+        let (_dir, page) = page_over("");
+        let wide = bottom_border(&page, 120);
+        assert!(wide.contains(SETTINGS_KEYS[0]), "{wide}");
+
+        let mid = bottom_border(&page, 61);
+        assert!(!mid.contains(SETTINGS_KEYS[0]), "{mid}");
+        assert!(
+            mid.contains("\u{23ce} edit") && mid.contains("esc"),
+            "{mid}"
+        );
+        let status_end = mid.find("20").expect("status") + 2;
+        let keys_start = mid.find('\u{23ce}').expect("legend");
+        let gap = mid[status_end..keys_start].chars().count();
+        assert!(gap >= 3, "gap {gap} in {mid}");
+    }
+
+    #[test]
+    fn settings_legend_picks_the_longest_tier_that_fits() {
+        assert_eq!(settings_legend(120, "1 of 20"), SETTINGS_KEYS[0]);
+        assert_eq!(settings_legend(60, "1 of 20"), SETTINGS_KEYS[1]);
+        assert_eq!(settings_legend(30, "1 of 20"), SETTINGS_KEYS[2]);
+        assert_eq!(settings_legend(10, "1 of 20"), SETTINGS_KEYS[2]);
     }
 
     #[test]

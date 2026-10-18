@@ -89,7 +89,12 @@ fn config_path() -> PathBuf {
     base.join("phux-desktop/updates.json")
 }
 
+#[cfg(target_os = "macos")]
 const TARGET: &str = "aarch64-apple-darwin";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const TARGET: &str = "x86_64-unknown-linux-gnu";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const TARGET: &str = "aarch64-unknown-linux-gnu";
 /// Beside the installed app, so the post-exit swap is a same-volume rename.
 const STAGING_DIR: &str = ".phux-desktop-update";
 /// The installer's lock; every publisher of `Phux.app` takes the same inode.
@@ -127,13 +132,56 @@ pub fn own_protocol() -> String {
 /// Only the installed, standard bundle can replace itself; bare development
 /// executables must never turn a test into an installation.
 pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return linux_bundle(executable);
+    }
     if !executable.ends_with("Phux.app/Contents/MacOS/phux-desktop") {
         return None;
     }
     Some(executable.parent()?.parent()?.parent()?.to_path_buf())
 }
 
+fn linux_bundle(executable: &Path) -> Option<PathBuf> {
+    if !executable.ends_with("phux-desktop/bin/phux-desktop") {
+        return None;
+    }
+    let bundle = executable.parent()?.parent()?;
+    linux_release(bundle).ok()?;
+    Some(bundle.to_path_buf())
+}
+
+fn linux_release(bundle: &Path) -> anyhow::Result<Release> {
+    let value: Value = serde_json::from_slice(&std::fs::read(
+        bundle.join("share/phux-desktop/release.json"),
+    )?)?;
+    if value["identifier"] != "dev.phux.desktop" {
+        bail!("Not a Phux Desktop bundle");
+    }
+    let version = value["version"]
+        .as_str()
+        .context("Missing desktop version")?;
+    Version::parse(version).context("Invalid desktop version")?;
+    let revision = value["sha"].as_str().context("Missing desktop revision")?;
+    if !release::is_lower_hex(revision, 40) {
+        bail!("Invalid desktop revision");
+    }
+    let channel = value["channel"]
+        .as_str()
+        .and_then(Channel::parse)
+        .context("Invalid desktop channel")?;
+    Ok(Release {
+        version: version.into(),
+        revision: revision.into(),
+        channel,
+        sha256: String::new(),
+        protocol: own_protocol(),
+    })
+}
+
 pub fn installed_release(bundle: &Path) -> anyhow::Result<Release> {
+    if cfg!(target_os = "linux") {
+        return linux_release(bundle);
+    }
     let read = |key: &str| -> anyhow::Result<String> {
         output(
             Command::new("/usr/libexec/PlistBuddy")
@@ -354,11 +402,31 @@ fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
 /// Download, verify and unpack `target` into the staging directory with the
 /// shipped installer. Nothing outside the staging directory changes.
 pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        bail!("{}", linux_install_remedy(target.channel, Some(bundle)));
+    }
     stage_with(
         bundle,
         target,
         |target| check_signed(target, RELEASE_KEYS, fetch),
         |_| {},
+    )
+}
+
+pub fn linux_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
+    let destination = bundle
+        .and_then(Path::parent)
+        .map_or_else(String::new, |directory| {
+            format!(
+                " --applications-dir {}",
+                crate::attach::quote_paths(&[directory.to_path_buf()])
+            )
+        });
+    format!(
+        "Automatic Desktop installation is not supported on Linux. With minisign on PATH, quit Phux and run: \
+         curl -fsSL https://phux.sh/install | PHUX_REQUIRE_SIGNATURE=1 sh -s -- \
+         --desktop --channel {}{destination}",
+        channel.as_str(),
     )
 }
 
@@ -432,7 +500,12 @@ fn stage_with(
         "Desktop update download timed out after 15 minutes. Nothing was installed.",
     )?;
     let staged = staged_path(&text, &staging_dir(bundle)?)?;
-    let built = installed_release(&staged)?;
+    verify_staged_release(&staged, target)?;
+    Ok(staged)
+}
+
+fn verify_staged_release(staged: &Path, target: &Release) -> anyhow::Result<()> {
+    let built = installed_release(staged)?;
     let matches = match target.channel {
         Channel::Stable => built.version == target.version,
         Channel::Next => built.revision == target.revision,
@@ -440,7 +513,7 @@ fn stage_with(
     if !matches || built.channel != target.channel {
         bail!("The staged Desktop bundle is not the release that was checked");
     }
-    Ok(staged)
+    Ok(())
 }
 
 /// The installer's final `staged: <dir>/Phux.app` line, which must name our
@@ -568,6 +641,9 @@ fn update_log() -> Stdio {
 /// process exits, and relaunches it when asked. The running bundle is never
 /// touched while this process uses it.
 pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Result<()> {
+    if cfg!(target_os = "linux") {
+        bail!("{}", linux_install_remedy(Channel::Stable, Some(bundle)));
+    }
     use std::os::unix::process::CommandExt;
     let mut command = apply_command(
         bundle,
@@ -589,6 +665,9 @@ pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Re
 /// A staged bundle from an earlier session is discarded at launch, but only
 /// when no helper holds the installer lock.
 pub fn clear_stale_stage(bundle: &Path) {
+    if cfg!(target_os = "linux") {
+        return;
+    }
     let (Ok(dir), Ok(lock)) = (staging_dir(bundle), lock_file(bundle)) else {
         return;
     };
@@ -708,12 +787,18 @@ mod tests {
 
     #[test]
     fn golden_manifests_name_the_desktop_release() {
-        let stable = manifest_release(STABLE, Channel::Stable).unwrap();
+        let for_host = |body: &str| {
+            let mut value: Value = serde_json::from_str(body).unwrap();
+            value["products"]["desktop"]["artifacts"][TARGET] =
+                value["products"]["desktop"]["artifacts"]["aarch64-apple-darwin"].clone();
+            value.to_string()
+        };
+        let stable = manifest_release(&for_host(STABLE), Channel::Stable).unwrap();
         assert_eq!(stable.version, "1.2.3");
         assert_eq!(stable.revision, "b".repeat(40));
         assert_eq!(stable.sha256, "d".repeat(64));
         assert_eq!(stable.protocol, "0.9");
-        let next = manifest_release(NEXT, Channel::Next).unwrap();
+        let next = manifest_release(&for_host(NEXT), Channel::Next).unwrap();
         assert_eq!(next.channel, Channel::Next);
         assert!(manifest_release(STABLE, Channel::Next).is_err());
     }
@@ -756,236 +841,240 @@ mod tests {
         assert!(available(&older, &stable));
     }
 
-    #[test]
-    fn only_standard_bundle_is_replaceable() {
-        assert_eq!(
-            app_bundle(Path::new(
-                "/Applications/Phux.app/Contents/MacOS/phux-desktop"
-            )),
-            Some(PathBuf::from("/Applications/Phux.app"))
-        );
-        assert!(app_bundle(Path::new("target/debug/phux-desktop")).is_none());
-        assert!(
-            app_bundle(Path::new(
-                "/Applications/Other.app/Contents/MacOS/phux-desktop"
-            ))
-            .is_none()
-        );
-    }
+    #[cfg(target_os = "macos")]
+    mod macos {
+        use super::*;
 
-    #[test]
-    fn stage_passes_the_checked_release_and_its_digest() {
-        let bundle = Path::new("/Applications/Phux.app");
-        let stable = Release {
-            version: "1.2.3".into(),
-            sha256: "d".repeat(64),
-            ..Release::default()
-        };
-        let args = |release: &Release| -> Vec<String> {
-            stage_command(bundle, release)
-                .unwrap()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect()
-        };
-        let digest = "d".repeat(64);
-        assert_eq!(
-            args(&stable),
-            [
-                "-s",
-                "--",
-                "--desktop",
-                "--stage-dir",
-                "/Applications/.phux-desktop-update",
-                "--channel",
-                "stable",
-                "--version",
-                "1.2.3",
-                "--sha256",
-                &digest,
-            ]
-        );
-        let next = Release {
-            channel: Channel::Next,
-            revision: "b".repeat(40),
-            ..stable
-        };
-        assert!(
-            args(&next)
-                .windows(2)
-                .any(|pair| pair == ["--revision", &"b".repeat(40)])
-        );
-        assert!(stage(bundle, &Release::default()).is_err());
-    }
+        #[test]
+        fn only_standard_bundle_is_replaceable() {
+            assert_eq!(
+                app_bundle(Path::new(
+                    "/Applications/Phux.app/Contents/MacOS/phux-desktop"
+                )),
+                Some(PathBuf::from("/Applications/Phux.app"))
+            );
+            assert!(app_bundle(Path::new("target/debug/phux-desktop")).is_none());
+            assert!(
+                app_bundle(Path::new(
+                    "/Applications/Other.app/Contents/MacOS/phux-desktop"
+                ))
+                .is_none()
+            );
+        }
 
-    /// Network: stages a published release into a scratch "Applications".
-    /// `PHUX_E2E_DESKTOP=<version>:<sha256> cargo test -- --ignored stages_a_published`
-    #[test]
-    #[ignore = "downloads a published release"]
-    fn stages_a_published_release() {
-        let spec = std::env::var("PHUX_E2E_DESKTOP").unwrap();
-        let (version, sha256) = spec.split_once(':').unwrap();
-        let apps = scratch("e2e");
-        let target = Release {
-            version: version.into(),
-            sha256: sha256.into(),
-            ..Release::default()
-        };
-        let staged = stage(&apps.join("Phux.app"), &target).unwrap();
-        assert_eq!(staged, apps.join(".phux-desktop-update/Phux.app"));
-        assert_eq!(installed_release(&staged).unwrap().version, version);
-        let mut wrong = target.clone();
-        wrong.sha256 = "0".repeat(64);
-        assert!(stage(&apps.join("Phux.app"), &wrong).is_err());
-        assert!(!apps.join("Phux.app").exists(), "staging never installs");
-        std::fs::remove_dir_all(apps).unwrap();
-    }
+        #[test]
+        fn stage_passes_the_checked_release_and_its_digest() {
+            let bundle = Path::new("/Applications/Phux.app");
+            let stable = Release {
+                version: "1.2.3".into(),
+                sha256: "d".repeat(64),
+                ..Release::default()
+            };
+            let args = |release: &Release| -> Vec<String> {
+                stage_command(bundle, release)
+                    .unwrap()
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect()
+            };
+            let digest = "d".repeat(64);
+            assert_eq!(
+                args(&stable),
+                [
+                    "-s",
+                    "--",
+                    "--desktop",
+                    "--stage-dir",
+                    "/Applications/.phux-desktop-update",
+                    "--channel",
+                    "stable",
+                    "--version",
+                    "1.2.3",
+                    "--sha256",
+                    &digest,
+                ]
+            );
+            let next = Release {
+                channel: Channel::Next,
+                revision: "b".repeat(40),
+                ..stable
+            };
+            assert!(
+                args(&next)
+                    .windows(2)
+                    .any(|pair| pair == ["--revision", &"b".repeat(40)])
+            );
+            assert!(stage(bundle, &Release::default()).is_err());
+        }
 
-    #[test]
-    fn the_staged_path_must_be_our_staging_bundle() {
-        let dir = scratch("staged-path");
-        let staged = dir.join("Phux.app");
-        std::fs::create_dir(&staged).unwrap();
-        let line = format!("verified\nstaged: {}\n", staged.display());
-        assert_eq!(staged_path(&line, &dir).unwrap(), staged);
-        assert!(staged_path("staged: /tmp/elsewhere/Phux.app\n", &dir).is_err());
-        assert!(staged_path("no marker\n", &dir).is_err());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+        /// Network: stages a published release into a scratch "Applications".
+        /// `PHUX_E2E_DESKTOP=<version>:<sha256> cargo test -- --ignored stages_a_published`
+        #[test]
+        #[ignore = "downloads a published release"]
+        fn stages_a_published_release() {
+            let spec = std::env::var("PHUX_E2E_DESKTOP").unwrap();
+            let (version, sha256) = spec.split_once(':').unwrap();
+            let apps = scratch("e2e");
+            let target = Release {
+                version: version.into(),
+                sha256: sha256.into(),
+                ..Release::default()
+            };
+            let staged = stage(&apps.join("Phux.app"), &target).unwrap();
+            assert_eq!(staged, apps.join(".phux-desktop-update/Phux.app"));
+            assert_eq!(installed_release(&staged).unwrap().version, version);
+            let mut wrong = target.clone();
+            wrong.sha256 = "0".repeat(64);
+            assert!(stage(&apps.join("Phux.app"), &wrong).is_err());
+            assert!(!apps.join("Phux.app").exists(), "staging never installs");
+            std::fs::remove_dir_all(apps).unwrap();
+        }
 
-    fn fake_app(path: &Path, marker: &str) {
-        std::fs::create_dir_all(path.join("Contents")).unwrap();
-        std::fs::write(path.join("Contents/marker"), marker).unwrap();
-    }
+        #[test]
+        fn the_staged_path_must_be_our_staging_bundle() {
+            let dir = scratch("staged-path");
+            let staged = dir.join("Phux.app");
+            std::fs::create_dir(&staged).unwrap();
+            let line = format!("verified\nstaged: {}\n", staged.display());
+            assert_eq!(staged_path(&line, &dir).unwrap(), staged);
+            assert!(staged_path("staged: /tmp/elsewhere/Phux.app\n", &dir).is_err());
+            assert!(staged_path("no marker\n", &dir).is_err());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
 
-    fn run_swap(apps: &Path, relaunch: bool) -> (std::process::Output, PathBuf) {
-        let opened = apps.join("opened");
-        let opener = apps.join("open");
-        std::fs::write(
-            &opener,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
-                opened.display()
-            ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let bundle = apps.join("Phux.app");
-        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
-        // A process that has already exited stands in for the quitting app.
-        let mut exited = Command::new("/usr/bin/true").spawn().unwrap();
-        let pid = exited.id();
-        exited.wait().unwrap();
-        let result = apply_command(&bundle, &staged, pid, relaunch, &opener)
-            .unwrap()
-            .output()
-            .unwrap();
-        (result, opened)
-    }
+        fn fake_app(path: &Path, marker: &str) {
+            std::fs::create_dir_all(path.join("Contents")).unwrap();
+            std::fs::write(path.join("Contents/marker"), marker).unwrap();
+        }
 
-    #[test]
-    fn the_helper_swaps_after_exit_and_relaunches() {
-        let apps = scratch("swap");
-        let bundle = apps.join("Phux.app");
-        fake_app(&bundle, "old");
-        fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
-        let (result, opened) = run_swap(&apps, true);
-        assert!(result.status.success(), "{result:?}");
-        assert_eq!(
-            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
-            "new"
-        );
-        assert!(!staging_dir(&bundle).unwrap().exists());
-        assert_eq!(
-            std::fs::read_to_string(&opened).unwrap(),
-            format!("{}\n", bundle.display())
-        );
-        assert!(!apps.join("pwned").exists() && !Path::new("pwned").exists());
-        std::fs::remove_dir_all(apps).unwrap();
-    }
-
-    /// Another instance running from the installed bundle keeps it in place:
-    /// nothing is moved or deleted from under a live process.
-    #[test]
-    fn a_running_instance_keeps_its_bundle() {
-        let apps = scratch("running");
-        let bundle = apps.join("Phux.app");
-        fake_app(&bundle, "old");
-        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
-        fake_app(&staged, "new");
-        let executable = bundle.join("Contents/MacOS/phux-desktop");
-        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
-        std::fs::copy("/bin/sleep", &executable).unwrap();
-        // A moved platform binary is killed on launch unless re-signed.
-        let signed = Command::new("/usr/bin/codesign")
-            .args(["-s", "-", "-f"])
-            .arg(&executable)
-            .output()
-            .unwrap();
-        assert!(signed.status.success(), "{signed:?}");
-        let mut instance = Command::new(&executable).arg("30").spawn().unwrap();
-        let result = Command::new("/bin/sh")
-            .args(["-c", SWAP, "phux-swap"])
-            .arg(&staged)
-            .arg(&bundle)
-            .args(["0", "/usr/bin/true"])
-            .output()
-            .unwrap();
-        instance.kill().unwrap();
-        instance.wait().unwrap();
-        assert!(!result.status.success(), "{result:?}");
-        assert_eq!(
-            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
-            "old"
-        );
-        assert!(staged.is_dir(), "the staged update stays for the next quit");
-        std::fs::remove_dir_all(apps).unwrap();
-    }
-
-    #[test]
-    fn a_plain_quit_installs_without_relaunching() {
-        let apps = scratch("quit");
-        let bundle = apps.join("Phux.app");
-        fake_app(&bundle, "old");
-        fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
-        let (result, opened) = run_swap(&apps, false);
-        assert!(result.status.success(), "{result:?}");
-        assert!(!opened.exists());
-        std::fs::remove_dir_all(apps).unwrap();
-    }
-
-    #[test]
-    fn a_missing_staged_bundle_leaves_the_installed_app_alone() {
-        let apps = scratch("missing");
-        let bundle = apps.join("Phux.app");
-        fake_app(&bundle, "old");
-        let (result, opened) = run_swap(&apps, true);
-        assert!(!result.status.success());
-        assert_eq!(
-            std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
-            "old"
-        );
-        assert!(!opened.exists());
-        std::fs::remove_dir_all(apps).unwrap();
-    }
-
-    /// A signed `Phux.app` release archive served to the shipped installer by
-    /// a fake `curl`, beside an installed app that every refusal must leave
-    /// alone.
-    struct Network {
-        root: PathBuf,
-        bundle: PathBuf,
-    }
-
-    impl Network {
-        fn new(name: &str) -> Self {
-            use std::os::unix::fs::PermissionsExt;
-            let root = scratch(name);
-            let bin = root.join("bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            // Serves the archive whatever the URL, then exits with `status`.
+        fn run_swap(apps: &Path, relaunch: bool) -> (std::process::Output, PathBuf) {
+            let opened = apps.join("opened");
+            let opener = apps.join("open");
             std::fs::write(
+                &opener,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                    opened.display()
+                ),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let bundle = apps.join("Phux.app");
+            let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+            // A process that has already exited stands in for the quitting app.
+            let mut exited = Command::new("/usr/bin/true").spawn().unwrap();
+            let pid = exited.id();
+            exited.wait().unwrap();
+            let result = apply_command(&bundle, &staged, pid, relaunch, &opener)
+                .unwrap()
+                .output()
+                .unwrap();
+            (result, opened)
+        }
+
+        #[test]
+        fn the_helper_swaps_after_exit_and_relaunches() {
+            let apps = scratch("swap");
+            let bundle = apps.join("Phux.app");
+            fake_app(&bundle, "old");
+            fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
+            let (result, opened) = run_swap(&apps, true);
+            assert!(result.status.success(), "{result:?}");
+            assert_eq!(
+                std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+                "new"
+            );
+            assert!(!staging_dir(&bundle).unwrap().exists());
+            assert_eq!(
+                std::fs::read_to_string(&opened).unwrap(),
+                format!("{}\n", bundle.display())
+            );
+            assert!(!apps.join("pwned").exists() && !Path::new("pwned").exists());
+            std::fs::remove_dir_all(apps).unwrap();
+        }
+
+        /// Another instance running from the installed bundle keeps it in place:
+        /// nothing is moved or deleted from under a live process.
+        #[test]
+        fn a_running_instance_keeps_its_bundle() {
+            let apps = scratch("running");
+            let bundle = apps.join("Phux.app");
+            fake_app(&bundle, "old");
+            let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+            fake_app(&staged, "new");
+            let executable = bundle.join("Contents/MacOS/phux-desktop");
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::copy("/bin/sleep", &executable).unwrap();
+            // A moved platform binary is killed on launch unless re-signed.
+            let signed = Command::new("/usr/bin/codesign")
+                .args(["-s", "-", "-f"])
+                .arg(&executable)
+                .output()
+                .unwrap();
+            assert!(signed.status.success(), "{signed:?}");
+            let mut instance = Command::new(&executable).arg("30").spawn().unwrap();
+            let result = Command::new("/bin/sh")
+                .args(["-c", SWAP, "phux-swap"])
+                .arg(&staged)
+                .arg(&bundle)
+                .args(["0", "/usr/bin/true"])
+                .output()
+                .unwrap();
+            instance.kill().unwrap();
+            instance.wait().unwrap();
+            assert!(!result.status.success(), "{result:?}");
+            assert_eq!(
+                std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+                "old"
+            );
+            assert!(staged.is_dir(), "the staged update stays for the next quit");
+            std::fs::remove_dir_all(apps).unwrap();
+        }
+
+        #[test]
+        fn a_plain_quit_installs_without_relaunching() {
+            let apps = scratch("quit");
+            let bundle = apps.join("Phux.app");
+            fake_app(&bundle, "old");
+            fake_app(&staging_dir(&bundle).unwrap().join("Phux.app"), "new");
+            let (result, opened) = run_swap(&apps, false);
+            assert!(result.status.success(), "{result:?}");
+            assert!(!opened.exists());
+            std::fs::remove_dir_all(apps).unwrap();
+        }
+
+        #[test]
+        fn a_missing_staged_bundle_leaves_the_installed_app_alone() {
+            let apps = scratch("missing");
+            let bundle = apps.join("Phux.app");
+            fake_app(&bundle, "old");
+            let (result, opened) = run_swap(&apps, true);
+            assert!(!result.status.success());
+            assert_eq!(
+                std::fs::read_to_string(bundle.join("Contents/marker")).unwrap(),
+                "old"
+            );
+            assert!(!opened.exists());
+            std::fs::remove_dir_all(apps).unwrap();
+        }
+
+        /// A signed `Phux.app` release archive served to the shipped installer by
+        /// a fake `curl`, beside an installed app that every refusal must leave
+        /// alone.
+        struct Network {
+            root: PathBuf,
+            bundle: PathBuf,
+        }
+
+        impl Network {
+            fn new(name: &str) -> Self {
+                use std::os::unix::fs::PermissionsExt;
+                let root = scratch(name);
+                let bin = root.join("bin");
+                std::fs::create_dir_all(&bin).unwrap();
+                // Serves the archive whatever the URL, then exits with `status`.
+                std::fs::write(
                 bin.join("curl"),
                 "#!/bin/sh\n\
                  while [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift ;; esac; shift; done\n\
@@ -993,20 +1082,20 @@ mod tests {
                  exit \"$(cat \"$FIXTURE/status\" 2>/dev/null || echo 0)\"\n",
             )
             .unwrap();
-            std::fs::set_permissions(bin.join("curl"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-            let bundle = root.join("Applications/Phux.app");
-            fake_app(&bundle, "old");
-            Self { root, bundle }
-        }
+                std::fs::set_permissions(bin.join("curl"), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                let bundle = root.join("Applications/Phux.app");
+                fake_app(&bundle, "old");
+                Self { root, bundle }
+            }
 
-        /// Pack a signed bundle identifying as `identifier`, run `tamper` on
-        /// it after signing, and return the archive's digest.
-        fn publish(&self, identifier: &str, tamper: impl FnOnce(&Path)) -> String {
-            let app = self.root.join("source/Phux.app");
-            std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-            std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/phux-desktop")).unwrap();
-            std::fs::write(
+            /// Pack a signed bundle identifying as `identifier`, run `tamper` on
+            /// it after signing, and return the archive's digest.
+            fn publish(&self, identifier: &str, tamper: impl FnOnce(&Path)) -> String {
+                let app = self.root.join("source/Phux.app");
+                std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+                std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/phux-desktop")).unwrap();
+                std::fs::write(
                 app.join("Contents/Info.plist"),
                 format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1024,252 +1113,305 @@ mod tests {
                 ),
             )
             .unwrap();
-            let signed = Command::new("/usr/bin/codesign")
-                .args(["--force", "--sign", "-"])
-                .arg(&app)
-                .output()
+                let signed = Command::new("/usr/bin/codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(&app)
+                    .output()
+                    .unwrap();
+                assert!(signed.status.success(), "{signed:?}");
+                tamper(&app);
+                let archive = self.root.join("asset.zip");
+                let packed = Command::new("/usr/bin/ditto")
+                    .args(["-c", "-k", "--keepParent", "--norsrc"])
+                    .arg(&app)
+                    .arg(&archive)
+                    .output()
+                    .unwrap();
+                assert!(packed.status.success(), "{packed:?}");
+                let digest = output(
+                    Command::new("/usr/bin/shasum")
+                        .args(["-a", "256"])
+                        .arg(&archive),
+                )
                 .unwrap();
-            assert!(signed.status.success(), "{signed:?}");
-            tamper(&app);
-            let archive = self.root.join("asset.zip");
-            let packed = Command::new("/usr/bin/ditto")
-                .args(["-c", "-k", "--keepParent", "--norsrc"])
-                .arg(&app)
-                .arg(&archive)
-                .output()
-                .unwrap();
-            assert!(packed.status.success(), "{packed:?}");
-            let digest = output(
-                Command::new("/usr/bin/shasum")
-                    .args(["-a", "256"])
-                    .arg(&archive),
-            )
-            .unwrap();
-            digest.split_whitespace().next().unwrap().to_owned()
-        }
+                digest.split_whitespace().next().unwrap().to_owned()
+            }
 
-        /// The stable channel manifest publishing `digest` for the archive,
-        /// read the way the Updates page reads it, as an update to 1.2.2.
-        fn checked(&self, digest: &str) -> Release {
-            let mut document: Value = serde_json::from_str(STABLE).unwrap();
-            document["products"]["desktop"]["artifacts"][TARGET]["sha256"] = json!(digest);
-            let target = manifest_release(&document.to_string(), Channel::Stable).unwrap();
-            let installed = Release {
-                version: "1.2.2".into(),
-                ..Release::default()
-            };
-            assert!(available(&installed, &target));
-            target
-        }
+            /// The stable channel manifest publishing `digest` for the archive,
+            /// read the way the Updates page reads it, as an update to 1.2.2.
+            fn checked(&self, digest: &str) -> Release {
+                let mut document: Value = serde_json::from_str(STABLE).unwrap();
+                document["products"]["desktop"]["artifacts"][TARGET]["sha256"] = json!(digest);
+                let target = manifest_release(&document.to_string(), Channel::Stable).unwrap();
+                let installed = Release {
+                    version: "1.2.2".into(),
+                    ..Release::default()
+                };
+                assert!(available(&installed, &target));
+                target
+            }
 
-        /// Stage `target` with the signature gate passed; the gate itself is
-        /// exercised by the `check_signed` tests and
-        /// [`an_unsigned_digest_is_refused_before_the_installer_runs`].
-        fn stage(&self, target: &Release) -> anyhow::Result<PathBuf> {
-            self.stage_gated(target, |_| Ok(()))
-        }
+            /// Stage `target` with the signature gate passed; the gate itself is
+            /// exercised by the `check_signed` tests and
+            /// [`an_unsigned_digest_is_refused_before_the_installer_runs`].
+            fn stage(&self, target: &Release) -> anyhow::Result<PathBuf> {
+                self.stage_gated(target, |_| Ok(()))
+            }
 
-        fn stage_gated(
-            &self,
-            target: &Release,
-            signed: impl FnOnce(&Release) -> anyhow::Result<()>,
-        ) -> anyhow::Result<PathBuf> {
-            stage_with(&self.bundle, target, signed, |command| {
-                let bin = self.root.join("bin");
-                command.env("FIXTURE", &self.root).env(
-                    "PATH",
-                    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
+            fn stage_gated(
+                &self,
+                target: &Release,
+                signed: impl FnOnce(&Release) -> anyhow::Result<()>,
+            ) -> anyhow::Result<PathBuf> {
+                stage_with(&self.bundle, target, signed, |command| {
+                    let bin = self.root.join("bin");
+                    command.env("FIXTURE", &self.root).env(
+                        "PATH",
+                        format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
+                    );
+                })
+            }
+
+            /// Staging `target` fails with `message`, leaves the installed app
+            /// untouched and stages nothing.
+            fn assert_refused(self, target: &Release, message: &str) {
+                let error = self.stage(target).unwrap_err();
+                self.assert_left_alone(&error, message);
+            }
+
+            fn assert_left_alone(self, error: &anyhow::Error, message: &str) {
+                let error = format!("{error:#}");
+                assert!(error.contains(message), "{error}");
+                assert_eq!(
+                    std::fs::read_to_string(self.bundle.join("Contents/marker")).unwrap(),
+                    "old"
                 );
-            })
-        }
-
-        /// Staging `target` fails with `message`, leaves the installed app
-        /// untouched and stages nothing.
-        fn assert_refused(self, target: &Release, message: &str) {
-            let error = self.stage(target).unwrap_err();
-            self.assert_left_alone(&error, message);
-        }
-
-        fn assert_left_alone(self, error: &anyhow::Error, message: &str) {
-            let error = format!("{error:#}");
-            assert!(error.contains(message), "{error}");
-            assert_eq!(
-                std::fs::read_to_string(self.bundle.join("Contents/marker")).unwrap(),
-                "old"
-            );
-            let staged = staging_dir(&self.bundle).unwrap().join("Phux.app");
-            assert!(!staged.exists());
-            std::fs::remove_dir_all(self.root).unwrap();
-        }
-    }
-
-    /// A throwaway minisign key (not a release key) and its signature over
-    /// the golden stable manifest's Desktop checksum, made with the minisign
-    /// CLI.
-    const FIXTURE_KEY: &str = "RWQSnC835onn6wYhJSMsOtOnBQzqog7tkuPsxUYn++QJQkTWfVA9xo8k";
-    const FIXTURE_SIDECAR: &[u8] = include_bytes!("testdata/stable.sha256");
-    const FIXTURE_MINISIG: &[u8] = include_bytes!("testdata/stable.sha256.minisig");
-    const FIXTURE_ASSET: &str = "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-macos-arm64.zip";
-
-    /// Serves the fixture sidecar and, unless `signed` is false, its
-    /// signature; anything else is a 404.
-    fn fixture_fetch(signed: bool) -> impl Fn(&str) -> anyhow::Result<Vec<u8>> {
-        move |url| {
-            if url == format!("{FIXTURE_ASSET}.sha256") {
-                Ok(FIXTURE_SIDECAR.to_vec())
-            } else if signed && url == format!("{FIXTURE_ASSET}.sha256.minisig") {
-                Ok(FIXTURE_MINISIG.to_vec())
-            } else {
-                bail!("curl: (22) The requested URL returned error: 404")
+                let staged = staging_dir(&self.bundle).unwrap().join("Phux.app");
+                assert!(!staged.exists());
+                std::fs::remove_dir_all(self.root).unwrap();
             }
         }
-    }
 
-    #[test]
-    fn a_signed_digest_that_matches_the_manifest_is_trusted() {
-        let target = manifest_release(STABLE, Channel::Stable).unwrap();
-        check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap();
-    }
+        /// A throwaway minisign key (not a release key) and its signature over
+        /// the golden stable manifest's Desktop checksum, made with the minisign
+        /// CLI.
+        const FIXTURE_KEY: &str = "RWQSnC835onn6wYhJSMsOtOnBQzqog7tkuPsxUYn++QJQkTWfVA9xo8k";
+        const FIXTURE_SIDECAR: &[u8] = include_bytes!("testdata/stable.sha256");
+        const FIXTURE_MINISIG: &[u8] = include_bytes!("testdata/stable.sha256.minisig");
+        const FIXTURE_ASSET: &str = "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-macos-arm64.zip";
 
-    #[test]
-    fn a_forged_manifest_digest_is_refused() {
-        let mut target = manifest_release(STABLE, Channel::Stable).unwrap();
-        target.sha256 = "e".repeat(64);
-        let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("but the signed checksum is"),
-            "{error:#}"
-        );
-    }
-
-    #[test]
-    fn a_missing_or_foreign_signature_is_refused() {
-        let target = manifest_release(STABLE, Channel::Stable).unwrap();
-        let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(false)).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("an unsigned release is never installed"),
-            "{error:#}"
-        );
-        // The shipped keys do not trust the fixture key.
-        let error = check_signed(&target, RELEASE_KEYS, fixture_fetch(true)).unwrap_err();
-        assert!(format!("{error:#}").contains("does not trust"), "{error:#}");
-    }
-
-    /// The archive matches the manifest, but the manifest's digest is not the
-    /// signed one: the installer never runs and nothing is staged.
-    #[test]
-    fn an_unsigned_digest_is_refused_before_the_installer_runs() {
-        let network = Network::new("stage-unsigned");
-        let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
-        let error = network
-            .stage_gated(&target, |target| {
-                check_signed(target, &[FIXTURE_KEY], fixture_fetch(true))
-            })
-            .unwrap_err();
-        network.assert_left_alone(&error, "but the signed checksum is");
-    }
-
-    #[test]
-    fn a_checked_release_stages_beside_the_installed_app() {
-        let network = Network::new("stage-ok");
-        let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
-        let staged = network.stage(&target).unwrap();
-        assert_eq!(
-            staged,
-            staging_dir(&network.bundle).unwrap().join("Phux.app")
-        );
-        assert_eq!(installed_release(&staged).unwrap().version, "1.2.3");
-        assert_eq!(
-            std::fs::read_to_string(network.bundle.join("Contents/marker")).unwrap(),
-            "old"
-        );
-        std::fs::remove_dir_all(network.root).unwrap();
-    }
-
-    #[test]
-    fn a_digest_mismatch_is_refused() {
-        let network = Network::new("stage-digest");
-        network.publish("dev.phux.desktop", |_| {});
-        let target = network.checked(&"0".repeat(64));
-        network.assert_refused(&target, "checksum mismatch");
-    }
-
-    fn truncate_archive(network: &Network) {
-        let archive = std::fs::read(network.root.join("asset.zip")).unwrap();
-        std::fs::write(
-            network.root.join("asset.zip"),
-            &archive[..archive.len() / 2],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn an_interrupted_download_is_refused() {
-        let network = Network::new("stage-interrupted");
-        let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
-        truncate_archive(&network);
-        // curl's "partial file": the transfer stopped before the end.
-        std::fs::write(network.root.join("status"), "18").unwrap();
-        network.assert_refused(&target, "could not download");
-    }
-
-    #[test]
-    fn a_truncated_download_is_refused() {
-        let network = Network::new("stage-truncated");
-        let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
-        truncate_archive(&network);
-        network.assert_refused(&target, "checksum mismatch");
-    }
-
-    #[test]
-    fn an_archive_for_another_bundle_identity_is_refused() {
-        let network = Network::new("stage-identity");
-        let target = network.checked(&network.publish("dev.example.other", |_| {}));
-        network.assert_refused(&target, "not Phux Desktop");
-    }
-
-    #[test]
-    fn a_tampered_bundle_is_refused_even_when_the_manifest_matches_it() {
-        let network = Network::new("stage-tampered");
-        let target = network.checked(&network.publish("dev.phux.desktop", |app| {
-            use std::io::Write;
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(app.join("Contents/MacOS/phux-desktop"))
-                .unwrap()
-                .write_all(b"tampered")
-                .unwrap();
-        }));
-        network.assert_refused(&target, "signature does not verify");
-    }
-
-    #[test]
-    fn a_stale_stage_is_cleared_only_when_the_lock_is_free() {
-        let apps = scratch("stale");
-        let bundle = apps.join("Phux.app");
-        let staged = staging_dir(&bundle).unwrap().join("Phux.app");
-        fake_app(&staged, "stale");
-        let lock = lock_file(&bundle).unwrap();
-        let mut holder = Command::new("/usr/bin/lockf")
-            .arg(&lock)
-            .args(["/bin/sleep", "5"])
-            .spawn()
-            .unwrap();
-        let start = std::time::Instant::now();
-        while !lock.exists() && start.elapsed() < Duration::from_secs(2) {
-            std::thread::sleep(Duration::from_millis(10));
+        /// Serves the fixture sidecar and, unless `signed` is false, its
+        /// signature; anything else is a 404.
+        fn fixture_fetch(signed: bool) -> impl Fn(&str) -> anyhow::Result<Vec<u8>> {
+            move |url| {
+                if url == format!("{FIXTURE_ASSET}.sha256") {
+                    Ok(FIXTURE_SIDECAR.to_vec())
+                } else if signed && url == format!("{FIXTURE_ASSET}.sha256.minisig") {
+                    Ok(FIXTURE_MINISIG.to_vec())
+                } else {
+                    bail!("curl: (22) The requested URL returned error: 404")
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(100));
-        clear_stale_stage(&bundle);
+
+        #[test]
+        fn a_signed_digest_that_matches_the_manifest_is_trusted() {
+            let target = manifest_release(STABLE, Channel::Stable).unwrap();
+            check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap();
+        }
+
+        #[test]
+        fn a_forged_manifest_digest_is_refused() {
+            let mut target = manifest_release(STABLE, Channel::Stable).unwrap();
+            target.sha256 = "e".repeat(64);
+            let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(true)).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("but the signed checksum is"),
+                "{error:#}"
+            );
+        }
+
+        #[test]
+        fn a_missing_or_foreign_signature_is_refused() {
+            let target = manifest_release(STABLE, Channel::Stable).unwrap();
+            let error = check_signed(&target, &[FIXTURE_KEY], fixture_fetch(false)).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("an unsigned release is never installed"),
+                "{error:#}"
+            );
+            // The shipped keys do not trust the fixture key.
+            let error = check_signed(&target, RELEASE_KEYS, fixture_fetch(true)).unwrap_err();
+            assert!(format!("{error:#}").contains("does not trust"), "{error:#}");
+        }
+
+        /// The archive matches the manifest, but the manifest's digest is not the
+        /// signed one: the installer never runs and nothing is staged.
+        #[test]
+        fn an_unsigned_digest_is_refused_before_the_installer_runs() {
+            let network = Network::new("stage-unsigned");
+            let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+            let error = network
+                .stage_gated(&target, |target| {
+                    check_signed(target, &[FIXTURE_KEY], fixture_fetch(true))
+                })
+                .unwrap_err();
+            network.assert_left_alone(&error, "but the signed checksum is");
+        }
+
+        #[test]
+        fn a_checked_release_stages_beside_the_installed_app() {
+            let network = Network::new("stage-ok");
+            let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+            let staged = network.stage(&target).unwrap();
+            assert_eq!(
+                staged,
+                staging_dir(&network.bundle).unwrap().join("Phux.app")
+            );
+            assert_eq!(installed_release(&staged).unwrap().version, "1.2.3");
+            assert_eq!(
+                std::fs::read_to_string(network.bundle.join("Contents/marker")).unwrap(),
+                "old"
+            );
+            std::fs::remove_dir_all(network.root).unwrap();
+        }
+
+        #[test]
+        fn a_digest_mismatch_is_refused() {
+            let network = Network::new("stage-digest");
+            network.publish("dev.phux.desktop", |_| {});
+            let target = network.checked(&"0".repeat(64));
+            network.assert_refused(&target, "checksum mismatch");
+        }
+
+        fn truncate_archive(network: &Network) {
+            let archive = std::fs::read(network.root.join("asset.zip")).unwrap();
+            std::fs::write(
+                network.root.join("asset.zip"),
+                &archive[..archive.len() / 2],
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn an_interrupted_download_is_refused() {
+            let network = Network::new("stage-interrupted");
+            let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+            truncate_archive(&network);
+            // curl's "partial file": the transfer stopped before the end.
+            std::fs::write(network.root.join("status"), "18").unwrap();
+            network.assert_refused(&target, "could not download");
+        }
+
+        #[test]
+        fn a_truncated_download_is_refused() {
+            let network = Network::new("stage-truncated");
+            let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+            truncate_archive(&network);
+            network.assert_refused(&target, "checksum mismatch");
+        }
+
+        #[test]
+        fn an_archive_for_another_bundle_identity_is_refused() {
+            let network = Network::new("stage-identity");
+            let target = network.checked(&network.publish("dev.example.other", |_| {}));
+            network.assert_refused(&target, "not Phux Desktop");
+        }
+
+        #[test]
+        fn a_tampered_bundle_is_refused_even_when_the_manifest_matches_it() {
+            let network = Network::new("stage-tampered");
+            let target = network.checked(&network.publish("dev.phux.desktop", |app| {
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(app.join("Contents/MacOS/phux-desktop"))
+                    .unwrap()
+                    .write_all(b"tampered")
+                    .unwrap();
+            }));
+            network.assert_refused(&target, "signature does not verify");
+        }
+
+        #[test]
+        fn a_stale_stage_is_cleared_only_when_the_lock_is_free() {
+            let apps = scratch("stale");
+            let bundle = apps.join("Phux.app");
+            let staged = staging_dir(&bundle).unwrap().join("Phux.app");
+            fake_app(&staged, "stale");
+            let lock = lock_file(&bundle).unwrap();
+            let mut holder = Command::new("/usr/bin/lockf")
+                .arg(&lock)
+                .args(["/bin/sleep", "5"])
+                .spawn()
+                .unwrap();
+            let start = std::time::Instant::now();
+            while !lock.exists() && start.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            clear_stale_stage(&bundle);
+            assert!(
+                staged.exists(),
+                "a held lock must protect the staged bundle"
+            );
+            holder.kill().unwrap();
+            holder.wait().unwrap();
+            clear_stale_stage(&bundle);
+            assert!(!staging_dir(&bundle).unwrap().exists());
+            std::fs::remove_dir_all(apps).unwrap();
+        }
+    }
+
+    #[test]
+    fn portable_bundle_version_and_identity_are_checked() {
+        let dir = scratch("linux-release");
+        let bundle = dir.join("phux-desktop");
+        let metadata = bundle.join("share/phux-desktop/release.json");
+        std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        let mut value = json!({"identifier":"dev.phux.desktop", "version":"1.2.3",
+            "sha":"b".repeat(40), "channel":"next", "target":"x86_64-unknown-linux-gnu"});
+        std::fs::write(&metadata, value.to_string()).unwrap();
+        let installed = linux_release(&bundle).unwrap();
+        assert_eq!(installed.version, "1.2.3");
+        assert_eq!(installed.channel, Channel::Next);
+        let executable = bundle.join("bin/phux-desktop");
+        assert_eq!(linux_bundle(&executable).unwrap(), bundle);
+        assert!(linux_bundle(Path::new("target/debug/phux-desktop")).is_none());
+        value["identifier"] = json!("dev.example.other");
+        std::fs::write(&metadata, value.to_string()).unwrap();
+        assert!(linux_bundle(&executable).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn linux_manual_update_requires_release_signatures() {
+        let remedy = linux_install_remedy(Channel::Next, None);
+        assert!(remedy.contains("PHUX_REQUIRE_SIGNATURE=1"));
+        assert!(remedy.contains("--desktop --channel next"));
+        assert!(remedy.contains("minisign"));
+        let bundle = Path::new("/custom apps/person's desktop/phux-desktop");
+        let remedy = linux_install_remedy(Channel::Stable, Some(bundle));
+        let expected = crate::attach::quote_paths(&[bundle.parent().unwrap().to_path_buf()]);
+        assert!(remedy.ends_with(&format!("--applications-dir {expected}")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_never_runs_the_macos_swap_or_staging_installer() {
+        let path = Path::new("/does-not-exist/phux-desktop");
         assert!(
-            staged.exists(),
-            "a held lock must protect the staged bundle"
+            stage(path, &Release::default())
+                .unwrap_err()
+                .to_string()
+                .contains("PHUX_REQUIRE_SIGNATURE=1")
         );
-        holder.kill().unwrap();
-        holder.wait().unwrap();
-        clear_stale_stage(&bundle);
-        assert!(!staging_dir(&bundle).unwrap().exists());
-        std::fs::remove_dir_all(apps).unwrap();
+        assert!(
+            apply_on_exit(path, path, true)
+                .unwrap_err()
+                .to_string()
+                .contains("not supported on Linux")
+        );
+        clear_stale_stage(path);
     }
 
     #[test]

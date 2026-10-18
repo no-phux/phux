@@ -31,6 +31,11 @@ desktop-test: worktree-claim desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
+[doc('Test the pinned Linux wgpu renderer, including native capture alpha')]
+desktop-renderer-test: worktree-claim desktop-source
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/clients/desktop/native/target}" python3 clients/desktop/toolchain/test-wgpu.py wgpu_
+
+[group('desktop')]
 [doc('Measure GPUI terminal draws headlessly (pass release for optimized comparisons)')]
 desktop-perf-headless profile="test": desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml --profile {{profile}} --test pixels -- --headless-perf
@@ -71,9 +76,16 @@ desktop-demo: desktop-host-debug desktop-cli
     cd clients/desktop && CARGO_TARGET_DIR="$PWD/.cache/demo-target" bun scripts/desktop-demo.ts
 
 [group('desktop')]
-[doc('Package Phux.app and qualify it against an isolated same-checkout server')]
+[doc('Package the desktop and qualify it against an isolated same-checkout server')]
 desktop-framework-check: desktop-package desktop-cli
-    bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    phux="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
+    if [[ "$(uname -s)" == Linux ]]; then
+        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- bun clients/desktop/scripts/smoke-linux.ts --app clients/desktop/dist/linux/phux-desktop --phux "$phux"
+    else
+        bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "$phux"
+    fi
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]
@@ -85,14 +97,28 @@ desktop-native-build: worktree-claim desktop-source
 desktop-native-test: desktop-framework-check
 
 [group('desktop')]
-[doc('Build Phux.app (release GPUI executable, fonts and icon) under clients/desktop/dist/app')]
+[doc('Package the release desktop for the native platform under clients/desktop/dist')]
 desktop-package: desktop-native-build
-    cd clients/desktop && bun scripts/package-app.ts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd clients/desktop
+    if [[ "$(uname -s)" == Linux ]]; then
+        bun scripts/package-linux.ts
+    else
+        bun scripts/package-app.ts
+    fi
 
 [group('desktop')]
 [doc('Build Phux.app and install it to /Applications; it opens your Intake session')]
 desktop-install-app: desktop-native-build
-    cd clients/desktop && bun scripts/package-app.ts --install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == Linux ]]; then
+        echo 'Linux desktop installation uses signed release bundles; run curl -fsSL https://phux.sh/install-desktop | PHUX_REQUIRE_SIGNATURE=1 sh' >&2
+        exit 2
+    fi
+    cd clients/desktop
+    bun scripts/package-app.ts --install
 
 [group('desktop')]
 [doc('Run the headless GPUI benchmark and fail on scene, time or RSS budget regressions')]

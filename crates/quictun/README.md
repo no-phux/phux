@@ -27,14 +27,49 @@ The usual design is TCP over a WebSocket bridge. QUIC improves on it:
   handshake budget. The leg is decided by the negotiated ALPN, never by
   what a peer sends.
 
+## Quick start
+
+Expose a local web server on a laptop behind NAT, then reach it from
+another machine:
+
+```sh
+# On the relay host (a VPS with a public UDP port):
+quictun pair --route laptop          # prints the route token and the relay pin
+quictun relay --listen 0.0.0.0:4433  # prints the relay pin again
+
+# On the laptop, with the token saved to an owner-only file:
+quictun expose --relay relay.example.com:4433 --relay-pin <RELAY_PIN> \
+               --token-file ~/.laptop-token --to 127.0.0.1:8080
+                                     # prints the service pin
+
+# Anywhere:
+quictun connect --relay relay.example.com:4433 --relay-pin <RELAY_PIN> \
+                --route laptop --service-pin <SERVICE_PIN> --listen 127.0.0.1:9000
+curl http://127.0.0.1:9000/
+```
+
+`expose` terminates TLS on every bridged stream and `connect` pins its
+certificate, so even a plaintext service crosses the relay as ciphertext.
+With `--passthrough` on both ends the stream is forwarded raw, for a
+target that runs TLS itself.
+
+**Browsers and other clients without QUIC:** run the relay with
+`--tcp-listen 0.0.0.0:443 --domain tunnel.example.com`, point
+`*.tunnel.example.com` at it, and give `expose` a certificate valid for
+`laptop.tunnel.example.com` (`--cert`, `--key`). The relay reads only the
+TLS ClientHello's server name, routes `laptop.tunnel.example.com` to
+route `laptop`, and forwards the encrypted bytes. TLS still ends at the
+laptop.
+
 ## Shape
 
 | Piece | What it is |
 |---|---|
-| `Protocol` | The tunnel ALPN, the consumer ALPNs, and the connection-ID tag. Nothing in the crate names an application. |
+| `Protocol` | The tunnel ALPN, the consumer ALPNs, the connection-ID tag, and the half-close rule. Nothing in the crate names an application; `Protocol::quictun()` is the binary's. |
 | `tunnel` | The wire: the stream-0 token preamble, the close codes, the tagged connection ID. |
 | `connect` | The client legs: a service's `Tunnel` and a consumer's `dial_route`, pinning the relay's leaf. |
-| `relay` | The relay: the endpoint, the TLS-layer route gate, the route-token store, and the splice (feature `relay`, default). |
+| `relay` | The relay: the endpoint, the TLS-layer route gate, the route-token store, per-route caps, the optional TCP ingress, and the splice (feature `relay`, default). |
+| `forward` | TCP forwarding with TLS at the service: `expose` and `connect` (feature `forward`, default). |
 | `pin` | Leaf-certificate pinning by SHA-256 fingerprint. |
 | `window` | A congestion-tracked QUIC send window for any quinn writer. |
 | `cert`, `secret_file` | Self-signed certificates and owner-only secret files (feature `provision`). |
@@ -83,17 +118,34 @@ let (_endpoint, _conn, _send, _recv) = dial_route(&relay, "laptop", b"myapp/1").
   its line. The relay re-reads the file whenever it changes.
 - **A newer tunnel for a route replaces the old one** (last-writer-wins).
   The old tunnel is closed with `RECLAIMED`.
-- **Unknown routes are refused during the TLS handshake**, before any
-  application byte flows. An enrolled route with no live tunnel is closed
-  with `ROUTE_OFFLINE`.
-- **A bridge ends when either direction finishes.** A consumer that
-  half-closes its stream before it has read the reply loses the reply.
+- **On QUIC, unknown routes are refused during the TLS handshake**, before
+  any application byte flows, and an enrolled route with no live tunnel is
+  closed with `ROUTE_OFFLINE`. **On the TCP ingress** the relay just drops
+  the socket after reading the ClientHello: no alert, no code.
+- **Stalled clients cannot take the relay.** Until a QUIC peer finishes its
+  handshake, or a TCP peer's ClientHello names a live route, it holds only
+  a handshake permit and its address's share, never a connection slot.
+  Bridged TCP sockets use keepalive, so a peer that vanished frees its
+  slot.
+- **Half-close is the protocol's choice.** `HalfClose::Propagate` (the
+  binary's) forwards each FIN and keeps the other direction flowing, as
+  TCP does. `HalfClose::EndsBridge` (`Protocol::new`'s default) ends the
+  bridge when either direction finishes, for protocols whose peers never
+  half-close.
+- **Tenants share fairly.** `--max-conns` caps the relay, and
+  `--max-conns-per-route` caps how many consumers one route may have at
+  once (QUIC and TCP together); a refused QUIC consumer is closed with
+  `OVER_CAP`. Consumers are unauthenticated at the relay, so anyone who
+  knows a route's name can fill its cap; the cap protects the other routes,
+  not the route itself. Accounts and billing belong to whatever writes the
+  route-token store.
 
 ## Status
 
-quictun is phux's relay ([ADR-0181]). It depends on no phux crate. Its wire
-is stable within a major version.
+quictun is phux's relay ([ADR-0181], [ADR-0183]). It depends on no phux
+crate. Its wire is stable within a major version.
 
 Licensed under Apache-2.0.
 
 [ADR-0181]: https://github.com/no-phux/phux/blob/main/docs/adr/0181-the-relay-is-a-standalone-quic-tunnel-crate.md
+[ADR-0183]: https://github.com/no-phux/phux/blob/main/docs/adr/0183-quictun-is-a-standalone-tunnel-product.md

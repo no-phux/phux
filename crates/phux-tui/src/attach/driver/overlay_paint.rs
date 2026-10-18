@@ -144,8 +144,21 @@ fn visible_search_hits(
         .collect()
 }
 
-/// The copy-mode keys, right-aligned on the strip when they fit.
-const COPY_MODE_KEYS: &str = "⏎ copy · w word · v line · / find · tab block · esc";
+/// The copy-mode key legends, longest first; the strip paints the longest one
+/// that fits.
+pub(super) const COPY_MODE_LEGENDS: [&str; 3] = [
+    "⏎ copy · w word · v line · / find · tab block · esc",
+    "⏎ copy · / find · tab block · esc",
+    "⏎ copy · esc",
+];
+
+/// The longest legend that fits in `room` cells, counting the one-cell pad on
+/// each side; `None` when even the shortest does not fit.
+pub(super) fn legend_for(room: usize) -> Option<&'static str> {
+    COPY_MODE_LEGENDS
+        .into_iter()
+        .find(|legend| crate::render::display_width(legend) + 2 <= room)
+}
 
 /// Emit the copy-mode status strip over the bottom row of `content` (the
 /// pane columns; the sidebar keeps its own rows), then hide the hardware
@@ -177,18 +190,20 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     };
     // Block vs linear, cycled by `Tab` (ADR-0045).
     let geom = if sel.rectangle { "block" } else { "linear" };
+    let unit = if cell_count == 1 { "cell" } else { "cells" };
     let status = search.map_or_else(
-        || format!(" copy-mode · {geom} · {cell_count} "),
-        |search| format!(" copy-mode · {geom} · {cell_count} · {search} "),
+        || format!(" Copy mode · {geom} · {cell_count} {unit} "),
+        |search| format!(" Copy mode · {geom} · {cell_count} {unit} · {search} "),
     );
     let width = usize::from(content.w.min(cols.saturating_sub(content.x)));
     let status = crate::render::clip_text(&status, width);
     let status_w = crate::render::display_width(&status);
-    // The key legend, when the status leaves room for it and a gap.
-    let keys = format!(" {COPY_MODE_KEYS} ");
-    let keys_w = crate::render::display_width(&keys);
-    let legend = (status_w + keys_w + 2 <= width).then_some(keys);
-    let fill = width - status_w - legend.as_ref().map_or(0, |_| keys_w);
+    // The longest key legend the status leaves room for, after a two-cell gap.
+    let legend = legend_for(width.saturating_sub(status_w + 2)).map(|keys| format!(" {keys} "));
+    let keys_w = legend
+        .as_ref()
+        .map_or(0, |keys| crate::render::display_width(keys));
+    let fill = width - status_w - keys_w;
     write_cup(out, rows - 1, content.x)?;
     // Selection strip from the theme (`selection_bg`/`selection_fg`), padded
     // to the pane columns only; then reset + hide the cursor.

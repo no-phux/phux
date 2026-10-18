@@ -1,0 +1,186 @@
+diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
+index 0b00405..97fe84d 100644
+--- a/gpui-fast-wgpu/src/wgpu_renderer.rs
++++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
+@@ -19,6 +19,11 @@ use std::sync::Arc;
+ 
+ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+ 
++// fs_path samples premultiplied RGB and alpha from the path intermediate.
++// Source-over must apply to both: additive destination alpha corrupts transparent
++// windows, cached layer tiles, and captures even when opaque targets hide it.
++const PATHS_BLEND: wgpu::BlendState = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
++
+ /// A submission receipt, never a display-presentation receipt. Ids remain
+ /// unique across windows and GPU recovery; exhaustion drops the receipt.
+ fn report_submission(
+@@ -841,19 +846,6 @@ impl WgpuRendererCore {
+             &shader_module,
+         );
+ 
+-        let paths_blend = wgpu::BlendState {
+-            color: wgpu::BlendComponent {
+-                src_factor: wgpu::BlendFactor::One,
+-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+-                operation: wgpu::BlendOperation::Add,
+-            },
+-            alpha: wgpu::BlendComponent {
+-                src_factor: wgpu::BlendFactor::One,
+-                dst_factor: wgpu::BlendFactor::One,
+-                operation: wgpu::BlendOperation::Add,
+-            },
+-        };
+-
+         let paths = create_pipeline(
+             "paths",
+             "vs_path",
+@@ -864,7 +856,7 @@ impl WgpuRendererCore {
+             wgpu::PrimitiveTopology::TriangleStrip,
+             &[Some(wgpu::ColorTargetState {
+                 format: surface_format,
+-                blend: Some(paths_blend),
++                blend: Some(PATHS_BLEND),
+                 write_mask: wgpu::ColorWrites::ALL,
+             })],
+             1,
+@@ -2841,6 +2833,23 @@ mod tests {
+         assert!(receiver.recv().is_err());
+     }
+ 
++    #[test]
++    fn path_blend_accumulates_source_over_alpha() {
++        let source_over = wgpu::BlendComponent {
++            src_factor: wgpu::BlendFactor::One,
++            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
++            operation: wgpu::BlendOperation::Add,
++        };
++        assert_eq!(PATHS_BLEND.color, source_over);
++        assert_eq!(PATHS_BLEND.alpha, source_over);
++        // Half-blue over half-red: premultiplied RGB is (0.25, 0, 0.5),
++        // alpha is 0.75, and straight RGB is (1/3, 0, 2/3), not (0.25, 0, 0.5).
++        assert_eq!(0.5 + 0.5 * (1.0 - 0.5), 0.75);
++        // On an opaque destination the source-over alpha is still exactly 1:
++        // this corrects transparent targets without changing opaque rendering.
++        assert_eq!(0.5 + 1.0 * (1.0 - 0.5), 1.0);
++    }
++
+     #[cfg(not(target_family = "wasm"))]
+     const CAPTURE_FORMATS: [wgpu::TextureFormat; 4] = [
+         wgpu::TextureFormat::Rgba8Unorm,
+@@ -2885,10 +2894,42 @@ mod tests {
+     #[cfg(not(target_family = "wasm"))]
+     #[test]
+     fn translucent_capture_png_composites_without_double_darkening() -> anyhow::Result<()> {
++        let mut scene = Scene::default();
++        scene.insert_primitive(solid_quad(1.0, 1.0, 6.0, 4.0, gpui::red().alpha(0.5)));
++        scene.insert_primitive(solid_quad(4.0, 1.0, 6.0, 4.0, gpui::blue().alpha(0.5)));
++        scene.finish();
++        for format in CAPTURE_FORMATS {
++            for premultiplied in [false, true] {
++                assert_translucent_capture(&scene, format, premultiplied, 13)?;
++                assert_translucent_capture(&scene, format, premultiplied, 17)?;
++            }
++        }
++        Ok(())
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    #[test]
++    fn translucent_path_over_quad_capture_accumulates_source_over_alpha() -> anyhow::Result<()> {
++        let mut scene = Scene::default();
++        scene.insert_primitive(solid_quad(1.0, 1.0, 6.0, 4.0, gpui::red().alpha(0.5)));
++        let mut path = gpui::Path::new(gpui::point(gpui::px(4.0), gpui::px(1.0)));
++        path.line_to(gpui::point(gpui::px(10.0), gpui::px(1.0)));
++        path.line_to(gpui::point(gpui::px(10.0), gpui::px(5.0)));
++        path.line_to(gpui::point(gpui::px(4.0), gpui::px(5.0)));
++        path.line_to(gpui::point(gpui::px(4.0), gpui::px(1.0)));
++        path.color = gpui::blue().alpha(0.5).into();
++        path.content_mask = ContentMask {
++            bounds: Bounds::new(
++                gpui::point(gpui::px(0.0), gpui::px(0.0)),
++                gpui::size(gpui::px(17.0), gpui::px(7.0)),
++            ),
++        };
++        scene.insert_primitive(path.scale(1.0));
++        scene.finish();
+         for format in CAPTURE_FORMATS {
+             for premultiplied in [false, true] {
+-                assert_translucent_capture(format, premultiplied, 13)?;
+-                assert_translucent_capture(format, premultiplied, 17)?;
++                assert_translucent_capture(&scene, format, premultiplied, 13)?;
++                assert_translucent_capture(&scene, format, premultiplied, 17)?;
+             }
+         }
+         Ok(())
+@@ -2896,6 +2937,7 @@ mod tests {
+ 
+     #[cfg(not(target_family = "wasm"))]
+     fn assert_translucent_capture(
++        scene: &Scene,
+         format: wgpu::TextureFormat,
+         premultiplied: bool,
+         width: i32,
+@@ -2913,11 +2955,7 @@ mod tests {
+             format,
+             alpha_mode,
+         );
+-        let mut scene = Scene::default();
+-        scene.insert_primitive(solid_quad(1.0, 1.0, 6.0, 4.0, gpui::red().alpha(0.5)));
+-        scene.insert_primitive(solid_quad(4.0, 1.0, 6.0, 4.0, gpui::blue().alpha(0.5)));
+-        scene.finish();
+-        let image = core.capture_scene(&scene, device_size(width, 7), premultiplied)?;
++        let image = core.capture_scene(scene, device_size(width, 7), premultiplied)?;
+         check_capture_gpu_errors(renderer.context.errors(), &mut generation)?;
+ 
+         let mut png = std::io::Cursor::new(Vec::new());
+@@ -2925,7 +2963,26 @@ mod tests {
+         let image = image::load_from_memory(png.get_ref())?.into_rgba8();
+         assert_eq!(image.dimensions(), (width as u32, 7));
+         assert_straight_capture_pixels(&image, format.is_srgb());
+-        assert_capture_composite(image, format.is_srgb());
++        let composite = composite_capture_over_white(image, format.is_srgb());
++        assert_white_capture_pixels(&composite, format.is_srgb());
++        assert_opaque_capture(&mut core, scene, device_size(width, 7), premultiplied)?;
++        check_capture_gpu_errors(renderer.context.errors(), &mut generation)?;
++        Ok(())
++    }
++
++    #[cfg(not(target_family = "wasm"))]
++    fn assert_opaque_capture(
++        core: &mut WgpuRendererCore,
++        scene: &Scene,
++        size: Size<DevicePixels>,
++        premultiplied: bool,
++    ) -> anyhow::Result<()> {
++        let target = HeadlessRenderTarget::new(core, size)?;
++        core.render_frame(scene, &target.view, size, premultiplied, wgpu::Color::WHITE)?;
++        let image = target.read_image(core)?;
++        // The corrected shared path pipeline must preserve opaque pixels and
++        // agree with straight-alpha PNG compositing over the same background.
++        assert_white_capture_pixels(&image, core.target_format.is_srgb());
+         Ok(())
+     }
+ 
+@@ -2943,8 +3000,7 @@ mod tests {
+     }
+ 
+     #[cfg(not(target_family = "wasm"))]
+-    fn assert_capture_composite(image: image::RgbaImage, srgb: bool) {
+-        let composite = composite_capture_over_white(image, srgb);
++    fn assert_white_capture_pixels(image: &image::RgbaImage, srgb: bool) {
+         let red = if srgb {
+             [255, 187, 187, 255]
+         } else {
+@@ -2960,9 +3016,9 @@ mod tests {
+         } else {
+             [127, 63, 191, 255]
+         };
+-        assert_pixel(&composite, 2, 2, red);
+-        assert_pixel(&composite, 8, 2, blue);
+-        assert_pixel(&composite, 5, 2, overlap);
++        assert_pixel(image, 2, 2, red);
++        assert_pixel(image, 8, 2, blue);
++        assert_pixel(image, 5, 2, overlap);
+     }
+ 
+     #[cfg(not(target_family = "wasm"))]

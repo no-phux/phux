@@ -15,6 +15,7 @@ file, no persistence beyond a route-bound token store and a keypair.
 Status: Accepted
 Date: 2026-07-21
 Superseded in part by [ADR-0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md): Decision 2 (home); the relay is `crates/quictun`, with no phux dependency, and `phux-relay` binds it to phux's protocol.
+Superseded in part by [ADR-0183](./0183-quictun-is-a-standalone-tunnel-product.md): Decision 1 (the scope fence), for `quictun` only; `phux relay` keeps it.
 See [ADR-0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) for Open Question 2 (relay connect links).
 
 ## Context

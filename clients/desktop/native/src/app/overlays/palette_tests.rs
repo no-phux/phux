@@ -347,7 +347,14 @@ fn goto_leading_marker_hands_the_remaining_query_and_focus_to_commands(cx: &mut 
     cx.update(|_, cx| {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("> sidebar".into()));
     });
-    keys(cx, "cmd-v");
+    keys(
+        cx,
+        if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        },
+    );
     assert_eq!(modal(&desk, cx), Modal::Commands);
     assert_eq!(query(&desk, cx), "sidebar");
     assert_eq!(selected_command(&desk, cx), Some("sidebar"));

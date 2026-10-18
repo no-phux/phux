@@ -1,5 +1,5 @@
 # Release Please owns the immutable tag and draft; publish.yml is the only door.
-# Stable: Apple silicon, ad-hoc signed, not Apple-notarized.
+# Stable: Apple silicon (ad-hoc signed) and Ubuntu 24.04 GNU/Linux x64/arm64.
 name: Release Desktop
 
 on:
@@ -182,24 +182,184 @@ jobs:
         if: inputs.channel == 'stable'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-sidecar
+          name: desktop-sidecar-macos-arm64
           path: ${{ runner.temp }}/desktop-release/phux-desktop-*-macos-arm64.zip.sha256
           if-no-files-found: error
       - name: Retain qualified next artifacts for serialized publication
         if: inputs.channel == 'next'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop
+          name: desktop-macos-arm64
           path: |
             ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip
             ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip.sha256
           if-no-files-found: error
 
-  # Signing runs on a hosted Linux runner, so the release key never reaches the
-  # macOS build host (ADR-0178). The draft publishes only once it is signed.
+  linux:
+    name: Qualify and publish Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      PHUX_BUILD_CHANNEL: ${{ inputs.channel }}
+      PHUX_CHANNEL: ${{ inputs.channel }}
+      PHUX_BUILD_SHA: ${{ inputs.sha }}
+      PHUX_DESKTOP_TARGET: ${{ matrix.target }}
+      GH_REPO: ${{ github.repository }}
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: harness
+          persist-credentials: false
+      - name: Require an existing desktop draft and native Linux runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu) test "$(uname -m)" = x86_64 ;;
+            aarch64-unknown-linux-gnu) test "$(uname -m)" = aarch64 ;;
+            *) exit 1 ;;
+          esac
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            test "$RELEASE_TAG" = next
+            [[ "$PHUX_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          else
+            test "$PHUX_BUILD_CHANNEL" = stable
+            [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha || inputs.tag }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate immutable source and select archive
+        id: version
+        working-directory: source
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            test "$(git rev-parse HEAD)" = "$PHUX_BUILD_SHA"
+          else
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+          PHUX_BUILD_SHA="$(git rev-parse HEAD)"
+          export PHUX_BUILD_SHA
+          echo "PHUX_BUILD_SHA=$PHUX_BUILD_SHA" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path('clients/desktop/package.json').read_text())['version']
+          assert json.loads(Path('.release-please-manifest.json').read_text())['clients/desktop'] == version
+          channel = os.environ['PHUX_BUILD_CHANNEL']
+          if channel == 'stable':
+              assert os.environ['RELEASE_TAG'] == f'desktop-v{version}'
+          identity = f"next.{os.environ['PHUX_BUILD_SHA']}" if channel == 'next' else version
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"archive=phux-desktop-{identity}-linux-{os.environ['ARCH']}.tar.gz\n")
+          PY
+      - uses: ./harness/.github/actions/setup-linux-desktop
+        with:
+          source: source
+      - name: Build and test native desktop and same-checkout CLI
+        working-directory: source
+        run: |
+          set -euo pipefail
+          just desktop-lint
+          xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+          just desktop-renderer-test
+          cargo build --locked --release -p phux
+          just desktop-native-build
+          bun clients/desktop/scripts/package-linux.ts
+      - name: Checksum and qualify the archived Linux package
+        env:
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-release" "$RUNNER_TEMP/desktop-qualified"
+          cp "source/clients/desktop/dist/$ARCHIVE" "$RUNNER_TEMP/desktop-release/"
+          cd "$RUNNER_TEMP/desktop-release"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          sha256sum -c "$ARCHIVE.sha256"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/desktop-qualified"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          bundle = Path(os.environ['RUNNER_TEMP']) / 'desktop-qualified/phux-desktop'
+          metadata = json.loads((bundle / 'share/phux-desktop/release.json').read_text())
+          assert metadata['sha'] == os.environ['PHUX_BUILD_SHA']
+          assert metadata['target'] == os.environ['PHUX_DESKTOP_TARGET']
+          assert metadata['channel'] == os.environ['PHUX_BUILD_CHANNEL']
+          assert (bundle / 'bin/phux-desktop').is_file()
+          PY
+          xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- \
+            bun harness/clients/desktop/scripts/smoke-linux.ts \
+            --app "$RUNNER_TEMP/desktop-qualified/phux-desktop" \
+             --phux "$GITHUB_WORKSPACE/source/target/release/phux" \
+             --require-backend Vulkan \
+            --output "$RUNNER_TEMP/desktop-evidence"
+      - name: Retain packaged Linux runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-runtime-linux-${{ matrix.arch }}-${{ inputs.sha || inputs.tag }}
+          path: ${{ runner.temp }}/desktop-evidence
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload to draft and verify downloaded bytes
+        if: inputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/$ARCHIVE.sha256" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256" --dir "$RUNNER_TEMP/desktop-download"
+          cd "$RUNNER_TEMP/desktop-download"
+          cmp "$ARCHIVE.sha256" "$RUNNER_TEMP/desktop-release/$ARCHIVE.sha256"
+          sha256sum -c "$ARCHIVE.sha256"
+      - name: Hand the stable checksum to the signer
+        if: inputs.channel == 'stable'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-sidecar-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/desktop-release/*.tar.gz.sha256
+          if-no-files-found: error
+      - name: Retain qualified next artifacts for serialized publication
+        if: inputs.channel == 'next'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/desktop-release/*.tar.gz
+            ${{ runner.temp }}/desktop-release/*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Signing is isolated from every build host (ADR-0178). All three platforms
+  # must qualify before any signature is issued or the draft is published.
   sign:
     name: Sign and publish stable
-    needs: macos
+    needs: [macos, linux]
     if: inputs.channel == 'stable'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -213,7 +373,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: desktop-sidecar
+          pattern: desktop-sidecar-*
+          merge-multiple: true
           path: ${{ runner.temp }}/desktop-sidecar
       - name: Sign the checksum and attach the signature
         env:
@@ -221,15 +382,18 @@ jobs:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
         run: |
           set -euo pipefail
-          sidecars=("$RUNNER_TEMP"/desktop-sidecar/phux-desktop-*-macos-arm64.zip.sha256)
-          test "${#sidecars[@]}" -eq 1
-          sidecar="${sidecars[0]}"
-          name="$(basename "$sidecar")"
-          # Sign only the checksum the draft actually carries.
-          gh release download "$RELEASE_TAG" --pattern "$name" --dir "$RUNNER_TEMP/desktop-draft"
-          cmp "$sidecar" "$RUNNER_TEMP/desktop-draft/$name"
-          bash scripts/ci/sign-release.sh "$sidecar"
-          gh release upload "$RELEASE_TAG" "$sidecar.minisig" --clobber
+          sidecars=("$RUNNER_TEMP"/desktop-sidecar/phux-desktop-*.sha256)
+          test "${#sidecars[@]}" -eq 3
+          for sidecar in "${sidecars[@]}"; do
+            name="$(basename "$sidecar")"
+            # Sign only the checksum the draft actually carries.
+            gh release download "$RELEASE_TAG" --pattern "$name" --dir "$RUNNER_TEMP/desktop-draft"
+            cmp "$sidecar" "$RUNNER_TEMP/desktop-draft/$name"
+          done
+          cat "${sidecars[@]}" > "$RUNNER_TEMP/desktop-sidecar/SHA256SUMS"
+          bash scripts/ci/sign-release.sh "${sidecars[@]}"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/desktop-sidecar/*.minisig \
+            "$RUNNER_TEMP/desktop-sidecar/SHA256SUMS" --clobber
       - name: Publish as stable, never latest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,7 +403,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
           marker='Desktop: ad-hoc signed; not Apple-notarized.'
           if ! grep -Fq "$marker" "$notes"; then
-            printf '\n%s\n\nApple silicon macOS 27 or later. Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
+            printf '\n%s\n\nApple silicon macOS 27 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
             --draft=false --latest=false

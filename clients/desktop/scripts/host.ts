@@ -29,12 +29,14 @@ export function layoutFile(stateHome: string, socket: string, session: string): 
   return join(stateHome, "phux-desktop", layoutScope(socket, session), "layout.json");
 }
 
-/** Launchd's PATH will not see these. Shipping resolution uses this order. */
+/** Common installed CLI locations; qualification must never use these. */
 export function installedPhuxCandidates(home = homedir()): string[] {
   return [
     join(home, ".local/bin/phux"),
     "/opt/homebrew/bin/phux",
     "/usr/local/bin/phux",
+    "/usr/bin/phux",
+    "/bin/phux",
     join(home, ".cargo/bin/phux"),
   ];
 }

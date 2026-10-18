@@ -33,6 +33,7 @@ access is blocked, not passed.
 |---|---|
 | Build | `clients/desktop/native/target/release/phux-desktop` from `just desktop-native-build`. No `.node` addon and no JS bundle. |
 | Package | `Phux.app` runs that binary, ships Paper Mono and the icon, and is ad-hoc signed. `PhuxDesktopHost` is `gpui`. |
+| Linux package | The tarball's `phux-desktop/bin/phux-desktop` runs with the packaged metadata, desktop entry, icon and license notices. Native x64 and ARM64 lanes use Ubuntu 24.04. |
 | CLI boundary | Smoke and perf pass `--phux` explicitly. The path is not an installed CLI. The app does not bundle or upgrade `phux`. |
 | Presentation | `--evidence` writes `presented.png` from the drawable-presented callback, `layout.json` with `presented: true` and a positive generation, and `interaction.json` for that same generation. |
 | OCR | macOS Vision reads the PNG and finds the live shell marker. The server snapshot alone is not enough. |
@@ -41,6 +42,16 @@ access is blocked, not passed.
 
 `just desktop-framework-check` is the packaged form of this gate. The release
 lane runs the same smoke on the extracted archive before upload.
+
+Linux runs `clients/desktop/scripts/smoke-linux.ts` on the extracted tarball
+under Xvfb and lavapipe. It records submitted-frame evidence, reads the live
+terminal marker with Tesseract, and checks that the same shell and server
+survive SIGKILL/SIGTERM and relaunch. The receipt's `presented: false` is
+intentional: successful wgpu submission is not a physical-display presentation
+receipt, and it cannot clear an unknown-delivery fence. The 13 offscreen
+pixel fixtures separately cover glyph placement, symbol fallback, colors,
+selection, blocks, streaming, and scroll. Neither lane establishes native IME,
+screen-reader, physical GPU/performance or Wayland compositor qualification.
 
 ## Product journeys still required
 
@@ -54,7 +65,7 @@ These are not implied by the host cutover:
 | Settings and Ghostty | Effective value, font, palette, keybinds, and the quick-terminal chord. `reset`, `vt`, and `html` copy formats remain unsupported. |
 | Agents | Attached-mode badges and attention, terminal/conversation switching, same-terminal acknowledged composer delivery, once-per-working-turn Stop, and read-only ended streams; attached approvals remain terminal-owned. ACP launch, typed exact-session commands, structured dialogs, same provider session across viewers, honest admission receipts, and read-only disconnection/end. |
 | Accessibility | A real screen-reader and IME journey. Manual observation is required; do not mark it passed from a unit test. |
-| Linux | A later platform matrix. macOS evidence does not qualify it. |
+| Linux | Physical GPU/performance, compositor-specific Wayland, native IME and screen-reader journeys remain separate from X11/lavapipe package qualification. |
 
 ### Native conversation gates
 
@@ -118,5 +129,5 @@ or presentation evidence.
 | Target | Current gap |
 |---|---|
 | Packaged smoke | The harness rejects fake evidence. A presented frame on this machine is still an execution record, not a claim in this document. |
-| Product journeys | Specified above. ACP launch/dialog implementation is not itself a real-provider, cross-view, GPU or shipping record. Notarization and Linux remain separate gates. |
+| Product journeys | Specified above. ACP launch/dialog implementation is not itself a real-provider, cross-view, GPU or shipping record. Notarization and Linux physical-display/IME/accessibility remain separate gates. |
 | Performance | The bench reads host histograms. A number from a loaded machine is observational until a hardware-tagged baseline exists. |

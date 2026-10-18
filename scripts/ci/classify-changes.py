@@ -113,6 +113,7 @@ ROUTES = DOC_INPUTS + (
 # that makes it. Checked before the compile-free WORKFLOWS short-circuit.
 SELF_ROUTES = (
     ((".github/workflows/desktop-test.yml",), {"desktop"}),
+    ((".github/actions/setup-linux-desktop/*",), {"desktop"}),
 )
 WORKFLOWS = (
     ".github/workflows/*.yml", ".github/workflows/*.yaml",

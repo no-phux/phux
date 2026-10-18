@@ -69,6 +69,7 @@ class RoutingTests(unittest.TestCase):
             (["just/desktop.just"], ALL),
             (["scripts/fixtures/release-manifest/stable.json"], {"phux", "desktop"}),
             ([".github/workflows/desktop-test.yml"], {"desktop"}),
+            ([".github/actions/setup-linux-desktop/action.yml"], {"desktop"}),
             (["scripts/doctor.sh"], {"native"}),
             (["scripts/test-dev-setup.sh"], {"native"}),
             (["scripts/native-smoke.sh"], {"native"}),
@@ -440,7 +441,18 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("merge_group:", triggers)
                 self.assertIn("fetch-depth: 0", workflow)
                 self.assertIn("uses: ./.github/actions/classify-changes", workflow)
-                self.assertIn("cancel-in-progress: true", workflow)
+                if name == "desktop-test":
+                    # main keeps its running run; only pull requests cancel.
+                    self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", workflow)
+                else:
+                    self.assertIn("cancel-in-progress: true", workflow)
+
+    def test_desktop_test_does_not_queue_every_main_sha_on_macos(self):
+        """Per-SHA main runs stacked xcode-27 jobs ahead of the release lanes."""
+        workflow = (ROOT / ".github/workflows/desktop-test.yml").read_text()
+        concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("group: mini-v1-desktop-test-${{ github.ref }}\n", concurrency)
+        self.assertNotIn("github.sha", concurrency)
 
     def test_archived_cockpit_has_no_workflows_or_artifact_outputs(self):
         self.assertEqual(list((ROOT / ".github/workflows").glob("cockpit-*.yml")), [])

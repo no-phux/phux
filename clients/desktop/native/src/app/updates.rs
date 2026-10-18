@@ -242,13 +242,16 @@ pub(crate) fn page(
         disabled: busy,
         run: Updater::check,
     };
-    let install = updater.desktop_action().map(|action| Action {
-        id: "updates-install",
-        label: action.label(),
-        primary: true,
-        disabled: false,
-        run: Updater::desktop_act,
-    });
+    let install = updater
+        .desktop_action()
+        .filter(|_| !cfg!(target_os = "linux"))
+        .map(|action| Action {
+            id: "updates-install",
+            label: action.label(),
+            primary: true,
+            disabled: false,
+            run: Updater::desktop_act,
+        });
     let runtime_enabled = !busy
         && !updater.development
         && updater.prefs.manage_runtime
@@ -279,7 +282,9 @@ pub(crate) fn page(
             }),
         status: updater.desktop_status(),
         detail: updater.desktop_detail(),
-        note: None,
+        note: cfg!(target_os = "linux").then(|| {
+            updates::linux_install_remedy(updater.prefs.desktop, updater.bundle.as_deref())
+        }),
         actions: std::iter::once(check).chain(install).collect(),
     };
     let runtime = Header {
@@ -311,13 +316,13 @@ pub(crate) fn page(
         )
         .group(
             SettingGroup::new()
-                .title("phux on this Mac")
+                .title("phux on this computer")
                 .item(runtime.item(entity, look, &mono))
                 .item(switch_item(
                     entity,
                     "Manage phux updates",
                     |prefs| &mut prefs.manage_runtime,
-                    "Let this app run phux’s own updater for this Mac and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
+                    "Let this app run phux’s own updater for this computer and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
                 ))
                 .item(channel_item(entity, true, busy, updater.prefs.runtime, look)),
         )
@@ -602,6 +607,12 @@ impl Updater {
     }
 
     pub fn desktop_act(&mut self, cx: &mut Context<Self>) {
+        if cfg!(target_os = "linux") {
+            self.message =
+                updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref());
+            cx.notify();
+            return;
+        }
         match self.desktop_action() {
             Some(DesktopAction::Download) => self.download_desktop(cx),
             Some(DesktopAction::Restart) => self.restart_to_update(cx),
@@ -698,7 +709,7 @@ impl Updater {
         }
         let protocol = self.protocol_change().map(|(now, next)| {
             format!(
-                "This update changes the wire protocol from {now} to {next}; phux on this Mac must be updated too."
+                "This update changes the wire protocol from {now} to {next}; phux on this computer must be updated too."
             )
         });
         let staged = self.staged.as_ref().map(|staged| {
@@ -1026,6 +1037,21 @@ mod tests {
             });
             updater.apply_staged();
             assert!(!updater.handed_off);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext;
+        let updater = cx.new(|_| installed("0.2.0"));
+        updater.update(cx, |updater, cx| {
+            updater.target = Some(release("0.3.0", &updates::own_protocol()));
+            updater.desktop_act(cx);
+            assert!(!updater.busy);
+            assert!(updater.staged.is_none());
+            assert!(!updater.handed_off);
+            assert!(updater.message.contains("PHUX_REQUIRE_SIGNATURE=1"));
         });
     }
 }

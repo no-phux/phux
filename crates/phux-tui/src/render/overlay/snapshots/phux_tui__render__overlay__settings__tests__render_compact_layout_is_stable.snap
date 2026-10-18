@@ -1,6 +1,5 @@
 ---
 source: crates/phux-tui/src/render/overlay/settings.rs
-assertion_line: 2031
 expression: text
 ---
 ╭ Settings ────────────────────────────────────────────────╮
@@ -18,4 +17,4 @@ expression: text
 │ ──────────────────────────────────────────────────────── │
 │ keybindings.which-key  bool                              │
 │ Show the which-key popup after the prefix                │
-╰ 2 of 3  ⏎ edit · ←→ step · tab section · del reset · esc ╯
+╰ 2 of 3 ────────────────────── ⏎ edit · tab section · esc ╯

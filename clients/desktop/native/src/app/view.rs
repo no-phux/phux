@@ -1204,7 +1204,7 @@ fn machines_row(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement 
         )
         .child(muted(look, detail).flex_shrink_0().text_xs())
         .tooltip(|window, cx| {
-            Tooltip::new("This Mac and saved machines: open, retry, add or forget")
+            Tooltip::new("This computer and saved machines: open, retry, add or forget")
                 .build(window, cx)
         })
         .on_click(cx.listener(|desk, _, window, cx| desk.execute("machines", window, cx)))

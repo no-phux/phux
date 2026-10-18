@@ -1,5 +1,5 @@
 # Native desktop host lanes for clients/desktop/native, a GPUI crate that
-# builds only on macOS. It is its own Cargo workspace, so the root lanes never
+# builds on macOS and Linux. It is its own Cargo workspace, so the root lanes never
 # compile it; before this workflow a desktop regression reached main with
 # nothing red (phux-piaf7). `macos` runs `just desktop-lint`,
 # `just desktop-test` and the headless perf budget on that test build;
@@ -26,10 +26,13 @@ permissions:
   contents: read
 
 concurrency:
-  # Same rule as ci.yml: pull requests are latest-wins, every main SHA keeps
-  # its own run.
-  group: mini-v1-desktop-test-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: true
+  # Pull requests are latest-wins. main is one running and one pending run:
+  # nothing gates on a per-SHA desktop-test, and keying main on the SHA queued
+  # two hour-long xcode-27 jobs per merge, ~35 deep, in front of the release
+  # lanes' own macOS builds. Nothing on main, push or dispatch, ever cancels
+  # the running main run.
+  group: mini-v1-desktop-test-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   changes:
@@ -88,6 +91,61 @@ jobs:
         with:
           name: desktop-perf-${{ github.run_attempt }}
           path: ${{ runner.temp }}/desktop-perf
+          if-no-files-found: warn
+          retention-days: 14
+
+  linux:
+    name: desktop native and package (Linux ${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.desktop_needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      PHUX_DESKTOP_TARGET: ${{ matrix.target }}
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-linux-desktop
+      - name: Native desktop lint
+        run: just desktop-lint
+      - name: Native desktop tests under X11 and lavapipe
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+      - name: Pinned Linux renderer and capture regressions
+        run: just desktop-renderer-test
+      - name: Build same-checkout CLI and Linux package
+        run: |
+          set -euo pipefail
+          cargo build --locked -p phux
+          just desktop-native-build
+          bun clients/desktop/scripts/package-linux.ts
+          mkdir -p "$RUNNER_TEMP/desktop-qualified"
+          tar -xzf clients/desktop/dist/phux-desktop-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP/desktop-qualified"
+      - name: Packaged X11 runtime qualification
+        run: >-
+          xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session --
+          bun clients/desktop/scripts/smoke-linux.ts
+          --app "$RUNNER_TEMP/desktop-qualified/phux-desktop"
+          --phux target/debug/phux
+          --require-backend Vulkan
+          --output "$RUNNER_TEMP/desktop-evidence"
+      - name: Retain packaged Linux runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-linux-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-evidence
           if-no-files-found: warn
           retention-days: 14
 

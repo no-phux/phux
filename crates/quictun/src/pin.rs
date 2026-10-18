@@ -44,17 +44,28 @@ fn normalize(fingerprint: &str) -> String {
 ///
 /// rustls refused the protocol versions (it does not, for TLS 1.3 on ring).
 pub fn client_config(pin: &str, alpn: &[u8]) -> Result<rustls::ClientConfig, rustls::Error> {
+    let mut config = stream_client_config(pin)?;
+    config.alpn_protocols = vec![alpn.to_vec()];
+    Ok(config)
+}
+
+/// [`client_config`] offering no ALPN: for a TLS session run inside a
+/// bridged stream, whose protocol the stream already fixed.
+///
+/// # Errors
+///
+/// As [`client_config`].
+pub fn stream_client_config(pin: &str) -> Result<rustls::ClientConfig, rustls::Error> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedLeaf {
         pin: normalize(pin),
         provider: Arc::clone(&provider),
     });
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+    let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    config.alpn_protocols = vec![alpn.to_vec()];
     Ok(config)
 }
 

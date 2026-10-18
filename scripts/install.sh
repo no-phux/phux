@@ -30,7 +30,7 @@ usage() {
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
 Installs phux and phux-mcp. With --desktop, also installs Phux Desktop
-(Apple silicon, macOS 27 or later; ad-hoc signed, not notarized), installing
+(Apple silicon macOS 27+, or x86_64/arm64 GNU/Linux), installing
 the CLI only when none is found.
 
   --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
@@ -42,8 +42,9 @@ the CLI only when none is found.
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
   --desktop                       Install Phux Desktop.
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,
-                                  else ~/Applications; also $PHUX_DESKTOP_APPLICATIONS_DIR).
-  --stage-dir <absolute dir>      Verify and stage Phux.app there, and install nothing.
+                                  else ~/Applications on macOS; $XDG_DATA_HOME or
+                                  ~/.local/share on Linux; also $PHUX_DESKTOP_APPLICATIONS_DIR).
+  --stage-dir <absolute dir>      Verify and stage Phux.app on macOS; install nothing.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
@@ -180,11 +181,16 @@ resolve() {
 # The one naming rule (ADR-0176 decision 1). Sets asset_stem, asset_name,
 # asset_url and sidecar_url for PRODUCT's build_id on TARGET.
 name_asset() {
+  case "$2" in
+    aarch64-apple-darwin) desktop_platform=macos-arm64 desktop_ext=zip ;;
+    x86_64-unknown-linux-gnu) desktop_platform=linux-x64 desktop_ext=tar.gz ;;
+    aarch64-unknown-linux-gnu) desktop_platform=linux-arm64 desktop_ext=tar.gz ;;
+  esac
   case "$1/$channel" in
     phux/stable) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
     phux/next) release=next asset_stem="phux-next.${build_id}-$2" ext=tar.gz ;;
-    desktop/stable) release="desktop-v${build_id}" asset_stem="phux-desktop-${build_id}-macos-arm64" ext=zip ;;
-    desktop/next) release=next asset_stem="phux-desktop-next.${build_id}-macos-arm64" ext=zip ;;
+    desktop/stable) release="desktop-v${build_id}" asset_stem="phux-desktop-${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
+    desktop/next) release=next asset_stem="phux-desktop-next.${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
   esac
   asset_name="${asset_stem}.${ext}"
   asset_url="${RELEASES}/${release}/${asset_name}"
@@ -480,8 +486,8 @@ publish_desktop() {
 
 rollback_desktop() {
   [ "$app_publishing" -eq 1 ] || return 0
-  [ "$app_published" -eq 0 ] || rm -rf "${applications_dir}/Phux.app"
-  [ ! -d "${app_publish}/previous.app" ] || mv -f "${app_publish}/previous.app" "${applications_dir}/Phux.app" || {
+  [ "$app_published" -eq 0 ] || rm -rf "$installed"
+  [ ! -d "${app_publish}/previous.app" ] || mv -f "${app_publish}/previous.app" "$installed" || {
     phux_message error "rollback failed; the previous app is at ${app_publish}/previous.app"
     app_publish=""
   }
@@ -508,15 +514,20 @@ EOF
 
 # The CLI the app finds from the Dock, where no interactive PATH applies.
 has_cli() {
-  for candidate in "${install_dir}/phux" "${HOME:-}/.local/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux; do
+  for candidate in "${install_dir}/phux" "${HOME:-}/.local/bin/phux" "${HOME:-}/.cargo/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
     [ ! -x "$candidate" ] || return 0
   done
-  return 1
+  command -v phux >/dev/null 2>&1
 }
 
 install_desktop() {
-  [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || die "Phux Desktop ships for Apple silicon macOS only"
-  [ "$(/usr/bin/sw_vers -productVersion | cut -d. -f1)" -ge 27 ] || die "Phux Desktop requires macOS 27 or later"
+  case "$target" in
+    *-linux-gnu) install_linux_desktop; return ;;
+  esac
+  if [ "$dry_run" -eq 0 ]; then
+    [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || die "Phux Desktop requires Apple silicon macOS or GNU/Linux"
+    [ "$(/usr/bin/sw_vers -productVersion | cut -d. -f1)" -ge 27 ] || die "Phux Desktop requires macOS 27 or later"
+  fi
   if [ -z "$stage_dir" ] && ! has_cli; then
     phux_message info "phux CLI not found; installing it first"
     install_cli "" ""
@@ -545,6 +556,146 @@ install_desktop() {
     phux_message warn "could not install the phux-desktop launcher; open the app directly"
   fi
   printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux.app")"
+}
+
+# Linux archives contain only these regular files/directories. Check types
+# before extraction: a symlink must never redirect a later archive member.
+linux_data_home() {
+  case "${XDG_DATA_HOME:-}" in
+    /*) printf '%s\n' "$XDG_DATA_HOME" ;;
+    *) printf '%s\n' "${HOME:-}/.local/share" ;;
+  esac
+}
+
+linux_desktop_member() {
+  case "${1%/}" in
+    phux-desktop | phux-desktop/bin | phux-desktop/bin/phux-desktop | \
+    phux-desktop/share | phux-desktop/share/phux-desktop | \
+    phux-desktop/share/phux-desktop/release.json | \
+    phux-desktop/share/phux-desktop/LICENSE | phux-desktop/share/phux-desktop/NOTICE | \
+    phux-desktop/share/phux-desktop/THIRD-PARTY-NOTICES.txt | \
+    phux-desktop/share/phux-desktop/PaperMono-OFL.txt | phux-desktop/share/phux-desktop/JetBrainsMono-OFL.txt | \
+    phux-desktop/share/applications | phux-desktop/share/applications/dev.phux.desktop.desktop | \
+    phux-desktop/share/icons | phux-desktop/share/icons/hicolor | \
+    phux-desktop/share/icons/hicolor/scalable | phux-desktop/share/icons/hicolor/scalable/apps | \
+    phux-desktop/share/icons/hicolor/scalable/apps/dev.phux.desktop.svg) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+linux_metadata() {
+  [ -f "$1/share/phux-desktop/release.json" ] || return 1
+  manifest_flat "$1/share/phux-desktop/release.json" > "${work}/desktop-metadata" || return 1
+  [ "$(manifest_value "${work}/desktop-metadata" identifier)" = dev.phux.desktop ]
+}
+
+check_linux_desktop_archive() {
+  tar -tzf "${work}/${asset_name}" > "${work}/members" || die "could not read the archive"
+  [ -s "${work}/members" ] || die "the archive is empty"
+  tar -tvzf "${work}/${asset_name}" > "${work}/types" || die "could not read archive types"
+  LC_ALL=C awk 'substr($0,1,1) !~ /[-d]/ { bad=1 } END { exit bad }' "${work}/types" \
+    || die "desktop archive members must be regular files or directories, not links"
+  while IFS= read -r member; do
+    linux_desktop_member "$member" || die "unexpected archive member: $member"
+  done < "${work}/members"
+}
+
+check_linux_desktop_release() {
+  [ -f "${app}/bin/phux-desktop" ] && [ -x "${app}/bin/phux-desktop" ] || die "the archive has no desktop executable"
+  linux_metadata "$app" || die "the archive is not Phux Desktop"
+  [ "$(manifest_value "${work}/desktop-metadata" target)" = "$target" ] || die "the bundle is for another target"
+  [ "$(manifest_value "${work}/desktop-metadata" channel)" = "$channel" ] || die "the bundle is for another channel"
+  metadata_key=version
+  [ "$channel" != next ] || metadata_key=sha
+  [ "$(manifest_value "${work}/desktop-metadata" "$metadata_key")" = "$build_id" ] || die "the bundle is not build ${build_id}"
+}
+
+unpack_linux_desktop() {
+  check_linux_desktop_archive
+  mkdir "${work}/desktop"
+  tar -xzf "${work}/${asset_name}" -C "${work}/desktop" --no-same-owner
+  app="${work}/desktop/phux-desktop"
+  check_linux_desktop_release
+}
+
+publish_linux_desktop() {
+  mkdir -p "$applications_dir"
+  app_lock="${applications_dir}/.phux-desktop-install.lock"
+  trap '' HUP INT TERM
+  mkdir "$app_lock" 2>/dev/null || die "another Desktop install is publishing; if none is running, remove ${app_lock}"
+  app_locked=1
+  trap_signals
+  installed="${applications_dir}/phux-desktop"
+  [ ! -L "$installed" ] || die "refusing to replace a symlink: ${installed}"
+  if [ -e "$installed" ]; then
+    linux_metadata "$installed" || die "refusing to replace an unrelated ${installed}"
+  fi
+  app_publish="$(mktemp -d "${applications_dir}/.phux-desktop-install.XXXXXX")"
+  cp -R "$app" "${app_publish}/phux-desktop"
+  app_publishing=1
+  if [ -e "$installed" ]; then mv "$installed" "${app_publish}/previous.app"; fi
+  app_published=1
+  mv "${app_publish}/phux-desktop" "$installed"
+  app_publishing=0
+}
+
+linux_desktop_launcher() {
+  mkdir -p "$install_dir" || return 1
+  [ ! -d "${install_dir}/phux-desktop" ] || return 1
+  launcher="$(mktemp -d "${install_dir}/.phux-desktop.XXXXXX")" || return 1
+  if ! ln -s "$(cd "$installed" && pwd -P)/bin/phux-desktop" "${launcher}/phux-desktop"; then
+    rmdir "$launcher"
+    return 1
+  fi
+  if mv -f "${launcher}/phux-desktop" "${install_dir}/phux-desktop"; then
+    rmdir "$launcher"
+  else
+    rm -rf "$launcher"
+    return 1
+  fi
+}
+
+# Desktop launchers do not inherit an interactive shell's PATH. Rewrite only
+# Exec and Icon to absolute paths, with both desktop-string and Exec quoting.
+register_linux_desktop() {
+  desktop_source="${installed}/share/applications/dev.phux.desktop.desktop"
+  [ -f "$desktop_source" ] || return 1
+  bundle_path="$(cd "$installed" && pwd -P)" || return 1
+  case "$bundle_path" in *'
+'*) return 1 ;; esac
+  executable="$(printf '%s' "${bundle_path}/bin/phux-desktop" | sed 's/%/%%/g; s/[\\"`$]/\\&/g; s/\\/\\\\/g')"
+  icon="$(printf '%s' "${bundle_path}/share/icons/hicolor/scalable/apps/dev.phux.desktop.svg" | sed 's/\\/\\\\/g')"
+  entries="$(linux_data_home)/applications"
+  mkdir -p "$entries" || return 1
+  [ ! -d "${entries}/dev.phux.desktop.desktop" ] || return 1
+  entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
+  if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
+    /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
+    /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
+    { print }
+  ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/dev.phux.desktop.desktop"; then
+    return 0
+  fi
+  rm -f "$entry"
+  return 1
+}
+
+install_linux_desktop() {
+  [ -z "$stage_dir" ] || die "automatic Desktop staging is not supported on Linux; install with --desktop instead"
+  if ! has_cli; then
+    phux_message info "phux CLI not found; installing it first"
+    install_cli "" ""
+  fi
+  resolve desktop "$target" "$pin" "$pin_sha256"
+  name_asset desktop "$target"
+  if [ "$dry_run" -eq 1 ]; then print_plan desktop "${applications_dir}/phux-desktop"; return; fi
+  fetch_verified
+  unpack_linux_desktop
+  publish_linux_desktop
+  linux_desktop_launcher || phux_message warn "could not install launcher; run ${installed}/bin/phux-desktop"
+  register_linux_desktop || phux_message warn "could not register the desktop menu entry; run ${installed}/bin/phux-desktop"
+  phux_message ok "installed Phux ${build_id} to ${installed}"
+  printf 'next: %s\n' "$(shell_quote "${installed}/bin/phux-desktop")"
 }
 
 # --- main --------------------------------------------------------------------
@@ -615,7 +766,10 @@ if [ -n "$stage_dir" ]; then
   # Stage on the volume the app swaps into, under the same lock.
   applications_dir="$(dirname "$stage_dir")"
 elif [ -z "$applications_dir" ]; then
-  if [ -w /Applications ]; then applications_dir=/Applications; else applications_dir="${HOME:-}/Applications"; fi
+  case "${os:-$(uname -s)}" in
+    [Ll]inux) applications_dir="$(linux_data_home)" ;;
+    *) if [ -w /Applications ]; then applications_dir=/Applications; else applications_dir="${HOME:-}/Applications"; fi ;;
+  esac
 fi
 
 case "${os:-$(uname -s)}/${arch:-$(uname -m)}" in
@@ -633,12 +787,15 @@ cli_publish=""
 app_publishing=0
 app_published=0
 app_publish=""
+app_locked=0
+app_lock=""
 stage_tmp=""
 cleanup() {
   rollback_cli
   rollback_desktop || true
   rm -rf "$work" "$cli_publish" "$app_publish" "$stage_tmp"
   [ "$cli_locked" -eq 0 ] || rmdir "${install_dir}/.phux-install.lock" 2>/dev/null || true
+  [ "$app_locked" -eq 0 ] || rmdir "$app_lock" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap_signals

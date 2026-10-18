@@ -199,7 +199,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
-| GPUI desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
+| GPUI desktop development | Apple-silicon Mac with Xcode/Metal, or x86-64/ARM64 Linux with desktop libraries; native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
@@ -349,7 +349,27 @@ source and bypasses archive verification but still runs ABI tests.
 
 ## GPUI desktop
 
-Apple-silicon Mac. **Prefer Mise plus host Xcode/Metal for the daily desktop
+Apple-silicon macOS and x86-64/ARM64 Linux are supported. Linux builds enable
+both GPUI's X11 and Wayland backends and use Vulkan through wgpu. A working
+Vulkan driver is required; Mesa's lavapipe can run graphical tests without a
+hardware GPU. X11/Xvfb qualification does not establish a compositor's Wayland,
+IME, accessibility, or physical-display presentation behavior.
+
+On Ubuntu 24.04 / Debian, add the desktop development packages:
+
+```sh
+sudo apt-get install -y libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libwayland-dev libx11-dev libxi-dev libxcb1-dev \
+  libvulkan-dev mesa-vulkan-drivers
+```
+
+For an isolated graphical test environment, also install `xvfb xauth xdotool
+dbus-x11 fonts-dejavu-core`. `nix develop` supplies the desktop libraries;
+the graphical session and GPU driver still belong to the host. Linux builds
+preserve the native/Nix compiler and library environment rather than sourcing
+the Apple toolchain normalizer.
+
+On macOS, **prefer Mise plus host Xcode/Metal for the daily desktop
 loop**; keep Nix for separately invoked fully provisioned validation. Both
 remain supported, but desktop doctor and builds reject a Nix shell whose Cargo
 or Rust compiler is shadowed by Mise, or whose explicit selection is Mise. This
@@ -367,14 +387,16 @@ just doctor desktop
 just desktop-app
 ```
 
-`just doctor desktop` verifies that the Metal compiler executes, not merely
-that Xcode exists. Install the separate component with
+On Linux, `just doctor desktop` checks the font and display development
+libraries and warns when no graphical session is available. On macOS it
+verifies that the Metal compiler executes, not merely that Xcode exists.
+Install the separate component with
 `xcodebuild -downloadComponent MetalToolchain` if needed. The first run is a
 from-source native build; later runs reuse it.
 
 See [desktop architecture](./architecture/desktop.md) for the host seams. The
-desktop build reuses the repository's Apple-toolchain environment helper, so it
-can select host Xcode/Metal without mixing in Nix's linker wrappers.
+macOS desktop build reuses the repository's Apple-toolchain environment helper,
+so it can select host Xcode/Metal without mixing in Nix's linker wrappers.
 
 ## Archived Zig Cockpit
 

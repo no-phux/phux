@@ -26,7 +26,8 @@ routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
 `.github/actions/classify-changes`, with no outer path filters.
-`desktop_needed` runs two `xcode-27` jobs for the desktop host's path crates,
+`desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
+jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
 unrouted `clients/desktop` paths. `macos` runs `just desktop-lint`,
 `just desktop-test`, and `just desktop-perf-budget` on the same test build:
@@ -36,11 +37,30 @@ ceilings catch only gross regressions. `package` builds the debug CLI and
 `just desktop-package`, then runs `smoke-app.ts` with
 `--allow-unconfirmed-present` and uploads the evidence directory. Neither job
 holds a build cache, so each run is two cold GPUI and libghostty builds on the
-5 macOS slots shared with the release lanes; a burst of core-crate merges to
-`main` can queue a release behind them. A hosted virtual display never
+5 macOS slots shared with the release lanes. So `main` keeps one running and
+one pending desktop-test run, not one per merge: per-SHA runs once stacked
+~35 macOS jobs ahead of the release builds and left drafts unpublished for
+hours. A hosted virtual display never
 confirms a presented drawable, so real-GPU qualification stays manual:
 `just desktop-native-test` on an Apple silicon Mac with a graphical login
 requires `confirmed` presentation.
+The Linux jobs run the native test/lint gates, build and extract the portable
+package, then run `smoke-linux.ts` under Xvfb/lavapipe with an isolated server.
+`just desktop-renderer-test` also exercises the pinned wgpu dependency's
+submission, shared-atlas and transparent-capture regressions in a disposable
+workspace, reusing the native target directory.
+That gate targets the low-level `wgpu_` modules, not gpui-fast's opt-in
+composed-window tile suite. Four composed-path equivalence failures reproduce
+unchanged in pristine gpui-fast 0.1.9 on lavapipe (`phux-9ddi1`); the desktop
+does not enable that composition path.
+Native frame capture and an independent X11 window screenshot with OCR,
+keyboard delivery, clipboard paste, shifted Meta bytes, window identity and
+app-crash session survival are checked separately.
+Release and CI smoke runs require the renderer's log to identify Vulkan;
+silently falling back to OpenGL does not qualify the Vulkan lane.
+Submitted receipts never count as confirmed physical-display presentation.
+Wayland compositor, physical GPU, IME and screen-reader qualification are not
+implied by this software-renderer lane.
 Unknown paths, unavailable history, and empty diffs
 request every surface. On pull requests the classifier also emits
 `test_filterset` (an `rdeps(=crate)` union), so a library change skips
