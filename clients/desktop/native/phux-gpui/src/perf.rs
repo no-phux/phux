@@ -14,7 +14,7 @@
 //! `desktop.key_to_paint` runs from a key reaching a focused terminal to the
 //! first paint of that terminal's next output. Everything is a `static` from
 //! [`phux_perf`], always on, one relaxed atomic add per sample.
-//! [`crate::diag::report`] appends them to the kernel and runtime rows.
+//! The desktop's `diag::report` appends them to the kernel and runtime rows.
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -66,7 +66,7 @@ pub static TABLE: &[Metric] = &[
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Time since the host started; [`crate::diag::report`] counts from here.
+/// Time since the host started; the desktop's `diag::report` counts from here.
 #[must_use]
 pub fn uptime() -> Duration {
     STARTED.elapsed()

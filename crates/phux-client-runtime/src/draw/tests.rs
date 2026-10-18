@@ -286,3 +286,24 @@ fn block_elements_leave_text_runs() {
     assert_eq!(list.blocks.len(), 1);
     assert_eq!((list.blocks[0].col, list.blocks[0].regions.len()), (1, 1));
 }
+
+#[test]
+fn a_line_merges_past_one_the_same_cell_starts() {
+    let mut frame = frame(&[&["a", "b", "c"]], 3);
+    cell_mut(&mut frame, 0, 0).0.flags = CELL_STRIKETHROUGH;
+    for col in 1..3 {
+        let (cell, _) = cell_mut(&mut frame, 0, col);
+        cell.flags = CELL_STRIKETHROUGH | CELL_OVERLINE;
+        cell.underline = 1;
+    }
+    let list = DrawList::build(&frame, &theme(), Visibility::default());
+    let lines: Vec<_> = list
+        .decorations
+        .iter()
+        .map(|line| (line.kind, line.start, line.end))
+        .collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines.contains(&(DecorationKind::Strikethrough, 0, 3)));
+    assert!(lines.contains(&(DecorationKind::Underline(Underline::Single), 1, 3)));
+    assert!(lines.contains(&(DecorationKind::Overline, 1, 3)));
+}

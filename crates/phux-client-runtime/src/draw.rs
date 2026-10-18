@@ -703,8 +703,10 @@ impl<C: Copy + PartialEq> Builder<C> {
             .decorations
             .iter_mut()
             .rev()
-            .take_while(|line| line.row == row && line.end == col)
-            .find(|line| line.kind == kind)
+            // The previous cell's lines end at `col`; this cell's own, pushed
+            // just before, end at `col + 1` and must not stop the search.
+            .take_while(|line| line.row == row && (line.end == col || line.end == col + 1))
+            .find(|line| line.kind == kind && line.end == col)
             && line.color == color
             && line.faint == faint
         {

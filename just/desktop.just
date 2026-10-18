@@ -44,6 +44,9 @@ desktop-perf-headless profile="test": desktop-source
 desktop-lint: worktree-claim desktop-source
     cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
     cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
+    # phux-gpui alone resolves without the desktop's `patched-gpui`, so its
+    # published-gpui-fast branches (src/platform.rs) compile and lint too.
+    cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml -p phux-gpui --all-targets -- -D warnings
 
 [group('desktop')]
 [doc('Repair repairable desktop host lock drift without resolving GPUI')]

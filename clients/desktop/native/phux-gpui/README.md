@@ -51,9 +51,14 @@ Enable it only when your build serves gpui-fast from phux's patched sources
 
 | Patch | With the feature | Without it |
 |---|---|---|
-| 0006 bulk glyph sprites | A row's glyphs are retained atlas sprites, one paint call per row. | Glyphs paint from their shaped lines each frame. Same pixels, more work per frame. |
+| 0006 bulk glyph sprites | A row's glyphs are retained atlas sprites, one paint call per row. | Glyphs paint from their shaped lines each frame. Same glyphs, more work per frame. |
 | 0001 drawable presented | A delivery fence clears only after the exact drawable was presented on a visible window. | It clears when the next frame begins: the scene was submitted, not proven on screen. |
 | 0005 press-and-hold | A held key repeats on macOS. | macOS shows its accent menu for a held letter. |
+
+Patch 0003 has no API and no feature: on macOS it ties a fallback family to
+the font data registered in memory. On published gpui-fast, a bundled Nerd
+symbol can resolve to an installed font of the same PostScript name, or to a
+missing-glyph box when none is installed.
 
 The pixel fixtures and perf budgets run with the feature, through
 `phux-desktop`.
