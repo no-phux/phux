@@ -2434,8 +2434,10 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         /// fits the terminal width. The expiry line says when the credential
         /// stops working, or that it does not expire. Needs a server address:
         /// pass `--host`, or let it derive one from the running server's
-        /// bound wss listener. Refused, with nothing minted, when neither
-        /// yields an address a device can dial. Cannot combine with `--json`,
+        /// bound wss listener. Also includes a single-use phone enrollment
+        /// ticket (as `--enroll` does): needs a device-dialable QUIC listener
+        /// and a server certificate issued by its workload CA. Refused before
+        /// minting if any of these are missing. Cannot combine with `--json`,
         /// which prints the bearer.
         #[usage(long, conflicts("--json", "--no-qr"))]
         qr: bool,
@@ -2503,8 +2505,9 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         /// Also mint a single-use enrollment ticket into the link, so a
         /// device without ssh (a phone) enrolls a workload certificate for a
         /// key it generates and keeps. Needed to reach a server in `paired`
-        /// policy mode. The ticket expires in ten minutes. With
-        /// `--relay-route` the device enrolls end to end through the relay.
+        /// policy mode. `--qr` implies this for direct phone pairing. The
+        /// ticket expires in ten minutes. With `--relay-route` the device
+        /// enrolls end to end through the relay.
         #[usage(long)]
         enroll: bool,
     },

@@ -824,7 +824,9 @@ pub(crate) fn run_pair(
         expires_label: expires.as_deref(),
     };
     let enroll = match door {
-        Door::Listener { enroll } => enroll,
+        // A camera QR is a phone pairing invitation, not a bearer-only link.
+        // Keep plain and JSON mints unchanged for machine clients.
+        Door::Listener { enroll } => phone_enrollment_requested(enroll, qr),
         Door::Relay { route, enroll } => {
             let replace = replace_token.as_deref();
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
@@ -844,7 +846,9 @@ pub(crate) fn run_pair(
         &addresses.live,
         addresses.server_url.as_deref(),
     )
-    .or_else(|| (enroll && addresses.live.quic.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned()));
+    .or_else(|| {
+        (enroll && addresses.quic_endpoint.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned())
+    });
     if let Some(refusal) = refusal {
         error!("pair: {refusal}");
         return ExitCode::FAILURE;
@@ -979,13 +983,23 @@ pub(crate) enum Door {
     },
 }
 
-/// Why `--enroll` refuses a server certificate no workload CA issued.
-const ENROLL_NEEDS_AUTHORITY: &str = "--enroll needs the server's certificate to chain to its \
-     workload CA (ADR-0153), and this one does not (it predates the CA, or the operator \
-     supplied it). `phux workload authority --rotate` issues one (every device then re-pairs)";
+/// Explicit camera pairing must work for a new phone; ordinary bearer and
+/// machine-readable mints keep their existing opt-in enrollment behavior.
+const fn phone_enrollment_requested(enroll: bool, qr: bool) -> bool {
+    enroll || qr
+}
 
-const ENROLL_NEEDS_QUIC: &str = "--enroll needs a bound QUIC listener: a device enrolls over \
-     QUIC (`phux server --quic ADDR`, or the overlay auto-listener)";
+/// Why phone enrollment refuses a server certificate no workload CA issued.
+const ENROLL_NEEDS_AUTHORITY: &str = "phone enrollment needs a server certificate issued by its \
+     workload CA, but this certificate predates the CA or was supplied separately; nothing was \
+     minted. `phux workload authority --rotate` then `phux upgrade` repairs an auto-provisioned \
+     legacy certificate, but rotates the CA: every paired device must re-pair and every workload \
+     credential must re-enroll. Operator-supplied certificates must be replaced by their owner";
+
+const ENROLL_NEEDS_QUIC: &str = "phone pairing needs a device-dialable QUIC listener to enroll \
+     its certificate; none was minted. Bind one with `phux server --quic ADDR` (or use the \
+     overlay auto-listener), then retry. A loopback or wildcard bind without an overlay \
+     address cannot be advertised to a phone";
 
 /// The fields a mint document gained after its first schema: the CA pin
 /// (ADR-0153) and an enrollment ticket (ADR-0154). Additive: `phux host add`
@@ -2030,8 +2044,9 @@ mod tests {
     use super::{
         LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names, build_connect_link,
         build_connect_link_pinned, build_relay_connect_link, legacy_connect_link, link_refusal,
-        live_listeners, pair_document, parse_connect_link, percent_encode, resolve_quic_endpoint,
-        resolve_server_url, select_relay_connector, shows_default_qr,
+        live_listeners, pair_document, parse_connect_link, percent_encode,
+        phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
+        select_relay_connector, shows_default_qr,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
@@ -2393,6 +2408,13 @@ mod tests {
         assert!(!shows_default_qr(false, false), "piped output stays text");
         assert!(!shows_default_qr(true, true), "another form was chosen");
         assert!(!shows_default_qr(true, false));
+    }
+
+    #[test]
+    fn camera_pairing_enrolls_without_an_extra_flag_but_machine_mints_do_not() {
+        assert!(phone_enrollment_requested(false, true));
+        assert!(phone_enrollment_requested(true, false));
+        assert!(!phone_enrollment_requested(false, false));
     }
 
     /// No listener report, or one with nothing bound, is a refusal naming

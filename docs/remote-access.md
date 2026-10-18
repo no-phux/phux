@@ -569,8 +569,11 @@ On a terminal the link is followed by a scannable QR of it; `--no-qr` leaves
 the QR out, and piped output never carries one.
 `phux pair --qr` is the form to film: it scales a terminal QR to the window,
 prints whether the credential expires, and does not print the bearer or the
-link (both exist only inside the QR). `--expires 15m` (also `24h`, `7d`, up
-to 30 days) sets that absolute expiry; with no `--expires` the line says the
+link (both exist only inside the QR). It includes a single-use enrollment
+ticket for a new phone automatically; it refuses without a reachable QUIC
+listener and a server certificate issued by its workload CA, before minting
+an unusable credential. `--expires 15m` (also `24h`, `7d`, up to 30 days)
+sets that absolute expiry; with no `--expires` the line says the
 credential does not expire, which is the wrong thing to leave in a recording.
 `phux pair --secret-file PATH` pre-pairs off camera: PATH is created mode
 0600 with the bearer and link, and neither is printed. `--json` still prints
@@ -594,8 +597,9 @@ is not advertised. The app passes one selected endpoint to `RemoteClient`;
 the shared runtime alone owns dialing and reconnecting, with no bridge-side
 fallback race. `ca` is the `sha256:` fingerprint of the CA the server's
 certificate chains to; an app pins it beside `fp`, and one that predates it
-ignores it. `phux pair --enroll` adds `enroll`, a single-use ticket with which
-the device enrolls a workload certificate for a key it generates and keeps
+ignores it. `phux pair --enroll` (implied by `--qr` for direct phone pairing)
+adds `enroll`, a single-use ticket with which the device enrolls a workload
+certificate for a key it generates and keeps
 (on a phone, in its keystore): what a server in `paired` mode requires
 ([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
 The ticket expires in ten minutes and enrolls one key; `phux --remote NAME
