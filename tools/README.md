@@ -15,14 +15,20 @@ format-check, typecheck, lint and test it.
 
 - `main.ts` lists every command; each area exports its own from
   `src/<area>/commands.ts`.
-- `src/lib/` holds what more than one area uses: the Cargo path graph
-  (`cargo.ts`), git, GitHub Actions outputs, the GitHub API, value narrowing
-  for parsed TOML and JSON, and human diagnostics (`output.ts`).
+- `src/lib/` holds what more than one area uses: the command contract
+  (`command.ts`), child processes (`process.ts`), git and `gh`, the Cargo
+  path graph (`cargo.ts`), GitHub Actions outputs, value narrowing for parsed
+  TOML and JSON, and human diagnostics (`output.ts`).
 - `src/<area>/*.test.ts` sit next to the code they test and run with
   `bun test`. Tests call functions directly; a fixture git repository or a
   fake `gh` on `PATH` stands in for the outside world, never a module mock.
 
 ## Rules
+
+- A command declares `summary` and, if it takes arguments, `usage`; it
+  throws `UsageError` for a bad command line (exit 2, usage printed) and
+  `Failure` for an expected failure (exit 1, message, no stack). `main.ts`
+  owns `--help`, and refuses arguments to a command with no `usage`.
 
 - Runtime code imports only Bun and `node:` built-ins. `devDependencies`
   are the typecheck, lint and format tools; nothing needs `bun install` to

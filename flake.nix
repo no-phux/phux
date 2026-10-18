@@ -334,10 +334,9 @@
             # hosted runners ship jq, but the scripts must also run in the
             # devshell (`just dep-stats`, local dashboard renders).
             pkgs.jq
-            # The Python guards and tests still under scripts/. Python is a
-            # TOOLING dependency only: no `cargo build` ever needs an
-            # interpreter. Pinning it here is what lets those gates hard-fail
-            # on a missing python3 instead of skipping themselves.
+            # The demo setup scripts and their test (just workflow-check), Rust
+            # test fixtures, examples and benchmarks. Python is a TOOLING
+            # dependency only: no `cargo build` or CI decision needs it.
             pkgs.python3
             # Debugging.
             pkgs.lldb

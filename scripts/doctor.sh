@@ -132,7 +132,6 @@ desktop_tools() {
     fi
     native_tools
     node_tools
-    need python3 'mise install; or: nix develop'
     local expected actual
     expected="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
     actual="$(bun --version 2>/dev/null || true)"
@@ -176,6 +175,7 @@ case "$scope" in
     web)
         rust_tools web
         node_tools
+        need bun 'mise install; or: nix develop'
         need wasm-pack "$(env_remedy 'cargo install --locked wasm-pack --version 0.15.0')"
         need wasm-opt 'brew install binaryen; or sudo apt-get install -y binaryen; Nix: nix develop'
         bindgen="$(sed -n 's/^wasm-bindgen = "=\([^"]*\)"/\1/p' clients/phux-web/Cargo.toml)"
@@ -194,7 +194,7 @@ case "$scope" in
         native_tools
         node_tools
         for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#full-root-validation')"; done
-        if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for workflow routing checks' 'brew install bash; put Homebrew bin on PATH'; fi
+        if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for the workflow gate scripts' 'brew install bash; put Homebrew bin on PATH'; fi
         for tool in nextest deny; do
             if cargo "$tool" --version >/dev/null 2>&1; then ok "cargo-$tool"; else
                 if [[ "$tool" == nextest ]]; then

@@ -10,8 +10,8 @@ last-reviewed: 2026-10-17
 one TypeScript package run by the pinned Bun: `bun tools/main.ts
 <command>`. Facts Cargo holds are read from the manifests, never copied
 into a table. No build or CI decision is made in Python any more; it
-remains only where a test fixture, example or dev benchmark is itself a
-Python program. Shell stays for sequencing programs.
+remains where a test fixture, example, dev benchmark or the demo setup
+scripts are themselves Python. Shell stays for sequencing programs.
 
 Status: Accepted
 Date: 2026-10-17
@@ -37,7 +37,8 @@ with type-aware `oxlint`, and the workflow gate already installs that Bun.
 1. **One package.** `tools/` is a private Bun package. `main.ts` lists the
    commands; each area (`routing`, `release`, `cargo`, `perf`, `web`, ...)
    exports its own from `src/<area>/commands.ts`, with tests beside the
-   code.
+   code. `main.ts` owns usage, `--help` and exit codes for all of them: a
+   command throws `UsageError` (exit 2) or `Failure` (exit 1).
 2. **Runtime is Bun and its built-ins.** Commands import only Bun and
    `node:` modules (TOML, YAML, globbing, `fetch`, subprocesses and the
    test runner are built in), so running one needs no `bun install`.
