@@ -225,6 +225,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Proposed
 
+- [0187](./0187-quick-capture.md) Quick capture saves intent before dispatch; the desktop launch spike does not yet implement durable cross-device capture.
+
 Drafted and under review; none of these governs anything yet.
 
 - [0177](./0177-non-terminal-resources-have-declared-producers.md) A declared producer is an owner-declared program whose process is the activation of the resource it feeds, bound by a one-resource credential; `FEED` is the first kind with one and usage is its first feed. Would supersede ADR-0166's lifecycle, delivery, and visibility.

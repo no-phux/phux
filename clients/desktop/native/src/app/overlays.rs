@@ -36,7 +36,7 @@ pub(crate) use goto_frecency::Store as GotoFrecency;
 pub(crate) use goto_search::GotoSearch;
 
 #[cfg(test)]
-mod palette_tests;
+pub(super) mod palette_tests;
 #[cfg(test)]
 mod window_tests;
 
@@ -50,6 +50,7 @@ pub(super) struct PaletteView {
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputSlot {
+    Capture,
     Find,
     Rename,
     SessionName,
@@ -62,6 +63,18 @@ pub enum InputSlot {
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     match desk.modal.clone() {
         Modal::None => {}
+        Modal::Capture => {
+            let draft = desk.capture.draft.clone();
+            let input = modal_input(
+                desk,
+                InputSlot::Capture,
+                &draft,
+                "What needs changing?",
+                window,
+                cx,
+            );
+            input.update(cx, |input, cx| input.focus(window, cx));
+        }
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -246,6 +259,12 @@ impl Desk {
         cx: &mut Context<Self>,
     ) {
         match (slot, submit) {
+            (InputSlot::Capture, submit) => {
+                self.capture.draft = value;
+                if let Some(shift) = submit {
+                    self.submit_capture(!shift, window, cx);
+                }
+            }
             (InputSlot::Find, None) => {
                 let case = self.find.as_ref().is_some_and(|find| find.case_sensitive);
                 self.run_search(value, case, cx);
@@ -275,6 +294,13 @@ impl Desk {
     /// and keeps the rest of the query; the path picker searches the host.
     fn palette_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.modal {
+            Modal::Commands | Modal::Goto if query.starts_with('!') => {
+                let text = query[1..].trim_start();
+                if !text.is_empty() {
+                    self.capture.draft = text.to_owned();
+                }
+                self.open_modal(Modal::Capture, window, cx);
+            }
             Modal::Goto if query.starts_with('>') => {
                 self.modal = Modal::Commands;
                 self.mark_prepared();
@@ -558,6 +584,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
     let colors = &look.chrome;
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
+        Modal::Capture => capture_panel(desk, &look),
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -617,6 +644,33 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
     };
     backdrop(colors, window, cx, card)
+}
+
+fn capture_panel(desk: &Desk, look: &Look) -> AnyElement {
+    let input = desk.input_entity(InputSlot::Capture);
+    sheet(look, 560.)
+        .id("capture-panel")
+        .debug_selector(|| "capture-panel".into())
+        .p(px(16.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child("Capture · OpenCode")
+        .children(input.map(|input| Input::new(&input)))
+        .when(desk.capture.is_pending(), |panel| {
+            panel.child(muted(look, "Dispatching…"))
+        })
+        .child(muted(
+            look,
+            "Enter: dispatch & follow · Shift+Enter: dispatch & stay · @session: route",
+        ))
+        .children(
+            desk.capture
+                .error
+                .clone()
+                .map(|error| div().text_sm().child(error)),
+        )
+        .into_any_element()
 }
 
 /// The gap between a transient surface and the window's edges.

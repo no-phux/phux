@@ -291,6 +291,7 @@ fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>) -> gpui::
                         (Modal::Commands, "Actions", "palette-mode-commands"),
                         (Modal::Settings, "Settings", "palette-mode-settings"),
                         (Modal::Windows, "Windows", "palette-mode-windows"),
+                        (Modal::Capture, "Capture !", "palette-mode-capture"),
                     ]
                     .into_iter()
                     .map(|(choice, label, id)| {

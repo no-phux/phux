@@ -176,8 +176,8 @@ pub struct Connection {
     fetched: HashSet<ArrangementKey>,
     closed: bool,
     known: HashSet<ResourceId>,
-    /// Terminals this window spawned, admitted before the post-spawn topology
-    /// refresh lists them. The spawn reply names the terminal and the server
+    /// Terminals this window spawned or attached, admitted before the topology
+    /// refresh lists them. The successful reply names the terminal and the server
     /// pumps its replica at once, so a new pane can appear without waiting a
     /// whole `GET_STATE` round trip (which is a full server snapshot on a
     /// remote link). Cleared on any connection boundary or close.
@@ -452,7 +452,7 @@ impl Connection {
         !self.closed && self.client.decide_approval(id, decision)
     }
 
-    /// The terminal is in the latest topology and the runtime will accept input.
+    /// The terminal is inventoried or explicitly admitted, and accepts input.
     #[must_use]
     pub fn ready(&self, id: &ResourceId) -> bool {
         !self.closed
@@ -843,9 +843,9 @@ impl Connection {
                         .retain(|_, conversation| &conversation.parent != terminal_id);
                 }
                 _ => {
-                    if let Some(id) = own_spawn(event) {
-                        // Our own spawn is live the moment the server answers it; the
-                        // topology refresh that lists it is a later round trip.
+                    if let Some(id) = admitted_terminal(event) {
+                        // A successful spawn/attach admits this exact resource;
+                        // a topology refresh listing it is a later round trip.
                         self.admitted.insert(id.clone());
                     }
                 }
@@ -1233,12 +1233,17 @@ pub fn parse_terminal(value: &str) -> Option<ResourceId> {
     id::parse(value)
 }
 
-/// The terminal id of a spawn this window owns and may place before the
-/// post-spawn topology refresh lists it. A refused spawn names none.
-fn own_spawn(event: &Event) -> Option<&ResourceId> {
+/// An exact resource the server admitted for this client's spawn/attach.
+/// Refusals never grant readiness, even when they name a resource.
+fn admitted_terminal(event: &Event) -> Option<&ResourceId> {
     match event {
         Event::TerminalSpawned {
             terminal_id: Some(id),
+            error: None,
+            ..
+        }
+        | Event::TerminalAttached {
+            terminal_id: id,
             error: None,
             ..
         } => Some(id),
@@ -1292,7 +1297,7 @@ mod remote_acceptance;
 
 #[cfg(test)]
 mod paint_wake_tests {
-    use super::{own_spawn, paint_wake, session_attached};
+    use super::{admitted_terminal, paint_wake, session_attached};
     use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
     use phux_protocol::ResourceId;
 
@@ -1323,10 +1328,10 @@ mod paint_wake_tests {
     }
 
     #[test]
-    fn only_a_successful_spawn_is_admitted_before_the_topology_lists_it() {
+    fn only_successful_spawn_or_attach_is_admitted_before_inventory() {
         let terminal = ResourceId::local(7);
         assert_eq!(
-            own_spawn(&Event::TerminalSpawned {
+            admitted_terminal(&Event::TerminalSpawned {
                 request_id: 1,
                 terminal_id: Some(terminal.clone()),
                 error: None,
@@ -1334,22 +1339,38 @@ mod paint_wake_tests {
             Some(&terminal)
         );
         assert_eq!(
-            own_spawn(&Event::TerminalSpawned {
+            admitted_terminal(&Event::TerminalSpawned {
                 request_id: 2,
-                terminal_id: Some(terminal),
+                terminal_id: Some(terminal.clone()),
                 error: Some("refused".into()),
             }),
             None
         );
         assert_eq!(
-            own_spawn(&Event::TerminalSpawned {
+            admitted_terminal(&Event::TerminalSpawned {
                 request_id: 3,
                 terminal_id: None,
                 error: None,
             }),
             None
         );
-        assert_eq!(own_spawn(&Event::TopologyChanged), None);
+        assert_eq!(
+            admitted_terminal(&Event::TerminalAttached {
+                request_id: 4,
+                terminal_id: terminal.clone(),
+                error: None
+            }),
+            Some(&terminal)
+        );
+        assert_eq!(
+            admitted_terminal(&Event::TerminalAttached {
+                request_id: 5,
+                terminal_id: terminal,
+                error: Some("refused".into())
+            }),
+            None
+        );
+        assert_eq!(admitted_terminal(&Event::TopologyChanged), None);
     }
 }
 
