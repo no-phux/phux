@@ -1,12 +1,6 @@
----
-audience: contributors, agents
-stability: evolving
-last-reviewed: 2026-10-17
----
-
 # Native terminal painter
 
-**TL;DR.** `Terminal` is a `gpui::Render` entity. `Terminal::new` takes
+`Terminal` is a `gpui::Render` entity. `Terminal::new` takes
 `Arc<Client>`, a runtime `ViewId` and `ResourceId`, and paints that
 publication with native GPUI glyphs. It does not look up a string registry.
 

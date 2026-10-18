@@ -97,12 +97,7 @@ pub(crate) fn page() -> Page {
         title: "phux status-bar widgets reference",
         summary: "Every registered status-bar widget kind with its options \
                   and defaults.",
-        tldr: "Every status-bar widget kind the binary registers, with the \
-               exact options and defaults each factory accepts, plus the \
-               universal `style` table and the `min-cols` / `max-cols` \
-               responsive-visibility bounds. Rendered from the same spec \
-               consts the factories validate options against, so a kind or \
-               option is listed here exactly when the binary accepts it.",
+        lede: "Status-bar widget kinds, their options and defaults, and the shared `style` and visibility settings.",
         body,
     }
 }

@@ -1,4 +1,4 @@
-# Release operations. CI does the releasing; see docs/RELEASING.md.
+# Release operations. CI does the releasing; see docs/releasing.md.
 
 
 # Stuck drafts, assetless releases, untagged release PRs, a stale stable

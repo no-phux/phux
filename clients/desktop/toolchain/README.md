@@ -1,12 +1,6 @@
----
-audience: contributors, agents
-stability: evolving
-last-reviewed: 2026-10-17
----
-
 # Desktop framework toolchain
 
-**TL;DR.** The desktop builds against GPUI Kit 0.7.3 on
+The desktop builds against GPUI Kit 0.7.3 on
 [gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.9, a GPUI fork with
 retained views, layout and text measurement, at the Zed revision of the
 `gpui-pre` 0.3.9 snapshot Kit pins. Kit's `gpui-pre` crates are served by

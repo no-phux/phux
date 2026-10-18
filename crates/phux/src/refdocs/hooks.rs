@@ -82,9 +82,7 @@ pub(crate) fn page() -> Page {
          non-blocking bounded channel (a full queue drops the event), a \
          fixed number of hook children run concurrently, and each child \
          runs under a timeout with kill-on-drop. A slow hook never blocks \
-         the server.\n\n\
-         Semantics, examples, and the notification pattern live in \
-         `docs/consumers/tui.md` section 9.\n",
+         the server.\n",
     );
 
     Page {
@@ -92,12 +90,7 @@ pub(crate) fn page() -> Page {
         title: "phux hooks reference",
         summary: "Every hook event the server fires, with its context \
                   keys, environment projection, and matching rules.",
-        tldr: "Every `[[hooks.<event>]]` event the server fires, the \
-               context keys a `when` clause can match, and the `PHUX_*` \
-               environment each hook child receives. Rendered from the \
-               same vocabulary `phux config check` validates against and \
-               the dispatcher injects with, so an event is listed here \
-               exactly when the server fires it.",
+        lede: "Hook events the server fires, the context a `when` clause can match, and the environment a hook process gets.",
         body,
     }
 }

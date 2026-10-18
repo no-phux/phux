@@ -4,18 +4,16 @@
 //!
 //! The table under test is `src/tool_table.rs`, compiled here with `#[path]`
 //! — the same file the adapter annotates its catalog from and the generated
-//! `docs/reference/parity.md` renders. It is checked against three sources
-//! this test does not own:
+//! `docs/reference/parity.md` renders. It is checked against:
 //!
 //! - the live catalog, from `phux-mcp --schema` (the bytes `tools/list`
 //!   serves, per `schema_is_exactly_the_live_tools_list_catalog`);
 //! - the CLI grammar, from `docs/reference/cli.md`, which the `phux` crate's
 //!   freshness test renders from the usage spec and byte-pins, so it is the
 //!   grammar and not a hand-kept list;
-//! - the agent-facing verbs, from `docs/consumers/agents.md` §7 (the JSON
-//!   index), headings and body alike: a backticked token that names a
-//!   `phux` invocation path (a leaf, not a group noun like `agent`) is an
-//!   agent-facing verb.
+//! - the JSON index in `docs/agents.md`, independently of the tool table;
+//! - [`AGENT_FACING`], a fixed coverage floor so shrinking the guide cannot
+//!   silently erase existing agent verbs, including mail and claim renew.
 
 #![allow(
     clippy::expect_used,
@@ -69,15 +67,62 @@ fn cli_verbs() -> BTreeSet<String> {
         .collect()
 }
 
-/// The agent-facing verbs `docs/consumers/agents.md` §7 indexes: every
-/// backticked token in the section, headings and body, that names a CLI
-/// invocation path, with a leading `phux ` and any flag suffix
-/// (`watch --json`) dropped. A group noun (`agent`, `host`, `resource`) is a
-/// parent of other paths, not an action with a document, and is skipped.
+/// The CLI verbs an agent is expected to drive: each needs an MCP tool or a
+/// `CLI_ONLY` row saying why not. Add a verb here when you add one agents
+/// should reach.
+const AGENT_FACING: &[&str] = &[
+    "agent answer",
+    "agent prompt",
+    "agent send-keys",
+    "agent wait",
+    "approvals",
+    "ask",
+    "channel",
+    "config agents",
+    "config run",
+    "host add",
+    "host ls",
+    "host renew",
+    "host upgrade",
+    "kill",
+    "launch",
+    "logs",
+    "ls",
+    "mcp",
+    "new",
+    "organize",
+    "play",
+    "rec mark",
+    "relaunch",
+    "resize",
+    "resource methods",
+    "resource show",
+    "resource wait",
+    "restore",
+    "rm",
+    "run",
+    "signal",
+    "snapshot",
+    "spawn",
+    "status",
+    "update",
+    "wait",
+    "watch",
+    "whoami",
+    "mail send",
+    "mail read",
+    "mail ack",
+    "claim take",
+    "claim renew",
+    "claim release",
+    "claim list",
+];
+
+/// Agent verbs indexed in the public guide, independent of the tool table.
 fn agent_facing_verbs(cli: &BTreeSet<String>) -> BTreeSet<String> {
-    let agents = repo_file("docs/consumers/agents.md");
+    let agents = repo_file("docs/agents.md");
     let start = agents
-        .find("\n## 7. JSON index")
+        .find("\n## JSON index")
         .expect("agents.md has the JSON index");
     let end = agents[start + 1..]
         .find("\n## ")
@@ -114,18 +159,24 @@ fn tool_verbs() -> BTreeSet<&'static str> {
 #[test]
 fn every_agent_facing_cli_verb_has_a_tool() {
     let cli = cli_verbs();
-    let agent_facing = agent_facing_verbs(&cli);
-    assert!(
-        agent_facing.len() >= 25,
-        "the JSON index parse found too few verbs to be meaningful ({} found): {agent_facing:?}",
-        agent_facing.len()
-    );
     let tools = tool_verbs();
-    for verb in &agent_facing {
-        let exempt = CLI_ONLY.iter().any(|(name, _)| name == verb);
+    let documented = agent_facing_verbs(&cli);
+    for verb in AGENT_FACING {
+        assert!(
+            documented.contains(*verb),
+            "the public JSON index lost {verb}"
+        );
+    }
+    assert!(documented.len() >= AGENT_FACING.len());
+    for verb in &documented {
+        assert!(
+            cli.contains(verb),
+            "JSON index names `phux {verb}`, which is not in the CLI grammar"
+        );
+        let exempt = CLI_ONLY.iter().any(|(name, _)| *name == verb);
         assert!(
             tools.contains(verb.as_str()) || exempt,
-            "`phux {verb}` is indexed in agents.md §7 but no MCP tool mirrors it; add the tool, \
+            "`phux {verb}` is agent-facing but no MCP tool mirrors it; add the tool, \
              or a CLI_ONLY row in crates/phux-mcp/src/tool_table.rs saying why not"
         );
         assert!(

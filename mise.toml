@@ -1,6 +1,6 @@
 # The Mise environment: managed toolchains on top of your own system packages.
 # `flake.nix` is the other supported environment and the fully provisioned one.
-# docs/SETUP.md#choosing-an-environment says which to pick and what each covers.
+# docs/development.md#choosing-an-environment says which to pick and what each covers.
 #
 # Both environments are held together rather than merely documented as similar:
 # `just toolchain-check` (a `just guards` gate) checks this file against the
@@ -18,7 +18,7 @@
 # (the pinned `mr-boxington` below): one shared, disk-budgeted compiler-output
 # store across worktrees, managed `target/` directories that are collected when
 # a checkout goes away, and a machine-wide compiler pool. See
-# docs/SETUP.md#build-cache-mbx for why phux needs it.
+# docs/development.md#build-cache-mbx for why phux needs it.
 rust = { version = "1.99.0", mr_boxington = true }
 zig = "0.16.0"
 node = "24"
@@ -52,7 +52,7 @@ mr-boxington = "1.22.0"
 
 # --- Deliberately absent ----------------------------------------------------
 # cargo-nextest has no prebuilt entry in Mise's registry, and the `cargo:`
-# backend would build it from source — which docs/SETUP.md specifically warns
+# backend would build it from source — which docs/development.md specifically warns
 # against, since nextest's source releases can need a newer compiler than this
 # repository's Rust pin. Install the official prebuilt binary instead:
 # https://nexte.st/docs/installation/pre-built-binaries/. `bash

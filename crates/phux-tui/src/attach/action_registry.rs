@@ -791,7 +791,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "toggle-project-group",
         description: "Collapse or expand one project group in the sidebar's \
-                      Sessions zone (ADR-0168)",
+                      Sessions zone",
         params: "`project` (the group's key, as the sidebar header carries it)",
         palette: Palette::Hidden {
             reason: "requires the `project` arg the sidebar's group header supplies, \

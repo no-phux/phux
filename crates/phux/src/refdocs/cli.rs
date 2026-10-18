@@ -31,13 +31,9 @@ pub(crate) fn page() -> Page {
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut body = String::from(
-        "Each section below is the `--help` text for one invocation path, \
-         rendered by the same argument parser the binary runs — flags, \
-         defaults, value names, and descriptions here are the ones the \
-         binary enforces. The root page omits the live crate version that \
-         `--help` prints (`phux <version>`), so a release bump does not \
-         churn this file. Hidden internal subcommands are omitted, exactly \
-         as they are from `--help` itself.\n\n",
+        "One section per command, in the order `phux <command> --help` \
+         would print them. The version line and hidden subcommands are \
+         left out.\n\n",
     );
     for (path, cmd) in &entries {
         let help =
@@ -61,11 +57,7 @@ pub(crate) fn page() -> Page {
         title: "phux CLI reference",
         summary: "Every non-hidden `phux` invocation path with its flags, \
                   defaults, and help text.",
-        tldr: "The complete `phux` command surface: one section per \
-               invocation path, each carrying the exact long help of the \
-               binary that generated it. Rendered from the argument parser \
-               itself, so the flags, defaults, and descriptions shown here \
-               are the ones the binary enforces.",
+        lede: "The `--help` text of every `phux` command.",
         body,
     }
 }

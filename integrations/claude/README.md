@@ -17,7 +17,7 @@ resources they also open a session under Claude's pane and append one record
 per hook event (`session_start`, `prompt` as a character count, `tool_start`
 and `tool_end` by tool name, `ask`, `notification`, `stop`, `session_end`).
 Typed records never carry prompt text, tool input, or tool output. A
-`provider_raw` record in the `phux.transcript/v1` convention (ADR-0156)
+`provider_raw` record in the `phux.transcript/v1` convention
 carries the conversation for phones and other stream readers: the prompt, each
 finished or failed tool call (its name, a one-line argument summary, and its
 status), and the turn's last reply. It is on by default, because the same

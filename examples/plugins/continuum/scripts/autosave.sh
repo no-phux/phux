@@ -10,9 +10,9 @@ tmp=$archive.tmp
 
 mkdir -p "$(dirname -- "$archive")"
 if [ -n "${PHUX_SOCKET:-}" ]; then
-    "$phux_bin" workspace save --socket "$PHUX_SOCKET" --output "$tmp"
+    "$phux_bin" archive export --socket "$PHUX_SOCKET" --output "$tmp"
 else
-    "$phux_bin" workspace save --output "$tmp"
+    "$phux_bin" archive export --output "$tmp"
 fi
 mv -f "$tmp" "$archive"
 printf '{"schema_version":1,"profile":"%s","archive":"%s"}\n' "$profile" "$archive"

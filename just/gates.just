@@ -148,6 +148,7 @@ tools-check:
 [group('gates')]
 docs-check:
     bash scripts/check-docs.sh
+    bash scripts/check-docs_test.sh
 
 
 # Regenerate docs/reference/ from the compiled binary after CLI changes; a

@@ -84,13 +84,13 @@ fn event_doc(name: &str) -> &'static str {
         }
         AGENT_STATE_CHANGED => {
             "The detector's published agent state for a pane actually \
-             changed (ADR-0046). `from` is absent on a first sighting; \
+             changed. `from` is absent on a first sighting; \
              `agent-name` is absent for an anonymous agent; a withdrawn \
              record arrives as `to = \"unknown\"`."
         }
         WORKTREE_CREATED => {
             "`phux worktree new` created a checkout, before its session \
-             starts (ADR-0168). The CLI fires it, not the server, and \
+             starts. The CLI fires it, not the server, and \
              waits for each hook; `repo` is the primary checkout."
         }
         other => unreachable!("no doc prose for hook event `{other}`"),

@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux exit codes reference
 
-**TL;DR.** The canonical exit-code table: 0 success, 1 failure, 2 usage error or server refusal, 3 partial-fleet unanswerable, 124 `wait` timeout, 125 `run` timeout. Rendered from the same in-code table `phux help exit-codes` uses, so the two cannot disagree.
+Exit statuses, for scripts. `phux help exit-codes` prints the same table.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page

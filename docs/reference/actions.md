@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux actions reference
 
-**TL;DR.** Every action a keybinding, palette row, context menu, or hook can dispatch, with its parameter surface and where the command palette offers it. Rendered from the same in-code inventories the dispatcher and palette are test-pinned to, so an action is listed here exactly when the binary handles it.
+Every action a key binding, palette row, context menu, or hook can dispatch, with its parameters.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -64,7 +58,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `switch-host` | — | `host` (a registered host name, or `local` for this machine); `name` (the session there) | Re-attach this terminal to a session on another machine |
-| `toggle-project-group` | — | `project` (the group's key, as the sidebar header carries it) | Collapse or expand one project group in the sidebar's Sessions zone (ADR-0168) |
+| `toggle-project-group` | — | `project` (the group's key, as the sidebar header carries it) | Collapse or expand one project group in the sidebar's Sessions zone |
 | `new-session` | Session | `name?` (bare opens an interactive prompt); `cwd?`; `host?` | Create a new session and switch to it |
 | `last-session` | Session |  | Switch back to the previous session |
 | `next-session` | Session |  | Switch to the next session by name |

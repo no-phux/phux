@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux CLI/MCP parity reference
 
-**TL;DR.** Every MCP tool the adapter serves, mapped to the `phux` verb it mirrors (or why it has none), whether it runs in-process or through the CLI residue and why, and its read-only and destructive annotations. Rendered from the tool table the parity gate checks, so it cannot drift from the adapter.
+Each MCP tool, the `phux` command it mirrors, and its read-only and destructive hints.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -89,8 +83,8 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_agent_show`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
 - `phux_agent_explain`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
 - `phux_agent_wait`: the result document's `detection` field is the detector projection, which is built in the phux binary, not phux-client.
-- `phux_agent_send_keys`: key-spec validation, the occupant check, operation-id minting, and the ADR-0076 error-code table live in the CLI command.
-- `phux_agent_prompt`: operation-id minting, the fused wait's result document, and the ADR-0076 error-code table live in the CLI command.
+- `phux_agent_send_keys`: key-spec validation, the occupant check, operation-id minting, and the error-code table live in the CLI command.
+- `phux_agent_prompt`: operation-id minting, the fused wait's result document, and the error-code table live in the CLI command.
 - `phux_agent_answer`: live-ask correlation and suggestion validation live in the CLI command.
 - `phux_agent_start`: integration resolution and the detector readiness wait live in the CLI command.
 - `phux_agent_session_open`: the Terminal-to-AgentSession resolution and the result documents are assembled in the CLI command (`commands/agent/resource_session.rs`).
@@ -115,7 +109,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 
 ## CLI verbs without a tool
 
-Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no MCP tool yet:
+Agent-facing verbs that have no MCP tool yet:
 
 - `phux logs`: local operator log inventory and tailing, not a model-facing server action.
 - `phux update`: replaces the operator's installed binaries; installation management stays outside MCP.
@@ -127,7 +121,7 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 - `phux host upgrade`: operator host-registry transport upgrade, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.
 - `phux mcp`: launches this adapter itself.
-- `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128).
+- `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny`.
 - `phux resize`: not exposed over MCP yet; a known parity gap.
 - `phux restore`: an operator's after-restart sweep; an agent relaunches the one pane it means with `phux_relaunch`.
 - `phux rec`: not exposed over MCP yet; a recording is written to a file on the adapter's host.
@@ -136,4 +130,4 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 
 ## Annotation sources
 
-`Read-only` is the kind table's `mutating` rule: a tool is read-only only when no method it can send changes server state. `Destructive` comes from the kind table's `MethodSpec.dangerous` flag (ADR-0128), or a method that needs `INPUT`.
+`Read-only` is the kind table's `mutating` rule: a tool is read-only only when no method it can send changes server state. `Destructive` comes from the kind table's `MethodSpec.dangerous` flag, or a method that needs `INPUT`.

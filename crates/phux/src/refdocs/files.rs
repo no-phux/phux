@@ -20,7 +20,7 @@ pub(crate) fn page() -> Page {
          ## Profiles\n\n\
          Every runtime and state path carries the active **profile**, so a \
          development build cannot touch the installed build's socket, \
-         sessions, or logs (ADR-0080). The profile is `$PHUX_PROFILE` when \
+         sessions, or logs. The profile is `$PHUX_PROFILE` when \
          set; otherwise `dev` for a binary that is not an installed release \
          (a debug build, or one under a Cargo `target/` directory); \
          otherwise `default`.\n\n\
@@ -58,9 +58,9 @@ pub(crate) fn page() -> Page {
          path.\n\n\
          Beside it, `known-authorities` holds the certificate authority \
          each paired server's leaf was issued by, one line per server \
-         keyed by the `[[remote]]` entry's `cert-fingerprint` \
-         (ADR-0153). Pairing writes it (`phux host add`, `--code`); a \
-         connection never does (ADR-0179). A server presenting another \
+         keyed by the `[[remote]]` entry's `cert-fingerprint`. \
+        Pairing writes it (`phux host add`, `--code`); a \
+         connection never does. A server presenting another \
          CA is refused. Delete a line to forget a pin.\n\n\
          ## State\n\n\
          The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling \
@@ -119,16 +119,16 @@ pub(crate) fn page() -> Page {
            the newest 100 runs once it passes 1 MiB. Recording is best \
            effort and never fails a run.\n\
          - `remote-cert.pem` / `remote-key.pem` are the TLS pair \
-           auto-provisioned for remote consumers (ADR-0031): issued by \
+           auto-provisioned for remote consumers: issued by \
            the workload CA (`workload-ca.pem`), the certificate file \
-           holding the leaf then the CA (ADR-0153), or self-signed when \
+           holding the leaf then the CA, or self-signed when \
            provisioned before that. `PHUX_WS_TLS_CERT` / \
            `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A \
            complete pair is never regenerated (`phux workload authority \
            --rotate` replaces it on purpose), so the pinned fingerprint \
            stays stable -- which \
-           also means its subjectAltName set is fixed at generation \
-           (ADR-0091); `phux doctor` reports whether it names the \
+           also means its subjectAltName set is fixed at generation; \
+          `phux doctor` reports whether it names the \
            address phux advertises.\n\
          - `remote-tokens` is the versioned verifier-only credential store \
            the server reads and `phux pair`, `phux pair rotate`, and `phux \
@@ -141,12 +141,12 @@ pub(crate) fn page() -> Page {
            regular, non-symlink file owned by the effective user with no \
            group/world permissions; an integrity failure denies \
            authentication. `PHUX_WS_TOKENS` moves it without weakening those \
-           checks. A store of legacy anonymous token lines is refused \
-           (ADR-0179): remove it and pair again.\n\
+           checks. A store of legacy anonymous token lines is refused: \
+          remove it and pair again.\n\
          - `enrollment-tickets` holds the SHA-256 of each single-use \
            ticket `phux pair --enroll` minted (never the ticket), with \
            the scope and lifetime the credential it enrolls gets; the \
-           first redemption consumes it (ADR-0154). It sits beside the \
+           first redemption consumes it. It sits beside the \
            workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
@@ -161,14 +161,14 @@ pub(crate) fn page() -> Page {
            it (owner-only, `0600`) through a synced \
            `workspace.json.autosave.tmp` and an atomic rename a few \
            seconds after the workspace changes, so a crash or power loss \
-           leaves the latest layout (ADR-0150). An archive that fails to \
+           leaves the latest layout. An archive that fails to \
            restore is copied to `workspace.json.unrestored` first.\n\n\
          ## Decided: not built\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
-         output for crash recovery are decided: not built (ADR-0130). \
+         output for crash recovery are decided: not built. \
          Neither path exists today; a crash loses every pane's \
          scrollback. The `EVENT` stream is a separate, memory-bounded \
-         journal (ADR-0123) that carries no PTY bytes. Workspace \
+         journal that carries no PTY bytes. Workspace \
          archives are written only where `phux archive export` or \
          `phux server --autosave` is pointed.\n",
     );
@@ -179,14 +179,7 @@ pub(crate) fn page() -> Page {
         summary: "The symbolic path rule for every file phux reads or \
                   writes: socket, config, logs, TLS material, tokens, \
                   bug reports.",
-        tldr: "Where phux keeps its files: the socket under \
-               `$XDG_RUNTIME_DIR` (or `/tmp`), config under \
-               `$XDG_CONFIG_HOME`, and logs, TLS material, pairing \
-               tokens, and bug reports under `$XDG_STATE_HOME`. Runtime \
-               and state paths carry the active profile, so a development \
-               build never shares them with an installed one. Each rule \
-               is pinned to the resolving function by a unit test, so \
-               the page moves when the code does.",
+        lede: "Where phux keeps its socket, config, state, logs, and credentials.",
         body,
     }
 }

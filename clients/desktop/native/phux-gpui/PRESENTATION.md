@@ -12,7 +12,7 @@ window. Paint, `on_next_frame`, and command-buffer completion do not mint
 `Presented`. Without the feature the receipt is the next frame's start, a
 weaker signal (see [README.md](README.md#patched-gpui)).
 
-The product contract lives in [desktop architecture](../../../../docs/architecture/desktop.md#frames-wakes-and-input).
+The product contract lives in [desktop architecture](../../../../docs/architecture.md#frames-wakes-and-input).
 
 ## Ticket and lifetime
 

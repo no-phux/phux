@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux CLI reference
 
-**TL;DR.** The complete `phux` command surface: one section per invocation path, each carrying the exact long help of the binary that generated it. Rendered from the argument parser itself, so the flags, defaults, and descriptions shown here are the ones the binary enforces.
+The `--help` text of every `phux` command.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -14,7 +8,7 @@ against `phux gen-reference-docs` output and fails on any drift, so
 hand edits do not survive. Regenerate with `just docs-gen`.
 -->
 
-Each section below is the `--help` text for one invocation path, rendered by the same argument parser the binary runs — flags, defaults, value names, and descriptions here are the ones the binary enforces. The root page omits the live crate version that `--help` prints (`phux <version>`), so a release bump does not churn this file. Hidden internal subcommands are omitted, exactly as they are from `--help` itself.
+One section per command, in the order `phux <command> --help` would print them. The version line and hidden subcommands are left out.
 
 ## `phux`
 

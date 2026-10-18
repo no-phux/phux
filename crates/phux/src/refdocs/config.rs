@@ -84,35 +84,32 @@ const SECTIONS: &[Section] = &[
         key: "satellites",
         header: "[[satellites]]",
         summary: "Federation satellites a hub routes to: name, endpoint, \
-                  token-file path, and certificate pin (ADR-0038).",
+                  token-file path, and certificate pin.",
     },
     Section {
         key: "connector",
         header: "[[connector]]",
         summary: "Outbound relay links this server supervises: relay \
-                  endpoint, token-file path, and certificate pin \
-                  (ADR-0052).",
+                  endpoint, token-file path, and certificate pin.",
     },
     Section {
         key: "uplink",
         header: "[[uplink]]",
         summary: "Hubs this server dials out to as a satellite, written by \
                   `phux host join`: satellite name, hub endpoint, the hub's \
-                  CA pin, and the enrolled identity's paths (ADR-0182).",
+                  CA pin, and the enrolled identity's paths.",
     },
     Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
-                  `phux host add` and resolved by `phux attach <name>` \
-                  (ADR-0055, ADR-0122).",
+                  `phux host add` and resolved by `phux attach <name>`.",
     },
     Section {
         key: "projects",
         header: "[[projects]]",
         summary: "Named projects `phux project open <name>` resolves: a \
-                  checkout path and an optional out-of-repo recipe \
-                  (ADR-0152).",
+                  checkout path and an optional out-of-repo recipe.",
     },
     Section {
         key: "theme",
@@ -302,10 +299,7 @@ pub(crate) fn page() -> Page {
         title: "phux config reference",
         summary: "Every `config.toml` section, the scalar defaults, and \
                   the annotated default config.",
-        tldr: "The complete `config.toml` surface: a section index pinned \
-               against the config schema, every scalar knob with its \
-               shipped default, and the annotated default configuration \
-               embedded in the binary that generated this page.",
+        lede: "Every `config.toml` section and setting, with the shipped defaults.",
         body,
     }
 }

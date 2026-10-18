@@ -1,27 +1,22 @@
-//! Wire protocol for phux.
+//! Wire protocol for phux: framing, message catalog, version negotiation,
+//! capabilities, and the VT-bytes-out, structured-input-in shape of terminal
+//! traffic.
 //!
-//! This crate defines the protocol described in [`docs/spec/`] at the workspace
-//! root: framing, message catalog, version negotiation, and the VT-bytes-on-
-//! wire terminal content shape (per [ADR-0013]).
-//!
-//! The protocol is the source of truth. Code in this crate is normative;
-//! implementations elsewhere defer to it.
+//! This crate is the specification. `docs/spec/wire-schema.json` in the
+//! repository is generated from it and test-pinned; `docs/protocol.md`
+//! describes framing and the handshake in prose.
 //!
 //! # Crate features
 //!
 //! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
 //!   [`ids`], [`caps`], [`policy`], and [`Version`], including for browser clients.
 //! - **`render-pool`** (off by default): `render_pool`, the libghostty
-//!   render-trio pool. Enables `libghostty-vt` only — no png, no kitty
-//!   graphics, no input-atom conversions. See [ADR-0086].
+//!   render-trio pool. Enables `libghostty-vt` only, with no png, no kitty
+//!   graphics, and no input-atom conversions.
 //! - **`server`** (off by default): enables `render-pool`, then adds
 //!   conversions to `libghostty-vt` atoms and engine-dependent SGR and Kitty
 //!   replay helpers. Native terminal consumers enable it; decoding wire
 //!   messages does not require it.
-//!
-//! [`docs/spec/`]: https://github.com/no-phux/phux/tree/main/docs/spec
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
-//! [ADR-0086]: https://github.com/no-phux/phux/blob/main/docs/adr/0086-shared-render-pool.md
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -74,8 +69,8 @@ pub use wire::frame::{
 pub use wire::info::AgentFacet;
 pub use wire::info::{HostInventory, HostSessionInfo};
 
-/// Protocol version this crate implements. Bump history and wire-breaking
-/// rationale live in `docs/spec/CHANGELOG.md`.
+/// Protocol version this crate implements. Clients and servers must agree on
+/// `major.minor`; additive changes ship as feature bits, not bumps.
 pub const PROTOCOL_VERSION: Version = Version {
     major: 0,
     minor: 9,

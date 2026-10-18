@@ -75,7 +75,7 @@ bash scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
 ```
 
 `build.rs` errors with a clear message if the artifact is missing. Follow
-[Contributor setup](../../docs/SETUP.md#browser-client) for tool versions,
+[development: browser client](../../docs/development.md#browser-client) for tool versions,
 source pin maintenance, and local engine development overrides.
 `bash scripts/doctor.sh web` checks tools and artifact presence from the root;
 the tests verify engine ABI compatibility.

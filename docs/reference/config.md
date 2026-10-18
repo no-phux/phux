@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux config reference
 
-**TL;DR.** The complete `config.toml` surface: a section index pinned against the config schema, every scalar knob with its shipped default, and the annotated default configuration embedded in the binary that generated this page.
+Every `config.toml` section and setting, with the shipped defaults.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -28,11 +22,11 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[notifications]` | Agent notifications the TUI posts when an agent blocks or finishes: delivery mode (terminal OSC, system, bell, off), the OSC dialect, per-event toggles, focus suppression, and sound. |
 | `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
-| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
-| `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
-| `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths (ADR-0182). |
-| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>` (ADR-0055, ADR-0122). |
-| `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe (ADR-0152). |
+| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin. |
+| `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
+| `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`. |
+| `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
@@ -113,7 +107,8 @@ The base layer embedded in the binary (`crates/phux-config/src/default.toml`), v
 #   |      ASCII punctuation; shifted glyphs (|, ?, ", etc.) decompose
 #          to physical-key + implicit Shift on a US layout.
 #
-# For the full schema, see crates/phux-config/src/schema.rs and docs/consumers/tui.md.
+# Every setting is listed in docs/reference/config.md; `phux config check`
+# validates this file.
 
 [defaults]
 # shell = unset → honor $SHELL (fallback /bin/sh).
@@ -131,7 +126,7 @@ The base layer embedded in the binary (`crates/phux-config/src/default.toml`), v
 # the shipped default stays conservative.
 term = "xterm-256color"
 # Per-pane scrollback, bounded twice: libghostty prunes on whichever of the
-# line limit and the byte limit is reached first (ADR-0094). On anything but a
+# line limit and the byte limit is reached first. On anything but a
 # narrow grid the BYTE limit is what binds, so raising history-limit alone
 # buys no depth. history-bytes is the one that decides how deep a pane is:
 #
@@ -145,20 +140,20 @@ term = "xterm-256color"
 # from the live scrollback only when a client asks for it. What it costs is
 # resident memory, and only once a pane has produced that much output: an
 # idle pane holds no history, a flooded one about this many bytes, for the
-# life of the session (ADR-0143). Multiply by your busy-pane count before
+# life of the session. Multiply by your busy-pane count before
 # raising it; lower it to cap a server with many noisy panes. 67108864
 # (64 MiB) is the accepted maximum. Pruning is page-granular, so the engine
 # keeps at least one standard page of history whatever you set.
 history-limit = 50000
 history-bytes = 10485760
-# Bytes of AgentEventsJsonlV1 records an agent session retains (ADR-0103).
+# Bytes of AgentEventsJsonlV1 records an agent session retains.
 # The ring is replayed when a client attaches to the session stream, so this
 # is both how far back `phux agent log` can see and what each attach re-sends.
 # An append past the ceiling evicts the oldest records and counts a tombstone
 # the bootstrap reports; it is never an error. 67108864 (64 MiB) is the
 # accepted maximum.
 agent-log-bytes = 4194304
-# The server's event journal (ADR-0123): how many recent events it keeps, and
+# The server's event journal: how many recent events it keeps, and
 # their estimated encoded size, so a watcher or waiter that reconnects with a
 # cursor is replayed what it missed. Whichever bound is reached first evicts
 # the oldest events; a cursor older than what remains is told it missed events
@@ -166,7 +161,7 @@ agent-log-bytes = 4194304
 # the accepted maxima.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
-# Retain on exit (ADR-0124): keep a Terminal inspectable after its process
+# Retain on exit: keep a Terminal inspectable after its process
 # exits -- its exit status, last screen, and history -- until it expires, the
 # count bound evicts it (oldest first), or it is killed. Off by default: a
 # spawner asks for it per pane. true retains every pane that does not say, the
@@ -178,12 +173,12 @@ retain-on-exit = false
 retain-on-exit-secs = 600
 retain-on-exit-max-secs = 86400
 retain-on-exit-max = 256
-# Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
+# Client-side outer-terminal mouse tracking on attach: divider
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).
 mouse = true
 
-# What a program's OSC 52 clipboard write does (ADR-0158): "allow" sets the
+# What a program's OSC 52 clipboard write does: "allow" sets the
 # host clipboard, "ask" prompts first, "deny" drops it. Only the focused pane
 # can write; clipboard reads are never answered.
 clipboard-write = "allow"
@@ -220,7 +215,7 @@ cwd-inheritance = "inherit-focused"
 session-name-template = "${cwd-basename}"
 
 # Policy for picking one geometry when concurrent views of a single
-# Terminal disagree on size (ADR-0027). A Terminal is one PTY + one grid,
+# Terminal disagree on size. A Terminal is one PTY + one grid,
 # so it renders one size; a view wanting another size letterboxes rather
 # than reflowing. One of:
 #   "smallest" — use the smallest view's size; larger views letterbox.
@@ -229,9 +224,8 @@ session-name-template = "${cwd-basename}"
 #   "latest"   — track the most recently resized view.
 #   "manual"   — hold a fixed size (implies a future resize verb).
 # Not yet consumed at the size-decision point: multi-view/multi-client
-# geometry negotiation is a follow-up (today the server uses
-# last-writer-wins per SPEC §10.5, phux-nk07). The knob lands first so
-# consumers can target it.
+# geometry negotiation is a follow-up (today the last resize wins). The
+# knob lands first so consumers can target it.
 window-size = "smallest"
 
 [keybindings]
@@ -290,7 +284,7 @@ which-key-delay-ms = 400
 "b" = "toggle-sidebar"
 
 # Copy-mode: enter text selection mode. Arrow keys adjust selection,
-# Enter copies to clipboard, Escape cancels. (phux-wave-a-copy-mode)
+# Enter copies to clipboard, Escape cancels.
 "[" = "copy-mode"
 
 # Tabs, tmux-style (phux-4li.15/.16). The action names keep tmux's
@@ -405,7 +399,7 @@ which-key-delay-ms = 400
 # `{ action = "rec-mark", label = "intro" }` names the marker.
 # `phux rec mark` posts the same event from another process.
 
-# Attention navigation (phux-oih5.16, ADR-0049). q jumps to the next pane
+# Attention navigation. q jumps to the next pane
 # with a pending AgentEvent::Asked, cycling by tab order then DFS leaf
 # order; Q returns to the pane where that excursion began. These unoccupied
 # lowercase/uppercase mnemonic keys are client-local and never write layout
@@ -426,7 +420,7 @@ which-key-delay-ms = 400
 # Detach this client from the session.
 "d" = "detach"
 
-# Supervisory control (ADR-0033, "take the wheel + kill"). Take seizes
+# Supervisory control. Take seizes
 # exclusive input over the focused pane so an agent driving it is locked
 # out until you Give it back; Freeze (SIGSTOP) pauses the pane's process
 # mid-step and Resume (SIGCONT) lets it run again. Destructive signals
@@ -515,8 +509,8 @@ which-key-delay-ms = 400
 
 # Federation satellites are remote phux servers a hub can route to. The registry
 # lands before routing so operators can declare stable names and endpoints.
-# The hub authenticates to a satellite as an ordinary remote consumer
-# (ADR-0038): run `phux pair` on the satellite host, save the printed token
+# The hub authenticates to a satellite as an ordinary remote consumer:
+# run `phux pair` on the satellite host, save the printed token
 # into an owner-only file on the hub, and record that file's path plus the
 # printed certificate fingerprint here. The token itself never goes in this
 # file — only the path to it.
@@ -531,7 +525,7 @@ which-key-delay-ms = 400
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised
 # independently. The relay is blind: each consumer runs TLS to this server
-# inside the relayed stream, so the relay forwards only ciphertext (ADR-0180).
+# inside the relayed stream, so the relay forwards only ciphertext.
 # Keep the enrollment token in an owner-only file, never inline.
 #
 # [[connector]]
@@ -540,7 +534,7 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 
 # Uplinks make this server a satellite of a hub that cannot dial it (a
-# sandbox behind NAT, ADR-0182): the server dials the hub and serves the
+# sandbox behind NAT): the server dials the hub and serves the
 # hub's streams over that one connection, so it needs no listener. `phux
 # host join CODE` (the code comes from `phux host ticket NAME` on the hub)
 # enrolls a key it keeps and writes the entry; edit by hand only to disable
@@ -553,10 +547,10 @@ which-key-delay-ms = 400
 # client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
 # client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
 
-# Remote phux servers this machine attaches TO (ADR-0055): `phux attach
+# Remote phux servers this machine attaches TO: `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
 # you never retype them. `phux host add me@mini` writes an entry for you
-# over ssh (ADR-0122); edit by hand only to relabel or retarget one. As with
+# over ssh; edit by hand only to relabel or retarget one. As with
 # satellites, the token itself never goes in this file — token-file points
 # at an owner-only file holding one hex token on one line. `session` picks
 # the session to attach on arrival; omit it and the remote server's own
@@ -573,14 +567,14 @@ which-key-delay-ms = 400
 # session = "main"
 # ssh = "me@mini"
 #
-# A server reached through a relay (ADR-0149) registers the relay as its
+# A server reached through a relay registers the relay as its
 # endpoint, the relay's pin as cert-fingerprint, and the relay route as
 # tls-server-name, the TLS server name every dial offers. `phux pair
 # --relay-route ROUTE` on the server prints a link that `phux attach
 # --remote NAME --code` registers this way.
 #
 # A routed entry also needs the server's certificate authority pinned for
-# that relay pin and route in `known-authorities` beside this file (ADR-0180):
+# that relay pin and route in `known-authorities` beside this file:
 # every dial runs end to end with the server inside the relayed stream, so the
 # relay sees only ciphertext. `phux attach --remote NAME --code LINK` and
 # `phux host add ... --ca-fingerprint` write that pin; a hand-written entry
@@ -593,7 +587,7 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 # tls-server-name = "studio"
 
-# Projects (ADR-0152): names `phux project open NAME` resolves. Each entry is
+# Projects: names `phux project open NAME` resolves. Each entry is
 # a checkout `path` (absolute or `~/`); phux never scans for repositories.
 # The checkout's own `.phux/project.toml` recipe runs only once its exact
 # bytes are approved (`phux project trust`). `recipe` points at a recipe
@@ -640,7 +634,7 @@ which-key-delay-ms = 400
 # the edge, matching the sidebar's. The tabs ride the theme's slots, named
 # `theme.<slot>`, so a `[theme]` name, file, or override recolours the bar
 # with the rest of the chrome; any widget colour may name a slot this way
-# (see `[theme]` in docs/consumers/tui.md section 4.4 for the slot list).
+# (the `[theme]` block below lists the slots).
 #
 # A `button` runs one argument-free action on click. The `+` that follows
 # the tabs opens a new tab, where a browser puts it; `+ session` in the
@@ -675,8 +669,7 @@ right = [
 # in code (crates/phux-tui/src/render/theme.rs); the block is commented
 # here so you can see the whole system at once and override one slot
 # without hunting for the name. Values accept named colors ("cyan"), hex
-# ("#7aa2f7") and ANSI indices ("12"). See docs/consumers/tui.md section
-# 4.4 for what each slot paints.
+# ("#7aa2f7") and ANSI indices ("12").
 #
 # Two keys select a whole palette underneath the slots: `name` is an
 # installed theme (`phux theme list`, `phux theme install URL`) and
@@ -750,7 +743,7 @@ right = [
 # and the agents dashboard (`prefix A`, or the status bar's `agents` chip)
 # is the navigation surface — it opens full-screen there.
 #
-# Agents on top and Sessions below share the body at a fixed line (ADR-0112):
+# Agents on top and Sessions below share the body at a fixed line:
 # `agents-share` is the Agents panel's percent of the body, half (50) by
 # default, whatever the agent population. Gaining or resolving an agent never
 # moves Sessions; an empty Agents panel keeps its header and a quiet
@@ -766,7 +759,7 @@ right = [
 # Responsive-chrome breakpoints. The chrome adapts to small terminals
 # around three thresholds; these move them without moving the behaviour.
 # Shipped values shown, each derived from content rather than from a
-# round number (docs/consumers/tui.md section 4.5 has the arithmetic).
+# round number.
 #
 # `compact-cols` / `compact-rows`: at or below these a viewport is
 # column- or row-starved, and overlays go full-bleed on that axis
@@ -788,7 +781,7 @@ right = [
 # compact-rows = 18
 # min-pane-cols = 40
 
-# Agent notifications (docs/consumers/tui.md, "Notifications"). The TUI
+# Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an
 # agent that was working finishes. "Finished" fires once per run: looking
 # at the pane before the notification goes out cancels it, and an agent
@@ -814,13 +807,13 @@ right = [
 # suppress-focused = true
 # sound = false
 
-# Authorization posture (docs/spec/workload-auth.md section 8). Read once
+# Authorization posture. Read once
 # at server start; a change needs a restart.
 #
 # Unset is `local`, except that a configured remote listener, relay
 # connector, or workload authority location (`PHUX_WORKLOAD_CA`, ...)
 # refuses to start the server and names `paired` as the remedy: nothing
-# ever grants a remote connection the owner's authority (ADR-0179).
+# ever grants a remote connection the owner's authority.
 # The overlay listener is auto-bound only under `paired`.
 #
 # `local`: the owner's Unix socket only. A configured remote listener

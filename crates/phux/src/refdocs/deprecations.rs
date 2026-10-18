@@ -55,12 +55,7 @@ pub(crate) fn page() -> Page {
         title: "phux deprecations reference",
         summary: "Every deprecated spelling, its replacement, and its \
                   removal release.",
-        tldr: "Deprecated spellings the current binary still accepts, \
-               each pinned with its replacement and lifecycle releases; \
-               empty when nothing is currently deprecated. Every row still \
-               parses, warns once on stderr with its replacement, is \
-               hidden from help and completions, and is scheduled for \
-               removal one release cycle or more after deprecation.",
+        lede: "Old spellings the binary still accepts, what replaces them, and when they go away.",
         body,
     }
 }

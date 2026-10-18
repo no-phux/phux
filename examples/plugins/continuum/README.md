@@ -11,8 +11,8 @@ cargo run -q -p phux --bin phux -- config run com.phux.demo.continuum autosave -
 cargo run -q -p phux --bin phux -- config run com.phux.demo.continuum restore-latest --json
 ```
 
-`autosave` writes `phux workspace save` output to a profile archive. `restore-latest`
-passes that archive to `phux workspace restore`. The default profile is
+`autosave` writes `phux archive export` output to a profile archive. `restore-latest`
+passes that archive to `phux archive import`. The default profile is
 `default`; override it with `PHUX_WORKSPACE_PROFILE`. By default archives live
 under the plugin's `state/` directory; override with `PHUX_CONTINUUM_DIR` or
 `PHUX_CONTINUUM_ARCHIVE`.

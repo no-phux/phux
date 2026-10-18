@@ -41,9 +41,8 @@ optional `required_executables` (a template is listed only when all are on
 A template's `[agent_identity] kind` also claims the provider an agent started
 in an ordinary shell reports through its `AgentSession` (`claude` from the
 Claude Code hooks, `pi`, `omp`, `opencode` from their phux extensions). With
-this plugin enabled, `phux workspace save` archives that session's native id
-and `phux workspace restore` resumes it through the template's `resume_args`
-([ADR-0151](../../../docs/adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
+this plugin enabled, `phux archive export` archives that session's native id
+and `phux archive import` resumes it through the template's `resume_args`.
 
 - `link-integration` / `unlink-integration` write only plugin-local state under
   `state/integrations`; they never install or run the agent. They default to
@@ -72,8 +71,7 @@ command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "cl
 working_directory = "workspace"
 ```
 
-`phux launch <integration>` ([ADR-0042](../../../docs/adr/0042-launch-executor.md))
-resolves that command from an enabled plugin, expands `${PHUX_PLUGIN_ROOT}`,
+`phux launch <integration>` resolves that command from an enabled plugin, expands `${PHUX_PLUGIN_ROOT}`,
 and spawns a pane. The server injects `PHUX_TERMINAL_ID` into every pane it
 spawns, so the wrapper self-targets with no configuration:
 

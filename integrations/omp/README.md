@@ -7,6 +7,9 @@ omp plugin install @phux/omp
 omp plugin upgrade @phux/omp   # move to the newest release
 ```
 
-Requires `phux` on `PATH` and a running local phux server. Installation,
-configuration, tools, and safety boundaries live in the
-[OMP integration guide](https://github.com/no-phux/phux/blob/main/docs/consumers/omp.md).
+Requires `phux` on `PATH` and a running local phux server. It registers the
+shared phux tool set (list, spawn, snapshot, send keys, paste, run, wait,
+agent prompt and wait, resource wait, status, runtime info) plus
+`/phux-status` and `/phux-attach`, reports OMP's lifecycle to phux as an
+agent session stream, and refuses input or destructive actions against its
+own pane. See [coding agents](https://github.com/no-phux/phux/blob/main/docs/agents.md).

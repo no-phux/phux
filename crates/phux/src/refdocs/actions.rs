@@ -59,12 +59,7 @@ pub(crate) fn page() -> Page {
         title: "phux actions reference",
         summary: "Every dispatcher action with its parameters, description, \
                   and palette placement.",
-        tldr: "Every action a keybinding, palette row, context menu, or \
-               hook can dispatch, with its parameter surface and where the \
-               command palette offers it. Rendered from the same in-code \
-               inventories the dispatcher and palette are test-pinned to, \
-               so an action is listed here exactly when the binary handles \
-               it.",
+        lede: "Every action a key binding, palette row, context menu, or hook can dispatch, with its parameters.",
         body,
     }
 }

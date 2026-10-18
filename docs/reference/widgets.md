@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux status-bar widgets reference
 
-**TL;DR.** Every status-bar widget kind the binary registers, with the exact options and defaults each factory accepts, plus the universal `style` table and the `min-cols` / `max-cols` responsive-visibility bounds. Rendered from the same spec consts the factories validate options against, so a kind or option is listed here exactly when the binary accepts it.
+Status-bar widget kinds, their options and defaults, and the shared `style` and visibility settings.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page

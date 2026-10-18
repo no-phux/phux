@@ -1,88 +1,34 @@
----
-audience: humans, agents, consumers, contributors
-stability: stable
-last-reviewed: 2026-10-13
----
+# phux docs
 
-# phux documentation
-
-**TL;DR.** Start with the quickstart to run a terminal, detach, and reattach.
-Use the task guides below for configuration, coding agents, and remote access;
-the references cover commands, protocols, and implementation.
-
-## Start here
-
-| Your goal | Best first page |
-|---|---|
-| Run a persistent terminal and reattach | [Quickstart](./QUICKSTART.md) |
-| Choose a supported platform and install method | [Install phux](./INSTALL.md) |
-| Understand sessions, resources, the Inbox, and persistence | [How phux works](./CONCEPTS.md) |
-| Compare phux with tmux, Herdr, or cmux | [When to use phux](./when-to-use.md) |
-| Translate tmux or screen habits | [Coming from tmux or screen](./coming-from.md) |
+Short pages, in the order most people need them. Anything the binary can
+state for itself (commands, settings, environment variables, exit codes,
+wire frames) is generated under [reference](./reference/README.md) and
+[spec](./spec/wire-schema.json), so the pages here link to it instead of
+repeating it.
 
 ## Use phux
 
-- [Terminal UI](./consumers/tui.md): navigate, split, copy, and search.
-- [Configuration](./CONFIG.md): make a small change, validate it, and apply it.
-- [Desktop](./consumers/desktop.md): use the native macOS interface.
-- [Cockpit archive](./consumers/cockpit.md): preserved Zig client and recovery instructions.
-- [Recording](./consumers/recording.md): capture and replay terminal work.
-- [All interfaces](./consumers/README.md): distinguish available clients from previews.
+- [Install](./install.md): installer, Homebrew, desktop app, updating, from source.
+- [Getting started](./getting-started.md): first session, keys, detaching, coming from tmux.
+- [Concepts](./concepts.md): the server, sessions and panes, targets, what survives what.
+- [Configuration](./config.md): keys, themes, status bar, hooks, plugins, projects.
+- [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, JSON and exit codes.
+- [Coding agents](./agents.md): agent state, host integrations, MCP, safety.
+- [Remote machines](./remote.md): `phux host add`, what is exposed, relays, linking machines.
+- [Clients](./clients.md): terminal UI, desktop, browser, phones.
+- [Embedding](./embedding.md): GPUI, other Rust toolkits, C and Swift.
+- [Troubleshooting](./troubleshooting.md): doctor, logs, known failures.
 
-## Run coding agents
+## Reference
 
-Hand your agent https://docs.phux.sh/llms.txt, or start with
-[coding-agent getting started](./consumers/getting-started.md), then
-choose [Claude Code](./consumers/claude.md), [Grok](./consumers/grok.md),
-[Pi](./consumers/pi.md), [Oh My Pi](./consumers/omp.md), [OpenCode V2](./consumers/opencode-v2.md), or
-[MCP](./consumers/mcp.md).
-For a one-minute Pi session, follow
-[pi + phux in 60 seconds](./consumers/pi-in-60-seconds.md).
-For scripts and advanced automation, use the [agent CLI guide](./consumers/agents.md).
-The [docs MCP](./consumers/getting-started.md#let-your-agent-read-the-docs) searches
-documentation; host integrations connect to your terminals. These are separate
-connections. Published pages have `.md` URLs and a **Copy page for agent** action.
+- [CLI](./reference/cli.md), [config](./reference/config.md), [actions](./reference/actions.md), [widgets](./reference/widgets.md), [hooks](./reference/hooks.md)
+- [environment variables](./reference/environment.md), [exit codes](./reference/exit-codes.md), [files](./reference/files.md), [deprecations](./reference/deprecations.md)
+- [resource kinds](./reference/kinds.md), [MCP tools](./reference/parity.md), [wire schema](./spec/wire-schema.json)
 
-## Connect machines
+## Work on phux
 
-[Remote access](./remote-access.md) starts with SSH enrollment and attach,
-then covers reconnect, pairing, overlays, and relays.
-[Troubleshooting](./remote-access.md#troubleshooting) separates server,
-route, firewall, and credential failures.
-
-## Performance and comparisons
-
-- [When to use phux](./when-to-use.md): compare workflows with tmux, Herdr, and cmux.
-- [Performance](./performance.md): measured results, methodology, and limits.
-- [Performance CI](./performance-ci.md): instruction-count gate, counter
-  ceilings, and the advisory nightly harness.
-- [Performance diagnostics](./operations.md#performance-observability): measure
-  your running system.
-
-## Troubleshoot and maintain
-
-- [Troubleshooting and recovery](./troubleshooting.md): start from a symptom.
-- [Update and roll back](./INSTALL.md#updating): use the owner of your install.
-- [Workspace continuity](./operations.md#workspace-continuity-and-update-survival):
-  distinguish live upgrade from restoring fresh PTYs.
-- [Operations](./operations.md): logs, services, diagnostics, and security boundaries.
-
-## Reference and integration development
-
-- [Generated reference](./reference/README.md): CLI, JSON, configuration, and catalogs.
-- [Harness authors](./consumers/harness.md): emit agent lifecycle records.
-- [Build a client](./consumers/build-a-client.md): implement a new consumer.
-- [Browser client development](./consumers/web.md): demo versus building your own client.
-- [Rust client library](./consumers/sdk.md): workspace library and native binding boundaries.
-- [Protocol specification](./spec/README.md): normative wire contracts.
-- [Architecture](./architecture/README.md) and [architecture decisions](./adr/README.md):
-  implementation structure and design rationale.
-
-## Working on the project
-
-[Contributor setup](./SETUP.md) · [Contributor guide](../CONTRIBUTING.md) ·
-[Documentation conventions](./CONVENTIONS.md) · [Release process](./RELEASING.md) · [CI](./CI.md)
-
-The public site at https://phux.sh is generated from this tree. Documentation
-is served at https://docs.phux.sh, with the primary documentation home at
-`/overview` and this full index at `/docs`.
+- [Architecture](./architecture.md): process model, crates, clients, the decisions behind them.
+- [Protocol](./protocol.md): framing, handshake, capabilities, how to change the wire.
+- [Development](./development.md): environments, build cache, per-area setup, gates, CI.
+- [Releasing](./releasing.md): what ships, how, and the manual controls.
+- [Contributing](../CONTRIBUTING.md) and [agent instructions](../AGENTS.md).

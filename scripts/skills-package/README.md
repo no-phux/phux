@@ -38,9 +38,8 @@ supervision; use using-phux for direct CLI work.
 OMP, and Pi. Prefer these when available: they provide harness-local targets,
 finite deadlines, cancellation, and bounded results.
 
-Skills are operating instructions, not tool registration. Start with the
-[agent setup guide](https://docs.phux.sh/consumers/getting-started) to connect
-your host. The [hosted docs MCP](https://phux.sh/mcp) is a separate read-only
+Skills are operating instructions, not tool registration. Start with
+[coding agents](https://docs.phux.sh/agents) to connect your host. The [hosted docs MCP](https://phux.sh/mcp) is a separate read-only
 documentation service; it cannot control your terminals.
 
 ## Source of truth

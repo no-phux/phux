@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux kind catalog reference
 
-**TL;DR.** The compiled kind catalog: server-level, substrate, and per-kind methods, the events each kind emits, and the workload-auth verb classification of every client frame and command. Rendered from `phux_protocol::kinds`, the table the classifier reads, so the page cannot drift from dispatch.
+Resource kinds, their methods and events, and the authorization verb each wire method needs.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -14,9 +8,9 @@ against `phux gen-reference-docs` output and fails on any drift, so
 hand edits do not survive. Regenerate with `just docs-gen`.
 -->
 
-Everything below is compiled into the binary from `phux_protocol::kinds`. The same rows drive `phux --capabilities --json` and the workload-auth classifier (`docs/spec/workload-auth.md` §6), so the verbs listed for a method are the verbs dispatch requires. A method is invoked through its typed frame or command. The catalog describes methods and is never an invocation handle, and reading it grants nothing.
+Everything below is compiled into the binary from `phux_protocol::kinds`. The same rows drive `phux --capabilities --json` and the workload-auth classifier, so the verbs listed for a method are the verbs dispatch requires. A method is invoked through its typed frame or command. The catalog describes methods and is never an invocation handle, and reading it grants nothing.
 
-Verbs are the closed set of workload-auth §5. A method whose rows need only `INVENTORY` or `OBSERVE` is read-only; any other verb can change server state; a method no row admits by verb (the `COMMAND` envelope, a denied method) counts as mutating. A gate is the `HELLO_OK` feature bit a client must see before relying on the method, named as `phux status --json` names it; a gate in the trailing `features_ext` word (ADR-0137) is marked `(features_ext)`, and any other lives in `features`. In `phux --capabilities --json` every gate is `feature_gate: { "word": "features" | "features_ext", "feature": name, "mask": value }`, where `mask` is the bit's value in that word of `HELLO_OK.server_caps`, not a bit index. The older `gate: { "feature", "mask" }` field covers only the `features` word and is `null` for a `features_ext` gate.
+Verbs are a closed set. A method whose rows need only `INVENTORY` or `OBSERVE` is read-only; any other verb can change server state; a method no row admits by verb (the `COMMAND` envelope, a denied method) counts as mutating. A gate is the `HELLO_OK` feature bit a client must see before relying on the method, named as `phux status --json` names it; a gate in the trailing `features_ext` word is marked `(features_ext)`, and any other lives in `features`. In `phux --capabilities --json` every gate is `feature_gate: { "word": "features" | "features_ext", "feature": name, "mask": value }`, where `mask` is the bit's value in that word of `HELLO_OK.server_caps`, not a bit index. The older `gate: { "feature", "mask" }` field covers only the `features` word and is `null` for a `features_ext` gate.
 
 ## Server methods
 

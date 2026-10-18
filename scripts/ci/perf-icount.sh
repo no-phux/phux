@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instruction-count regression guard; see docs/performance-ci.md.
+# Instruction-count regression guard; see docs/development.md#performance.
 #
 # Builds the phux-server `icount` bench with the `icount` profile and runs it
 # under callgrind, then compares Ir to benchmarks/icount-baseline.json, or

@@ -13,7 +13,7 @@
 # are the release contract; the xcframework is the mobile pin's input.
 #
 # No pull request triggers this workflow, so its caches are saved from every
-# run without thrashing the PR budget docs/RELEASING.md describes.
+# run without thrashing the PR cache budget docs/development.md#ci describes.
 #
 # It also fires on main when the shim or its runtime inputs change, exactly as
 # ffi-android.yml does, so a merge is the produce run. That pairing is the

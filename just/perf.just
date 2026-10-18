@@ -102,7 +102,7 @@ bloat *ARGS:
 
 # Callgrind instruction counts for the hot paths, compared with
 # benchmarks/icount-baseline.json. Run inside `nix develop` on x86_64.
-# `--update` rewrites the baseline; see docs/performance-ci.md before
+# `--update` rewrites the baseline; see docs/development.md#performance before
 # committing that file.
 [group('perf')]
 [doc('Callgrind instruction counts against benchmarks/icount-baseline.json.')]
