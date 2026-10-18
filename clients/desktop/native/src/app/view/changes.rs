@@ -23,7 +23,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::{Selectable, Sizable};
 
-use crate::git::Area;
+use crate::git::{Area, Status};
 
 use super::super::changes::{Layout, View};
 use super::super::color::from_hex;
@@ -67,7 +67,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
                         .child(files::list(desk, &status, &look, cx))
                         .child(commit_box(desk, &look, cx)),
                 )
-                .child(diff::column(desk, diff_width, &look, window, cx))
+                .child(diff::column(desk, diff_width, &look, cx))
                 .into_any_element()
         }
         View::Repo(_) => placeholder("Nothing to commit", "The working tree is clean.", &look),
@@ -125,32 +125,34 @@ fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
 
 /// Branch, upstream drift and the repository, with the view toggles,
 /// refresh and close.
-fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
-    let status = desk.changes.status();
-    let branch = status.map_or_else(
-        || "Changes".to_owned(),
-        |status| {
-            status.branch.name.clone().unwrap_or_else(|| {
-                let commit = status.branch.commit.as_deref().unwrap_or("no commit");
-                format!("detached at {commit}")
-            })
-        },
-    );
-    let mut detail = Vec::new();
-    if let Some(status) = status {
-        detail.push(status.name());
-        let b = &status.branch;
-        if b.ahead > 0 {
-            detail.push(format!("{} to push", b.ahead));
-        }
-        if b.behind > 0 {
-            detail.push(format!("{} to pull", b.behind));
-        }
-        if b.upstream.is_none() && b.name.is_some() {
-            detail.push("no upstream".into());
-        }
-    }
-    let (layout_icon, layout_label) = match desk.changes.layout {
+/// The branch, or where HEAD is detached.
+fn branch_title(status: Option<&Status>) -> String {
+    let Some(branch) = status.map(|status| &status.branch) else {
+        return "Changes".into();
+    };
+    branch.name.clone().unwrap_or_else(|| {
+        let commit = branch.commit.as_deref().unwrap_or("no commit");
+        format!("detached at {commit}")
+    })
+}
+
+/// The repository, then how the branch stands against its upstream.
+fn branch_detail(status: &Status) -> String {
+    let branch = &status.branch;
+    let drift = [
+        (branch.ahead > 0).then(|| format!("{} to push", branch.ahead)),
+        (branch.behind > 0).then(|| format!("{} to pull", branch.behind)),
+        (branch.upstream.is_none() && branch.name.is_some()).then(|| "no upstream".into()),
+    ];
+    std::iter::once(status.name())
+        .chain(drift.into_iter().flatten())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The layout button's icon and tooltip: what it shows, and what a click does.
+fn layout_control(layout: Layout) -> (IconName, &'static str) {
+    match layout {
         Layout::Auto => (
             IconName::Columns2,
             "Layout: Automatic (click for Side by Side)",
@@ -160,7 +162,12 @@ fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
             "Layout: Side by Side (click for Unified)",
         ),
         Layout::Unified => (IconName::Rows2, "Layout: Unified (click for Automatic)"),
-    };
+    }
+}
+
+fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let status = desk.changes.status();
+    let (layout_icon, layout_label) = layout_control(desk.changes.layout);
     let (tree_icon, tree_label) = if desk.changes.tree {
         (IconName::List, "Show as List")
     } else {
@@ -192,11 +199,9 @@ fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                         .truncate()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(branch),
+                        .child(branch_title(status)),
                 )
-                .when(!detail.is_empty(), |column| {
-                    column.child(muted(look, detail.join(" · ")).truncate())
-                }),
+                .children(status.map(|status| muted(look, branch_detail(status)).truncate())),
         )
         .when(repo, |header| {
             header

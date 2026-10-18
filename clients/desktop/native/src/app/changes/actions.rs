@@ -3,7 +3,7 @@
 //! and write, keep and send review comments.
 
 use gpui::prelude::*;
-use gpui::{Context, Window};
+use gpui::{Context, Entity, Subscription, Window};
 use gpui_kit::component::diff::DiffLineRange;
 use gpui_kit::component::input::{InputEvent, TextareaState};
 
@@ -101,11 +101,15 @@ impl Desk {
         let Some(range) = state.read(cx).selected_lines() else {
             return;
         };
-        let source = self.changes.source;
-        let reverse = source == Source::Staged;
-        let text = &self.changes.loaded(source).text;
-        let Some(patch) = crate::git::partial_patch(text, &review::selection(&range), reverse)
-        else {
+        let reverse = self.changes.source == Source::Staged;
+        let section = self
+            .changes
+            .loaded(self.changes.source)
+            .sections
+            .get(range.path().as_ref());
+        let cut = section
+            .and_then(|file| crate::git::partial_patch(file, review::selection(&range), reverse));
+        let Some(patch) = cut else {
             self.post(
                 Kind::Info,
                 "No changed lines selected",
@@ -129,23 +133,8 @@ impl Desk {
     /// commit landed.
     pub(crate) fn prepare_changes_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.changes.message.is_none() {
-            let input = cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .placeholder("Commit message")
-                    .auto_grow(1, 6)
-                    .submit_on_enter(true)
-            });
-            // Enter commits and Shift+Enter adds a line, as in the conversation composer.
-            let subscription = cx.subscribe_in(
-                &input,
-                window,
-                |desk, _, event: &InputEvent, _, cx| match event {
-                    InputEvent::PressEnter { shift: false, .. } => desk.commit_changes(cx),
-                    InputEvent::Change => cx.notify(),
-                    _ => {}
-                },
-            );
-            self.changes.message = Some((input, subscription));
+            let field = composer("Commit message", 6, Self::commit_changes, window, cx);
+            self.changes.message = Some(field);
         }
         if std::mem::take(&mut self.changes.pending_clear)
             && let Some((input, _)) = self.changes.message.as_ref()
@@ -154,29 +143,15 @@ impl Desk {
         }
     }
 
-    /// Open a comment field under `range`, replacing any unsaved one.
+    /// Open a note field under `range`, replacing any unsaved one.
     pub(crate) fn start_comment(
         &mut self,
         range: DiffLineRange,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder("Note for the agent")
-                .auto_grow(1, 8)
-                .submit_on_enter(true)
-        });
-        let subscription =
-            cx.subscribe_in(
-                &input,
-                window,
-                |desk, _, event: &InputEvent, _, cx| match event {
-                    InputEvent::PressEnter { shift: false, .. } => desk.save_comment(cx),
-                    InputEvent::Change => cx.notify(),
-                    _ => {}
-                },
-            );
+        let (input, subscription) =
+            composer("Note for the agent", 8, Self::save_comment, window, cx);
         input.update(cx, |input, cx| input.focus(window, cx));
         self.changes.draft = Some(Draft {
             source: self.changes.source,
@@ -254,4 +229,31 @@ impl Desk {
         }
         cx.notify();
     }
+}
+
+/// A growing text field where Enter runs `submit` and Shift+Enter adds a
+/// line, as in the conversation composer.
+fn composer(
+    placeholder: &'static str,
+    rows: usize,
+    submit: fn(&mut Desk, &mut Context<Desk>),
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> (Entity<TextareaState>, Subscription) {
+    let input = cx.new(|cx| {
+        TextareaState::new(window, cx)
+            .placeholder(placeholder)
+            .auto_grow(1, rows)
+            .submit_on_enter(true)
+    });
+    let subscription = cx.subscribe_in(
+        &input,
+        window,
+        move |desk, _, event: &InputEvent, _, cx| match event {
+            InputEvent::PressEnter { shift: false, .. } => submit(desk, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        },
+    );
+    (input, subscription)
 }

@@ -95,11 +95,24 @@ impl Layout {
 /// The narrowest diff an automatic layout splits.
 const SPLIT_WIDTH: f32 = 820.;
 
-/// One read of a checkout: its status and both comparisons, parsed.
-struct Snapshot {
-    status: Status,
+/// Both comparisons of one read, parsed.
+#[derive(Clone, Default)]
+pub(crate) struct Comparisons {
     changes: Loaded,
     staged: Loaded,
+}
+
+impl Comparisons {
+    pub(crate) fn get(&self, source: Source) -> &Loaded {
+        match source {
+            Source::Changes => &self.changes,
+            Source::Staged => &self.staged,
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        self.changes.same(&other.changes) && self.staged.same(&other.staged)
+    }
 }
 
 pub(crate) struct Changes {
@@ -114,8 +127,7 @@ pub(crate) struct Changes {
     reading: bool,
     /// The comparison the diff shows.
     pub source: Source,
-    changes: Loaded,
-    staged: Loaded,
+    comparisons: Comparisons,
     pub diff: Option<(Entity<DiffState>, Subscription)>,
     /// The file last revealed, kept in view across reloads.
     pub focus: Option<String>,
@@ -148,8 +160,7 @@ impl Default for Changes {
             generation: 0,
             reading: false,
             source: Source::Changes,
-            changes: Loaded::default(),
-            staged: Loaded::default(),
+            comparisons: Comparisons::default(),
             diff: None,
             focus: None,
             viewed: HashMap::new(),
@@ -196,53 +207,37 @@ impl Changes {
     }
 
     pub(crate) fn loaded(&self, source: Source) -> &Loaded {
-        match source {
-            Source::Changes => &self.changes,
-            Source::Staged => &self.staged,
-        }
+        self.comparisons.get(source)
     }
 
     /// Whether `path` is marked viewed in the shown comparison and unchanged since.
     pub(crate) fn is_viewed(&self, path: &str) -> bool {
-        self.viewed
-            .get(&(self.source, path.to_owned()))
-            .is_some_and(|print| self.loaded(self.source).prints.get(path) == Some(print))
+        let mark = self.viewed.get(&(self.source, path.to_owned()));
+        mark.is_some() && mark.copied() == self.loaded(self.source).print(path)
     }
 
-    /// Drop the shown comparison's viewed marks whose file changed or left,
-    /// returning the paths still listed, which must unfold.
+    /// Drop the shown comparison's marks whose file changed or left, and
+    /// return the paths still listed: they must unfold.
     pub(crate) fn lapse_viewed(&mut self) -> Vec<String> {
-        let source = self.source;
-        let prints = match source {
-            Source::Changes => &self.changes.prints,
-            Source::Staged => &self.staged.prints,
-        };
-        let lapsed: Vec<String> = self
-            .viewed
-            .iter()
-            .filter(|((side, path), print)| *side == source && prints.get(path) != Some(print))
-            .map(|((_, path), _)| path.clone())
-            .collect();
-        for path in &lapsed {
-            self.viewed.remove(&(source, path.clone()));
-        }
-        lapsed
-            .into_iter()
-            .filter(|path| prints.contains_key(path))
-            .collect()
+        let (source, loaded) = (self.source, self.comparisons.get(self.source));
+        let mut unfold = Vec::new();
+        self.viewed.retain(|(side, path), print| {
+            let lapsed = *side == source && loaded.print(path) != Some(*print);
+            if lapsed && loaded.sections.contains_key(path) {
+                unfold.push(path.clone());
+            }
+            !lapsed
+        });
+        unfold
     }
 
     /// Mark `path` viewed at its current fingerprint, or clear the mark.
     pub(crate) fn set_viewed(&mut self, path: &str, viewed: bool) {
         let key = (self.source, path.to_owned());
-        match self.loaded(self.source).prints.get(path).copied() {
-            Some(print) if viewed => {
-                self.viewed.insert(key, print);
-            }
-            _ => {
-                self.viewed.remove(&key);
-            }
-        }
+        match self.loaded(self.source).print(path).filter(|_| viewed) {
+            Some(print) => self.viewed.insert(key, print),
+            None => self.viewed.remove(&key),
+        };
     }
 
     /// Viewed files of the shown comparison, and how many it has.
@@ -311,8 +306,8 @@ impl Desk {
     }
 
     /// Re-read when the focused pane now points at another folder (focus
-    /// moved, or its shell changed directory).
-    /// Another pane in the same checkout becomes where a review is sent.
+    /// moved, or its shell changed directory). Another pane in the same
+    /// checkout becomes where a review is sent.
     pub(crate) fn follow_changes(&mut self, cx: &mut Context<Self>) {
         if !self.changes.open {
             return;
@@ -350,19 +345,22 @@ impl Desk {
         if !self.changes.open || (self.changes.reading && !force) {
             return;
         }
-        let folder = match self.changes_folder() {
-            Ok(folder) => folder,
+        match self.changes_folder() {
+            Ok(folder) => self.read_changes(folder, cx),
             Err(reason) => {
                 self.changes.folder = None;
-                self.set_changes_view(View::Unavailable(reason), None, cx);
-                return;
+                self.set_changes_view(View::Unavailable(reason), Comparisons::default(), cx);
             }
-        };
+        }
+    }
+
+    /// Read `folder` off the UI thread. A later read makes this one's result stale.
+    fn read_changes(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.changes.terminal = self.focused_terminal();
         if self.changes.folder.as_ref() != Some(&folder) {
             self.changes.folder = Some(folder.clone());
             self.changes.focus = None;
-            self.set_changes_view(View::Loading, None, cx);
+            self.set_changes_view(View::Loading, Comparisons::default(), cx);
         }
         self.changes.generation += 1;
         self.changes.reading = true;
@@ -375,54 +373,38 @@ impl Desk {
                     return;
                 }
                 desk.changes.reading = false;
-                match result {
-                    Ok(Some(snapshot)) => {
-                        let view = View::Repo(snapshot.status.clone());
-                        desk.set_changes_view(view, Some(snapshot), cx);
-                    }
-                    Ok(None) => desk.set_changes_view(View::NotRepo(folder), None, cx),
-                    Err(error) => desk.set_changes_view(View::Failed(error), None, cx),
-                }
+                let (view, comparisons) = match result {
+                    Ok(Some((status, comparisons))) => (View::Repo(status), comparisons),
+                    Ok(None) => (View::NotRepo(folder), Comparisons::default()),
+                    Err(error) => (View::Failed(error), Comparisons::default()),
+                };
+                desk.set_changes_view(view, comparisons, cx);
             });
         })
         .detach();
     }
 
-    /// Show `view`, and the comparisons a checkout came with. Repaints only
-    /// what changed: an unchanged patch keeps the diff's scroll and folds.
-    fn set_changes_view(&mut self, view: View, snapshot: Option<Snapshot>, cx: &mut Context<Self>) {
+    /// Show `view` and its comparisons. The diff reloads only when the shown
+    /// comparison changed, since a reload resets its scroll and folds. An
+    /// emptied comparison gives way to the other.
+    fn set_changes_view(&mut self, view: View, comparisons: Comparisons, cx: &mut Context<Self>) {
         if self.changes.view != view {
             self.changes.view = view;
             cx.notify();
         }
-        let (changes, staged) = snapshot.map_or_else(
-            || (Loaded::default(), Loaded::default()),
-            |snapshot| (snapshot.changes, snapshot.staged),
-        );
-        let fresh =
-            |old: &Loaded, new: &Loaded| old.key != new.key || old.files.len() != new.files.len();
-        let shown_changed = match self.changes.source {
-            Source::Changes => fresh(&self.changes.changes, &changes),
-            Source::Staged => fresh(&self.changes.staged, &staged),
-        };
-        let any_changed =
-            fresh(&self.changes.changes, &changes) || fresh(&self.changes.staged, &staged);
-        self.changes.changes = changes;
-        self.changes.staged = staged;
-        // An emptied comparison gives way to the other, so the diff is never blank needlessly.
-        let other = match self.changes.source {
-            Source::Changes => Source::Staged,
-            Source::Staged => Source::Changes,
-        };
-        if self.changes.loaded(self.changes.source).files.is_empty()
-            && !self.changes.loaded(other).files.is_empty()
-        {
-            self.changes.source = other;
-            self.show_source(cx);
-        } else if shown_changed || self.changes.diff.is_none() {
-            self.show_source(cx);
+        let old = std::mem::replace(&mut self.changes.comparisons, comparisons);
+        let was = self.changes.source;
+        let fresh = &self.changes.comparisons;
+        if fresh.get(was).files.is_empty() && !fresh.get(was.other()).files.is_empty() {
+            self.changes.source = was.other();
         }
-        if any_changed {
+        let shown = self.changes.source;
+        if shown != was
+            || !old.get(shown).same(self.changes.loaded(shown))
+            || self.changes.diff.is_none()
+        {
+            self.show_source(cx);
+        } else if !old.same(&self.changes.comparisons) {
             cx.notify();
         }
     }
@@ -438,21 +420,23 @@ impl Desk {
         staged: &str,
         cx: &mut Context<Self>,
     ) {
-        let patch = |text: &str| git::PatchText {
-            text: text.to_owned(),
-            reduced: false,
+        let parse = |text: &str| {
+            let patch = git::PatchText {
+                text: text.to_owned(),
+                reduced: false,
+            };
+            Loaded::parse(patch, Vec::new())
         };
-        let snapshot = Snapshot {
-            changes: review::parse(patch(changes), &[]),
-            staged: review::parse(patch(staged), &[]),
-            status: status.clone(),
+        let comparisons = Comparisons {
+            changes: parse(changes),
+            staged: parse(staged),
         };
-        self.set_changes_view(View::Repo(status), Some(snapshot), cx);
+        self.set_changes_view(View::Repo(status), comparisons, cx);
     }
 }
 
 /// Status, then both comparisons, then the text of each conflicted file.
-fn read_checkout(folder: &std::path::Path) -> Result<Option<Snapshot>, String> {
+fn read_checkout(folder: &std::path::Path) -> Result<Option<(Status, Comparisons)>, String> {
     let Some(status) = git::read_status(folder)? else {
         return Ok(None);
     };
@@ -471,11 +455,11 @@ fn read_checkout(folder: &std::path::Path) -> Result<Option<Snapshot>, String> {
         .collect();
     let changes = git::read_patch(&root, Source::Changes, &untracked, review::FETCH_CONTEXT)?;
     let staged = git::read_patch(&root, Source::Staged, &[], review::FETCH_CONTEXT)?;
-    Ok(Some(Snapshot {
-        changes: review::parse(changes, &conflicts),
-        staged: review::parse(staged, &[]),
-        status,
-    }))
+    let comparisons = Comparisons {
+        changes: Loaded::parse(changes, conflicts),
+        staged: Loaded::parse(staged, Vec::new()),
+    };
+    Ok(Some((status, comparisons)))
 }
 
 /// `~/x` as an absolute path, for a shell that reported its folder that way.

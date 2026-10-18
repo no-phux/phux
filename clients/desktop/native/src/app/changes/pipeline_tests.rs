@@ -67,44 +67,36 @@ fn a_checkout_reads_into_both_comparisons_and_a_picked_line_stages_alone() {
     run(&dir, &["add", "staged.txt"]);
     std::fs::write(dir.join("notes.md"), "# Notes\n").unwrap();
 
-    let snapshot = read_checkout(&dir).unwrap().expect("a checkout");
-    assert_eq!(paths(&snapshot.changes), ["src/lib.rs", "notes.md"]);
-    assert_eq!(paths(&snapshot.staged), ["staged.txt"]);
-    assert_eq!(snapshot.changes.stats("src/lib.rs"), Some((2, 2)));
-    assert_eq!(snapshot.changes.stats("notes.md"), Some((1, 0)));
+    let (status, read) = read_checkout(&dir).unwrap().expect("a checkout");
+    let (changes, staged) = (read.get(Source::Changes), read.get(Source::Staged));
+    assert_eq!(paths(changes), ["src/lib.rs", "notes.md"]);
+    assert_eq!(paths(staged), ["staged.txt"]);
+    assert_eq!(changes.stats("src/lib.rs"), Some((2, 2)));
+    assert_eq!(changes.stats("notes.md"), Some((1, 0)));
     // Wide context: the whole file is in the patch for the view to unfold.
-    assert!(snapshot.changes.text.contains(" line 20\n"));
+    assert!(changes.sections["src/lib.rs"].contains(" line 20\n"));
 
     // The unified view's selection of line 5's removal and replacement.
     let range = DiffLineRange::new("src/lib.rs", DiffSide::Original, 5, 5)
         .with_end_side(DiffSide::Modified);
-    let patch =
-        crate::git::partial_patch(&snapshot.changes.text, &review::selection(&range), false)
-            .expect("changed lines");
-    crate::git::apply(
-        &snapshot.status.root,
-        &Op::Apply {
-            patch,
-            reverse: false,
-        },
-    )
-    .unwrap();
+    stage(&status.root, changes, &range, false);
     let cached = run(&dir, &["diff", "--cached", "--", "src/lib.rs"]);
     assert!(cached.contains("-line 5\n+line five\n"), "{cached}");
     assert!(!cached.contains("thirty-five"), "{cached}");
 
     // The staged comparison now carries it; unstaging it out of there reverses.
-    let snapshot = read_checkout(&dir).unwrap().unwrap();
-    assert_eq!(paths(&snapshot.staged), ["src/lib.rs", "staged.txt"]);
-    let back = crate::git::partial_patch(&snapshot.staged.text, &review::selection(&range), true)
-        .expect("staged lines");
-    crate::git::apply(
-        &snapshot.status.root,
-        &Op::Apply {
-            patch: back,
-            reverse: true,
-        },
-    )
-    .unwrap();
+    let (status, read) = read_checkout(&dir).unwrap().unwrap();
+    assert_eq!(
+        paths(read.get(Source::Staged)),
+        ["src/lib.rs", "staged.txt"]
+    );
+    stage(&status.root, read.get(Source::Staged), &range, true);
     assert!(run(&dir, &["diff", "--cached", "--", "src/lib.rs"]).is_empty());
+}
+
+/// What the panel's Stage Lines does with `range` in `loaded`.
+fn stage(root: &Path, loaded: &Loaded, range: &DiffLineRange, reverse: bool) {
+    let file = &loaded.sections[range.path().as_ref()];
+    let patch = crate::git::partial_patch(file, review::selection(range), reverse).unwrap();
+    crate::git::apply(root, &Op::Apply { patch, reverse }).unwrap();
 }

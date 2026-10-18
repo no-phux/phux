@@ -9,15 +9,14 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, IntoElement, SharedString, WeakEntity, Window,
-    div, px,
+    AnyElement, App, Context, ElementId, Entity, IntoElement, SharedString, WeakEntity, div, px,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::diff::{
     Diff, DiffAnnotation, DiffChangeIndicator, DiffFile, DiffFileStatus, DiffHoverHighlight,
-    DiffLinePosition, DiffState,
+    DiffLinePosition, DiffLineRange, DiffState,
 };
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::{Selectable, Sizable};
@@ -30,43 +29,33 @@ use super::super::super::desk::Desk;
 use super::super::super::skin::Look;
 use super::super::super::ui::{ghost_button, ghost_icon, muted};
 
-const DRAFT: &str = "comment-draft";
-
-pub(super) fn column(
-    desk: &mut Desk,
-    width: f32,
-    look: &Look,
-    window: &mut Window,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let column = div()
+pub(super) fn column(desk: &Desk, width: f32, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let shown = desk.changes.diff.as_ref().map(|(state, _)| state.clone());
+    let empty = desk.changes.loaded(desk.changes.source).files.is_empty();
+    let body = match shown {
+        Some(state) if !empty => {
+            let mode = desk.changes.layout.mode(width);
+            if state.read(cx).mode() != mode {
+                state.update(cx, |state, cx| state.set_mode(mode, cx));
+            }
+            diff(desk, &state, look, cx).into_any_element()
+        }
+        _ => div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(muted(look, "No changes in this comparison"))
+            .into_any_element(),
+    };
+    div()
         .flex_1()
         .min_w_0()
         .h_full()
         .flex()
         .flex_col()
-        .child(toolbar(desk, look, cx));
-    let Some(state) = desk.changes.diff.as_ref().map(|(state, _)| state.clone()) else {
-        return column.into_any_element();
-    };
-    let mode = desk.changes.layout.mode(width);
-    if state.read(cx).mode() != mode {
-        state.update(cx, |state, cx| state.set_mode(mode, cx));
-    }
-    if desk.changes.loaded(desk.changes.source).files.is_empty() {
-        return column
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(muted(look, "No changes in this comparison")),
-            )
-            .into_any_element();
-    }
-    column
-        .child(diff(desk, &state, look, window, cx))
+        .child(toolbar(desk, look, cx))
+        .child(body)
         .into_any_element()
 }
 
@@ -172,23 +161,52 @@ struct Ink {
     radius: f32,
 }
 
+/// What a note slot under some lines holds.
+#[derive(Clone)]
+enum Note {
+    Draft(Entity<TextareaState>, String),
+    Saved(u64, String),
+}
+
+/// A note slot under the last line of `range`.
+fn slot(id: String, range: &DiffLineRange) -> DiffAnnotation {
+    let line = DiffLinePosition::new(range.path().clone(), range.end_side(), range.end());
+    DiffAnnotation::line(ElementId::from(SharedString::from(id)), line)
+}
+
+/// The shown comparison's saved notes, then the one being written.
+fn notes(desk: &Desk) -> Vec<(DiffAnnotation, Note)> {
+    let saved = desk.changes.shown_comments().map(|comment| {
+        let note = Note::Saved(comment.id, comment.body.clone());
+        (slot(format!("note-{}", comment.id), &comment.range), note)
+    });
+    let draft = desk
+        .changes
+        .draft
+        .as_ref()
+        .filter(|draft| draft.source == desk.changes.source);
+    let draft = draft.map(|draft| {
+        let note = Note::Draft(draft.input.clone(), range_label(&draft.range));
+        (slot("note-draft".into(), &draft.range), note)
+    });
+    saved.chain(draft).collect()
+}
+
 fn diff(
     desk: &Desk,
     state: &Entity<DiffState>,
     look: &Look,
-    _window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let handle = cx.weak_entity();
-    let source = desk.changes.source;
-    let busy = desk.changes.busy;
+    let (source, busy) = (desk.changes.source, desk.changes.busy);
     let viewed: Rc<HashSet<String>> = Rc::new(
         desk.changes
             .loaded(source)
-            .files
-            .iter()
-            .map(|file| file.path().to_string())
+            .sections
+            .keys()
             .filter(|path| desk.changes.is_viewed(path))
+            .cloned()
             .collect(),
     );
     let ink = Ink {
@@ -197,83 +215,40 @@ fn diff(
         muted: from_hex(&look.chrome.muted),
         radius: look.skin.shape.kit_radius,
     };
-    let mut annotations: Vec<DiffAnnotation> = desk
-        .changes
-        .shown_comments()
-        .map(|comment| {
-            DiffAnnotation::line(
-                ElementId::from(SharedString::from(format!("comment-{}", comment.id))),
-                DiffLinePosition::new(
-                    comment.range.path().clone(),
-                    comment.range.end_side(),
-                    comment.range.end(),
-                ),
-            )
-        })
-        .collect();
-    let draft = desk
-        .changes
-        .draft
-        .as_ref()
-        .filter(|draft| draft.source == source)
-        .map(|draft| (draft.input.clone(), range_label(&draft.range)));
-    if let Some(range) = desk
-        .changes
-        .draft
-        .as_ref()
-        .filter(|draft| draft.source == source)
-        .map(|draft| draft.range.clone())
-    {
-        annotations.push(DiffAnnotation::line(
-            ElementId::from(SharedString::from(DRAFT)),
-            DiffLinePosition::new(range.path().clone(), range.end_side(), range.end()),
-        ));
-    }
-    let bodies: Rc<Vec<(String, u64, String)>> = Rc::new(
-        desk.changes
-            .shown_comments()
-            .map(|comment| {
-                (
-                    format!("comment-{}", comment.id),
-                    comment.id,
-                    comment.body.clone(),
-                )
-            })
-            .collect(),
-    );
-    let header_handle = handle.clone();
-    let header_state = state.clone();
-    let note_handle = handle.clone();
-    let add_handle = handle;
+    let notes = Rc::new(notes(desk));
+    let (header_handle, header_state) = (handle.clone(), state.clone());
+    let (note_handle, add_handle) = (handle.clone(), handle);
+    let slots = notes
+        .iter()
+        .map(|(slot, _)| slot.clone())
+        .collect::<Vec<_>>();
     Diff::new(state)
         .flex_1()
         .min_h_0()
         .hover_highlight(DiffHoverHighlight::Both)
         .change_indicator(DiffChangeIndicator::Bars)
         .render_header_suffix(move |file, _, cx| {
+            let viewed = viewed.contains(file.path().as_ref());
             header_controls(
                 file,
                 source,
-                viewed.contains(file.path().as_ref()),
+                viewed,
                 busy,
                 &header_state,
                 &header_handle,
                 cx,
             )
         })
-        .annotations(annotations)
-        .render_annotation(move |annotation, _, _| {
-            let id = annotation.id().to_string();
-            if id == DRAFT
-                && let Some((input, label)) = draft.clone()
-            {
-                return draft_card(input, label, ink, note_handle.clone());
+        .annotations(slots)
+        .render_annotation(move |slot, _, _| {
+            let note = notes.iter().find(|(each, _)| each.id() == slot.id());
+            match note.map(|(_, note)| note.clone()) {
+                Some(Note::Draft(input, label)) => {
+                    draft_card(input, label, ink, note_handle.clone())
+                }
+                Some(Note::Saved(id, body)) => note_card(id, body, ink, note_handle.clone()),
+                None => div().into_any_element(),
             }
-            let Some((_, comment, body)) = bodies.iter().find(|(key, ..)| *key == id).cloned()
-            else {
-                return div().into_any_element();
-            };
-            note_card(comment, body, ink, note_handle.clone())
         })
         .on_add_annotation(move |range, window, cx| {
             let range = range.clone();

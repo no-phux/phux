@@ -65,44 +65,6 @@ fn a_new_repository_has_no_commit_and_a_detached_head_no_name() {
 }
 
 #[test]
-fn a_diff_is_coloured_by_line_and_counted() {
-    let diff = parse_diff(
-        "diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n+more\n\\ No newline at end of file\n",
-    );
-    let kinds: Vec<LineKind> = diff.lines.iter().map(|line| line.kind).collect();
-    use LineKind::*;
-    assert_eq!(
-        kinds,
-        [
-            Meta, Meta, Meta, Meta, Hunk, Context, Removed, Added, Added, Note
-        ]
-    );
-    assert_eq!((diff.added, diff.removed), (2, 1));
-    let numbers: Vec<Option<u32>> = diff.lines[5..].iter().map(|line| line.number).collect();
-    assert_eq!(numbers, [Some(1), Some(2), Some(2), Some(3), None]);
-}
-
-#[test]
-fn hunk_headers_give_both_starting_lines() {
-    assert_eq!(hunk_start("@@ -10,4 +12,6 @@ fn x()"), Some((10, 12)));
-    assert_eq!(hunk_start("@@ -0,0 +1 @@"), Some((0, 1)));
-    assert_eq!(hunk_start("@@ nonsense"), None);
-}
-
-#[test]
-fn a_huge_diff_is_cut_with_a_note() {
-    let body: String = (0..MAX_DIFF_LINES + 50)
-        .map(|i| format!("+{i}\n"))
-        .collect();
-    let diff = parse_diff(&format!("@@ -0,0 +1 @@\n{body}"));
-    assert_eq!(diff.lines.len(), MAX_DIFF_LINES + 1);
-    assert_eq!(
-        diff.lines.last().map(|line| line.kind),
-        Some(LineKind::Note)
-    );
-}
-
-#[test]
 fn a_row_shows_the_name_before_its_folder() {
     assert_eq!(
         entry(Area::Unstaged, "a/b/c.rs", 'M').split_name(),
@@ -133,8 +95,12 @@ fn stage_unstage_and_commit_round_trip_through_git() {
     assert_eq!(status.count(Area::Untracked), 1);
     let untracked = status.in_area(Area::Untracked).next().unwrap().clone();
     assert_eq!(untracked.path, "sub/a.txt");
-    let preview = read_diff(&status.root, &untracked).unwrap();
-    assert_eq!(preview.added, 1);
+    let preview = read_patch(&status.root, Source::Changes, &[untracked.path], 3).unwrap();
+    assert!(
+        preview
+            .text
+            .contains("+++ b/sub/a.txt\n@@ -0,0 +1 @@\n+one\n")
+    );
 
     apply(&status.root, &Op::Stage(vec!["sub/a.txt".into()])).unwrap();
     let status = read_status(&dir).unwrap().unwrap();
@@ -156,9 +122,9 @@ fn stage_unstage_and_commit_round_trip_through_git() {
 
     std::fs::write(dir.join("sub/a.txt"), "two\n").unwrap();
     let status = read_status(&dir).unwrap().unwrap();
-    let changed = status.in_area(Area::Unstaged).next().unwrap();
-    let diff = read_diff(&status.root, changed).unwrap();
-    assert_eq!((diff.added, diff.removed), (1, 1));
+    assert_eq!(status.count(Area::Unstaged), 1);
+    let diff = read_patch(&status.root, Source::Changes, &[], 3).unwrap();
+    assert!(diff.text.contains("-one\n+two\n"));
 
     // An empty commit is git's refusal, surfaced as its message.
     let refused = apply(&status.root, &Op::Commit("nothing".into())).unwrap_err();

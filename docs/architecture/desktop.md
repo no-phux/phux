@@ -264,8 +264,9 @@ The [Changes panel guide](../consumers/desktop-changes.md) owns behavior.
 `GIT_OPTIONAL_LOCKS=0` and `GIT_TERMINAL_PROMPT=0`, parses
 `status --porcelain=v2 --branch -z`, reads each comparison as one raw patch,
 and applies stage, unstage, commit and conflict resolution. Line staging cuts
-a partial patch from the shown comparison and pipes it to
-`git apply --cached`, reversed for unstaging. It has no GPUI dependency and is
+the selected file's patch section down to the selected lines and pipes it to
+`git apply --cached --recount`, reversed for unstaging. Recounting lets the
+cut keep its original hunk headers. It has no GPUI dependency and is
 tested against a real temporary repository. No Git library is linked, so
 hooks, config, credential helpers and ignore rules match the terminal.
 
@@ -275,9 +276,9 @@ paths locally. One `smol::unblock` read takes the status, both comparisons
 with wide context, and the text of each conflicted file. It parses them into
 GPUI Kit `DiffFile`s off the UI thread, and a generation counter drops results
 for a folder the panel has left. The diff view is Kit's `DiffState`. The panel
-replaces its files only when a comparison's fingerprint changed, because
-replacing them resets scroll and folds. Viewed marks key on each file's patch
-fingerprint.
+replaces its files only when the shown comparison's per-file patch sections
+changed, because replacing them resets scroll and folds. The same sections
+feed line staging and the viewed marks' fingerprints.
 
 `app/view/changes.rs` is a cached chrome slot like the sidebar, so terminal
 frames do not rebuild it. Kit's `Diff` element renders the patch: word-level

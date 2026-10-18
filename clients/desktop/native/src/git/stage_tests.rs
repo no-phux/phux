@@ -32,11 +32,14 @@ fn commit_all(dir: &Path, message: &str) {
     apply(dir, &Op::Commit(message.into())).unwrap();
 }
 
-/// Cut `source`'s patch to `selection` and apply it to the index.
+/// Cut `source`'s one changed file to `selection` and apply it to the index.
 fn apply_selection(dir: &Path, source: Source, untracked: &[String], selection: &Selection) {
     let reverse = source == Source::Staged;
     let patch = read_patch(dir, source, untracked, 3).unwrap();
-    let cut = partial_patch(&patch.text, selection, reverse).unwrap();
+    let [file] = split_files(&patch.text)[..] else {
+        panic!("one file in {}", patch.text);
+    };
+    let cut = partial_patch(file, *selection, reverse).unwrap();
     apply(
         dir,
         &Op::Apply {
@@ -54,7 +57,7 @@ fn one_of_two_changed_lines_is_staged_and_unstaged_again() {
     commit_all(&dir, "base");
     write(&dir, "f.txt", "a\nx\nb\nc\nd\ny\n");
 
-    let x = Selection::lines("f.txt", Side::New, 2, 2);
+    let x = Selection::lines(Side::New, 2, 2);
     apply_selection(&dir, Source::Changes, &[], &x);
     let staged = git(&dir, &["diff", "--cached", "--no-color"]);
     assert!(
@@ -79,7 +82,7 @@ fn one_of_two_changed_lines_is_staged_and_unstaged_again() {
 
     // A replaced line, staged as its removal and addition together.
     write(&dir, "f.txt", "a\nB\nc\nD\n");
-    let pair = Selection::lines("f.txt", Side::Old, 2, 2).with_end_side(Side::New);
+    let pair = Selection::lines(Side::Old, 2, 2).with_end_side(Side::New);
     apply_selection(&dir, Source::Changes, &[], &pair);
     assert_eq!(git(&dir, &["show", ":f.txt"]), "a\nB\nc\nd\n");
     apply_selection(&dir, Source::Staged, &[], &pair);
@@ -95,7 +98,7 @@ fn part_of_an_untracked_file_is_staged_as_a_new_file() {
     write(&dir, "new.txt", "one\ntwo\nthree\n");
     let untracked = vec!["new.txt".to_owned()];
 
-    let first_two = Selection::lines("new.txt", Side::New, 1, 2);
+    let first_two = Selection::lines(Side::New, 1, 2);
     apply_selection(&dir, Source::Changes, &untracked, &first_two);
     assert_eq!(git(&dir, &["show", ":new.txt"]), "one\ntwo\n");
     let status = read_status(&dir).unwrap().unwrap();
@@ -103,11 +106,11 @@ fn part_of_an_untracked_file_is_staged_as_a_new_file() {
     assert_eq!(status.count(Area::Unstaged), 1);
 
     // Unstaging one line of the newly added file keeps the file.
-    let two = Selection::lines("new.txt", Side::New, 2, 2);
+    let two = Selection::lines(Side::New, 2, 2);
     apply_selection(&dir, Source::Staged, &[], &two);
     assert_eq!(git(&dir, &["show", ":new.txt"]), "one\n");
     // Unstaging all that is left removes it from the index again.
-    let one = Selection::lines("new.txt", Side::New, 1, 1);
+    let one = Selection::lines(Side::New, 1, 1);
     apply_selection(&dir, Source::Staged, &[], &one);
     let status = read_status(&dir).unwrap().unwrap();
     assert_eq!(status.count(Area::Staged), 0);
@@ -121,7 +124,7 @@ fn a_line_after_a_last_line_without_newline_can_be_staged() {
     write(&dir, "n.txt", "x\ny");
     commit_all(&dir, "base");
     write(&dir, "n.txt", "x\ny\nz\nw\n");
-    let z = Selection::lines("n.txt", Side::New, 3, 3);
+    let z = Selection::lines(Side::New, 3, 3);
     apply_selection(&dir, Source::Changes, &[], &z);
     assert_eq!(git(&dir, &["show", ":n.txt"]), "x\ny\nz\n");
     let _ = std::fs::remove_dir_all(&dir);

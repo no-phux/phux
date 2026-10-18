@@ -195,22 +195,15 @@ fn file_row(
     let (name, folder) = entry.split_name();
     let id = SharedString::from(format!("change-{:?}-{}", entry.area, entry.path));
     let group = SharedString::from(format!("change-group-{:?}-{}", entry.area, entry.path));
-    let (icon, label) = match entry.area {
-        Area::Staged => (IconName::Minus, "Unstage"),
-        Area::Conflicted => (IconName::Check, "Mark Resolved"),
-        Area::Unstaged | Area::Untracked => (IconName::Plus, "Stage"),
-    };
     let tooltip = match &entry.from {
         Some(from) => format!("{from} → {}", entry.path),
         None => entry.path.clone(),
     };
-    let focused =
-        desk.changes.source == source && desk.changes.focus.as_deref() == Some(entry.path.as_str());
-    let viewed = desk.changes.source == source && desk.changes.is_viewed(&entry.path);
+    let shown = desk.changes.source == source;
+    let focused = shown && desk.changes.focus.as_deref() == Some(entry.path.as_str());
+    let viewed = shown && desk.changes.is_viewed(&entry.path);
     let stats = desk.changes.loaded(source).stats(&entry.path);
-    let theme = &look.chrome.theme;
     let path = entry.path.clone();
-    let toggle = entry.path.clone();
     row(id.clone(), look)
         .debug_selector({
             let id = id.clone();
@@ -253,28 +246,7 @@ fn file_row(
                     line.child(muted(look, folder.to_owned()).flex_1().min_w_0().truncate())
                 }),
         )
-        .children(stats.map(|(added, removed)| {
-            div()
-                .flex()
-                .flex_shrink_0()
-                .gap(px(4.))
-                .text_xs()
-                .group_hover(group.clone(), |style| style.invisible())
-                .when(added > 0, |counts| {
-                    counts.child(
-                        div()
-                            .text_color(from_hex(&theme.success))
-                            .child(format!("+{added}")),
-                    )
-                })
-                .when(removed > 0, |counts| {
-                    counts.child(
-                        div()
-                            .text_color(from_hex(&theme.danger))
-                            .child(format!("−{removed}")),
-                    )
-                })
-        }))
+        .children(stats.map(|stats| line_counts(stats, &group, look)))
         .when(viewed, |row| {
             row.child(
                 Icon::new(IconName::Eye)
@@ -282,22 +254,62 @@ fn file_row(
                     .text_color(from_hex(&look.chrome.faint)),
             )
         })
-        .child(
-            div()
-                .absolute()
-                .right(px(4.))
-                .invisible()
-                .group_hover(group, |style| style.visible())
-                .child(
-                    ghost_icon(SharedString::from(format!("{id}-stage")), icon, label)
-                        .disabled(desk.changes.busy)
-                        .on_click(cx.listener(move |desk, _, _, cx| {
-                            cx.stop_propagation();
-                            desk.stage_path(source, &toggle, cx);
-                        })),
-                ),
-        )
+        .child(stage_button(desk, entry, &id, source, group, cx))
         .into_any_element()
+}
+
+/// `+N −M`, hidden while the row's stage button shows.
+fn line_counts(
+    (added, removed): (usize, usize),
+    group: &SharedString,
+    look: &Look,
+) -> impl IntoElement {
+    let theme = &look.chrome.theme;
+    let count = |n: usize, sign: char, color: &str| {
+        (n > 0).then(|| {
+            div()
+                .text_color(from_hex(color))
+                .child(format!("{sign}{n}"))
+        })
+    };
+    div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(4.))
+        .text_xs()
+        .group_hover(group.clone(), |style| style.invisible())
+        .children(count(added, '+', &theme.success))
+        .children(count(removed, '−', &theme.danger))
+}
+
+/// Stage, unstage or resolve `entry`, shown while the row is hovered.
+fn stage_button(
+    desk: &Desk,
+    entry: &Entry,
+    id: &SharedString,
+    source: Source,
+    group: SharedString,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let (icon, label) = match entry.area {
+        Area::Staged => (IconName::Minus, "Unstage"),
+        Area::Conflicted => (IconName::Check, "Mark Resolved"),
+        Area::Unstaged | Area::Untracked => (IconName::Plus, "Stage"),
+    };
+    let path = entry.path.clone();
+    div()
+        .absolute()
+        .right(px(4.))
+        .invisible()
+        .group_hover(group, |style| style.visible())
+        .child(
+            ghost_icon(SharedString::from(format!("{id}-stage")), icon, label)
+                .disabled(desk.changes.busy)
+                .on_click(cx.listener(move |desk, _, _, cx| {
+                    cx.stop_propagation();
+                    desk.stage_path(source, &path, cx);
+                })),
+        )
 }
 
 /// The letter a file row leads with. Untracked files read as added.

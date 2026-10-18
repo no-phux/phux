@@ -1,5 +1,5 @@
-//! Native Git for the Changes panel: a checkout's branch, changed files and
-//! diffs, plus stage, unstage and commit.
+//! Native Git for the Changes panel: a checkout's branch and changed files,
+//! raw patches for the diff view, and the index and commit writes.
 //!
 //! Everything runs the user's own `git` against a local directory, so hooks,
 //! config, credentials and ignore rules behave exactly as they do in the
@@ -14,10 +14,10 @@ mod patch;
 mod stage;
 
 pub use patch::{Selection, Side, partial_patch};
-pub use stage::{MAX_PATCH_BYTES, MAX_UNTRACKED, PatchText, Source, read_file, read_patch};
+pub use stage::{
+    MAX_PATCH_BYTES, MAX_UNTRACKED, PatchText, Source, read_file, read_patch, split_files,
+};
 
-/// A diff longer than this is cut, with a note saying so.
-pub const MAX_DIFF_LINES: usize = 4000;
 /// An untracked file larger than this is not read for its preview.
 const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
 
@@ -101,36 +101,6 @@ impl Status {
     }
 }
 
-/// What one diff line is, for its colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineKind {
-    /// `diff --git`, `index`, `---`, `+++` and mode lines.
-    Meta,
-    /// `@@ -a,b +c,d @@`.
-    Hunk,
-    Added,
-    Removed,
-    Context,
-    /// `\ No newline at end of file`, binary notices, truncation.
-    Note,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DiffLine {
-    pub kind: LineKind,
-    pub text: String,
-    /// The line's number in the new file, or in the old one when removed.
-    pub number: Option<u32>,
-}
-
-/// A rendered diff for one entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Diff {
-    pub lines: Vec<DiffLine>,
-    pub added: usize,
-    pub removed: usize,
-}
-
 /// A change to the index or history the panel can make.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -178,53 +148,6 @@ pub fn read_status(dir: &Path) -> Result<Option<Status>, String> {
     Ok(Some(parse_status(root, &out)))
 }
 
-/// The diff `entry` shows: the index against HEAD when staged, the working
-/// tree against the index otherwise, and the whole file when untracked.
-pub fn read_diff(root: &Path, entry: &Entry) -> Result<Diff, String> {
-    let path = entry.path.as_str();
-    let out = match entry.area {
-        Area::Staged => run_diff(
-            root,
-            &[
-                "diff",
-                "--cached",
-                "--no-color",
-                "--no-ext-diff",
-                "--",
-                path,
-            ],
-        )?,
-        Area::Unstaged | Area::Conflicted => {
-            run_diff(root, &["diff", "--no-color", "--no-ext-diff", "--", path])?
-        }
-        Area::Untracked => {
-            let size = std::fs::metadata(root.join(path)).map_or(0, |meta| meta.len());
-            if size > MAX_PREVIEW_BYTES {
-                return Ok(note(&format!(
-                    "New file, {} KiB: too large to preview.",
-                    size / 1024
-                )));
-            }
-            run_diff(
-                root,
-                &[
-                    "diff",
-                    "--no-index",
-                    "--no-color",
-                    "--no-ext-diff",
-                    "--",
-                    "/dev/null",
-                    path,
-                ],
-            )?
-        }
-    };
-    if out.trim().is_empty() {
-        return Ok(note("No textual changes."));
-    }
-    Ok(parse_diff(&out))
-}
-
 /// Apply `op` to the checkout at `root`.
 pub fn apply(root: &Path, op: &Op) -> Result<(), String> {
     match op {
@@ -243,17 +166,6 @@ fn with_paths<'a>(head: &[&'a str], paths: &'a [String]) -> Vec<&'a str> {
     let mut args = head.to_vec();
     args.extend(paths.iter().map(String::as_str));
     args
-}
-
-fn note(text: &str) -> Diff {
-    Diff {
-        lines: vec![DiffLine {
-            kind: LineKind::Note,
-            text: text.to_owned(),
-            number: None,
-        }],
-        ..Diff::default()
-    }
 }
 
 fn command(dir: &Path, args: &[&str]) -> Command {
@@ -432,87 +344,6 @@ fn tracked(rest: &str, skip: usize, from: Option<String>, entries: &mut Vec<Entr
             code: tree,
         });
     }
-}
-
-/// Classify a unified diff's lines, cut at [`MAX_DIFF_LINES`].
-#[must_use]
-pub fn parse_diff(out: &str) -> Diff {
-    let mut diff = Diff::default();
-    // Next old- and new-side line numbers; `None` outside a hunk.
-    let mut at: Option<(u32, u32)> = None;
-    for (index, line) in out.lines().enumerate() {
-        if index == MAX_DIFF_LINES {
-            diff.lines.push(DiffLine {
-                kind: LineKind::Note,
-                text: format!("Diff cut at {MAX_DIFF_LINES} lines; open the file to see the rest."),
-                number: None,
-            });
-            break;
-        }
-        let kind = classify(line, at.is_some());
-        let number = match (kind, at.as_mut()) {
-            (LineKind::Added, Some((_, new))) => Some(step(new)),
-            (LineKind::Removed, Some((old, _))) => Some(step(old)),
-            (LineKind::Context, Some((old, new))) => {
-                step(old);
-                Some(step(new))
-            }
-            _ => None,
-        };
-        match kind {
-            LineKind::Hunk => at = hunk_start(line),
-            LineKind::Meta if line.starts_with("diff ") => at = None,
-            LineKind::Added => diff.added += 1,
-            LineKind::Removed => diff.removed += 1,
-            _ => {}
-        }
-        diff.lines.push(DiffLine {
-            kind,
-            text: line.replace('\t', "    "),
-            number,
-        });
-    }
-    diff
-}
-
-fn classify(line: &str, in_hunk: bool) -> LineKind {
-    if line.starts_with("diff ") {
-        return LineKind::Meta;
-    }
-    if line.starts_with("@@") {
-        return LineKind::Hunk;
-    }
-    if !in_hunk {
-        return if line.starts_with("Binary files") {
-            LineKind::Note
-        } else {
-            LineKind::Meta
-        };
-    }
-    match line.as_bytes().first() {
-        Some(b'+') => LineKind::Added,
-        Some(b'-') => LineKind::Removed,
-        Some(b'\\') => LineKind::Note,
-        _ => LineKind::Context,
-    }
-}
-
-/// Return the current line number and advance it.
-fn step(line: &mut u32) -> u32 {
-    let current = *line;
-    *line += 1;
-    current
-}
-
-/// The first old and new line numbers of `@@ -a[,b] +c[,d] @@`.
-fn hunk_start(header: &str) -> Option<(u32, u32)> {
-    let mut sides = header.split(' ').skip(1);
-    let side = |field: Option<&str>, sign: char| -> Option<u32> {
-        field?.strip_prefix(sign)?.split(',').next()?.parse().ok()
-    };
-    let old = side(sides.next(), '-')?;
-    let new = side(sides.next(), '+')?;
-    Some((old, new))
 }
 
 #[cfg(test)]
