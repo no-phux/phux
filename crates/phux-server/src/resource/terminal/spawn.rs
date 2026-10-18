@@ -76,8 +76,8 @@ pub(super) fn write_all_resilient(
     write_all_retry(writer, bytes, None)
 }
 
-/// [`write_all_resilient`] for the live master, which is `O_NONBLOCK` so an
-/// echo steal can read without sharing that flag onto a blocking `write(2)`.
+/// [`write_all_resilient`] for the live master, whose reader shares its
+/// `O_NONBLOCK` status flag with the writer.
 /// `EAGAIN` waits for output space instead of killing the pane's input.
 pub(super) fn write_all_pty(
     writer: &mut (dyn Write + Send),
@@ -782,8 +782,8 @@ fn drain_master_with_budget<R: Read>(reader: &mut R, buf: &mut [u8], budget: std
             Ok(0) => return,
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                // The master is nonblocking so an echo steal cannot stall a
-                // poller. An orphan drain still has to wait for the child.
+                // The poller's master is nonblocking. An orphan drain still
+                // has to wait for the child.
                 if std::time::Instant::now() >= deadline {
                     debug!(
                         "pty reader thread: orphan drain budget expired; leaving the master unread"
@@ -852,12 +852,10 @@ fn start_pty_bridge(
     child: Box<dyn Child + Send + Sync>,
 ) -> Result<SpawnedPty, TerminalActorError> {
     let reader = dup_master_reader(&*master)?;
-    // One open file description backs the master, this reader, the echo
-    // dup, and the writer. `O_NONBLOCK` is a status flag, so it is shared:
-    // the reader can return `EAGAIN` when a direct steal already took the
-    // byte, and the writer waits that out instead of treating it as fatal.
+    // One open file description backs the master, reader, and writer.
+    // `O_NONBLOCK` is shared, so writes wait out `EAGAIN` instead of
+    // treating it as fatal. Only the reader consumes output.
     super::park::set_nonblock(&reader).map_err(|err| TerminalActorError::PtyIo(err.to_string()))?;
-    let echo = dup_master_reader(&*master)?;
     let writer = master
         .take_writer()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
@@ -870,14 +868,9 @@ fn start_pty_bridge(
     let (input_tx_to_writer, input_rx_for_writer) =
         mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
 
-    let reader = super::park::attach(reader, pty_tx_to_actor.clone());
-    let fast = super::fast_pty::PtyFastPath::new(
-        input_tx_to_writer.clone(),
-        master_for_writer,
-        echo,
-        pty_tx_to_actor,
-        writer,
-    );
+    let reader = super::park::attach(reader, pty_tx_to_actor);
+    let fast =
+        super::fast_pty::PtyFastPath::new(input_tx_to_writer.clone(), master_for_writer, writer);
     let writer_fast = Arc::clone(&fast);
     let writer_thread = std::thread::Builder::new()
         .name("phux-pty-writer".to_owned())
@@ -1726,6 +1719,51 @@ mod canonical_guard_tests {
         let _ = pty.child.kill();
         // SAFETY: `fcntl` just created `high` and this test owns it.
         drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(high) });
+    }
+
+    /// Inline input must not consume output ahead of the authoritative reader.
+    /// Otherwise the reader can hold an earlier chunk while a direct write
+    /// enqueues a later one first, assigning valid sequences to reordered bytes.
+    #[test]
+    fn inline_pty_write_leaves_pending_output_for_the_authoritative_reader() {
+        use super::super::fast_pty::{DirectWrite, PtyFastPath};
+        use std::os::fd::AsFd;
+
+        let (master, _slave) = open_default_pty();
+        let mut reader = dup_master_reader(&*master).expect("reader");
+        super::super::park::set_nonblock(&reader).expect("nonblocking reader");
+        let mut writer = master.take_writer().expect("writer");
+        let prefix = b"before";
+        writer.write_all(prefix).expect("queue the earlier echo");
+        let mut ready = [nix::poll::PollFd::new(
+            reader.as_fd(),
+            nix::poll::PollFlags::POLLIN,
+        )];
+        assert_eq!(
+            nix::poll::poll(
+                &mut ready,
+                nix::poll::PollTimeout::try_from(DELIVERY_DEADLINE).expect("deadline")
+            )
+            .expect("wait for pending output"),
+            1,
+            "the prefix must already be readable before the inline write"
+        );
+        let (input_tx, input_rx) = mpsc::channel(1);
+        let fast = PtyFastPath::new(input_tx, Arc::new(Mutex::new(master)), writer);
+
+        assert_eq!(fast.try_direct(b"after"), DirectWrite::Wrote);
+        let mut actual = [0; 64];
+        let n = reader
+            .read(&mut actual)
+            .expect("the authoritative reader retains the prefix");
+        assert!(
+            actual[..n].starts_with(prefix),
+            "output reordered: {:?}",
+            &actual[..n]
+        );
+
+        fast.close();
+        fast.run_writer(input_rx);
     }
 
     /// Enter and Ctrl-U are not legacy printables, so they sit in the input
