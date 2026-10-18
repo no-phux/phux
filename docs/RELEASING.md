@@ -46,7 +46,7 @@ CLI releases are GitHub's Latest. The Homebrew tap
 
 | You want to | Do this |
 |---|---|
-| Ship a release | Let the release PR auto-merge once `ci` is green, or mark it ready and squash-merge it |
+| Ship a release | Mark the draft release PR ready, then squash-merge it once `ci` is green |
 | Finish or rebuild a draft | `gh workflow run release.yml -f tag=<tag>`; an empty tag reconciles every ready draft |
 | Rebuild next | `gh workflow run next.yml` (optionally `-f sha=<sha>`) |
 | See whether anything is stuck | `just release-drift` |
@@ -59,7 +59,9 @@ CLI releases are GitHub's Latest. The Homebrew tap
 
 1. Conventional commits land on `main`. Release Please keeps one release PR
    for the root and one for Desktop. Each carries the version bump,
-   changelog, and synced lockfiles.
+   changelog, and synced lockfiles. It stays a draft and keeps accumulating
+   changes until a maintainer marks it ready and merges it; nothing
+   auto-merges it, because `next` already ships every green `main`.
 2. The merged PR becomes a tag and a private draft.
 3. `release.yml` (after each green `main` ci, daily at 15:05 UTC, or by
    dispatch) picks every draft whose tagged commit has a green `ci`. It
@@ -129,9 +131,9 @@ whose tag disagrees with Cargo's resolved versions.
 
 Release Please cannot update `Cargo.lock`, so the `release-prs` job commits
 the root, browser, and Desktop lockfiles. Release Please force-pushes the
-release branch on every green `main` commit, so `release.yml` returns the PR
-to draft until the lockfile push lands. Do not merge a release PR while it is
-a draft. The tools tests check integration versions on every change.
+release branch on every green `main` commit, so `release.yml` returns a ready
+PR to draft until the lockfile push lands, then restores it. Do not merge a
+release PR while it is a draft. The tools tests check integration versions on every change.
 
 ## Build rules
 

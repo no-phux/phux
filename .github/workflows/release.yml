@@ -9,6 +9,8 @@
 # - Release Please force-pushes a release branch and drops the lockfile
 #   commit, and main's ruleset accepts the previous head's green ci. A ready
 #   PR is held as draft in the same job until its lockfile push lands.
+# - Release PRs open as drafts and accumulate changes; nothing merges them.
+#   Marking one ready runs ci; squash-merging it cuts the stable release.
 # - A draft ships only on a green ci push run for its own commit
 #   (tools/src/release/publish-plan.ts). Every run reconciles every draft, so
 #   a run superseded while pending loses nothing.
@@ -51,6 +53,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       prs: ${{ steps.hold.outputs.prs }}
+      held: ${{ steps.hold.outputs.held }}
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
@@ -65,10 +68,9 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # PR number 0 is a change-less candidate with no branch. Every PR this
-      # run rewrote goes back to draft until release-prs syncs its lockfiles;
-      # an open release PR this run did not touch gets auto-merge now.
-      - name: Hold rewritten release PRs; auto-merge the rest
+      # PR number 0 is a change-less candidate with no branch. A ready PR this
+      # run rewrote goes back to draft until release-prs syncs its lockfiles.
+      - name: Hold rewritten ready release PRs
         id: hold
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -77,24 +79,19 @@ jobs:
         run: |
           set -euo pipefail
           prs="$(jq -c '[.[] | select(.number > 0)]' <<<"$PRS")"
-          rewritten="$(jq -r '.[].number' <<<"$prs")"
-          state() { gh pr view "$1" --json state,isDraft --jq '"\(.state) \(.isDraft)"'; }
-          for num in $rewritten; do
-            if [ "$(state "$num")" = "OPEN false" ]; then gh pr ready "$num" --undo; fi
-          done
-          open="$(gh pr list --state open --limit 50 --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("release-please--")) | .number')"
-          for num in $open; do
-            grep -qx "$num" <<<"$rewritten" && continue
-            if [ "$(state "$num")" = "OPEN true" ]; then gh pr ready "$num"; fi
-            # --auto is refused on an already-clean PR; merge it directly then.
-            gh pr merge "$num" --squash --auto || gh pr merge "$num" --squash
+          held=()
+          for num in $(jq -r '.[].number' <<<"$prs"); do
+            if [ "$(gh pr view "$num" --json state,isDraft --jq '"\(.state) \(.isDraft)"')" = "OPEN false" ]; then
+              gh pr ready "$num" --undo
+              held+=("$num")
+            fi
           done
           echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          echo "held=${held[*]}" >> "$GITHUB_OUTPUT"
 
   # Release Please cannot select workspace members in Cargo.lock (its rust
   # strategy rejects a virtual workspace), so cargo re-resolves the locks:
-  # metadata only, no build. Then the PR goes ready with squash auto-merge.
+  # metadata only, no build. Then a held PR is ready again.
   release-prs:
     name: sync ${{ matrix.pr.headBranchName }}
     needs: release-please
@@ -153,7 +150,8 @@ jobs:
           git push origin "HEAD:${BRANCH}"
       # Only after the lockfile push: an earlier ready lets a non-strict
       # ruleset merge the unsynced head.
-      - name: Ready and auto-merge
+      - name: Release the hold
+        if: contains(format(' {0} ', needs.release-please.outputs.held), format(' {0} ', matrix.pr.number))
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
@@ -161,9 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           read -r state draft < <(gh pr view "$NUM" --json state,isDraft --jq '"\(.state) \(.isDraft)"')
-          if [ "$state" != OPEN ]; then echo "#$NUM is $state"; exit 0; fi
-          if [ "$draft" = true ]; then gh pr ready "$NUM"; fi
-          gh pr merge "$NUM" --squash --auto || gh pr merge "$NUM" --squash
+          if [ "$state" = OPEN ] && [ "$draft" = true ]; then gh pr ready "$NUM"; fi
 
   plan:
     name: choose drafts
