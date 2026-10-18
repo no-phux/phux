@@ -26,6 +26,41 @@ impl TabPosition {
     }
 }
 
+/// How the sidebar groups sessions. Every grouping lists the same sessions;
+/// only the headings change.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarGrouping {
+    /// Under their repository, with the machine named on remote rows.
+    #[default]
+    Project,
+    /// Under the machine they run on.
+    Machine,
+    /// One list, no headings.
+    None,
+}
+
+impl SidebarGrouping {
+    /// Stable JSON value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Machine => "machine",
+            Self::None => "none",
+        }
+    }
+
+    /// Parse the JSON value. Anything unrecognized is the default.
+    #[must_use]
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("machine") => Self::Machine,
+            Some("none") => Self::None,
+            _ => Self::Project,
+        }
+    }
+}
+
 /// What sits behind the window's chrome and panes.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WindowBackground {
@@ -77,6 +112,8 @@ pub struct DisplayPrefs {
     pub sidebar_width: f64,
     /// Workspace tab placement.
     pub tab_position: TabPosition,
+    /// How the sidebar groups sessions.
+    pub sidebar_grouping: SidebarGrouping,
     /// Agent notifications.
     pub notifications: bool,
     /// Cell width multiplier.
@@ -119,6 +156,7 @@ pub fn default_display() -> DisplayPrefs {
         sidebar_visible: true,
         sidebar_width: 248.0,
         tab_position: TabPosition::Top,
+        sidebar_grouping: SidebarGrouping::Project,
         notifications: true,
         cell_width: 1.0,
         cell_height: 1.0,
@@ -234,6 +272,9 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
             Some("side") => TabPosition::Side,
             _ => TabPosition::Top,
         },
+        sidebar_grouping: SidebarGrouping::parse(
+            object.get("sidebarGrouping").and_then(Value::as_str),
+        ),
         notifications: flag("notifications", fallback.notifications),
         cell_width: number("cellWidth", fallback.cell_width),
         cell_height: number("cellHeight", fallback.cell_height),
@@ -265,6 +306,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "sidebarVisible": display.sidebar_visible,
         "sidebarWidth": display.sidebar_width,
         "tabPosition": display.tab_position.as_str(),
+        "sidebarGrouping": display.sidebar_grouping.as_str(),
         "notifications": display.notifications,
         "cellWidth": display.cell_width,
         "cellHeight": display.cell_height,
@@ -306,6 +348,28 @@ mod tests {
             let value = display_value(&prefs);
             assert_eq!(value["tabPosition"], position.as_str());
             assert_eq!(parse_display(&value), prefs);
+        }
+    }
+
+    #[test]
+    fn sidebar_grouping_round_trips_and_defaults_to_projects() {
+        for grouping in [
+            SidebarGrouping::Project,
+            SidebarGrouping::Machine,
+            SidebarGrouping::None,
+        ] {
+            let prefs = DisplayPrefs {
+                sidebar_grouping: grouping,
+                ..default_display()
+            };
+            let value = display_value(&prefs);
+            assert_eq!(value["sidebarGrouping"], grouping.as_str());
+            assert_eq!(parse_display(&value), prefs);
+        }
+        for value in [json!("host"), json!(3), json!(null)] {
+            let parsed = parse_display(&json!({"sidebarGrouping": value, "fontSize": 15}));
+            assert_eq!(parsed.sidebar_grouping, SidebarGrouping::Project);
+            assert_eq!(parsed.font_size, 15.);
         }
     }
 

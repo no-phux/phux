@@ -1,8 +1,16 @@
+use std::path::PathBuf;
+
+use super::tabs::tab_height;
+use super::titlebar::{MENU_RAIL, controls_fit};
 use super::*;
+use crate::app::desk::Modal;
+use crate::app::ui::list::row_radius;
 use crate::app::{AppOptions, desk::Link};
 use crate::connection::{Connection, DeterministicDial};
+use crate::workspace::layout::{DeskTab, LayoutNode, Placement};
 use crate::workspace::{Workspace, WorkspaceOptions, persist};
 use gpui::{AnyWindowHandle, Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{MouseButton, point};
 use gpui_kit::component::Root;
 
 /// The default skin's titlebar, which these layouts paint.
@@ -138,11 +146,15 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
                 "placement never edits tab content"
             );
             assert_eq!(workspace.active_id, "fixture-b");
-            assert!(!desk.prefs.sidebar_visible);
+            assert_eq!(
+                desk.prefs.sidebar_visible,
+                command == "tabs-side",
+                "tabs in the sidebar bring the sidebar"
+            );
         });
         let a = cx
             .debug_bounds("tab-fixture-a")
-            .expect("tab is visible without a sidebar");
+            .expect("tab is visible wherever it is placed");
         let c = cx.debug_bounds("tab-fixture-c").unwrap();
         if command == "tabs-side" {
             assert_eq!(a.origin.x, c.origin.x);
@@ -187,8 +199,28 @@ fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut T
                 .clone()),
             "fixture-a"
         );
-        let close = cx.debug_bounds("tab-close-fixture-a").unwrap();
-        cx.simulate_click(close.center(), Modifiers::none());
+        if command == "tabs-side" {
+            // A sidebar tab closes from its actions, as any row does.
+            let more = cx.debug_bounds("tab-more-fixture-a").expect("tab actions");
+            cx.simulate_click(more.center(), Modifiers::none());
+            draw(cx);
+            let menu = desk
+                .read_with(cx, |desk, _| desk.menu_window())
+                .expect("tab menu");
+            let menu_cx = &mut VisualTestContext::from_window(menu, cx);
+            let close = menu_cx
+                .debug_bounds("glass-menu-close-tab")
+                .expect("close in the tab menu");
+            menu_cx.simulate_click(close.center(), Modifiers::none());
+            menu_cx.run_until_parked();
+            assert!(
+                cx.debug_bounds("tab-close-fixture-c").is_none(),
+                "no close glyph on sidebar rows"
+            );
+        } else {
+            let close = cx.debug_bounds("tab-close-fixture-a").unwrap();
+            cx.simulate_click(close.center(), Modifiers::none());
+        }
         draw(cx);
         assert_eq!(ids(&desk, cx), ["fixture-b", "fixture-c"]);
         assert_eq!(
@@ -336,9 +368,9 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
     let hidden = cx.debug_bounds("tab-fixture-h").unwrap();
     assert!(hidden.origin.x > px(800.));
     cx.simulate_event(gpui::ScrollWheelEvent {
-        // The workspace identity narrows the visible strip, so scroll past it.
+        // Far enough that the seventh tab clears the main menu rail.
         position: point(px(500.), px(TITLEBAR / 2.)),
-        delta: gpui::ScrollDelta::Pixels(point(px(-640.), px(0.))),
+        delta: gpui::ScrollDelta::Pixels(point(px(-560.), px(0.))),
         ..Default::default()
     });
     draw(cx);
@@ -437,9 +469,11 @@ fn pane_actions_stay_open_after_the_pointer_leaves_the_capsule(cx: &mut TestAppC
         cx.debug_bounds("pane-actions-fixture-a").is_some(),
         "the trigger stays mounted while its menu is open"
     );
-    cx.simulate_keystrokes("escape");
+    assert!(desk.read_with(cx, |desk, _| desk.menu_open("pane-fixture-a")));
+    desk.update(cx, |desk, cx| desk.close_menu(cx));
     draw(cx);
     assert!(desk.read_with(cx, |desk, _| desk.pane_menu_open.is_none()));
+    assert!(!desk.read_with(cx, |desk, _| desk.menu_open("pane-fixture-a")));
 }
 
 #[test]
@@ -584,4 +618,63 @@ fn shown_chords_follow_the_keymap(cx: &mut TestAppContext) {
         }
         assert_eq!(desk.shown_chord("no-such-command"), None);
     });
+}
+
+#[gpui::test]
+fn sidebar_tabs_live_under_their_session_and_return_to_the_titlebar_when_it_hides(
+    cx: &mut TestAppContext,
+) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(2);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    run(&desk, "tabs-side", cx);
+    let width = desk.read_with(cx, |desk, _| desk.prefs.sidebar_width as f32);
+    let session = cx
+        .debug_bounds("session-current")
+        .expect("this window's session heads its tabs");
+    let tab = cx
+        .debug_bounds("tab-fixture-a")
+        .expect("tab in the sidebar");
+    assert!(tab.right() <= px(width), "the tab is inside the sidebar");
+    assert!(tab.origin.y >= session.bottom(), "under its session");
+    assert!(
+        cx.debug_bounds("top-tabs").is_none(),
+        "one place for tabs, not two"
+    );
+    run(&desk, "sidebar", cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.prefs.tab_position, TabPosition::Side);
+        assert_eq!(desk.tab_position(), TabPosition::Top);
+    });
+    let tab = cx
+        .debug_bounds("tab-fixture-a")
+        .expect("tabs never disappear with the sidebar");
+    assert!(tab.bottom() <= px(TITLEBAR));
+}
+
+#[gpui::test]
+fn sidebar_groupings_are_views_that_bring_the_sidebar(cx: &mut TestAppContext) {
+    use crate::settings::SidebarGrouping;
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    for (command, grouping) in [
+        ("group-machines", SidebarGrouping::Machine),
+        ("group-none", SidebarGrouping::None),
+        ("group-projects", SidebarGrouping::Project),
+    ] {
+        run(&desk, command, cx);
+        desk.read_with(cx, |desk, _| {
+            assert_eq!(desk.prefs.sidebar_grouping, grouping);
+            assert!(desk.prefs.sidebar_visible);
+        });
+        assert!(cx.debug_bounds("sidebar-view").is_some());
+    }
 }

@@ -12,7 +12,7 @@ use gpui_kit::component::{Disableable, Sizable};
 use super::color::from_hex;
 use super::overlays::corner;
 use super::skin::Look;
-use super::view::muted;
+use super::ui::muted;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
 
 pub(crate) struct Updater {

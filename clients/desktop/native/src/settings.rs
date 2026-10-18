@@ -12,8 +12,8 @@ pub mod skin;
 pub mod theme;
 
 pub use display::{
-    DisplayPrefs, SIDEBAR_MAX, SIDEBAR_MIN, TabPosition, WindowBackground, default_display,
-    display_value, parse_display, sanitize_display,
+    DisplayPrefs, SIDEBAR_MAX, SIDEBAR_MIN, SidebarGrouping, TabPosition, WindowBackground,
+    default_display, display_value, parse_display, sanitize_display,
 };
 pub use ghostty::{
     Bind, Diagnostic, GhosttyConfig, GhosttySource, Origin, ghostty_action, ghostty_chord,
