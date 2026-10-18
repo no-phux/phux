@@ -469,6 +469,7 @@ const MODIFIERS: &[(&str, &str)] = &[
 ];
 
 const ACTIONS: &[(&str, &str)] = &[
+    ("capture", "capture"),
     ("new_split:right", "split-right"),
     ("new_split:left", "split-left"),
     ("new_split:down", "split-down"),

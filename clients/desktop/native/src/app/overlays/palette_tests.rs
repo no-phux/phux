@@ -7,7 +7,7 @@ use crate::app::{AppOptions, Desk, Modal};
 /// An actual desktop with no session to attach and no executable CLI. In
 /// particular, a test must not construct navigation content by starting a
 /// runtime driver: its real I/O cannot be driven by GPUI's deterministic clock.
-fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Desk>) {
+pub(in crate::app) fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Desk>) {
     let path = std::env::temp_dir().join(format!(
         "phux-palette-test-{}-{}",
         std::process::id(),
@@ -159,6 +159,45 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
         last.bottom() <= panel.bottom(),
         "last action stays inside the panel"
     );
+}
+
+#[gpui::test]
+fn capture_prefix_takes_typing_and_retains_a_refused_draft(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "!fix the sidebar");
+    assert_eq!(modal(&desk, cx), Modal::Capture);
+    assert!(cx.debug_bounds("capture-panel").is_some());
+    keys(cx, "enter");
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.capture.draft, "fix the sidebar");
+        assert!(desk.capture.error.is_some());
+    });
+    keys(cx, "escape cmd-shift-p");
+    click(cx, "palette-mode-capture");
+    desk.read_with(cx, |desk, cx| {
+        let input = desk.input_entity(InputSlot::Capture).unwrap();
+        assert_eq!(input.read(cx).value().as_str(), "fix the sidebar");
+    });
+    keys(cx, "shift-enter");
+    assert_eq!(modal(&desk, cx), Modal::Capture);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.capture.draft, "fix the sidebar")
+    });
+}
+
+#[gpui::test]
+fn goto_also_accepts_capture_prefix_and_escape_restores_focus(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "!");
+    assert_eq!(modal(&desk, cx), Modal::Capture);
+    type_text(cx, "next thought");
+    keys(cx, "escape");
+    assert_desk_focus(&desk, cx);
+    desk.read_with(cx, |desk, _| assert_eq!(desk.capture.draft, "next thought"));
 }
 
 #[gpui::test]
