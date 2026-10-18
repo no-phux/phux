@@ -30,6 +30,7 @@ fn pending_capture(follow: bool) -> State {
     State {
         draft: "original thought".into(),
         error: None,
+        editor: None,
         pending: Some(Pending {
             id: 42,
             follow,
@@ -64,6 +65,7 @@ fn enter_keeps_the_capture_keyboard_until_a_later_bootstrap_places_the_agent(
     let mut connection = crate::workspace::view_tests::attached();
     let workspace = crate::workspace::view_tests::opened(&mut connection);
     let cx = &mut gpui::VisualTestContext::from_window(handle, cx);
+    cx.update(|window, _| window.activate_window());
     desk.update(cx, |desk, _| {
         desk.link = Some(crate::app::desk::Link {
             connection,
@@ -105,7 +107,7 @@ fn enter_keeps_the_capture_keyboard_until_a_later_bootstrap_places_the_agent(
         desk.read_with(cx, |desk, cx| {
             assert_eq!(desk.modal, Modal::Capture);
             assert_eq!(desk.capture.draft, "first prompt");
-            let (_, input, _) = desk.modal_inputs.first().unwrap();
+            let (input, _) = desk.capture.editor.as_ref().unwrap();
             assert!(
                 input.read(cx).focus_handle(cx).is_focused(window),
                 "a spawn receipt must not return keys to the original shell"
@@ -175,6 +177,16 @@ fn enter_keeps_the_capture_keyboard_until_a_later_bootstrap_places_the_agent(
                 "the ready agent must own the GPUI keyboard"
             );
         });
+    });
+    cx.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("capture", window, cx)));
+    cx.run_until_parked();
+    desk.read_with(cx, |desk, cx| {
+        assert!(
+            desk.capture.draft.is_empty(),
+            "blur must not resurrect confirmed text"
+        );
+        let (input, _) = desk.capture.editor.as_ref().unwrap();
+        assert!(input.read(cx).value().is_empty());
     });
 }
 
