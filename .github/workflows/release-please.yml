@@ -7,6 +7,8 @@
 # - Release Please force-pushes the release branch and drops the lockfile
 #   commit, and main does not require checks on the latest push. So a ready
 #   PR is held as draft until sync-lockfile's push lands.
+# - Release PRs open as drafts and accumulate changes; nothing merges them.
+#   Marking one ready runs ci; squash-merging it cuts the stable release.
 # - No last-release-sha (the changelog would grow from it forever) and no
 #   package-name on the root package (it feeds the branch component and
 #   aborts root-only releases with no tag).
@@ -214,57 +216,3 @@ jobs:
             gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
             echo "restored #$PR_NUMBER to ready for review"
           fi
-
-  # Each open release PR lands as one squash commit once ci is green. PRs are
-  # found by branch, because Release Please returns nothing for an unchanged
-  # one, and undrafted here, after the lockfile is synced.
-  auto-merge:
-    name: squash auto-merge release PRs
-    needs: [release-please, sync-lockfile]
-    # Never undraft onto an unsynced head.
-    if: >-
-      always()
-      && needs.release-please.result == 'success'
-      && (needs.sync-lockfile.result == 'success' || needs.sync-lockfile.result == 'skipped')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
-      - name: Undraft and enable squash auto-merge
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
-            --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("release-please--")) | .number')"
-          if [ -z "$numbers" ]; then
-            echo "no open release PRs"
-            exit 0
-          fi
-          while IFS= read -r num; do
-            [ -n "$num" ] || continue
-            meta="$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '[.state,(.isDraft|tostring)] | @tsv')"
-            state="${meta%%$'\t'*}"
-            draft="${meta#*$'\t'}"
-            if [ "$state" != "OPEN" ]; then
-              echo "#$num is $state; nothing to auto-merge"
-              continue
-            fi
-            if [ "$draft" = "true" ]; then
-              echo "#$num is a draft; marking it ready for review"
-              gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
-            fi
-            # `--auto` is refused on an already-clean PR; fall back to merging
-            # the finished release in that case.
-            gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --auto \
-              || gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash
-          done <<< "$numbers"
