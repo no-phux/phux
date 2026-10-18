@@ -37,14 +37,23 @@ pub const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 /// Let's Encrypt's production directory.
 pub const LETS_ENCRYPT: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
-/// Renew once the certificate has less than this long left.
-const RENEW_BEFORE: Duration = Duration::from_hours(30 * 24);
+/// Renew once less than this share of the certificate's lifetime is left:
+/// a 90-day certificate at 30 days, a 6-day one at 2 days.
+const RENEW_AT_ONE_IN: u64 = 3;
 
-/// How often [`maintain`] checks the certificate's expiry.
-const CHECK_EVERY: Duration = Duration::from_hours(12);
+/// The longest [`maintain`] waits between checks.
+const MAX_CHECK: Duration = Duration::from_hours(12);
 
-/// First retry after a failed issuance; doubles up to [`RETRY_CAP`].
-const RETRY_BASE: Duration = Duration::from_secs(60);
+/// The shortest [`maintain`] waits between checks.
+const MIN_CHECK: Duration = Duration::from_secs(60);
+
+/// First retry after a failed issuance; doubles up to [`RETRY_CAP`]. Five
+/// minutes keeps a run of failed validations under Let's Encrypt's limit of
+/// five per hour for one account and name.
+const RETRY_BASE: Duration = Duration::from_mins(5);
+
+/// The longest a poll honors a CA's `Retry-After`.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 /// Longest wait between failed issuances.
 const RETRY_CAP: Duration = Duration::from_hours(6);
@@ -114,12 +123,10 @@ impl AcmeConfig {
         self.dir().join("account.url")
     }
 
-    fn cert_path(&self) -> PathBuf {
-        self.dir().join(format!("{}.cert.pem", self.domain))
-    }
-
-    fn key_path(&self) -> PathBuf {
-        self.dir().join(format!("{}.key.pem", self.domain))
+    /// The key and its chain in one owner-only PEM file, so replacing them
+    /// is one rename and a crash never pairs a key with another chain.
+    fn bundle_path(&self) -> PathBuf {
+        self.dir().join(format!("{}.pem", self.domain))
     }
 }
 
@@ -203,42 +210,54 @@ pub fn service_config(certs: Arc<AcmeCerts>, alpns: Vec<Vec<u8>>) -> rustls::Ser
 
 /// Keep `certs` serving a valid certificate for `config.domain`, forever.
 ///
-/// Load the stored one, obtain one when there is none or it expires within
-/// 30 days, and check again every 12 hours. Failures are logged and retried
-/// with backoff (1 minute, doubling to 6 hours).
-pub async fn maintain(config: AcmeConfig, certs: Arc<AcmeCerts>) {
-    if let Some((key, _)) = load_stored(&config) {
-        certs.set_current(key);
+/// Load the stored one, obtain one when there is none or less than a third
+/// of its lifetime is left, and check again in proportion (at most every 12
+/// hours). An issuance waits until `reachable` reads `true`, since the CA
+/// validates through the relay: [`crate::forward::expose`] sets it while
+/// its tunnel is up. Failures are logged and retried with backoff (5
+/// minutes, doubling to 6 hours).
+pub async fn maintain(
+    config: AcmeConfig,
+    certs: Arc<AcmeCerts>,
+    mut reachable: tokio::sync::watch::Receiver<bool>,
+) {
+    if let Some(stored) = load_stored(&config) {
+        certs.set_current(stored.key);
     }
     let mut retry = RETRY_BASE;
     loop {
-        if !renewal_due(&config) {
-            tokio::time::sleep(CHECK_EVERY).await;
+        if let Some(wait) = next_check(&config) {
+            tokio::time::sleep(wait).await;
             continue;
+        }
+        if reachable.wait_for(|up| *up).await.is_err() {
+            return;
         }
         let wait = match issue(&config, &certs).await {
             Ok(()) => {
                 tracing::info!(domain = %config.domain, "acme certificate issued");
                 retry = RETRY_BASE;
-                CHECK_EVERY
+                continue;
             }
             Err(err) => {
                 tracing::warn!(domain = %config.domain, %err, retry_in = ?retry, "acme issuance failed");
-                let wait = retry;
-                retry = (retry * 2).min(RETRY_CAP);
-                wait
+                retry
             }
         };
+        retry = (retry * 2).min(RETRY_CAP);
         tokio::time::sleep(wait).await;
     }
 }
 
-/// Whether there is no usable stored certificate, or it expires soon.
-fn renewal_due(config: &AcmeConfig) -> bool {
-    load_stored(config).is_none_or(|(_, not_after)| {
-        let left = not_after.saturating_sub(unix_now());
-        left < RENEW_BEFORE.as_secs()
-    })
+/// How long until the stored certificate needs renewing, clamped to
+/// [`MIN_CHECK`]..[`MAX_CHECK`]; `None` when it needs it now (or there is
+/// none).
+fn next_check(config: &AcmeConfig) -> Option<Duration> {
+    let stored = load_stored(config)?;
+    let lifetime = stored.not_after.saturating_sub(stored.not_before);
+    let renew_at = stored.not_after.saturating_sub(lifetime / RENEW_AT_ONE_IN);
+    let until = renew_at.checked_sub(unix_now()).filter(|secs| *secs > 0)?;
+    Some(Duration::from_secs(until).clamp(MIN_CHECK, MAX_CHECK))
 }
 
 fn unix_now() -> u64 {
@@ -247,24 +266,38 @@ fn unix_now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// The stored certificate and key, if both load and match, with the leaf's
-/// expiry in Unix seconds.
-fn load_stored(config: &AcmeConfig) -> Option<(Arc<rustls::sign::CertifiedKey>, u64)> {
-    let (cert_path, key_path) = (config.cert_path(), config.key_path());
-    if !cert_path.exists() {
-        return None;
-    }
-    let certs = crate::cert::load_certs(&cert_path).ok()?;
-    let not_after = not_after(certs.first()?)?;
-    let key = crate::cert::load_key(&key_path).ok()?;
-    let certified = certified_key(certs, key).ok()?;
-    Some((Arc::new(certified), not_after))
+/// A stored certificate that loads and matches its key.
+struct Stored {
+    key: Arc<rustls::sign::CertifiedKey>,
+    /// The leaf's validity, in Unix seconds.
+    not_before: u64,
+    not_after: u64,
 }
 
-/// A leaf's notAfter, in Unix seconds.
-fn not_after(cert: &rustls::pki_types::CertificateDer<'_>) -> Option<u64> {
+fn load_stored(config: &AcmeConfig) -> Option<Stored> {
+    let bundle = config.bundle_path();
+    if !bundle.exists() {
+        return None;
+    }
+    let certs = crate::cert::load_certs(&bundle).ok()?;
+    let (not_before, not_after) = validity(certs.first()?)?;
+    let key = crate::cert::load_key(&bundle).ok()?;
+    let key = Arc::new(certified_key(certs, key).ok()?);
+    Some(Stored {
+        key,
+        not_before,
+        not_after,
+    })
+}
+
+/// A leaf's notBefore and notAfter, in Unix seconds.
+fn validity(cert: &rustls::pki_types::CertificateDer<'_>) -> Option<(u64, u64)> {
     let (_, parsed) = x509_parser::parse_x509_certificate(cert.as_ref()).ok()?;
-    u64::try_from(parsed.validity().not_after.timestamp()).ok()
+    let validity = parsed.validity();
+    Some((
+        u64::try_from(validity.not_before.timestamp()).ok()?,
+        u64::try_from(validity.not_after.timestamp()).ok()?,
+    ))
 }
 
 fn certified_key(
@@ -343,8 +376,10 @@ pub async fn issue(config: &AcmeConfig, certs: &AcmeCerts) -> Result<(), AcmeErr
     let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
         .map_err(|err| AcmeError::Crypto(err.to_string()))?;
     let certified = certified_key(chain, key)?;
-    write_private(&config.key_path(), key_pem.as_bytes())?;
-    write_private(&config.cert_path(), chain_pem.as_bytes())?;
+    write_private(
+        &config.bundle_path(),
+        format!("{key_pem}{chain_pem}").as_bytes(),
+    )?;
     certs.set_current(Arc::new(certified));
     Ok(())
 }
@@ -377,18 +412,26 @@ impl Drop for ChallengeGuard<'_> {
 
 impl<'a> Session<'a> {
     async fn open(config: &'a AcmeConfig) -> Result<Self, AcmeError> {
-        let key = AccountKey::load_or_create(&config.account_key_path())?;
-        let response = http::request(&config.roots, "GET", &config.directory, None).await?;
+        let (key, created) = AccountKey::load_or_create(&config.account_key_path())?;
+        // A stored account URL names the account of the stored key; a new
+        // key has no account yet, whatever the old URL says.
+        let kid = if created {
+            let _ = std::fs::remove_file(config.account_url_path());
+            None
+        } else {
+            std::fs::read_to_string(config.account_url_path())
+                .ok()
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty())
+        };
+        let response =
+            http::request(&config.roots, "GET", &config.directory, None, http::JSON).await?;
         if response.status != 200 {
             return Err(AcmeError::Protocol(format!(
                 "directory {}: status {}",
                 config.directory, response.status
             )));
         }
-        let kid = std::fs::read_to_string(config.account_url_path())
-            .ok()
-            .map(|url| url.trim().to_owned())
-            .filter(|url| !url.is_empty());
         Ok(Self {
             config,
             key,
@@ -405,7 +448,7 @@ impl<'a> Session<'a> {
             return Ok(nonce);
         }
         let url = url_field(&self.directory, "newNonce")?;
-        let response = http::request(&self.config.roots, "GET", &url, None).await?;
+        let response = http::request(&self.config.roots, "GET", &url, None, http::JSON).await?;
         response
             .header("replay-nonce")
             .map(str::to_owned)
@@ -419,10 +462,21 @@ impl<'a> Session<'a> {
         url: &str,
         payload: Option<&Value>,
     ) -> Result<http::Response, AcmeError> {
+        self.post_accepting(url, payload, http::JSON).await
+    }
+
+    /// [`Self::post`], asking for `accept` (a certificate chain is PEM).
+    async fn post_accepting(
+        &mut self,
+        url: &str,
+        payload: Option<&Value>,
+        accept: &str,
+    ) -> Result<http::Response, AcmeError> {
         for attempt in 0..2 {
             let nonce = self.nonce().await?;
             let body = self.key.sign(url, &nonce, self.kid.as_deref(), payload)?;
-            let response = http::request(&self.config.roots, "POST", url, Some(&body)).await?;
+            let response =
+                http::request(&self.config.roots, "POST", url, Some(&body), accept).await?;
             self.nonce = response.header("replay-nonce").map(str::to_owned);
             if response.status < 400 {
                 return Ok(response);
@@ -518,10 +572,13 @@ impl<'a> Session<'a> {
     ) -> Result<(String, String), AcmeError> {
         let crypto = |err: rcgen::Error| AcmeError::Crypto(err.to_string());
         let key = rcgen::KeyPair::generate().map_err(crypto)?;
-        let csr = rcgen::CertificateParams::new(vec![self.config.domain.clone()])
-            .map_err(crypto)?
-            .serialize_request(&key)
-            .map_err(crypto)?;
+        let mut params =
+            rcgen::CertificateParams::new(vec![self.config.domain.clone()]).map_err(crypto)?;
+        // No subject: rcgen's default common name ("rcgen self signed
+        // cert") is not a name in the order, and a CA that reads the CN as
+        // one (Boulder does) refuses the CSR. The SAN carries the domain.
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        let csr = params.serialize_request(&key).map_err(crypto)?;
         self.post(finalize_url, Some(&json!({ "csr": b64(csr.der()) })))
             .await?;
         let order = self
@@ -534,7 +591,9 @@ impl<'a> Session<'a> {
             )));
         }
         let certificate_url = url_field(&order, "certificate")?;
-        let chain = self.post(&certificate_url, None).await?;
+        let chain = self
+            .post_accepting(&certificate_url, None, "application/pem-certificate-chain")
+            .await?;
         let chain = String::from_utf8(chain.body)
             .map_err(|_| AcmeError::Protocol("certificate chain is not text".to_owned()))?;
         Ok((chain, key.serialize_pem()))
@@ -543,11 +602,17 @@ impl<'a> Session<'a> {
     /// POST-as-GET `url` until its status leaves `waiting`, or give up.
     async fn poll(&mut self, url: &str, waiting: &[&str]) -> Result<Value, AcmeError> {
         for _ in 0..self.config.poll_attempts {
-            let object = self.post(url, None).await?.json()?;
+            let response = self.post(url, None).await?;
+            let object = response.json()?;
             if !waiting.contains(&text(&object, "status")) {
                 return Ok(object);
             }
-            tokio::time::sleep(self.config.poll_interval).await;
+            // Honor the CA's Retry-After (in seconds), within reason.
+            let asked = response
+                .header("retry-after")
+                .and_then(|secs| secs.trim().parse().ok())
+                .map_or(Duration::ZERO, Duration::from_secs);
+            tokio::time::sleep(asked.min(MAX_RETRY_AFTER).max(self.config.poll_interval)).await;
         }
         Err(AcmeError::Protocol(format!(
             "{url}: still pending after polling"
@@ -565,6 +630,7 @@ fn challenge_certificate(
     let crypto = |err: rcgen::Error| AcmeError::Crypto(err.to_string());
     let digest = Sha256::digest(key_authorization.as_bytes());
     let mut params = rcgen::CertificateParams::new(vec![domain.to_owned()]).map_err(crypto)?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
     params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(&digest)];
     let key = rcgen::KeyPair::generate().map_err(crypto)?;
     let cert = params.self_signed(&key).map_err(crypto)?;
@@ -623,26 +689,58 @@ mod tests {
         assert!(!certs.has_certificate());
     }
 
+    /// Store a self-signed certificate for `config.domain` valid from
+    /// `issued_ago` until `left` from now.
+    fn store(config: &AcmeConfig, issued_ago: Duration, left: Duration) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![config.domain.clone()]).unwrap();
+        let now = std::time::SystemTime::now();
+        params.not_before = (now - issued_ago).into();
+        params.not_after = (now + left).into();
+        let cert = params.self_signed(&key).unwrap();
+        let bundle = format!("{}{}", key.serialize_pem(), cert.pem());
+        write_private(&config.bundle_path(), bundle.as_bytes()).unwrap();
+    }
+
     #[test]
-    fn renewal_is_due_without_a_certificate_and_near_expiry() {
+    fn renewal_comes_at_a_third_of_the_lifetime_whatever_its_length() {
+        let day = Duration::from_hours(24);
         let dir = tempfile::tempdir().unwrap();
         let config = AcmeConfig::new("https://ca.test/dir", "a.test", dir.path());
-        assert!(renewal_due(&config), "nothing stored");
+        assert!(next_check(&config).is_none(), "nothing stored: issue now");
 
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::new(vec!["a.test".to_owned()]).unwrap();
-        let soon = std::time::SystemTime::now() + Duration::from_hours(5 * 24);
-        params.not_after = soon.into();
-        let cert = params.self_signed(&key).unwrap();
-        write_private(&config.key_path(), key.serialize_pem().as_bytes()).unwrap();
-        write_private(&config.cert_path(), cert.pem().as_bytes()).unwrap();
-        assert!(load_stored(&config).is_some(), "a matching pair loads");
-        assert!(renewal_due(&config), "five days left");
+        // 90 days: due at 30 left.
+        store(&config, day * 50, day * 40);
+        assert!(load_stored(&config).is_some(), "the bundle loads");
+        let wait = next_check(&config).expect("not due with 40 of 90 days left");
+        assert_eq!(wait, MAX_CHECK, "checked again within 12 hours");
+        store(&config, day * 65, day * 25);
+        assert!(next_check(&config).is_none(), "due with 25 of 90 days left");
 
-        let later = std::time::SystemTime::now() + Duration::from_hours(80 * 24);
-        params.not_after = later.into();
-        let cert = params.self_signed(&key).unwrap();
-        write_private(&config.cert_path(), cert.pem().as_bytes()).unwrap();
-        assert!(!renewal_due(&config), "eighty days left");
+        // 6 days: due at 2 left, never immediately after issuance.
+        store(&config, Duration::ZERO, day * 6);
+        let wait = next_check(&config).expect("a fresh 6-day certificate is not due");
+        assert_eq!(wait, MAX_CHECK);
+        store(&config, day * 5, day);
+        assert!(next_check(&config).is_none(), "due with 1 of 6 days left");
+
+        // One hour: checks follow it closely, never more often than a minute.
+        store(&config, Duration::ZERO, Duration::from_secs(3600));
+        let wait = next_check(&config).unwrap();
+        assert!(
+            wait <= Duration::from_mins(40) && wait >= MIN_CHECK,
+            "{wait:?}"
+        );
+    }
+
+    /// A new account key forgets the old account's URL.
+    #[tokio::test]
+    async fn a_new_account_key_does_not_reuse_a_stale_account_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AcmeConfig::new("https://127.0.0.1:1/dir", "a.test", dir.path());
+        write_private(&config.account_url_path(), b"https://ca.test/acct/old").unwrap();
+        // The directory is unreachable, but the key is created first.
+        assert!(Session::open(&config).await.is_err());
+        assert!(!config.account_url_path().exists(), "stale URL removed");
     }
 }

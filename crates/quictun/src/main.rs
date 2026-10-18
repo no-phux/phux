@@ -35,7 +35,7 @@ USAGE:
                   [--alpn LIST] [--state DIR]
   quictun connect --relay HOST:PORT --relay-pin FP --route NAME --listen ADDR
                   (--service-pin FP | --service-name NAME [--service-ca PEM]
-                   | --passthrough)
+                   | --passthrough) [--single-stream]
 
 relay    Serve tunnels and consumers on UDP ADDR. With --tcp-listen, TLS
          clients without QUIC reach route R by the server name R.<--domain>.
@@ -52,14 +52,16 @@ expose   Dial out to the relay and forward each consumer to the local TCP
 connect  Listen on local TCP ADDR and carry every connection to the route
          as a stream on one QUIC connection, pinning the service's
          certificate (--service-pin) or verifying it for NAME against
-         Mozilla's roots plus --service-ca (--service-name).
+         Mozilla's roots plus --service-ca (--service-name). --single-stream
+         dials a connection per local connection, for a relay that bridges
+         one stream per consumer.
 
 The state directory defaults to $XDG_STATE_HOME/quictun. RUST_LOG sets the
 log level (default info).
 ";
 
 /// Flags that take no value.
-const SWITCHES: &[&str] = &["passthrough"];
+const SWITCHES: &[&str] = &["passthrough", "single-stream"];
 
 /// The flags each command takes; anything else is a usage error, so a
 /// misspelled flag never runs silently with its default.
@@ -97,6 +99,7 @@ fn flags_of(command: &str) -> Option<&'static [&'static str]> {
             "service-pin",
             "service-name",
             "service-ca",
+            "single-stream",
             "passthrough",
         ],
         _ => return None,
@@ -301,11 +304,14 @@ async fn run_expose(args: &Args) -> Result<(), Failure> {
     let relay = relay_addr(args).await?;
     let token = read_token(Path::new(args.required("token-file")?))?;
     let target = resolve(args.required("to")?).await?;
-    // Issuance validates through the tunnel, so it runs beside it.
+    // Issuance validates through the tunnel, so it runs beside it and waits
+    // for it to be admitted.
+    let (reachable, admitted) = tokio::sync::watch::channel(false);
     if let Some((config, certs)) = acme {
-        tokio::spawn(quictun::acme::maintain(config, certs));
+        tokio::spawn(quictun::acme::maintain(config, certs, admitted));
     }
-    forward::expose(&relay, &Protocol::quictun(), &token, target, tls)
+    let protocol = Protocol::quictun();
+    forward::expose(&relay, &protocol, &token, target, tls, Some(&reachable))
         .await
         .map_err(run("the relay refused the token"))
 }
@@ -331,8 +337,8 @@ async fn run_connect(args: &Args) -> Result<(), Failure> {
         alpn,
         service,
         // The quictun relay bridges every stream: one connection, one
-        // handshake, for every local connection.
-        multiplex: true,
+        // handshake, for every local connection. An older relay does not.
+        multiplex: !args.switch("single-stream"),
     };
     forward::connect(listener, route).await;
     Ok(())

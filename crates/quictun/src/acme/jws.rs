@@ -31,9 +31,10 @@ impl std::fmt::Debug for AccountKey {
 
 impl AccountKey {
     /// The key stored (PKCS#8 DER, owner-only) at `path`, generating and
-    /// storing one when there is none.
-    pub(crate) fn load_or_create(path: &Path) -> Result<Self, AcmeError> {
+    /// storing one when there is none; `true` when it was just created.
+    pub(crate) fn load_or_create(path: &Path) -> Result<(Self, bool), AcmeError> {
         let rng = SystemRandom::new();
+        let mut created = false;
         let pkcs8 = match std::fs::read(path) {
             Ok(pkcs8) => {
                 crate::secret_file::check(path, crate::secret_file::SecretFile::OwnerOnlyToken)
@@ -44,13 +45,14 @@ impl AccountKey {
                 let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
                     .map_err(|_| AcmeError::Crypto("generate the account key".to_owned()))?;
                 super::write_private(path, pkcs8.as_ref())?;
+                created = true;
                 pkcs8.as_ref().to_vec()
             }
             Err(err) => return Err(AcmeError::Store(format!("{}: {err}", path.display()))),
         };
         let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &pkcs8, &rng)
             .map_err(|_| AcmeError::Crypto(format!("{}: not a P-256 key", path.display())))?;
-        Ok(Self { pair, rng })
+        Ok((Self { pair, rng }, created))
     }
 
     /// The public key as a JWK, its members in the lexicographic order the
@@ -115,8 +117,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("acme").join("account.key");
-        let first = AccountKey::load_or_create(&path).unwrap();
-        let second = AccountKey::load_or_create(&path).unwrap();
+        let (first, created) = AccountKey::load_or_create(&path).unwrap();
+        let (second, again) = AccountKey::load_or_create(&path).unwrap();
+        assert!(created && !again, "created once, then loaded");
         assert_eq!(first.jwk(), second.jwk());
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -125,7 +128,7 @@ mod tests {
     #[test]
     fn requests_verify_under_the_jwk_and_carry_the_right_header() {
         let dir = tempfile::tempdir().unwrap();
-        let key = AccountKey::load_or_create(&dir.path().join("k")).unwrap();
+        let (key, _) = AccountKey::load_or_create(&dir.path().join("k")).unwrap();
         let body: Value = serde_json::from_slice(
             &key.sign(
                 "https://ca/new-order",
@@ -170,7 +173,7 @@ mod tests {
     #[test]
     fn the_thumbprint_hashes_the_canonical_jwk() {
         let dir = tempfile::tempdir().unwrap();
-        let key = AccountKey::load_or_create(&dir.path().join("k")).unwrap();
+        let (key, _) = AccountKey::load_or_create(&dir.path().join("k")).unwrap();
         let jwk = key.jwk();
         let canonical = format!(
             r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,

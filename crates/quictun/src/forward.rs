@@ -33,6 +33,9 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Longest redial delay.
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
+/// How long a tunnel must stay open before it counts as admitted.
+pub const ADMITTED_AFTER: Duration = Duration::from_secs(2);
+
 /// How long a tunnel must stay up before its end resets the backoff.
 const STABLE_TUNNEL: Duration = Duration::from_secs(30);
 
@@ -99,6 +102,11 @@ pub enum ServiceTlsError {
 /// `target`, redialing the relay with capped backoff whenever the tunnel
 /// drops.
 ///
+/// `reachable` reads `true` while a tunnel has been up for
+/// [`ADMITTED_AFTER`] (the relay refuses within a round trip, so a tunnel
+/// still open by then was admitted) and `false` otherwise: what
+/// [`crate::acme::maintain`] waits on, since the CA validates through it.
+///
 /// # Errors
 ///
 /// Returns only when the relay refuses the token: redialing cannot fix that.
@@ -108,17 +116,32 @@ pub async fn expose(
     token: &[u8],
     target: SocketAddr,
     tls: ServiceTls,
+    reachable: Option<&tokio::sync::watch::Sender<bool>>,
 ) -> Result<(), ConnectError> {
     let mut backoff = BACKOFF_BASE;
+    let set_reachable = |up: bool| {
+        if let Some(reachable) = reachable {
+            reachable.send_replace(up);
+        }
+    };
     loop {
         let opened = tokio::time::Instant::now();
         let ended = match Tunnel::open(relay, protocol, token).await {
             Ok(tunnel) => {
                 tracing::info!(relay = %relay.addr, "tunnel dialed");
-                serve_tunnel(&tunnel, target, &tls).await
+                let serving = serve_tunnel(&tunnel, target, &tls);
+                tokio::pin!(serving);
+                tokio::select! {
+                    ended = &mut serving => ended,
+                    () = tokio::time::sleep(ADMITTED_AFTER) => {
+                        set_reachable(true);
+                        serving.await
+                    }
+                }
             }
             Err(err) => err,
         };
+        set_reachable(false);
         if ended.is_auth_refused() {
             return Err(ended);
         }
@@ -289,12 +312,16 @@ struct RelayLink {
     dialing: tokio::sync::Mutex<()>,
 }
 
-/// A stream to the route and, when it has the connection to itself, the
-/// connection to close once the stream is done.
-type RouteStream = (
-    tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
-    Option<(quinn::Endpoint, quinn::Connection)>,
-);
+/// The connection a stream to the route rides.
+enum Lane {
+    /// Its own, closed once the stream is done.
+    Own(quinn::Endpoint, quinn::Connection),
+    /// The shared one, retired if the stream finds it dead.
+    Shared(quinn::Connection),
+}
+
+/// A stream to the route and the connection it rides.
+type RouteStream = (tokio::io::Join<quinn::RecvStream, quinn::SendStream>, Lane);
 
 impl RelayLink {
     fn new(route: Route) -> Self {
@@ -312,16 +339,32 @@ impl RelayLink {
         if !route.multiplex {
             let (endpoint, conn, send, recv) =
                 dial_route(&route.relay, &route.name, &route.alpn).await?;
-            return Ok((tokio::io::join(recv, send), Some((endpoint, conn))));
+            return Ok((tokio::io::join(recv, send), Lane::Own(endpoint, conn)));
         }
         // Waits while the relay's stream limit is reached.
         if let Some(conn) = self.live()
             && let Ok((send, recv)) = conn.open_bi().await
         {
-            return Ok((tokio::io::join(recv, send), None));
+            return Ok((tokio::io::join(recv, send), Lane::Shared(conn)));
         }
-        let (send, recv) = self.redial().await?.open_bi().await?;
-        Ok((tokio::io::join(recv, send), None))
+        let conn = self.redial().await?;
+        let (send, recv) = conn.open_bi().await?;
+        Ok((tokio::io::join(recv, send), Lane::Shared(conn)))
+    }
+
+    /// Stop using `conn` for new streams: a stream on it failed before any
+    /// byte came back, the sign of a connection that died without a close
+    /// reaching us (a relay restart, a network change), which quinn would
+    /// otherwise only notice at its idle timeout. The next forward redials.
+    fn retire(&self, conn: &quinn::Connection) {
+        let mut cached = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .as_ref()
+            .is_some_and(|(_, current)| current.stable_id() == conn.stable_id())
+        {
+            conn.close(0u32.into(), b"unresponsive");
+            *cached = None;
+        }
     }
 
     /// The shared connection, while it is open.
@@ -352,12 +395,12 @@ impl RelayLink {
     /// One local connection, through the relay to the route.
     async fn carry(&self, mut local: TcpStream) -> Result<(), CarryError> {
         let _ = local.set_nodelay(true);
-        let (stream, own) = self.open().await?;
+        let (stream, lane) = self.open().await?;
         let (config, name) = match &self.route.service {
             ServiceTrust::Passthrough => {
                 let mut stream = stream;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
-                drain(stream, own).await;
+                drain(stream, lane).await;
                 return Ok(());
             }
             ServiceTrust::Pin(pin) => (
@@ -369,14 +412,26 @@ impl RelayLink {
         };
         let name = rustls::pki_types::ServerName::try_from(name)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-        let mut session = tokio::time::timeout(
+        let handshake = tokio::time::timeout(
             TLS_HANDSHAKE_DEADLINE,
             tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream),
         )
-        .await
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+        .await;
+        let mut session = match handshake {
+            Ok(Ok(session)) => session,
+            failed => {
+                if let Lane::Shared(conn) = &lane {
+                    self.retire(conn);
+                }
+                return Err(match failed {
+                    Ok(Err(err)) => err,
+                    _ => std::io::Error::from(std::io::ErrorKind::TimedOut),
+                }
+                .into());
+            }
+        };
         tokio::io::copy_bidirectional(&mut local, &mut session).await?;
-        drain(session.into_inner().0, own).await;
+        drain(session.into_inner().0, lane).await;
         Ok(())
     }
 }
@@ -397,13 +452,10 @@ fn named_client_config(
 /// Let the relay acknowledge everything sent before the stream is dropped,
 /// then, when the stream had its connection to itself, close that
 /// connection (dropping it would discard undelivered stream data).
-async fn drain(
-    stream: tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
-    own: Option<(quinn::Endpoint, quinn::Connection)>,
-) {
+async fn drain(stream: tokio::io::Join<quinn::RecvStream, quinn::SendStream>, lane: Lane) {
     let (_recv, send) = stream.into_inner();
     let _ = tokio::time::timeout(DRAIN_DEADLINE, send.stopped()).await;
-    if let Some((endpoint, conn)) = own {
+    if let Lane::Own(endpoint, conn) = lane {
         conn.close(0u32.into(), b"done");
         let _ = tokio::time::timeout(DRAIN_DEADLINE, endpoint.wait_idle()).await;
     }

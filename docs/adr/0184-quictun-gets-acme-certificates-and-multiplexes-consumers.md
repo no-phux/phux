@@ -38,7 +38,9 @@ which the owner asked to close (2026-10-17):
    - It signs JWS requests with ES256 under a P-256 account key, kept
      owner-only in `<state>/acme/`.
    - It validates by RFC 8737's TLS-ALPN-01.
-   - It finalizes with a CSR for a fresh key.
+   - It finalizes with a CSR for a fresh key, with no subject. Boulder
+     counts a CSR's common name as one of its names, so rcgen's default
+     CN would be refused.
    - It runs one HTTP/1.1 request per TLS connection.
 
    The service's certificate resolver (`AcmeCerts`) serves a challenge
@@ -46,9 +48,20 @@ which the owner asked to close (2026-10-17):
    certificate to everyone else. A validation connection ends at its
    handshake and is never forwarded. The CA reaches the service the way
    any TCP consumer does: through the relay's TCP ingress, routed by SNI.
-   The relay must therefore listen on TCP 443. `maintain` loads the stored
-   certificate, renews it 30 days before expiry, checks every 12 hours,
-   and backs off from 1 minute to 6 hours on failure.
+   The relay must therefore listen on TCP 443.
+
+   `maintain` loads the stored certificate and renews it once a third of
+   its lifetime is left: 30 days for a 90-day certificate, 2 days for a
+   6-day one. It checks in proportion, at most every 12 hours. Issuance
+   waits until `expose` reports its tunnel admitted, meaning still open
+   2 s after dialing, because validation runs through that tunnel.
+   Failures back off from 5 minutes to 6 hours, which stays under Let's
+   Encrypt's limit of five failed validations per hour. Polls honor
+   `Retry-After`, up to 30 s.
+
+   The key and its chain are stored as one owner-only PEM bundle, replaced
+   by a single rename. A newly created account key discards any stored
+   account URL.
 2. **No HTTP-01 or DNS-01.** HTTP-01 would need the relay to route plain
    HTTP by `Host`, a second ingress. DNS-01 needs DNS-provider APIs.
    TLS-ALPN-01 needs nothing new. One consequence is no wildcard
@@ -64,14 +77,30 @@ which the owner asked to close (2026-10-17):
    its own route unit (ADR-0183 Decision 6), up to that many at once:
    - The relay enforces the limit through quinn's
      `max_concurrent_bidi_streams` on consumer connections.
-   - A refused stream is reset with `OVER_CAP` or `ROUTE_OFFLINE`, and the
-     connection stays up.
+   - A refused stream is reset on its own:
+     - `OVER_CAP` when the route is at its cap, or when the tunnel is
+       alive but did not open a stream within 5 s;
+     - `ROUTE_OFFLINE` when the tunnel is gone, which also closes the
+       connection.
+   - Each stream gets 256 KiB of receive credit and the connection 4 MiB
+     in all, bounding what one unauthenticated peer can make the relay
+     buffer. quinn's defaults would allow about 1.25 MB per stream with no
+     connection limit.
+   - A multiplexed connection with no stream bridged for 30 s is closed, so
+     an idle client gives its connection slot back.
    - A tunnel accepts up to 4096 concurrent streams from the relay.
 5. **`connect` multiplexes.** `Route::multiplex` carries every local
-   connection as a stream on one cached connection. It redials once when
-   that connection dies, and forwards that find it dead together share one
-   redial. A finished stream waits for its data to be acknowledged but
-   leaves the connection open.
+   connection as a stream on one cached connection:
+   - It redials when that connection closes, and forwards that find it
+     dead together share one redial.
+   - A stream whose TLS handshake fails retires the connection. That
+     catches a connection that died without a close reaching the client
+     (a relay restart, a network change), which quinn would otherwise
+     notice only at its 30 s idle timeout.
+   - A finished stream waits for its data to be acknowledged but leaves
+     the connection open.
+   - `--single-stream` restores one connection per local connection, for
+     a relay that bridges a single stream per consumer.
 
 ## Why
 
@@ -93,9 +122,9 @@ which the owner asked to close (2026-10-17):
   TLS-ALPN-01, no External Account Binding, no revocation, no ARI
   renewal hints. A CA that requires more (EAB) is not supported yet.
 - **A multiplexed consumer is one unauthenticated peer with up to 256
-  streams.** The per-route cap still counts streams, not connections, so
-  the per-route accounting holds. The per-connection stream limit bounds
-  one peer.
+  streams.** The per-route cap counts streams, not connections. What one
+  peer can make the relay buffer is bounded by the 4 MiB connection
+  window, not by the stream count.
 
 ## Alternatives
 
@@ -103,9 +132,7 @@ which the owner asked to close (2026-10-17):
   brings an HTTP stack (hyper-rustls) or async runtime glue the tree does
   not have, for an exchange of a few small JSON requests.
 - **A consumer-group envelope on the tunnel wire,** so phux could
-  multiplex too. Deferred: it changes the tunnel wire and phux's
-  connector, and phux already has per-Terminal streams on direct QUIC
-  (ADR-0115).
+  multiplex too. Deferred: it changes the wire and phux's connector.
 
 ## Related
 
@@ -113,12 +140,8 @@ which the owner asked to close (2026-10-17):
   [ADR-0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md), and
   [ADR-0051](./0051-outbound-dial-out-connector-transport.md). It changes
   nothing for phux.
-- Evidence in `crates/quictun/tests/acme.rs`: a mock CA verifies every JWS,
-  refuses one nonce with `badNonce`, builds its URLs from `Host`, and
-  validates TLS-ALPN-01 through the relay's TCP ingress. The test then
-  sends eight concurrent `connect` forwards, name-verified, over one QUIC
-  connection.
-- The client was also run against Pebble, Let's Encrypt's test CA, using
-  the real binary: relay, `expose --acme-domain`, then `curl` through the
-  ingress and through `connect`. That run found the `Host` header that
-  dropped its port, which the mock now checks.
+- Evidence: `crates/quictun/tests/acme.rs` (a strict mock CA that
+  validates TLS-ALPN-01 through the ingress, then eight `connect`
+  forwards over one connection) and `tests/relay.rs` (per-stream bridging
+  and the idle reaper). The binary was also run against Pebble, which
+  found a `Host` header missing its port; the mock now checks that.
