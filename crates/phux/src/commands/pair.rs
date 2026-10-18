@@ -847,7 +847,9 @@ pub(crate) fn run_pair(
         addresses.server_url.as_deref(),
     )
     .or_else(|| {
-        (enroll && addresses.quic_endpoint.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned())
+        let camera = qr || (output.default_qr && addresses.server_url.is_some());
+        (enroll && !addresses.enrollment_endpoint_ready(camera))
+            .then(|| ENROLL_NEEDS_QUIC.to_owned())
     });
     if let Some(refusal) = refusal {
         error!("pair: {refusal}");
@@ -1283,6 +1285,16 @@ struct PairAddresses {
 }
 
 impl PairAddresses {
+    /// Phone QRs need an advertised route. Explicit machine-readable enrollment
+    /// can use a bound loopback listener without advertising it to a phone.
+    fn enrollment_endpoint_ready(&self, camera: bool) -> bool {
+        if camera {
+            self.quic_endpoint.is_some()
+        } else {
+            self.live.quic.is_some()
+        }
+    }
+
     /// The advertised names an existing certificate is warned about. The
     /// `MagicDNS` name is claimed by a certificate this run generates but is
     /// not warned about: it stands for an overlay address that is checked,
@@ -2397,6 +2409,26 @@ mod tests {
             ..addresses
         };
         assert_eq!(without.checked_names(), without.advertised);
+    }
+
+    #[test]
+    fn machine_enrollment_accepts_loopback_but_phone_qrs_need_a_dialable_route() {
+        let mut addresses = PairAddresses {
+            overlay: vec![],
+            live: live(None, Some("127.0.0.1:8788")),
+            server_url: None,
+            quic_endpoint: None,
+            advertised: vec![],
+            magic_dns_name: None,
+        };
+        assert!(addresses.enrollment_endpoint_ready(false));
+        assert!(!addresses.enrollment_endpoint_ready(true));
+        addresses.quic_endpoint = Some("quic://100.64.0.2:8788".to_owned());
+        assert!(addresses.enrollment_endpoint_ready(true));
+        addresses.live.quic = None;
+        addresses.quic_endpoint = None;
+        assert!(!addresses.enrollment_endpoint_ready(false));
+        assert!(!addresses.enrollment_endpoint_ready(true));
     }
 
     /// The QR beneath the text link is the default only on a terminal, and
