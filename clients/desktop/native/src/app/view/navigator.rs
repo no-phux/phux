@@ -135,6 +135,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
     let ink = look.ink;
     let chord = desk.shown_chord("goto");
     div()
+        .debug_selector(|| "sidebar-footer".into())
         .flex_shrink_0()
         .h(px(44.))
         .px(px(8.))

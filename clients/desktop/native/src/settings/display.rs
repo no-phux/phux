@@ -11,6 +11,8 @@ pub enum TabPosition {
     /// Compact horizontal tabs in the titlebar.
     #[default]
     Top,
+    /// Horizontal tabs below the workspace.
+    Bottom,
     /// Scrollable vertical tabs beside the workspace.
     Side,
 }
@@ -21,6 +23,7 @@ impl TabPosition {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Top => "top",
+            Self::Bottom => "bottom",
             Self::Side => "side",
         }
     }
@@ -270,6 +273,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         sidebar_width: number("sidebarWidth", fallback.sidebar_width),
         tab_position: match object.get("tabPosition").and_then(Value::as_str) {
             Some("side") => TabPosition::Side,
+            Some("bottom") => TabPosition::Bottom,
             _ => TabPosition::Top,
         },
         sidebar_grouping: SidebarGrouping::parse(
@@ -337,7 +341,7 @@ mod tests {
 
     #[test]
     fn tab_placement_round_trips_without_changing_other_preferences() {
-        for position in [TabPosition::Top, TabPosition::Side] {
+        for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
             let prefs = DisplayPrefs {
                 tab_position: position,
                 sidebar_visible: false,
@@ -420,7 +424,7 @@ mod tests {
     fn old_or_unrecognized_tab_placement_preserves_the_rest_of_the_display() {
         for value in [
             None,
-            Some(json!("bottom")),
+            Some(json!("unknown")),
             Some(json!(null)),
             Some(json!(42)),
         ] {

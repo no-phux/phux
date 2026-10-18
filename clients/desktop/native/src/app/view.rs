@@ -14,7 +14,7 @@
 //! | [`titlebar`] | traffic-light lead, the main menu trigger, top tabs, actions, bell |
 //! | [`navigator`] | the one sidebar: sessions, their tabs, background terminals |
 //! | [`changes`] | the Changes panel: the focused pane's Git checkout |
-//! | [`tabs`] | one tab renderer for the titlebar and the navigator |
+//! | [`tabs`] | one tab renderer for the titlebar, bottom strip and navigator |
 //! | [`panes`] | the split tree, pane cards, their controls and the empty state |
 //! | [`status`] | the exceptions-only status line and the notification peek |
 //!
@@ -52,7 +52,9 @@ use super::overlays;
 use super::skin::Look;
 use super::ui::shadow;
 
+pub(super) use changes::width as changes_width;
 pub(super) use status::{notification_edge, notification_text};
+pub(super) use tabs::MIN_STRIP_WIDTH;
 
 /// Whether the skin shows workspace tabs when there are `count` of them.
 fn tabs_shown(skin: &Skin, count: usize) -> bool {
@@ -124,6 +126,7 @@ fn drag_label(keys: &[ResourceKey], name: &str) -> String {
 #[derive(Default)]
 pub(super) struct ChromeCache {
     titlebar: Option<Entity<CachedChrome>>,
+    bottom_tabs: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
     changes: Option<Entity<CachedChrome>>,
     overlays: Option<Entity<CachedChrome>>,
@@ -174,7 +177,12 @@ fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) 
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
+    let tab_position = desk.tab_position();
     desk.set_viewport(window.viewport_size());
+    if desk.tab_position() != tab_position {
+        // Cached chrome must follow a responsive placement change on resize.
+        cx.notify();
+    }
     desk.sync_title(window);
     desk.settle_focus(window, cx);
     desk.drive_skin(window, cx);

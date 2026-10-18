@@ -352,7 +352,7 @@ impl TabGeometry {
 
 fn tab_coordinate(position: TabPosition, x: f32, y: f32) -> f32 {
     match position {
-        TabPosition::Top => x,
+        TabPosition::Top | TabPosition::Bottom => x,
         TabPosition::Side => y,
     }
 }

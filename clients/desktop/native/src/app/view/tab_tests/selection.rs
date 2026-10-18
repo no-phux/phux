@@ -14,7 +14,7 @@ fn modifier_click_selects_tab_subset_without_activation_or_drag_on_both_axes(
         platform: true,
         ..Modifiers::none()
     };
-    for command in ["tabs-top", "tabs-side"] {
+    for command in ["tabs-top", "tabs-bottom", "tabs-side"] {
         desk.update(cx, selectable_work);
         run(&desk, command, cx);
         for selector in ["tab-fixture-a", "tab-fixture-b"] {

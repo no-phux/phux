@@ -1,5 +1,5 @@
-//! One tab renderer and one set of tab actions for both placements: a
-//! compact strip in the titlebar, or rows under the current session in the
+//! One tab renderer and one set of tab actions: a compact strip in the
+//! titlebar or below the workspace, or rows under the current session in the
 //! navigator. A tab whose agent needs a person wears that state itself: a
 //! wash and a mark on its corner, not an entry in a separate list. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
@@ -22,15 +22,34 @@ use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
-use super::super::ui::list::{ICON, ROW, row_icon, row_radius};
+use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
 use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
 use super::super::ui::{attention_mark, ghost_icon};
 use super::tab_glow;
 
+/// Both selected and inactive tabs reserve the surface's one-point rim.
+const TAB_RIM: f32 = 1.;
+/// Enough room for one readable horizontal tab and its actions while scrolling.
+pub(crate) const MIN_STRIP_WIDTH: f32 = 160.;
+
 /// Titlebar tab height for a bar `titlebar` points tall.
 pub(super) fn tab_height(titlebar: f32) -> f32 {
     (titlebar - 14.).clamp(22., 30.)
+}
+
+/// The cached bottom strip uses the same horizontal tabs as the titlebar.
+pub(super) fn build_bottom(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    let look = desk.look();
+    div()
+        .id("bottom-tab-bar")
+        .debug_selector(|| "bottom-tab-bar".into())
+        .size_full()
+        .px(px(look.skin.shape.gutter))
+        .flex()
+        .items_center()
+        .child(strip(desk, TabPosition::Bottom, &look, cx))
+        .into_any_element()
 }
 
 /// The tabs at `position`, measured as painted for drag reordering.
@@ -49,8 +68,14 @@ pub(super) fn strip(
     let geometry = desk.tab_geometry.clone();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
+    let id = match position {
+        TabPosition::Top => "top-tabs",
+        TabPosition::Bottom => "bottom-tabs",
+        TabPosition::Side => "side-tabs",
+    };
     div()
-        .id(if side { "side-tabs" } else { "top-tabs" })
+        .id(id)
+        .debug_selector(move || id.into())
         .when(side, |list| list.w_full())
         .when(!side, |list| {
             list.flex_1().min_w_0().h_full().overflow_x_scroll()
@@ -67,7 +92,11 @@ pub(super) fn strip(
                         .min_w(px(tabs.len() as f32 * 105. + 3.))
                         .h_full()
                         .items_center()
-                        .px(px(4.))
+                        .px(px(if position == TabPosition::Bottom {
+                            0.
+                        } else {
+                            4.
+                        }))
                 })
                 .children(tabs.iter().map(|tab| {
                     tab_button(desk, tab, active, position, look, cx).into_any_element()
@@ -300,9 +329,13 @@ fn tab_button(
         .group("tab")
         .relative()
         .flex_shrink_0()
+        .pr(px(4.))
         .when(side, |tab| {
             // A row under its session, indented past the session's caret.
-            tab.min_h(px(ROW)).w_full().pl(px(8. + ICON))
+            tab.min_h(px(ROW))
+                .w_full()
+                .pl(px(CHILD_INSET - TAB_RIM))
+                .pr(px(ROW_INSET - TAB_RIM))
         })
         .when(!side, |tab| {
             tab.h(px(height - sunk))
@@ -311,10 +344,9 @@ fn tab_button(
                 .flex_1()
                 .pl(px(10.))
         })
-        .pr(px(4.))
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(px(if side { ROW_GAP } else { 6. }))
         .when(selected, |tab| {
             tab.surface(look, if side { Surface::SideTab } else { Surface::Tab })
                 .shadow(tab_glow(look))
@@ -352,6 +384,10 @@ fn tab_button(
         })
         .child(
             div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("tab-label-{id}")
+                })
                 .flex_1()
                 .min_w_0()
                 .truncate()

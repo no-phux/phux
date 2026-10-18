@@ -18,7 +18,7 @@ use crate::app::color::from_hex;
 use crate::app::desk::Desk;
 use crate::app::fleet::Work;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, ICON, row_detail, row_label};
+use crate::app::ui::list::{CHILD_LABEL, Emphasis, row_detail, row_label};
 use crate::app::ui::menu::Anchor;
 use crate::app::ui::{badge, ghost_icon, muted, row};
 use crate::app::view::{ResourceDrag, tabs, tabs_at};
@@ -185,10 +185,15 @@ pub(super) fn session_block(
                 })
                 .when(others && side_tabs, |block| {
                     block.child(
-                        muted(look, "Not in a tab")
-                            .pl(px(8. + ICON + 8.))
-                            .pt(px(6.))
-                            .pb(px(2.)),
+                        muted(
+                            look,
+                            div()
+                                .debug_selector(|| "background-terminals-label".into())
+                                .child("Not in a tab"),
+                        )
+                        .pl(px(CHILD_LABEL))
+                        .pt(px(6.))
+                        .pb(px(2.)),
                     )
                 })
                 .children(

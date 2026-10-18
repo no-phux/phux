@@ -35,7 +35,7 @@ use super::super::ui::{ghost_icon, muted};
 const FILES_WIDTH: f32 = 252.;
 
 /// The panel's width this frame: as dragged, but never crowding out the panes.
-pub(super) fn width(desk: &Desk, viewport: f32) -> f32 {
+pub(crate) fn width(desk: &Desk, viewport: f32) -> f32 {
     use super::super::changes::{MIN_WIDTH, PANES_MIN};
     desk.changes
         .width
