@@ -45,7 +45,7 @@ CLI releases are GitHub's Latest. The Homebrew tap
 
 | You want to | Do this |
 |---|---|
-| Ship a release | Let the release PR auto-merge once `ci` is green, or mark it ready and squash-merge it |
+| Ship a release | Mark the draft release PR ready, then squash-merge it once `ci` is green |
 | Finish or rebuild a draft | `gh workflow run publish.yml -f tag=<tag>`; an empty tag reconciles every ready draft |
 | Rebuild next | `gh workflow run next-release.yml` (optionally `-f sha=<sha>`) |
 | See whether anything is stuck | `just release-drift` |
@@ -58,7 +58,9 @@ CLI releases are GitHub's Latest. The Homebrew tap
 
 1. Conventional commits land on `main`. Release Please keeps one release PR
    for the root and one for Desktop. Each carries the version bump,
-   changelog, and synced lockfiles.
+   changelog, and synced lockfiles. It stays a draft and keeps accumulating
+   changes until a maintainer marks it ready and merges it; nothing
+   auto-merges it, because `next` already ships every green `main`.
 2. The merged PR becomes a tag and a private draft.
 3. `publish` (on `ci` or Release Please completion, daily at 15:05 UTC, or by
    dispatch) picks every draft whose tagged commit has a green `ci`. It
