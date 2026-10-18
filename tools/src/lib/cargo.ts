@@ -150,6 +150,53 @@ function activated(
   return { dependencies, forwarded };
 }
 
+interface DependencyRequest {
+  readonly dir: string;
+  readonly features: Set<string>;
+}
+
+/** Features requested on an edge, including inherited and forwarded features. */
+function dependencyFeatures(
+  spec: Table,
+  base: Table,
+  forwarded: ReadonlySet<string> | undefined,
+): Set<string> {
+  const defaults = spec["default-features"] ?? base["default-features"] ?? true;
+  return new Set([
+    ...strings(base["features"]),
+    ...strings(spec["features"]),
+    ...(defaults ? ["default"] : []),
+    ...(forwarded ?? []),
+  ]);
+}
+
+/** Active local dependency edges in manifest order, across every target. */
+function activePathDependencies(
+  manifest: Manifest,
+  requested: ReadonlySet<string>,
+  kinds: readonly DependencyKind[],
+  root: string,
+): DependencyRequest[] {
+  const inherited = table(
+    table(workspaceRoot(manifest.dir, root)?.document["workspace"])["dependencies"],
+  );
+  const { dependencies, forwarded } = activated(manifest.document, requested);
+  const found: DependencyRequest[] = [];
+  for (const tables of dependencyTables(manifest.document)) {
+    for (const kind of kinds) {
+      for (const [key, value] of Object.entries(table(tables[kind]))) {
+        const spec = table(value);
+        if (spec["optional"] === true && !dependencies.has(key)) continue;
+        const path = dependencyPath(manifest, key, spec, () => inherited, root);
+        if (path === undefined) continue;
+        const base = spec["workspace"] === true ? table(inherited[key]) : {};
+        found.push({ dir: path, features: dependencyFeatures(spec, base, forwarded.get(key)) });
+      }
+    }
+  }
+  return found;
+}
+
 /**
  * Every local crate directory a build compiles. Optional edges count only
  * when enabled; dependency features are unified to a fixed point. Dev edges
@@ -175,30 +222,8 @@ export function pathClosure(roots: readonly BuildRoot[], root = ROOT): Set<strin
     const requested = new Set([...(previous ?? []), ...features]);
     enabled.set(dir, requested);
     const manifest = manifestAt(dir);
-    const inherited = table(table(workspaceRoot(dir, root)?.document["workspace"])["dependencies"]);
-    const { dependencies, forwarded } = activated(manifest.document, requested);
     const kinds = devRoots.has(dir) ? ALL_KINDS : TRANSITIVE_KINDS;
-    for (const tables of dependencyTables(manifest.document)) {
-      for (const kind of kinds) {
-        for (const [key, value] of Object.entries(table(tables[kind]))) {
-          const spec = table(value);
-          if (spec["optional"] === true && !dependencies.has(key)) continue;
-          const path = dependencyPath(manifest, key, spec, () => inherited, root);
-          if (path === undefined) continue;
-          const base = spec["workspace"] === true ? table(inherited[key]) : {};
-          const defaults = spec["default-features"] ?? base["default-features"] ?? true;
-          pending.push({
-            dir: path,
-            features: new Set([
-              ...strings(base["features"]),
-              ...strings(spec["features"]),
-              ...(defaults ? ["default"] : []),
-              ...(forwarded.get(key) ?? []),
-            ]),
-          });
-        }
-      }
-    }
+    pending.push(...activePathDependencies(manifest, requested, kinds, root));
   }
   return new Set(enabled.keys());
 }
