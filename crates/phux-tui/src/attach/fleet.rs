@@ -32,6 +32,7 @@ use phux_protocol::wire::info::SessionInfo;
 use super::agent_rows::{AgentSessionRow, AgentSessionRows};
 use super::pane_state::{PaneSlot, VcsIndex};
 use crate::layout::ArrangementDoc;
+use crate::render::chrome::{AGENT_IDLE_GLYPH, agent_state_glyph};
 use crate::render::overlay::SelectItem;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
@@ -256,7 +257,7 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
         toml::Value::String(phux_client::selector::format_terminal_id(id)),
     );
     let mut item = SelectItem::new(
-        format!("{} {host}", state_glyph(record.state)),
+        format!("{} {host}", agent_state_glyph(record.state)),
         phux_config::keybind::ResolvedAction {
             action: "split-pane".to_owned(),
             args,
@@ -346,7 +347,7 @@ fn pane_row(
                 (None, _) => session.name().to_owned(),
             };
             (
-                state_glyph(session.state),
+                agent_state_glyph(session.state),
                 who,
                 Some(session.state.as_str()),
             )
@@ -356,7 +357,7 @@ fn pane_row(
                 .kind
                 .as_ref()
                 .map_or_else(|| r.name.clone(), |kind| format!("{} [{kind}]", r.name));
-            (state_glyph(r.state), who, Some(r.state.as_str()))
+            (agent_state_glyph(r.state), who, Some(r.state.as_str()))
         }
         (None, None) => (
             AGENT_IDLE_GLYPH,
@@ -484,7 +485,7 @@ fn foreign_pane_row(
                 .kind
                 .as_ref()
                 .map_or_else(|| r.name.clone(), |kind| format!("{} [{kind}]", r.name));
-            (state_glyph(r.state), who, Some(r.state.as_str()))
+            (agent_state_glyph(r.state), who, Some(r.state.as_str()))
         },
     );
     let attention = record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
@@ -521,20 +522,6 @@ fn foreign_pane_row(
     }
     item
 }
-
-/// The badge glyph for a declared agent state (shared chrome vocabulary).
-const fn state_glyph(state: AgentMetaState) -> &'static str {
-    use crate::render::chrome::{AGENT_BLOCKED_GLYPH, AGENT_DONE_GLYPH, AGENT_WORKING_GLYPH};
-    match state {
-        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
-        AgentMetaState::Working => AGENT_WORKING_GLYPH,
-        AgentMetaState::Done => AGENT_DONE_GLYPH,
-        AgentMetaState::Idle | AgentMetaState::Unknown => AGENT_IDLE_GLYPH,
-    }
-}
-
-/// The hollow ring: idle, reviewed, or unknown.
-const AGENT_IDLE_GLYPH: &str = "\u{25cb}";
 
 /// Shorten a cwd to its last path component for the secondary column
 /// (a full path would push the state word off a narrow modal).
@@ -783,11 +770,11 @@ mod tests {
 
     #[test]
     fn state_glyphs_cover_the_v1_vocabulary() {
-        assert_eq!(state_glyph(AgentMetaState::Blocked), "●");
-        assert_eq!(state_glyph(AgentMetaState::Working), "◐");
-        assert_eq!(state_glyph(AgentMetaState::Idle), "○");
-        assert_eq!(state_glyph(AgentMetaState::Done), "◆");
-        assert_eq!(state_glyph(AgentMetaState::Unknown), "○");
+        assert_eq!(agent_state_glyph(AgentMetaState::Blocked), "●");
+        assert_eq!(agent_state_glyph(AgentMetaState::Working), "◐");
+        assert_eq!(agent_state_glyph(AgentMetaState::Idle), "○");
+        assert_eq!(agent_state_glyph(AgentMetaState::Done), "◆");
+        assert_eq!(agent_state_glyph(AgentMetaState::Unknown), "○");
     }
 
     #[test]
