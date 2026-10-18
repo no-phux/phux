@@ -347,6 +347,7 @@ fn ipv6_websocket_attaches_exchanges_output_and_joins_on_close() {
                     let _ = stop.await;
                 })
                 .await
+                .expect("IPv6 WebSocket test server");
         });
         let address = phux_server_testkit::bound_listener_addr(
             &socket,
@@ -372,7 +373,6 @@ fn ipv6_websocket_attaches_exchanges_output_and_joins_on_close() {
         drop(shutdown);
         tokio::time::timeout(DEADLINE, server)
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
     });
