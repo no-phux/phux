@@ -30,10 +30,10 @@
     "./tui": "./tui.js"
   },
   "scripts": {
-    "build": "bun scripts/build.mjs",
+    "compile": "bun scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
-    "gates": "bun run typecheck && bun run build && bun test"
+    "gates": "bun run typecheck && bun run compile && bun test"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.32"

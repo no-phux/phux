@@ -26,7 +26,7 @@ From a phux checkout:
 ```sh
 cd integrations/opencode-v2
 bun install --frozen-lockfile
-bun run build
+bun run compile
 ```
 
 OpenCode loads bundled `index.js` for server tools and `tui.js` for the terminal
@@ -34,6 +34,8 @@ companion, not TypeScript sources. The bundles include phux's shared runtime;
 the TUI entrypoint is universal-compiled against OpenTUI 0.5.17 and Solid 1.9.12.
 Install the declared peers before loading a checkout; merely having `tui.js`
 on disk does not mean its runtime dependencies are available.
+Artifacts are checked in and Git installs require no build lifecycle hooks;
+the compiled OpenCode installer cannot run npm Git preparation.
 Configure OpenCode V2 with an absolute package directory:
 
 ```jsonc
