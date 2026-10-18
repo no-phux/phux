@@ -1295,7 +1295,7 @@ struct PairAddresses {
 impl PairAddresses {
     /// Phone QRs need an advertised route. Explicit machine-readable enrollment
     /// can use a bound loopback listener without advertising it to a phone.
-    fn enrollment_endpoint_ready(&self, camera: bool) -> bool {
+    const fn enrollment_endpoint_ready(&self, camera: bool) -> bool {
         if camera {
             self.quic_endpoint.is_some()
         } else {
