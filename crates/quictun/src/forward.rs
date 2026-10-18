@@ -33,6 +33,12 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Longest redial delay.
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
+/// How long a tunnel must stay up before its end resets the backoff.
+const STABLE_TUNNEL: Duration = Duration::from_secs(30);
+
+/// How long a failed accept pauses `connect`'s listener.
+const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+
 /// How long a finished forward waits for the relay to acknowledge its last
 /// bytes, and for its close to go out.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(2);
@@ -105,16 +111,26 @@ pub async fn expose(
 ) -> Result<(), ConnectError> {
     let mut backoff = BACKOFF_BASE;
     loop {
+        let opened = tokio::time::Instant::now();
         let ended = match Tunnel::open(relay, protocol, token).await {
             Ok(tunnel) => {
-                tracing::info!(relay = %relay.addr, "tunnel up");
-                backoff = BACKOFF_BASE;
+                tracing::info!(relay = %relay.addr, "tunnel dialed");
                 serve_tunnel(&tunnel, target, &tls).await
             }
             Err(err) => err,
         };
         if ended.is_auth_refused() {
             return Err(ended);
+        }
+        // `open` returns before the relay admits the tunnel, so only a
+        // tunnel that stayed up resets the backoff: a relay at its cap, or
+        // another `expose` reclaiming the route, backs off instead of
+        // looping twice a second.
+        if opened.elapsed() >= STABLE_TUNNEL {
+            backoff = BACKOFF_BASE;
+        }
+        if ended.close_code() == Some(crate::tunnel::RECLAIMED_CODE) {
+            tracing::warn!("another tunnel claimed this route; is a second `expose` running?");
         }
         tracing::warn!(err = %ended, retry_in = ?backoff, "tunnel down; redialing");
         tokio::time::sleep(backoff).await;
@@ -186,15 +202,22 @@ pub struct Route {
 }
 
 /// Accept local connections on `listener` and carry each through the relay
-/// to `route`, until the listener fails.
+/// to `route`, forever.
 ///
-/// # Errors
-///
-/// Accepting on the listener failed.
-pub async fn connect(listener: TcpListener, route: Route) -> std::io::Result<()> {
+/// A failed accept (a connection reset before accept, the process out of
+/// descriptors) is logged and retried after a short pause; it never drops
+/// the forwards in flight.
+pub async fn connect(listener: TcpListener, route: Route) {
     let route = Arc::new(route);
     loop {
-        let (local, peer) = listener.accept().await?;
+        let (local, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                tracing::warn!(%err, "accept failed");
+                tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+                continue;
+            }
+        };
         let route = Arc::clone(&route);
         tokio::spawn(async move {
             if let Err(err) = carry(local, &route).await {

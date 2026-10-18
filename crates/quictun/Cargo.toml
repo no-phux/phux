@@ -41,6 +41,9 @@ hex = { version = "0.4", optional = true }
 subtle = { version = "2", optional = true }
 # OS CSPRNG for token minting; `std` for `std::error::Error` (`relay`).
 getrandom = { version = "0.4", features = ["std"], optional = true }
+# TCP keepalive on ingress sockets, so a vanished peer frees its slot
+# (`relay`); already in this graph through quinn and tokio.
+socket2 = { version = "0.6", optional = true }
 # The TLS session a forwarder runs inside a bridged stream (`forward`); the
 # same version and features phux-dial and phux-server already use.
 tokio-rustls = { version = "0.26", default-features = false, features = [
@@ -60,7 +63,7 @@ default = ["relay", "forward", "cli"]
 provision = ["dep:rcgen", "dep:rustix"]
 # The relay itself: the endpoint, the SNI gate, the route-token store, and
 # the optional TCP ingress.
-relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom"]
+relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom", "dep:socket2"]
 # TCP forwarding through a relay, TLS end to end: `expose` and `connect`.
 forward = ["provision", "dep:tokio-rustls"]
 # The `quictun` binary.

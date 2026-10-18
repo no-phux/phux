@@ -50,9 +50,14 @@ for `quictun` and leaves it in place for `phux relay`.
    browser reaches an exposed service when that service presents a
    certificate the browser trusts for `R.<domain>`. A hello that is not
    TLS, names no server, or names no enrolled route with a live tunnel is
-   dropped. Each TCP consumer takes a connection slot and the per-source
-   share, and must send its hello within the consumer stream deadline
-   (5 s, 16 KiB at most).
+   dropped. While a TCP consumer reads its hello it holds only a handshake
+   permit and its source's share, as a QUIC handshake does. It takes a
+   connection slot only once the hello names a live route, so peers that
+   connect and stall cannot lock out tunnels. The hello must arrive within
+   the consumer stream deadline (5 s, 16 KiB at most). Bridged sockets use
+   TCP keepalive, so a vanished peer frees its slot. A finished bridge
+   reads leftover input before it closes, so the close is a FIN and not a
+   reset that could cut off the reply.
 4. **Half-close is the protocol's choice.** `Protocol::half_close` is
    either `EndsBridge`, the existing rule where either direction's end
    ends the bridge, or `Propagate`, which forwards each FIN and keeps the
@@ -68,7 +73,11 @@ for `quictun` and leaves it in place for `phux relay`.
 6. **Tenancy is per route; accounts are not the relay's.**
    `max_conns_per_route` caps how many consumers one route may have
    bridged at once (the QUIC and TCP legs together), so one tenant cannot
-   take every slot. A refused QUIC consumer is closed with `OVER_CAP`.
+   take every slot. A unit is taken only once the consumer opens its
+   stream, so a handshake-only consumer never holds one. A refused QUIC
+   consumer is closed with `OVER_CAP`. Consumers are unauthenticated at
+   the relay, so anyone who knows a route's name can fill its cap: the cap
+   protects the other routes, not the route itself.
    Accounts, billing, and who may mint which route stay outside the
    relay. As [ADR-0180](./0180-the-relay-is-blind.md) Decision 4 already
    set for phux, a hosted deployment's backend writes the route-token

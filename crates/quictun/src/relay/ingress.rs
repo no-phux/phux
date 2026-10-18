@@ -11,16 +11,29 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::relay::RelayError;
-use crate::relay::runtime::{CONSUMER_STREAM_DEADLINE, Shared};
+use crate::relay::runtime::{CONSUMER_STREAM_DEADLINE, Shared, note_consumer_sni};
 use crate::splice::{Tee, splice};
 
 /// The largest `ClientHello` the relay buffers before giving up on it.
 const MAX_CLIENT_HELLO: usize = 16 * 1024;
+
+/// How long a failed accept pauses the listener.
+const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+
+/// How long a finished TCP bridge reads leftover input before closing.
+const CLOSE_DRAIN: Duration = Duration::from_secs(2);
+
+/// Idle time before the first keepalive probe on a bridged socket.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+
+/// Time between keepalive probes once they start.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Where the relay accepts TCP consumers and how it names routes there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +80,8 @@ pub(crate) fn bind(ingress: TcpIngress) -> Result<BoundIngress, RelayError> {
 
 /// The next TCP consumer and the ingress's domain, or never without an
 /// ingress. A failed accept (a reset before accept, or the process out of
-/// descriptors) yields `None` and the relay keeps serving.
+/// descriptors) yields `None` after a short pause, so a listener that stays
+/// readable cannot spin the relay's loop; the relay keeps serving.
 pub(crate) async fn accept(
     ingress: Option<&BoundIngress>,
 ) -> Option<(TcpStream, SocketAddr, Option<Arc<str>>)> {
@@ -77,7 +91,8 @@ pub(crate) async fn accept(
     match ingress.listener.accept().await {
         Ok((stream, remote)) => Some((stream, remote, ingress.domain.clone())),
         Err(err) => {
-            tracing::debug!(%err, "tcp accept failed");
+            tracing::warn!(%err, "tcp accept failed");
+            tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
             None
         }
     }
@@ -86,45 +101,24 @@ pub(crate) async fn accept(
 /// Route one TCP consumer by its `ClientHello` and splice it onto a fresh
 /// stream over the route's tunnel.
 ///
-/// It holds a connection slot throughout, and its source's share until the
-/// hello is read, as a QUIC consumer does.
+/// Until the hello names a route with a live tunnel, the consumer holds only
+/// a handshake permit and its source's share, as a QUIC handshake does; it
+/// takes a connection slot (and its route's unit) only once admitted, so a
+/// peer that connects and stalls cannot lock out connectors and consumers.
 pub(crate) async fn bridge(
     mut stream: TcpStream,
     remote: SocketAddr,
     domain: Option<Arc<str>>,
     shared: Arc<Shared>,
 ) {
+    let Some((hello, route, tunnel)) = admit(&mut stream, remote, domain, &shared).await else {
+        return;
+    };
     let Ok(_slot) = Arc::clone(&shared.slots).try_acquire_owned() else {
-        tracing::warn!(%remote, "refused tcp: relay at connection cap");
+        tracing::warn!(%remote, route, "refused tcp: relay at connection cap");
         return;
     };
-    // TCP's handshake proves the address, so this is the validated share.
-    let Some(source) = shared.sources.try_take((remote.ip(), true)) else {
-        tracing::debug!(%remote, "refused tcp: source at its handshake share");
-        return;
-    };
-    let hello = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, read_client_hello(&mut stream))
-        .await
-        .ok()
-        .flatten();
-    drop(source);
-    let Some((hello, server_name)) = hello else {
-        tracing::debug!(%remote, "refused tcp: no TLS `ClientHello` with a server name in time");
-        return;
-    };
-    let Some(route) = route_for(&server_name, domain.as_deref()) else {
-        tracing::debug!(%remote, server_name, "refused tcp: server name names no route");
-        return;
-    };
-    if !shared.tokens.current().routes().contains(route) {
-        tracing::debug!(%remote, route, "refused tcp: route not enrolled");
-        return;
-    }
-    let Some(tunnel) = shared.registry.get(route) else {
-        tracing::warn!(%remote, route, "refused tcp: no live tunnel for enrolled route");
-        return;
-    };
-    let Some(_route_share) = shared.take_route_share(route) else {
+    let Some(_route_share) = shared.take_route_share(&route) else {
         tracing::warn!(%remote, route, "refused tcp: route at its consumer cap");
         return;
     };
@@ -138,19 +132,77 @@ pub(crate) async fn bridge(
     if tun_send.write_all(&hello).await.is_err() {
         return;
     }
-    let _ = stream.set_nodelay(true);
+    keep_alive(&stream);
     tracing::info!(route, %remote, "tcp consumer bridged");
     let observed = &shared.observers.consumer_bytes;
-    let (tcp_recv, tcp_send) = stream.into_split();
+    let (mut tcp_recv, tcp_send) = stream.into_split();
     splice(
-        Tee::new(tcp_recv, observed.clone()),
+        Tee::new(&mut tcp_recv, observed.clone()),
         tun_send,
         Tee::new(tun_recv, observed.clone()),
         tcp_send,
         shared.protocol.half_close,
     )
     .await;
+    // Closing a socket with unread input sends a reset, which can make the
+    // client's kernel discard reply bytes it has not delivered yet; read
+    // what is left (bounded) so the close is a FIN.
+    let mut sink = tokio::io::sink();
+    let discard = tokio::io::copy(&mut tcp_recv, &mut sink);
+    let _ = tokio::time::timeout(CLOSE_DRAIN, discard).await;
     tracing::debug!(route, %remote, "tcp consumer bridge ended");
+}
+
+/// Admission: under a handshake permit and the source's share, read the
+/// `ClientHello` and resolve it to an enrolled route with a live tunnel.
+/// Returns the bytes read, the route, and its tunnel.
+async fn admit(
+    stream: &mut TcpStream,
+    remote: SocketAddr,
+    domain: Option<Arc<str>>,
+    shared: &Shared,
+) -> Option<(Vec<u8>, String, quinn::Connection)> {
+    let Ok(_handshake) = Arc::clone(&shared.handshakes).try_acquire_owned() else {
+        tracing::debug!(%remote, "refused tcp: handshakes at capacity");
+        return None;
+    };
+    // TCP's handshake proves the address, so this is the validated share.
+    let Some(_source) = shared.sources.try_take((remote.ip(), true)) else {
+        tracing::debug!(%remote, "refused tcp: source at its handshake share");
+        return None;
+    };
+    let read = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, read_client_hello(stream)).await;
+    let Some((hello, server_name)) = read.ok().flatten() else {
+        tracing::debug!(%remote, "refused tcp: no TLS hello with a server name in time");
+        return None;
+    };
+    note_consumer_sni(shared.observers.consumer_sni.as_ref(), Some(&server_name));
+    let Some(route) = route_for(&server_name, domain.as_deref()) else {
+        tracing::debug!(%remote, server_name, "refused tcp: server name names no route");
+        return None;
+    };
+    if !shared.tokens.current().routes().contains(route) {
+        tracing::debug!(%remote, route, "refused tcp: route not enrolled");
+        return None;
+    }
+    let Some(tunnel) = shared.registry.get(route) else {
+        tracing::warn!(%remote, route, "refused tcp: no live tunnel for enrolled route");
+        return None;
+    };
+    Some((hello, route.to_owned(), tunnel))
+}
+
+/// TCP keepalive on a bridged socket, so a peer that vanished (a dropped NAT
+/// mapping, a sleeping laptop) is noticed and its slot freed, as QUIC's idle
+/// timeout does on the other leg.
+fn keep_alive(stream: &TcpStream) {
+    let _ = stream.set_nodelay(true);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    if let Err(err) = socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive) {
+        tracing::debug!(%err, "tcp keepalive not set");
+    }
 }
 
 /// The route a TLS server name reaches: `R` for `R.<domain>` with a domain,

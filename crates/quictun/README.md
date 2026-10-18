@@ -118,9 +118,15 @@ let (_endpoint, _conn, _send, _recv) = dial_route(&relay, "laptop", b"myapp/1").
   its line. The relay re-reads the file whenever it changes.
 - **A newer tunnel for a route replaces the old one** (last-writer-wins).
   The old tunnel is closed with `RECLAIMED`.
-- **Unknown routes are refused during the TLS handshake**, before any
-  application byte flows. An enrolled route with no live tunnel is closed
-  with `ROUTE_OFFLINE`.
+- **On QUIC, unknown routes are refused during the TLS handshake**, before
+  any application byte flows, and an enrolled route with no live tunnel is
+  closed with `ROUTE_OFFLINE`. **On the TCP ingress** the relay just drops
+  the socket after reading the ClientHello: no alert, no code.
+- **Stalled clients cannot take the relay.** Until a QUIC peer finishes its
+  handshake, or a TCP peer's ClientHello names a live route, it holds only
+  a handshake permit and its address's share, never a connection slot.
+  Bridged TCP sockets use keepalive, so a peer that vanished frees its
+  slot.
 - **Half-close is the protocol's choice.** `HalfClose::Propagate` (the
   binary's) forwards each FIN and keeps the other direction flowing, as
   TCP does. `HalfClose::EndsBridge` (`Protocol::new`'s default) ends the
@@ -129,7 +135,9 @@ let (_endpoint, _conn, _send, _recv) = dial_route(&relay, "laptop", b"myapp/1").
 - **Tenants share fairly.** `--max-conns` caps the relay, and
   `--max-conns-per-route` caps how many consumers one route may have at
   once (QUIC and TCP together); a refused QUIC consumer is closed with
-  `OVER_CAP`. Accounts and billing belong to whatever writes the
+  `OVER_CAP`. Consumers are unauthenticated at the relay, so anyone who
+  knows a route's name can fill its cap; the cap protects the other routes,
+  not the route itself. Accounts and billing belong to whatever writes the
   route-token store.
 
 ## Status

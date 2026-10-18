@@ -255,6 +255,10 @@ pub(crate) struct Shared {
     preamble_deadline: Duration,
     /// Connection slots, `max_conns` of them, held for a connection's life.
     pub(crate) slots: Arc<Semaphore>,
+    /// Admissions in progress (a QUIC handshake, a TCP `ClientHello`), held
+    /// apart from [`Self::slots`] so peers that stall before admission can
+    /// never lock out connectors and consumers.
+    pub(crate) handshakes: Arc<Semaphore>,
     /// Admissions in progress per source address (and whether it was
     /// validated); see [`DEFAULT_HANDSHAKES_PER_SOURCE`].
     pub(crate) sources: Arc<Shares<(IpAddr, bool)>>,
@@ -330,6 +334,7 @@ impl BoundRelay {
         let max_handshakes = self.max_conns.max(1).saturating_mul(HANDSHAKES_PER_SLOT);
         let handshakes = Arc::new(Semaphore::new(max_handshakes));
         let shared = Arc::new(Shared {
+            handshakes: Arc::clone(&handshakes),
             tunnel_config: self.tunnel_config,
             protocol: self.protocol,
             registry: TunnelRegistry::new(),
@@ -486,7 +491,7 @@ async fn handle_connection(admitted: AdmittedHandshake, shared: Arc<Shared>) {
 
 /// Append a consumer SNI rustls already accepted. Absent observer or absent
 /// name records nothing; the handshake decision has already been made.
-fn note_consumer_sni(observed: Option<&Arc<Mutex<Vec<String>>>>, name: Option<&str>) {
+pub(crate) fn note_consumer_sni(observed: Option<&Arc<Mutex<Vec<String>>>>, name: Option<&str>) {
     let (Some(observed), Some(name)) = (observed, name) else {
         return;
     };
@@ -617,11 +622,6 @@ async fn bridge_consumer(
         conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
         return;
     };
-    let Some(_route_share) = shared.take_route_share(&route) else {
-        tracing::warn!(%remote, route = %route, "refused: route at its consumer cap");
-        conn.close(OVER_CAP_CODE.into(), b"route at its consumer capacity");
-        return;
-    };
     // Bounded so a handshake-only consumer cannot pin its cap permit.
     let consumer_streams = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi()).await;
     drop(source);
@@ -636,6 +636,13 @@ async fn bridge_consumer(
             );
             return;
         }
+    };
+    // Taken only once the consumer has opened its stream, so a
+    // handshake-only consumer never holds one of the route's units.
+    let Some(_route_share) = shared.take_route_share(&route) else {
+        tracing::warn!(%remote, route = %route, "refused: route at its consumer cap");
+        conn.close(OVER_CAP_CODE.into(), b"route at its consumer capacity");
+        return;
     };
     let Ok(Ok((tun_send, tun_recv))) =
         tokio::time::timeout(CONSUMER_STREAM_DEADLINE, tunnel.open_bi()).await

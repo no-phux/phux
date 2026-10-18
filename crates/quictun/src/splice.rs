@@ -10,6 +10,8 @@ use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
+use crate::HalfClose;
+
 /// A reader that appends what it yields to `sink`, when there is one: the
 /// relay's tap for tests, a plain pass-through in production.
 pub(crate) struct Tee<R> {
@@ -39,20 +41,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for Tee<R> {
         }
         polled
     }
-}
-
-/// What a bridge does when one direction reaches end of stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HalfClose {
-    /// The finished direction's FIN is forwarded and the whole bridge ends:
-    /// the other direction stops forwarding. For a protocol whose peers
-    /// never half-close, this frees a bridge as soon as either side is done.
-    #[default]
-    EndsBridge,
-    /// The finished direction's FIN is forwarded and the other direction
-    /// keeps flowing until it finishes too, as TCP does. A client may send
-    /// its request, half-close, and still read the whole reply.
-    Propagate,
 }
 
 /// Splice `a_recv -> b_send` and `b_recv -> a_send` concurrently. When a

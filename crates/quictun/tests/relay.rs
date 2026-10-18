@@ -286,6 +286,39 @@ async fn with_propagated_half_close_a_consumer_reads_the_reply_after_its_fin() {
     .expect("deadline");
 }
 
+/// TCP clients that connect and send nothing hold only handshake permits,
+/// never connection slots, so they cannot lock out tunnels and consumers.
+#[tokio::test]
+async fn stalled_tcp_clients_take_no_connection_slot() {
+    timeout(DEADLINE, async {
+        let relay = Relay::start_with(Protocol::quictun(), |config| {
+            // One slot for the tunnel, one for the consumer.
+            config.max_conns = 2;
+            config.tcp_ingress = Some(TcpIngress {
+                listen: "127.0.0.1:0".parse().expect("addr"),
+                domain: None,
+            });
+        });
+        let ingress = relay.tcp.expect("tcp ingress");
+        let mut stalled = Vec::new();
+        for _ in 0..3 {
+            stalled.push(tokio::net::TcpStream::connect(ingress).await.expect("tcp"));
+        }
+        let token = relay.enroll("echo");
+        let tunnel = Tunnel::open(&relay.addr, &Protocol::quictun(), &token)
+            .await
+            .expect("tunnel");
+        let _service = serve_echo(tunnel);
+        assert_eq!(
+            round_trip(&relay.addr, "echo", b"quictun/1", b"still served").await,
+            b"STILL SERVED"
+        );
+        drop(stalled);
+    })
+    .await
+    .expect("deadline");
+}
+
 /// A local TCP service that reads each connection to its end, then answers
 /// with how much it got.
 async fn counting_target() -> SocketAddr {

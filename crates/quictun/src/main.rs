@@ -52,6 +52,41 @@ log level (default info).
 /// Flags that take no value.
 const SWITCHES: &[&str] = &["passthrough"];
 
+/// The flags each command takes; anything else is a usage error, so a
+/// misspelled flag never runs silently with its default.
+fn flags_of(command: &str) -> Option<&'static [&'static str]> {
+    Some(match command {
+        "relay" => &[
+            "listen",
+            "tcp-listen",
+            "domain",
+            "max-conns",
+            "max-conns-per-route",
+            "state",
+        ],
+        "pair" => &["route", "state"],
+        "expose" => &[
+            "relay",
+            "relay-pin",
+            "token-file",
+            "to",
+            "cert",
+            "key",
+            "passthrough",
+            "state",
+        ],
+        "connect" => &[
+            "relay",
+            "relay-pin",
+            "route",
+            "listen",
+            "service-pin",
+            "passthrough",
+        ],
+        _ => return None,
+    })
+}
+
 fn main() -> ExitCode {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -59,16 +94,22 @@ fn main() -> ExitCode {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
-    let mut raw = std::env::args().skip(1);
-    let Some(command) = raw.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    if matches!(command.as_str(), "help" | "-h" | "--help") {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "help" | "-h" | "--help"))
+    {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let args = match Args::parse(raw) {
+    let Some((command, rest)) = raw.split_first() else {
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let Some(allowed) = flags_of(command) else {
+        return usage_error(&format!("unknown command {command:?}"));
+    };
+    let args = match Args::parse(rest.iter().cloned(), allowed) {
         Ok(parsed) => parsed,
         Err(err) => return usage_error(&err),
     };
@@ -84,8 +125,7 @@ fn main() -> ExitCode {
             "relay" => run_relay(&args).await,
             "pair" => run_pair(&args),
             "expose" => run_expose(&args).await,
-            "connect" => run_connect(&args).await,
-            other => Err(Failure::Usage(format!("unknown command {other:?}"))),
+            _ => run_connect(&args).await,
         }
     });
     match outcome {
@@ -123,7 +163,7 @@ struct Args {
 }
 
 impl Args {
-    fn parse(argv: impl Iterator<Item = String>) -> Result<Self, String> {
+    fn parse(argv: impl Iterator<Item = String>, allowed: &[&str]) -> Result<Self, String> {
         let mut values = BTreeMap::new();
         let mut switches = BTreeSet::new();
         let mut argv = argv.peekable();
@@ -131,6 +171,9 @@ impl Args {
             let Some(flag) = arg.strip_prefix("--") else {
                 return Err(format!("unexpected argument {arg:?}"));
             };
+            if !allowed.contains(&flag) {
+                return Err(format!("unknown flag --{flag}"));
+            }
             if SWITCHES.contains(&flag) {
                 switches.insert(flag.to_owned());
                 continue;
@@ -163,6 +206,15 @@ impl Args {
             .transpose()
     }
 
+    /// A count that must be at least one: zero would refuse everything, or
+    /// be silently raised.
+    fn positive(&self, flag: &str) -> Result<Option<usize>, Failure> {
+        match self.parsed::<usize>(flag)? {
+            Some(0) => Err(Failure::Usage(format!("--{flag} must be at least 1"))),
+            count => Ok(count),
+        }
+    }
+
     fn switch(&self, flag: &str) -> bool {
         self.switches.contains(flag)
     }
@@ -178,10 +230,13 @@ async fn run_relay(args: &Args) -> Result<(), Failure> {
         .parsed::<SocketAddr>("listen")?
         .ok_or_else(|| Failure::Usage("--listen is required".to_owned()))?;
     let mut config = RelayConfig::in_dir(listen, &args.state_dir(), Protocol::quictun());
-    if let Some(max_conns) = args.parsed("max-conns")? {
+    if let Some(max_conns) = args.positive("max-conns")? {
         config.max_conns = max_conns;
     }
-    config.max_conns_per_route = args.parsed("max-conns-per-route")?;
+    config.max_conns_per_route = args.positive("max-conns-per-route")?;
+    if args.optional("domain").is_some() && args.optional("tcp-listen").is_none() {
+        return Err(Failure::Usage("--domain needs --tcp-listen".to_owned()));
+    }
     config.tcp_ingress = args
         .parsed::<SocketAddr>("tcp-listen")?
         .map(|listen| TcpIngress {
@@ -204,6 +259,8 @@ async fn run_relay(args: &Args) -> Result<(), Failure> {
 
 fn run_pair(args: &Args) -> Result<(), Failure> {
     let route = args.required("route")?;
+    // Before anything is written: a bad name must leave no state behind.
+    relay::validate_route_name(route).map_err(run("pair"))?;
     let config = RelayConfig::in_dir(
         SocketAddr::from(([0, 0, 0, 0], 0)),
         &args.state_dir(),
@@ -224,10 +281,10 @@ fn run_pair(args: &Args) -> Result<(), Failure> {
 }
 
 async fn run_expose(args: &Args) -> Result<(), Failure> {
+    let tls = service_tls(args)?;
     let relay = relay_addr(args).await?;
     let token = read_token(Path::new(args.required("token-file")?))?;
     let target = resolve(args.required("to")?).await?;
-    let tls = service_tls(args)?;
     forward::expose(&relay, &Protocol::quictun(), &token, target, tls)
         .await
         .map_err(run("the relay refused the token"))
@@ -262,9 +319,8 @@ async fn run_connect(args: &Args) -> Result<(), Failure> {
         alpn,
         service_pin,
     };
-    forward::connect(listener, route)
-        .await
-        .map_err(run("accept"))
+    forward::connect(listener, route).await;
+    Ok(())
 }
 
 /// The relay's address and pin, from `--relay` and `--relay-pin`.
@@ -298,6 +354,11 @@ fn read_token(path: &Path) -> Result<Vec<u8>, Failure> {
 /// The service end's TLS, printing the pin `connect` needs.
 fn service_tls(args: &Args) -> Result<ServiceTls, Failure> {
     if args.switch("passthrough") {
+        if args.optional("cert").is_some() || args.optional("key").is_some() {
+            return Err(Failure::Usage(
+                "--passthrough forwards TLS untouched; it takes no --cert or --key".to_owned(),
+            ));
+        }
         return Ok(ServiceTls::Passthrough);
     }
     let (cert, key) = match (args.optional("cert"), args.optional("key")) {
@@ -321,19 +382,57 @@ fn service_tls(args: &Args) -> Result<ServiceTls, Failure> {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> Result<Args, String> {
-        Args::parse(args.iter().map(|arg| (*arg).to_owned()))
+    fn parse(command: &str, args: &[&str]) -> Result<Args, String> {
+        let allowed = flags_of(command).expect("known command");
+        Args::parse(args.iter().map(|arg| (*arg).to_owned()), allowed)
     }
 
     #[test]
     fn flags_take_values_and_switches_do_not() {
-        let args = parse(&["--route", "laptop", "--passthrough", "--to", "127.0.0.1:80"]).unwrap();
-        assert_eq!(args.optional("route"), Some("laptop"));
+        let args = parse(
+            "expose",
+            &["--relay", "r:1", "--passthrough", "--to", "127.0.0.1:80"],
+        )
+        .unwrap();
+        assert_eq!(args.optional("relay"), Some("r:1"));
         assert_eq!(args.optional("to"), Some("127.0.0.1:80"));
         assert!(args.switch("passthrough"));
-        assert!(parse(&["--route"]).is_err(), "missing value");
-        assert!(parse(&["--route", "--to", "x"]).is_err(), "flag as value");
-        assert!(parse(&["laptop"]).is_err(), "positional");
-        assert!(parse(&["--route", "a", "--route", "b"]).is_err(), "twice");
+        assert!(parse("pair", &["--route"]).is_err(), "missing value");
+        assert!(
+            parse("expose", &["--relay", "--to", "x"]).is_err(),
+            "flag as value"
+        );
+        assert!(parse("pair", &["laptop"]).is_err(), "positional");
+        assert!(
+            parse("pair", &["--route", "a", "--route", "b"]).is_err(),
+            "twice"
+        );
+    }
+
+    /// A flag another command takes, or a misspelling, is refused rather
+    /// than silently ignored.
+    #[test]
+    fn each_command_takes_only_its_own_flags() {
+        assert!(
+            parse("relay", &["--max-conns-per-rout", "4"]).is_err(),
+            "typo"
+        );
+        assert!(
+            parse("pair", &["--listen", "0.0.0.0:1"]).is_err(),
+            "relay's flag"
+        );
+        assert!(
+            parse("connect", &["--state", "/tmp"]).is_err(),
+            "connect keeps no state"
+        );
+        assert!(flags_of("frobnicate").is_none());
+    }
+
+    #[test]
+    fn counts_must_be_positive() {
+        let zero = parse("relay", &["--max-conns", "0"]).unwrap();
+        assert!(zero.positive("max-conns").is_err());
+        let four = parse("relay", &["--max-conns", "4"]).unwrap();
+        assert!(matches!(four.positive("max-conns"), Ok(Some(4))));
     }
 }

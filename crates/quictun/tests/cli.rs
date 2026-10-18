@@ -17,14 +17,29 @@ use tokio::time::timeout;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
-fn quictun(state: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_quictun"));
+/// The `quictun` binary under test, from the runner's environment
+/// (`CARGO_BIN_EXE_*` under `cargo test`, `NEXTEST_BIN_EXE_*` under nextest)
+/// rather than `env!`, which would key this test to one checkout.
+fn quictun_bin() -> std::ffi::OsString {
+    ["CARGO_BIN_EXE_quictun", "NEXTEST_BIN_EXE_quictun"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .expect("run under `cargo test` or `cargo nextest`, which export the quictun binary path")
+}
+
+/// The binary with `args`, then `--state` when given. Without one, the
+/// default state directory points nowhere writable, so a test can never
+/// touch the real one.
+fn quictun(state: Option<&Path>, args: &[&str]) -> Command {
+    let mut command = Command::new(quictun_bin());
     command
         .env("RUST_LOG", "warn")
+        .env("XDG_STATE_HOME", "/nonexistent/quictun-test-state")
         .args(args)
-        .arg("--state")
-        .arg(state)
         .kill_on_drop(true);
+    if let Some(state) = state {
+        command.arg("--state").arg(state);
+    }
     command
 }
 
@@ -97,7 +112,7 @@ async fn pair_relay_expose_and_connect_carry_tcp_end_to_end() {
         let relay_state = tempfile::tempdir().expect("relay state");
         let service_state = tempfile::tempdir().expect("service state");
 
-        let pair = quictun(relay_state.path(), &["pair", "--route", "laptop"]);
+        let pair = quictun(Some(relay_state.path()), &["pair", "--route", "laptop"]);
         let (_pair, token, mut pair_out) = spawn_reading(pair, "token").await;
         let relay_pin = read_value(&mut pair_out, "relay pin").await;
         let token_file = service_state.path().join("token");
@@ -105,14 +120,17 @@ async fn pair_relay_expose_and_connect_carry_tcp_end_to_end() {
         std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600))
             .expect("chmod");
 
-        let relay = quictun(relay_state.path(), &["relay", "--listen", "127.0.0.1:0"]);
+        let relay = quictun(
+            Some(relay_state.path()),
+            &["relay", "--listen", "127.0.0.1:0"],
+        );
         let (_relay, relay_addr, mut relay_out) = spawn_reading(relay, "relay").await;
         assert_eq!(read_value(&mut relay_out, "relay pin").await, relay_pin);
 
         let target = counting_target().await.to_string();
         let token_path = token_file.to_str().expect("utf-8 path");
         let expose = quictun(
-            service_state.path(),
+            Some(service_state.path()),
             &[
                 "expose",
                 "--relay",
@@ -128,7 +146,7 @@ async fn pair_relay_expose_and_connect_carry_tcp_end_to_end() {
         let (_expose, service_pin, _expose_out) = spawn_reading(expose, "service pin").await;
 
         let connect = quictun(
-            service_state.path(),
+            None,
             &[
                 "connect",
                 "--relay",
@@ -167,6 +185,41 @@ async fn bad_invocations_fail_and_name_the_problem() {
         (&["frobnicate"][..], "unknown command"),
         (
             &[
+                "relay",
+                "--listen",
+                "127.0.0.1:0",
+                "--max-conns-per-rout",
+                "4",
+            ][..],
+            "unknown flag",
+        ),
+        (
+            &["relay", "--listen", "127.0.0.1:0", "--domain", "x.dev"][..],
+            "--domain needs --tcp-listen",
+        ),
+        (
+            &["relay", "--listen", "127.0.0.1:0", "--max-conns", "0"][..],
+            "at least 1",
+        ),
+        (
+            &[
+                "expose",
+                "--relay",
+                "127.0.0.1:1",
+                "--relay-pin",
+                "x",
+                "--token-file",
+                "/nonexistent",
+                "--to",
+                "127.0.0.1:1",
+                "--passthrough",
+                "--cert",
+                "c",
+            ][..],
+            "takes no --cert",
+        ),
+        (
+            &[
                 "connect",
                 "--relay",
                 "127.0.0.1:1",
@@ -180,9 +233,27 @@ async fn bad_invocations_fail_and_name_the_problem() {
             "--service-pin",
         ),
     ] {
-        let output = quictun(state.path(), args).output().await.expect("run");
+        let state = (args[0] != "connect").then(|| state.path());
+        let output = quictun(state, args).output().await.expect("run");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{args:?} succeeded");
         assert!(stderr.contains(needle), "{args:?}: {stderr}");
     }
+    assert!(
+        std::fs::read_dir(state.path())
+            .expect("state")
+            .next()
+            .is_none(),
+        "a refused invocation writes no state"
+    );
+}
+
+#[tokio::test]
+async fn help_works_after_a_command_too() {
+    let output = quictun(None, &["relay", "--help"])
+        .output()
+        .await
+        .expect("run");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("USAGE"));
 }

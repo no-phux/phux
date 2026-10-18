@@ -49,20 +49,34 @@ pub mod pin;
 pub mod relay;
 #[cfg(feature = "provision")]
 pub mod secret_file;
+#[cfg(feature = "relay")]
 mod splice;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tunnel;
 pub mod window;
 
-pub use splice::HalfClose;
 pub use tunnel::CidTag;
+pub use window::{SendWindow, TrackedSend};
 
 /// Compiles the README's example, so the published front page cannot rot.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
-pub use window::{SendWindow, TrackedSend};
+
+/// What a bridge does when one direction reaches end of stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HalfClose {
+    /// The finished direction's FIN is forwarded and the whole bridge ends:
+    /// the other direction stops forwarding. For a protocol whose peers
+    /// never half-close, this frees a bridge as soon as either side is done.
+    #[default]
+    EndsBridge,
+    /// The finished direction's FIN is forwarded and the other direction
+    /// keeps flowing until it finishes too, as TCP does. A client may send
+    /// its request, half-close, and still read the whole reply.
+    Propagate,
+}
 
 /// What makes one relay deployment its own: the ALPN a service's tunnel
 /// offers, the ALPNs a consumer may offer, and the tag a tunnel's initial
