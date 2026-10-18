@@ -51,6 +51,7 @@ jobs:
         with:
           ref: ${{ steps.select.outputs.sha }}
           fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
 
       - name: Decide which products to build
         id: decide
@@ -71,16 +72,17 @@ jobs:
             if [ -z "$previous" ] || ! git cat-file -e "${previous}^{commit}" 2>/dev/null; then
               echo "$product: no usable previous commit" >&2; echo true; return
             fi
-            outputs="$(git diff --name-only "$previous" "$SHA" -- | python3 scripts/ci/classify-changes.py)"
+            outputs="$(bun tools/main.ts classify --since "$previous" --until "$SHA")"
             for key in "$@"; do
               if grep -qx "${key}=true" <<<"$outputs"; then
                 echo "$product: $key changed" >&2; echo true; return
               fi
             done
-            # Desktop is its own workspace, outside the root classifier.
+            # The release workflow is compile-free to the classifier but
+            # changes what a desktop release ships.
             if [ "$product" = desktop ] && ! git diff --quiet "$previous" "$SHA" -- \
-                clients/desktop scripts/install.sh just/desktop.just .github/workflows/desktop-release.yml; then
-              echo "$product: desktop inputs changed" >&2; echo true; return
+                .github/workflows/desktop-release.yml; then
+              echo "$product: desktop release workflow changed" >&2; echo true; return
             fi
             echo "$product: unchanged" >&2; echo false
           }
