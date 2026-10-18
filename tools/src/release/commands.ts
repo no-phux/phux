@@ -2,20 +2,29 @@ import { parseArgs } from "node:util";
 import { required, UsageError, type Command } from "../lib/command.ts";
 import { writeSection } from "./changelog-section.ts";
 import { main as dispatchIntegrations } from "./dispatch-integrations.ts";
+import { main as nextPlan } from "./next-plan.ts";
 import { main as publishPlan } from "./publish-plan.ts";
 import { releaseDrift } from "./release-drift.ts";
 import { releaseManifest } from "./release-manifest.ts";
-import { run as validationReceipt } from "./validation-receipt.ts";
 
 const text = { type: "string" } as const;
 
 export const commands: Record<string, Command> = {
   "publish-plan": {
     summary:
-      "Choose the drafts publish.yml ships and delete superseded ones (env in, outputs out).",
+      "Choose the drafts release.yml ships and delete superseded ones (env in, outputs out).",
     run: () => publishPlan(),
   },
   "release-manifest": releaseManifest,
+  "next-plan": {
+    summary: "Decide which products next.yml rebuilds for a green main SHA (outputs).",
+    usage: "SHA",
+    run(args) {
+      const [sha, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;
+      if (sha === undefined || extra.length > 0) throw new UsageError("expected one SHA");
+      return nextPlan(sha);
+    },
+  },
   "dispatch-integration-publishes": {
     summary: "Dispatch agent-integration-release.yml for each of TAGS and wait for it.",
     run: () => dispatchIntegrations(),
@@ -30,18 +39,6 @@ export const commands: Record<string, Command> = {
       const tag = required(values.tag, "--tag");
       const ref = values.ref ?? `refs/tags/${tag}`;
       return writeSection(tag, values.changelog ?? "CHANGELOG.md", ref, values.output);
-    },
-  },
-  "validation-receipt": {
-    summary: "Write, or on a push find, a receipt of validation for this exact tree and workflow.",
-    usage: "check|write WORKFLOW",
-    async run(args) {
-      const [mode, workflow, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;
-      if ((mode !== "check" && mode !== "write") || workflow === undefined || extra.length > 0) {
-        throw new UsageError("expected a mode (check or write) and a workflow path");
-      }
-      await validationReceipt(mode, workflow);
-      return 0;
     },
   },
   "release-drift": {

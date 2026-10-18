@@ -1,13 +1,13 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-17
+last-reviewed: 2026-10-18
 ---
 
 # Contributing to phux
 
 **TL;DR.** Test the area you change and expand coverage for shared code;
-use `just ci-full` for the full root PR bar. Update `docs/spec/` +
+`just check` runs every CI lane your diff needs. Update `docs/spec/` +
 CHANGELOG for wire changes; write an ADR for any decision that closes
 off design space; no homegrown crypto, scripting language, plugin
 host, tmux-style copy-mode clone, or template DSL. Doc conventions and the
@@ -49,19 +49,17 @@ the repository.
 
 ## Bar for any change
 
-A PR must pass its applicable CI lanes. During development, run the scoped
-checks in the setup guide. For changes spanning the root Rust/CLI surface:
+A PR must pass the CI lanes its diff routes to. Iterate with the scoped
+checks in the setup guide, then run the bar before you push:
 
 ```sh
-just ci        # full root deterministic/unit gate set
-just ci-full   # ci + the real-server lanes; the complete PR bar
+just check --dry-run   # the lanes your diff needs, against origin/main
+just check             # run them, through the recipes CI runs
 ```
 
-Use scoped gates while iterating, then expand for shared code and affected
-consumers. `just ci-full` adds real-server e2e and the agent example smoke; run
-it before pushing anything that touches the CLI surface, server lifecycle, or
-the example scripts. Desktop and browser builds have their own additional
-checks; the root target does not build those clients.
+`just check` uses `ci.yml`'s own routing (`tools/src/routing/`), so a
+browser-only change runs the browser lane and a docs change runs the guards.
+[docs/CI.md](./docs/CI.md) maps lanes to recipes.
 
 ### Build only what you are iterating on
 
@@ -79,11 +77,10 @@ The default executable still supports browser WebTransport. Lean builds opt out
 via `phux --no-default-features` at Cargo build time; workspace tests deliberately
 enable the complete server transport surface. The TUI is its own crate
 (`phux-tui`, ADR-0100), so a headless consumer such as `phux-mcp` links
-`phux-client` and cannot reach the chrome. `just build-features-check`
-checks these resolved dependency boundaries without compiling.
-`just build-features-compile` separately type-checks the lean executable,
-headless client/MCP targets, and `phux-tui --no-default-features` so workspace
-feature unification cannot hide errors. Both checks run in `just ci` and CI.
+`phux-client` and cannot reach the chrome. `just rust-lint` checks these
+resolved dependency boundaries without compiling, then type-checks the lean
+executable, headless client/MCP targets, and `phux-tui --no-default-features`
+so workspace feature unification cannot hide errors.
 
 Use `cargo check -p <crate>` for a targeted type check. For repeated workspace
 test runs, keep the Cargo build selection as `--workspace` and select tests with
@@ -96,43 +93,14 @@ For timing evidence, append `--timings` to a Cargo build and inspect
 directory private; mbx shares compiled work between them through its store,
 not through a shared `target/` ([setup](./docs/SETUP.md#build-cache-mbx)).
 
-### Gate-by-gate: local vs CI
+### Local and CI run the same recipes
 
-The local bar is a **superset** of `.github/workflows/ci.yml`: a gate CI runs
-and `just ci` does not is a gate you discover by pushing. The workflow calls
-the `just/*.just` recipes instead of re-typing cargo flags, so flags live in
-one place; prefer adding a recipe to naming a bare `cargo` command in CI.
-Product recipes stay out of the root `justfile` so CI can route by module.
-
-| Gate | CI (`ci.yml`) | Local |
-|---|---|---|
-| formatting | `just fmt-check` | same recipe |
-| clippy | `just lint` | same recipe |
-| rustdoc | `just doc` | same recipe |
-| dependency hygiene | `just deny` | same recipe |
-| production feature boundaries | `just build-features-check` | same recipe |
-| opt-out feature compilation | `just build-features-compile` | same recipe |
-| doc system | `just docs-check` | same recipe |
-| generated glyph table | `just font-check` | same recipe |
-| e2e lane coverage | `just e2e-lane-check` | same recipe |
-| toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
-| unit tests | `just test-archive` in the `test build` job compiles once; the `test` and `test (integration)` jobs run `NEXTEST_PROFILE=ci just test` from that archive (`PHUX_TEST_ARCHIVE`), split by `PHUX_UNIT_PART=lib`/`integration` (default features plus the empty `phux-server/measure`; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test` (both halves); `just test-cargo` if nextest is unavailable |
-| workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
-| agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
-| Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
-| libghostty-vt prebuilt pin | `scripts/check-ghostty-pin.sh` | `just ghostty-pin-check` |
-| install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
-| build-cache portability | `just cache-portable-check` | same recipe |
-| embedded skill contract | `just skill-contract` | same |
-| fast e2e + perf gates | `just e2e` (`e2e` job, from the `test build` archive) | `just e2e`, via `just ci-full` |
-| UniFFI binding | `just binding-uniffi-test` (`uniffi` job) | same, via `just ci` |
-| instruction counts | `perf-icount` job in `ci.yml` (`just perf-icount`) | `just perf-icount` inside `nix develop` on x86_64; see [Performance CI](./docs/performance-ci.md) |
-| agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
-
-Unit and e2e tests share the default feature set; optional profiling
-surfaces compile under `just lint` and `just doc` with `--all-features`.
-`just e2e` stays out of `just ci` because it spawns real PTY-backed servers
-with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
+Every `ci.yml` lane job runs just recipes, never re-typed cargo flags, and
+`just check` runs those recipes locally. Add a gate by adding it to a lane's
+recipe, not to the workflow. Product recipes stay out of the root `justfile`
+so the classifier can route by module. Unit and e2e tests share the default
+feature set; optional profiling surfaces compile under `just lint` and
+`just doc` with `--all-features`.
 
 Real-PTY test harnesses set `PHUX_NO_UPDATE_CHECK=1` in the child environment,
 after scrubbing ambient variables or calling `env_clear()`. Private XDG state
@@ -142,15 +110,12 @@ children, not the developer's release settings.
 
 ### Gates that are CI-only or local-only
 
-Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
-`just native-smoke`). The native desktop crate runs in `desktop-test.yml`
-(macOS; reproduce with `just desktop-lint desktop-test`). The Zig Cockpit is [archived](./docs/consumers/cockpit.md).
-The following have
-no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
-mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
-`just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
-workflow (run `just stress` locally; 2-core runners starve the current-thread
-runtime), commit-message linting, and the release/publish lanes.
+CI-only: `rust icount` (x86_64 valgrind; `just perf-icount` inside
+`nix develop` on x86_64 reproduces it), `native setup` (a clean machine),
+caching, commit-message linting, and the release lanes. Local-only:
+`just stress` (two-core runners starve the current-thread runtime),
+`just mutation-rust`, and real-GPU desktop qualification. The Zig Cockpit is
+[archived](./docs/consumers/cockpit.md).
 
 ## Additional expectations
 

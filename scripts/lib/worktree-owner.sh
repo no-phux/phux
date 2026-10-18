@@ -21,7 +21,7 @@
 #     with a notice. `just worktree-release` drops the caller's own lease when
 #     a session hands the worktree on; PHUX_WORKTREE_TAKEOVER=1 takes over a
 #     live one, for a deliberate handoff the previous session did not release.
-#   - The claim records HEAD. The long runs (`ci`, `test`, `e2e`) re-check it
+#   - The claim records HEAD. The long runs (`test`, `e2e`) re-check it
 #     after success through scripts/worktree-verify.sh and fail (exit 3) when
 #     HEAD moved or the lease changed hands mid-run, because their green no
 #     longer describes one commit. This is detection, not prevention: a

@@ -13,7 +13,7 @@
 # FAILURE POLICY: a reachable download.rs without an entry for a target, or a
 # listed archive the release does not serve, is a hard failure. An
 # unreachable one (offline checkout, GitHub outage, no curl) is a warning and
-# exit 0, as in check-zig-pins.sh.
+# exit 0.
 set -euo pipefail
 # shellcheck source=scripts/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"

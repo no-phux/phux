@@ -9,7 +9,7 @@ last-reviewed: 2026-10-13
 **TL;DR.** Pick Mise or Nix — both first-class — then run the same commands.
 `mise install` manages compilers and gate tools on your OS packages; `nix
 develop` provisions every lane. After that: `just doctor`, then a scoped check
-or `just ci`. Just is the repo command layer, not a third environment. Browser
+or `just check`. Just is the repo command layer, not a third environment. Browser
 work uses the committed engine binary.
 
 ## Choosing an environment
@@ -19,7 +19,7 @@ Two are supported. They are not tiers of the same thing.
 | | Nix (`flake.nix`) | Mise (`mise.toml`) |
 |---|---|---|
 | Provides | Compilers, every root gate tool, browser toolchains, observability tools, pinned system libraries | Compilers and runtimes, plus the root gate tools |
-| Runs | Everything, including `just ci-full` and the browser lanes | `just ci`, once `cargo-nextest` is installed separately |
+| Runs | Every `just check` lane, including the browser lane | Every root lane, once `cargo-nextest` is installed separately |
 | Costs | A dev-shell build on first use | Seconds; per-tool downloads |
 | Choose it when | You want one command to reproduce any lane, or you are touching the browser client or release infrastructure | You already run a working native toolchain and want the pins without adopting Nix |
 
@@ -33,8 +33,7 @@ Then the same commands in either environment:
 
 ```sh
 just doctor             # default scope: native; also core / docs / integrations / web / ci
-just ci                 # deterministic/unit bar
-just ci-full            # that plus real-server e2e and agent smoke; the PR bar
+just check              # the CI lanes your diff needs; the PR bar
 ```
 
 `just` is how you run this repository after the tools are on PATH. It is not
@@ -60,7 +59,7 @@ If you already activate Mise in your shell, you do not need direnv. `rustc` and
 `zig` from mise shims are the Mise path.
 
 **They are held together, not merely documented as similar.**
-`just toolchain-check` is a `just ci` gate that reads `mise.toml`, `flake.nix`,
+`just toolchain-check` is a guards gate that reads `mise.toml`, `flake.nix`,
 `rust-toolchain.toml`, `.config/zig-toolchain.json`, the Cargo manifests, the
 workflows, and the container builders and fails if any of them names a
 different Rust, Zig, Node, Bun, usage CLI, or mbx. `just toolchain-parity` is the
@@ -198,12 +197,12 @@ the shell, Cargo, and npm commands below also work directly.
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | GPUI desktop development | Apple-silicon Mac with Xcode/Metal, or x86-64/ARM64 Linux with desktop libraries; native Rust/Zig, Bun, Node | `just doctor desktop`, then `just desktop-app` |
-| Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
+| The PR bar | Native prerequisites plus gate tools | `just doctor ci`, then `just check` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
 availability/versions and prints remedies; it does not install, compile, or
 claim your change passes tests. `docs` and `integrations` do not invoke Rust or
-Zig. The scripts work with macOS's Bash 3.2; the workflow gate additionally uses
+Zig. The scripts work with macOS's Bash 3.2; `just guards` additionally uses
 Bun (the `tools/` package), Node, and Python for the demo setup test.
 
 ### Where the pins actually live
@@ -265,7 +264,7 @@ ships, and every link in the shell would fail against it.
 
 ### Native CI (no Mise, no Nix)
 
-Hosted `native-setup.yml` has neither environment. It uses the rustup and Zig
+CI's `native setup` lane has neither environment. It uses the rustup and Zig
 helpers, which read the same pins:
 
 ```sh
@@ -403,18 +402,18 @@ on `main`. Use the [archive recovery guide](./consumers/cockpit.md) to open
 the preserved branch or plan a bot-led reintegration. The Zig pin remains
 required by libghostty, independently of that archived app.
 
-## Full root validation
+## The PR bar
 
 Add `cargo-nextest` to the Mise tools (Nix already has it). Then:
 
 ```sh
 just doctor ci
-just ci-full
+just check
 ```
 
-The full gate uses network services for npm auditing and advisory data;
-availability failures are not source-code verdicts. See
-[Contributing](../CONTRIBUTING.md#gate-by-gate-local-vs-ci) for the gate map.
+`just check` routes your diff the way CI does and runs those lanes. The gates
+use network services for npm auditing and advisory data; availability
+failures are not source-code verdicts. [CI](./CI.md) maps lanes to recipes.
 
 Every tool can be present and still not link: a linker that predates the SDK
 it is pointed at rejects its stub files, and an `SDKROOT` or `DEVELOPER_DIR`
@@ -426,8 +425,8 @@ second rather than part-way through a cold build.
 
 Start with the smallest relevant gate. Expand to downstream crates and clients
 when changing shared APIs, protocol, FFI, Cargo inputs, or build scripts.
-Formatting a doc does not require `just ci-full`; changing server lifecycle
-does require real-server coverage. CLI changes must regenerate reference docs
+`just check` sizes the run to the diff: a doc edit runs the guards, and a
+server lifecycle change runs real-server e2e. CLI changes must regenerate reference docs
 with `just docs-gen`. Report exactly which commands ran; a scoped pass is not
 a full-workspace pass.
 

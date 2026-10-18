@@ -1,16 +1,17 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-17
+last-reviewed: 2026-10-18
 ---
 
 # Releasing
 
-**TL;DR.** Release Please cuts versions, tags, and private drafts. `publish`
-ships every draft whose tagged commit has a green `ci`, then rebuilds
-`channels/stable.json`. `next-release` ships green `main` to the moving
-`next` prerelease and `channels/next.json`. One dispatch of `publish`
-finishes a stuck draft. `phux-protocol` on crates.io stays a human dispatch.
+**TL;DR.** After every green `main` ci, `release.yml` runs Release Please
+(versions, tags, private drafts), then ships every draft whose tagged commit
+has a green `ci` and rebuilds `channels/stable.json`. `next.yml` ships green
+`main` to the moving `next` prerelease and `channels/next.json`. One dispatch
+of `release.yml` finishes a stuck draft. `phux-protocol` on crates.io is
+published by hand.
 The decisions are [ADR-0176](./adr/0176-the-release-pipeline.md). CI lanes
 are in [CI](./CI.md).
 
@@ -23,8 +24,8 @@ are in [CI](./CI.md).
 | Mobile FFI | on `vX.Y.Z` | `PhuxFFI-*`, `PhuxMobileFFI-*` zips + `.sha256` + `.provenance` | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` | `<component>-vX.Y.Z` | npm with provenance + release tarball | `agent-integration-release.yml` |
 | Claude and Grok plugins | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | release tarball; repository marketplace | `agent-integration-release.yml` |
-| `phux-protocol` | `vX.Y.Z` | crates.io | `publish-crate.yml`, by hand |
-| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, desktop ZIP/Linux tarballs at `next.<sha>`, signed sidecars | `next-release.yml` |
+| `phux-protocol` | `vX.Y.Z` | crates.io | `just publish-protocol`, by hand |
+| Next | `next` | `phux-next.<sha>-<target>.tar.gz`, desktop ZIP/Linux tarballs at `next.<sha>`, signed sidecars | `next.yml` |
 | Manifests | `channels` | `stable.json`, `next.json` | `bun tools/main.ts release-manifest` |
 
 CLI targets are `aarch64-apple-darwin` (`xcode-27`), `x86_64-unknown-linux-gnu`
@@ -46,13 +47,13 @@ CLI releases are GitHub's Latest. The Homebrew tap
 | You want to | Do this |
 |---|---|
 | Ship a release | Let the release PR auto-merge once `ci` is green, or mark it ready and squash-merge it |
-| Finish or rebuild a draft | `gh workflow run publish.yml -f tag=<tag>`; an empty tag reconciles every ready draft |
-| Rebuild next | `gh workflow run next-release.yml` (optionally `-f sha=<sha>`) |
+| Finish or rebuild a draft | `gh workflow run release.yml -f tag=<tag>`; an empty tag reconciles every ready draft |
+| Rebuild next | `gh workflow run next.yml` (optionally `-f sha=<sha>`) |
 | See whether anything is stuck | `just release-drift` |
-| Publish `phux-protocol` | `gh workflow run publish-crate.yml -f tag=vX.Y.Z -f dry_run=false` |
+| Publish `phux-protocol` | `just publish-protocol-dry`, then `just publish-protocol` from the tag |
 | Revalidate an integration tag | `gh workflow run agent-integration-release.yml -f tag=<tag> -f dry_run=true` |
-| Re-attach mobile FFI | `gh workflow run ffi-xcframework.yml -f tag=vX.Y.Z` |
-| Report a hand-recovered release to Linear | `gh workflow run linear-release.yml -f tag=vX.Y.Z` |
+| Re-attach mobile FFI | `gh workflow run ffi-xcframework.yml -f tag=vX.Y.Z` and `ffi-android.yml` |
+| Retry a failed step (Linear, a dispatch) | re-run the failed job of that `release` run |
 
 ## Stable
 
@@ -60,29 +61,29 @@ CLI releases are GitHub's Latest. The Homebrew tap
    for the root and one for Desktop. Each carries the version bump,
    changelog, and synced lockfiles.
 2. The merged PR becomes a tag and a private draft.
-3. `publish` (on `ci` or Release Please completion, daily at 15:05 UTC, or by
+3. `release.yml` (after each green `main` ci, daily at 15:05 UTC, or by
    dispatch) picks every draft whose tagged commit has a green `ci`. It
    deletes drafts older than a published version of the same component.
 4. Each lane builds from the tag with the harness from `main`, attaches every
    asset, then flips the draft public. A CLI release must have all three
    targets, or it stays a draft.
-5. `publish` rebuilds `stable.json` from what is now published, and its
-   scheduled run checks for drift.
-6. Once a CLI release is public, `publish` dispatches `ffi-xcframework` and
-   `ffi-android` to attach the mobile FFI, then `website-dispatch` so phux.sh
-   picks up the new version. The mobile builds run outside `publish`'s
-   single concurrency slot, so the next draft never waits on them.
+5. It rebuilds `stable.json` from what is now published, and its scheduled
+   run checks for drift.
+6. Once a CLI release is public, it dispatches `ffi-xcframework` and
+   `ffi-android` to attach the mobile FFI, tells phux.sh to rebuild, and
+   reports the release to Linear. The mobile builds run outside the release
+   workflow's single concurrency slot, so the next draft never waits on them.
 
 The build source is the tag, and the build harness is `main`, because
 `workflow_run` and `schedule` run the default branch. So a release
-infrastructure fix applies to an older tag on the next `publish` run.
-`bun tools/main.ts release-orchestration-check` pins this wiring.
+infrastructure fix applies to an older tag on the next run.
+`tools/src/cargo/release-orchestration.test.ts` pins this wiring.
 
 ## Next
 
-`next-release` runs after `ci` succeeds on a push to `main`, one run at a
-time; a newer commit queues. Each product rebuilds only when its inputs
-changed since the commit `next.json` names. After a build lands,
+`next.yml` runs after `ci` succeeds on a push to `main`, one run at a time;
+a newer commit queues. Each product rebuilds only when its inputs changed
+since the commit `next.json` names (`tools/src/release/next-plan.ts`). After a build lands,
 `release-manifest next` uploads the assets, rewrites that product's entry
 in `next.json`, writes its bridge record (`channel.json` or
 `desktop-channel.json`), and prunes that product's assets to the current and
@@ -96,8 +97,7 @@ Every CLI and Desktop sidecar is signed with minisign
 `PHUX_MINISIGN_SECRET_KEY` repository secret, writes `<asset>.sha256.minisig`,
 and fails unless the signature verifies against `RELEASE_KEYS` in
 `scripts/install.sh`. It runs in `release.yml`, in the Linux `sign` job of
-`desktop-release.yml` (which publishes the Desktop draft), and in
-`next-release.yml`. A missing secret fails the release instead of shipping it
+`desktop-release.yml` (which publishes the Desktop draft), and in `next.yml`. A missing secret fails the release instead of shipping it
 unsigned. The next key's secret is held encrypted off any machine that holds
 the current one; ADR-0178 decision 6 is the custody rule and the rotation
 procedure.
@@ -110,8 +110,8 @@ table. `release-manifest` takes digests from GitHub's asset `digest`
 field, uploads only when content changes, and keeps a product's previous
 entry when that product cannot be resolved. The golden manifests in
 `scripts/fixtures/release-manifest/` are read by the generator, CLI, Desktop,
-and installer tests. `bun tools/main.ts release-manifest fixtures --check`
-keeps them in step with the generator.
+and installer tests. `release-manifest.test.ts` keeps them in step with the
+generator.
 
 ## Versioning
 
@@ -127,19 +127,18 @@ whose tag disagrees with Cargo's resolved versions.
 | `feat:` | minor |
 | `feat!:` / `BREAKING CHANGE:` | minor, not 1.0.0 (`bump-minor-pre-major`) |
 
-Release Please cannot update `Cargo.lock`. Its `sync-lockfile` job commits the
-root, browser, and Desktop lockfiles. It force-pushes the release branch on
-every `main` commit, so `release-please.yml` returns the PR to draft until
-the lockfile push lands. Do not merge a release PR while it is a draft.
-`bun tools/main.ts integration-versions-check` checks integration
-versions after any version-bearing change.
+Release Please cannot update `Cargo.lock`, so the `release-prs` job commits
+the root, browser, and Desktop lockfiles. Release Please force-pushes the
+release branch on every green `main` commit, so `release.yml` returns the PR
+to draft until the lockfile push lands. Do not merge a release PR while it is
+a draft. The tools tests check integration versions on every change.
 
 ## Build rules
 
 - Release binaries use rustup and the pinned Zig tarballs from
   `.config/zig-toolchain.json`, never Nix, because Nix links `/nix/store`
   paths. Bumping Zig means re-pinning all three digests in one commit;
-  `just zig-pin-check` compares them against ziglang.org.
+  `scripts/install-zig.sh` refuses a tarball that does not match.
 - `scripts/build-release-binaries.sh` pins CPU baselines (`x86-64`, `generic`,
   `apple-m1`; Zig `baseline`). `scripts/check-release-cpu-baselines.sh`
   rejects a release surface that bypasses them.
@@ -166,7 +165,7 @@ versions after any version-bearing change.
 
 npm packages publish through
 [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so
-there is no npm secret. `publish` dispatches `agent-integration-release.yml`
+there is no npm secret. `release.yml` dispatches `agent-integration-release.yml`
 instead of calling it, because npm trusts the entry workflow's filename.
 Trusted publishing cannot do a package's first publish, so a new `@phux/*`
 package needs one human `npm publish`. A re-dispatched tag verifies instead
@@ -174,17 +173,16 @@ of republishing.
 
 ## crates.io
 
-Publishing is irreversible, so `publish-crate.yml` runs only by hand, against
-an existing tag, with `dry_run` defaulting to `true`. It runs in the
-`crates-io` environment, which requires a reviewer and holds
-`CARGO_REGISTRY_TOKEN`. Dry-run locally with `just publish-protocol-dry`.
-Every other crate is `publish = false`, so the CLI ships only as release
-artifacts and Homebrew.
+Publishing is irreversible, so no workflow does it. Check out the tag, run
+`just publish-protocol-dry`, then `just publish-protocol`, which asks for
+confirmation. Every other crate is `publish = false`, so the CLI ships only as
+release artifacts and Homebrew.
 
 ## Secrets
 
 | Secret | Used by |
 |---|---|
-| Release App (`vars.RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`) | `release-please.yml`, `website-dispatch.yml`; its pushes trigger `ci`, which `GITHUB_TOKEN` pushes cannot |
-| `CARGO_REGISTRY_TOKEN` | `publish-crate.yml`, in the `crates-io` environment |
-| `LINEAR_RELEASE_ACCESS_KEY` | `linear-release.yml` |
+| Release App (`vars.RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`) | `release.yml` (release PRs, phux.sh), `ci.yml` (`content`: phux.sh and no-phux/skills); its pushes trigger `ci`, which `GITHUB_TOKEN` pushes cannot |
+| `PHUX_MINISIGN_SECRET_KEY` | `release.yml`, `desktop-release.yml`, `next.yml` |
+| `CACHIX_AUTH_TOKEN` | `ci.yml` Nix lanes push the devshell closure on `main` |
+| `LINEAR_RELEASE_ACCESS_KEY` | `release.yml` |

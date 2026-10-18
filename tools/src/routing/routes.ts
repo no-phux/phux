@@ -15,7 +15,7 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
 
 /**
  * Documentation that code or a guard reads: Rust tests byte-compare the spec,
- * generated reference, agent guide and recorded casts; the workflow gate reads
+ * generated reference, agent guide and recorded casts; the guards read
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
@@ -28,14 +28,13 @@ const DOC_INPUTS: Record<string, Surface[]> = {
 const PRODUCT_PROSE = [".agents/skills/{using-phux,using-phux-mcp}/**", "integrations/*/skills/**"];
 
 const ROUTES: Record<string, Surface[]> = {
-  // Compile-free workflow infrastructure: only the workflow gate runs, except
-  // for a lane's own workflow, which runs that lane.
+  // Workflow infrastructure is compile-free (guards only), except ci.yml and
+  // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
-  ".github/actions/**": [],
   ".github/{actionlint.yaml,dependabot.yml}": [],
-  ".github/workflows/desktop-test.yml": ["desktop"],
-  ".github/actions/setup-linux-desktop/**": ["desktop"],
-  "scripts/ci/{setup-linux-release-userspace,mbx-export-failed-lane}.sh": [],
+  ".github/workflows/ci.yml": [...SURFACES],
+  ".github/actions/**": [...SURFACES],
+  "scripts/ci/setup-linux-release-userspace.sh": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   "tools/{main.ts,package.json}": ["web", "desktop"],
@@ -57,6 +56,7 @@ const ROUTES: Record<string, Surface[]> = {
   // root CLI inputs (e.g. phux-protocol), so they still fail closed.
   "clients/desktop/native/**": ["desktop"],
   "just/desktop.just": ["desktop"],
+  "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see
   // LANE_BUILDS).
   "crates/**": ["phux"],
@@ -70,24 +70,23 @@ const ROUTES: Record<string, Surface[]> = {
   ".cargo/**": [...SHARED, "desktop"],
   "Cargo.lock": SHARED,
   "flake.{nix,lock}": ["phux", "web"],
-  // The native-setup assurance lane; desktop-test provisions with setup-rust.sh too.
+  // The native lane; the desktop lane provisions with setup-rust.sh too.
   "just/setup.just": ["native"],
   "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
   "scripts/setup-rust.sh": ["native", "desktop"],
-  // How native-setup, web-engine and desktop get libghostty's Zig; the Nix
+  // How the native, web-engine and desktop lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG],
   "scripts/install-zig.sh": ZIG,
   "scripts/lib/dev-toolchain.sh": ZIG,
-  // The check job runs build-features-check against the real graph.
+  // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
-  // Compile-free recipes and scripts that only their own workflows run. The
-  // root justfile is imports and `default`.
+  // Compile-free recipes and scripts that guards or release workflows run.
+  // The root justfile is imports and `default`.
   justfile: [],
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
-  "scripts/bench/perf-nightly.sh": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/{build-ffi-xcframework,build-mobile-ffi-android}.sh": [],

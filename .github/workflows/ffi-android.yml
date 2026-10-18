@@ -3,7 +3,7 @@
 # wait on NDK. phux-mobile fetches this zip at PHUX_REV.
 #
 # Fires on main when the shim or its runtime inputs change, so a merge is the
-# produce run. publish.yml dispatches it with the tag to attach the zip once
+# produce run. release.yml dispatches it with the tag to attach the zip once
 # a root release is public; a tagless dispatch is a repair build.
 
 name: ffi-android
@@ -14,13 +14,6 @@ on:
   # output, so phux-mobile's pin always finds the pair at the same commit.
   push:
     branches: [main]
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing root release tag (vX.Y.Z) to build from and attach to.
-        required: false
-        type: string
-        default: ""
   workflow_dispatch:
     inputs:
       tag:
@@ -43,7 +36,7 @@ permissions:
 # though phux-mobile may pin it. Per-commit groups only serialize a replay of
 # the same commit; nothing is cancelled.
 concurrency:
-  group: mini-v1-ffi-android-${{ inputs.tag || inputs.commit || github.sha }}
+  group: ffi-android-${{ inputs.tag || inputs.commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -58,8 +51,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
       - id: detect
-        uses: ./.github/actions/classify-changes
+        run: bun tools/main.ts detect-changes >> "$GITHUB_OUTPUT"
 
   build:
     name: build Android UniFFI zip

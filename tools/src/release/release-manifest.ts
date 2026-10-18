@@ -115,7 +115,7 @@ function ensurePrerelease(tag: string, notes: string, target?: string): void {
   try {
     ghRelease(...args, ...(target ? ["--target", target] : []));
   } catch (error) {
-    // publish.yml and next-release.yml can race to create `channels`.
+    // release.yml and next.yml can race to create `channels`.
     if (release(tag) === undefined) throw error;
   }
 }
@@ -248,14 +248,14 @@ function pruneNext(product: Product, keep: readonly string[]): void {
   }
 }
 
-function nextSha(product: Product): string {
+export function nextSha(product: Product): string {
   return str(table(table(publishedManifest("next")?.["products"])[product])["sha"]) ?? "";
 }
 
 /**
  * Publish `product` built at `sha` to the next channel.
  *
- * next-release.yml runs one at a time, so replacing this product's entry in
+ * next.yml runs one at a time, so replacing this product's entry in
  * the published next.json cannot lose the other product's update.
  */
 function publishNext(product: Product, sha: string, dist: string): void {

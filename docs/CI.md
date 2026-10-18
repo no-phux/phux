@@ -1,129 +1,110 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-17
+last-reviewed: 2026-10-18
 ---
 
 # CI
 
-**TL;DR.** One classifier routes every change to the lanes it can affect. The
-`ci` aggregate is the merge gate. Caches save on `main` pushes only and are
-pruned to one entry per prefix. Main runs reuse a successful run's receipt
-only for an identical tree. Release lanes are in [Releasing](./RELEASING.md).
+**TL;DR.** One workflow, `ci.yml`, validates every pull request and every
+`main` push. Its `plan` job routes the diff to lanes, and each lane runs the
+same just recipes that `just check` runs on your machine. Only what your
+change can affect runs, and anything that runs gates the merge. Post-merge
+work follows a green `main`: `release.yml` and `next.yml`. Releasing is
+[its own page](./RELEASING.md).
 
-## Runners and concurrency
+## Workflows
 
-The repository is public, so standard hosted runners are free. Workflows use
-`ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`, with no
-larger or self-hosted runners. The account allows 20 concurrent standard
-jobs, 5 of them macOS. Concurrency groups use the `mini-v1-` namespace, and
-`pr-janitor` cancels a closed PR's live runs. The tests in `tools/src/policy/`
-(part of `just tools-check`) hold every workflow to these rules, the cache
-rules below, and artifact provenance.
+| Workflow | Fires on | Does |
+|---|---|---|
+| `ci.yml` | every non-draft PR, every `main` push, dispatch | routed lanes and the required `ci` aggregate; on a green push, republishes changed docs and skills |
+| `commitlint.yml` | PRs, including title edits | lints every commit and the PR title |
+| `release.yml` | green `main` ci, daily, dispatch | release PRs, then publishes every draft whose commit is green |
+| `next.yml` | green `main` ci, dispatch | the moving `next` prerelease |
+| `build-cli.yml`, `desktop-release.yml` | called by the two above | release builds |
+| `ffi-xcframework.yml`, `ffi-android.yml` | `main` pushes touching the binding closure; tag dispatch | mobile artifacts. phux-mobile finds them by these file names and push runs, so do not rename or merge them |
+| `agent-integration-release.yml` | dispatched by `release.yml` | npm trusted publishing trusts this file name |
 
-## Routing
+The ruleset requires two contexts: `ci` and `commitlint`. A ruleset matches a
+job's display name, not its id.
 
-[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts) owns the
-routes, and `bun tools/main.ts detect-changes` resolves the diff for pull
-requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
-`web-check.yml`, and `desktop-test.yml` read it through
-`.github/actions/classify-changes`, with no outer path filters. Root crates
-are not listed: the web and desktop lanes route the closure of what their
-builds compile (`LANE_BUILDS`), read from the Cargo manifests, so a
-dependency added or dropped re-routes on its own. Changes confined to
-`clients/desktop/native/**` or `just/desktop.just` run only desktop
-qualification, not unrelated root, browser, or integration builds. Other
-`clients/desktop` files still fail closed: the root CLI embeds some of them.
-`desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
-jobs for the desktop host's path crates,
-the toolchain inputs, the root files the crate embeds, its own workflow, and
-unrouted `clients/desktop` paths. `macos` runs `just desktop-lint`,
-`just desktop-test`, and `just desktop-perf-budget` on the same test build:
-the headless GPUI benchmark's scene and runtime counters must match
-`clients/desktop/scripts/perf-budget.ts` exactly, and its tick and RSS
-ceilings catch only gross regressions. `package` builds the debug CLI and
-`just desktop-package`, then runs `smoke-app.ts` with
-`--allow-unconfirmed-present` and uploads the evidence directory. Neither job
-holds a build cache, so each run is two cold GPUI and libghostty builds on the
-5 macOS slots shared with the release lanes. So `main` keeps one running and
-one pending desktop-test run, not one per merge: per-SHA runs once stacked
-~35 macOS jobs ahead of the release builds and left drafts unpublished for
-hours. A hosted virtual display never
-confirms a presented drawable, so real-GPU qualification stays manual:
-`just desktop-native-test` on an Apple silicon Mac with a graphical login
-requires `confirmed` presentation.
-The Linux jobs run the native test/lint gates, build and extract the portable
-package, then run `smoke-linux.ts` under Xvfb/lavapipe with an isolated server.
-`just desktop-renderer-test` also exercises the pinned wgpu dependency's
-submission, shared-atlas and transparent-capture regressions in a disposable
-workspace, reusing the native target directory.
-That gate targets the low-level `wgpu_` modules, not gpui-fast's opt-in
-composed-window tile suite. Four composed-path equivalence failures reproduce
-unchanged in pristine gpui-fast 0.1.9 on lavapipe (`phux-9ddi1`); the desktop
-does not enable that composition path.
-Native frame capture and an independent X11 window screenshot with OCR,
-keyboard delivery, clipboard paste, shifted Meta bytes, window identity and
-app-crash session survival are checked separately.
-Release and CI smoke runs require the renderer's log to identify Vulkan;
-silently falling back to OpenGL does not qualify the Vulkan lane.
-Submitted receipts never count as confirmed physical-display presentation.
-Wayland compositor, physical GPU, IME and screen-reader qualification are not
-implied by this software-renderer lane.
-Unknown paths, unavailable history, and empty diffs
-request every surface. On pull requests the classifier also emits
-`test_filterset` (an `rdeps(=crate)` union), so a library change skips
-unrelated crates. A `tests/`-only diff builds just that test. Pushes to
-`main` run the full pool. A release PR's version-only hunks
-(`tools/src/routing/release-metadata.ts`) skip compile lanes.
-`just tools-check` tests the routes.
+## Lanes
 
-The required `ci` aggregate rejects failed or cancelled lanes. The test
-profile compiles once per run: `test build` runs `just test-archive`, which
-compiles the union of the unit halves and the e2e set into one nextest archive
-(about 410 MB, a one-day artifact). `test`, `test (integration)`, and `e2e`
-restore no build cache (`build-cache: none`); they download the archive and run
-`just test` with `PHUX_UNIT_PART=lib` or `integration`, or `just e2e`, with
-`PHUX_TEST_ARCHIVE` set. A `tests/`-only diff archives that test plus the e2e
-binaries when e2e runs. `uniffi` builds its own feature set. On PRs it skips
-known crate-only changes outside the binding's test dependency closure; shared
-or unknown inputs fail closed, and main pushes retain full qualification.
-Every lane keeps
-`--workspace` and `TEST_FEATURES`, so feature unification and the rdeps
-filterset match the whole pool.
+[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts) maps paths to
+surfaces, and [`plan.ts`](../tools/src/routing/plan.ts) maps surfaces to
+lanes and lanes to recipes. A path no route names requests every lane, so an
+unknown input fails closed. A change to `ci.yml` or `.github/actions/` reruns
+every lane too.
+
+| Lane | Job | Recipe | Runs when |
+|---|---|---|---|
+| guards | `guards` | `just guards` | always: workflows, shell, tools tests, docs, installers, pins |
+| lint | `rust lint` | `just rust-lint` | Rust inputs |
+| tests | `rust test build`, then `rust tests` | `just test-archive`, `just test` | library or `tests/` changes |
+| e2e | `rust e2e` | `just e2e` | as above, unless a `tests/`-only diff touches no e2e binary |
+| ffi | `rust ffi` | `just binding-uniffi-test`, `just ffi-abi` | the binding crate's dependency closure |
+| icount | `rust icount` | `just perf-icount` | hot-path crates and the baseline ([performance CI](./performance-ci.md)) |
+| integrations | `agent integrations` | `just agent-integrations-check` | `integrations/` and plugin manifests |
+| web | `web` | `just web-check` | the browser clients and the Cargo closure they build |
+| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-qualify` | the desktop host and the Cargo closure it builds; PRs only |
+| native | `native setup` | `just native-smoke` | toolchain, setup, and link inputs on a clean runner |
+
+On a pull request, a library change runs only its reverse dependencies
+(`rdeps(=crate)`), and a `tests/`-only change builds only that test. A release
+PR's version-only hunks skip every compile lane. A `main` push runs the full
+Rust pool, because two green PRs can still merge into a red tree. The desktop
+lane is the exception: on `main`, `next.yml` qualifies every desktop change on
+the same macOS and Linux targets, and per-merge macOS jobs once starved the
+five-slot macOS pool the release builds share.
+
+`just check` runs the pull-request plan for your working tree against
+`origin/main`, through the same recipes. `--dry-run` prints the lanes without
+running them. icount (x86_64 valgrind) and native (a clean machine) run only
+in CI.
+
+The test profile compiles once per run: `rust test build` archives the unit
+and e2e binaries (about 410 MB, kept one day), and `rust tests` and `rust e2e`
+download it and compile nothing.
+
+## Cancellation and reuse
+
+Pull requests are latest-wins, and closing one cancels its in-flight run.
+Every `main` SHA keeps its own run, because `release.yml` publishes a draft
+only on a green push run for that exact commit.
+
+When a pull request passes, the `ci` job uploads a receipt: the tree and the
+lanes that ran. A `main` push whose tree is identical, with the same lanes,
+skips every lane and goes green in seconds
+([`receipt.ts`](../tools/src/routing/receipt.ts)). A receipt is metadata,
+bound to its run's commit through GitHub's Git database. Any API failure
+counts as a miss.
 
 ## Caches
 
-The Actions cache is 10 GB per repository with LRU eviction, and a cache
-saved on `refs/pull/N/merge` restores only on that PR. So every cache saves on
-`main` pushes only, and pull requests restore without writing:
+The Actions cache is 10 GB per repository with LRU eviction, and an entry
+saved on a PR's merge ref restores only on that PR. So caches save on `main`
+pushes only.
 
-- The check, test build, and icount lanes keep one mbx `objects` entry each
-  (`.github/actions/setup-rust-lane`). The key is lane, `flake.lock`,
+- The lint, test build, and icount lanes keep one mbx `objects` entry each
+  (`.github/actions/setup-rust-lane`). The key is the lane, `flake.lock`,
   `Cargo.lock`, and the UTC day. A new day restores the previous entry by
-  prefix and saves once; a failed main lane still exports when the exact key
-  was not restored. The store is collected before compiling, under a 40 GiB
-  cap above the largest working set.
-- `test build` sets `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`,
-  which keeps its store near 0.7 GB compressed (line tables pushed it to
-  6.1 GB and a 6m 28s unpack, run 38503810705). With the store a phux-tui
-  change compiles in about 3 minutes; a phux-protocol change still recompiles
-  every workspace crate.
-- `uniffi` keeps a dependency-only `rust-cache` (`build-cache: deps`) with
-  `cache-on-failure`. libghostty-vt-sys downloads a prebuilt engine
-  ([SETUP](./SETUP.md)), so no lane compiles Zig for it.
+  prefix.
+- The test build sets `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`,
+  which keeps its store near 0.7 GB compressed.
+- The ffi lane keeps a dependency-only `rust-cache`.
 - Release builds cache the crate registry only, never `target/`.
 
-`prune-build-cache` keeps the newest entry per lane and per maintained
-prefix, deletes every `sccache/` object, and deletes retired prefixes,
-including the old per-lane `v0-rust-phux-test-`,
-`v0-rust-phux-test-integration-`, and `v0-rust-phux-e2e-` dependency entries.
-`pr-janitor` deletes a closed PR's merge-ref caches.
+`prune-build-cache` keeps the newest entry per prefix after each `main` push.
 
-## Validation reuse
+## Runners
 
-Pull request validation is latest-wins. Main runs are keyed by SHA, so a
-later push cannot cancel validation that a release tag needs. A main run may
-reuse a seven-day validation receipt only from a successful run in this
-repository with the same workflow path, identical routed coverage, and the
-same Git tree, resolved independently through GitHub's Git database.
-Anything else runs the normal lanes.
+The repository is public, so standard hosted runners are free:
+`ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`. The
+account allows 20 concurrent jobs, 5 of them macOS. The tests in
+`tools/src/policy/` and `tools/src/routing/workflows.test.ts` hold the
+workflows to these rules, and they run in `just guards`.
+
+## Off CI
+
+`just stress` (CPU-starved on two-core runners), `just mutation-rust`, and
+real-GPU desktop qualification (`just desktop-native-test`) run locally.

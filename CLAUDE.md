@@ -1,14 +1,14 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-18
 ---
 
 # phux Project Instructions for Agents
 
 **TL;DR.** phux-specific agent guidance layered on [`AGENTS.md`](./AGENTS.md)
 (universal rules): how to build and test (`mise install` or `nix develop`,
-then `just ci`), the crate/architecture map, and the project conventions.
+then `just check`), the crate/architecture map, and the project conventions.
 
 Commit verified task changes before handoff per
 [AGENTS.md's completion policy](./AGENTS.md#finish-the-work); that policy
@@ -23,26 +23,26 @@ Setup and version details live in [`docs/SETUP.md`](./docs/SETUP.md).
 mise install        # or: nix develop
 just doctor native  # or core / docs / integrations / web / ci
 just core-check     # example scoped loop; see SETUP.md for other areas
-just ci             # full root deterministic/unit gate set
-just ci-full        # ci + the real-server e2e and agent smoke lanes
-just check          # quick type-check
 just test           # cargo nextest run --workspace
+just check          # every CI lane your diff needs, via CI's own recipes
+just check --dry-run  # which lanes those are
 ```
 
 The Zig Cockpit is archived outside `main`; see the
 [recovery guide](./docs/consumers/cockpit.md).
 
-**`just ci-full` is the full root PR bar; scoped gates are the inner loop.**
-CI's `e2e` job and workflow gate also run `just e2e` and
-`just agents-fleet-smoke`, which `just ci` omits, so `just ci` green can still fail a required check. See
-CONTRIBUTING.md §"Bar for any change" for the gate-by-gate map. `commitlint`
-lints every commit in the PR, not just the title.
+**`just check` is the PR bar; scoped gates are the inner loop.** It routes
+your diff against `origin/main` exactly as `ci.yml` does and runs the same
+recipes, so there is no run-everything recipe and no reason to run lanes your
+change cannot affect. Only `rust icount` and `native setup` are CI-only. See
+[docs/CI.md](./docs/CI.md). `commitlint` lints every commit in the PR, not
+just the title.
 
 ## How work reaches `main`
 
 `main` has one ruleset: no deletion, no force push, linear history, pull
 request required, required checks `ci` and `commitlint`. Organization admins
-and the release App may bypass it; a bypass never replaces `just ci-full` and a
+and the release App may bypass it; a bypass never replaces `just check` and a
 PR with hosted checks, and still lands as a non-force fast-forward.
 See `docs/RELEASING.md` for the routing matrix.
 

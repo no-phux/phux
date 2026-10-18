@@ -18,7 +18,7 @@
 # generated from `crates/*/tests/*_e2e.rs`:
 #   1. It is a curated PR-critical-path subset by design. The heavy
 #      `stress_*` storms are deliberately excluded (CPU-starved on a 2-core
-#      runner; they live in stress.yml), and a future expensive e2e binary
+#      runner; they run locally via `just stress`), and a future expensive e2e binary
 #      must be able to make the same choice.
 #   2. The filterset is split across two nextest invocations with different
 #      `--run-ignored` modes (all vs ignored-only), so "the list" is not one
@@ -131,10 +131,10 @@ while IFS= read -r path; do
     phux_hint "names the binary. This one is named nowhere, so it never executes"
     phux_hint "in CI and will stay green no matter what it asserts."
     echo "" >&2
-    phux_hint "Fix by adding it to the fast PR lane in ${JUSTFILE} (recipe \`e2e\`):"
+    phux_hint "Fix by adding it to the fast PR lane in just/test.just (recipe \`e2e\`):"
     phux_hint "  -E '... + binary_id(${binary_id})'"
     phux_hint "or, if it is too slow for the PR critical path, to the \`stress\`"
-    phux_hint "recipe (which runs post-merge and nightly via stress.yml)."
+    phux_hint "recipe (run locally with `just stress`)."
     echo "" >&2
 done < <(find crates -type f -path '*/tests/*_e2e.rs' | sort)
 

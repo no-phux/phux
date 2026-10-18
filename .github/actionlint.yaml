@@ -21,14 +21,9 @@ self-hosted-runner:
 paths:
   .github/workflows/ci.yml:
     ignore:
-      # The single quotes are intentional: $1 and $PATH belong to the inner
-      # bash launched by `nix develop`, not to the workflow shell.
-      - 'shellcheck reported issue in this script: SC2016:.+'
-  .github/workflows/release-please.yml:
-    ignore:
       - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
       - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
-  .github/workflows/sync-skills.yml:
+  .github/workflows/release.yml:
     ignore:
       - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
       - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'

@@ -1,14 +1,14 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-18
 ---
 
 # Quality bar: testing and performance
 
 **TL;DR.** Unit, property, and snapshot tests cover behavior, invariants,
 wire bytes, and rendered frames. `just test` runs the workspace unit pool;
-`just ci-full` adds the root gates and smoke lanes required for PRs.
+`just check` runs every CI lane your change needs.
 Crate benches and isolated-server probes measure performance. Mutation
 testing is opt-in, not a CI gate.
 
@@ -20,10 +20,9 @@ All three test layers run today:
    integration tests under `crates/*/tests/`. The workspace pool is
    `just test` (`cargo nextest run --workspace`). CI pull requests may set
    `PHUX_NEXTEST_FILTERSET` to the classifier's `rdeps()` expression so only
-   affected crates run. Library changes keep `--workspace`; a tests-only diff builds that integration test. `just ci`
-   includes that pool plus compile-free contract gates (fmt, lint, rustdoc,
-   deny, `just docs-check`, and others listed in CONTRIBUTING.md). It does
-   not spawn real PTY-backed servers.
+   affected crates run. Library changes keep `--workspace`; a tests-only diff
+   builds that integration test. The pool does not spawn real PTY-backed
+   servers.
 
 2. **Property tests** (`proptest`) for invariants that should hold across
    arbitrary inputs. They live in `phux-protocol` (codec roundtrip),
@@ -52,25 +51,17 @@ All three test layers run today:
 
 ## Real-server and smoke lanes
 
-These lanes sit outside `just ci`; passing `just ci` alone does not meet the
-PR bar. The e2e lane spawns real PTY-backed servers.
-
 - `just e2e` — the fast e2e lane: ignored `*_e2e.rs` binaries against
   PTY-backed servers (headless `run`/`wait`, agent-record loop, spatial
-  edits, wall-clock perf). CI's `test` job runs this; `just ci` does not.
+  edits, wall-clock perf). CI's `rust e2e` job runs it.
 - `just agents-fleet-smoke` — hermetic argv/control-flow gate for the
-  placed-fleet example. No live server.
-- `just ci-full` — `just ci` plus `just e2e` plus `just agents-fleet-smoke`.
-  That is the full root PR bar.
-
-[`../../scripts/parity-gate.sh`](../../scripts/parity-gate.sh)
-(`just parity-check-list`, `just parity-gate`) names the herdr-parity
-evidence scenarios: the cheap list mode proves each still points at a real
-script, recipe, test, or asset; the run mode spawns real PTYs and tmux.
+  placed-fleet example, inside `just guards`. No live server.
+- `just stress` — resize, output, and lifecycle storms. Local only: two-core
+  runners starve them.
 
 ## Mutation testing
 
-Mutation testing with `cargo-mutants` is opt-in, not a `just ci` gate.
+Mutation testing with `cargo-mutants` is opt-in, not a CI lane.
 [`../TESTING_MUTATIONS.md`](../TESTING_MUTATIONS.md) owns the runner,
 budgets, and how to read killed/survived/unviable results. There is no
 required mutation score.

@@ -5,7 +5,7 @@
 # flake.nix and the manifests and checks they AGREE ON PAPER. It cannot see
 # what a shell hands you. This is the other half — it realizes both
 # environments and compares binary against binary — which is why it is
-# advisory and local-only rather than a `just ci` gate: a CI checkout has no
+# advisory and local-only rather than a `just guards` gate: a CI checkout has no
 # Mise, and realizing the dev shell to lint a linter version is not a bar to
 # hold a PR to.
 #

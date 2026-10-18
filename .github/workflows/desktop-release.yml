@@ -1,4 +1,4 @@
-# Release Please owns the immutable tag and draft; publish.yml is the only door.
+# Release Please owns the immutable tag and draft; release.yml is the only door.
 # Stable: Apple silicon (ad-hoc signed) and Ubuntu 24.04 GNU/Linux x64/arm64.
 name: Release Desktop
 
@@ -19,14 +19,14 @@ on:
         type: string
     secrets:
       PHUX_MINISIGN_SECRET_KEY:
-        description: minisign secret key that signs a stable checksum (ADR-0178); next signs in next-release.yml
+        description: minisign secret key that signs a stable checksum (ADR-0178); next signs in next.yml
         required: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: mini-v1-desktop-release-${{ inputs.tag }}
+  group: desktop-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:

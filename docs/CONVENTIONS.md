@@ -39,7 +39,7 @@ Decision (one decision per file, strict)
 Discipline (this file + CI)
   docs/CONVENTIONS.md ───► you are here
   scripts/check-docs.sh ─► mechanical enforcement
-  just docs-check ───────► wired into `just ci`
+  just docs-check ───────► wired into `just guards`
 ```
 
 Anything that's not in those four layers is scratch (see
@@ -474,7 +474,7 @@ The discipline layer is mechanically checked. See
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 | conflict-marker | A leftover `<<<<<<<`, `|||||||` or `>>>>>>>` merge or stash conflict marker |
 
-All run under `just docs-check`, which is in `just ci`. Adding a check
+All run under `just docs-check`, which `just guards` runs on every change. Adding a check
 is welcome — open a PR against `scripts/check-docs.sh` and reference
 this file.
 

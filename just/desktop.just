@@ -74,17 +74,38 @@ desktop-demo: desktop-host-debug desktop-cli
     cp -L "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" clients/desktop/.cache/demo-target/debug/phux
     cd clients/desktop && CARGO_TARGET_DIR="$PWD/.cache/demo-target" bun scripts/desktop-demo.ts
 
+# PHUX_DESKTOP_SMOKE_ARGS passes extra smoke flags (evidence dir, backend).
 [group('desktop')]
 [doc('Package the desktop and qualify it against an isolated same-checkout server')]
 desktop-framework-check: desktop-package desktop-cli
     #!/usr/bin/env bash
     set -euo pipefail
     phux="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
+    read -ra extra <<< "${PHUX_DESKTOP_SMOKE_ARGS:-}"
     if [[ "$(uname -s)" == Linux ]]; then
-        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- bun clients/desktop/scripts/smoke-linux.ts --app clients/desktop/dist/linux/phux-desktop --phux "$phux"
+        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- bun clients/desktop/scripts/smoke-linux.ts --app clients/desktop/dist/linux/phux-desktop --phux "$phux" ${extra[@]+"${extra[@]}"}
     else
-        bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "$phux"
+        bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "$phux" ${extra[@]+"${extra[@]}"}
     fi
+
+# The `desktop` lane: tooling, lint, tests, then the packaged app against an
+# isolated same-checkout server. Linux runs the tests under Xvfb and the
+# pinned wgpu renderer; macOS runs the headless perf budget.
+[group('desktop')]
+[doc('Desktop lane: tooling, lint, tests, perf or renderer, package and smoke.')]
+desktop-qualify: desktop-install desktop-check desktop-lint
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == Linux ]]; then
+        if [[ -n "${DISPLAY:-}" ]]; then just desktop-test; else
+            xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+        fi
+        just desktop-renderer-test
+    else
+        just desktop-test
+        just desktop-perf-budget
+    fi
+    just desktop-framework-check
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]
