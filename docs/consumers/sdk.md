@@ -21,7 +21,7 @@ contract. External callers should use the CLI or MCP adapter.
 behind the CLI agent verbs and [MCP adapter](./mcp.md).
 
 Native embedders use `phux-client-ffi`: the C ABI or UniFFI for
-phux-mobile. Both project `phux-client-runtime`, which owns dialing,
+phux-mobile; a GPUI app uses `phux-gpui` ([embedding guide](./embedding.md)). Both project `phux-client-runtime`, which owns dialing,
 reconnect, the session kernel, acknowledged-input replay, and grid publication.
 See the [client runtime](../architecture/client-runtime.md) (ADR-0133,
 ADR-0135).

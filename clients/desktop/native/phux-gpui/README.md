@@ -39,9 +39,9 @@ one view that should resize the PTY. The rest of the view's contract is in
 
 The crate depends on `gpui` as `gpui-fast = "=0.1.9"` (its library is named
 `gpui`) and on the phux client crates by path; nothing here is on crates.io
-yet. `libghostty-vt` builds its prebuilt archive only in `ReleaseFast`, so
-set `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast` in your `.cargo/config.toml`
-`[env]` the way this repository does, or have Zig on `PATH`.
+yet. The [embedding guide](../../../../docs/consumers/embedding.md#build-requirements)
+has the one build setting libghostty needs, and the routes for apps that are
+not GPUI.
 
 ## `patched-gpui`
 
