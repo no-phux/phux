@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.107.0](https://github.com/no-phux/phux/compare/v0.106.0...v0.107.0) (2026-10-18)
+
+
+### Features
+
+* **desktop:** one navigator, one glass menu, and a shared component library ([59b482b](https://github.com/no-phux/phux/commit/59b482bf43aa8c904f128b3c37e379836870fab2))
+
+
+### Bug Fixes
+
+* **pair:** mint enrollment ticket before bearer credential ([#1626](https://github.com/no-phux/phux/issues/1626)) ([b5d3efb](https://github.com/no-phux/phux/commit/b5d3efbfe06932d8169f360d749488b8d619ae8c))
+
 ## [0.106.0](https://github.com/no-phux/phux/compare/v0.105.1...v0.106.0) (2026-10-18)
 
 
