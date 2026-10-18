@@ -96,6 +96,30 @@ the first operation may still land. Acknowledged input is admitted per pane:
 prompt different panes in parallel, but serialize prompts to one pane. Use
 `phux agent --help` and `phux help agent <verb>` for current lifecycle and agent-session arguments.
 
+## Coordinating with other agents
+
+Talk to another agent with mail, not by typing into its pane. `mail send`
+stores the message and rings the recipient with a one-line prompt naming you
+and the thread; reply in the same thread. Before working in a checkout another
+agent might touch, claim it; a conflict names the holder, so mail them.
+
+```sh
+phux agent list --json                  # who runs where: pi@749, @730 ...
+phux mail send pi@749 -t pr-1622 -m "rebased; CI is green"
+phux mail read                           # unread mail to your pane; marks it read
+phux mail ack 0123...cdef                # tell the sender it was handled
+phux claim take ~/work/shared-checkout --note "landing #1622"
+phux claim renew 42 --ttl 3600           # use the fence returned by take
+phux claim release 42                    # exactly that acquisition, when done
+```
+
+You speak as your pane (`@N`), including headless children. Keep the returned
+fence: it identifies the whole acquired path set. Taking again never renews
+another acquisition, even from your own pane. Renew/release require that exact
+fence; stale cleanup cannot remove a replacement. Do not replace a stale
+receipt with a newly listed fence automatically. Claims are advisory; only
+explicit release or expiry frees them, not a worker exit or a quiet pane.
+
 <!-- phux-skill-region: terminal -->
 ## Driving interactive terminals
 
@@ -132,5 +156,5 @@ Do not rely on a static command inventory. Run `phux --help`,
 `phux help <verb>`, and `phux runtime-info --json` against the installed binary.
 For MCP, load the `using-phux-mcp` skill and use `phux mcp --schema`.
 
-phux is not a scheduler, credential channel, durable lock service, or message
-bus. Keep retries, scheduling, and ownership in the orchestrator.
+phux is not a scheduler or credential channel, and a claim is advisory, not a
+lock. Keep retries and scheduling in the orchestrator.

@@ -4,7 +4,7 @@ stability: evolving
 last-reviewed: 2026-10-18
 ---
 
-# 0187 — Quick capture saves intent before dispatching work
+# 0188 — Quick capture saves intent before dispatching work
 
 **TL;DR.** Capture is server-side intake, not a desktop note or an agent
 session. Save one thought, resolve a destination using explicit rules, then

@@ -112,6 +112,7 @@ pub fn run_keeper(endpoint: &Endpoint, idle_exit: Duration) -> Result<KeeperExit
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum Served {
     Answered,
     Stale,
@@ -124,26 +125,50 @@ fn answer(stream: &UnixStream, respond: impl FnOnce(Request) -> Response) -> io:
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let mut line = String::new();
     BufReader::new(stream.take(MAX_LINE)).read_line(&mut line)?;
-    let (response, served) = match serde_json::from_str::<Envelope>(&line) {
-        Ok(envelope) if envelope.build != BUILD => (
-            Response::Fault(Fault::Stale {
-                keeper: BUILD.to_owned(),
-            }),
-            Served::Stale,
-        ),
-        Ok(envelope) => (respond(envelope.request), Served::Answered),
-        Err(err) => (
-            Response::Fault(Fault::BadRequest {
-                message: format!("unreadable request: {err}"),
-            }),
-            Served::Answered,
-        ),
-    };
+    let (response, served) = respond_to_line(&line, respond);
     let mut reply = serde_json::to_string(&response).map_err(io::Error::other)?;
     reply.push('\n');
     let mut writer = stream;
     writer.write_all(reply.as_bytes())?;
     Ok(served)
+}
+
+/// Compatibility is decided from the envelope before interpreting a versioned
+/// operation. An incompatible payload cannot prevent graceful retirement.
+#[derive(serde::Deserialize)]
+struct CompatibilityHeader {
+    build: String,
+}
+
+fn respond_to_line(line: &str, respond: impl FnOnce(Request) -> Response) -> (Response, Served) {
+    // Ignore the payload only for this header pass. Decode the original bytes
+    // afterward: materializing Value first would erase duplicate-field errors.
+    let envelope = match serde_json::from_str::<CompatibilityHeader>(line) {
+        Ok(envelope) => envelope,
+        Err(err) => return bad_request(&err),
+    };
+    if envelope.build != BUILD {
+        return (
+            Response::Fault(Fault::Stale {
+                keeper: BUILD.to_owned(),
+            }),
+            Served::Stale,
+        );
+    }
+    match serde_json::from_str::<Envelope>(line) {
+        Ok(envelope) => (respond(envelope.request), Served::Answered),
+        Err(err) => bad_request(&err),
+    }
+}
+
+fn bad_request(err: &serde_json::Error) -> (Response, Served) {
+    (
+        Response::Fault(Fault::BadRequest {
+            message: format!("unreadable request: {err}"),
+            keeper: Some(BUILD.to_owned()),
+        }),
+        Served::Answered,
+    )
 }
 
 fn handle(store: &mut Store, request: Request) -> Response {
@@ -160,6 +185,13 @@ fn handle(store: &mut Store, request: Request) -> Response {
         Request::PlanStart(request) => store.plan_start(&request).map(Response::StartPlan),
         Request::ReplayStart(request) => store.replay_start(&request).map(Response::StartReplay),
         Request::CommitStart(request) => store.commit_start(request).map(Response::StartApplied),
+        Request::SendMail(request) => store.send_mail(&request).map(Response::Sent),
+        Request::ReadMail(request) => store.read_mail(&request).map(Response::Mail),
+        Request::AckMail(request) => store.ack_mail(&request).map(Response::Acked),
+        Request::TakeClaim(request) => store.take_claim(&request).map(Response::ClaimOutcome),
+        Request::RenewClaim(request) => store.renew_claim(&request).map(Response::Claims),
+        Request::ReleaseClaim(request) => store.release_claim(&request).map(Response::Released),
+        Request::Claims(filter) => store.claims(&filter).map(Response::Claims),
     };
     result.unwrap_or_else(|err| Response::Fault(err.into()))
 }
@@ -213,4 +245,33 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn matching_version_duplicate_fields_are_rejected_before_dispatch() {
+        let line = format!(
+            r#"{{"build":"{BUILD}","request":{{"op":"list","repo":null,"archived":false,"archived":true}}}}"#
+        );
+        let (response, served) =
+            respond_to_line(&line, |_| panic!("duplicate fields reached dispatch"));
+        assert_eq!(served, Served::Answered);
+        assert!(
+            matches!(response, Response::Fault(Fault::BadRequest { keeper: Some(keeper), .. }) if keeper == BUILD)
+        );
+    }
+
+    #[test]
+    fn matching_version_parser_errors_identify_the_keeper_and_do_not_dispatch() {
+        let line =
+            serde_json::json!({"build": BUILD, "request": {"op": "unknown_operation"}}).to_string();
+        let (response, served) = respond_to_line(&line, |_| panic!("invalid payload dispatched"));
+        assert_eq!(served, Served::Answered);
+        assert!(
+            matches!(response, Response::Fault(Fault::BadRequest { keeper: Some(keeper), .. }) if keeper == BUILD)
+        );
+    }
 }

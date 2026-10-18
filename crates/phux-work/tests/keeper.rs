@@ -136,7 +136,7 @@ fn a_request_from_another_build_retires_the_keeper() {
     let mut stream = UnixStream::connect(&endpoint.socket).expect("connect");
     stream
         .write_all(
-            b"{\"build\":\"0.0.0-other\",\"request\":{\"op\":\"list\",\"repo\":null,\"archived\":false}}\n",
+            b"{\"build\":\"0.0.0-other\",\"request\":{\"op\":\"unknown_future_operation\",\"shape\":[1,2,3]}}\n",
         )
         .expect("write");
     let mut reply = String::new();
@@ -148,6 +148,61 @@ fn a_request_from_another_build_retires_the_keeper() {
         keeper.join().expect("join").expect("keeper"),
         KeeperExit::Stale
     );
+}
+
+#[test]
+fn fenced_leases_cross_the_keeper_without_losing_mutation_preconditions() {
+    use phux_work::{ClaimFilter, ClaimOutcome, ReleaseClaim, RenewClaim, TakeClaim};
+    let root = tempfile::tempdir().expect("tempdir");
+    let endpoint = endpoint(root.path());
+    let keeper = {
+        let endpoint = endpoint.clone();
+        thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(500)))
+    };
+    wait_for_socket(&endpoint);
+    let client = Client::new(endpoint, None);
+    let request = TakeClaim {
+        holder: "pi@749".into(),
+        paths: vec!["/r/a".into(), "/r/b".into()],
+        exclusive: true,
+        ttl_secs: 600,
+        note: "keeper regression".into(),
+    };
+    let ClaimOutcome::Granted(first) = client.take_claim(request.clone()).expect("take") else {
+        panic!("free")
+    };
+    let fence = first[0].fence;
+    assert_eq!(first[1].fence, fence);
+    assert!(matches!(
+        client.take_claim(request.clone()).expect("repeat"),
+        ClaimOutcome::Conflict(_)
+    ));
+    let renewed = client
+        .renew_claim(RenewClaim {
+            holder: "@749".into(),
+            fence,
+            ttl_secs: 1200,
+        })
+        .expect("renew");
+    assert_eq!(renewed.len(), 2);
+    let missing = client.renew_claim(RenewClaim {
+        holder: "@730".into(),
+        fence,
+        ttl_secs: 1200,
+    });
+    assert!(matches!(missing, Err(Error::NoClaim { fence: other }) if other == fence));
+    let cleanup = ReleaseClaim {
+        holder: "@749".into(),
+        fence,
+    };
+    assert_eq!(client.release_claim(cleanup.clone()).expect("release"), 2);
+    let ClaimOutcome::Granted(next) = client.take_claim(request).expect("reacquire") else {
+        panic!("released")
+    };
+    assert!(next[0].fence > fence);
+    assert_eq!(client.release_claim(cleanup).expect("stale cleanup"), 0);
+    assert_eq!(client.claims(ClaimFilter::default()).expect("live"), next);
+    keeper.join().expect("join").expect("keeper");
 }
 
 #[test]

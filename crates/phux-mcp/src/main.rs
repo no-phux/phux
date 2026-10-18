@@ -30,6 +30,7 @@ mod cli_tools;
 #[cfg(test)]
 mod contract_tests;
 mod contracts;
+mod coord_tools;
 mod diagnostic_tools;
 #[cfg(test)]
 mod goldens;

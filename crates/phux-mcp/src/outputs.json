@@ -1687,5 +1687,390 @@
         "description": "Exact reusable resource ID, when this result identifies one resource."
       }
     }
+  },
+  "phux_mail_send": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "mail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "thread",
+          "from",
+          "to",
+          "body",
+          "created_at"
+        ]
+      },
+      "bells": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "to",
+            "outcome"
+          ]
+        }
+      }
+    },
+    "required": [
+      "schema",
+      "mail",
+      "bells"
+    ]
+  },
+  "phux_mail_read": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "reader": {
+        "type": "string"
+      },
+      "mail": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "thread": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "body": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "read_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "acked_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "thread",
+            "from",
+            "to",
+            "body",
+            "created_at"
+          ]
+        }
+      }
+    },
+    "required": [
+      "schema",
+      "reader",
+      "mail"
+    ]
+  },
+  "phux_mail_ack": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "mail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "thread",
+          "from",
+          "to",
+          "body",
+          "created_at"
+        ]
+      }
+    },
+    "required": [
+      "schema",
+      "mail"
+    ]
+  },
+  "phux_claim_take": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "holder": {
+        "type": "string"
+      },
+      "claim": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "granted",
+              "conflict"
+            ]
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "holder": {
+                  "type": "string"
+                },
+                "exclusive": {
+                  "type": "boolean"
+                },
+                "fence": {
+                  "type": "integer"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "holder",
+                "exclusive",
+                "fence",
+                "expires_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "outcome",
+          "claims"
+        ]
+      }
+    },
+    "required": [
+      "schema",
+      "holder",
+      "claim"
+    ]
+  },
+  "phux_claim_renew": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "exclusive": {
+              "type": "boolean"
+            },
+            "fence": {
+              "type": "integer"
+            },
+            "note": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "holder",
+            "exclusive",
+            "fence",
+            "expires_at"
+          ]
+        }
+      },
+      "holder": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema",
+      "claims",
+      "holder"
+    ]
+  },
+  "phux_claim_release": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "holder": {
+        "type": "string"
+      },
+      "released": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "schema",
+      "holder",
+      "released"
+    ]
+  },
+  "phux_claim_list": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "exclusive": {
+              "type": "boolean"
+            },
+            "fence": {
+              "type": "integer"
+            },
+            "note": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "holder",
+            "exclusive",
+            "fence",
+            "expires_at"
+          ]
+        }
+      }
+    },
+    "required": [
+      "schema",
+      "claims"
+    ]
   }
 }

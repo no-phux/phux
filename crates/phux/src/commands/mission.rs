@@ -272,7 +272,7 @@ fn endpoint() -> Endpoint {
     )
 }
 
-fn client(json: bool) -> Result<Client, ExitCode> {
+pub(crate) fn client(json: bool) -> Result<Client, ExitCode> {
     let endpoint = endpoint();
     let program = phux_config::instance::running_executable().map_err(|err| {
         fail(
@@ -623,6 +623,24 @@ pub(crate) fn report(json: bool, err: &phux_work::Error) -> ExitCode {
     fail(json, err)
 }
 
+/// [`report`] for another verb on the work store, whose documents carry
+/// `schema` instead of the mission schema.
+pub(crate) fn report_as(json: bool, err: &phux_work::Error, schema: &str) -> ExitCode {
+    let (code, exit, remedy) = classify(err);
+    let remedy = if code == codes::USAGE_ERROR {
+        "run `phux mail --help` or `phux claim --help` for usage"
+    } else {
+        remedy
+    };
+    if json {
+        emit_json_error_as(schema, code, &err.to_string(), remedy, exit)
+    } else {
+        error!("{}", err);
+        hint!("{remedy}");
+        ExitCode::from(exit)
+    }
+}
+
 pub(crate) fn report_code(
     json: bool,
     code: &str,
@@ -712,6 +730,16 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
             1,
             "retry; if it persists, check `keeper.log` beside the work store",
         ),
+        phux_work::Error::NoClaim { .. } => (
+            codes::CLAIM_NOT_FOUND,
+            1,
+            "inspect `phux claim list`; acquire anew rather than renewing an expired receipt",
+        ),
+        phux_work::Error::NoMail { .. } => (
+            codes::MAIL_NOT_FOUND,
+            1,
+            "check the id with `phux mail read --all`",
+        ),
         phux_work::Error::InvalidAlias(_)
         | phux_work::Error::InvalidOperationId(_)
         | phux_work::Error::InvalidRepo(_)
@@ -733,8 +761,12 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
 }
 
 fn emit_json_error(code: &str, message: &str, remedy: &str, exit: u8) -> ExitCode {
+    emit_json_error_as(SCHEMA, code, message, remedy, exit)
+}
+
+fn emit_json_error_as(schema: &str, code: &str, message: &str, remedy: &str, exit: u8) -> ExitCode {
     let doc = serde_json::json!({
-        "schema": SCHEMA,
+        "schema": schema,
         "schema_version": SCHEMA_VERSION,
         "error": {"code": code, "message": message},
         "remedy": remedy,
