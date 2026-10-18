@@ -68,6 +68,10 @@ CLI releases are GitHub's Latest. The Homebrew tap
    targets, or it stays a draft.
 5. `publish` rebuilds `stable.json` from what is now published, and its
    scheduled run checks for drift.
+6. Once a CLI release is public, `publish` dispatches `ffi-xcframework` and
+   `ffi-android` to attach the mobile FFI, then `website-dispatch` so phux.sh
+   picks up the new version. The mobile builds run outside `publish`'s
+   single concurrency slot, so the next draft never waits on them.
 
 The build source is the tag, and the build harness is `main`, because
 `workflow_run` and `schedule` run the default branch. So a release

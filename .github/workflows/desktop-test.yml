@@ -26,10 +26,12 @@ permissions:
   contents: read
 
 concurrency:
-  # Same rule as ci.yml: pull requests are latest-wins, every main SHA keeps
-  # its own run.
-  group: mini-v1-desktop-test-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: true
+  # Pull requests are latest-wins. main is one running and one pending run:
+  # nothing gates on a per-SHA desktop-test, and keying main on the SHA queued
+  # two hour-long xcode-27 jobs per merge, ~35 deep, in front of the release
+  # lanes' own macOS builds. The running main run is never cancelled.
+  group: mini-v1-desktop-test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   changes:
