@@ -40,6 +40,10 @@ impl ControlPlane {
             .as_ref()
             .is_some_and(|previous| previous.id != info.id);
         if new_incarnation {
+            // Spawn keys are only remembered by the original incarnation.
+            // Replaying against recycled terminal/session ids can launch work
+            // in a different destination, even when the new server supports keys.
+            self.fail_pending_spawns();
             if let Some(engine) = &self.engine {
                 engine.reset_connection();
             }
