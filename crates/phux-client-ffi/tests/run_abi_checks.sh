@@ -10,6 +10,7 @@ set -euo pipefail
 profile="${1:-ffi-dev}"
 crate_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root="$(cd "$crate_dir/../.." && pwd)"
+bash "$crate_dir/tests/run_header_checks.sh"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
 archive="$target_dir/$profile/libphux_client_ffi.a"
 if [[ ! -f "$archive" ]]; then

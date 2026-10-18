@@ -27,9 +27,16 @@ const MAX_PATH_BYTES: usize = 4096;
 /// The longest `HELLO` client name a connect call accepts.
 const MAX_CLIENT_NAME_BYTES: usize = 256;
 
-/// Told from the runtime's driver thread that consumer-visible state
-/// changed. One outstanding wake covers any number of frames; the next
-/// `phux_client_poll` re-arms it.
+/// Notification that consumer-visible state changed. Driver wakes run off-thread;
+/// registration and explicit runtime wakes may invoke it inline on the caller,
+/// including before either connect call returns a handle. One outstanding wake
+/// covers any number of frames; the next `phux_client_poll` re-arms it.
+///
+/// Fully initialize a thread-safe context before connect. Asynchronously post
+/// work to the owning loop; never dispatch inline or re-enter this ABI from the
+/// callback. Poll only after connect returns a valid handle. Never wait on an
+/// embedder mutex held across connect. Keep the callback and context valid until
+/// `phux_client_free` retires the listener, waits out callbacks, and returns.
 pub type PhuxClientWakeCallback = unsafe extern "C" fn(context: *mut c_void);
 
 /// Where a connected client dials and what it trusts.
@@ -51,10 +58,11 @@ pub struct PhuxConnectOptions {
     pub config_path: PhuxBytes,
     /// The `HELLO` client name the runtime sends on every connection.
     pub client_name: PhuxBytes,
-    /// Called from the runtime's thread when something changed. May be
-    /// NULL, in which case the embedder polls on its own schedule.
+    /// Activity notification; may run off-thread or inline before connect
+    /// returns. See `PhuxClientWakeCallback`. NULL permits scheduled polling.
     pub wake: Option<PhuxClientWakeCallback>,
-    /// Passed back to `wake` untouched.
+    /// Passed back to `wake` untouched. Fully initialize this thread-safe
+    /// context before connect; keep it valid until `phux_client_free` returns.
     pub wake_context: *mut c_void,
 }
 
@@ -69,9 +77,9 @@ struct WakeBridge {
 struct WakeContext(*mut c_void);
 
 // SAFETY: the pointer is opaque to this crate and is only passed back to the
-// embedder's own callback. The ABI documents that callback as callable from
-// the runtime's thread, and the runtime never invokes a listener while
-// holding one of its locks.
+// embedder's own callback. The ABI requires a thread-safe context and permits
+// off-thread and inline wakes, including during registration before connect
+// returns. The runtime invokes the listener outside its locks.
 unsafe impl Send for WakeContext {}
 // SAFETY: as above.
 unsafe impl Sync for WakeContext {}
@@ -79,7 +87,8 @@ unsafe impl Sync for WakeContext {}
 impl Listener for WakeBridge {
     fn on_activity(&self) {
         // SAFETY: the embedder's own function pointer and context, which it
-        // keeps valid until `phux_client_free` joins the driver thread.
+        // keeps valid until `phux_client_free` retires the listener, waits out
+        // in-flight callbacks, joins the driver thread, and returns.
         unsafe { (self.wake)(self.context.0) }
     }
 }
@@ -94,7 +103,8 @@ impl Listener for WakeBridge {
 ///
 /// The runtime queues `HELLO` itself on every connection, so a connected
 /// embedder must not call `phux_client_queue_hello`. `ATTACH` stays
-/// explicit.
+/// explicit. A wake may run inline before this call returns; initialize the
+/// thread-safe context first and post asynchronously to the owning loop.
 ///
 /// # Safety
 ///
@@ -149,7 +159,8 @@ pub unsafe extern "C" fn phux_client_connect(
 /// through it: only its resolved configuration is read.
 ///
 /// `options.target` and `options.socket_path` must both be empty, because
-/// the tunnel is the destination.
+/// the tunnel is the destination. The wake has the same inline-registration
+/// and context-lifetime contract as [`phux_client_connect`].
 ///
 /// # Safety
 ///
@@ -252,7 +263,9 @@ fn connect(
 
 /// Feed everything the driver has read since the last poll, then publish the
 /// resulting effects. The embedded lane does this inside
-/// `phux_client_feed_frame`; a connected client calls this on its wake.
+/// `phux_client_feed_frame`; a connected client calls this from owning-loop
+/// work posted by its wake, never inline in that callback or before connect
+/// returns a valid handle.
 ///
 /// # Safety
 ///
