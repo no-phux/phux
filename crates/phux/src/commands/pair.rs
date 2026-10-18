@@ -824,11 +824,10 @@ pub(crate) fn run_pair(
         expires_label: expires.as_deref(),
     };
     let enroll = match door {
-        // A camera QR is a phone pairing invitation, not a bearer-only link.
-        // Keep plain and JSON mints unchanged for machine clients.
-        Door::Listener { enroll } => phone_enrollment_requested(enroll, qr),
+        Door::Listener { enroll } => enroll,
         Door::Relay { route, enroll } => {
             let replace = replace_token.as_deref();
+            let enroll = phone_enrollment_requested(enroll, qr, output.default_qr, true);
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
@@ -840,6 +839,14 @@ pub(crate) fn run_pair(
         }
     };
     let addresses = resolve_pair_addresses(host.as_deref(), live);
+    // Both explicit camera QR and a QR shown by default must enroll a new
+    // phone. With no link there is no default QR; ordinary mints still work.
+    let enroll = phone_enrollment_requested(
+        enroll,
+        qr,
+        output.default_qr,
+        addresses.server_url.is_some(),
+    );
     let refusal = link_refusal(
         host.as_deref(),
         qr,
@@ -983,10 +990,15 @@ pub(crate) enum Door {
     },
 }
 
-/// Explicit camera pairing must work for a new phone; ordinary bearer and
-/// machine-readable mints keep their existing opt-in enrollment behavior.
-const fn phone_enrollment_requested(enroll: bool, qr: bool) -> bool {
-    enroll || qr
+/// Any QR actually shown to a phone must let it enroll; without a link the
+/// implicit QR is skipped. Piped, JSON and secret-file mints remain opt-in.
+const fn phone_enrollment_requested(
+    enroll: bool,
+    qr: bool,
+    default_qr: bool,
+    has_link: bool,
+) -> bool {
+    enroll || qr || (default_qr && has_link)
 }
 
 /// Why phone enrollment refuses a server certificate no workload CA issued.
@@ -2412,9 +2424,12 @@ mod tests {
 
     #[test]
     fn camera_pairing_enrolls_without_an_extra_flag_but_machine_mints_do_not() {
-        assert!(phone_enrollment_requested(false, true));
-        assert!(phone_enrollment_requested(true, false));
-        assert!(!phone_enrollment_requested(false, false));
+        assert!(phone_enrollment_requested(false, true, false, true));
+        assert!(phone_enrollment_requested(false, true, false, false));
+        assert!(phone_enrollment_requested(false, false, true, true));
+        assert!(phone_enrollment_requested(true, false, false, false));
+        assert!(!phone_enrollment_requested(false, false, true, false));
+        assert!(!phone_enrollment_requested(false, false, false, true));
     }
 
     /// No listener report, or one with nothing bound, is a refusal naming
