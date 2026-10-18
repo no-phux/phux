@@ -38,8 +38,8 @@ Use an explicit disposable server socket and a non-production profile, not
 an inherited pane socket. From the repository root, first run
 `just desktop-source` to materialize the workspace's pinned GPUI sources.
 The example opens a window; run it only in an authorized graphical session.
-That server must already have a session named `embed-test`; substitute its
-actual session name in the final argument if different.
+That server must already have a session named `embed-test` containing a
+terminal; substitute its actual session name in the final argument if different.
 
 ```sh
 # /tmp/phux-embed-test.sock must belong to your disposable test server.
