@@ -38,7 +38,7 @@ use super::widgets::{
 };
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
-use crate::render::{ChromeBreakpoints, Theme, clip_left, clip_text, display_width};
+use crate::render::{ChromeBreakpoints, Theme, clip_left, clip_text, display_width, home_to_tilde};
 
 /// Columns of the section column: a marker, the longest title
 /// (`Experimental`), a gap, and a two-digit count.
@@ -181,7 +181,8 @@ impl SettingsOverlay {
             specs.extend(CATALOG.iter().filter(|s| s.section == *section));
             specs.extend(SLOT_SPECS.iter().filter(|s| s.section == *section));
         }
-        let display_path = shorten_home(&path);
+        let home = std::env::var("HOME").ok();
+        let display_path = display_path_for(&path, home.as_deref());
         let mut page = Self {
             path,
             display_path,
@@ -1318,18 +1319,9 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// `~` for the home directory, so the header fits.
-fn shorten_home(path: &Path) -> String {
-    let shown = path.display().to_string();
-    std::env::var_os("HOME")
-        .map(|home| home.to_string_lossy().into_owned())
-        .filter(|home| !home.is_empty())
-        .and_then(|home| {
-            shown
-                .strip_prefix(home.as_str())
-                .map(|rest| format!("~{rest}"))
-        })
-        .unwrap_or(shown)
+/// The header's path: `~` for the home directory, so the header fits.
+fn display_path_for(path: &Path, home: Option<&str>) -> String {
+    home_to_tilde(&path.display().to_string(), home)
 }
 
 impl SettingsOverlay {
@@ -1593,6 +1585,16 @@ impl RenderOverlay for SettingsOverlay {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_path_shortens_home_only_at_a_path_boundary() {
+        let shown = |p: &str| display_path_for(Path::new(p), Some("/Users/p"));
+        assert_eq!(
+            shown("/Users/p/.config/phux/config.toml"),
+            "~/.config/phux/config.toml"
+        );
+        assert_eq!(shown("/Users/pat/x"), "/Users/pat/x");
+    }
 
     fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
         KeyEvent {
