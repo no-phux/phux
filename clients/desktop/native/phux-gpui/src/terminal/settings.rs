@@ -5,6 +5,7 @@
 //! scales 0.5–2; [`Settings::sanitize`] puts anything else back on the default.
 
 use gpui::{Font, Hsla, font, rgb};
+use phux_client_runtime::draw::{Theme, Visibility};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -83,6 +84,33 @@ impl Settings {
             && self.focused == other.focused
             && self.cursor_visible == other.cursor_visible
             && self.blink_visible == other.blink_visible
+    }
+
+    /// The colours the runtime's paint rules ([`phux_client_runtime::draw`])
+    /// resolve cells against.
+    #[must_use]
+    pub fn theme(&self) -> Theme<Hsla> {
+        Theme {
+            foreground: self.foreground,
+            background: self.background,
+            cursor: self.cursor,
+            ansi: self.palette,
+            selection_foreground: self.selection_foreground,
+            selection_background: self.selection_background,
+            rgb: |color| {
+                rgb(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)).into()
+            },
+        }
+    }
+
+    /// Focus and blink phase, for the runtime's paint rules.
+    #[must_use]
+    pub const fn visibility(&self) -> Visibility {
+        Visibility {
+            focused: self.focused,
+            cursor_visible: self.cursor_visible,
+            blink_visible: self.blink_visible,
+        }
     }
 
     /// Clamp metrics the painter cannot use. Non-finite values become the default.

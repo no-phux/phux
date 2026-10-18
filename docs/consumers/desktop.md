@@ -281,7 +281,7 @@ and themes first. The searchable font chooser offers installed families and
 the bundled Nerd family, retains the current selection, and identifies a
 missing font's Paper Mono substitution. Nerd symbols fall back automatically;
 the main font does not need to change. Font assets and patch attribution are
-shipped under their [Open Font License](../../clients/desktop/native/assets/fonts/JetBrainsMono-OFL.txt).
+shipped under their [Open Font License](../../clients/desktop/native/phux-gpui/assets/fonts/JetBrainsMono-OFL.txt).
 
 **Layout** holds **Blur behind window** (`windowBackground`, default `blur`).
 A blurred window is translucent over the desktop, and macOS re-blurs and blends
