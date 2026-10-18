@@ -22,7 +22,7 @@ use phux_protocol::ids::{OperationId, SatelliteHost, SessionKey};
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, AgentState, Connection, ConnectionIdentity};
 use crate::settings::skin::{Backdrop, Shift, Skin};
-use crate::settings::{self, DisplayPrefs, TabPosition, WindowBackground};
+use crate::settings::{self, DisplayPrefs, SidebarGrouping, TabPosition, WindowBackground};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
 use crate::workspace::persist::{self, FileLayoutStore};
@@ -229,13 +229,15 @@ pub struct Desk {
     pub(crate) fleet: super::fleet::Fleet,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
-    /// A host switch is resolving its target's home session.
-    #[cfg(feature = "ui-fixtures")]
-    pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
-    #[cfg(feature = "ui-fixtures")]
-    pub(super) main_menu: Option<gpui::WindowHandle<super::glass_menu::GlassMenu>>,
+    /// The glass menu showing, by the trigger that opened it.
+    pub(super) menu: Option<super::menus::OpenMenu>,
+    /// The trigger whose menu last closed, and when: a click that closes a
+    /// menu by deactivating it must not reopen it from the same trigger.
+    pub(super) menu_closed: Option<(gpui::SharedString, Instant)>,
+    /// Where menu triggers were painted.
+    pub(crate) anchors: super::ui::anchor::Anchors,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
@@ -598,11 +600,10 @@ impl Desk {
             hosts: Vec::new(),
             fleet: Default::default(),
             host_adding: None,
-            #[cfg(feature = "ui-fixtures")]
-            host_switching: false,
             drag_region: None,
-            #[cfg(feature = "ui-fixtures")]
-            main_menu: None,
+            menu: None,
+            menu_closed: None,
+            anchors: Default::default(),
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
@@ -1202,7 +1203,17 @@ impl Desk {
             }
             "plain-terminal" => self.update_prefs(|prefs| prefs.plain = !prefs.plain, cx),
             "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
-            "tabs-side" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Side, cx),
+            "tabs-side" => self.update_prefs(
+                |prefs| {
+                    prefs.tab_position = TabPosition::Side;
+                    prefs.sidebar_visible = true;
+                },
+                cx,
+            ),
+            "group-projects" => self.group_sidebar(SidebarGrouping::Project, cx),
+            "group-machines" => self.group_sidebar(SidebarGrouping::Machine, cx),
+            "group-none" => self.group_sidebar(SidebarGrouping::None, cx),
+            "main-menu" => self.open_main_menu(window, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
             "font-down" => self.update_prefs(|prefs| prefs.font_size -= 1.0, cx),
             "font-reset" => self.update_prefs(
@@ -1560,12 +1571,13 @@ impl Desk {
         cx: &mut Context<Self>,
     ) -> bool {
         let before = self.prefs.clone();
+        let axis = self.tab_position();
         change(&mut self.prefs);
         self.prefs = settings::sanitize_display(&self.prefs);
         if self.prefs == before {
             return false;
         }
-        if self.prefs.tab_position != before.tab_position {
+        if self.tab_position() != axis {
             if matches!(self.drag, Some(Drag::Tab { .. })) {
                 self.drag = None;
             }
@@ -1662,11 +1674,7 @@ impl Desk {
         }
         self.closed = true;
         self.fleet.clear();
-        #[cfg(feature = "ui-fixtures")]
-        if let Some(menu) = self.main_menu.take() {
-            let _ =
-                gpui::AnyWindowHandle::from(menu).update(cx, |_, window, _| window.remove_window());
-        }
+        self.close_menu(cx);
         self.persist();
         self.flush_saves();
         self.release_link(false);
@@ -3459,7 +3467,7 @@ impl Desk {
             link.connection
                 .agents
                 .values()
-                .map(move |info| super::view::ago_wait(info.changed_at_ms, now))
+                .map(move |info| super::ui::ago_wait(info.changed_at_ms, now))
         });
         peek.into_iter()
             .chain(ages.min().map(Duration::from_millis))
@@ -3508,41 +3516,6 @@ impl Desk {
             });
         })
         .detach();
-    }
-
-    /// Point this window at another host in place: `None` is this machine,
-    /// `Some(name)` a registered remote. The current connection and views are
-    /// released and the target's home session and saved layout take their
-    /// place. No new window is opened.
-    #[cfg(feature = "ui-fixtures")]
-    pub(crate) fn switch_host(&mut self, name: Option<String>, cx: &mut Context<Self>) {
-        if self.host_switching || self.remote == name {
-            return;
-        }
-        self.host_switching = true;
-        let phux = self.phux.clone();
-        let socket = self.socket.clone();
-        let target = name.clone();
-        cx.spawn(async move |desk, cx| {
-            let probe = target.clone();
-            let resolved = smol::unblock(move || match probe.as_deref() {
-                Some(host) => crate::connection::home::open_remote_home(host),
-                None => crate::connection::home::open_home(&phux, &socket, None),
-            })
-            .await;
-            let _ = desk.update(cx, |desk, cx| {
-                desk.host_switching = false;
-                match resolved {
-                    Ok(session) => desk.adopt_work(target, session, None, None, cx),
-                    Err(error) => {
-                        desk.post(Kind::Error, "Could not switch host", Some(error));
-                        cx.notify();
-                    }
-                }
-            });
-        })
-        .detach();
-        cx.notify();
     }
 
     fn work_layout_path(
@@ -3791,12 +3764,33 @@ impl Desk {
         cx.notify();
     }
 
-    /// Quick windows keep their compact titlebar regardless of the main layout.
+    /// Group the sidebar's sessions, showing the sidebar if it was hidden.
+    fn group_sidebar(&mut self, grouping: SidebarGrouping, cx: &mut Context<Self>) {
+        self.update_prefs(
+            |prefs| {
+                prefs.sidebar_grouping = grouping;
+                prefs.sidebar_visible = true;
+            },
+            cx,
+        );
+    }
+
+    /// Whether this window shows the sidebar: wanted, and not withdrawn by
+    /// the skin (the plain terminal has none) or the window's role.
+    pub(crate) fn sidebar_shown(&self) -> bool {
+        self.prefs.sidebar_visible
+            && self.role != WindowRole::Quick
+            && self.skin().chrome.sidebar > 0.
+    }
+
+    /// Where the tabs are painted. Tabs in the sidebar return to the
+    /// titlebar while the sidebar is hidden, so they never disappear; quick
+    /// windows keep their compact titlebar regardless of the main layout.
     pub(crate) fn tab_position(&self) -> TabPosition {
-        if self.role == WindowRole::Quick {
-            TabPosition::Top
-        } else {
+        if self.sidebar_shown() {
             self.prefs.tab_position
+        } else {
+            TabPosition::Top
         }
     }
 

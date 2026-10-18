@@ -8,7 +8,7 @@ use phux_protocol::ids::{AuthorityId, SessionKey};
 
 use super::desk::Desk;
 use super::notifications::Kind;
-use crate::connection::Connection;
+use crate::connection::{AgentState, Connection};
 
 /// A route chooses a connection; persistent identity chooses work on that authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,7 +31,8 @@ pub(crate) struct Work {
     pub id: u32,
     pub project: Option<(String, String)>,
     pub terminals: usize,
-    pub needs_you: usize,
+    /// The most pressing state among its agents that need a person.
+    pub attention: Option<AgentState>,
     pub intake: bool,
     pub online: bool,
 }
@@ -186,15 +187,13 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
                     id: session.id,
                     project,
                     terminals: panes.len(),
-                    needs_you: panes
-                        .iter()
-                        .filter(|pane| {
-                            connection
-                                .agents
-                                .get(&pane.terminal_id)
-                                .is_some_and(crate::connection::AgentInfo::needs_you)
-                        })
-                        .count(),
+                    attention: super::ui::status::strongest(
+                        panes
+                            .iter()
+                            .filter_map(|pane| connection.agents.get(&pane.terminal_id))
+                            .filter(|info| info.needs_you())
+                            .map(|info| info.state),
+                    ),
                     intake: session.key.is_some() && session.key == topology.intake(),
                     online: available(connection),
                 }

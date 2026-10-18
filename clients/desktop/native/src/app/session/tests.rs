@@ -363,7 +363,7 @@ struct FocusFixture {
 }
 
 #[gpui::test]
-fn main_menu_is_the_same_hub_with_or_without_a_sidebar(cx: &mut TestAppContext) {
+fn main_menu_drops_from_the_titlebar_with_or_without_a_sidebar(cx: &mut TestAppContext) {
     let desktop = cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
@@ -407,23 +407,33 @@ fn main_menu_is_the_same_hub_with_or_without_a_sidebar(cx: &mut TestAppContext) 
         cx.run_until_parked();
         let bounds = cx
             .debug_bounds("main-menu-rail")
-            .expect("persistent hub trigger");
+            .expect("persistent main menu trigger");
         assert!(bounds.origin.x >= gpui::px(78.));
         assert!(bounds.right() <= gpui::px(240.));
         cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(
             desk.read_with(cx, |desk, _| desk.modal.clone()),
-            crate::app::Modal::Goto
+            crate::app::Modal::None,
+            "the main menu is a dropdown, not a modal"
         );
-        let settings = cx
-            .debug_bounds("palette-mode-settings")
-            .expect("shared settings scope");
-        cx.simulate_click(settings.center(), gpui::Modifiers::none());
-        cx.run_until_parked();
+        let menu = desk
+            .read_with(cx, |desk, _| desk.menu_window())
+            .expect("the glass main menu opens");
+        let menu_cx = &mut gpui::VisualTestContext::from_window(menu, cx);
+        let settings = menu_cx
+            .debug_bounds("glass-menu-settings")
+            .expect("settings in the main menu");
+        menu_cx.simulate_click(settings.center(), gpui::Modifiers::none());
+        menu_cx.run_until_parked();
         assert_eq!(
-            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            desk.read_with(menu_cx, |desk, _| desk.modal.clone()),
             crate::app::Modal::Settings
+        );
+        assert!(
+            desk.read_with(menu_cx, |desk, _| desk.menu_window())
+                .is_none(),
+            "choosing an item closes the menu"
         );
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();

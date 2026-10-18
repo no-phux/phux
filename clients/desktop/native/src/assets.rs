@@ -1,4 +1,4 @@
-//! Kit's component bundle plus the few application icons used by the menu.
+//! Kit's component bundle plus the few application icons the glass menus use.
 use std::borrow::Cow;
 
 use gpui::{AssetSource, SharedString};
@@ -10,7 +10,13 @@ gpui_kit::assets::icon_assets!(
         AppWindow,
         LaptopMinimal,
         PanelsTopLeft,
-        Server
+        Server,
+        Clock,
+        FolderPlus,
+        Layers,
+        ListTree,
+        Pencil,
+        Trash
     ]
 );
 
@@ -47,6 +53,12 @@ mod tests {
             IconName::LaptopMinimal,
             IconName::PanelsTopLeft,
             IconName::Server,
+            IconName::Clock,
+            IconName::FolderPlus,
+            IconName::Layers,
+            IconName::ListTree,
+            IconName::Pencil,
+            IconName::Trash,
             IconName::ChevronLeft,
             IconName::ChevronRight,
             IconName::Folder,
