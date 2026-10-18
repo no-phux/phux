@@ -217,6 +217,7 @@ column is the base status word plus at most one relationship clause, about
 | [0183](./0183-quictun-is-a-standalone-tunnel-product.md) | quictun is a standalone tunnel product | Accepted (supersedes in part [0057](./0057-minimal-reference-relay.md)) |
 | [0184](./0184-build-and-ci-logic-is-one-bun-package.md) | Build and CI logic is one Bun package | Accepted |
 | [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) | quictun gets ACME certificates and multiplexes consumers | Accepted (builds on [0183](./0183-quictun-is-a-standalone-tunnel-product.md)) |
+| [0186](./0186-the-client-neutral-config-is-its-own-crate.md) | The client-neutral config is its own crate | Accepted (builds on [0039](./0039-layered-config.md), [0133](./0133-one-client-runtime-below-every-binding.md)) |
 
 ## When to write an ADR
 

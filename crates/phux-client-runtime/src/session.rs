@@ -128,7 +128,7 @@ impl Session {
     /// adds per-Terminal streams (proto.md §4.2).
     ///
     /// A development build refuses the production Unix socket
-    /// (`phux_config::socket::refuse_dev_on_production`).
+    /// (`phux_config_core::socket::refuse_dev_on_production`).
     ///
     /// # Errors
     ///
@@ -660,7 +660,7 @@ fn refuse_production_socket(dial: &Dial) -> Result<(), SessionError> {
     let Dial::Uds(path) = dial else {
         return Ok(());
     };
-    phux_config::socket::refuse_dev_on_production(path).map_err(|refusal| {
+    phux_config_core::socket::refuse_dev_on_production(path).map_err(|refusal| {
         SessionError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             refusal,

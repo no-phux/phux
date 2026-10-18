@@ -69,14 +69,14 @@ const PERF_ICOUNT_PATHS = [
 
 /**
  * The mobile FFI artifacts ffi-xcframework.yml and ffi-android.yml build on
- * main: phux-client-ffi's crate closure, its builders, and both workflows.
+ * main: phux-client-ffi's C ABI and UniFFI closures, its builders, and both workflows.
  * Not a lane, so an unknown path does not rebuild them.
  */
 function mobileFfiPaths(root: string): string[] {
   return [
-    ...[...pathClosure([{ dir: "crates/phux-client-ffi", dev: false }], root)].map(
-      (dir) => `${dir}/**`,
-    ),
+    ...[
+      ...pathClosure([{ dir: "crates/phux-client-ffi", dev: false, features: ["uniffi"] }], root),
+    ].map((dir) => `${dir}/**`),
     "scripts/{build-ffi-xcframework,build-mobile-ffi-xcframework,build-mobile-ffi-android}.sh",
     "scripts/ci/setup-android-ndk.sh",
     ".github/workflows/ffi-{android,xcframework}.yml",
@@ -92,7 +92,10 @@ export class Classifier {
   constructor(private readonly root = ROOT) {
     this.table = routes(root);
     this.mobileFfi = mobileFfiPaths(root);
-    this.uniffiCrates = pathClosure([{ dir: "crates/phux-client-ffi", dev: true }], root);
+    this.uniffiCrates = pathClosure(
+      [{ dir: "crates/phux-client-ffi", dev: true, features: ["uniffi"], defaultFeatures: false }],
+      root,
+    );
     this.packages = workspaceMembers(".", root)
       .flatMap(({ name, dir }) => (name && CRATE_NAME.test(name) ? [{ name, dir }] : []))
       // Longest directory first, so a nested crate wins over its parent.

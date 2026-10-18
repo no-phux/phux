@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use phux_config::RemoteConfigEntry;
+use phux_config_core::RemoteConfigEntry;
 use phux_dial::TlsClientIdentity;
 
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
@@ -403,8 +403,8 @@ impl AuthorityPin {
                 ..Self::default()
             };
         };
-        let store = phux_config::known_authorities::path_beside(config_path);
-        let ca = phux_config::known_authorities::lookup(&store, leaf, route.as_deref());
+        let store = phux_config_core::known_authorities::path_beside(config_path);
+        let ca = phux_config_core::known_authorities::lookup(&store, leaf, route.as_deref());
         Self { ca, route }
     }
 
@@ -458,8 +458,8 @@ pub fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, St
 pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String> {
     let target = RemoteTarget::parse(raw)?;
     let path: PathBuf =
-        config_path.map_or_else(phux_config::loader::config_path, Path::to_path_buf);
-    let config = phux_config::loader::load_from(&path)
+        config_path.map_or_else(phux_config_core::loader::config_path, Path::to_path_buf);
+    let config = phux_config_core::loader::load_client_from(&path)
         .map_err(|err| format!("could not read the phux config {}: {err}", path.display()))?;
     reject_duplicates(&config.remote)?;
     let entry = find_entry(&config.remote, &target).ok_or_else(|| unregistered(&target))?;
@@ -666,6 +666,25 @@ mod tests {
     }
 
     #[test]
+    fn resolves_layered_remotes_without_reading_tui_tables() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("shared.toml"),
+            "[[remote]]\nname = 'mini'\nendpoint = 'quic://127.0.0.1:8788'\n",
+        )
+        .expect("shared registry");
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "extends = ['shared.toml']\n[keybindings]\nprefix = 42\n",
+        )
+        .expect("config with invalid TUI schema");
+        let resolved = resolve("mini", Some(&config)).expect("client-neutral resolution");
+        assert_eq!(resolved.name, "mini");
+        assert_eq!(resolved.endpoint, "quic://127.0.0.1:8788");
+    }
+
+    #[test]
     fn a_relay_routed_entry_resolves_with_its_tls_server_name() {
         let mut routed = entry("mini", "quic://relay.example:4433");
         routed.tls_server_name = Some("mini-route".to_owned());
@@ -768,8 +787,8 @@ mod tests {
         );
 
         let authority = format!("sha256:{}", "c".repeat(64));
-        let store = phux_config::known_authorities::path_beside(&config);
-        phux_config::known_authorities::record(&store, &pin, None, &authority)
+        let store = phux_config_core::known_authorities::path_beside(&config);
+        phux_config_core::known_authorities::record(&store, &pin, None, &authority)
             .expect("pin at pairing");
         let second = resolve("mini", Some(&config)).expect("mini");
         assert_eq!(second.authority.ca.as_deref(), Some(authority.as_str()));

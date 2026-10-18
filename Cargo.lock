@@ -2736,7 +2736,7 @@ dependencies = [
  "libghostty-vt",
  "minisign-verify",
  "phux-client-core",
- "phux-config",
+ "phux-config-core",
  "phux-core",
  "phux-dial",
  "phux-perf",
@@ -2766,6 +2766,7 @@ dependencies = [
  "chrono",
  "insta",
  "nix 0.31.3",
+ "phux-config-core",
  "phux-protocol",
  "serde",
  "serde_json",
@@ -2777,6 +2778,18 @@ dependencies = [
  "toml_edit",
  "tracing",
  "unicode-width",
+]
+
+[[package]]
+name = "phux-config-core"
+version = "0.108.1"
+dependencies = [
+ "nix 0.31.3",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

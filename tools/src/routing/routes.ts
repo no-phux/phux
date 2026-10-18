@@ -97,7 +97,8 @@ const ROUTES: Record<string, Surface[]> = {
 /**
  * What each separately built lane compiles from the Cargo graph. The web lane
  * is the browser workspaces plus the browser harness build: phux-server's
- * `ws_demo_server` example (dev dependencies) and the `phux` binary.
+ * `ws_demo_server` example (dev dependencies) and the `phux` binary. Optional
+ * dependencies are followed only when their features are enabled.
  */
 export const LANE_BUILDS: readonly [Surface, readonly BuildRoot[]][] = [
   [

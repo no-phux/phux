@@ -1,0 +1,29 @@
+[package]
+name = "phux-config-core"
+description = "The client-neutral half of phux's config.toml: where it lives, how its layers merge, and the tables every client reads."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Split out of phux-config so an embedder that only dials remotes (the
+# desktop through phux-client-runtime) does not build the TUI's schema,
+# defaults and widgets. Every dependency below was already phux-config's, at
+# the same spec.
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# `instance` reads the uid and the host name through `nix`'s safe wrappers,
+# keeping this crate's `forbid(unsafe_code)`.
+nix = { version = "0.31", default-features = false, features = ["user", "hostname"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,8 +1,8 @@
 //! Layered config resolution and merge (ADR-0039).
 //!
 //! A file may declare `extends = ["path-or-name"]`. The effective config is
-//! embedded `default.toml` <- extended layers (depth-first, listed order) <-
-//! the declaring file, merged recursively; a key `x-append` holding an array
+//! the caller's embedded defaults <- extended layers (depth-first, listed
+//! order) <- the declaring file, merged recursively; a key `x-append` holding an array
 //! appends to `x` instead of replacing it. Resolution is depth-bounded and
 //! acyclic, a diamond layer merges once at its first position, and every
 //! failure names the offending file. The fold records which layer set each
@@ -26,7 +26,7 @@ const DEFAULTS_DISPLAY_PATH: &str = "<embedded default.toml>";
 /// One layer of the resolved config stack, in merge order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
-    /// The embedded `default.toml`; always first.
+    /// The caller's embedded defaults; always first.
     Defaults,
     /// A layer file pulled in via `extends`.
     Extended(PathBuf),
@@ -71,41 +71,36 @@ pub struct ConfigProvenance {
 const MANIFEST_ARRAY_KEYS: [&str; 2] = ["plugins", "plugins-append"];
 
 /// Parse `input` as a plain TOML table.
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "private module helper; pub would trip unreachable_pub"
-)]
-pub(crate) fn parse_table(input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
+///
+/// # Errors
+///
+/// [`ConfigError::Parse`] for invalid TOML.
+pub fn parse_table(input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
     toml::from_str(input).map_err(|e| ConfigError::parse(path, input, e.span(), e.message()))
 }
 
-/// Merge the full layer stack (defaults, `extends` layers, `user_input`) and
-/// record provenance. `path` anchors relative `extends` entries; with no
-/// `extends`, no I/O occurs.
+/// Merge the full layer stack (`defaults`, `extends` layers, `user_input`)
+/// and record provenance.
+///
+/// `path` anchors relative `extends` entries; with no `extends`, no I/O
+/// occurs. `max_read_bytes` bounds `user_input` plus every inherited file,
+/// the embedded defaults excluded.
 ///
 /// # Errors
 ///
 /// [`ConfigError::Parse`] for invalid TOML in any layer;
 /// [`ConfigError::LayerRead`] / [`ConfigError::LayerCycle`] /
-/// [`ConfigError::Layer`] for resolution and `-append` failures.
-pub fn merged_config_with_provenance(
-    user_input: &str,
-    path: &Path,
-) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
-    merged_with_budget(user_input, path, None)
-}
-
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "private module helper; pub would trip unreachable_pub"
-)]
-pub(crate) fn merged_with_budget(
+/// [`ConfigError::Layer`] for resolution and `-append` failures; an
+/// exhausted budget is a [`ConfigError::LayerRead`] with
+/// [`std::io::ErrorKind::FileTooLarge`].
+pub fn merged_with_budget(
+    defaults: &str,
     user_input: &str,
     path: &Path,
     max_read_bytes: Option<usize>,
 ) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
     let defaults_path = Path::new(DEFAULTS_DISPLAY_PATH);
-    let default_table = parse_table(crate::DEFAULT_CONFIG_TOML, defaults_path)?;
+    let default_table = parse_table(defaults, defaults_path)?;
     let stack = resolve_user_stack(user_input, path, max_read_bytes)?;
 
     let mut layers = vec![LayerSource::Defaults];
@@ -435,12 +430,9 @@ impl Recorder<'_> {
 }
 
 /// Dotted path for `key` under `prefix`, double-quoting non-bare keys. Shared
-/// with [`crate::check`] so its findings match provenance paths exactly.
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "private module helper; pub would trip unreachable_pub"
-)]
-pub(crate) fn child_path(prefix: &str, key: &str) -> String {
+/// with `phux_config::check` so its findings match provenance paths exactly.
+#[must_use]
+pub fn child_path(prefix: &str, key: &str) -> String {
     let is_bare = !key.is_empty()
         && key
             .chars()
@@ -581,6 +573,8 @@ fn finalize_keys(
 
 #[cfg(test)]
 mod budget_tests {
+    use super::merged_with_budget;
+
     #[test]
     fn aggregate_budget_counts_unique_diamond_layers_and_preserves_unbounded_loading() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -592,29 +586,23 @@ mod budget_tests {
         std::fs::write(dir.path().join("b.toml"), branch).expect("b");
         std::fs::write(dir.path().join("common.toml"), common).expect("common");
         let exact = input.len() + 2 * branch.len() + common.len();
-        let bounded =
-            crate::parse_with_defaults_bounded(input, &root, exact).expect("exact budget");
-        let ordinary = crate::parse_with_defaults(input, &root).expect("ordinary loader");
-        assert_eq!(bounded.remote, ordinary.remote);
-        assert!(crate::parse_with_defaults_bounded(input, &root, exact - 1).is_err());
+        let merge = |budget| merged_with_budget("", input, &root, budget).map(|(table, _)| table);
+        let ordinary = merge(None).expect("ordinary loader");
+        assert_eq!(merge(Some(exact)).expect("exact budget"), ordinary);
+        assert!(merge(Some(exact - 1)).is_err());
         std::fs::write(
             dir.path().join("common.toml"),
             format!("{common}#{}", "界".repeat(1000)),
         )
         .expect("large common");
-        assert!(crate::parse_with_defaults_bounded(input, &root, exact).is_err());
-        assert_eq!(
-            crate::parse_with_defaults(input, &root)
-                .expect("unbounded behavior unchanged")
-                .remote,
-            ordinary.remote
-        );
+        assert!(merge(Some(exact)).is_err());
+        assert_eq!(merge(None).expect("unbounded behavior unchanged"), ordinary);
     }
 }
 
 #[cfg(test)]
 mod retired_distro_tests {
-    use super::{herdr_layer_to_starter, rewrite_retired_distro_layer};
+    use super::{herdr_layer_to_starter, merged_with_budget, rewrite_retired_distro_layer};
     use std::path::Path;
 
     #[test]
@@ -633,8 +621,12 @@ mod retired_distro_tests {
 
         let user = dir.path().join("config.toml");
         let input = format!("extends = [\"{}\"]\n", herdr.display());
-        let cfg = crate::parse_with_defaults(&input, &user).expect("retired path still loads");
-        assert_eq!(cfg.defaults.history_limit, 12345);
+        let (merged, _) =
+            merged_with_budget("", &input, &user, None).expect("retired path still loads");
+        assert_eq!(
+            merged["defaults"]["history-limit"].as_integer(),
+            Some(12345)
+        );
 
         // A still-present herdr stub wins unchanged.
         std::fs::write(&herdr, "defaults.history-limit = 7\n").expect("stub");

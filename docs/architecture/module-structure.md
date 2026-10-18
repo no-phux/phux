@@ -6,7 +6,7 @@ last-reviewed: 2026-10-17
 
 # Module structure
 
-**TL;DR.** Directory-level maps of phux's twenty-one crates. Follow each crate's
+**TL;DR.** Directory-level maps of phux's twenty-five crates. Follow each crate's
 current layout when adding modules; do not retrofit older layouts onto new
 work. File-level detail belongs in the crate's `lib.rs` and module docs.
 
@@ -229,15 +229,31 @@ generation staged through `BootstrapBegin` / `Chunk` / `Ready`; an
 AgentSession has no replica and derives state from its records.
 `phux-client` and `phux-tui` re-export these modules under stable paths.
 
-## `phux-config`
+## `phux-config-core`
+
+The client-neutral half of `config.toml` (ADR-0186). Embedders depend on
+this crate, not on `phux-config`.
 
 ```
 src/
-  schema.rs, loader.rs, layer.rs, check.rs, error.rs, vocab.rs
-  instance.rs     — profiles and build kind; socket.rs, production.rs — the
-                    dev-never-reaches-production guards (operations.md)
+  loader.rs       — config path; ClientConfig ([[remote]], [organize])
+  layer.rs        — the extends merge over caller-supplied defaults (ADR-0039)
+  error.rs, organize.rs, remote.rs, known_authorities.rs
+  instance.rs     — profiles and build kind; socket.rs — the
+                    dev-never-reaches-production socket guard (operations.md)
+```
+
+## `phux-config`
+
+The full schema over `default.toml`. It re-exports `phux-config-core`
+under its own paths.
+
+```
+src/
+  schema.rs, loader.rs, check.rs, vocab.rs
+  production.rs   — the dev-never-reaches-production state guards
   keybind.rs      — keybind parser and trie resolver
-  connector.rs, remote.rs, satellite.rs, uplink.rs — machine-registry schema
+  connector.rs, satellite.rs, uplink.rs — machine-registry schema
   plugin.rs, plugin/ — plugin manifests: load, link, validate, version
   integration.rs, distro.rs, scaffold.rs
   settings/       — scalar-settings catalogue and comment-preserving writer (ADR-0101)

@@ -29,7 +29,8 @@ requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
 `.github/actions/classify-changes`, with no outer path filters. Root crates
 are not listed: the web and desktop lanes route the closure of what their
-builds compile (`LANE_BUILDS`), read from the Cargo manifests, so a
+builds compile (`LANE_BUILDS`), read from the Cargo manifests. Optional
+dependencies count only when an enabled feature turns them on, so a
 dependency added or dropped re-routes on its own. Changes confined to
 `clients/desktop/native/**` or `just/desktop.just` run only desktop
 qualification, not unrelated root, browser, or integration builds. Other
