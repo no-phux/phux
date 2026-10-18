@@ -143,12 +143,17 @@ impl gpui::Render for CachedChrome {
     }
 }
 
+/// A cached chrome region laid out at `style`. A cached view is a leaf to
+/// layout, with no measured content to defend its size, so the slot never
+/// shrinks: whatever the active tab holds, the chrome keeps the size its
+/// style names, and only an intended change (a drag, a pref, the skin) moves it.
 fn chrome_slot(
     slot: &mut Option<Entity<CachedChrome>>,
     build: fn(&mut Desk, &mut Window, &mut Context<Desk>) -> AnyElement,
     style: StyleRefinement,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let style = style.flex_shrink_0();
     slot.get_or_insert_with(|| {
         let observed = cx.entity();
         cx.new(|cx| {

@@ -5,6 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::coord::{
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail,
+    Sent, TakeClaim,
+};
 use crate::error::Error;
 use crate::id::Alias;
 use crate::start::{StartApplied, StartPlan, StartRequest};
@@ -13,9 +17,10 @@ use crate::store::{
     StateEdit,
 };
 
-/// The build a request or keeper comes from. Equal builds share this crate's
-/// types, so the exchange needs no further versioning.
-pub(crate) const BUILD: &str = env!("CARGO_PKG_VERSION");
+/// Keeper compatibility includes a semantic epoch, even during development
+/// within one package version. Bump the epoch for incompatible request or
+/// mutation semantics; otherwise an already-running keeper could retain them.
+pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-2");
 
 /// Longest request or response line, in bytes.
 pub(crate) const MAX_LINE: u64 = 1 << 20;
@@ -41,6 +46,13 @@ pub(crate) enum Request {
     PlanStart(StartRequest),
     ReplayStart(StartRequest),
     CommitStart(StartRequest),
+    SendMail(SendMail),
+    ReadMail(ReadMail),
+    AckMail(AckMail),
+    TakeClaim(TakeClaim),
+    RenewClaim(RenewClaim),
+    ReleaseClaim(ReleaseClaim),
+    Claims(ClaimFilter),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +65,12 @@ pub(crate) enum Response {
     StartPlan(StartPlan),
     StartReplay(Option<StartApplied>),
     StartApplied(StartApplied),
+    Sent(Sent),
+    Mail(Vec<Mail>),
+    Acked(Mail),
+    ClaimOutcome(ClaimOutcome),
+    Released(u64),
+    Claims(Vec<Claim>),
     Fault(Fault),
 }
 
@@ -104,12 +122,22 @@ pub(crate) enum Fault {
         running: u64,
         max_agents: u64,
     },
+    NoMail {
+        id: String,
+        reader: String,
+    },
+    NoClaim {
+        fence: u64,
+    },
     Busy,
     Stale {
         keeper: String,
     },
     BadRequest {
         message: String,
+        /// Absent only in legacy keepers that decode the payload before the header.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keeper: Option<String>,
     },
     Store {
         message: String,
@@ -145,6 +173,8 @@ impl From<Error> for Fault {
                 running,
                 max_agents: limit,
             },
+            Error::NoMail { id, reader } => Self::NoMail { id, reader },
+            Error::NoClaim { fence } => Self::NoClaim { fence },
             Error::Busy => Self::Busy,
             other @ (Error::Io(_)
             | Error::Sqlite(_)
@@ -191,9 +221,11 @@ impl From<Fault> for Error {
                 running,
                 limit: max_agents,
             },
+            Fault::NoMail { id, reader } => Self::NoMail { id, reader },
+            Fault::NoClaim { fence } => Self::NoClaim { fence },
             Fault::Busy => Self::Busy,
             Fault::Stale { keeper } => Self::Keeper(format!("keeper is from build {keeper}")),
-            Fault::BadRequest { message } => Self::Keeper(message),
+            Fault::BadRequest { message, .. } => Self::Keeper(message),
             Fault::Store { message } => Self::Store(message),
         }
     }

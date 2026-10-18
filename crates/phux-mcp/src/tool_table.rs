@@ -46,6 +46,9 @@ pub(crate) enum Touches {
     LocalExec,
     /// Reads local configuration only.
     LocalRead,
+    /// Writes this host's work store (mail, claims): no server state, no
+    /// PTY, nothing ended.
+    LocalWrite,
 }
 
 /// One tool.
@@ -74,6 +77,10 @@ pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
 /// Why an agent read stays on the CLI: the detector projection.
 const DETECTOR: &str = "the detector projection (manifest replay over the pane's screen, plus \
      `[[plugins]]` agent declarations) is built in the phux binary, not phux-client";
+
+/// Why mail and claims run the CLI: one work-store client and one identity rule.
+const COORD: &str = "the work store's keeper is started and addressed by the phux binary, and \
+     the caller's address comes from its pane, which the CLI resolves";
 
 /// Why the `AgentSession` verbs stay on the CLI.
 const AGENT_SESSION: &str = "the Terminal-to-AgentSession resolution and the result documents \
@@ -389,6 +396,29 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
     ),
     residue(
+        "phux_mail_send",
+        "mail send",
+        COORD,
+        // The doorbell is an acknowledged prompt into each recipient's agent.
+        Touches::Wire(&["GET_METADATA", "APPLY_INPUT"]),
+    ),
+    residue("phux_mail_read", "mail read", COORD, Touches::LocalWrite),
+    residue("phux_mail_ack", "mail ack", COORD, Touches::LocalWrite),
+    residue("phux_claim_take", "claim take", COORD, Touches::LocalWrite),
+    residue(
+        "phux_claim_renew",
+        "claim renew",
+        COORD,
+        Touches::LocalWrite,
+    ),
+    residue(
+        "phux_claim_release",
+        "claim release",
+        COORD,
+        Touches::LocalWrite,
+    ),
+    residue("phux_claim_list", "claim list", COORD, Touches::LocalRead),
+    residue(
         "phux_status",
         "status",
         "the status document (peer-credential pid, service state, log paths) is assembled by \
@@ -539,6 +569,10 @@ pub(crate) fn hints(touches: Touches) -> Option<Hints> {
         Touches::LocalExec => Some(UNMAPPED),
         Touches::LocalRead => Some(Hints {
             read_only: true,
+            destructive: false,
+        }),
+        Touches::LocalWrite => Some(Hints {
+            read_only: false,
             destructive: false,
         }),
         Touches::Wire(names) => wire_hints(names),

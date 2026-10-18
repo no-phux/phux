@@ -69,8 +69,8 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
 
 3. **One layer.** The coordinator owns tasks. Until phux-ajxq, the interim
    store is that coordinator. The ops hub is its first read-and-command
-   client and keeps no task state. Blackbird stays frozen and optional
-   ([ADR-0095](./0095-the-blackbird-boundary.md)). Beads stays dev-only.
+   client and keeps no task state. Agent mail and claims share this store
+   ([ADR-0187](./0187-agents-coordinate-through-phux.md)); beads is dev-only.
 
 4. **Merge.** The only merge is Patrick's explicit, TTY-confirmed action
    at the reviewed SHA. Nothing merges automatically. An agent never
@@ -118,7 +118,7 @@ nouns, ids, operation ids, and revisions imports without a second
 identity. Putting that store in the server would add a wire and would
 teach the terminal process about git. The event ring cannot be the task
 log: it drops history on restart. A second writer, or a second product
-store in the ops hub, Blackbird, or beads, splits the authority ADR-0092
+store in the ops hub or beads splits the authority ADR-0092
 exists to keep. An automatic or agent merge would land a SHA the human
 did not confirm. A delegated grant cannot create panes or start workers,
 so until MC-1.4b Lead runs with the owner's authority and only while
@@ -143,7 +143,7 @@ the owner's authority only while attended. Shared
 - Store tasks in the server's organization database: a protocol change
   and a second authority beside the coordinator.
 - Herdr-shaped files keyed by `phux/12`: not importable as opaque ids.
-- Let the ops hub, Blackbird, or beads own tasks: a second authority.
+- Let the ops hub or beads own tasks: a second authority.
 - Merge automatically, or let an agent merge. Refused.
 - Run task workers or an unattended Lead on the owner's grant, or name
   the user-facing verb `delegate`. Workers would hold terminate and signal

@@ -6,18 +6,21 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, Styled, StyledText,
-    WeakEntity, Window, div, px,
+    AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, Styled, StyledText, Window,
+    div, px,
 };
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{IndexPath, Sizable};
 
 use crate::app::actions::Run;
 use crate::app::color::from_hex;
 use crate::app::desk::{Desk, Modal};
 use crate::settings::theme::Palette;
+
+mod header;
+
+pub(crate) use header::hub_header;
+use header::{Header, header, wraps_controls};
 
 use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
@@ -25,16 +28,6 @@ use super::{
     Row, Section, Target, WINDOWS, command_results, command_sections, corner, move_sections,
     prepare_goto, query_terms, rank_sections, session_sections, settings_sections, window_sections,
 };
-
-struct Header {
-    modal: Modal,
-    all_commands: bool,
-    details: bool,
-    filter: GotoFilter,
-    has_details: bool,
-    empty_query: bool,
-    compact: bool,
-}
 
 fn results(desk: &mut Desk, query: &str, cx: &Context<Desk>) -> (&'static str, Vec<Section>) {
     match desk.modal {
@@ -75,12 +68,6 @@ fn selected_preview(sections: &[Section], selected: Option<IndexPath>) -> Option
         .clone()
 }
 
-fn preview_available(sections: &[Section], selected: Option<IndexPath>) -> bool {
-    selected
-        .and_then(|index| sections.get(index.section)?.rows.get(index.row))
-        .is_some_and(|row| row.preview.is_some())
-}
-
 pub(super) fn palette(
     desk: &mut Desk,
     colors: &Palette,
@@ -103,11 +90,14 @@ pub(super) fn palette(
         .selected_index()
         .or_else(|| (count > 0).then_some(IndexPath::new(0).section(0)));
     let preview = selected_preview(&sections, selected);
-    let details = preview.filter(|_| desk.palette_view.details);
+    // Open details hold their height whatever row is highlighted, so moving
+    // the selection never grows or shrinks the sheet.
+    let details_open =
+        desk.palette_view.details && (desk.modal == Modal::Goto || preview.is_some());
     let viewport = window.viewport_size();
     let top = super::sheet_top(viewport);
     let available = (viewport.height.as_f32() - top - super::SHEET_GUTTER).max(120.);
-    let detail_height = if details.is_some() {
+    let detail_height = if details_open {
         (available * 0.4).min(160.)
     } else {
         0.
@@ -137,7 +127,6 @@ pub(super) fn palette(
         all_commands: desk.palette_view.all_commands,
         details: desk.palette_view.details,
         filter: desk.goto.filter,
-        has_details: preview_available(&sections, selected),
         empty_query: query.trim().is_empty(),
         compact,
     };
@@ -199,12 +188,21 @@ pub(super) fn palette(
         .text_left()
         .overflow_hidden()
         .child(command)
-        .children(details.map(|card| facts_panel(card, detail_height, &colors, look.border)))
+        .when(details_open, |sheet| {
+            sheet.child(facts_panel(preview, detail_height, &colors, look.border))
+        })
         .into_any_element()
 }
 
-fn facts_panel(card: FactsCard, height: f32, colors: &Palette, rule: Hsla) -> impl IntoElement {
-    div()
+/// The details of the highlighted row, or a quiet note in the same space
+/// when that row has none.
+fn facts_panel(
+    card: Option<FactsCard>,
+    height: f32,
+    colors: &Palette,
+    rule: Hsla,
+) -> impl IntoElement {
+    let panel = div()
         .id("palette-facts")
         .debug_selector(|| "palette-facts".into())
         .w_full()
@@ -215,7 +213,14 @@ fn facts_panel(card: FactsCard, height: f32, colors: &Palette, rule: Hsla) -> im
         .border_color(rule)
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(6.));
+    let Some(card) = card else {
+        return panel
+            .text_size(px(11.))
+            .text_color(from_hex(&colors.muted))
+            .child("No details for this row");
+    };
+    panel
         .child(
             div()
                 .truncate()
@@ -249,175 +254,6 @@ fn facts_panel(card: FactsCard, height: f32, colors: &Palette, rule: Hsla) -> im
         }))
 }
 
-fn focus_search(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) {
-    if let Some(state) = desk.palette_state.clone() {
-        state.update(cx, |state, cx| state.focus(window, cx));
-    }
-    cx.notify();
-}
-
-pub(crate) fn hub_header(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
-    header(
-        &Header {
-            modal: desk.modal.clone(),
-            all_commands: false,
-            details: false,
-            filter: desk.goto.filter,
-            has_details: false,
-            empty_query: false,
-            compact: false,
-        },
-        colors,
-        &cx.weak_entity(),
-    )
-    .into_any_element()
-}
-
-fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>) -> gpui::Div {
-    let modal = state.modal.clone();
-    let modes = div()
-        .flex()
-        .items_center()
-        .gap(px(2.))
-        .when(
-            matches!(
-                modal,
-                Modal::Commands | Modal::Goto | Modal::Settings | Modal::Windows
-            ),
-            |modes| {
-                modes.children(
-                    [
-                        (Modal::Goto, "Work", "palette-mode-goto"),
-                        (Modal::Commands, "Actions", "palette-mode-commands"),
-                        (Modal::Settings, "Settings", "palette-mode-settings"),
-                        (Modal::Windows, "Windows", "palette-mode-windows"),
-                        (Modal::Capture, "Capture !", "palette-mode-capture"),
-                    ]
-                    .into_iter()
-                    .map(|(choice, label, id)| {
-                        let handle = handle.clone();
-                        div().debug_selector(move || id.into()).child(
-                            Button::new(id)
-                                .label(label)
-                                .ghost()
-                                .xsmall()
-                                .toggled(modal == choice)
-                                .on_click(move |_, window, cx| {
-                                    let _ = handle.update(cx, |desk, cx| {
-                                        if desk.modal != choice {
-                                            desk.open_modal(choice.clone(), window, cx);
-                                        }
-                                    });
-                                }),
-                        )
-                    }),
-                )
-            },
-        )
-        .when(modal == Modal::WindowSession, |modes| {
-            modes.child("Sessions")
-        })
-        .when(modal == Modal::MoveResources, |modes| {
-            modes.child("Move to")
-        });
-    let controls = header_controls(state, handle);
-    let wrapped = wraps_controls(&modal, state.compact, state.empty_query);
-    div()
-        .h(px(if wrapped { 68. } else { 36. }))
-        .when(wrapped, |this| this.flex_wrap())
-        .px(px(10.))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(8.))
-        .text_size(px(11.))
-        .text_color(from_hex(&colors.muted))
-        .child(modes)
-        .child(controls.when(wrapped, |this| this.w_full().justify_end()))
-}
-
-fn wraps_controls(modal: &Modal, compact: bool, empty_query: bool) -> bool {
-    compact && (*modal == Modal::Goto || *modal == Modal::Commands && empty_query)
-}
-
-fn header_controls(state: &Header, handle: &WeakEntity<Desk>) -> gpui::Div {
-    let modal = &state.modal;
-    let mut controls = div().flex().items_center().gap(px(4.));
-    if *modal == Modal::Commands && state.empty_query {
-        let handle = handle.clone();
-        controls = controls.child(
-            div()
-                .debug_selector(|| "palette-all-commands".into())
-                .child(
-                    Button::new("palette-all-commands")
-                        .label("All commands")
-                        .ghost()
-                        .xsmall()
-                        .toggled(state.all_commands)
-                        .on_click(move |_, window, cx| {
-                            let _ = handle.update(cx, |desk, cx| {
-                                desk.palette_view.all_commands = !desk.palette_view.all_commands;
-                                focus_search(desk, window, cx);
-                            });
-                        }),
-                ),
-        );
-    }
-    if *modal == Modal::Goto {
-        controls = controls.child(state_filter(state.filter, handle));
-        if state.has_details {
-            let handle = handle.clone();
-            controls = controls.child(
-                div().debug_selector(|| "palette-details".into()).child(
-                    Button::new("palette-details")
-                        .label("Details")
-                        .ghost()
-                        .xsmall()
-                        .toggled(state.details)
-                        .on_click(move |_, window, cx| {
-                            let _ = handle.update(cx, |desk, cx| {
-                                desk.palette_view.details = !desk.palette_view.details;
-                                focus_search(desk, window, cx);
-                            });
-                        }),
-                ),
-            );
-        }
-    }
-    controls
-}
-
-fn state_filter(filter: GotoFilter, desk: &WeakEntity<Desk>) -> impl IntoElement {
-    let desk = desk.clone();
-    div().debug_selector(|| "palette-filter".into()).child(
-        Button::new("palette-filter")
-            .label(if filter == GotoFilter::All {
-                "Filter"
-            } else {
-                filter.label()
-            })
-            .ghost()
-            .xsmall()
-            .dropdown_caret(true)
-            .dropdown_menu(move |mut menu, _, _| {
-                for choice in GotoFilter::ALL {
-                    let desk = desk.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(choice.label())
-                            .checked(choice == filter)
-                            .on_click(move |_, window, cx| {
-                                let _ = desk.update(cx, |desk, cx| {
-                                    desk.set_goto_filter(choice, window, cx)
-                                });
-                            }),
-                    );
-                }
-                menu
-            }),
-    )
-}
-
 fn item(
     row: Row,
     tokens: &[&str],
@@ -430,7 +266,7 @@ fn item(
     let highlights = title_matches(&title, tokens);
     // A destination's context disambiguates it; command explanations remain searchable only.
     let detail = row.detail.filter(|_| row.command.is_none());
-    let chord = row.chord.filter(|_| selected);
+    let chord = row.chord;
     let mut item = CommandItem::new()
         .label(title.clone())
         .keywords([row.keywords]);
@@ -479,10 +315,14 @@ fn item(
                     .text_color(from_hex(&colors.muted))
                     .child(detail)
             }))
+            // Every row holds its chord's space and the highlighted one shows
+            // it, so moving the highlight never re-truncates a title.
             .children(chord.clone().map(|chord| {
                 let selector = format!("palette-chord:{chord}");
                 div()
-                    .debug_selector(move || selector)
+                    .flex_shrink_0()
+                    .when(selected, |hint| hint.debug_selector(move || selector))
+                    .when(!selected, |hint| hint.invisible())
                     .text_size(px(11.))
                     .text_color(from_hex(&colors.muted))
                     .child(chord)

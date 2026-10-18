@@ -1,240 +1,234 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-17
+last-reviewed: 2026-10-18
 ---
 
 # Decisions in force
 
-**TL;DR.** The ADRs that currently govern each part of phux, grouped by
-topic and listed newest decision first, with one line on what each one
-decides. Superseded and deprecated ADRs are omitted; ADRs still under
-review sit in the trailing Proposed block. Start here to learn what is
-settled and follow a link for the why. The README index is the numeric
-view; a docs gate keeps the two in sync.
+**TL;DR.** Current decisions by topic, newest first; Proposed records remain
+in the trailing block. Follow each record for its contract, rationale, and
+relationships. The [numeric index](./README.md) is the other navigation view.
 
-A topic lists only ADRs whose `Status:` is `Accepted` or
-`Accepted (forward-compat)`. When an ADR is accepted, add its line to the
-topic it governs; when it is superseded or deprecated, delete its line.
-The `adr-in-force-sync` gate in `scripts/check-docs.sh` fails any tree
-where a live ADR is missing from this file, listed twice, or listed after
-it stopped being in force. Where an older ADR in a topic has been amended
-by a newer one, the newer line is the operative reading.
+Topics include Accepted and Accepted (forward-compat) records. A newer
+amending decision is operative where it overlaps an older one; the older
+record retains its historical rationale. Update membership when a record's
+status changes. The docs gate checks identities, ordering, and membership.
 
 ## Identity and kinds
 
-- [0160](./0160-sessions-own-resources-and-window-is-retired.md) A resource belongs to exactly one session; sessions are persistent or ephemeral records chosen at create, Window is gone, tabs are arrangement groups, and each server designates a persistent Intake session.
-- [0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md) The TUI casts no `window-size` vote and sizes each pane with `RESIZE_TERMINAL`, which carries an optional cell pixel size.
-- [0126](./0126-idempotent-create.md) A spawn may carry a client key; a retry with the same key and payload returns the original resource, and a different payload is refused.
-- [0125](./0125-kind-catalog-is-generated-metadata.md) One compiled table in `phux_protocol::kinds` is both the per-kind method catalog and the workload-auth classifier; no catalog frame, no string-invoked methods, and discovery grants nothing.
-- [0124](./0124-retain-on-exit.md) A spawn may ask to keep its Terminal after exit; the exit becomes a facet and `RESOURCE_CLOSED` stays the one purge.
-- [0104](./0104-parent-bindings-are-l1-lifecycle.md) A parent is bound at spawn; closing it closes every child with `ParentClosed`, atomically.
-- [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; `ResourceId` replaces `TerminalId`, with Terminal as kind 0.
-- [0064](./0064-playback-as-a-pane.md) `phux play` creates a real Terminal fed from a cast; no wire change.
-- [0062](./0062-headless-resize-and-window-size-policy.md) An explicit headless resize applies now but does not outrank the `window-size` policy.
-- [0056](./0056-cross-session-terminal-move.md) `MOVE_RESOURCE` re-parents a live Terminal across sessions on L1; geometry stays L3.
-- [0050](./0050-explicit-spawn-ownership.md) `SPAWN_RESOURCE` may name an owning Terminal; placement remains a client-written L3 concern.
-- [0027](./0027-terminal-references-and-l3-links.md) A Terminal is one identity with one geometry; views, tags, and links are client-side.
-- [0015](./0015-protocol-layering.md) The wire is L1 Terminals, L2 Collections, L3 metadata; sessions and windows are conventions.
-- [0011](./0011-protocol-core-independence.md) `phux-protocol` and `phux-core` share no dependency edge; `IdBridge` is their meeting point.
+- [0160](./0160-sessions-own-resources-and-window-is-retired.md) Sessions own resources; Window is retired
+- [0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md) The TUI sizes panes and casts no viewport vote
+- [0126](./0126-idempotent-create.md) Idempotent create
+- [0125](./0125-kind-catalog-is-generated-metadata.md) Kind catalog is generated metadata
+- [0124](./0124-retain-on-exit.md) Retain on exit
+- [0104](./0104-parent-bindings-are-l1-lifecycle.md) Parent bindings are L1 lifecycle
+- [0102](./0102-resources-the-server-serves-kinds.md) Resources the server serves kinds
+- [0064](./0064-playback-as-a-pane.md) Playback as a pane
+- [0062](./0062-headless-resize-and-window-size-policy.md) Headless resize and window size policy
+- [0056](./0056-cross-session-terminal-move.md) Cross-session Terminal move
+- [0050](./0050-explicit-spawn-ownership.md) Explicit spawn ownership
+- [0027](./0027-terminal-references-and-l3-links.md) Terminal references and L3 links
+- [0015](./0015-protocol-layering.md) Protocol layering
+- [0011](./0011-protocol-core-independence.md) Protocol core independence
 
 ## Wire and codecs
 
-- [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) Organization edits are typed `COMMAND` variants behind `ORGANIZATION`, with operation ids, expected revisions, and typed refusals; the intercepted session keys and the TUI layout key are translated for old clients.
-- [0142](./0142-host-path-query-is-separate-from-directory-listing.md) Host path browse and fuzzy search use a new feature-gated L3 frame pair; directory listings do not change.
+- [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) Organization is typed commands behind a feature bit
+- [0142](./0142-host-path-query-is-separate-from-directory-listing.md) Host path queries do not change directory listings
 
-- [0137](./0137-server-feature-word-extends.md) The `ServerFeature` u32 is closed; the next capability is a trailing `features_ext` word that old clients ignore.
-- [0123](./0123-events-are-journaled.md) Every event is stamped with a server-wide sequence and journaled; a cursor replays it, and every loss is a typed gap.
-- [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
-- [0117](./0117-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
-- [0061](./0061-capabilities-add-versions-break.md) New wire surface ships as a negotiated capability; a `major.minor` mismatch is rejected.
-- [0060](./0060-self-contained-session-recording.md) Recording is a consumer-side projection over the attach contract; encoders run in-process.
-- [0059](./0059-sandboxed-chunked-file-upload.md) `PUT_FILE` sends bounded chunks into a server-chosen sandbox directory under the command envelope.
-- [0034](./0034-kitty-graphics-image-passthrough.md) Kitty graphics prefer Unicode placeholders; the client repaints from its cell grid only.
-- [0024](./0024-wire-owns-input-atoms.md) The wire protocol owns its input atoms instead of reusing libghostty's types.
-- [0021](./0021-control-plane-commands.md) CLI verbs ride `COMMAND`/`COMMAND_RESULT`; selectors resolve client-side against `GET_STATE`.
-- [0013](./0013-libghostty-bytes-on-wire.md) Terminal content crosses the wire as VT bytes; input stays structured events.
-- [0008](./0008-use-libghostty-types-directly.md) Plain libghostty types are re-exported, not mirrored; only multiplexer domain types are phux's own.
-- [0006](./0006-input-mirrors-libghostty.md) Wire input events wrap libghostty atoms with terminal addressing and phux framing.
+- [0137](./0137-server-feature-word-extends.md) Server feature word extends (forward-compat)
+- [0123](./0123-events-are-journaled.md) Events are journaled
+- [0086](./0086-shared-render-pool.md) Shared render pool
+- [0117](./0117-wire-codec-stays-tlv.md) Wire codec stays TLV
+- [0061](./0061-capabilities-add-versions-break.md) Capabilities add versions break
+- [0060](./0060-self-contained-session-recording.md) Self-contained session recording
+- [0059](./0059-sandboxed-chunked-file-upload.md) Sandboxed chunked file upload
+- [0034](./0034-kitty-graphics-image-passthrough.md) Kitty graphics image passthrough
+- [0024](./0024-wire-owns-input-atoms.md) Wire owns input atoms
+- [0021](./0021-control-plane-commands.md) Control plane commands
+- [0013](./0013-libghostty-bytes-on-wire.md) libghostty bytes on wire
+- [0008](./0008-use-libghostty-types-directly.md) Use libghostty types directly
+- [0006](./0006-input-mirrors-libghostty.md) Input mirrors libghostty
 
 ## Server process and actor model
 
-- [0162](./0162-organization-records-persist-and-activations-reconcile.md) Organization records commit to a SQLite store before memory; activations record process identity, reconcile to lost or unobserved after a crash, never relaunch, and follow an explicit exit policy.
-- [0150](./0150-the-server-keeps-the-restore-archive-current.md) `--restore` runs `phux server --autosave`: the server restores the archive on a cold start and rewrites it atomically after each change, so a crash restores the latest layout.
-- [0130](./0130-on-disk-pty-journal-is-not-built.md) The server keeps no durable PTY output and ships no `--recover` mode; a crash loses scrollback and clients reattach to a fresh server.
-- [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
-- [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
-- [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
-- [0083](./0083-in-place-supervisor-unit-reconcile.md) `service reconcile` patches only the installed unit's restart-policy keys and reloads nothing.
-- [0080](./0080-socket-lifecycle-and-instance-isolation.md) Liveness is a connect probe; every build resolves a profile that isolates its directories.
-- [0073](./0073-service-managed-pane-login-shell.md) A service-managed server spawns command-less panes as login shells; hand-started servers do not.
-- [0063](./0063-ephemeral-server-lifetime.md) `--exit-after-idle` is an opt-in exit condition beside the last-pane self-exit.
-- [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) The server runs under a generated service unit; `enroll` mints credentials over ssh.
-- [0032](./0032-graceful-server-upgrade.md) The server re-execs in place with inherited fds; sessions survive a binary upgrade.
-- [0028](./0028-runtime-log-control.md) Logs are leveled `tracing`; input atoms narrate their shape and never their text.
-- [0014](./0014-server-terminal-pane-actor.md) Each Terminal is one `spawn_local` actor on the single current-thread runtime.
-- [0005](./0005-relationship-to-zmx-and-zmosh.md) zmx and zmosh are pattern sources, not shared code or forks.
-- [0004](./0004-libghostty-vt-as-grid.md) Per-pane server state is a `libghostty_vt::Terminal`, not a hand-written grid.
-- [0003](./0003-server-process-model.md) One server per user holds every session in a single process.
+- [0162](./0162-organization-records-persist-and-activations-reconcile.md) Organization records persist; activations reconcile
+- [0150](./0150-the-server-keeps-the-restore-archive-current.md) The server keeps the restore archive current
+- [0130](./0130-on-disk-pty-journal-is-not-built.md) On disk pty journal is not built
+- [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit closes terminals and detaches windows
+- [0096](./0096-always-on-performance-telemetry.md) Always on performance telemetry
+- [0088](./0088-adopting-a-live-server-into-supervision.md) Adopting a live server into supervision
+- [0083](./0083-in-place-supervisor-unit-reconcile.md) In-place supervisor unit reconcile
+- [0080](./0080-socket-lifecycle-and-instance-isolation.md) Socket lifecycle and instance isolation
+- [0073](./0073-service-managed-pane-login-shell.md) Service managed pane login shell
+- [0063](./0063-ephemeral-server-lifetime.md) Ephemeral server lifetime
+- [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) Always-on server and ssh-bootstrapped enrollment
+- [0032](./0032-graceful-server-upgrade.md) Graceful server upgrade
+- [0028](./0028-runtime-log-control.md) Runtime log control (forward-compat)
+- [0014](./0014-server-terminal-pane-actor.md) Server terminal pane actor
+- [0005](./0005-relationship-to-zmx-and-zmosh.md) Relationship to zmx and zmosh
+- [0004](./0004-libghostty-vt-as-grid.md) libghostty VT as grid
+- [0003](./0003-server-process-model.md) Server process model
 
 ## State sync and bootstrap
 
-- [0143](./0143-ship-ten-mib-of-scrollback-per-pane.md) `defaults.history-bytes` ships at 10 MiB; only panes that fill it pay for it.
-- [0119](./0119-attach-leases-retained-history.md) Attach leases retained history; `history-bytes` is a memory bound.
-- [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) Scrollback is bounded in bytes by `defaults.history-bytes`.
-- [0090](./0090-confirmation-gated-predictive-echo.md) Predictive echo shows on the alternate screen only after a confirmed non-blank echo.
-- [0070](./0070-native-engine-state-bootstrap.md) Native clients bootstrap from versioned libghostty state; history replicas are client-owned.
-- [0043](./0043-state-diff-output-mode.md) `StateSync` output mode emits per-consumer minimum-VT diffs with an ack-advanced reference.
-- [0018](./0018-lazy-state-synchronization.md) The wire's long-arc shape is lazy per-consumer synchronization of engine state.
+- [0143](./0143-ship-ten-mib-of-scrollback-per-pane.md) Ship 10 MiB of scrollback per pane
+- [0119](./0119-attach-leases-retained-history.md) Attach leases retained history
+- [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) Explicit per pane scrollback byte ceiling
+- [0090](./0090-confirmation-gated-predictive-echo.md) Confirmation gated predictive echo
+- [0070](./0070-native-engine-state-bootstrap.md) Native engine state bootstrap
+- [0043](./0043-state-diff-output-mode.md) State diff output mode
+- [0018](./0018-lazy-state-synchronization.md) Lazy state synchronization
 
 ## Input authority
 
-- [0144](./0144-input-credits-backpressure-instead-of-drop.md) Typed input waits for per-Terminal credits instead of being dropped; a pane stalled past five seconds refuses input explicitly.
-- [0053](./0053-acknowledged-idempotent-input.md) `APPLY_INPUT` is one bounded, acknowledged, idempotent input batch under the command envelope.
-- [0044](./0044-dedicated-input-lane.md) Input routing and encoding run on a dedicated thread from published mode snapshots.
-- [0127](./0127-attach-roles-are-lease-intent.md) An attach may declare `VIEWER` (observe-only, input refused) or `PRIMARY` with `DELIBERATE` takeover (attach and seize); the lease and the grant stay the only arbiters.
-- [0128](./0128-approvals-are-held-actions.md) A `?signal` grant's kills, signals, and forced detaches are held until a connection holding un-held `SIGNAL` on the subject approves (run once, as the requester) or denies; approvals expire, and every confirmation derives from the catalog's `dangerous` mark.
-- [0033](./0033-input-authority-and-process-signals.md) Exclusive input leases and process signals ride the command envelope as Terminal-scoped verbs.
+- [0144](./0144-input-credits-backpressure-instead-of-drop.md) Input credits backpressure instead of drop
+- [0053](./0053-acknowledged-idempotent-input.md) Acknowledged idempotent input
+- [0044](./0044-dedicated-input-lane.md) Dedicated input lane
+- [0127](./0127-attach-roles-are-lease-intent.md) Attach roles are lease intent
+- [0128](./0128-approvals-are-held-actions.md) Approvals are held actions
+- [0033](./0033-input-authority-and-process-signals.md) Input authority and process signals
 
 ## Federation and transport
 
-- [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) `quictun expose --acme-domain` obtains and renews a public certificate by TLS-ALPN-01 through the relay's TCP ingress; `Protocol::consumer_streams` lets one consumer connection carry many bridged streams (phux keeps one), and `connect` multiplexes every local connection onto one.
-- [0183](./0183-quictun-is-a-standalone-tunnel-product.md) `quictun` ships `relay`/`pair`/`expose`/`connect` with TLS ending at the service, a TCP ingress routed by ClientHello server name, per-route consumer caps, and a protocol-chosen half-close; accounts stay in the backend that writes the route-token store.
-- [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
-- [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is `crates/quictun`, which depends on no phux crate: a deployment supplies its ALPNs and connection-ID tag as a `Protocol`, and `phux-relay` is phux's binding.
-- [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) `phux attach --ssh` bootstraps over ssh: the host's server opens a QUIC listener for one attach on a local-socket-only `OPEN_LISTENER`, admits only an in-memory token, and closes it after its linger; `ssh://` entries try this before `ssh -t`.
-- [0115](./0115-quic-stream-per-terminal.md) QUIC carries one control stream plus one bidi stream per attached Terminal; UDS/ws keep the single-stream shape.
-- [0111](./0111-how-a-front-restore-is-judged.md) A front restore survives one failed connection of its host and is judged when the backoff redial, a lister, lists; This Mac's first projection at launch leaves a restored peer's tab in front; a record matches on coordinator, session id and creation time, so a graceful upgrade keeps it.
-- [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) Cockpit keeps, beside each remembered host, the one session it showed; at launch every host lists, and only the one whose tab was in front is shown again, at the window's real size, once its own list still carries that session.
-- [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) A late kill is `KILL_RESOURCE_IF`: the server kills only while the caller's instance token names its id space and no connection but the spawning one attached the resource; a hub relays the check to the satellite and vouches for its own consumers.
-- [0136](./0136-hub-mirrors-satellite-agent-metadata.md) A hub keeps a read-only mirror of `phux.agent/v1` and `phux.agent.asked/v1` per satellite terminal, retagged `Local` to `Satellite`. Every other L3 key stays server-local.
-- [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time. It does not chain. Routing failure is an `OTHER` refusal naming the host. The agent-metadata mirror is the separate carve-out above.
-- [0107](./0107-satellite-sessions-are-listed-never-adopted.md) A hub lists satellite sessions host-qualified under their own ids; selecting one opens its active pane through the resource relay.
-- [0141](./0141-pair-mints-only-against-a-live-listener.md) `phux pair` mints only after the running server reports a bound remote listener; the connect link names that bind.
-- [0164](./0164-pair-links-name-the-magicdns-host.md) On a MagicDNS tailnet, `phux pair` links name the host's MagicDNS name, not its tailnet address, on both `url` and `quic`; pinning makes the certificate's names irrelevant.
-- [0122](./0122-host-add-is-the-front-door.md) `phux host add HOST` is the one front door for a machine: confirm, start and supervise, pair, probe, register; an attach whose saved route stops answering starts the server over ssh before it re-pairs.
-- [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
-- [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.
-- [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
-- [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) A relay route is the TLS server name everywhere: `[[remote]] tls-server-name`, the connect link's `sni` (with `quic`, no `url`), and `phux pair --relay-route`.
-- [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool (its home is now ADR-0181's).
-- [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
-- [0051](./0051-outbound-dial-out-connector-transport.md) A server behind NAT dials out to a relay and holds one persistent QUIC tunnel.
-- [0037](./0037-overlay-network-reachability.md) Remote self-host consumers reach the server over a WireGuard-class overlay; phux stays overlay-agnostic.
-- [0025](./0025-browser-web-client.md) `phux-web` is a Rust-to-WASM consumer over a WebSocket transport beside UDS.
-- [0007](./0007-mosh-class-transport-and-satellites.md) Transport is a trait; every identity carries a local or satellite tag from day one.
+- [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) quictun gets ACME certificates and multiplexes consumers
+- [0183](./0183-quictun-is-a-standalone-tunnel-product.md) quictun is a standalone tunnel product
+- [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) Satellites enroll and dial out to the hub
+- [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is a standalone QUIC tunnel crate
+- [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) Ssh bootstrap opens a listener per attach
+- [0115](./0115-quic-stream-per-terminal.md) QUIC stream per terminal
+- [0111](./0111-how-a-front-restore-is-judged.md) How a front restore is judged
+- [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) A showing peer is re-shown at launch only in front
+- [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) Late kills are conditional on instance and attachment
+- [0136](./0136-hub-mirrors-satellite-agent-metadata.md) Hub mirrors satellite agent metadata
+- [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays host queries per request
+- [0107](./0107-satellite-sessions-are-listed-never-adopted.md) Satellite sessions are listed never adopted
+- [0141](./0141-pair-mints-only-against-a-live-listener.md) Pair mints only against a live listener
+- [0164](./0164-pair-links-name-the-magicdns-host.md) Pair links name the magicdns host
+- [0122](./0122-host-add-is-the-front-door.md) Host add is the front door
+- [0093](./0093-remote-target-as-a-resolution-ladder.md) Remote target as a resolution ladder
+- [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) Overlay auto-listen and one-command pairing
+- [0066](./0066-host-namespace.md) Host namespace
+- [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) Relay routes ride the TLS server name everywhere
+- [0057](./0057-minimal-reference-relay.md) Minimal reference relay
+- [0052](./0052-connector-route-identity-and-config.md) Connector route identity and config
+- [0051](./0051-outbound-dial-out-connector-transport.md) Outbound dial out connector transport
+- [0037](./0037-overlay-network-reachability.md) Overlay network reachability (forward-compat)
+- [0025](./0025-browser-web-client.md) Browser web client
+- [0007](./0007-mosh-class-transport-and-satellites.md) Mosh class transport and satellites (forward-compat)
 
 ## Auth and trust
 
-- [0180](./0180-the-relay-is-blind.md) A relay routes on the route alone and forwards ciphertext: every relayed consumer runs TLS 1.3 to the server inside its stream, pinning the server's CA; the connector refuses anything else and clients refuse to dial a route without that pin.
-- [0179](./0179-the-legacy-auth-paths-are-removed.md) `local` and `paired` are the only modes: no mode beside a remote listener refuses to start, `PHUX_WORKLOAD_MTLS` and the legacy token-store migration are retired, and a CA pin is made at pairing, never learned.
-- [0163](./0163-actors-and-delegated-agent-grants.md) Every change names its principal and on-behalf-of human; `ORGANIZE` and `TERMINATE` join the scope verbs under schema 2; agents act through delegated grants, and a human's takeover always wins the lease.
-- [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) A device without ssh enrolls a key it keeps with a single-use `phux pair --enroll` ticket over the QUIC listener's `phux-enroll/1` ALPN; relays and WebTransport carry the identity in an end-to-end TLS session inside their stream.
-- [0153](./0153-clients-pin-the-workload-ca.md) The workload CA issues the server certificate; clients pin the CA at pairing, refuse a changed CA by name, and `phux workload authority --rotate` re-pairs everything.
-- [0116](./0116-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.
-- [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
-- [0098](./0098-workload-proof-and-closed-scope-authority.md) Closed verb/selector grants with one pre-routing seam and live revocation (proof profile superseded by 0116).
-- [0091](./0091-certificate-names-the-advertised-address.md) The certificate names bind and overlay addresses once, at generation, and is never widened.
-- [0038](./0038-hub-satellite-auth.md) A hub dials a satellite as an ordinary paired consumer, pinned to its certificate fingerprint.
-- [0031](./0031-remote-consumer-auth-and-encryption.md) Remote consumers use TLS over WebSocket with a pairing-issued bearer token in HELLO.
+- [0180](./0180-the-relay-is-blind.md) The relay is blind
+- [0179](./0179-the-legacy-auth-paths-are-removed.md) The legacy auth paths are removed
+- [0163](./0163-actors-and-delegated-agent-grants.md) Actors and delegated agent grants
+- [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) Devices enroll with a ticket over their own alpn
+- [0153](./0153-clients-pin-the-workload-ca.md) Clients pin the workload ca
+- [0116](./0116-workload-auth-is-mtls.md) Workload auth is mTLS
+- [0106](./0106-identity-is-the-serving-user.md) Identity is the serving user
+- [0098](./0098-workload-proof-and-closed-scope-authority.md) Workload proof and closed-scope authority (forward-compat)
+- [0091](./0091-certificate-names-the-advertised-address.md) Certificate names the advertised address
+- [0038](./0038-hub-satellite-auth.md) Hub satellite auth
+- [0031](./0031-remote-consumer-auth-and-encryption.md) Remote consumer auth and encryption
 
 ## Agents
 
-- [0159](./0159-agent-streams-resume-from-committed-records.md) A reconnect resumes an AgentSession after its committed record sequence; eviction or an incompatible shared relay cut yields an explicit full replacement, never a silent gap.
-- [0156](./0156-agent-transcript-records.md) First-party Pi and Claude integrations append the conversation as `provider_raw` records in the `phux.transcript/v1` convention, on by default with what the pane shows; tool output needs `PHUX_AGENT_TRANSCRIPT=full`, and `=0` opts out.
-- [0155](./0155-host-originated-push-through-a-blind-gateway.md) A suspended phone is pushed by its own server through a blind first-party gateway, with a content-free notice and a per-device grant under `phux.push/v1/<device>`.
-- [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Save archives a shell-started agent's live `AgentSession` native id when an enabled integration claims and can resume it.
-- [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Pi and OpenCode are sibling adapters over one private, neutral Node integration runtime; neither imports the other.
-- [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
-- [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable work rides a separate, fenced, bounded `phux-coordinator/1` endpoint, never L1 or L3.
-- [0095](./0095-the-blackbird-boundary.md) phux and Blackbird never connect; one optional field in the agent record joins their ledgers.
-- [0085](./0085-hook-sourced-agent-state.md) Hook-reported working, blocked, and done states are detector evidence, published immediately.
-- [0084](./0084-starting-an-agent-in-an-existing-shell.md) `phux agent start` types the integration argv into a live shell; detection verifies the kind.
-- [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.
-- [0077](./0077-agent-read-surface.md) The read surface grows additive `ScreenState` keys, not a new read-source vocabulary.
-- [0076](./0076-agent-prompt-and-lifecycle-wait.md) `agent prompt` submits through `APPLY_INPUT`; `agent wait` needs an observed transition.
-- [0075](./0075-agent-name-addressing.md) `%name` selects exactly one agent Terminal client-side; ambiguity or a withdrawn name refuses.
-- [0068](./0068-native-agent-session-restore.md) A launch records a bounded native session identity; restore rebuilds resume argv from the integration.
-- [0067](./0067-cache-preserving-agent-fleet-context.md) Fleet context reaches models as sequenced tail deltas; static prompts never carry live values.
-- [0046](./0046-server-side-agent-state-detection.md) The server derives agent state from title and screen; unmatched means `idle`, never `blocked`.
-- [0042](./0042-launch-executor.md) `phux launch` spawns an integration template's argv through `SPAWN_RESOURCE`; no shell evaluation.
-- [0040](./0040-agent-identity-metadata.md) Agent identity and lifecycle are one L3 record, `phux.agent/v1`, scoped to the Terminal.
-- [0036](./0036-agent-asked-detection.md) The `phux-ask` title sentinel triggers `Asked`; hooks are the next authority, scraping the fallback.
-- [0035](./0035-agent-asked-event.md) A blocked agent's question is an additive `AgentEvent::Asked` on the agent-event stream.
-- [0022](./0022-tool-for-agents.md) phux is the terminal-capability substrate agents use; the CLI plus JSON schema is the contract.
-- [0009](./0009-phux-vs-mux-positioning.md) phux is a substrate, not an agent-orchestration product; it absorbs no runner or workspace features.
+- [0187](./0187-agents-coordinate-through-phux.md) Agents coordinate through phux
+- [0159](./0159-agent-streams-resume-from-committed-records.md) Agent streams resume from committed records
+- [0156](./0156-agent-transcript-records.md) Agent transcript records
+- [0155](./0155-host-originated-push-through-a-blind-gateway.md) Host originated push through a blind gateway
+- [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Live agent sessions bridge into native restore
+- [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Agent integrations share a neutral runtime
+- [0103](./0103-agent-session-resource-and-producer-fed-streams.md) Agent session resource and producer-fed streams
+- [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable coordinator is a separate bounded endpoint (forward-compat)
+- [0085](./0085-hook-sourced-agent-state.md) Hook sourced agent state
+- [0084](./0084-starting-an-agent-in-an-existing-shell.md) Starting an agent in an existing shell
+- [0078](./0078-alternate-screen-history.md) Alternate screen history (forward-compat)
+- [0077](./0077-agent-read-surface.md) Agent read surface
+- [0076](./0076-agent-prompt-and-lifecycle-wait.md) Agent prompt and lifecycle wait
+- [0075](./0075-agent-name-addressing.md) Agent name addressing
+- [0068](./0068-native-agent-session-restore.md) Native agent-session restore
+- [0067](./0067-cache-preserving-agent-fleet-context.md) Cache-preserving agent fleet context
+- [0046](./0046-server-side-agent-state-detection.md) Server side agent state detection
+- [0042](./0042-launch-executor.md) Launch executor
+- [0040](./0040-agent-identity-metadata.md) Agent identity metadata
+- [0036](./0036-agent-asked-detection.md) Agent asked detection
+- [0035](./0035-agent-asked-event.md) Agent asked event
+- [0022](./0022-tool-for-agents.md) Tool for agents
+- [0009](./0009-phux-vs-mux-positioning.md) phux vs mux positioning
 
 ## TUI conventions
 
-- [0172](./0172-tui-actions-and-jobs-are-declared-once.md) A TUI action is one registry row carrying its handler, pinned by test to phux-config's `ACTION_NAMES`; background work is a `Job` on one facility with a per-kind in-flight guard, delivered to the driver's one job arm as a toast plus an optional inventory refresh.
-- [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) A plugin `[[sidebar]]` section is a fixed band between Agents and Sessions; its rows are session panes rendered from a closed token vocabulary, and a pane rows only when every token resolves.
-- [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) A plugin `overlay` pane is a Terminal in no window, drawn by the client as a modal box; any action dismisses it by killing its Terminal, and it closes when its process exits.
-- [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) While attached the TUI pushes kitty keyboard flag 1 on the host and pops it in the shared terminal reset; hosts without the protocol stay on the legacy decoder.
-- [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) The sidebar groups sessions by machine: the attached server live, every other machine from a hosts provider command printing `phux.hosts/v1` (default `phux ls --all --json`); `switch-host` execs `phux attach` on the chosen machine.
-- [0165](./0165-gpui-desktop-replaces-the-solid-host.md) The desktop is a GPUI application with in-process runtime views, focused-writable geometry, and close-detaches; the shipping app is the Rust executable, not a Solid/NAPI host.
-- [0135](./0135-one-binding-crate.md) A binding crate is one crate: `phux-client-ffi` derives the product vocabulary from the runtime once in `projection/`, and carries one encoder per language behind a feature (`c-abi` by default, `uniffi` for mobile); `phux-mobile-ffi` is deleted.
-- [0134](./0134-connected-lanes-refine-the-binding-boundary.md) A binding holds no connected-client state machine but may keep its decode point; the runtime owns each connected resource's engine thread; UniFFI stays for mobile with the shim in this repo; the C ABI has an embedded and a connected lane.
-- [0171](./0171-one-transport-phux-client-rides-the-runtime.md) `phux-client-runtime` is the only transport; `phux-client`'s `Connection` is a facade over a runtime session, organization edits have one sequencer, and the TUI's bytes ride the runtime before its engine moves.
-- [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
-- [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
-- [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
-- [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.
-- [0112](./0112-stable-split-sidebar-navigation.md) Fixed Agents and host-aware Sessions panels preserve navigation positions across state changes.
-- [0079](./0079-fatal-signal-terminal-restore.md) An async-signal-safe handler restores the outer terminal after a fatal client signal.
-- [0121](./0121-cli-parser-is-usage-rs.md) The `phux` CLI parses with usage-rs 6.9; one declaration drives parse, help, completions, and the generated CLI reference.
-- [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
-- [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
-- [0174](./0174-organize-asks-a-judge-and-code-decides.md) `phux organize` moves panes to the sessions they belong in: a judge (Jev with a key, else repository matching) picks among known sessions, code gates it by confidence and never pulls a pane from its own repository's session, and a local journal undoes it.
-- [0168](./0168-project-identity-is-a-session-attribute.md) A session made in a git checkout carries a project identity keyed by its normalized `origin` URL, as typed session attributes set at `SESSION_CREATE`; pickers, the sidebar, and `phux ls` group by it, across machines.
-- [0152](./0152-project-recipes-run-only-approved-bytes.md) `phux project open` builds a missing session from `.phux/project.toml` through the restore engine, only after its exact bytes are approved per repository.
-- [0054](./0054-worktree-bound-sessions.md) `phux worktree` derives a session name from the worktree path; no stored state.
-- [0049](./0049-client-local-focus-and-advisory-attention.md) Focus is client-local and never in shared layout metadata; agent attention is advisory.
-- [0048](./0048-drag-to-resize-and-default-mouse-capture.md) The client captures outer-terminal mouse by default; divider drags commit through `SET_METADATA`.
-- [0045](./0045-client-side-copy-mode.md) Copy-mode is a client-local projection over the pane's own engine, never a wire feature.
-- [0158](./0158-pane-clipboard-writes-are-client-policy.md) An OSC 52 write from a pane is honoured by the client focused on that pane, from its own replica and only from live output, under a per-client `defaults.clipboard-write` policy (`allow` by default, `ask`, `deny`); clipboard reads stay unsupported.
-- [0029](./0029-one-cursor-authority-and-repaint-scheduler.md) One end-of-frame cursor emitter and one `RepaintLevel` accumulator drained per loop iteration.
-- [0026](./0026-overlays-theme-stack-single-dispatch.md) Chrome and overlays share one theme, a real stack, and a single dispatch path.
-- [0020](./0020-layered-render.md) ratatui renders chrome around holes that libghostty pane interiors fill.
-- [0019](./0019-tui-multi-pane-rendering.md) The layout tree persists as a CBOR L3 blob; edits are client-computed `SET_METADATA` writes.
-- [0017](./0017-tui-not-protocol-privileged.md) The reference TUI has no protocol standing; windows, panes, and focus are L3 conventions.
-- [0012](./0012-binary-split-tree-layout.md) Window layout is a binary split tree with an open-interval `ratio`; n-ary is rejected.
-- [0010](./0010-frontend-agnostic-tmux-cc-reserved.md) phux is TUI-first, non-TUI frontends are not precluded, tmux control mode is off the roadmap.
+- [0172](./0172-tui-actions-and-jobs-are-declared-once.md) TUI actions and jobs are declared once
+- [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) Plugin sidebar sections are fixed bands of pane rows
+- [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) Plugin overlay panes float outside the layout
+- [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) TUI pushes kitty keyboard disambiguate on the host
+- [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) Sidebar machines come from a hosts provider
+- [0165](./0165-gpui-desktop-replaces-the-solid-host.md) GPUI desktop replaces the Solid host
+- [0135](./0135-one-binding-crate.md) One binding crate
+- [0134](./0134-connected-lanes-refine-the-binding-boundary.md) Connected lanes refine the binding boundary
+- [0171](./0171-one-transport-phux-client-rides-the-runtime.md) One transport phux client rides the runtime
+- [0133](./0133-one-client-runtime-below-every-binding.md) One client runtime below every binding
+- [0129](./0129-projections-are-named-by-key.md) Projections are named by key
+- [0100](./0100-the-tui-is-its-own-crate.md) The TUI is its own crate
+- [0089](./0089-three-zone-attention-sidebar.md) Three zone attention sidebar
+- [0112](./0112-stable-split-sidebar-navigation.md) Stable split sidebar navigation
+- [0079](./0079-fatal-signal-terminal-restore.md) Fatal-signal terminal restore
+- [0121](./0121-cli-parser-is-usage-rs.md) CLI parser is usage rs
+- [0065](./0065-one-cli-grammar.md) One CLI grammar
+- [0058](./0058-right-click-context-menus.md) Right-click context menus
+- [0174](./0174-organize-asks-a-judge-and-code-decides.md) Organize asks a judge; code decides
+- [0168](./0168-project-identity-is-a-session-attribute.md) Project identity is a session attribute
+- [0152](./0152-project-recipes-run-only-approved-bytes.md) Project recipes run only approved bytes
+- [0054](./0054-worktree-bound-sessions.md) Worktree bound sessions
+- [0049](./0049-client-local-focus-and-advisory-attention.md) Client local focus and advisory attention
+- [0048](./0048-drag-to-resize-and-default-mouse-capture.md) Drag to resize and default mouse capture
+- [0045](./0045-client-side-copy-mode.md) Client side copy mode
+- [0158](./0158-pane-clipboard-writes-are-client-policy.md) Pane clipboard writes are client policy
+- [0029](./0029-one-cursor-authority-and-repaint-scheduler.md) One cursor authority and repaint scheduler
+- [0026](./0026-overlays-theme-stack-single-dispatch.md) Overlays theme stack single dispatch
+- [0020](./0020-layered-render.md) Layered render
+- [0019](./0019-tui-multi-pane-rendering.md) TUI multi pane rendering
+- [0017](./0017-tui-not-protocol-privileged.md) TUI not protocol privileged
+- [0012](./0012-binary-split-tree-layout.md) Binary split tree layout
+- [0010](./0010-frontend-agnostic-tmux-cc-reserved.md) Frontend agnostic tmux cc reserved (forward-compat)
 
 ## Config
 
-- [0186](./0186-the-client-neutral-config-is-its-own-crate.md) `phux-config-core` holds the config path, layer merge, `[[remote]]`, `[organize]` and instance paths; embedders depend on it, not on the TUI's `phux-config`.
-- [0101](./0101-the-settings-page-edits-the-file.md) The settings page edits one key per change in `config.toml`; running state never writes back.
-- [0041](./0041-managed-plugin-installs.md) `phux plugin install` fetches into one managed directory with system tools and one `plugins.lock`.
-- [0039](./0039-layered-config.md) Config is an ordered `extends` stack; arrays replace unless a key opts into `-append`.
-- [0023](./0023-config-ux-philosophy.md) One TOML file over embedded defaults that are the live base layer; no imperative mutation.
+- [0186](./0186-the-client-neutral-config-is-its-own-crate.md) The client-neutral config is its own crate
+- [0101](./0101-the-settings-page-edits-the-file.md) The settings page edits the file
+- [0041](./0041-managed-plugin-installs.md) Managed plugin installs
+- [0039](./0039-layered-config.md) Layered config
+- [0023](./0023-config-ux-philosophy.md) Config ux philosophy
 
 ## Release, CI, and docs
 
-- [0184](./0184-build-and-ci-logic-is-one-bun-package.md) Build, release and CI logic is one TypeScript package, `tools/`, on the pinned Bun; crate facts come from the Cargo manifests, and no build or CI decision is made in Python.
-- [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
-- [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
-- [0178](./0178-release-checksums-are-minisign-signed.md) CI minisign-signs every release sidecar with one Actions-held key; `phux update` verifies it against embedded current and next keys and refuses an unsigned or foreign checksum.
-- [0176](./0176-the-release-pipeline.md) One name table; clients read version, commit, protocol, and digest from the channel manifest and derive the rest; one installer; `publish.yml` publishes stable drafts on green `ci`, `next-release.yml` publishes green `main`.
-- [0175](./0175-one-release-manifest-per-channel.md) Desktop stages an update while running and swaps it in after exit; each release carries the protocol it speaks.
-- [0169](./0169-zig-cockpit-lives-in-an-archive.md) Zig Cockpit and its exclusive hooks leave main; a published archive branch and annotated tag preserve bot-led recovery. Shared FFI, GPUI desktop, mobile, and libghostty Zig stay.
-- [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.
-- [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
-- [0001](./0001-language-rust.md) phux is implemented in Rust.
+- [0184](./0184-build-and-ci-logic-is-one-bun-package.md) Build and CI logic is one Bun package
+- [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) Ci aggregate gate and action supply chain
+- [0082](./0082-retire-the-ci-metrics-store.md) Retire the ci metrics store
+- [0178](./0178-release-checksums-are-minisign-signed.md) Release checksums are minisign-signed
+- [0176](./0176-the-release-pipeline.md) The release pipeline
+- [0175](./0175-one-release-manifest-per-channel.md) One release manifest per channel
+- [0169](./0169-zig-cockpit-lives-in-an-archive.md) Zig cockpit lives in an archive
+- [0074](./0074-self-update-trust-boundary.md) Self update trust boundary
+- [0069](./0069-generated-reference-docs.md) Generated reference docs
+- [0001](./0001-language-rust.md) Use Rust
 
-- [0170](./0170-acp-is-the-provider-seam.md) Native agents use the official pinned Rust ACP client and operator-installed native servers or maintained adapters; no private provider SDK bridges.
+- [0170](./0170-acp-is-the-provider-seam.md) Acp is the provider seam
 
 ## Proposed
 
-- [0187](./0187-quick-capture.md) Quick capture saves intent before dispatch; the desktop launch spike does not yet implement durable cross-device capture.
+- [0188](./0188-quick-capture.md) Quick capture
 
 Drafted and under review; none of these governs anything yet.
 
-- [0177](./0177-non-terminal-resources-have-declared-producers.md) A declared producer is an owner-declared program whose process is the activation of the resource it feeds, bound by a one-resource credential; `FEED` is the first kind with one and usage is its first feed. Would supersede ADR-0166's lifecycle, delivery, and visibility.
-- [0173](./0173-mission-control-is-a-client-composition.md) Mission control is a client composition: it may own a task's worktree, brief, and agent start, and the server learns nothing. An interim store uses the coordinator's nouns until phux-ajxq; merge is Patrick's TTY confirmation at the reviewed SHA. Task workers use the ADR-0163 delegated grant; until MC-1.4b Lead runs with the owner's authority and only while attended.
-- [0166](./0166-usage-collection-is-a-supervised-child.md) Optional usage is one supervised collector child; the terminal runtime and plugin hooks do not host it.
-- [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) A theme is an Omarchy-schema `colors.toml` in `$XDG_DATA_HOME/phux/themes/<name>`, installed by URL or by a plugin, chosen by `[theme] name`; every client maps the same keys onto its chrome and the ANSI-16 palette.
-- [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
-- [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
-- [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
-- [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) Prune the unreferenced policy vocabulary from `phux-protocol`; keep the HELLO authorization seam.
-- [0071](./0071-what-phux-1-0-commits-to.md) 1.0 freezes the consumer surface under semver; the wire keeps its own `0.x` line.
+- [0177](./0177-non-terminal-resources-have-declared-producers.md) Non terminal resources have declared producers
+- [0173](./0173-mission-control-is-a-client-composition.md) Mission control is a client composition
+- [0166](./0166-usage-collection-is-a-supervised-child.md) Usage collection is a supervised child
+- [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) Themes are colors toml files every client reads
+- [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients
+- [0092](./0092-durable-work-coordinator-authority.md) The coordinator owns durable work
+- [0087](./0087-elastic-status-bar-space.md) Elastic status bar space
+- [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) Prune policy vocabulary keep the seam
+- [0071](./0071-what-phux-1-0-commits-to.md) What phux 1.0 commits to
