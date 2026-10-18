@@ -827,7 +827,7 @@ pub(crate) fn run_pair(
         Door::Listener { enroll } => enroll,
         Door::Relay { route, enroll } => {
             let replace = replace_token.as_deref();
-            let enroll = phone_enrollment_requested(enroll, qr, output.default_qr, true);
+            let enroll = phone_enrollment_requested(enroll, output, true);
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
@@ -841,12 +841,7 @@ pub(crate) fn run_pair(
     let addresses = resolve_pair_addresses(host.as_deref(), live);
     // Both explicit camera QR and a QR shown by default must enroll a new
     // phone. With no link there is no default QR; ordinary mints still work.
-    let enroll = phone_enrollment_requested(
-        enroll,
-        qr,
-        output.default_qr,
-        addresses.server_url.is_some(),
-    );
+    let enroll = phone_enrollment_requested(enroll, output, addresses.server_url.is_some());
     let refusal = link_refusal(
         host.as_deref(),
         qr,
@@ -1001,13 +996,8 @@ pub(crate) enum Door {
 
 /// Any QR actually shown to a phone must let it enroll; without a link the
 /// implicit QR is skipped. Piped, JSON and secret-file mints remain opt-in.
-const fn phone_enrollment_requested(
-    enroll: bool,
-    qr: bool,
-    default_qr: bool,
-    has_link: bool,
-) -> bool {
-    enroll || qr || (default_qr && has_link)
+const fn phone_enrollment_requested(enroll: bool, output: LinkOutput<'_>, has_link: bool) -> bool {
+    enroll || output.qr || (output.default_qr && has_link)
 }
 
 /// Why phone enrollment refuses a server certificate no workload CA issued.
@@ -2104,10 +2094,10 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names, build_connect_link,
-        build_connect_link_pinned, build_relay_connect_link, legacy_connect_link, link_refusal,
-        live_listeners, pair_document, parse_connect_link, percent_encode,
-        phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
+        LinkOutput, LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names,
+        build_connect_link, build_connect_link_pinned, build_relay_connect_link,
+        legacy_connect_link, link_refusal, live_listeners, pair_document, parse_connect_link,
+        percent_encode, phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
         select_relay_connector, shows_default_qr,
     };
     use phux_protocol::wire::{
@@ -2494,12 +2484,28 @@ mod tests {
 
     #[test]
     fn camera_pairing_enrolls_without_an_extra_flag_but_machine_mints_do_not() {
-        assert!(phone_enrollment_requested(false, true, false, true));
-        assert!(phone_enrollment_requested(false, true, false, false));
-        assert!(phone_enrollment_requested(false, false, true, true));
-        assert!(phone_enrollment_requested(true, false, false, false));
-        assert!(!phone_enrollment_requested(false, false, true, false));
-        assert!(!phone_enrollment_requested(false, false, false, true));
+        for (enroll, qr, default_qr, has_link, expected) in [
+            (false, true, false, true, true),
+            (false, true, false, false, true),
+            (false, false, true, true, true),
+            (true, false, false, false, true),
+            (false, false, true, false, false),
+            (false, false, false, true, false),
+        ] {
+            let output = LinkOutput {
+                name: None,
+                qr,
+                default_qr,
+                json: false,
+                secret_file: None,
+                expires_at: None,
+                expires_label: None,
+            };
+            assert_eq!(
+                phone_enrollment_requested(enroll, output, has_link),
+                expected
+            );
+        }
     }
 
     /// No listener report, or one with nothing bound, is a refusal naming
