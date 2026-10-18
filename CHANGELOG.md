@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.104.0](https://github.com/no-phux/phux/compare/v0.103.0...v0.104.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** a standalone tunnel: binary, TCP ingress, half-close, per-route caps ([#1612](https://github.com/no-phux/phux/issues/1612)) ([2df25c3](https://github.com/no-phux/phux/commit/2df25c32adcdad354269c54e502a1814a24811c0))
+
+
+### Bug Fixes
+
+* **ci:** a desktop-test dispatch on main never cancels the running main run ([ea62987](https://github.com/no-phux/phux/commit/ea62987f3fa30e9d4b4721cc69cae884d3dfc9c0))
+
 ## [0.103.0](https://github.com/no-phux/phux/compare/v0.102.0...v0.103.0) (2026-10-18)
 
 
