@@ -181,14 +181,7 @@ impl Desk {
         if self.prefs == before {
             return false;
         }
-        if self.tab_position() != axis {
-            if matches!(self.drag, Some(Drag::Tab { .. })) {
-                self.drag = None;
-            }
-            self.tab_geometry
-                .borrow_mut()
-                .prepare(self.tab_position(), 0);
-        }
+        self.refresh_tab_placement(axis);
         if self.prefs.ghostty_keys != before.ghostty_keys {
             self.sync_bindings(cx);
         }

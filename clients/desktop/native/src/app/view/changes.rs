@@ -23,7 +23,7 @@ use super::super::ui::list::{Emphasis, row_label};
 use super::super::ui::{ghost_button, ghost_icon, muted, row, row_icon, section_label};
 
 /// The card's width beside the panes.
-pub(super) const WIDTH: f32 = 380.;
+pub(crate) const WIDTH: f32 = 380.;
 /// Rows listed per section; a vast untracked tree is counted, not painted.
 const MAX_ROWS: usize = 500;
 

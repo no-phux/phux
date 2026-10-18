@@ -76,6 +76,32 @@ Logs: `~/Library/Logs/phux-desktop.log` on macOS,
 **Copy Diagnostics** in the palette copies versions, server id, host, and
 recent errors, without terminal content.
 
+## Using it
+
+See the [desktop usage guide](USAGE.md#using-it) for navigation, tab placement,
+shortcuts, and settings. Current implementation/consumer routes are in
+[Clients](../../docs/clients.md).
+
+### Command palette
+
+See [Command palette](USAGE.md#command-palette).
+
+### Performance monitor
+
+See [Performance monitor](USAGE.md#performance-monitor).
+
+### Updates
+
+See [Updates](USAGE.md#updates).
+
+### Coming from Ghostty
+
+See [Coming from Ghostty](USAGE.md#coming-from-ghostty).
+
+### Native agents
+
+See [Native agents](USAGE.md#native-agents).
+
 ## Development
 
 ```sh
@@ -87,6 +113,13 @@ just desktop-lint
 just desktop-check     # the CI gate: script typecheck, lint, qualification guards, host lock
 just desktop-package   # build the app without installing it
 ```
+
+`desktop-demo` builds the CLI and desktop executable from this checkout and
+owns a private foreground server and app. Each run gets a temporary socket,
+HOME and XDG directories; inherited Phux listener/auth settings are cleared.
+Closing the app or interrupting the supervisor reaps both children and
+removes that state. It refuses installed or external artifacts and does not
+restart a lost server behind the supervisor.
 
 `just desktop-source` materializes the pinned, patched GPUI the crate
 builds against ([toolchain](./toolchain/README.md)); `desktop-app` runs it

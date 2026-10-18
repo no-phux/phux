@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, IntoElement, SharedString, WeakEntity, Window,
-    px,
 };
 use gpui_kit::component::tooltip::Tooltip;
 use phux_client_runtime::control::PaneDescriptor;
@@ -16,9 +15,9 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, ICON, row_detail, row_label};
+use crate::app::ui::list::{Emphasis, child_row, row_detail, row_label};
 use crate::app::ui::status::{harness_mark, state_dot};
-use crate::app::ui::{ago, dot, row, row_icon};
+use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
 
 /// A record worth a row: one whose process is coming up, up, or going down.
@@ -36,11 +35,6 @@ fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
         .activation
         .as_ref()
         .map(|activation| activation.state)
-}
-
-/// Indented under its session, past the session's caret.
-fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
-    row(id, look).pl(px(8. + ICON))
 }
 
 pub(super) fn record_row(
@@ -116,15 +110,21 @@ pub(super) fn pane_row(
         .debug_selector(move || selector.to_string())
         .when(selected, |row| row.bg(look.active))
         .child(row_icon(glyph))
-        .child(row_label(
-            title,
-            if attention.is_some() {
-                Emphasis::Normal
-            } else {
-                Emphasis::Quiet
-            },
-            look,
-        ))
+        .child(
+            row_label(
+                title,
+                if attention.is_some() {
+                    Emphasis::Normal
+                } else {
+                    Emphasis::Quiet
+                },
+                look,
+            )
+            .debug_selector({
+                let terminal = pane.terminal_id.clone();
+                move || format!("pane-label-{terminal}")
+            }),
+        )
         .when_some(drag, |row, drag| {
             row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
         })

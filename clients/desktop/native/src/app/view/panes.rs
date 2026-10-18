@@ -5,8 +5,9 @@
 //! in when the pointer reaches the top edge, and a file dragged over it shows
 //! where the drop will paste.
 
+use crate::settings::TabPosition;
 use gpui::prelude::*;
-use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{Context, IntoElement, ParentElement, StyleRefinement, Styled, Window, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use phux_client_runtime::control::Status;
@@ -35,9 +36,23 @@ pub(super) fn main_column(
         .debug_selector(|| "main-column".into())
         .flex_grow(1.)
         .min_w(px(0.))
+        .min_h(px(0.))
         .flex()
         .flex_col()
         .child(workspace_body(desk, look, window, cx))
+        .when(
+            super::tabs_at(desk, &look.skin, TabPosition::Bottom),
+            |column| {
+                column.child(super::chrome_slot(
+                    &mut desk.chrome.bottom_tabs,
+                    super::tabs::build_bottom,
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(px(look.skin.chrome.titlebar)),
+                    cx,
+                ))
+            },
+        )
         .when(status > 0., |column| {
             column.child(super::status::status_bar(desk, status, look, cx))
         })
