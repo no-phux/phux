@@ -12,8 +12,8 @@ use crate::render::overlay::MenuRow;
 
 /// A menu's border title and its rows.
 pub(super) struct MenuSpec {
-    /// Border title — the target the menu acts on (`"pane"`, a tab
-    /// name, a session name).
+    /// Border title — the target the menu acts on (`Pane`, a tab's label,
+    /// a session name).
     pub title: String,
     /// Rows, top to bottom.
     pub rows: Vec<MenuRow>,
@@ -35,7 +35,7 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
             "split-pane",
             &[("direction", "horizontal")],
         ),
-        row(keybindings, "Move", "move-pane", &[]),
+        row(keybindings, "Move…", "move-pane", &[]),
         row(
             keybindings,
             if zoomed { "Unzoom" } else { "Zoom" },
@@ -48,15 +48,16 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
         row(keybindings, "Kill", "kill-pane", &[]),
     ];
     MenuSpec {
-        title: "pane".to_owned(),
+        title: "Pane".to_owned(),
         rows,
     }
 }
 
-/// The menu for a tab. The caller has already made `name`'s tab active (a
-/// right-click on a tab selects it first, exactly as a left click does), so
-/// the rows act on the active tab with no target arg.
-pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> MenuSpec {
+/// The menu for a tab, titled `label` (the tab as the bar names it: its
+/// name, or `Tab N` for an auto-named one). The caller has already made
+/// that tab active (a right-click on a tab selects it first, exactly as a
+/// left click does), so the rows act on the active tab with no target arg.
+pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, label: &str) -> MenuSpec {
     let rows = vec![
         row(keybindings, "New tab", "new-window", &[]),
         row(keybindings, "Rename…", "rename-window", &[]),
@@ -66,10 +67,10 @@ pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> M
         row(keybindings, "Kill…", "kill-window", &[]),
     ];
     MenuSpec {
-        title: if name.is_empty() {
-            "tab".to_owned()
+        title: if label.is_empty() {
+            "Tab".to_owned()
         } else {
-            name.to_owned()
+            label.to_owned()
         },
         rows,
     }
@@ -308,7 +309,8 @@ mod tests {
 
     #[test]
     fn a_nameless_target_still_gets_a_title() {
-        assert_eq!(window_menu(None, "").title, "tab");
+        assert_eq!(window_menu(None, "").title, "Tab");
+        assert_eq!(pane_menu(None, false).title, "Pane");
         assert_eq!(session_menu(None, "").title, "session");
     }
 }
