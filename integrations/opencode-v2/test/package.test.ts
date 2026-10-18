@@ -1,29 +1,26 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const packageRoot = resolve(import.meta.dir, "..");
 
-test("packed plugin loads outside the checkout with only its declared dependency", async () => {
+test("packed plugin installs and loads outside the checkout with its declared peers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "phux-opencode-pack-"));
   try {
     const archive = join(directory, "plugin.tgz");
     command([process.execPath, "pm", "pack", "--filename", archive], packageRoot);
-    command(["tar", "-xzf", archive, "-C", directory], directory);
-    const dependencies = join(directory, "node_modules", "@opencode");
-    await mkdir(dependencies, { recursive: true });
-    await symlink(join(packageRoot, "node_modules", "@opencode", "plugin"), join(dependencies, "plugin"), "dir");
-    await symlink(join(packageRoot, "node_modules", "solid-js"), join(directory, "node_modules", "solid-js"), "dir");
-    await mkdir(join(directory, "node_modules", "@opentui"), { recursive: true });
-    await symlink(join(packageRoot, "node_modules", "@opentui", "solid"), join(directory, "node_modules", "@opentui", "solid"), "dir");
-    await symlink(join(packageRoot, "node_modules", "@opentui", "core"), join(directory, "node_modules", "@opentui", "core"), "dir");
+    await writeFile(join(directory, "package.json"), JSON.stringify({
+      private: true,
+      dependencies: { "@phux/opencode": archive },
+    }));
+    command([process.execPath, "install"], directory);
     const executable = join(directory, "phux-fixture");
     await writeFile(executable, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"running\":false}'\nexit 1\n", { mode: 0o700 });
     const output = command([process.execPath, "--eval", `
       import { Host } from '@opencode/plugin/host';
-      const entrypoints = Host.resolve({ directory: ${JSON.stringify(join(directory, "package"))} });
+       const entrypoints = Host.resolve({ directory: ${JSON.stringify(directory)}, name: '@phux/opencode' });
       if (!entrypoints.server || !entrypoints.tui || entrypoints.rpc) {
         throw new Error('native loader must discover exactly the packed server and TUI entrypoints');
       }

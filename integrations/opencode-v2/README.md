@@ -1,6 +1,6 @@
 # @phux/opencode
 
-OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.26` contract.
+OpenCode V2 plugin, tested against the public `@opencode/plugin@2.0.32` contract.
 OpenCode keeps its own shell, sessions, and permissions; phux supplies
 terminals only where a terminal is the point.
 
@@ -13,8 +13,8 @@ opencode plugin add @phux/opencode
 This needs `@phux/opencode` 0.4.0 or newer; 0.3.0 and earlier are the retired
 OpenCode V1 adapter.
 
-Then list the terminal companion in global `cli.json` (see below) as
-`{ "plugins": ["@phux/opencode"] }`. Leave the version off so updates reach
+The CLI automatically loads the terminal companion from the server plugin.
+Leave the version off so updates reach
 it: OpenCode never updates plugins on its own, so run `opencode plugin check`
 and `opencode plugin update` (or the TUI's Plugins dialog) to move to the
 newest release.
@@ -31,7 +31,9 @@ bun run build
 
 OpenCode loads bundled `index.js` for server tools and `tui.js` for the terminal
 companion, not TypeScript sources. The bundles include phux's shared runtime;
-the TUI entrypoint uses the host's `solid-js` peer dependency.
+the TUI entrypoint is universal-compiled against OpenTUI 0.5.17 and Solid 1.9.12.
+Install the declared peers before loading a checkout; merely having `tui.js`
+on disk does not mean its runtime dependencies are available.
 Configure OpenCode V2 with an absolute package directory:
 
 ```jsonc
@@ -53,15 +55,15 @@ or in a project's `opencode.jsonc` if you only want them there. Do not register
 both the primary checkout and a worktree copy in the same location: OpenCode
 loads both plugin entries, and a stale bundle can override the newer tools.
 
-The terminal companion must also be listed in global `cli.json` (`plugins`),
-since the shared OpenCode service cannot know which phux pane is displaying a
-session. It claims only the session visible in this TUI and clears the prior
+The companion runs inside each CLI, so the shared OpenCode service does not
+need to know which phux pane is displaying a session. It claims only the
+session visible in this TUI and clears the prior
 claim on navigation or exit. This is what lets phux-mobile link a pane to its
 native OpenCode view by exact `opencode:<session id>` identity:
 
-```json
-{ "plugins": ["/absolute/path/to/phux/integrations/opencode-v2"] }
-```
+For a CLI connected to a remote service without this plugin, load the companion
+locally through `cli.json` using the same package target. Do not also register a
+different local checkout when the connected service already supplies it.
 
 The CLI companion does nothing outside a phux pane. The server plugin may
 still supply tools globally, but **do not assume its `PHUX_TERMINAL_ID` names
