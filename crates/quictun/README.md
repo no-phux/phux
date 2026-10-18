@@ -162,11 +162,11 @@ let (_endpoint, _conn, _send, _recv) = dial_route(&relay, "laptop", b"myapp/1").
 
 ## Status
 
-quictun is phux's relay ([ADR-0181], [ADR-0183], [ADR-0184]). It depends on no phux
+quictun is phux's relay ([ADR-0181], [ADR-0183], [ADR-0185]). It depends on no phux
 crate. Its wire is stable within a major version.
 
 Licensed under Apache-2.0.
 
 [ADR-0181]: https://github.com/no-phux/phux/blob/main/docs/adr/0181-the-relay-is-a-standalone-quic-tunnel-crate.md
 [ADR-0183]: https://github.com/no-phux/phux/blob/main/docs/adr/0183-quictun-is-a-standalone-tunnel-product.md
-[ADR-0184]: https://github.com/no-phux/phux/blob/main/docs/adr/0184-quictun-gets-acme-certificates-and-multiplexes-consumers.md
+[ADR-0185]: https://github.com/no-phux/phux/blob/main/docs/adr/0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md
