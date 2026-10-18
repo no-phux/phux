@@ -27,6 +27,7 @@ export interface Classification {
   readonly docsOnly: boolean;
   readonly perfIcountNeeded: boolean;
   readonly mobileFfiNeeded: boolean;
+  readonly uniffiNeeded: boolean;
   readonly testFilterset: string;
   readonly unitMode: UnitMode;
   readonly unitTargets: string;
@@ -48,6 +49,7 @@ const EVERYTHING: Classification = {
   docsOnly: false,
   perfIcountNeeded: true,
   mobileFfiNeeded: true,
+  uniffiNeeded: true,
   testFilterset: "",
   ...WORKSPACE,
 };
@@ -84,11 +86,16 @@ function mobileFfiPaths(root: string): string[] {
 export class Classifier {
   private readonly table: Route[];
   private readonly mobileFfi: string[];
+  private readonly uniffiCrates: ReadonlySet<string>;
   private readonly packages: { name: string; dir: string }[];
 
   constructor(private readonly root = ROOT) {
     this.table = routes(root);
     this.mobileFfi = mobileFfiPaths(root);
+    this.uniffiCrates = pathClosure(
+      [{ dir: "crates/phux-client-ffi", dev: true, features: ["uniffi"], defaultFeatures: false }],
+      root,
+    );
     this.packages = workspaceMembers(".", root)
       .flatMap(({ name, dir }) => (name && CRATE_NAME.test(name) ? [{ name, dir }] : []))
       // Longest directory first, so a nested crate wins over its parent.
@@ -105,9 +112,18 @@ export class Classifier {
       docsOnly: productive.length === 0,
       perfIcountNeeded: files.some((path) => matchesAny(path, PERF_ICOUNT_PATHS)),
       mobileFfiNeeded: files.some((path) => matchesAny(path, this.mobileFfi)),
+      uniffiNeeded: this.uniffiNeeded(productive),
       testFilterset,
       ...this.unitPlan(productive, testFilterset),
     };
+  }
+
+  /** Skip only known crates outside the binding's test dependency closure. */
+  private uniffiNeeded(productive: readonly string[]): boolean {
+    return productive.some((path) => {
+      const crate = this.packages.find(({ dir }) => path.startsWith(`${dir}/`));
+      return crate === undefined || this.uniffiCrates.has(crate.dir);
+    });
   }
 
   private surfaces(path: string): readonly Surface[] {
@@ -202,6 +218,7 @@ export function toOutputs(result: Classification): Record<string, string | boole
     docs_only: result.docsOnly,
     perf_icount_needed: result.perfIcountNeeded,
     mobile_ffi_needed: result.mobileFfiNeeded,
+    uniffi_needed: result.uniffiNeeded,
     test_filterset: result.testFilterset,
     unit_mode: result.unitMode,
     unit_targets: result.unitTargets,

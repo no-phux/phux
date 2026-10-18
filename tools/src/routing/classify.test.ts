@@ -39,7 +39,11 @@ test.each<[string[], Surface[]]>([
   [["docs/consumers/agents.md"], ["phux"]],
   [["CHANGELOG.md"], []],
   [[".agents/skills/using-phux/SKILL.md"], ["phux"]],
-  [["clients/desktop/native/src/main.rs"], ALL],
+  [["clients/desktop/native/src/main.rs"], ["desktop"]],
+  [["clients/desktop/native/Cargo.toml"], ["desktop"]],
+  [["clients/desktop/native/tests/window.rs"], ["desktop"]],
+  [["clients/desktop/native/assets/icon.png"], ["desktop"]],
+  [["just/desktop.just"], ["desktop"]],
   [["clients/phux-web/src/lib.rs"], ["web"]],
   [["tools/src/web/browser.ts"], ["web"]],
   [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
@@ -60,7 +64,12 @@ test.each<[string[], Surface[]]>([
   [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "desktop"]],
   [["scripts/install-zig.sh"], ["web_engine", "native", "desktop"]],
   [["scripts/setup-rust.sh"], ["native", "desktop"]],
-  [["clients/desktop/native/Cargo.lock"], ALL],
+  [["clients/desktop/native/Cargo.lock"], ["desktop"]],
+  [["clients/desktop/phux-protocol"], ALL],
+  [
+    ["clients/desktop/native/src/main.rs", "crates/phux-mcp/src/lib.rs"],
+    ["phux", "desktop"],
+  ],
   [["just/unknown.just"], ALL],
   [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
   [[".github/workflows/desktop-test.yml"], ["desktop"]],
@@ -189,6 +198,27 @@ test("outputs carry exactly the classify-changes action's keys", () => {
   const action = readFileSync(join(ROOT, ".github/actions/classify-changes/action.yml"), "utf8");
   const keys = Object.keys(table(table(Bun.YAML.parse(action))["outputs"])).toSorted();
   expect(Object.keys(toOutputs(classifier.classify([]))).toSorted()).toEqual(keys);
+});
+
+test("UniFFI qualification skips only known unrelated crate inputs", () => {
+  expectField("uniffiNeeded", [
+    [[], true],
+    [["crates/phux-client-ffi/src/lib.rs"], true],
+    [["crates/phux-client-ffi/tests/connected.rs"], true],
+    [["crates/phux-core/src/lib.rs"], true],
+    [["crates/phux-server/src/lib.rs"], true],
+    [["crates/phux-testkit/src/lib.rs"], true],
+    [["crates/quictun/src/lib.rs"], true],
+    [["crates/phux-mcp/src/lib.rs"], false],
+    [["crates/phux-tui/src/lib.rs", "docs/SETUP.md"], false],
+    [["crates/phux-tui/src/lib.rs", "crates/phux-core/src/lib.rs"], true],
+    [["crates/phux-mcp/src/lib.rs", "Cargo.lock"], true],
+    [["crates/phux-mcp/src/lib.rs", "new-product/source.xyz"], true],
+    [["crates/new-crate/src/lib.rs"], true],
+    [["Cargo.toml"], true],
+    [[".github/workflows/ci.yml"], true],
+    [["docs/SETUP.md"], false],
+  ]);
 });
 
 test("the mobile FFI artifacts rebuild on their crate closure only", () => {
