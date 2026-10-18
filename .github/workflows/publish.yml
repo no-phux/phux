@@ -44,6 +44,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - id: plan
         name: Decide
         env:
@@ -51,7 +52,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
           DISPATCH_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
-        run: python3 scripts/ci/publish_plan.py
+        run: bun tools/main.ts publish-plan
 
   phux:
     name: publish phux
@@ -89,10 +90,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - name: Build and publish stable.json
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci/release_manifest.py stable --out "$RUNNER_TEMP/stable.json" --publish
+        run: bun tools/main.ts release-manifest stable --out "$RUNNER_TEMP/stable.json" --publish
 
   # Mobile artifacts ride on the root release without gating it. Dispatched,
   # not called, and only once the CLI is public: a called xcframework build
@@ -152,11 +154,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - name: Dispatch agent-integration-release and wait
         env:
           GH_TOKEN: ${{ github.token }}
           TAGS: ${{ needs.plan.outputs.integration_tags }}
-        run: python3 scripts/ci/dispatch_integration_publishes.py
+        run: bun tools/main.ts dispatch-integration-publishes
 
   linear-phux:
     name: report phux to Linear
@@ -182,10 +185,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
+      - uses: ./.github/actions/setup-bun
       - name: Check for stuck releases
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/check-release-drift.mjs
+        run: bun tools/main.ts release-drift

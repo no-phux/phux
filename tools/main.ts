@@ -7,6 +7,7 @@ import { commands as font } from "./src/font/commands.ts";
 import { commands as integrations } from "./src/integrations/commands.ts";
 import { commands as mbx } from "./src/mbx/commands.ts";
 import { commands as perf } from "./src/perf/commands.ts";
+import { commands as release } from "./src/release/commands.ts";
 import { commands as routing } from "./src/routing/commands.ts";
 
 const COMMANDS: Record<string, Command> = {
@@ -15,6 +16,7 @@ const COMMANDS: Record<string, Command> = {
   ...integrations,
   ...mbx,
   ...perf,
+  ...release,
   ...routing,
 };
 

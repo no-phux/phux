@@ -75,14 +75,14 @@ jobs:
           # Prefer local Git objects for source-pin validation; squash-merged
           # release commits fall back to the checksummed source archive.
           fetch-depth: 0
+      # Both paths run tools commands (install-surface-check among them).
+      - uses: ./.github/actions/setup-bun
       # The docs-check and install-surface-check recipe bodies.
       - name: docs guards
         if: env.DOCS_ONLY == 'true'
         run: |
           bash scripts/check-docs.sh
           bash scripts/check-install-surface.sh
-      - uses: ./.github/actions/setup-bun
-        if: env.DOCS_ONLY != 'true'
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: env.DOCS_ONLY != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17

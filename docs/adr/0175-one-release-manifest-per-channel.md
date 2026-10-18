@@ -95,8 +95,8 @@ ran from it, then asked the app to quit. The install had no timeout.
    same trust ADR-0074 states. Signing one manifest is now the single place
    to add an independent root.
 5. **The manifest is generated from what is published.**
-   `scripts/ci/release_manifest.py` builds `stable.json` from the newest
-   published, non-draft `vX.Y.Z` and `desktop-vX.Y.Z` releases (authenticated
+   `tools/src/release/release-manifest.ts` builds `stable.json` from the
+   newest published, non-draft `vX.Y.Z` and `desktop-vX.Y.Z` releases (authenticated
    API, sidecars, tag source). It builds `next.json` from the next
    prerelease's per-product pointers and sidecars. It uploads only when the
    content changed. `publish.yml` regenerates `stable.json` on every run,

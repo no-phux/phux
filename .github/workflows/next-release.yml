@@ -65,7 +65,7 @@ jobs:
           changed() {
             local product="$1" previous outputs key
             shift
-            previous="$(python3 scripts/ci/release_manifest.py next-sha "$product")"
+            previous="$(bun tools/main.ts release-manifest next-sha "$product")"
             if [ "$previous" = "$SHA" ]; then
               echo "$product: already published" >&2; echo false; return
             fi
@@ -120,6 +120,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -127,7 +128,7 @@ jobs:
           merge-multiple: true
 
       # The signature over each sidecar is the trust root `phux update` and
-      # the installer check (ADR-0178); release_manifest.py refuses an
+      # the installer check (ADR-0178); `release-manifest next` refuses an
       # unsigned build.
       - name: Sign the checksums
         env:
@@ -141,11 +142,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: python3 scripts/ci/release_manifest.py next --product phux --sha "$SHA" --dist dist
+        run: bun tools/main.ts release-manifest next --product phux --sha "$SHA" --dist dist
 
       - name: Publish desktop
         if: ${{ !cancelled() && needs.desktop.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: python3 scripts/ci/release_manifest.py next --product desktop --sha "$SHA" --dist dist
+        run: bun tools/main.ts release-manifest next --product desktop --sha "$SHA" --dist dist
