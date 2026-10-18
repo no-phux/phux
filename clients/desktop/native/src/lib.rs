@@ -24,6 +24,7 @@ pub mod assets;
 pub mod chrome;
 pub mod connection;
 pub mod diag;
+pub mod git;
 pub mod hotkeys;
 pub mod launch;
 pub mod settings;

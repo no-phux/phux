@@ -16,7 +16,8 @@ gpui_kit::assets::icon_assets!(
         Layers,
         ListTree,
         Pencil,
-        Trash
+        Trash,
+        GitBranch
     ]
 );
 
@@ -59,6 +60,8 @@ mod tests {
             IconName::ListTree,
             IconName::Pencil,
             IconName::Trash,
+            IconName::GitBranch,
+            IconName::Minus,
             IconName::ChevronLeft,
             IconName::ChevronRight,
             IconName::Folder,
