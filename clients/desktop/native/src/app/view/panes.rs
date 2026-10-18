@@ -17,6 +17,8 @@ use super::super::skin::Look;
 use super::super::ui::{keystroke, muted};
 
 mod card;
+mod controls;
+mod depth;
 mod split;
 
 use card::pane_view;
