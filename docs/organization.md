@@ -56,8 +56,9 @@ adopts an arbitrary matching PID or implicitly relaunches work. A surviving
 recorded process without its owning engine becomes **Lost**; a process no
 longer matching becomes Completed with an Unobserved outcome. Lost means
 uncertainty, not an inactive pane: removal/relaunch is refused while it may
-still run. Verify termination through the supported lifecycle before retrying;
-do not erase identity to make the refusal disappear.
+still run. The current CLI cannot resolve every Lost activation; follow
+[the recovery limitation and escalation path](./troubleshooting.md#cold-restart-and-downgrade),
+not an assumed PID-kill or relaunch sequence.
 
 `ExitPolicy::Remove` removes a normally exited resource (and an empty
 Ephemeral session). `Retain` keeps its outcome inspectable until purge or
@@ -90,14 +91,27 @@ Capture dispatch service; do not infer those from historical design names.
 
 Importing dormant organization records is not permission to execute them.
 Explicit restore/relaunch creates a new execution; it never resurrects the
-old PTY or its scrollback. Native conversation resume stores bounded opaque
-native identity and the owning plugin/integration ids, not executable argv
-from an archive. Resolve resume argv from the **currently enabled, trusted**
-integration template. Ownership mismatch refuses before creating anything;
-other unresolved terminal integrations may warn and fall back to a plain
-shell, not to arbitrary archived commands. Option-shaped native ids are
-rejected. ACP-owned restore additionally requires the provider's
-[`loadSession` support](./agents.md#acp-owned-sessions).
+old PTY or its scrollback. There are two different agent restore lanes:
+
+- **Terminal `agent_session` resume:** stores bounded opaque native identity
+  and owning plugin/integration ids. Resume argv is resolved from the
+  **currently enabled, trusted** integration template. Ownership mismatch
+  refuses before creation; other unresolved terminal integrations may warn
+  and fall back to a plain shell. Option-shaped native ids are rejected.
+- **ACP `native_launch` restore:** archives a complete `SpawnNativeAgent`
+  executable recipe, including command argv, cwd and environment. Explicit
+  restore/relaunch currently executes that saved recipe without resolving
+  current integration ownership/templates. **Inspect and trust the archive
+  as executable input before restoring it**; disabling/changing its plugin
+  does not invalidate the saved command. The provider process starts before
+  the `loadSession` capability check, so a later restore failure does not
+  mean no executable ran. `loadSession` is still required to resume the
+  provider conversation, not an executable-trust check.
+
+The [saved recipe path](../crates/phux-server/src/runtime/organization.rs)
+and [ACP process startup](../crates/phux-agent-host/src/session/acp.rs) define
+that current limitation; [ACP usage](./agents.md#acp-owned-sessions) covers
+readiness and operation receipts.
 
 The [archive resolver](../crates/phux/src/commands/archive.rs) and
 [live-session bridge tests](../crates/phux/src/commands/archive/bridge.rs)

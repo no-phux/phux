@@ -60,8 +60,10 @@ bound AgentSession. A new non-terminal kind would also need a placement
 payload and persisted-layout representation: the layout currently names
 terminals. A new renderer alone is not enough.
 
-`PaneOrigin` is `Human` or `Agent(Harness)`, not creator provenance. Clients
-cannot see `Provenance.created_by`; human and agent CLI connections announce
+`PaneOrigin` is `Human` or `Agent(Harness)`, not creator provenance. These
+are presentation classifications, not authorization principals;
+[connection authority](./remote.md#connection-authority) is a separate grant.
+Clients cannot see `Provenance.created_by`; human and agent CLI connections announce
 the same `phux-cli` name, and terminal spawns record no parent. Classification
 uses the published agent badge or bound AgentSession. The session's provider
 outranks a badge's declared kind. A future creator field would be another

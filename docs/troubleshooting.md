@@ -99,8 +99,35 @@ Hot `phux upgrade` hands live PTYs to the replacement binary; a cold start,
 crash or reboot does not. [Organization reconciliation](./organization.md#activations-and-reconciliation)
 checks boot/PID/start identity and never automatically relaunches or adopts
 arbitrary processes. Lost means a recorded process may still run without its
-engine; inspect and verify its termination before an explicit relaunch.
-Do not delete the record or substitute a new identity to bypass the refusal.
+engine. **There is currently no supported end-to-end CLI procedure to
+terminate/reconcile a post-crash Lost record and then relaunch it.**
+
+1. Read and preserve the inventory with `phux ls --json`. In that document,
+   `sessions[].exec.lost` counts Lost members and `sessions[].key` identifies
+   the session. Save the refusal, logs, and any known resource key; do not
+   reuse an old `@N` or treat a PID as the activation identity.
+2. Leave the uncertain record intact and escalate to the serving-host
+   operator/maintainer. CLI inventory does not expose the complete persisted
+   process identity for each Lost activation. `resource show` inspects live
+   resources, not that missing engine. There is no CLI `resource terminate`
+   or `reconcile` verb; ordinary `kill`/`signal` is not a documented substitute.
+   Do not guess a PID kill, edit/delete the store, or cold-restart other live
+   work to bypass the refusal.
+3. A maintainer must establish identity and an inactive activation before
+   explicit `phux relaunch ^RESOURCE_KEY` (substitute the verified key).
+   Startup reconciliation can mark a no-longer-matching process
+   Completed/Unobserved at a later planned start, but it is not an on-demand
+   CLI operation or a reason to restart production for diagnosis. If the
+   state cannot be verified, stop; no safe relaunch is established.
+
+For maintainers, `GET_ORGANIZATION`/`phux_client::org::fetch_from_socket`
+exposes the record key, activation id/instance/state and optional live
+handle. Post-cold-start Lost records have no engine-backed live handle; the
+public termination helpers require one. Core Lost-termination semantics
+therefore do not establish a usable CLI recovery path. See the
+[record projection and termination target](../crates/phux-server/src/runtime/organization.rs),
+[client helpers](../crates/phux-client/src/org.rs) and
+[crash-reconciliation test](../crates/phux-server/tests/lifecycle/crash_restart.rs).
 
 Before an incompatible downgrade, export the supported organization/archive
 view, deliberately stop the owning server, and preserve its store plus

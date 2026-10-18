@@ -22,7 +22,7 @@ Every section and setting is listed in the [config reference](./reference/config
 | Owner | Apply boundary |
 | --- | --- |
 | TUI keybindings, theme, chrome/status, plugin UI rows, which-key, clipboard-write, notifications | Explicit config reload. Failure leaves the previous settings intact. |
-| TUI sidebar geometry/hosts settings and mouse capture | Next attach; detach/reattach the client, not the server. |
+| TUI sidebar geometry/hosts settings, mouse capture and predictive echo | Next attach; detach and invoke attach again, not just reconnect/reload and not a server restart. |
 | Server policy mode, listeners, hooks and server-owned defaults | Read at server start/handoff; client reload does not replace them. |
 | Hub satellites and reverse uplinks | The config-reload doorbell reconciles changed links. |
 | Workload registry and bearer stores | Their own admission/revocation reload path, not a universal config reload. |
@@ -85,6 +85,10 @@ off for local/loopback ones. Set an explicit override for sensitive displays:
 [experimental]
 predictive-echo = false
 ```
+
+After setting this false, **detach this TUI and invoke `phux attach` again
+before typing secrets**. Config reload and automatic reconnect retain the
+previous attach's prediction setting; neither disables an existing overlay.
 
 Prediction changes only this client's display, never wire input, other
 clients or recordings. It does **not** know the child's no-echo/password

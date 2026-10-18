@@ -27,9 +27,9 @@ it in flight. Refusal keeps the draft; pending sends suppress duplicate submits.
 
 The destination preview uses the same validated resolver as launch. A leading
 `@session` selects that session on the connected server only when it has one
-distinct known local working directory. Otherwise Capture uses the focused
-local pane's session and working directory. Unknown or ambiguous targets and
-remote paths are refused; Capture never guesses another worktree or treats a
+distinct known local working directory. Without an explicit selector,
+Capture uses the focused local pane's session and working directory. Unknown
+or ambiguous targets and remote paths are refused; Capture never guesses another worktree or treats a
 remote folder as local.
 
 Text is passed as an argv argument (`opencode --prompt TEXT`), not interpolated

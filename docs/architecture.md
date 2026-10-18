@@ -146,10 +146,13 @@ when its generation equals the cached number. Never publish a cached frame as
 evidence of recovery.
 
 Raw-send success is a local queue result, not delivery. Unknown delivery is
-terminal-wide. `acknowledge_projection` runs only from GPUI's drawable-presented
-callback, after the window is visible and the terminal bounds are unclipped.
-Paint and `on_next_frame` do not clear the fence. A late callback must not
-clear a newer fence.
+terminal-wide. In Phux Desktop (the `patched-gpui` product build),
+`acknowledge_projection` runs only from the drawable-presented callback on
+a visible, unclipped terminal. Paint and `on_next_frame` do not clear its
+fence; a late callback must not clear a newer fence. Unpatched embedders
+use a weaker next-frame-start receipt, not presentation proof; that lane
+does not meet this product guarantee. See the
+[feature qualification](../clients/desktop/native/phux-gpui/PRESENTATION.md).
 
 ## Agents, authority, work
 

@@ -51,7 +51,12 @@ and their shared client remain alive.
 
 It builds on the published gpui-fast. Its `patched-gpui` feature adds the
 retained glyph sprites, drawable-presented receipts and macOS key repeat
-that phux's own GPUI patches provide.
+that phux's own GPUI patches provide. Phux Desktop enables it and requires
+the [drawable-presented product guarantee](./architecture.md#frames-wakes-and-input).
+An unpatched embedder instead gets the weaker next-frame-start receipt,
+not proof of visible presentation; see the
+[feature qualification](../clients/desktop/native/phux-gpui/PRESENTATION.md).
+Do not claim the product's unknown-delivery recovery guarantee on that lane.
 
 ## Any Rust toolkit
 
@@ -89,8 +94,12 @@ resize the terminal from the view that owns its size.
 is the C ABI. For product connections use `phux_client_connect`: the runtime
 owns socket, HELLO, framing and reconnect. Post its wake to your event loop,
 then call `phux_client_poll` on the owning thread. Never feed frames, queue
-a second HELLO or drain outgoing bytes on a connected handle. The wake
-callback runs off-thread and must not call this ABI.
+a second HELLO or drain outgoing bytes on a connected handle. Fully
+initialize the thread-safe wake context **before** `phux_client_connect`: a
+registration wake may call it synchronously before the client is returned.
+It must only post asynchronously to the event loop, never call the ABI
+inline or wait for a mutex held across connect. Start polling only after
+connect returns the handle; keep the context valid until free completes.
 
 `phux_client_new` plus `feed_frame`/`outgoing_*` is the separate embedded
 lane for offline use, harnesses and fault injection: the host then owns
@@ -126,8 +135,12 @@ comes from authoritative frames; the designated size-owning view sends
 resize intent, while observers do not create resize feedback loops.
 
 A listener is a coalesced wake, not an event payload. Drain then invalidate
-only affected views. Callbacks run on the runtime thread outside locks;
-post to the UI rather than blocking or re-entering locked control state.
+only affected views. Driver notifications run on the runtime thread;
+registration (`set_listener`) and explicit `wake`/`close` can invoke the
+listener synchronously on their caller's thread. All run outside runtime
+locks, not necessarily outside your locks. Initialize context before
+registration, make it thread-safe, and only post asynchronously to the UI;
+never block or re-enter the client from a callback.
 `with_control` is non-reentrant and must not block or call back into the
 client. Dropping the last `Client` closes the driver, retires callbacks,
 waits out callbacks on other threads, and joins the driver (never joins
