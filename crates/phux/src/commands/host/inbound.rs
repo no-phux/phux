@@ -1,4 +1,4 @@
-//! Reverse enrollment (ADR-0181): `phux host ticket NAME` on a hub, and
+//! Reverse enrollment (ADR-0182): `phux host ticket NAME` on a hub, and
 //! `phux host join CODE` on a machine the hub cannot dial.
 //!
 //! `ticket` mints a single-use satellite ticket into the workload store,
@@ -148,7 +148,7 @@ fn inbound_entry_enabled(name: &str) -> Result<bool, CliError> {
 }
 
 /// Only a hub that verifies workload certificates offers the satellite ALPN
-/// (ADR-0181), so a ticket minted for any other would enroll a satellite the
+/// (ADR-0182), so a ticket minted for any other would enroll a satellite the
 /// hub then refuses.
 fn require_paired() -> Result<(), CliError> {
     let config = config_loader::load().map_err(|err| registry_failure(err.to_string()))?;

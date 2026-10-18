@@ -63,7 +63,12 @@ impl ToastOverlay {
                 ))
             })
             .collect();
-        Modal::new(&self.theme, self.title.clone(), body).wrap(true)
+        // A passthrough notice goes away on its own; only a toast that
+        // holds the keyboard says how to let go of it.
+        let keys = if self.passthrough { "" } else { "any key" };
+        Modal::new(&self.theme, self.title.clone(), body)
+            .wrap(true)
+            .footer("", keys)
     }
 }
 
@@ -163,6 +168,7 @@ mod tests {
             !text.contains("Press any key"),
             "no teaching footer:\n{text}"
         );
+        assert!(text.contains("any key"), "border legend:\n{text}");
     }
 
     #[test]
@@ -175,6 +181,7 @@ mod tests {
             !text.contains("Start typing"),
             "no teaching footer:\n{text}"
         );
+        assert!(!text.contains("any key"), "no legend on a notice:\n{text}");
     }
 
     #[test]

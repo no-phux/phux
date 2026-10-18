@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-17
 ---
 
-# 0181 — Satellites enroll with a ticket and dial out to the hub
+# 0182 — Satellites enroll with a ticket and dial out to the hub
 
 **TL;DR.** A machine the hub cannot dial (a sandbox VM behind NAT) joins
 as a satellite by dialing out. `phux host ticket NAME` on the hub mints a

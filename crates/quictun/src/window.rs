@@ -144,9 +144,8 @@ mod tests {
 
     use super::*;
     use crate::testing::DropProxy;
-    use crate::tls::{CertTrust, client_config};
 
-    const ALPN: &[u8] = b"phux-window-test";
+    const ALPN: &[u8] = b"window-test";
 
     #[test]
     fn send_window_is_the_congestion_window_plus_unsent_slack() {
@@ -163,13 +162,17 @@ mod tests {
         (dir, endpoint)
     }
 
-    /// A quinn client endpoint that trusts the throwaway certificate.
-    fn client_endpoint() -> quinn::Endpoint {
-        client_endpoint_with_transport(quinn::TransportConfig::default())
+    /// A quinn client endpoint that pins the throwaway certificate in `dir`.
+    fn client_endpoint(dir: &std::path::Path) -> quinn::Endpoint {
+        client_endpoint_with_transport(dir, quinn::TransportConfig::default())
     }
 
-    fn client_endpoint_with_transport(transport: quinn::TransportConfig) -> quinn::Endpoint {
-        let crypto = client_config(&CertTrust::SkipVerify, Some(ALPN)).expect("client tls");
+    fn client_endpoint_with_transport(
+        dir: &std::path::Path,
+        transport: quinn::TransportConfig,
+    ) -> quinn::Endpoint {
+        let pin = crate::cert::cert_fingerprint(&dir.join("cert.pem")).expect("pin");
+        let crypto = crate::pin::client_config(&pin, ALPN).expect("client tls");
         let mut endpoint =
             quinn::Endpoint::client("127.0.0.1:0".parse().expect("addr")).expect("bind client");
         let mut config = quinn::ClientConfig::new(Arc::new(
@@ -195,7 +198,7 @@ mod tests {
         let (dir, server) = server_endpoint();
         let server_addr: SocketAddr = server.local_addr().expect("server addr");
         let proxy = DropProxy::start(server_addr).await.expect("proxy");
-        let client = client_endpoint();
+        let client = client_endpoint(dir.path());
         let dialed = async {
             client
                 .connect(proxy.addr(), "localhost")
@@ -282,11 +285,11 @@ mod tests {
     async fn exhausted_stream_credit_preserves_other_stream_progress() {
         tokio::time::timeout(Duration::from_secs(5), async {
             const CREDIT: u32 = 32 * 1024;
-            let (_dir, server) = server_endpoint();
+            let (dir, server) = server_endpoint();
             let mut transport = quinn::TransportConfig::default();
             transport.stream_receive_window(CREDIT.into());
             transport.receive_window((16 * CREDIT).into());
-            let client = client_endpoint_with_transport(transport);
+            let client = client_endpoint_with_transport(dir.path(), transport);
             let dialed = client
                 .connect(server.local_addr().expect("server addr"), "localhost")
                 .expect("connect");

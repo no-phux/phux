@@ -4883,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -4899,7 +4899,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "libghostty-vt",
  "phux-client-core",
@@ -4910,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4938,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "chrono",
  "nix",
@@ -4956,7 +4956,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "serde",
  "slotmap",
@@ -4988,11 +4988,12 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "futures-util",
  "hex",
  "phux-protocol",
+ "quictun",
  "quinn",
  "rustls",
  "sha2 0.11.0",
@@ -5004,7 +5005,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "libc",
  "nix",
@@ -5014,7 +5015,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.101.0"
+version = "0.102.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -5342,6 +5343,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "quictun"
+version = "0.102.0"
+dependencies = [
+ "quinn",
+ "rustls",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

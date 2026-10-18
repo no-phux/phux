@@ -1,4 +1,4 @@
-//! Reverse enrollment through the CLI (ADR-0181): `phux host ticket` on a
+//! Reverse enrollment through the CLI (ADR-0182): `phux host ticket` on a
 //! `paired` hub mints a join code, `phux host join` on a server with no
 //! listener enrolls with it and starts the uplink without a restart, and the
 //! hub then spawns on that satellite. The code works once, and `phux

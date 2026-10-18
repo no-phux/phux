@@ -67,13 +67,13 @@ ROUTES = DOC_INPUTS + (
       "crates/phux-agent-rules/*", "crates/phux-agent-host/*", "crates/phux/*", "crates/phux-client/*",
       "crates/phux-mission/*", "crates/phux-work/*",
       "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
-      "crates/portable-pty-adopt/*"), {"web"}),
+      "crates/portable-pty-adopt/*", "crates/quictun/*"), {"web"}),
     # The desktop host's path-dependency closure, checked against the
     # manifests by the test. Every other clients/desktop path is unrouted, so
     # it requests every surface, desktop included.
     (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
       "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
-      "crates/phux-client-runtime/*", "crates/phux-dial/*"), {"desktop"}),
+      "crates/phux-client-runtime/*", "crates/phux-dial/*", "crates/quictun/*"), {"desktop"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
     # Path crates inherit `workspace = true` keys from the root manifest, and

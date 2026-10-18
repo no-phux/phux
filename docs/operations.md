@@ -842,7 +842,7 @@ local `--hub` without dropping listeners already baked into the unit.
   Treat `ssh_client` as a label the connecting side reported, not a
   verified address.
 - **Inbound (`inbound://`):** the satellite dials the hub instead
-  ([ADR-0181](adr/0181-satellites-enroll-and-dial-out-to-the-hub.md)),
+  ([ADR-0182](adr/0182-satellites-enroll-and-dial-out-to-the-hub.md)),
   under the QUIC ALPN `phux-satellite/1`. It presents a satellite
   certificate it enrolled with a single-use `phux host ticket` code, and it
   pins the hub's CA. The hub must run `paired`. Each stream the hub opens is

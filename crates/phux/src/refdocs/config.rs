@@ -98,7 +98,7 @@ const SECTIONS: &[Section] = &[
         header: "[[uplink]]",
         summary: "Hubs this server dials out to as a satellite, written by \
                   `phux host join`: satellite name, hub endpoint, the hub's \
-                  CA pin, and the enrolled identity's paths (ADR-0181).",
+                  CA pin, and the enrolled identity's paths (ADR-0182).",
     },
     Section {
         key: "remote",

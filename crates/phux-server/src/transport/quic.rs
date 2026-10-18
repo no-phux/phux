@@ -56,7 +56,7 @@ pub(crate) struct QuicListener {
     /// Where the enrollment ALPN issues into, when this listener offers it
     /// (`workload-auth.md` §8.2): the configured listener only.
     enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
-    /// Where satellites that dial in under the satellite ALPN go (ADR-0181):
+    /// Where satellites that dial in under the satellite ALPN go (ADR-0182):
     /// the configured listener only.
     satellites: Option<crate::hub::adopt::SatelliteAdopter>,
     admissions: super::Admissions<QuicAccepted>,
@@ -133,7 +133,7 @@ impl QuicListener {
     }
 
     /// Adopt satellites that dial in under the satellite ALPN into `adopter`
-    /// (ADR-0181). The ALPN is offered only when this listener verifies
+    /// (ADR-0182). The ALPN is offered only when this listener verifies
     /// workload certificates; without this call it is refused.
     #[must_use]
     pub(crate) fn with_satellites(mut self, adopter: crate::hub::adopt::SatelliteAdopter) -> Self {
@@ -391,7 +391,7 @@ async fn admit_connection(
     }
     if negotiated_alpn(&conn).as_deref() == Some(phux_protocol::policy::SATELLITE_ALPN) {
         // Never a consumer: the hub's link supervisor adopts it, or it is
-        // closed before any stream (ADR-0181).
+        // closed before any stream (ADR-0182).
         match satellites {
             Some((adopter, endpoint)) => {
                 crate::hub::adopt::admit(conn, endpoint, workload_registry.as_ref(), &adopter);

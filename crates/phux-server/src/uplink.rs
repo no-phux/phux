@@ -1,4 +1,4 @@
-//! Satellite uplinks: dialing out to a hub (ADR-0181, `workload-auth.md`
+//! Satellite uplinks: dialing out to a hub (ADR-0182, `workload-auth.md`
 //! §8.3).
 //!
 //! A server the hub cannot reach joins as a satellite by dialing the hub. On

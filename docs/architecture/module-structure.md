@@ -118,7 +118,7 @@ src/
                   — detector (ADR-0046), SET_METADATA arbitration, ask ingress
   hooks.rs        — event-hook dispatcher, argv-only
   hub/            — federation: satellite links, relay, operation fence,
-                    adoption of satellites that dial in (ADR-0181)
+                    adoption of satellites that dial in (ADR-0182)
   uplink.rs       — this server as a satellite dialing out to a hub
   transport.rs, transport/ — UDS, WebSocket, QUIC, TLS, WebTransport
   upgrade/        — graceful re-exec and PTY handoff (ADR-0032)
@@ -262,10 +262,10 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 ## The smaller crates
 
 - **`phux-dial`** — the shared outbound TLS/QUIC/WebSocket dialer
-  (fingerprint-pinned TLS 1.3 plus bearer token). Under `provision` it also
-  mints and reads the self-signed pair (`cert.rs`) that both `phux-server`
-  and `phux-relay` terminate with, and `window.rs` owns the congestion-tracked
-  QUIC send window ([`transport.md`](./transport.md)).
+  (fingerprint-pinned TLS 1.3 plus bearer token). It re-exports `quictun`'s
+  congestion-tracked QUIC send window (`window`;
+  [`transport.md`](./transport.md)) and, under `provision`, the self-signed
+  pair (`cert`) that both `phux-server` and `phux-relay` terminate with.
 - **`phux-client-runtime`** — the one client orchestration layer (ADR-0133;
   [`client-runtime.md`](./client-runtime.md)): registry target resolution,
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
@@ -294,8 +294,15 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   `c/arrangement/` wraps the shared arrangement and `c/organization.rs`
   the organization commands. Packaging lives in `scripts/build-*ffi*.sh`
   ([`../RELEASING.md`](../RELEASING.md)).
-- **`phux-relay`** — the reference relay (ADR-0051, ADR-0052); never parses
-  phux frames.
+- **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): `quictun`'s
+  relay bound to phux's ALPNs, `phxT` tunnel tag, and state directory
+  (ADR-0181); never parses phux frames.
+- **`quictun`** — the blind QUIC tunnel relay, with no phux dependency
+  (ADR-0181). `relay/` is the endpoint, SNI gate, route-token store, and
+  splice; `tunnel.rs` the wire (preamble, close codes, connection-ID tag);
+  `connect.rs` the service's tunnel and consumer's dial; `pin.rs` leaf
+  pinning; `window.rs`, `cert.rs`, and `secret_file.rs` the modules
+  `phux-dial` re-exports.
 - **`phux-record`** — offline recording codec and exporter (ADR-0060), pure
   and synchronous.
 - **`phux-mcp`** — hand-rolled JSON-RPC/stdio MCP adapter over

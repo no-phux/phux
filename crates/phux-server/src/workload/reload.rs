@@ -168,7 +168,7 @@ impl ReloadingWorkloadRegistry {
             .map(|credential| credential.authenticated(&snapshot))
     }
 
-    /// The active satellite credential for a verified TLS leaf (ADR-0181):
+    /// The active satellite credential for a verified TLS leaf (ADR-0182):
     /// its id and the satellite name it enrolled as.
     #[must_use]
     pub fn lookup_satellite_certificate(&self, certificate: &[u8]) -> Option<(String, String)> {

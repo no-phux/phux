@@ -703,7 +703,9 @@ and hostable `[[panes]]` appear under Plugin. Every picker and prompt
 shares this frame, so its key legend sits in the same place, and the frame
 is only as tall as its rows need, up to half the viewport (a two-tab picker
 is a five-row box, not a screen); a live list never shrinks while it is
-up.
+up. A toast that holds the keyboard says `any key` in the same corner; a
+passthrough notice, which goes away on the next key without taking it,
+says nothing.
 
 <!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
 > **Status: shipped.** Every manifest `placement` opens a real server-side
@@ -760,8 +762,12 @@ or end, `C-w` kills the previous word, `C-h`/Backspace and `C-d`/Delete
 delete a character. Enter commits; Esc cancels.
 
 The **directory picker** (`C-a G`) browses directories on the attached
-server and opens a new window there. Over `phux --remote` it browses the
-remote host. With a satellite pane focused, and a hub that advertises
+server and opens a new window there. Its title is the action (`Go to
+directory`, naming the host when it is not simply the attached server's)
+and the directory it shows is the footer status, `~`-shortened and clipped
+from the left when long. While the listing is in flight the same box says
+`Listing ~…`; Esc cancels it. Over `phux --remote` it browses the remote
+host. With a satellite pane focused, and a hub that advertises
 `LIST_DIRECTORY_HOST`, it lists that satellite through the hub.
 
 ### Settings page

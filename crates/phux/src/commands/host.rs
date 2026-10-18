@@ -2152,7 +2152,7 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
 }
 
 /// An `inbound://` satellite's credential names the satellite it was
-/// enrolled as (ADR-0181), so renaming only the entry would strand the
+/// enrolled as (ADR-0182), so renaming only the entry would strand the
 /// joined machine under a name the hub no longer adopts.
 fn inbound_rename_refusal(row: &HostRow) -> Option<CliError> {
     let inbound =
@@ -2252,7 +2252,7 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
         return json_err::emit(json, &registry_failure(err), 1);
     }
     // A satellite that dialed in holds a credential this hub issued; removing
-    // it revokes that credential too (ADR-0181).
+    // it revokes that credential too (ADR-0182).
     let revoked = (resolved == HostRole::Satellite)
         .then(|| inbound::revoke_satellite(name))
         .flatten();

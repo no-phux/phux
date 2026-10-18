@@ -29,30 +29,21 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 sha2 = "0.11"
 # Decode the pairing token (hex) into the raw bytes the QUIC preamble carries.
 hex = "0.4"
-# Self-signed certificate generation (`provision` feature only).
-rcgen = { version = "0.14", default-features = false, features = [
-    "ring",
-    "pem",
-], optional = true }
-# The effective uid a secret file's owner is checked against (`provision`
-# only). Already in the workspace through phux-server; no new crate.
-rustix = { version = "1.1", default-features = false, features = [
-    "std",
-    "process",
-], optional = true }
-# Warn about a loosely-permissioned key that is still admitted (`provision`
-# only); quinn already pulls it in.
-tracing = { workspace = true, optional = true }
+# The tunnel wire's connection-ID tag and the congestion-tracked send window;
+# with `provision`, certificate provisioning and secret-file checks too.
+quictun.workspace = true
 
 [features]
 # The `cert` and `secret_file` modules, for the crates that terminate TLS
 # (server, relay).
-provision = ["dep:rcgen", "dep:rustix", "dep:tracing"]
+provision = ["quictun/provision"]
 # Test-only `testing::DropProxy` UDP impairment; off in shipped builds.
-testing = []
+testing = ["quictun/testing"]
 
 [dev-dependencies]
 # Provisioning tests write real cert/key pairs to a scratch directory.
 tempfile.workspace = true
+# The CA-pinning tests issue their own chains.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 # Self dev-dependency so crate-scoped test runs build the `cert` module.
 phux-dial = { path = ".", features = ["provision", "testing"] }

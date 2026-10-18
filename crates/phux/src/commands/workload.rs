@@ -634,7 +634,7 @@ fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError
 }
 
 /// Withdraw an unspent enrollment ticket (`t-…`): it is refused from now on,
-/// like a consumed one (ADR-0154, ADR-0181).
+/// like a consumed one (ADR-0154, ADR-0182).
 fn revoke_ticket(paths: &WorkloadPaths, ticket_id: &str) -> Result<Report, CliError> {
     let newly_revoked = workload::tickets::revoke_ticket(
         &workload::tickets::tickets_path(&paths.registry),

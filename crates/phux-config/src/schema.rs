@@ -39,7 +39,7 @@ pub struct Config {
     pub satellites: Vec<SatelliteConfigEntry>,
     /// Outbound relay links this server supervises (ADR-0052).
     pub connector: Vec<ConnectorConfigEntry>,
-    /// Hubs this server dials out to as a satellite (ADR-0181), written by
+    /// Hubs this server dials out to as a satellite (ADR-0182), written by
     /// `phux host join`.
     pub uplink: Vec<UplinkConfigEntry>,
     /// Remote servers this machine attaches to (ADR-0055), written by

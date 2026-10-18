@@ -24,7 +24,7 @@ pub(super) struct HubState {
         phux_protocol::ids::SatelliteHost,
         phux_protocol::caps::ServerFeatureSet,
     )>,
-    /// Where the QUIC listener hands satellites that dial in (ADR-0181); it
+    /// Where the QUIC listener hands satellites that dial in (ADR-0182); it
     /// accepts none until an `inbound://` link registers.
     adopter: crate::hub::adopt::SatelliteAdopter,
 }

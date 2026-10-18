@@ -43,7 +43,7 @@ pub const ENROLL_ALPN: &[u8] = b"phux-enroll/1";
 
 /// ALPN protocol id for a satellite's outbound link to its hub.
 ///
-/// See `docs/spec/workload-auth.md` §8.3 and ADR-0181. The satellite dials
+/// See `docs/spec/workload-auth.md` §8.3 and ADR-0182. The satellite dials
 /// and presents its satellite credential; the hub then opens bidirectional
 /// streams, each one phux connection with the hub as the client. It MUST
 /// never equal any other phux ALPN: the ALPN alone decides the role.

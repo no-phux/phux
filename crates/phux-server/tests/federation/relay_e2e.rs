@@ -54,11 +54,8 @@ struct Topology {
 
 fn relay_config(dir: &Path, listen: SocketAddr) -> RelayConfig {
     RelayConfig {
-        listen,
-        cert_path: dir.join("relay-cert.pem"),
-        key_path: dir.join("relay-key.pem"),
-        tokens_path: dir.join("relay-tokens"),
         max_conns: 16,
+        ..phux_relay::config_in(listen, dir)
     }
 }
 

@@ -371,7 +371,7 @@ installing the *remote* unit only; the local `--hub` ensure still runs.
 
 A sandbox or VM behind NAT has no address the hub can dial and often no ssh.
 It joins by dialing out instead
-([ADR-0181](adr/0181-satellites-enroll-and-dial-out-to-the-hub.md)). The hub
+([ADR-0182](adr/0182-satellites-enroll-and-dial-out-to-the-hub.md)). The hub
 must run `[policy] mode = "paired"` with a QUIC listener the sandbox can
 reach.
 

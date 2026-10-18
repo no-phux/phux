@@ -186,7 +186,7 @@ pub struct ServerState {
     /// Hub handles (ADR-0007); all `None` on a non-hub server. See
     /// [`hub_state`].
     hub: HubState,
-    /// Satellite uplinks this server keeps to hubs (ADR-0181).
+    /// Satellite uplinks this server keeps to hubs (ADR-0182).
     uplinks: crate::uplink::Uplinks,
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).

@@ -1,14 +1,15 @@
-//! Self-signed certificate provisioning for phux TLS listeners.
+//! Self-signed certificate provisioning for TLS listeners.
 //!
-//! The provisioning half of [`crate::tls`]'s pinning, shared by `phux-server`
-//! and `phux-relay` (which ADR-0051 forbids from depending on the server).
+//! The provisioning half of [`crate::pin`]'s pinning, for the relay and any
+//! service that terminates TLS the same way.
 //!
 //! Contract:
 //!
 //! - **A complete pair is never touched.** Its fingerprint is pinned on
-//!   devices phux cannot reach; regenerating would silently un-pair them.
+//!   devices the operator cannot reach; regenerating would silently un-pair
+//!   them.
 //! - **A half-present pair is refused**, not repaired, for the same reason.
-//! - **SANs are chosen once, at generation** (ADR-0091); an existing
+//! - **SANs are chosen once, at generation**; an existing
 //!   certificate is never widened.
 //! - **The key is owner-only (`0o600`); the certificate is public.**
 
@@ -19,7 +20,6 @@ use std::path::Path;
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use sha2::{Digest, Sha256};
 
 /// Errors from provisioning or reading persisted TLS material. Callers map
 /// this into their own error vocabulary.
@@ -67,7 +67,7 @@ pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), CertE
 /// Provision a self-signed certificate + key when both files are missing.
 ///
 /// SANs name the loopback identities, then `advertised` (IP literals or DNS
-/// names). A complete pair is left untouched and never widened (ADR-0091).
+/// names). A complete pair is left untouched and never widened.
 ///
 /// # Errors
 ///
@@ -145,7 +145,7 @@ pub fn san_list(advertised: &[String]) -> Vec<String> {
 }
 
 /// SHA-256 fingerprint of the leaf certificate as uppercase colon-separated
-/// hex (`AB:CD:…`): the shape `phux pair` prints and [`crate::CertTrust`] pins.
+/// hex (`AB:CD:…`): the spelling [`crate::pin`] pins.
 ///
 /// # Errors
 ///
@@ -156,9 +156,7 @@ pub fn cert_fingerprint(cert_path: &Path) -> Result<String, CertError> {
     let leaf = certs
         .first()
         .ok_or_else(|| CertError::NoCerts(cert_path.display().to_string()))?;
-    let digest = Sha256::digest(leaf.as_ref());
-    let hex: Vec<String> = digest.iter().map(|b| format!("{b:02X}")).collect();
-    Ok(hex.join(":"))
+    Ok(crate::pin::fingerprint(leaf))
 }
 
 /// Read the PEM certificate chain, leaf first.
@@ -218,7 +216,7 @@ mod tests {
         let mode = fs::metadata(&key).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "private key must be owner-only");
 
-        let digest = Sha256::digest(certs[0].as_ref());
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(certs[0].as_ref());
         let expected: Vec<String> = digest.iter().map(|b| format!("{b:02X}")).collect();
         let first = cert_fingerprint(&cert).unwrap();
         assert_eq!(first, expected.join(":"));
@@ -276,7 +274,7 @@ mod tests {
         );
     }
 
-    /// ADR-0091: the advertised address reaches the certificate (checked by
+    /// The advertised address reaches the certificate (checked by
     /// rustls' own name verification), and a wider request over an existing
     /// pair never mints a new one.
     #[test]

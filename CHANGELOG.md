@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.102.0](https://github.com/no-phux/phux/compare/v0.101.0...v0.102.0) (2026-10-17)
+
+
+### Features
+
+* **tui:** a toast says any key in its border ([072d2b1](https://github.com/no-phux/phux/commit/072d2b1956f6ad649a2de728f875aefcee3c9a7f))
+* **tui:** the directory picker takes the modal house style ([cd1237b](https://github.com/no-phux/phux/commit/cd1237b11b02bdec3db8a5da76c9864f0ff61ad8))
+
+
+### Refactors
+
+* **relay:** extract the relay into quictun, a standalone QUIC tunnel crate ([#1598](https://github.com/no-phux/phux/issues/1598)) ([3d5c186](https://github.com/no-phux/phux/commit/3d5c186604319a7f551db0b0eb6d910bc21c951c))
+
 ## [0.101.0](https://github.com/no-phux/phux/compare/v0.100.0...v0.101.0) (2026-10-17)
 
 

@@ -98,7 +98,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Federation and transport
 
-- [0181](./0181-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
+- [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
+- [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is `crates/quictun`, which depends on no phux crate: a deployment supplies its ALPNs and connection-ID tag as a `Protocol`, and `phux-relay` is phux's binding.
 - [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) `phux attach --ssh` bootstraps over ssh: the host's server opens a QUIC listener for one attach on a local-socket-only `OPEN_LISTENER`, admits only an in-memory token, and closes it after its linger; `ssh://` entries try this before `ssh -t`.
 - [0115](./0115-quic-stream-per-terminal.md) QUIC carries one control stream plus one bidi stream per attached Terminal; UDS/ws keep the single-stream shape.
 - [0111](./0111-how-a-front-restore-is-judged.md) A front restore survives one failed connection of its host and is judged when the backoff redial, a lister, lists; This Mac's first projection at launch leaves a restored peer's tab in front; a record matches on coordinator, session id and creation time, so a graceful upgrade keeps it.
@@ -114,7 +115,7 @@ by a newer one, the newer line is the operative reading.
 - [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.
 - [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
 - [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) A relay route is the TLS server name everywhere: `[[remote]] tls-server-name`, the connect link's `sni` (with `quic`, no `url`), and `phux pair --relay-route`.
-- [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool.
+- [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool (its home is now ADR-0181's).
 - [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
 - [0051](./0051-outbound-dial-out-connector-transport.md) A server behind NAT dials out to a relay and holds one persistent QUIC tunnel.
 - [0037](./0037-overlay-network-reachability.md) Remote self-host consumers reach the server over a WireGuard-class overlay; phux stays overlay-agnostic.

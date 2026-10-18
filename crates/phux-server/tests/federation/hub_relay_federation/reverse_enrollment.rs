@@ -1,4 +1,4 @@
-//! Reverse enrollment (ADR-0181, phux-lxov.3): a satellite with no listener
+//! Reverse enrollment (ADR-0182, phux-lxov.3): a satellite with no listener
 //! at all enrolls with a ticket the hub minted, dials the hub's QUIC
 //! listener under `phux-satellite/1`, and the hub's link supervisor adopts
 //! that connection as the satellite's link. The ticket is single use, an
