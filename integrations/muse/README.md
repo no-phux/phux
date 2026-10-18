@@ -13,10 +13,12 @@ phux, plus the scripts that prove the contract holds:
 - **`SKILL.md`** — the operating guide. When to use phux, how to drive it
   via the CLI, and the safety rules. Written for Muse's capabilities
   (shell execution, file I/O, finite observations).
-- **`scripts/muse-lib.sh`** — ergonomic shell library. Source it and drive
-  phux with short functions (`mspawn`, `mrun`, `mwait`, `msnap`, `mls`,
-  `mkill`, `mdo`) instead of raw CLI incantations. `muse_init` ensures
-  the binary and server, starting the server when needed.
+- **`../../.agents/lib/phux-agent.sh`** — general, harness-agnostic shell
+  library. Source it and drive phux with short functions (`phux_spawn`,
+  `phux_run`, `phux_wait`, `phux_snap`, `phux_ls`, `phux_kill`, `phux_do`)
+  instead of raw CLI incantations. `phux_init` ensures the binary and
+  server, starting the server when needed. Not Muse-specific: any agent
+  or script can use it.
 - **`scripts/setup.sh`** — idempotent environment check. Verifies the
   `phux` binary, `jq`, the server (auto-started), and the tool versions
   this integration was built against.

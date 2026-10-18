@@ -5,13 +5,13 @@
 set -u
 
 _LIBDIR=$(dirname "$0")
-# shellcheck source=scripts/muse-lib.sh
-. "$_LIBDIR/muse-lib.sh"
+# shellcheck source=../../.agents/lib/phux-agent.sh
+. "$_LIBDIR/../../../.agents/lib/phux-agent.sh"
 
 fail() { printf 'muse-setup: error: %s\n' "$1" >&2; exit 1; }
 ok() { printf 'muse-setup: ok: %s\n' "$1"; }
 
-muse_init || fail "phux not ready (need phux and jq on PATH, and a startable server)"
+phux_init || fail "phux not ready (need phux and jq on PATH, and a startable server)"
 ok "phux $(phux --version 2>/dev/null | head -1), server running"
 
 # Pinned tool versions this integration was validated against.

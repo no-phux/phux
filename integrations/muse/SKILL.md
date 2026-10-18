@@ -1,28 +1,30 @@
 ---
 name: using-phux-muse
-description: Drives phux persistent terminals as Muse via the muse-lib.sh shell library. Use when Muse needs terminal state to survive across steps, an interactive program, a dev server, or coordination with other agents through phux; prefer a one-shot shell for independent commands.
+description: Drives phux persistent terminals as Muse via the general phux-agent.sh shell library. Use when Muse needs terminal state to survive across steps, an interactive program, a dev server, or coordination with other agents through phux; prefer a one-shot shell for independent commands.
 compatibility: Requires the phux CLI and jq on PATH. Muse runs headless: there is no terminal UI and no plugin host.
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Using phux as Muse
 
-Source the library, then drive phux with short functions. Every function
-prints its result on stdout and diagnostics on stderr; every wait carries
-a finite timeout (default 20s, override with `MUSE_DEFAULT_TIMEOUT`).
+Source the general agent library (`../../.agents/lib/phux-agent.sh`,
+harness-agnostic — not Muse-specific), then drive phux with short
+functions. Every function prints its result on stdout and diagnostics on
+stderr; every wait carries a finite timeout (default 20s, override with
+`PHUX_AGENT_TIMEOUT`).
 
 ```sh
-. ./scripts/muse-lib.sh   # from integrations/muse/
+. ../../.agents/lib/phux-agent.sh
 
-muse_init            # ensure phux + server (idempotent, auto-starts)
-s=$(mspawn mysess)   # spawn ephemeral session, prints name
-mrun "$s" "make -j"  # run a command, prints its output
-mwait "$s" "done"    # wait for text with finite timeout
-msnap "$s"           # snapshot pane text
-mls                  # list sessions, one name per line
-mkill "$s"           # kill session, no prompt
-mdo job "cmd"        # spawn, run, snapshot, kill — one shot
+phux_init            # ensure phux + server (idempotent, auto-starts)
+s=$(phux_spawn s1)   # spawn ephemeral session, prints name
+phux_run "$s" "make -j"  # run a command, prints its output
+phux_wait "$s" "done"    # wait for text with finite timeout
+phux_snap "$s"           # snapshot pane text
+phux_ls                  # list sessions, one name per line
+phux_kill "$s"           # kill session, no prompt
+phux_do job "cmd"        # spawn, run, snapshot, kill — one shot
 ```
 
 ## When to use phux

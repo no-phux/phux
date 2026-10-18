@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.2.0 — 2026-10-18
+## 0.3.0 — 2026-10-18
+
+Architectural decoupling: ergonomics are no longer Muse-coupled.
+
+- New `.agents/lib/phux-agent.sh`: harness-agnostic shell library
+  (`phux_init`, `phux_spawn`, `phux_run`, `phux_snap`, `phux_wait`,
+  `phux_ls`, `phux_kill`, `phux_do`). Any agent or script can source it.
+  Documents why `status` keeps its `no_server` contract (read-only probe)
+  instead of auto-starting.
+- `integrations/muse/` is now a thin consumer: SKILL.md, setup.sh,
+  smoke.sh, tests, docs. Removed `scripts/muse-lib.sh`.
+- Verified live: setup, smoke, and `phux_do` one-shot all pass.
 
 Ergonomics overhaul from a self-eval drive:
 

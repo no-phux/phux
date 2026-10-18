@@ -4,6 +4,7 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 const read = (p) => readFile(new URL(p, root), "utf8");
+const readAgentLib = (p) => readFile(new URL(`../../.agents/${p}`, root), "utf8");
 const executable = (p) =>
   access(new URL(p, root), constants.X_OK).then(
     () => true,
@@ -20,53 +21,46 @@ test("package manifest is coherent", async () => {
 test("README, SKILL, and CHANGELOG exist with expected headings", async () => {
   const readme = await read("README.md");
   assert.match(readme, /^# phux for Muse/m);
-  assert.match(readme, /muse-lib\.sh/);
+  assert.match(readme, /phux-agent\.sh/);
   const skill = await read("SKILL.md");
   assert.match(skill, /^# Using phux as Muse/m);
   assert.match(skill, /finite timeout/i);
-  assert.match(skill, /mspawn/);
+  assert.match(skill, /phux_spawn/);
   const changelog = await read("CHANGELOG.md");
   assert.match(changelog, /^# Changelog/m);
 });
 
-test("scripts are executable shell", async () => {
-  for (const s of ["scripts/muse-lib.sh", "scripts/setup.sh", "scripts/smoke.sh"]) {
-    assert.equal(await executable(s), true, `${s} must be executable`);
-    const body = await read(s);
-    assert.match(body, /^#!\/bin\/sh/m, `${s} needs a sh shebang`);
+test("general agent library exists and is harness-agnostic", async () => {
+  const body = await readAgentLib("lib/phux-agent.sh");
+  assert.match(body, /^#!\/bin\/sh/m);
+  // No Muse coupling: generic phux_ prefix, no m* aliases.
+  for (const fn of ["phux_init", "phux_spawn", "phux_run", "phux_snap", "phux_wait", "phux_ls", "phux_kill", "phux_do"]) {
+    assert.match(body, new RegExp(`^${fn}\\(\\)`, "m"), `lib must define ${fn}`);
   }
-  // setup.sh and smoke.sh execute; the lib is sourced so it must not set -u.
-  for (const s of ["scripts/setup.sh", "scripts/smoke.sh"]) {
-    assert.match(await read(s), /^set -u/m, `${s} needs set -u`);
-  }
-  assert.doesNotMatch(await read("scripts/muse-lib.sh"), /^set -u/m);
-});
-
-test("muse-lib.sh exposes the ergonomic API", async () => {
-  const body = await read("scripts/muse-lib.sh");
-  for (const fn of ["muse_init", "mspawn", "mrun", "msnap", "mwait", "mls", "mkill", "mdo"]) {
-    assert.match(body, new RegExp(`^${fn}\\(\\)`, "m"), `muse-lib.sh must define ${fn}`);
-  }
-  // Verified CLI forms, not guesses: -s for new, --ephemeral flag, --yes for kill.
+  assert.doesNotMatch(body, /^m(spawn|run|snap|wait|ls|kill|do)\(\)/m);
+  assert.doesNotMatch(body, /MUSE_DEFAULT_TIMEOUT/);
+  // Verified CLI forms, not guesses.
   assert.match(body, /phux new --json -s/);
   assert.match(body, /--ephemeral/);
   assert.match(body, /phux kill --yes/);
-  // JSON parsed with jq, never shell patterns.
+  // JSON parsed with jq, never shell patterns. Documents the no_server contract.
   assert.match(body, /jq -r/);
-  assert.doesNotMatch(body, /case "\$status" in/);
+  assert.match(body, /no_server/);
 });
 
-test("setup.sh delegates to the library", async () => {
-  const body = await read("scripts/setup.sh");
-  assert.match(body, /\. "\$_LIBDIR\/muse-lib\.sh"/);
-  assert.match(body, /muse_init/);
-});
-
-test("smoke.sh dogfoods the library", async () => {
-  const body = await read("scripts/smoke.sh");
-  assert.match(body, /\. "\$_LIBDIR\/muse-lib\.sh"/);
-  for (const fn of ["mspawn", "mrun", "mwait", "msnap", "mkill"]) {
-    assert.match(body, new RegExp(`\\b${fn}\\b`), `smoke.sh must use ${fn}`);
+test("scripts are executable and delegate to the general library", async () => {
+  for (const s of ["scripts/setup.sh", "scripts/smoke.sh"]) {
+    assert.equal(await executable(s), true, `${s} must be executable`);
+    const body = await read(s);
+    assert.match(body, /^#!\/bin\/sh/m, `${s} needs a sh shebang`);
+    assert.match(body, /^set -u/m, `${s} needs set -u`);
+    assert.match(body, /\. "\$_LIBDIR\/\.\.\/\.\.\/\.\.\/\.agents\/lib\/phux-agent\.sh"/);
   }
-  assert.match(body, /trap .* EXIT/, "smoke.sh must clean up on exit");
+  // setup.sh uses phux_init; smoke.sh dogfoods the drive cycle.
+  assert.match(await read("scripts/setup.sh"), /\bphux_init\b/);
+  const smoke = await read("scripts/smoke.sh");
+  for (const fn of ["phux_spawn", "phux_run", "phux_wait", "phux_snap", "phux_kill"]) {
+    assert.match(smoke, new RegExp(`\\b${fn}\\b`), `smoke.sh must use ${fn}`);
+  }
+  assert.match(smoke, /trap .* EXIT/, "smoke.sh must clean up on exit");
 });
