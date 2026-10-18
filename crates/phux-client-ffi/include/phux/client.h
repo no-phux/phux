@@ -1207,6 +1207,102 @@ PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, co
  * grid metadata reports has_foreground/has_background false again. Visible
  * terminals republish. A wrong size or version is PHUX_CLIENT_INVALID_ARGUMENT. */
 PhuxClientResult phux_client_set_terminal_theme(PhuxClient *client, const PhuxTerminalTheme *theme);
+
+/* Draw list (additive to ABI version 3): phux's paint rules applied to the
+ * current grid, as rectangles and text in cell coordinates. Paint background,
+ * backgrounds, a solid cursor, texts, blocks, decorations, then any other
+ * cursor; a faint item paints at half alpha. Colours are final: the client
+ * theme, palette provenance, inverse video and selection are applied. */
+typedef struct PhuxDrawOptions {
+    size_t size; /* initialize to sizeof(PhuxDrawOptions) */
+    uint32_t version; /* initialize to PHUX_CLIENT_ABI_VERSION */
+    PhuxGridRgb selection_foreground, selection_background;
+    bool focused; /* a block cursor is solid; unfocused cursors are hollow */
+    bool cursor_visible;
+    bool blink_visible; /* the blink phase is on */
+} PhuxDrawOptions;
+
+typedef struct PhuxDrawBackground {
+    uint16_t row, start, end; /* cells start..end; default background omitted */
+    PhuxGridRgb color;
+} PhuxDrawBackground;
+
+#define PHUX_DRAW_FACE_BOLD 1u
+#define PHUX_DRAW_FACE_ITALIC 2u
+
+/* utf8[utf8_offset..+utf8_len] drawn from col across cells columns, one
+ * character per column; a wide character or multi-character grapheme is a
+ * run of its own. */
+typedef struct PhuxDrawText {
+    uint16_t row, col, cells;
+    uint8_t face; /* PHUX_DRAW_FACE_* bits */
+    bool faint;
+    PhuxGridRgb color;
+    uint32_t utf8_offset, utf8_len;
+} PhuxDrawText;
+
+/* One filled part of a cell, in eighths from its top-left corner. */
+typedef struct PhuxDrawRegion {
+    uint8_t x, y, width, height;
+} PhuxDrawRegion;
+
+/* A block element (U+2580..U+259F): fill regions[0..region_count]. */
+typedef struct PhuxDrawBlock {
+    uint16_t row, col;
+    PhuxGridRgb color;
+    bool faint;
+    uint8_t region_count;
+    PhuxDrawRegion regions[2];
+} PhuxDrawBlock;
+
+typedef enum PhuxDrawDecorationKind {
+    PHUX_DRAW_UNDERLINE_SINGLE = 1,
+    PHUX_DRAW_UNDERLINE_DOUBLE = 2,
+    PHUX_DRAW_UNDERLINE_CURLY = 3,
+    PHUX_DRAW_UNDERLINE_DOTTED = 4,
+    PHUX_DRAW_UNDERLINE_DASHED = 5,
+    PHUX_DRAW_STRIKETHROUGH = 6,
+    PHUX_DRAW_OVERLINE = 7
+} PhuxDrawDecorationKind;
+
+typedef struct PhuxDrawDecoration {
+    uint16_t row, start, end; /* merged across adjacent cells */
+    uint8_t kind; /* PhuxDrawDecorationKind */
+    bool faint;
+    PhuxGridRgb color;
+} PhuxDrawDecoration;
+
+typedef struct PhuxDrawCursor {
+    bool visible;
+    bool solid; /* paints under the glyphs, which take the cell background */
+    uint16_t row, col, width; /* width 2 on a wide character */
+    uint32_t style; /* PhuxCursorStyle */
+    PhuxGridRgb color;
+} PhuxDrawCursor;
+
+typedef struct PhuxDrawList {
+    size_t size; /* initialize to sizeof(PhuxDrawList) */
+    uint32_t version; /* initialize to PHUX_CLIENT_ABI_VERSION */
+    uint16_t cols, rows;
+    PhuxGridRgb background;
+    const PhuxDrawBackground *backgrounds;
+    size_t background_count;
+    const PhuxDrawText *texts;
+    size_t text_count;
+    const PhuxDrawBlock *blocks;
+    size_t block_count;
+    const PhuxDrawDecoration *decorations;
+    size_t decoration_count;
+    PhuxDrawCursor cursor;
+    PhuxBytes utf8;
+} PhuxDrawList;
+
+/* Build the terminal's current grid and lend its draw list. NULL options are
+ * the defaults (focused, cursor and blink visible). Borrowed until the next
+ * mutable client call, like terminal_grid's view, which this also refreshes.
+ * INVALID_STATE without a published grid; a wrong size or version is
+ * PHUX_CLIENT_INVALID_ARGUMENT. */
+PhuxClientResult phux_client_terminal_draw_list(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxDrawOptions *options, PhuxDrawList *out_list);
 /**
  * Reports whether the published Ghostty terminal's effective mouse-tracking
  * state is active (X10, normal, button, or any-event). Returns

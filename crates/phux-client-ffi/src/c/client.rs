@@ -29,6 +29,7 @@ use phux_protocol::caps::{BootstrapLimits, Layer, ServerFeature};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{CloseReason, FrameKind};
 
+use crate::c::draw_list::DrawCache;
 use crate::c::error::BridgeError;
 use crate::c::grid_metadata::GridMetadataCache;
 use crate::c::types::{
@@ -142,6 +143,8 @@ pub(crate) struct RenderCache {
     pub _terminal_host: Vec<u8>,
     pub view: PhuxTerminalGridView,
     pub metadata: GridMetadataCache,
+    /// The draw list last lent for this frame, if one was asked for.
+    pub draw: Option<DrawCache>,
 }
 
 #[cfg(test)]
@@ -1250,6 +1253,7 @@ impl Client {
                 _terminal_host: host,
                 view,
                 metadata,
+                draw: None,
             },
         );
         let Some(cache) = self.render.get(id) else {
