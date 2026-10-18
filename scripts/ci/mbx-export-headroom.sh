@@ -47,7 +47,7 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" && -n "${RUNNER_OS:-}" ]]; then
     || echo "mbx-export-headroom: toolchain cleanup skipped" >&2
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ -n "${MBX_CACHE_DIR:-}" ]]; then
   cache_dir="${MBX_CACHE_DIR}"
 elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
@@ -57,7 +57,8 @@ else
 fi
 
 if [[ -d "${cache_dir}/targets" && -d "${cache_dir}/actions/cas/v1" ]]; then
-  python3 "${script_dir}/mbx-collapse-target-copies.py" "${cache_dir}" \
+  # setup-rust-lane puts the devshell's bun on PATH for the mbx lanes.
+  bun "${root}/tools/main.ts" mbx-collapse-target-copies "${cache_dir}" \
     || echo "mbx-export-headroom: collapse failed; continuing" >&2
 fi
 

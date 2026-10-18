@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Performance CI
@@ -49,7 +49,8 @@ the checked-in file. A rustc or flake bump that changes codegen moves the
 counts; the path filter runs the job on those files, and the baseline has to
 be updated in the same change.
 
-The comparison reads `benchmarks/icount-baseline.json`. Each scenario's
+The comparison (`bun tools/main.ts perf-icount`, in `tools/src/perf/`) reads
+`benchmarks/icount-baseline.json`. Each scenario's
 instruction count may rise by at most 5 percent. An equal rise passes. A drop
 passes. A missing or extra scenario fails. Exact allocation counts for encode
 and decode stay in `crates/phux-protocol/tests/it/hot_path_alloc.rs` and run

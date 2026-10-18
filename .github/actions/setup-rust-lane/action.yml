@@ -102,8 +102,10 @@ runs:
     # Zig or mold a nixpkgs bump can change underneath an unchanged rustc,
     # which is the same invalidation the old rust-cache key carried. The
     # GitHub entry uses cache_key from this step, not the action's generated
-    # rustc-and-commit key. flake.lock already pins that compiler.
-    - name: expose the devshell's mbx and rustc
+    # rustc-and-commit key. flake.lock already pins that compiler. The
+    # devshell's bun rides along for scripts/ci/mbx-export-headroom.sh, which
+    # these mbx lanes run outside `nix develop`.
+    - name: expose the devshell's mbx, rustc and bun
       if: inputs.build-cache == 'mbx'
       id: mbx-env
       shell: bash
@@ -112,7 +114,7 @@ runs:
       run: |
         set -euo pipefail
         # Through a file: the shellHook greets on stdout.
-        nix develop -c bash -c 'dirname "$(command -v mbx)" > "$1"; dirname "$(command -v rustc)" >> "$1"' _ "$RUNNER_TEMP/mbx-path"
+        nix develop -c bash -c 'for tool in mbx rustc bun; do dirname "$(command -v "$tool")"; done > "$1"' _ "$RUNNER_TEMP/mbx-path"
         cat "$RUNNER_TEMP/mbx-path" >> "$GITHUB_PATH"
         echo "PHUX_CI_MBX=1" >> "$GITHUB_ENV"
         flake="$(sha256sum flake.lock | cut -c1-12)"

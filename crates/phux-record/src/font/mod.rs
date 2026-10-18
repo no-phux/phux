@@ -6,7 +6,8 @@
 //! render as tofu.
 //!
 //! `spleen_8x16` is generated from `assets/spleen-8x16.bdf` by
-//! `scripts/gen-bitmap-font.py` and committed; there is no build-time codegen.
+//! `bun tools/main.ts gen-bitmap-font` and committed; there is no build-time
+//! codegen.
 //! [`boxdraw`] draws box/block glyphs before the face and a small set of
 //! missing symbols after it.
 

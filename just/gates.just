@@ -117,7 +117,6 @@ workflow-check: shellcheck tools-check
     bash scripts/check-release-cpu-baselines.sh
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
-    python3 -B scripts/test-output.py
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
     node --test scripts/test-vt-wasm.mjs

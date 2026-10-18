@@ -334,11 +334,10 @@
             # hosted runners ship jq, but the scripts must also run in the
             # devshell (`just dep-stats`, local dashboard renders).
             pkgs.jq
-            # scripts/gen-bitmap-font.py and its drift gate (`just font-check`,
-            # a `just ci` and ci.yml step). Python is a TOOLING dependency only:
-            # the glyph table it emits is committed, so no `cargo build` ever
-            # needs an interpreter. Pinning it here is what lets the gate hard-
-            # fail on a missing python3 instead of skipping itself.
+            # The Python guards and tests still under scripts/. Python is a
+            # TOOLING dependency only: no `cargo build` ever needs an
+            # interpreter. Pinning it here is what lets those gates hard-fail
+            # on a missing python3 instead of skipping themselves.
             pkgs.python3
             # Debugging.
             pkgs.lldb

@@ -17,7 +17,9 @@ The repository is public, so standard hosted runners are free. Workflows use
 `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`, with no
 larger or self-hosted runners. The account allows 20 concurrent standard
 jobs, 5 of them macOS. Concurrency groups use the `mini-v1-` namespace, and
-`pr-janitor` cancels a closed PR's live runs.
+`pr-janitor` cancels a closed PR's live runs. The tests in `tools/src/policy/`
+(part of `just tools-check`) hold every workflow to these rules, the cache
+rules below, and artifact provenance.
 
 ## Routing
 

@@ -3,15 +3,15 @@
 #
 # Drift gate for the only generated Rust source in the workspace:
 # crates/phux-record/src/font/spleen_8x16.rs, produced from the vendored
-# Spleen BDF face by scripts/gen-bitmap-font.py.
+# Spleen BDF face by `bun tools/main.ts gen-bitmap-font` (tools/src/font/).
 #
 # WHY a CI gate and not a build.rs. Committing the generated table is a
 # deliberate call (ADR-0060): a plain `cargo build` then compiles ordinary
-# Rust with no Python on PATH, no BDF parser in the dependency graph, no
+# Rust with no tooling runtime on PATH, no BDF parser in the dependency graph, no
 # build-script node added to a 13-crate workspace, and nothing that breaks
 # the hermetic nix devshell story. The price of committing a generated
 # artifact is that nothing links it back to its source. Before this script
-# existed, `grep` for gen-bitmap-font.py across every workflow, script, and
+# existed, `grep` for the generator across every workflow, script, and
 # the justfile returned zero hits: you could hand-edit a glyph row, or bump
 # the .bdf and forget to regenerate, and every other gate stayed green
 # because the result is still valid Rust that compiles and renders.
@@ -40,14 +40,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-GENERATOR="scripts/gen-bitmap-font.py"
+GENERATOR="tools/src/font/bitmap.ts"
 SOURCE="crates/phux-record/assets/spleen-8x16.bdf"
 GENERATED="crates/phux-record/src/font/spleen_8x16.rs"
 
 # The fix command, spelled once and printed verbatim on every failure path.
 # A drift gate that only says "these differ" makes the reader reconstruct the
 # invocation from the generator's docstring; this one hands it over.
-FIX="python3 ${GENERATOR} ${SOURCE} ${GENERATED}"
+FIX="bun tools/main.ts gen-bitmap-font ${SOURCE} ${GENERATED}"
 
 for path in "$GENERATOR" "$SOURCE" "$GENERATED"; do
     if [ ! -f "$path" ]; then
@@ -57,11 +57,11 @@ for path in "$GENERATOR" "$SOURCE" "$GENERATED"; do
     fi
 done
 
-if ! command -v python3 >/dev/null 2>&1; then
+if ! command -v bun >/dev/null 2>&1; then
     # Hard failure, never a skip. A gate that quietly opts out when its
-    # interpreter is absent is indistinguishable from the hole it replaced.
-    # python3 is in the nix devshell (flake.nix) precisely so this runs.
-    phux_error "python3 not found on PATH; cannot verify ${GENERATED}"
+    # runtime is absent is indistinguishable from the hole it replaced.
+    # The nix devshell and mise both pin bun precisely so this runs.
+    phux_error "bun not found on PATH; cannot verify ${GENERATED}"
     phux_hint "run inside the dev shell:  nix develop -c bash scripts/check-generated-font.sh"
     exit 1
 fi
@@ -70,8 +70,8 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/phux-font-check.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 regenerated="${TMP}/spleen_8x16.rs"
 
-if ! python3 "$GENERATOR" "$SOURCE" "$regenerated" >/dev/null; then
-    phux_error "${GENERATOR} failed on ${SOURCE}"
+if ! bun tools/main.ts gen-bitmap-font "$SOURCE" "$regenerated" >/dev/null; then
+    phux_error "gen-bitmap-font failed on ${SOURCE}"
     phux_hint "reproduce with:  ${FIX}"
     exit 1
 fi
