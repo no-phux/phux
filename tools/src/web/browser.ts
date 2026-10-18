@@ -1,14 +1,6 @@
-// Run real Chrome tests with an isolated, readiness-checked demo server.
-//
-// Run inside `nix develop .#browser` (or with docs/SETUP.md's browser/native
-// tools). CHROMEDRIVER and CHROME select a matching local browser/driver
-// pair. The standalone client's cwd, Cargo.lock, and .cargo/config.toml
-// remain authoritative.
-//
-// The private scratch exported as TMPDIR is placed so the Unix sockets
-// created under it fit in sockaddr_un. Darwin's sun_path is 104 bytes
-// including NUL; the macOS default /var/folders TMPDIR is already long enough
-// that nesting phux-browser-* plus mbx's cache-agent.sock overflows it.
+// Run real Chrome tests against an isolated, readiness-checked demo server.
+// Run inside `nix develop .#browser`; CHROME and CHROMEDRIVER override the
+// browser/driver pair found on PATH.
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
 import {
@@ -17,7 +9,6 @@ import {
   closeSync,
   constants as fs,
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -27,15 +18,16 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { connect as tcpConnect, type Socket } from "node:net";
+import { connect as tcpConnect } from "node:net";
 import { constants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect as tlsConnect } from "node:tls";
+import { Failure } from "../lib/command.ts";
+import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
-import { isTable, type Table } from "../lib/value.ts";
 import { AgentFixture } from "./fixture.ts";
 
-export type Env = Record<string, string>;
+type Env = Record<string, string>;
 
 export const REQUIRED_TESTS = [
   "renders_engine_grid_to_canvas",
@@ -61,352 +53,72 @@ export const REQUIRED_TESTS = [
   "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
   "dropping_polled_establishment_disposes_app_reader_and_transport",
 ] as const;
-export const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"] as const;
-export const TEST_TOKEN = "11".repeat(32);
-
-export const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];
+const TEST_TOKEN = "11".repeat(32);
 
 /** SIGTERM/SIGINT: unwind through every cleanup, then exit 128 + signum. */
-export class Interrupted extends Error {
+class Interrupted extends Error {
   constructor(readonly signum: number) {
     super(`interrupted by signal ${signum}`);
   }
 }
 
 let interrupted: Interrupted | undefined;
-let wakeInterrupted: () => void = () => {};
-const interruption = new Promise<void>((done) => {
-  wakeInterrupted = done;
-});
-
-export function installInterruptHandlers(): void {
-  for (const name of ["SIGTERM", "SIGINT"] as const) {
-    process.on(name, () => {
-      interrupted ??= new Interrupted(constants.signals[name]);
-      wakeInterrupted();
-    });
-  }
-}
+const interruption = Promise.withResolvers<"interrupted">();
 
 function throwIfInterrupted(): void {
   if (interrupted) throw interrupted;
 }
 
-/** Own a loopback UDP port that silently discards every QUIC datagram. */
-export class UdpBlackhole {
-  packets = 0;
-  private socket: Bun.udp.Socket<"buffer"> | undefined;
-
-  get port(): number {
-    if (this.socket === undefined) throw new Error("UdpBlackhole is not open");
-    return this.socket.port;
-  }
-
-  get open(): boolean {
-    return this.socket !== undefined && !this.socket.closed;
-  }
-
-  async start(): Promise<this> {
-    this.socket = await Bun.udpSocket({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: {
-        data: () => {
-          this.packets += 1;
-        },
-      },
-    });
-    return this;
-  }
-
-  close(): void {
-    this.socket?.close();
-  }
-}
-
-/** Signal one owned process group; false when nothing signalable is left. */
-export type GroupSignal = (group: number, signal: NodeJS.Signals | 0) => boolean;
-
-/** Signal only the session/process group that this runner created. */
-export const signalGroup: GroupSignal = (group, signal) => {
+/** Signal the process group this runner created; false when nothing signalable is left. */
+export function signalGroup(group: number, signal: NodeJS.Signals | 0): boolean {
   try {
     process.kill(-group, signal);
+    return true;
   } catch (error) {
     const code = error instanceof Error && "code" in error ? error.code : undefined;
-    // Darwin answers EPERM for a group whose remaining members are zombies
-    // awaiting their reaper: nothing signalable is left in it.
+    // Darwin answers EPERM for a group holding only zombies awaiting their reaper.
     if (code === "ESRCH" || code === "EPERM") return false;
     throw error;
   }
-  return true;
-};
-
-/** How long an owned group gets to exit on SIGINT before it is SIGKILLed. */
-export const STOP_GRACE_MS = 10_000;
-
-export interface Owned {
-  readonly pid: number;
-  readonly exited: Promise<number>;
-}
-
-async function reaped(child: Owned, ms: number): Promise<void> {
-  await Promise.race([child.exited, sleep(ms)]);
-}
-
-/** Drain the owned group, even when its leader exited before its children. */
-export async function stop(
-  child: Owned,
-  graceMs = STOP_GRACE_MS,
-  signal = signalGroup,
-): Promise<void> {
-  signal(child.pid, "SIGINT");
-  // Check the whole group rather than taking the leader's exit as proof
-  // that Chrome/driver/compiler descendants exited.
-  const deadline = performance.now() + graceMs;
-  while (performance.now() < deadline) {
-    if (!signal(child.pid, 0)) {
-      await reaped(child, 5000);
-      return;
-    }
-    await sleep(100);
-  }
-  // A descendant can ignore SIGINT. Escalate the same owned group after the
-  // bounded grace, including when the leader has already exited.
-  signal(child.pid, "SIGKILL");
-  await reaped(child, 5000);
-}
-
-export class CommandFailed extends Error {
-  constructor(
-    readonly command: string[],
-    readonly code: number,
-  ) {
-    super(`Command '${command.join(" ")}' returned non-zero exit status ${code}.`);
-  }
-}
-
-export class CommandTimeout extends Error {}
-
-export interface RunOptions {
-  readonly cwd: string;
-  readonly env: Env;
-  readonly timeoutMs: number;
-  /** File descriptor that takes stdout and stderr. */
-  readonly log: number;
-  readonly graceMs?: number;
-}
-
-/** Give commands their own process group so cancellation reaps their tools. */
-export async function run(command: string[], options: RunOptions): Promise<void> {
-  throwIfInterrupted();
-  const child = Bun.spawn(command, {
-    cwd: options.cwd,
-    env: options.env,
-    stdin: "ignore",
-    stdout: options.log,
-    stderr: options.log,
-    detached: true,
-  });
-  try {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const outcome = await Promise.race([
-      child.exited,
-      new Promise<"timeout">((done) => {
-        timer = setTimeout(() => done("timeout"), options.timeoutMs);
-      }),
-      interruption.then(() => "interrupted" as const),
-    ]);
-    clearTimeout(timer);
-    if (outcome === "timeout") {
-      throw new CommandTimeout(
-        `Command '${command.join(" ")}' timed out after ${options.timeoutMs}ms`,
-      );
-    }
-    if (outcome === "interrupted") throw interrupted ?? new Interrupted(constants.signals.SIGTERM);
-    if (outcome !== 0) throw new CommandFailed(command, outcome);
-  } finally {
-    await stop(child, options.graceMs);
-  }
-}
-
-/** Run with stdout and stderr appended to a fresh log file. */
-async function runLogged(command: string[], options: Omit<RunOptions, "log">, logPath: string) {
-  const log = openSync(logPath, "w");
-  try {
-    await run(command, { ...options, log });
-  } finally {
-    closeSync(log);
-  }
-}
-
-const LISTENING = /ws-demo-server listening on wss?:\/\/127\.0\.0\.1:(\d+)\//;
-
-export interface Server {
-  readonly exitCode: number | null;
-  readonly signalCode?: string | null;
-}
-
-function exited(server: Server): boolean {
-  return server.exitCode !== null || (server.signalCode ?? null) !== null;
 }
 
 /**
- * The port the demo server bound. It is started on port 0 and names the
- * address it actually bound, so no other process can take the port first.
+ * SIGINT the owned group, then SIGKILL it after `graceMs`. The whole group is
+ * checked, not the leader: Chrome, driver and compiler descendants can outlive
+ * it or ignore SIGINT.
  */
-export async function boundPort(server: Server, logPath: string, pause = sleep): Promise<number> {
-  for (let probe = 0; probe < 300; probe += 1) {
-    if (exited(server)) throw new Error("demo server exited before reporting its bound port");
-    const match = LISTENING.exec(readFileSync(logPath, "utf8"));
-    if (match?.[1]) return Number(match[1]);
-    await pause(100);
-    throwIfInterrupted();
-  }
-  throw new CommandTimeout("demo server did not report its bound port after 300 bounded probes");
-}
-
-function upgradeRequest(token: string | undefined): string {
-  const protocol = token ? `Sec-WebSocket-Protocol: phux.v1, phux.bearer.${token}\r\n` : "";
-  return (
-    "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n" +
-    "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" +
-    `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n${protocol}\r\n`
-  );
-}
-
-/** Whether a raw WebSocket upgrade on `port` is answered 101. */
-export function websocketReady(port: number, tls = false, token?: string): Promise<boolean> {
-  return new Promise((done, fail) => {
-    const socket: Socket = tls
-      ? tlsConnect({ host: "127.0.0.1", port, servername: "localhost", rejectUnauthorized: false })
-      : tcpConnect({ host: "127.0.0.1", port });
-    socket.setTimeout(500, () => {
-      socket.destroy();
-      fail(new Error("WebSocket readiness probe timed out"));
-    });
-    socket.once(tls ? "secureConnect" : "connect", () => socket.write(upgradeRequest(token)));
-    socket.once("data", (data: Buffer) => {
-      socket.destroy();
-      done(data.subarray(0, 13).toString("latin1") === "HTTP/1.1 101 ");
-    });
-    socket.once("error", (error) => {
-      socket.destroy();
-      fail(error);
-    });
-  });
-}
-
-export type Probe = (port: number, tls: boolean, token?: string) => Promise<boolean>;
-
-export async function waitReady(
-  server: Server,
-  port: number,
-  {
-    tls = false,
-    token,
-    probe = websocketReady,
-    pause = sleep,
-  }: {
-    tls?: boolean;
-    token?: string;
-    probe?: Probe;
-    pause?: (ms: number) => Promise<void>;
-  } = {},
-): Promise<void> {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (exited(server)) throw new Error("demo server exited before WebSocket readiness");
-    try {
-      if (await probe(port, tls, token)) return;
-    } catch {
-      // Not listening yet.
+async function stop(child: Subprocess, graceMs = 10_000): Promise<void> {
+  signalGroup(child.pid, "SIGINT");
+  const deadline = performance.now() + graceMs;
+  while (signalGroup(child.pid, 0)) {
+    if (performance.now() >= deadline) {
+      signalGroup(child.pid, "SIGKILL");
+      break;
     }
-    await pause(100);
-    throwIfInterrupted();
+    await Bun.sleep(100);
   }
-  throw new CommandTimeout("demo server WebSocket upgrade failed after 120 bounded probes");
+  await Promise.race([child.exited, Bun.sleep(5000)]);
 }
 
-function escape(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+interface Spawn {
+  cwd: string;
+  env: Env;
+  /** Truncated, then takes the child's stdout and stderr. */
+  logPath: string;
+  graceMs?: number;
 }
 
-export function requireBrowserTests(
-  output: string,
-  required: readonly string[] = REQUIRED_TESTS,
-): string {
-  for (const name of required) {
-    if (!new RegExp(`test (?:\\S*::)?${escape(name)} \\.\\.\\. ok`).test(output)) {
-      throw new Error(`Chrome did not report a passing browser test: ${name}`);
-    }
-  }
-  return `Chrome execution verified: ${required.length} required browser tests passed`;
-}
-
-/** Merge the chosen binary into capabilities understood by wasm-bindgen. */
-export function webdriverEnvironment(env: Env, directory: string, cwd: string): Env {
-  const key = "WASM_BINDGEN_TEST_WEBDRIVER_JSON";
-  const source = resolve(cwd, env[key] ?? "webdriver.json");
-  let capabilities: Table = {};
-  if (existsSync(source) || key in env) {
-    const parsed: unknown = JSON.parse(readFileSync(source, "utf8"));
-    if (!isTable(parsed)) throw new Error(`${source} is not a JSON object`);
-    capabilities = parsed;
-  }
-  if (env["CHROME"]) {
-    const options = capabilities["goog:chromeOptions"];
-    capabilities["goog:chromeOptions"] = {
-      ...(isTable(options) ? options : {}),
-      binary: env["CHROME"],
-    };
-  }
-  if (env["PHUX_TEST_ACCEPT_INSECURE_CERTS"] === "1") capabilities["acceptInsecureCerts"] = true;
-  const destination = join(directory, "webdriver.json");
-  writeFileSync(destination, JSON.stringify(capabilities));
-  return { ...env, [key]: destination };
-}
-
-export type Runner = (
-  command: string[],
-  options: Omit<RunOptions, "log">,
-  logPath: string,
-) => Promise<void>;
-
-export async function runChrome(
-  command: string[],
-  env: Env,
-  logs: string,
-  runner: Runner = runLogged,
-) {
-  const cwd = join(ROOT, "clients/phux-web");
-  // Preserve user capabilities without modifying their file, and keep this
-  // copy alive until wasm-bindgen has finished both browser test binaries.
-  const scratch = mkdtempSync(join(env["TMPDIR"] ?? tmpdir(), "phux-webdriver-"));
-  try {
-    const webEnv = webdriverEnvironment(env, scratch, cwd);
-    webEnv["CARGO_TARGET_DIR"] = env["PHUX_WEB_CARGO_TARGET_DIR"] ?? join(cwd, "target");
-    await runner(command, { cwd, env: webEnv, timeoutMs: 600_000 }, join(logs, "chrome.log"));
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-function wasmPackTest(env: Env, tests: string[]): string[] {
-  const command = ["wasm-pack", "test", "--headless", "--chrome", "--locked", ...tests];
-  // wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
-  if (env["CHROMEDRIVER"]) command.splice(4, 0, "--chromedriver", env["CHROMEDRIVER"]);
-  return command;
-}
-
-/** The demo server in a group of its own, logging to `logPath`, stopped after `body`. */
-async function withDemoServer<T>(
-  env: Env,
-  logPath: string,
-  body: (server: Subprocess) => Promise<T>,
+/** Run `body` with `argv` alive in its own process group, then stop the group. */
+async function owned<T>(
+  argv: string[],
+  { cwd, env, logPath, graceMs }: Spawn,
+  body: (child: Subprocess) => Promise<T>,
 ): Promise<T> {
   throwIfInterrupted();
   const log = openSync(logPath, "w");
-  const server = Bun.spawn([join(env["CARGO_TARGET_DIR"] ?? "", "debug/examples/ws_demo_server")], {
-    cwd: ROOT,
+  const child = Bun.spawn(argv, {
+    cwd,
     env,
     stdin: "ignore",
     stdout: log,
@@ -414,328 +126,354 @@ async function withDemoServer<T>(
     detached: true,
   });
   try {
-    return await body(server);
+    return await body(child);
   } finally {
-    await stop(server);
+    await stop(child, graceMs);
     closeSync(log);
   }
 }
 
-async function browserTests(env: Env, logs: string): Promise<void> {
-  env["PHUX_WS_ADDR"] = "127.0.0.1:0";
-  // A `cat` pane: each typed line comes back as program output, escape
-  // sequences included (ws_demo_server's default pane is a shell).
-  env["PHUX_DEMO_PANE"] = "cat";
-  const command = wasmPackTest(env, [
-    "--lib",
-    "--test",
-    "render",
-    "--test",
-    "e2e_browser",
-    "--test",
-    "e2e_input",
-  ]);
-  await withDemoServer(env, join(logs, "server.log"), async (server) => {
-    const port = await boundPort(server, join(logs, "server.log"));
-    env["PHUX_TEST_WS_URL"] = `ws://127.0.0.1:${port}/`;
-    await waitReady(server, port);
-    // Do not reuse the native target or override the standalone rustflags.
-    const socketPath = join(env["TMPDIR"] ?? tmpdir(), `phux-e2e-${server.pid}.sock`);
-    const binary = join(env["CARGO_TARGET_DIR"] ?? "", "debug/phux");
-    const fixture = new AgentFixture(binary, socketPath, env).start();
+/** Run `argv` to completion; a non-zero exit, timeout or interrupt throws after the group is stopped. */
+export function run(argv: string[], options: Spawn & { timeoutMs: number }): Promise<void> {
+  return owned(argv, options, async (child) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((done) => {
+      timer = setTimeout(() => done("timeout"), options.timeoutMs);
+    });
+    const outcome = await Promise.race([child.exited, timeout, interruption.promise]);
+    clearTimeout(timer);
+    throwIfInterrupted();
+    const command = argv.join(" ");
+    if (outcome === "timeout")
+      throw new Failure(`${command} timed out after ${options.timeoutMs}ms`);
+    if (outcome !== 0) throw new Failure(`${command} exited ${outcome}`);
+  });
+}
+
+export type Server = Pick<Subprocess, "exitCode" | "signalCode">;
+
+/** Retry `check` every 100ms until it yields a value, failing once the server exits or `attempts` run out. */
+export async function poll<T>(
+  server: Server,
+  what: string,
+  attempts: number,
+  check: () => Promise<T | undefined>,
+  pause: (ms: number) => Promise<void> = Bun.sleep,
+): Promise<T> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (server.exitCode !== null || server.signalCode !== null) {
+      throw new Failure(`demo server exited before ${what}`);
+    }
+    const value = await check().catch(() => undefined);
+    if (value !== undefined) return value;
+    await pause(100);
+    throwIfInterrupted();
+  }
+  throw new Failure(`demo server gave no ${what} after ${attempts} bounded probes`);
+}
+
+const LISTENING = /ws-demo-server listening on wss?:\/\/127\.0\.0\.1:(\d+)\//;
+
+/** The port the demo server bound; it starts on port 0 so nothing can take the port first. */
+export function boundPort(server: Server, logPath: string): Promise<number> {
+  return poll(server, "its bound port", 300, async () => {
+    const port = LISTENING.exec(readFileSync(logPath, "utf8"))?.[1];
+    return port === undefined ? undefined : Number(port);
+  });
+}
+
+/** Whether a raw WebSocket upgrade on `port` is answered 101. */
+export function websocketReady(port: number, tls = false, token?: string): Promise<boolean> {
+  const protocol = token ? `Sec-WebSocket-Protocol: phux.v1, phux.bearer.${token}\r\n` : "";
+  const request =
+    "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+    `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n${protocol}\r\n`;
+  return new Promise((done, fail) => {
+    const socket = tls
+      ? tlsConnect({ host: "127.0.0.1", port, servername: "localhost", rejectUnauthorized: false })
+      : tcpConnect({ host: "127.0.0.1", port });
+    socket.setTimeout(500, () => socket.destroy(new Error("WebSocket readiness probe timed out")));
+    socket.once(tls ? "secureConnect" : "connect", () => socket.write(request));
+    socket.once("data", (data: Buffer) => {
+      socket.destroy();
+      done(data.subarray(0, 13).toString("latin1") === "HTTP/1.1 101 ");
+    });
+    socket.once("error", fail);
+    socket.once("close", () => done(false));
+  });
+}
+
+function waitReady(server: Server, port: number, tls: boolean, token?: string): Promise<true> {
+  return poll(server, "WebSocket readiness", 120, async () =>
+    (await websocketReady(port, tls, token)) ? true : undefined,
+  );
+}
+
+/** Fail unless the Chrome log reports every `required` test as passing. */
+export function requireBrowserTests(output: string, required: readonly string[]): string {
+  for (const name of required) {
+    if (!new RegExp(`test (?:\\S*::)?${name} \\.\\.\\. ok`).test(output)) {
+      throw new Failure(`Chrome did not report a passing browser test: ${name}`);
+    }
+  }
+  return `Chrome execution verified: ${required.length} required browser tests passed`;
+}
+
+/** Write the wasm-bindgen WebDriver capabilities for the chosen Chrome; returns the path. */
+export function webdriverCapabilities(
+  directory: string,
+  chrome: string | undefined,
+  insecure: boolean,
+): string {
+  const path = join(directory, "webdriver.json");
+  const capabilities = {
+    ...(chrome ? { "goog:chromeOptions": { binary: chrome } } : {}),
+    ...(insecure ? { acceptInsecureCerts: true } : {}),
+  };
+  writeFileSync(path, JSON.stringify(capabilities));
+  return path;
+}
+
+interface Paths {
+  logs: string;
+  /** The private scratch exported as TMPDIR. */
+  scratch: string;
+  /** The native CARGO_TARGET_DIR holding the demo server and phux. */
+  target: string;
+}
+
+/** wasm-pack the standalone client's `tests` in Chrome and check `required` passed. */
+async function chrome(
+  env: Env,
+  paths: Paths,
+  tests: string[],
+  required: readonly string[],
+  insecure = false,
+): Promise<void> {
+  const cwd = join(ROOT, "clients/phux-web");
+  const driver = env["CHROMEDRIVER"] ? ["--chromedriver", env["CHROMEDRIVER"]] : [];
+  const logPath = join(paths.logs, "chrome.log");
+  // The standalone client keeps its own target, Cargo.lock and rustflags.
+  const webEnv = {
+    ...env,
+    CARGO_TARGET_DIR: join(cwd, "target"),
+    WASM_BINDGEN_TEST_WEBDRIVER_JSON: webdriverCapabilities(paths.scratch, env["CHROME"], insecure),
+  };
+  const command = ["wasm-pack", "test", "--headless", "--chrome", ...driver, "--locked", ...tests];
+  await run(command, { cwd, env: webEnv, logPath, timeoutMs: 600_000 });
+  console.log(requireBrowserTests(readFileSync(logPath, "utf8"), required));
+}
+
+/** The demo server in its own group, ready on its bound port for `body`. */
+function demoServer(
+  env: Env,
+  paths: Paths,
+  log: string,
+  body: (server: Subprocess, port: number) => Promise<void>,
+): Promise<void> {
+  const logPath = join(paths.logs, log);
+  const binary = join(paths.target, "debug/examples/ws_demo_server");
+  return owned([binary], { cwd: ROOT, env, logPath }, async (server) =>
+    body(server, await boundPort(server, logPath)),
+  );
+}
+
+const BROWSER_SUITES = "--lib --test render --test e2e_browser --test e2e_input".split(" ");
+// A `cat` pane echoes each typed line, escape sequences included.
+const DEMO_SERVER = { PHUX_WS_ADDR: "127.0.0.1:0", PHUX_DEMO_PANE: "cat" };
+
+async function browserTests(env: Env, paths: Paths): Promise<void> {
+  const serverEnv = { ...env, ...DEMO_SERVER };
+  await demoServer(serverEnv, paths, "server.log", async (server, port) => {
+    await waitReady(server, port, false);
+    // The demo server's owner socket, in the TMPDIR it inherited.
+    const socket = join(paths.scratch, `phux-e2e-${server.pid}.sock`);
+    const fixture = new AgentFixture(join(paths.target, "debug/phux"), socket, serverEnv);
     try {
-      env["PHUX_TEST_AGENT_URL"] = fixture.url;
-      await runChrome(command, env, logs);
-      console.log(requireBrowserTests(readFileSync(join(logs, "chrome.log"), "utf8")));
-      // The authenticated fallback reuses chrome.log; retain proof of the
-      // main browser scenarios, including live agent discovery.
-      copyFileSync(join(logs, "chrome.log"), join(logs, "browser.log"));
+      const testEnv = {
+        ...serverEnv,
+        PHUX_TEST_WS_URL: `ws://127.0.0.1:${port}/`,
+        PHUX_TEST_AGENT_URL: fixture.url,
+      };
+      await chrome(testEnv, paths, BROWSER_SUITES, REQUIRED_TESTS);
+      // The fallback run overwrites chrome.log; keep the main run's proof.
+      copyFileSync(join(paths.logs, "chrome.log"), join(paths.logs, "browser.log"));
     } finally {
       await fixture.close();
     }
   });
 }
 
-export function writeAuthFixture(directory: string): { cert: string; key: string; tokens: string } {
+/** A localhost certificate and a token store holding TEST_TOKEN, as demo-server env. */
+function authEnvironment(directory: string): Env {
   const cert = join(directory, "cert.pem");
   const key = join(directory, "key.pem");
   const tokens = join(directory, "tokens.json");
-  const openssl = Bun.spawnSync(
-    [
-      "openssl",
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      key,
-      "-out",
-      cert,
-      "-days",
-      "1",
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { stdout: "ignore", stderr: "ignore", timeout: 30_000 },
+  capture(
+    "openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost"
+      .split(" ")
+      .concat("-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-keyout", key, "-out", cert),
+    { timeoutMs: 30_000 },
   );
-  if (openssl.exitCode !== 0) throw new Error(`openssl exited ${openssl.exitCode}`);
   const verifier = createHash("sha256").update(Buffer.from(TEST_TOKEN, "hex")).digest("hex");
-  writeFileSync(
-    tokens,
-    JSON.stringify({
-      version: 1,
-      credentials: [
-        {
-          id: "browser-e2e",
-          verifier: `sha256:${verifier}`,
-          principal: "device:browser-e2e",
-          scopes: ["terminal.control"],
-          issued_at: "2026-09-13T00:00:00Z",
-          expires_at: null,
-          revoked_at: null,
-          generation: 1,
-        },
-      ],
-    }),
-  );
+  const credential = {
+    id: "browser-e2e",
+    verifier: `sha256:${verifier}`,
+    principal: "device:browser-e2e",
+    scopes: ["terminal.control"],
+    issued_at: "2026-09-13T00:00:00Z",
+    expires_at: null,
+    revoked_at: null,
+    generation: 1,
+  };
+  writeFileSync(tokens, JSON.stringify({ version: 1, credentials: [credential] }));
   chmodSync(key, 0o600);
   chmodSync(tokens, 0o600);
-  return { cert, key, tokens };
-}
-
-async function authenticatedFallbackTests(
-  env: Env,
-  logs: string,
-  directory: string,
-): Promise<void> {
-  const { cert, key, tokens } = writeAuthFixture(directory);
-  const authEnv: Env = {
-    ...env,
-    PHUX_WS_ADDR: "127.0.0.1:0",
+  return {
     PHUX_WS_SECURE: "1",
     PHUX_WS_TLS_CERT: cert,
     PHUX_WS_TLS_KEY: key,
     PHUX_WS_TOKENS: tokens,
-    PHUX_TEST_TOKEN: TEST_TOKEN,
-    PHUX_TEST_ACCEPT_INSECURE_CERTS: "1",
   };
-  const blackhole = await new UdpBlackhole().start();
+}
+
+/** Bind a loopback UDP port that counts and discards every datagram. */
+export async function udpBlackhole() {
+  let packets = 0;
+  const socket = await Bun.udpSocket({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data: () => {
+        packets += 1;
+      },
+    },
+  });
+  return { port: socket.port, packets: () => packets, close: () => socket.close() };
+}
+
+/** A blackholed WebTransport attempt must fall back to authenticated WSS. */
+async function fallbackTests(env: Env, paths: Paths): Promise<void> {
+  const serverEnv = { ...env, ...DEMO_SERVER, ...authEnvironment(paths.scratch) };
+  const blackhole = await udpBlackhole();
   try {
-    authEnv["PHUX_TEST_WT_URL"] = `https://127.0.0.1:${blackhole.port}/session?token=${TEST_TOKEN}`;
-    const command = wasmPackTest(authEnv, ["--test", "e2e_fallback_auth"]);
-    const logPath = join(logs, "auth-server.log");
-    await withDemoServer(authEnv, logPath, async (server) => {
-      const port = await boundPort(server, logPath);
-      authEnv["PHUX_TEST_WSS_URL"] = `wss://127.0.0.1:${port}/`;
-      await waitReady(server, port, { tls: true, token: TEST_TOKEN });
-      await runChrome(command, authEnv, logs);
-      const chrome = readFileSync(join(logs, "chrome.log"), "utf8");
-      console.log(requireBrowserTests(chrome, AUTH_REQUIRED_TESTS));
-      if (blackhole.packets === 0) {
-        throw new Error("Chrome sent no datagrams to the WebTransport blackhole");
-      }
-      console.log(`WebTransport blackhole verified: ${blackhole.packets} datagrams discarded`);
+    await demoServer(serverEnv, paths, "auth-server.log", async (server, port) => {
+      await waitReady(server, port, true, TEST_TOKEN);
+      const testEnv = {
+        ...serverEnv,
+        PHUX_TEST_TOKEN: TEST_TOKEN,
+        PHUX_TEST_WT_URL: `https://127.0.0.1:${blackhole.port}/session?token=${TEST_TOKEN}`,
+        PHUX_TEST_WSS_URL: `wss://127.0.0.1:${port}/`,
+      };
+      await chrome(testEnv, paths, ["--test", "e2e_fallback_auth"], AUTH_REQUIRED_TESTS, true);
     });
+    if (blackhole.packets() === 0) {
+      throw new Failure("Chrome sent no datagrams to the WebTransport blackhole");
+    }
+    console.log(`WebTransport blackhole verified: ${blackhole.packets()} datagrams discarded`);
   } finally {
     blackhole.close();
   }
 }
 
-/** The runner's own knobs; every other inherited PHUX_* variable is dropped. */
-export const RUNNER_VARIABLES = ["PHUX_WEB_CARGO_TARGET_DIR", "PHUX_BROWSER_AUTH_ONLY"];
-
 /**
- * The runner's environment without inherited phux configuration.
- *
- * Run from a phux pane, the shell carries the production server's socket,
- * listener addresses, TLS material, and token store (PHUX_SOCKET,
- * PHUX_QUIC_ADDR, PHUX_WS_TOKENS, ...). The demo server snapshots PHUX_* at
- * startup, so an inherited value would aim it at production state.
+ * The environment without inherited phux configuration. From a phux pane the
+ * shell carries the production server's socket, listeners, TLS material and
+ * token store, and the demo server snapshots PHUX_* at startup.
  */
 export function isolatedEnvironment(environ: Record<string, string | undefined>): Env {
-  const env: Env = {};
-  for (const [name, value] of Object.entries(environ)) {
-    if (value === undefined) continue;
-    if (!name.startsWith("PHUX_") || RUNNER_VARIABLES.includes(name)) env[name] = value;
-  }
-  return env;
+  return Object.fromEntries(
+    Object.entries(environ).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("PHUX_"),
+    ),
+  );
 }
 
-/**
- * Compile the throwaway native harness at opt-level 0.
- *
- * The workspace dev profile is opt-level 1. Run 38457853567 spent 7m 00s in
- * this one cargo build; the browser checks after it were seconds. Keep the
- * override off the caller's env so wasm-pack still matches the artifacts
- * earlier steps in the job already built.
- */
-export function harnessBuildEnv(env: Env): Env {
-  return { ...env, CARGO_PROFILE_DEV_OPT_LEVEL: "0" };
-}
+// The longest Unix socket under the scratch parent: mbx (external) binds
+// cache-agent.sock under the private scratch, whose mkdtemp suffix is budgeted
+// at eight characters. The demo server's phux-e2e-<pid>.sock is shorter.
+const NESTED_SOCKET = "phux-browser-XXXXXXXX/mbx-session-XXXXXXXX/cache-agent.sock";
+const SHORT_SCRATCH_BASES = ["/tmp", "/private/tmp", "/var/tmp"];
 
-// Usable Unix socket path length: sun_path minus its trailing NUL. Darwin's
-// sun_path is 104 bytes; Linux's is 108. Same split as phux-server's
-// MAX_SOCKET_PATH_LEN (103 on Darwin, 107 on Linux).
-export const DARWIN_SOCKET_PATH_MAX = 103;
-export const LINUX_SOCKET_PATH_MAX = 107;
-
-// mkdtemp's random suffix is six characters; budget eight, which also
-// covers CPython's tempfile names in tools nested under the scratch.
-export const TEMP_NAME_RANDOM = 8;
-export const SCRATCH_PREFIX = "phux-browser-";
-
-// Relative to the private scratch once it is exported as TMPDIR. mbx is
-// external and binds cache-agent.sock inside mbx-session-*; the session
-// token in this representative is eight characters. pid_t is 32-bit, so a
-// decimal pid is at most ten digits. The webdriver entry is the scratch
-// directory this runner creates beside those sockets, not a socket name of
-// its own.
-export const MBX_SOCKET_SUFFIX = "mbx-session-XXXXXXXX/cache-agent.sock";
-export const E2E_SOCKET_SUFFIX = `phux-e2e-${"0".repeat(10)}.sock`;
-export const WEBDRIVER_SCRATCH_SUFFIX = `phux-webdriver-${"x".repeat(TEMP_NAME_RANDOM)}`;
-export const NESTED_SOCKET_SUFFIXES = [
-  MBX_SOCKET_SUFFIX,
-  E2E_SOCKET_SUFFIX,
-  WEBDRIVER_SCRATCH_SUFFIX,
-];
-
-// Portable short directories, none of them user-specific. The first that
-// exists, is writable, and still leaves socket headroom is the parent of the
-// private scratch. /tmp stays under the Darwin limit even after
-// phux-browser-* and mbx's nested socket; /private/tmp is its macOS target.
-export const SHORT_SCRATCH_BASES = ["/tmp", "/private/tmp", "/var/tmp"];
-
-/** Usable sockaddr_un path bytes on `platform`, excluding the trailing NUL. */
+/** Usable sockaddr_un path bytes, excluding the NUL: Darwin's sun_path is 104, Linux's 108. */
 export function socketPathMax(platform: string): number {
-  return platform === "linux" ? LINUX_SOCKET_PATH_MAX : DARWIN_SOCKET_PATH_MAX;
-}
-
-const bytes = (path: string) => Buffer.byteLength(path);
-
-function longestSocket(base: string): string {
-  const scratch = join(base, SCRATCH_PREFIX + "x".repeat(TEMP_NAME_RANDOM));
-  const paths = NESTED_SOCKET_SUFFIXES.map((suffix) => join(scratch, suffix));
-  return paths.reduce((longest, path) => (bytes(path) > bytes(longest) ? path : longest));
-}
-
-/** True when a private scratch under `base` cannot hold every nested socket. */
-export function scratchSocketOverflow(base: string, limit: number): boolean {
-  return bytes(longestSocket(base)) > limit;
+  return platform === "linux" ? 107 : 103;
 }
 
 function writableDir(path: string): boolean {
   try {
-    if (!statSync(path).isDirectory()) return false;
     accessSync(path, fs.W_OK | fs.X_OK);
-    return true;
+    return statSync(path).isDirectory();
   } catch {
     return false;
   }
 }
 
-const HOSTS: Record<string, string> = { darwin: "Darwin", linux: "Linux" };
-
-function scratchLimitMessage(
-  preferred: string,
-  limit: number,
-  platform: string,
-  candidates: readonly string[],
-) {
-  const example = longestSocket(preferred);
-  const host = HOSTS[platform] ?? platform;
-  return (
-    `browser gate TMPDIR ${preferred} would make ${example} ${bytes(example)} bytes, ` +
-    `past the ${limit}-byte ${host} Unix socket path limit. ` +
-    `None of ${candidates.join(", ")} is a writable directory short enough. ` +
-    "Set TMPDIR to a short writable directory such as /tmp and retry."
-  );
-}
-
 /**
- * Parent for the private per-run scratch that child processes see as TMPDIR.
- *
- * A caller-supplied TMPDIR that already leaves room for the nested sockets is
- * used unchanged. A long default (macOS /var/folders/...) is not: mbx then
- * creates <scratch>/mbx-session-*\/cache-agent.sock and Darwin rejects the
- * bind. When no short writable base exists, fail here so the limit is named
- * instead of surfacing later as an opaque compile error.
+ * Parent for the private scratch child processes see as TMPDIR: TMPDIR when
+ * its nested sockets fit sockaddr_un, else the first short writable base. A
+ * long macOS /var/folders TMPDIR otherwise fails mbx's bind deep in the build.
  */
-export function browserScratchBase(
-  environ: Env,
-  {
-    platform = process.platform,
-    candidates = SHORT_SCRATCH_BASES,
-  }: {
-    platform?: string;
-    candidates?: readonly string[];
-  } = {},
+export function scratchBase(
+  tmp: string | undefined,
+  platform: string = process.platform,
+  candidates: readonly string[] = SHORT_SCRATCH_BASES,
 ): string {
   const limit = socketPathMax(platform);
-  const explicit = environ["TMPDIR"];
-  if (explicit && !scratchSocketOverflow(explicit, limit)) return explicit;
-  const preferred = explicit || tmpdir();
-  if (!explicit && !scratchSocketOverflow(preferred, limit)) return preferred;
-  for (const candidate of candidates) {
-    if (!scratchSocketOverflow(candidate, limit) && writableDir(candidate)) return candidate;
-  }
-  throw new Error(scratchLimitMessage(preferred, limit, platform, candidates));
-}
-
-/** A private scratch under `base`; the caller removes it. */
-export function browserScratchDir(base: string): string {
-  return mkdtempSync(join(base, SCRATCH_PREFIX));
+  const fits = (base: string) => Buffer.byteLength(join(base, NESTED_SOCKET)) <= limit;
+  const preferred = tmp || tmpdir();
+  if (fits(preferred)) return preferred;
+  const short = candidates.find((base) => fits(base) && writableDir(base));
+  if (short !== undefined) return short;
+  const example = join(preferred, NESTED_SOCKET);
+  throw new Failure(
+    `browser gate TMPDIR ${preferred} would make ${example} ${Buffer.byteLength(example)} bytes, ` +
+      `past the ${limit}-byte ${platform} Unix socket path limit, and none of ` +
+      `${candidates.join(", ")} is a short writable directory. ` +
+      "Set TMPDIR to a short writable directory such as /tmp and retry.",
+  );
 }
 
 const LOGS = ["build.log", "chrome.log", "browser.log", "server.log", "auth-server.log"];
 
 export async function webBrowser(): Promise<number> {
-  installInterruptHandlers();
-  const env = isolatedEnvironment(process.env);
-  for (const [variable, binary] of [
-    ["CHROME", "chromium"],
-    ["CHROMEDRIVER", "chromedriver"],
-  ] as const) {
-    const executable = Bun.which(binary);
-    if (executable && env[variable] === undefined) env[variable] = executable;
+  for (const name of ["SIGTERM", "SIGINT"] as const) {
+    process.on(name, () => {
+      interrupted ??= new Interrupted(constants.signals[name]);
+      interruption.resolve("interrupted");
+    });
   }
-  env["CARGO_TARGET_DIR"] = resolve(env["CARGO_TARGET_DIR"] ?? join(ROOT, "target/web-native"));
-  // Choose the scratch parent before touching logs or compiling. The native
-  // build keeps the caller's TMPDIR; the private scratch is exported only for
-  // the browser run, which is where mbx nests cache-agent.sock under it.
-  const scratchParent = browserScratchBase(env);
+  const env = isolatedEnvironment(process.env);
+  for (const [variable, binary] of Object.entries({
+    CHROME: "chromium",
+    CHROMEDRIVER: "chromedriver",
+  })) {
+    const found = env[variable] ?? Bun.which(binary);
+    if (found) env[variable] = found;
+  }
+  const target = resolve(env["CARGO_TARGET_DIR"] ?? join(ROOT, "target/web-native"));
+  env["CARGO_TARGET_DIR"] = target;
+  const scratchParent = scratchBase(env["TMPDIR"]);
   const logs = join(ROOT, "target/web-browser-logs");
   mkdirSync(logs, { recursive: true });
   for (const name of LOGS) rmSync(join(logs, name), { force: true });
   try {
-    // One Cargo schedule for the demo server and the phux binary. Split
-    // invocations on 2 jobs were 5m 55s then 3m 41s (run 38451988979). One
-    // schedule at the runner's 4 cores was 7m 00s (run 38457853567). Cargo's
-    // default job count is the machine's CPU count.
-    await runLogged(
-      [
-        "cargo",
-        "build",
-        "--locked",
-        "-p",
-        "phux-server",
-        "--example",
-        "ws_demo_server",
-        "-p",
-        "phux",
-        "--bin",
-        "phux",
-      ],
-      { cwd: ROOT, env: harnessBuildEnv(env), timeoutMs: 1_200_000 },
-      join(logs, "build.log"),
+    // One Cargo schedule for both binaries, at opt-level 0: the dev profile's
+    // opt-level 1 made this throwaway build the job's slowest step.
+    await run(
+      "cargo build --locked -p phux-server --example ws_demo_server -p phux --bin phux".split(" "),
+      {
+        cwd: ROOT,
+        env: { ...env, CARGO_PROFILE_DEV_OPT_LEVEL: "0" },
+        logPath: join(logs, "build.log"),
+        timeoutMs: 1_200_000,
+      },
     );
-    const scratch = browserScratchDir(scratchParent);
+    const scratch = mkdtempSync(join(scratchParent, "phux-browser-"));
     try {
-      env["TMPDIR"] = scratch;
-      if (env["PHUX_BROWSER_AUTH_ONLY"] !== "1") await browserTests(env, logs);
-      await authenticatedFallbackTests(env, logs, scratch);
+      const paths = { logs, scratch, target };
+      await browserTests({ ...env, TMPDIR: scratch }, paths);
+      await fallbackTests({ ...env, TMPDIR: scratch }, paths);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -744,10 +482,9 @@ export async function webBrowser(): Promise<number> {
     if (error instanceof Interrupted) return 128 + error.signum;
     throw error;
   } finally {
-    for (const name of readdirSync(logs)
-      .filter((file) => file.endsWith(".log"))
-      .sort()) {
-      console.log(`\n${join(logs, name)}:\n${readFileSync(join(logs, name), "utf8")}`);
+    for (const name of readdirSync(logs).sort()) {
+      if (name.endsWith(".log"))
+        console.log(`\n${join(logs, name)}:\n${readFileSync(join(logs, name), "utf8")}`);
     }
   }
 }

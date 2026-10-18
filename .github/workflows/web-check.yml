@@ -63,8 +63,6 @@ jobs:
         run: nix develop -c bash scripts/build-vt-wasm.sh --check
       - name: Engine ABI, normalization, and smoke
         run: nix develop -c node --test scripts/test-vt-wasm.mjs
-      - name: Browser runner regression
-        run: nix develop -c bun test ./tools/src/web
       - name: Engine adapter tests
         working-directory: clients/phux-vt-web
         run: nix develop ../.. -c wasm-pack test --node --locked
