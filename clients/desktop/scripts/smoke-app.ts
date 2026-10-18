@@ -157,6 +157,9 @@ for result in request.results ?? [] {
 );
 const projectName = "Cedar";
 const projectSession = "Spruce";
+/** The socket-scoped folder history and the folder it must keep. */
+let recentFile = "";
+let recentFolder = "";
 const marker = "PHUXSURVIVAL";
 let server: Bun.Subprocess | undefined;
 function appArgs(dir: string, smoke: boolean): string[] {
@@ -197,9 +200,12 @@ async function capture(label: string, expected = marker): Promise<Bun.Subprocess
     text.toLowerCase().includes(projectName.toLowerCase()),
     `${label}: project sidebar not rendered; OCR: ${text}`,
   );
+  // Recent folders live in the main menu, not on the resting window, so the
+  // history file is the evidence that each launch kept them.
+  const recent: unknown = JSON.parse(readFileSync(recentFile, "utf8"));
   assert(
-    text.toLowerCase().includes("recent folders"),
-    `${label}: persistent recent folder shortcuts not rendered; OCR: ${text}`,
+    Array.isArray(recent) && recent.includes(recentFolder),
+    `${label}: persistent recent folder shortcuts were lost: ${JSON.stringify(recent)}`,
   );
   return app;
 }
@@ -293,8 +299,9 @@ try {
   ]);
   run(["/usr/bin/git", "-C", repository, "worktree", "add", "-q", "-b", "spruce", projectDir]);
   // The app's local history is scoped to this socket, independent of the
-  // server Session; rendering it survives each fresh app process below.
-  const recentFile = join(dirname(layoutFile(join(home, "state"), socket, "")), "projects.json");
+  // server Session; it survives each fresh app process below.
+  recentFile = join(dirname(layoutFile(join(home, "state"), socket, "")), "projects.json");
+  recentFolder = projectDir;
   mkdirSync(dirname(recentFile), { recursive: true });
   writeFileSync(recentFile, JSON.stringify([projectDir]));
   const opened: unknown = JSON.parse(cli("project", "open", "--json", projectDir));
