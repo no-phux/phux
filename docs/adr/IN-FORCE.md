@@ -98,6 +98,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Federation and transport
 
+- [0184](./0184-quictun-gets-acme-certificates-and-multiplexes-consumers.md) `quictun expose --acme-domain` obtains and renews a public certificate by TLS-ALPN-01 through the relay's TCP ingress; `Protocol::consumer_streams` lets one consumer connection carry many bridged streams (phux keeps one), and `connect` multiplexes every local connection onto one.
 - [0183](./0183-quictun-is-a-standalone-tunnel-product.md) `quictun` ships `relay`/`pair`/`expose`/`connect` with TLS ending at the service, a TCP ingress routed by ClientHello server name, per-route consumer caps, and a protocol-chosen half-close; accounts stay in the backend that writes the route-token store.
 - [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
 - [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is `crates/quictun`, which depends on no phux crate: a deployment supplies its ALPNs and connection-ID tag as a `Protocol`, and `phux-relay` is phux's binding.

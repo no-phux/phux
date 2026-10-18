@@ -15,7 +15,7 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -169,10 +169,19 @@ where
             )
             .await
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+            // An ACME TLS-ALPN-01 validation ends with its handshake; it is
+            // never a consumer of the target (RFC 8737 §3).
+            if accepted.get_ref().1.alpn_protocol() == Some(ACME_TLS_ALPN) {
+                return Ok(());
+            }
             forward_to(accepted, target).await
         }
     }
 }
+
+/// The TLS-ALPN-01 validation ALPN, spelled here so the forwarder needs no
+/// `acme` feature to recognize (and not forward) a validation.
+const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
 /// Connect to `target` and copy both ways, each direction's end of stream
 /// forwarded as a shutdown.
@@ -186,6 +195,35 @@ where
     Ok(())
 }
 
+/// How `connect` trusts the service at the far end of the stream.
+#[derive(Debug, Clone)]
+pub enum ServiceTrust {
+    /// The service's certificate fingerprint ([`crate::pin`]), for the
+    /// self-signed certificate `expose` keeps by default. The TLS server
+    /// name is the route.
+    Pin(String),
+    /// A certificate a CA in `roots` issued for `name` (an ACME certificate,
+    /// or any other public one), verified the way a browser would, so
+    /// renewal never breaks it. `name` is also the TLS server name.
+    Name {
+        /// The name the certificate must cover.
+        name: String,
+        /// The CAs trusted to issue it.
+        roots: Arc<rustls::RootCertStore>,
+    },
+    /// No TLS inside the stream: the service runs
+    /// [`ServiceTls::Passthrough`] and its target speaks TLS itself.
+    Passthrough,
+}
+
+/// Mozilla's root store, for [`ServiceTrust::Name`].
+#[must_use]
+pub fn web_roots() -> rustls::RootCertStore {
+    rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    }
+}
+
 /// Where [`connect`] carries each local connection.
 #[derive(Debug, Clone)]
 pub struct Route {
@@ -195,10 +233,13 @@ pub struct Route {
     pub name: String,
     /// The consumer ALPN to offer the relay.
     pub alpn: Vec<u8>,
-    /// The service's certificate fingerprint, pinned in the TLS session
-    /// inside the stream; `None` forwards the stream raw (the service runs
-    /// [`ServiceTls::Passthrough`] and its target speaks TLS itself).
-    pub service_pin: Option<String>,
+    /// How to trust the service inside the stream.
+    pub service: ServiceTrust,
+    /// Carry every local connection as a stream on one shared relay
+    /// connection, for a relay whose protocol bridges every stream
+    /// ([`crate::Protocol::consumer_streams`] above one). Otherwise each
+    /// local connection dials its own.
+    pub multiplex: bool,
 }
 
 /// Accept local connections on `listener` and carry each through the relay
@@ -208,7 +249,7 @@ pub struct Route {
 /// descriptors) is logged and retried after a short pause; it never drops
 /// the forwards in flight.
 pub async fn connect(listener: TcpListener, route: Route) {
-    let route = Arc::new(route);
+    let relay = Arc::new(RelayLink::new(route));
     loop {
         let (local, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -218,10 +259,10 @@ pub async fn connect(listener: TcpListener, route: Route) {
                 continue;
             }
         };
-        let route = Arc::clone(&route);
+        let relay = Arc::clone(&relay);
         tokio::spawn(async move {
-            if let Err(err) = carry(local, &route).await {
-                tracing::warn!(%peer, route = %route.name, %err, "forward failed");
+            if let Err(err) = relay.carry(local).await {
+                tracing::warn!(%peer, route = %relay.route.name, %err, "forward failed");
             }
         });
     }
@@ -238,41 +279,132 @@ pub enum CarryError {
     Io(#[from] std::io::Error),
 }
 
-/// One local connection, through the relay to the route.
-async fn carry(mut local: TcpStream, route: &Route) -> Result<(), CarryError> {
-    let _ = local.set_nodelay(true);
-    let (endpoint, conn, send, recv) = dial_route(&route.relay, &route.name, &route.alpn).await?;
-    let stream = tokio::io::join(recv, send);
-    let Some(pin) = &route.service_pin else {
-        let mut stream = stream;
-        tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
-        drain(stream, &conn, &endpoint).await;
-        return Ok(());
-    };
-    let config = crate::pin::stream_client_config(pin)
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
-    let name = rustls::pki_types::ServerName::try_from(route.name.clone())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-    let mut session = tokio::time::timeout(
-        TLS_HANDSHAKE_DEADLINE,
-        tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream),
-    )
-    .await
-    .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
-    tokio::io::copy_bidirectional(&mut local, &mut session).await?;
-    drain(session.into_inner().0, &conn, &endpoint).await;
-    Ok(())
+/// One route's way through the relay: with [`Route::multiplex`], a cached
+/// connection every forward opens its stream on, redialed once it dies.
+#[derive(Debug)]
+struct RelayLink {
+    route: Route,
+    shared: std::sync::Mutex<Option<(quinn::Endpoint, quinn::Connection)>>,
+    /// Held while redialing, so one dial serves every waiting forward.
+    dialing: tokio::sync::Mutex<()>,
 }
 
-/// Let the relay acknowledge everything sent before the connection drops
-/// (dropping it discards undelivered stream data), then close it.
+/// A stream to the route and, when it has the connection to itself, the
+/// connection to close once the stream is done.
+type RouteStream = (
+    tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
+    Option<(quinn::Endpoint, quinn::Connection)>,
+);
+
+impl RelayLink {
+    fn new(route: Route) -> Self {
+        Self {
+            route,
+            shared: std::sync::Mutex::new(None),
+            dialing: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// A stream to the route: on the shared connection when multiplexing
+    /// (dialing it if there is none, or it died), else on its own.
+    async fn open(&self) -> Result<RouteStream, ConnectError> {
+        let route = &self.route;
+        if !route.multiplex {
+            let (endpoint, conn, send, recv) =
+                dial_route(&route.relay, &route.name, &route.alpn).await?;
+            return Ok((tokio::io::join(recv, send), Some((endpoint, conn))));
+        }
+        // Waits while the relay's stream limit is reached.
+        if let Some(conn) = self.live()
+            && let Ok((send, recv)) = conn.open_bi().await
+        {
+            return Ok((tokio::io::join(recv, send), None));
+        }
+        let (send, recv) = self.redial().await?.open_bi().await?;
+        Ok((tokio::io::join(recv, send), None))
+    }
+
+    /// The shared connection, while it is open.
+    fn live(&self) -> Option<quinn::Connection> {
+        let cached = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        cached
+            .as_ref()
+            .map(|(_, conn)| conn)
+            .filter(|conn| conn.close_reason().is_none())
+            .cloned()
+    }
+
+    /// A new shared connection. One redial at a time: forwards that found
+    /// the old connection dead together share the first one's result.
+    async fn redial(&self) -> Result<quinn::Connection, ConnectError> {
+        let _dialing = self.dialing.lock().await;
+        if let Some(conn) = self.live() {
+            return Ok(conn);
+        }
+        let route = &self.route;
+        let (endpoint, conn) =
+            crate::connect::dial_route_connection(&route.relay, &route.name, &route.alpn).await?;
+        *self.shared.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((endpoint, conn.clone()));
+        Ok(conn)
+    }
+
+    /// One local connection, through the relay to the route.
+    async fn carry(&self, mut local: TcpStream) -> Result<(), CarryError> {
+        let _ = local.set_nodelay(true);
+        let (stream, own) = self.open().await?;
+        let (config, name) = match &self.route.service {
+            ServiceTrust::Passthrough => {
+                let mut stream = stream;
+                tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
+                drain(stream, own).await;
+                return Ok(());
+            }
+            ServiceTrust::Pin(pin) => (
+                crate::pin::stream_client_config(pin)
+                    .map_err(|err| std::io::Error::other(err.to_string()))?,
+                self.route.name.clone(),
+            ),
+            ServiceTrust::Name { name, roots } => (named_client_config(roots)?, name.clone()),
+        };
+        let name = rustls::pki_types::ServerName::try_from(name)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+        let mut session = tokio::time::timeout(
+            TLS_HANDSHAKE_DEADLINE,
+            tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream),
+        )
+        .await
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+        tokio::io::copy_bidirectional(&mut local, &mut session).await?;
+        drain(session.into_inner().0, own).await;
+        Ok(())
+    }
+}
+
+/// A TLS 1.3 client config verifying the service against `roots`.
+fn named_client_config(
+    roots: &Arc<rustls::RootCertStore>,
+) -> std::io::Result<rustls::ClientConfig> {
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .map_err(|err| std::io::Error::other(err.to_string()))?
+    .with_root_certificates(Arc::clone(roots))
+    .with_no_client_auth())
+}
+
+/// Let the relay acknowledge everything sent before the stream is dropped,
+/// then, when the stream had its connection to itself, close that
+/// connection (dropping it would discard undelivered stream data).
 async fn drain(
     stream: tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
-    conn: &quinn::Connection,
-    endpoint: &quinn::Endpoint,
+    own: Option<(quinn::Endpoint, quinn::Connection)>,
 ) {
     let (_recv, send) = stream.into_inner();
     let _ = tokio::time::timeout(DRAIN_DEADLINE, send.stopped()).await;
-    conn.close(0u32.into(), b"done");
-    let _ = tokio::time::timeout(DRAIN_DEADLINE, endpoint.wait_idle()).await;
+    if let Some((endpoint, conn)) = own {
+        conn.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(DRAIN_DEADLINE, endpoint.wait_idle()).await;
+    }
 }

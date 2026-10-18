@@ -50,6 +50,16 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
     "ring",
     "logging",
 ], optional = true }
+# Mozilla's roots, for a CA-issued service certificate (`forward`) and the
+# ACME CA's own HTTPS (`acme`); data only, as phux-server uses it.
+webpki-roots = { version = "1", optional = true }
+# The ACME account key's ES256 signatures (`acme`); rustls's own backend.
+ring = { version = "0.17", optional = true }
+# ACME's JSON and JOSE base64url (`acme`).
+serde_json = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+# A stored certificate's expiry, for renewal (`acme`).
+x509-parser = { version = "0.18", optional = true }
 # The binary's log output (`cli`); already in the tree through phux.
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "std",
@@ -65,16 +75,31 @@ provision = ["dep:rcgen", "dep:rustix"]
 # the optional TCP ingress.
 relay = ["provision", "dep:hex", "dep:subtle", "dep:getrandom", "dep:socket2"]
 # TCP forwarding through a relay, TLS end to end: `expose` and `connect`.
-forward = ["provision", "dep:tokio-rustls"]
+forward = ["provision", "dep:tokio-rustls", "dep:webpki-roots"]
+# Public certificates for an exposed service by ACME (TLS-ALPN-01).
+acme = [
+    "forward",
+    "dep:ring",
+    "dep:serde_json",
+    "dep:base64",
+    "dep:x509-parser",
+]
 # The `quictun` binary.
-cli = ["relay", "forward", "dep:tracing-subscriber"]
+cli = ["relay", "forward", "acme", "dep:tracing-subscriber"]
 # Test-only `testing::DropProxy` UDP impairment; off in shipped builds.
 testing = []
 
 [dev-dependencies]
 tempfile.workspace = true
+# The mock ACME CA in tests/acme.rs signs the client's CSR (the
+# `x509-parser` feature reads it); same version phux-server uses.
+rcgen = { version = "0.14", default-features = false, features = [
+    "ring",
+    "pem",
+    "x509-parser",
+] }
 # Self dev-dependency so crate-scoped test runs build every module.
-quictun = { path = ".", features = ["relay", "forward", "testing"] }
+quictun = { path = ".", features = ["relay", "forward", "acme", "testing"] }
 
 [[bin]]
 name = "quictun"
