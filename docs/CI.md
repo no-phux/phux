@@ -30,7 +30,10 @@ requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `.github/actions/classify-changes`, with no outer path filters. Root crates
 are not listed: the web and desktop lanes route the closure of what their
 builds compile (`LANE_BUILDS`), read from the Cargo manifests, so a
-dependency added or dropped re-routes on its own.
+dependency added or dropped re-routes on its own. Changes confined to
+`clients/desktop/native/**` or `just/desktop.just` run only desktop
+qualification, not unrelated root, browser, or integration builds. Other
+`clients/desktop` files still fail closed: the root CLI embeds some of them.
 `desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
 jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
@@ -81,7 +84,10 @@ compiles the union of the unit halves and the e2e set into one nextest archive
 restore no build cache (`build-cache: none`); they download the archive and run
 `just test` with `PHUX_UNIT_PART=lib` or `integration`, or `just e2e`, with
 `PHUX_TEST_ARCHIVE` set. A `tests/`-only diff archives that test plus the e2e
-binaries when e2e runs. `uniffi` builds its own feature set. Every lane keeps
+binaries when e2e runs. `uniffi` builds its own feature set. On PRs it skips
+known crate-only changes outside the binding's test dependency closure; shared
+or unknown inputs fail closed, and main pushes retain full qualification.
+Every lane keeps
 `--workspace` and `TEST_FEATURES`, so feature unification and the rdeps
 filterset match the whole pool.
 

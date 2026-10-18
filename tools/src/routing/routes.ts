@@ -52,8 +52,13 @@ const ROUTES: Record<string, Surface[]> = {
   "{integrations,.claude-plugin,.grok-plugin}/**": ["integrations"],
   "scripts/ci/agent-integrations.sh": ["integrations"],
   ".release-please-manifest.json": ["integrations"],
+  // The native desktop is a separate workspace. Keep its tests and packages,
+  // not unrelated root/browser/integration builds. Other desktop files can be
+  // root CLI inputs (e.g. phux-protocol), so they still fail closed.
+  "clients/desktop/native/**": ["desktop"],
+  "just/desktop.just": ["desktop"],
   // Root crates reach the web and desktop lanes only through Cargo (see
-  // LANE_BUILDS). Other clients/desktop paths are unrouted: every surface.
+  // LANE_BUILDS).
   "crates/**": ["phux"],
   "crates/**/{Cargo.toml,Cargo.lock,build.rs,*.ld,*.lds,*.c,*.h}": ["native"],
   // Golden release manifests are include_str! inputs of the updaters' tests.

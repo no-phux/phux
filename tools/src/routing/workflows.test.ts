@@ -129,6 +129,15 @@ test("the ci aggregate needs every lane and rejects failed and cancelled ones", 
   }
 });
 
+test("UniFFI main pushes retain full qualification; PRs use the binding closure", () => {
+  const condition = str(job(workflow("ci.yml"), "uniffi")["if"]) ?? "";
+  expect(condition).toContain(
+    "github.event_name == 'push' || (needs.changes.outputs.uniffi_needed == 'true'",
+  );
+  expect(condition).toContain("needs.changes.outputs.validated != 'true'");
+  expect(condition).toContain("needs.changes.outputs.phux_needed == 'true'");
+});
+
 test("both FFI workflows build on mobile_ffi_needed or a failed classification", () => {
   // phux-mobile pins one revision and fetches both artifacts at it.
   for (const name of FFI) {
