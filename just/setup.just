@@ -8,6 +8,15 @@ doctor SCOPE="native":
     bash scripts/doctor.sh "{{SCOPE}}"
 
 
+# Activate the tracked Git hooks. The relative path makes every worktree run
+# its own checkout's .beads/hooks. Beads owns the managed blocks there; the
+# repository's checks are chained after them.
+[group('setup')]
+[doc('Activate the tracked Git hooks (.beads/hooks) in every worktree.')]
+hooks-install:
+    git config core.hooksPath .beads/hooks
+
+
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
 [group('setup')]
 native-smoke: worktree-claim

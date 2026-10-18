@@ -30,7 +30,9 @@ phux away from any of those, it's the wrong proposal.
 
 Start with [Contributor setup](./docs/SETUP.md): `mise install` or
 `nix develop`, then the same `just` recipes. A GitHub issue or PR is enough
-to coordinate; you do not need Beads.
+to coordinate; you do not need Beads. Run `just hooks-install` once per clone:
+its pre-commit hook rejects a staged file over 5,000 tokens (bytes/4) and
+prints how to split it.
 
 ## Agent entrypoints
 
