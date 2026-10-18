@@ -53,7 +53,7 @@ global-hotkey = "=0.8.0"
 
 # GPUI Kit pins gpui-pre; the compatibility crates under `toolchain/compat`
 # carry those names and re-export gpui-fast, so Kit and this host share one
-# GPUI. `toolchain/bootstrap.py` materializes the patched gpui-fast crates.
+# GPUI. `just desktop-source` (tools/src/desktop) materializes the patched gpui-fast crates.
 [patch.crates-io]
 gpui-pre = { path = "../toolchain/compat/gpui-pre" }
 gpui-pre-macros = { path = "../toolchain/compat/gpui-pre-macros" }
