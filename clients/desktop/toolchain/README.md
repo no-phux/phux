@@ -12,13 +12,14 @@ retained views, layout and text measurement, at the Zed revision of the
 `gpui-pre` 0.3.9 snapshot Kit pins. Kit's `gpui-pre` crates are served by
 small compatibility crates in `compat/` that re-export gpui-fast. Five
 gpui-fast crates carry reviewed local patches. `source.json` pins each
-crates.io archive and each patch by SHA-256; `bootstrap.py` materializes the
-patched copies under `gpui/` (ignored build state), and `native/Cargo.toml`
-points `[patch.crates-io]` at them and at `compat/`.
+crates.io archive and each patch by SHA-256; `just desktop-source`
+(`tools/src/desktop/`) materializes the patched copies under `gpui/` (ignored
+build state), and `native/Cargo.toml` points `[patch.crates-io]` at them and
+at `compat/`.
 
 ## Bootstrap
 
-`just desktop-source` runs `python3 clients/desktop/toolchain/bootstrap.py`.
+`just desktop-source` runs `bun tools/main.ts desktop-source`.
 It downloads `gpui-fast`, `gpui-fast-apple`, `gpui-fast-macos`,
 `gpui-fast-linux` and `gpui-fast-wgpu` from
 crates.io (cached under `clients/desktop/.cache/crates`), verifies them,
@@ -54,10 +55,10 @@ retention in or out when something looks stale.
 ## Changing the framework
 
 ```sh
-python3 clients/desktop/toolchain/bootstrap.py --edit    # gpui/ becomes a git repo
+bun tools/main.ts desktop-source --edit             # gpui/ becomes a git repo
 # edit under gpui/, then amend the matching patch commit, or add a commit
-git -C clients/desktop/toolchain/gpui commit --amend      # or: commit -m 0003-name
-python3 clients/desktop/toolchain/bootstrap.py --export  # rewrite patches/ + pins
+git -C clients/desktop/toolchain/gpui commit --amend  # or: commit -m 0003-name
+bun tools/main.ts desktop-source --export           # rewrite patches/ + pins
 ```
 
 `--edit` lays the series out as one commit per patch over a `base` commit of

@@ -3,7 +3,7 @@
 # `desktop-source` bootstraps the parent-managed GPUI snapshot.
 [group('desktop')]
 desktop-source:
-    python3 clients/desktop/toolchain/bootstrap.py
+    bun tools/main.ts desktop-source
 
 [private]
 desktop-host-debug: desktop-source
