@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.108.0](https://github.com/no-phux/phux/compare/v0.107.0...v0.108.0) (2026-10-18)
+
+
+### Features
+
+* **mcp:** ship structured contracts and retryable mutations ([#1631](https://github.com/no-phux/phux/issues/1631)) ([60427c2](https://github.com/no-phux/phux/commit/60427c2c6becab3595c58aa848572e43de14767f))
+
+
+### Bug Fixes
+
+* **pair:** make camera QR enroll new phones ([#1624](https://github.com/no-phux/phux/issues/1624)) ([d76cafd](https://github.com/no-phux/phux/commit/d76cafdfefdd90b73275434e5697843374957220))
+
 ## [0.107.0](https://github.com/no-phux/phux/compare/v0.106.0...v0.107.0) (2026-10-18)
 
 
