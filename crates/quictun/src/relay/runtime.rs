@@ -3,7 +3,6 @@
 //! connection; per-connection failures are logged and never tear down the
 //! endpoint.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,10 +11,12 @@ use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::Protocol;
+use crate::relay::ingress::{self, TcpIngress};
 use crate::relay::registry::TunnelRegistry;
-use crate::relay::splice::{Tee, splice};
+use crate::relay::shares::{Share, Shares};
 use crate::relay::tokens::{CachedRouteTokens, RouteTokenStore};
 use crate::relay::{RelayError, tls};
+use crate::splice::{Tee, splice};
 use crate::tunnel::{
     AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, read_preamble,
 };
@@ -59,7 +60,7 @@ const PREAMBLE_DEADLINE: Duration = Duration::from_secs(5);
 /// How long an admitted consumer has to open its stream (and the relay the
 /// matching tunnel stream). Without it a handshake-only consumer would hold
 /// its cap permit forever, since keep-alives stop QUIC from reaping it.
-const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
+pub(crate) const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
@@ -109,6 +110,12 @@ pub struct RelayConfig {
     pub max_conns: usize,
     /// The ALPNs and connection-ID tag this relay serves.
     pub protocol: Protocol,
+    /// Consumers one route may have bridged at once, so one tenant cannot
+    /// take every connection slot; `None` leaves only [`Self::max_conns`].
+    pub max_conns_per_route: Option<usize>,
+    /// A TCP listener for clients that cannot speak QUIC, routed on their
+    /// TLS `ClientHello`'s server name; `None` serves QUIC only.
+    pub tcp_ingress: Option<TcpIngress>,
 }
 
 /// The relay's run loop: [`Self::run_async`], or [`Self::bind`] then
@@ -125,12 +132,12 @@ pub struct RelayRuntime {
 /// What a test may watch the relay do, without changing what it does. Both
 /// are `None` in production.
 #[derive(Debug, Clone, Default)]
-struct Observers {
+pub(crate) struct Observers {
     /// Consumer SNIs rustls read from completed handshakes.
-    consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
+    pub(crate) consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
     /// Every byte the relay forwarded for a consumer, both directions: the
     /// relay's whole view of a bridged session.
-    consumer_bytes: Option<Arc<Mutex<Vec<u8>>>>,
+    pub(crate) consumer_bytes: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl RelayRuntime {
@@ -218,16 +225,17 @@ impl RelayRuntime {
 
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
         let local_addr = endpoint.local_addr()?;
+        let tcp = config.tcp_ingress.map(ingress::bind).transpose()?;
         Ok(BoundRelay {
             endpoint,
-            legs: Arc::new(Legs {
-                tunnel_config: Arc::new(tunnel_config),
-                protocol: config.protocol,
-            }),
+            tcp,
+            tunnel_config: Arc::new(tunnel_config),
+            protocol: config.protocol,
             local_addr,
             routes: store.len(),
             tokens,
             max_conns: config.max_conns,
+            max_conns_per_route: config.max_conns_per_route,
             preamble_deadline,
             handshakes_per_source: self.handshakes_per_source,
             observers: self.observers,
@@ -235,13 +243,50 @@ impl RelayRuntime {
     }
 }
 
-/// What tells a connection's leg and picks its flow control.
+/// What every connection task of one serving relay shares.
 #[derive(Debug)]
-struct Legs {
+pub(crate) struct Shared {
     /// The server config a tagged tunnel is accepted with: the endpoint's
     /// crypto plus [`TUNNEL_STREAM_RECEIVE_WINDOW`].
     tunnel_config: Arc<quinn::ServerConfig>,
-    protocol: Protocol,
+    pub(crate) protocol: Protocol,
+    pub(crate) registry: TunnelRegistry<quinn::Connection>,
+    pub(crate) tokens: Arc<CachedRouteTokens>,
+    preamble_deadline: Duration,
+    /// Connection slots, `max_conns` of them, held for a connection's life.
+    pub(crate) slots: Arc<Semaphore>,
+    /// Admissions in progress (a QUIC handshake, a TCP `ClientHello`), held
+    /// apart from [`Self::slots`] so peers that stall before admission can
+    /// never lock out connectors and consumers.
+    pub(crate) handshakes: Arc<Semaphore>,
+    /// Admissions in progress per source address (and whether it was
+    /// validated); see [`DEFAULT_HANDSHAKES_PER_SOURCE`].
+    pub(crate) sources: Arc<Shares<(IpAddr, bool)>>,
+    /// Bridged consumers per route, when capped.
+    route_consumers: Option<Arc<Shares<String>>>,
+    pub(crate) observers: Observers,
+}
+
+/// A route's consumer unit: `None` for an uncapped route.
+pub(crate) type RouteShare = Option<Share<String>>;
+
+impl Shared {
+    /// One of `route`'s consumer units, or `None` when the route is at its
+    /// cap.
+    pub(crate) fn take_route_share(&self, route: &str) -> Option<RouteShare> {
+        self.route_consumers.as_ref().map_or(Some(None), |shares| {
+            shares.try_take(route.to_owned()).map(Some)
+        })
+    }
+
+    /// Append bytes the relay forwarded outside a [`Tee`] to the tap.
+    pub(crate) fn observe_bytes(&self, bytes: &[u8]) {
+        if let Some(sink) = &self.observers.consumer_bytes {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(bytes);
+        }
+    }
 }
 
 /// A relay whose endpoint is bound but not yet serving — the output of
@@ -249,11 +294,14 @@ struct Legs {
 #[derive(Debug)]
 pub struct BoundRelay {
     endpoint: quinn::Endpoint,
-    legs: Arc<Legs>,
+    tcp: Option<ingress::BoundIngress>,
+    tunnel_config: Arc<quinn::ServerConfig>,
+    protocol: Protocol,
     local_addr: SocketAddr,
     routes: usize,
     tokens: Arc<CachedRouteTokens>,
     max_conns: usize,
+    max_conns_per_route: Option<usize>,
     preamble_deadline: Duration,
     handshakes_per_source: usize,
     observers: Observers,
@@ -267,6 +315,12 @@ impl BoundRelay {
         self.local_addr
     }
 
+    /// The TCP ingress listener's resolved address, when one is configured.
+    #[must_use]
+    pub fn tcp_addr(&self) -> Option<SocketAddr> {
+        self.tcp.as_ref().map(ingress::BoundIngress::local_addr)
+    }
+
     /// Serve the bound relay until `shutdown` resolves or the endpoint
     /// closes. Per-connection failures are logged and never propagate.
     pub async fn serve(self, shutdown: impl Future<Output = ()>) -> Result<(), RelayError> {
@@ -277,11 +331,24 @@ impl BoundRelay {
             "relay listening"
         );
         let endpoint = self.endpoint;
-        let registry: TunnelRegistry<quinn::Connection> = TunnelRegistry::new();
-        let slots = Arc::new(Semaphore::new(self.max_conns));
         let max_handshakes = self.max_conns.max(1).saturating_mul(HANDSHAKES_PER_SLOT);
         let handshakes = Arc::new(Semaphore::new(max_handshakes));
-        let sources = Arc::new(SourceShares::new(self.handshakes_per_source));
+        let shared = Arc::new(Shared {
+            handshakes: Arc::clone(&handshakes),
+            tunnel_config: self.tunnel_config,
+            protocol: self.protocol,
+            registry: TunnelRegistry::new(),
+            tokens: self.tokens,
+            preamble_deadline: self.preamble_deadline,
+            slots: Arc::new(Semaphore::new(self.max_conns)),
+            sources: Arc::new(Shares::new(self.handshakes_per_source)),
+            route_consumers: self
+                .max_conns_per_route
+                .map(|cap| Arc::new(Shares::new(cap))),
+            observers: self.observers,
+        });
+        // TCP bridges are tasks of their own; they end with the relay.
+        let mut tcp_bridges = tokio::task::JoinSet::new();
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -289,84 +356,24 @@ impl BoundRelay {
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
                     let Some(admitted) =
-                        admit_handshake(incoming, &handshakes, max_handshakes, &sources)
+                        admit_handshake(incoming, &handshakes, max_handshakes, &shared.sources)
                     else {
                         continue;
                     };
-                    tokio::spawn(handle_connection(
-                        admitted,
-                        Arc::clone(&self.legs),
-                        registry.clone(),
-                        Arc::clone(&self.tokens),
-                        self.preamble_deadline,
-                        Arc::clone(&slots),
-                        self.observers.clone(),
-                    ));
+                    tokio::spawn(handle_connection(admitted, Arc::clone(&shared)));
                 }
+                accepted = ingress::accept(self.tcp.as_ref()) => {
+                    if let Some((stream, remote, domain)) = accepted {
+                        tcp_bridges.spawn(ingress::bridge(stream, remote, domain, Arc::clone(&shared)));
+                    }
+                }
+                Some(_) = tcp_bridges.join_next(), if !tcp_bridges.is_empty() => {}
             }
         }
+        tcp_bridges.abort_all();
         endpoint.close(0u32.into(), b"shutdown");
         let _ = tokio::time::timeout(SHUTDOWN_DRAIN, endpoint.wait_idle()).await;
         Ok(())
-    }
-}
-
-/// The in-flight admissions of each source address, by whether its address
-/// was validated; see [`DEFAULT_HANDSHAKES_PER_SOURCE`].
-#[derive(Debug)]
-struct SourceShares {
-    share: usize,
-    in_flight: Mutex<HashMap<(IpAddr, bool), usize>>,
-}
-
-impl SourceShares {
-    fn new(share: usize) -> Self {
-        Self {
-            share: share.max(1),
-            in_flight: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(IpAddr, bool), usize>> {
-        self.in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Take one of `ip`'s `validated` share, if any is left.
-    fn try_take(self: &Arc<Self>, ip: IpAddr, validated: bool) -> Option<SourceShare> {
-        let key = (ip, validated);
-        let mut in_flight = self.lock();
-        let count = in_flight.entry(key).or_insert(0);
-        let admitted = *count < self.share;
-        if admitted {
-            *count += 1;
-        }
-        drop(in_flight);
-        admitted.then(|| SourceShare {
-            shares: Arc::clone(self),
-            key,
-        })
-    }
-}
-
-/// One held unit of a source's share; returned on drop, and the map entry
-/// goes with the last one so it stays bounded by what is in flight.
-#[derive(Debug)]
-struct SourceShare {
-    shares: Arc<SourceShares>,
-    key: (IpAddr, bool),
-}
-
-impl Drop for SourceShare {
-    fn drop(&mut self) {
-        let mut in_flight = self.shares.lock();
-        if let Some(count) = in_flight.get_mut(&self.key) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                in_flight.remove(&self.key);
-            }
-        }
     }
 }
 
@@ -376,7 +383,7 @@ impl Drop for SourceShare {
 struct AdmittedHandshake {
     incoming: quinn::Incoming,
     handshake: OwnedSemaphorePermit,
-    source: SourceShare,
+    source: Share<(IpAddr, bool)>,
 }
 
 /// Take a handshake slot and a source share for `incoming`, or turn it away
@@ -389,7 +396,7 @@ fn admit_handshake(
     incoming: quinn::Incoming,
     handshakes: &Arc<Semaphore>,
     max_handshakes: usize,
-    sources: &Arc<SourceShares>,
+    sources: &Arc<Shares<(IpAddr, bool)>>,
 ) -> Option<AdmittedHandshake> {
     let validated = incoming.remote_address_validated();
     let loaded = handshakes.available_permits() <= max_handshakes / 2;
@@ -398,7 +405,7 @@ fn admit_handshake(
         return None;
     }
     let remote = incoming.remote_address();
-    let Some(source) = sources.try_take(remote.ip(), validated) else {
+    let Some(source) = sources.try_take((remote.ip(), validated)) else {
         if !validated && incoming.may_retry() {
             let _ = incoming.retry();
         } else {
@@ -425,23 +432,15 @@ fn admit_handshake(
 /// and is held throughout, and the source share until the leg's admission
 /// step (preamble or first stream) ends. The flow-control config is chosen
 /// first from the connection-ID tag.
-async fn handle_connection(
-    admitted: AdmittedHandshake,
-    legs: Arc<Legs>,
-    registry: TunnelRegistry<quinn::Connection>,
-    tokens: Arc<CachedRouteTokens>,
-    preamble_deadline: Duration,
-    slots: Arc<Semaphore>,
-    observers: Observers,
-) {
+async fn handle_connection(admitted: AdmittedHandshake, shared: Arc<Shared>) {
     let AdmittedHandshake {
         incoming,
         handshake: handshake_permit,
         source,
     } = admitted;
-    let tagged = legs.protocol.cid_tag.matches(&incoming.orig_dst_cid());
+    let tagged = shared.protocol.cid_tag.matches(&incoming.orig_dst_cid());
     let connecting = if tagged {
-        incoming.accept_with(Arc::clone(&legs.tunnel_config))
+        incoming.accept_with(Arc::clone(&shared.tunnel_config))
     } else {
         incoming.accept()
     };
@@ -461,7 +460,7 @@ async fn handle_connection(
         }
     };
     // No free slot: an application close needs the finished handshake.
-    let Ok(_permit) = slots.try_acquire_owned() else {
+    let Ok(_permit) = Arc::clone(&shared.slots).try_acquire_owned() else {
         tracing::warn!(remote = %conn.remote_address(), "refused: relay at connection cap");
         conn.close(OVER_CAP_CODE.into(), b"relay at connection capacity");
         return;
@@ -470,24 +469,20 @@ async fn handle_connection(
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unreadable handshake data");
         return;
     };
-    if alpn == legs.protocol.tunnel_alpn {
+    if alpn == shared.protocol.tunnel_alpn {
         let leg = TunnelLeg {
             bounded: tagged,
-            tokens: &tokens,
-            preamble_deadline,
+            tokens: &shared.tokens,
+            preamble_deadline: shared.preamble_deadline,
             source,
         };
-        admit_tunnel(conn, leg, &registry).await;
-    } else if legs.protocol.is_consumer_alpn(&alpn) {
-        note_consumer_sni(observers.consumer_sni.as_ref(), server_name.as_deref());
-        bridge_consumer(
-            conn,
-            server_name,
-            source,
-            &registry,
-            observers.consumer_bytes,
-        )
-        .await;
+        admit_tunnel(conn, leg, &shared.registry).await;
+    } else if shared.protocol.is_consumer_alpn(&alpn) {
+        note_consumer_sni(
+            shared.observers.consumer_sni.as_ref(),
+            server_name.as_deref(),
+        );
+        bridge_consumer(conn, server_name, source, &shared).await;
     } else {
         // rustls only negotiates advertised protocols; defensive.
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unknown protocol");
@@ -496,7 +491,7 @@ async fn handle_connection(
 
 /// Append a consumer SNI rustls already accepted. Absent observer or absent
 /// name records nothing; the handshake decision has already been made.
-fn note_consumer_sni(observed: Option<&Arc<Mutex<Vec<String>>>>, name: Option<&str>) {
+pub(crate) fn note_consumer_sni(observed: Option<&Arc<Mutex<Vec<String>>>>, name: Option<&str>) {
     let (Some(observed), Some(name)) = (observed, name) else {
         return;
     };
@@ -523,7 +518,7 @@ struct TunnelLeg<'a> {
     tokens: &'a CachedRouteTokens,
     preamble_deadline: Duration,
     /// Held until the preamble is read (or its deadline passes).
-    source: SourceShare,
+    source: Share<(IpAddr, bool)>,
 }
 
 /// Admit (or refuse) a connector tunnel: read the stream-0 auth preamble,
@@ -607,14 +602,13 @@ async fn admit_tunnel(
 
 /// Bridge one consumer's first stream onto a fresh stream over its route's
 /// live tunnel. What crosses is the consumer's end-to-end TLS session with
-/// the service, ciphertext the relay holds no key for; `observed`
-/// records it for tests.
+/// the service, ciphertext the relay holds no key for; the tap records it
+/// for tests.
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
-    source: SourceShare,
-    registry: &TunnelRegistry<quinn::Connection>,
-    observed: Option<Arc<Mutex<Vec<u8>>>>,
+    source: Share<(IpAddr, bool)>,
+    shared: &Shared,
 ) {
     let remote = conn.remote_address();
     // Defensive: the SniGate already refused absent SNI at TLS.
@@ -623,7 +617,7 @@ async fn bridge_consumer(
         conn.close(ROUTE_OFFLINE_CODE.into(), b"no route requested");
         return;
     };
-    let Some(tunnel) = registry.get(&route) else {
+    let Some(tunnel) = shared.registry.get(&route) else {
         tracing::warn!(%remote, route = %route, "refused: no live tunnel for enrolled route");
         conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
         return;
@@ -643,6 +637,13 @@ async fn bridge_consumer(
             return;
         }
     };
+    // Taken only once the consumer has opened its stream, so a
+    // handshake-only consumer never holds one of the route's units.
+    let Some(_route_share) = shared.take_route_share(&route) else {
+        tracing::warn!(%remote, route = %route, "refused: route at its consumer cap");
+        conn.close(OVER_CAP_CODE.into(), b"route at its consumer capacity");
+        return;
+    };
     let Ok(Ok((tun_send, tun_recv))) =
         tokio::time::timeout(CONSUMER_STREAM_DEADLINE, tunnel.open_bi()).await
     else {
@@ -652,11 +653,13 @@ async fn bridge_consumer(
     };
     tracing::info!(route = %route, %remote, "consumer bridged");
     let window = SendWindow::new(conn.clone());
+    let observed = &shared.observers.consumer_bytes;
     let control_bridge = splice(
         Tee::new(consumer_streams.1, observed.clone()),
         tun_send,
-        Tee::new(tun_recv, observed),
+        Tee::new(tun_recv, observed.clone()),
         TrackedSend::new(consumer_streams.0, window),
+        shared.protocol.half_close,
     );
     tokio::pin!(control_bridge);
 
@@ -666,7 +669,13 @@ async fn bridge_consumer(
     let mut refused_streams = 0_u64;
     loop {
         tokio::select! {
-            () = &mut control_bridge => break,
+            () = &mut control_bridge => {
+                // Dropping the connection discards stream data quinn has not
+                // delivered yet, such as the tail of a reply; the consumer
+                // closes once it has read the FIN, so give it that long.
+                let _ = tokio::time::timeout(SHUTDOWN_DRAIN, conn.closed()).await;
+                break;
+            }
             opened = conn.accept_bi() => {
                 let Ok((mut cons_send, mut cons_recv)) = opened else { break };
                 refused_streams = refused_streams.saturating_add(1);

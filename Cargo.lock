@@ -3255,11 +3255,14 @@ dependencies = [
  "rustix",
  "rustls",
  "sha2 0.11.0",
+ "socket2",
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
