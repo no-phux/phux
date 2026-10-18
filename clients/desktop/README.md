@@ -41,13 +41,17 @@ instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 Diagnostics** in the command palette copies versions, server id, connection
 epoch, host and recent errors for a bug report, without terminal content.
 
-The sidebar shows one **Work** catalog across Local and registered hosts, grouped
-by repository identity when available. Each session has a **Runs on …** host chip
-on its own line, with a stable, lightly tinted glass accent. The titlebar repeats
-the active session and its host even with the sidebar hidden. Names, not colors,
-identify hosts; long names are available in the session tooltip, and offline
-inventory stays explicitly labeled. Selecting a session restores its layout in
-this window without moving or restarting its processes.
+The sidebar is the one navigator: every session across This Mac and registered
+hosts, grouped by **Project** (repository identity), by **Machine**, or not at
+all; the chevron at its top switches the grouping. A session on another machine
+names that machine in faint text on its own row; This Mac needs no label, and
+offline inventory reads **offline**. The session this window shows opens in
+place, listing its tabs (with **Tabs in Sidebar**) and any of its terminals no
+tab holds. An agent that needs you marks the tab, terminal or folded session it
+is in, rather than a separate list. The titlebar's main menu names the active
+session, and its machine when that is not this Mac, even with the sidebar
+hidden. Selecting a session restores its layout in this window without moving
+or restarting its processes.
 Intake and imported sessions remain ordinary work, not a separate navigation root.
 Select work and choose
 **Organize Selected Work…** to move it to a named session, or explicitly
@@ -109,8 +113,12 @@ server behind the supervisor.
 
 ### Command palette
 
-The titlebar **Phux** button, **⌘P**, **⇧⌘P**, and **⌘,** open the same
-searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
+The main menu beside the window controls drops a glass menu: new terminal,
+agent, session, folder or window, **Open Recent**, Go To and the palette,
+**View** (tab placement and sidebar grouping), pane splits, Settings and
+Reconnect. Its header leads to **Switch Machine**. Session, tab and pane
+actions (the **…** on a row, or a right-click) use the same glass menu.
+**⌘P**, **⇧⌘P**, and **⌘,** open the same searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
 across hosts plus the active session's terminals and tabs; a typed search also
 finds actions and settings. The work, terminal and tab this window shows
 read **Current**, so the one in use stays distinguishable from similar names
@@ -196,15 +204,19 @@ Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 `~/.config/phux-desktop/updates.json`). Bare development executables and launches
 with explicit CLI/socket/profile overrides cannot install updates.
 
-The window is a sidebar (agents by urgency, then every session and its panes),
-workspace tabs, split panes, and a status bar. Command-key chords belong to the
-app; everything else reaches the terminal.
+The window is a sidebar (every session, the current one open on its tabs and
+background terminals), workspace tabs, split panes, and a status bar that
+speaks only for exceptions. Command-key chords belong to the app; everything
+else reaches the terminal.
 
-Choose **Top** or **Side** in **Settings > Layout & notifications > Tab placement**. The choice is saved with your display
-preferences. Side tabs have their own scrollable rail, even with the navigator
-hidden; Quick Terminal keeps compact titlebar tabs. Selecting, closing,
-double-clicking to rename, and dragging to reorder work in either layout.
-The command palette also offers **Tabs on Top** and **Tabs on Side**.
+Choose **Top** or **Side** in **Settings > Layout & notifications > Tab placement**,
+or **View** in the main menu. The choice is saved with your display
+preferences. Side tabs live in the sidebar under their session, so there is one
+column of navigation, not two; hiding the sidebar returns them to the titlebar,
+and Quick Terminal keeps compact titlebar tabs. Selecting, closing,
+double-clicking to rename, right-clicking for tab actions, and dragging to
+reorder work in either layout. The command palette also offers **Tabs on Top**,
+**Tabs in Sidebar**, and the three **Group Sessions** views.
 
 Settings, dialogs, notifications, find controls, and dropdowns use the same
 theme-aware glass treatment. **Settings > Appearance > Font family** previews
@@ -213,8 +225,8 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Offline inventory stays visible and cannot be opened until it is refreshed.
-**Settings > Hosts & connections** (also **Machines…** from the titlebar machine
-chip, the sidebar, the File menu and the palette) lists This Mac and every saved
+**Settings > Hosts & connections** (also **Machines…** from the main menu's
+**Switch Machine** page, the File menu and the palette) lists This Mac and every saved
 machine with its state, opens, retries, disconnects, adds or forgets machines, and
 refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an

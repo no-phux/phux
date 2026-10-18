@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-15
+last-reviewed: 2026-10-17
 ---
 
 # phux-desktop (native crate)
@@ -18,6 +18,9 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 | `launch` | CLI options, installed-CLI and server resolution, Kit init, first window |
 | `diag` | log file, `perf.jsonl` sampler, `--evidence`/`--smoke` captures, window metrics |
 | `app` | windows, menus, commands, chrome, overlays, the per-window `Desk` |
+| `app/ui` | the component library: rows, badges, buttons, attention marks, menu anchors, the one glass menu; never reads a `Desk` |
+| `app/view` | chrome composed from `ui`: titlebar, the one navigator, tabs (one renderer, two placements), panes, status |
+| `app/menus` | every glass menu's contents (main, view, session, tab, pane), built from the desk |
 | `app/overlays/launcher` | native command/navigation presentation over Kit's query and selection state |
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |

@@ -109,13 +109,15 @@ thread. One persistent Session is bound to each canonical checkout path;
 untrusted [project recipes](../CONFIG.md#project-recipes) are refused until
 approved, and a same-name checkout cannot take over another Session. The
 sidebar groups Sessions by remote-keyed repository identity, falling back to
-legacy project labels. Selecting work restores its per-session layout in the
+legacy project labels; grouping by machine or not at all are views of the same
+list. Selecting work restores its per-session layout in the
 current window; **Open Folder** uses the same window. A new terminal in that Session starts at its recorded
 directory; reopening after the last shell exits starts a shell there without
-rerunning the recipe. **Recent folders** keeps the last eight successfully
-opened local checkout paths in socket-scoped desktop state across app restarts.
-Selecting one runs the same CLI trust and collision checks; **Forget folder**
-removes only its shortcut, not the Session, layout, or checkout. This is
+rerunning the recipe. **Open Recent** in the main menu keeps the last eight
+successfully opened local checkout paths in socket-scoped desktop state across
+app restarts. Selecting one runs the same CLI trust and collision checks;
+**Clear Recent** removes only the shortcuts, not the Sessions, layouts, or
+checkouts. This is
 local-only: multi-folder or cross-host project references, offline remote
 folders, and cross-server Workspaces are not yet implemented.
 
@@ -234,9 +236,10 @@ are deduplicated and navigate without typing; approval buttons appear only
 with server authority.
 
 **Current macOS build:** Sidebar rows keep one title and a restrained status
-marker. Hover for directory, provider, lifecycle age, and identity. **Needs
-you** keeps explicit blocked, finished, and attention states; context menus
-and organization actions remain available. The bell's Inbox lists the
+marker. Hover for directory, provider, lifecycle age, and identity. Blocked,
+finished, and attention states are marked on the tab, terminal row, or folded
+session that holds the agent, never in a separate list; context menus and
+organization actions remain available. The bell's Inbox lists the
 server's held approvals (ADR-0128) with **Approve** and **Deny**, only when
 the server advertises `APPROVALS`. An entry stays exactly while the server
 lists the approval. A decision is sent once; one that arrives after the
@@ -246,8 +249,10 @@ under one system notification, so macOS shows it once.
 
 ## Connections, settings, and native behavior
 
-The titlebar **Phux** button stays in the left rail with or without the sidebar.
-It opens the same panel as Command-P, Command-Shift-P, and Command-comma:
+The titlebar's main menu stays beside the window controls with or without the
+sidebar. It names the session this window shows and drops a glass menu of what
+to create, where to go, and how to view the window; its header switches
+machines. Command-P, Command-Shift-P, and Command-comma open one panel:
 **Work**, **Actions**, and **Settings** share search, selection, keyboard
 behavior, and one surface. Work lists host-qualified sessions across the
 registered machines; typed search also discovers actions and preference pages.
@@ -257,8 +262,8 @@ than a separate category sidebar. Host enrollment and recovery live under
 when disconnected or empty, with its connected, connecting, or unavailable
 state and an Open, Retry, Reconnect, or Disconnect action. Disconnect drops
 another machine's inventory link until Retry; this window's own route only
-reconnects. **Machines…** reaches it from the titlebar machine chip, the
-sidebar's **Machines** row, the File menu, and the palette. **Add Machine…** is
+reconnects. **Machines…** reaches it from the main menu's **Switch Machine**
+page, the File menu, and the palette. **Add Machine…** is
 in the File menu, the palette, and on the Hosts & connections page. Hosts appear
 as session context, not sidebar roots.
 The tab strip keeps New Terminal and the notification bell.

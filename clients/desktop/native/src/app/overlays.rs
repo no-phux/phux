@@ -22,7 +22,7 @@ use crate::connection::path::{self as paths};
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 use super::skin::{Look, Surface, Surfaced};
-use super::view::{dot, ghost_button, ghost_icon, muted};
+use super::ui::{dot, ghost_button, ghost_icon, muted};
 use crate::settings::theme::Palette;
 
 mod goto_facts;
@@ -568,7 +568,13 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
             super::settings_panel::panel(desk, window, cx)
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
-        Modal::Notifications => notifications_panel(desk, colors, &look, cx),
+        Modal::Notifications => {
+            let panel = notifications_panel(desk, colors, &look, cx);
+            return match desk.anchors.get("notifications") {
+                Some(bell) => popover(bell, window, cx, panel),
+                None => backdrop(colors, window, cx, panel),
+            };
+        }
         Modal::NativeLaunch => super::native_launch::panel(desk, &look, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
@@ -657,6 +663,37 @@ fn backdrop(
             cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
         )
         .child(card)
+        .into_any_element()
+}
+
+/// A panel dropped from its trigger, as a menu drops: no dimming, the
+/// workspace stays in view, and a click anywhere outside closes it.
+fn popover(
+    trigger: gpui::Bounds<gpui::Pixels>,
+    window: &Window,
+    cx: &mut Context<Desk>,
+    card: impl IntoElement,
+) -> AnyElement {
+    let viewport = window.viewport_size();
+    let right = (viewport.width - trigger.right()).max(px(SHEET_GUTTER / 2.));
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .size_full()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(trigger.bottom() + px(6.))
+                .right(right)
+                .max_h(viewport.height - trigger.bottom() - px(SHEET_GUTTER))
+                .child(card),
+        )
         .into_any_element()
 }
 
@@ -1613,7 +1650,7 @@ fn notification_rows(
                 .approval
                 .map(|approval| approval_buttons(desk, approval, id, cx));
             let edge = super::view::notification_edge(entry, look);
-            let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
+            let age = super::ui::ago(0, entry.at.elapsed().as_millis() as u64);
             div()
                 .id(("notification", id as usize))
                 .px(px(12.))

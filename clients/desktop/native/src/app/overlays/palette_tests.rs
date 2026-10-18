@@ -747,11 +747,18 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
         let card = cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{modal:?} {page:?} renders its card"));
-        assert_eq!(
-            card.top(),
-            gpui::px(top),
-            "{modal:?} sits at the shared top"
-        );
+        if *modal == Modal::Notifications {
+            // The inbox drops from the bell instead, right edges aligned.
+            let bell = cx.debug_bounds("notifications").expect("the bell");
+            assert_eq!(card.top(), bell.bottom() + gpui::px(6.));
+            assert_eq!(card.right(), bell.right());
+        } else {
+            assert_eq!(
+                card.top(),
+                gpui::px(top),
+                "{modal:?} sits at the shared top"
+            );
+        }
         // A click inside the card never dismisses it.
         cx.simulate_click(
             card.origin + gpui::point(gpui::px(4.), gpui::px(4.)),
@@ -894,7 +901,7 @@ fn path_loading_and_failure_read_in_the_results_not_the_footer(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn machines_are_reachable_from_the_palette_sidebar_and_titlebar(cx: &mut TestAppContext) {
+fn machines_are_reachable_from_the_palette_and_the_main_menu(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     let connections = Some(crate::app::settings_panel::Page::Connections);
@@ -918,18 +925,22 @@ fn machines_are_reachable_from_the_palette_sidebar_and_titlebar(cx: &mut TestApp
     keys(cx, "escape");
     assert_eq!(modal(&desk, cx), Modal::None);
 
-    click(cx, "sidebar-machines");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    // The main menu's header leads to every machine, then to their settings.
+    click(cx, "main-menu-rail");
+    let menu = desk
+        .read_with(cx, |desk, _| desk.menu_window())
+        .expect("the main menu drops");
+    let menu_cx = &mut VisualTestContext::from_window(menu, cx);
+    for selector in ["glass-menu-header", "glass-menu-machines"] {
+        let row = menu_cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("no {selector} in the menu"));
+        menu_cx.simulate_click(row.center(), gpui::Modifiers::none());
+        menu_cx.run_until_parked();
+    }
+    assert_eq!(modal(&desk, menu_cx), Modal::Settings);
     assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        connections
-    );
-    keys(cx, "escape");
-
-    click(cx, "workspace-machines");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
+        desk.read_with(menu_cx, |desk, _| desk.settings_page),
         connections
     );
 }

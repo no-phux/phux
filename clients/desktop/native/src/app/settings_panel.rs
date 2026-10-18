@@ -26,7 +26,9 @@ use super::color::from_hex;
 use super::desk::{Desk, Modal};
 use super::fleet::Reach;
 use super::skin::Look;
-use super::view::{ghost_button, muted};
+use super::ui::segmented::{Segment, segmented};
+use super::ui::{ghost_button, muted};
+use gpui_kit::assets::IconName as Icons;
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
@@ -927,40 +929,41 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let tabs = handle.clone();
     let tab_position = SettingField::render(move |_, _, cx| {
         let position = prefs_of(&tabs, cx).tab_position;
-        let look = look_of(&tabs, cx);
-        // Track and thumb from the skin's control radius: 10 and 7 on glass.
-        let radius = look.skin.shape.kit_radius;
-        let ink = look.ink;
-        div()
-            .tab_group()
-            .flex()
-            .gap(px(3.))
-            .p(px(3.))
-            .rounded(px(radius + 2.))
-            .bg(ink.opacity(0.05))
-            .children(
-                [
-                    (settings::TabPosition::Top, "Top", IconName::LayoutDashboard),
-                    (settings::TabPosition::Side, "Side", IconName::PanelLeft),
-                ]
-                .into_iter()
-                .map(|(value, label, icon)| {
-                    let id = format!("tab-position-{}", value.as_str());
-                    let selected = position == value;
-                    div().debug_selector(|| id.clone()).child(
-                        Button::new(SharedString::from(id.clone()))
-                            .label(label)
-                            .icon(icon)
-                            .small()
-                            .ghost()
-                            .toggled(selected)
-                            .rounded(px((radius - 1.).max(0.)))
-                            .bg(ink.opacity(if selected { 0.10 } else { 0. }))
-                            .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
-                            .on_click(click_sets(&tabs, move |prefs| prefs.tab_position = value)),
-                    )
-                }),
-            )
+        segmented(
+            &look_of(&tabs, cx),
+            position,
+            [
+                (settings::TabPosition::Top, "Top", Icons::LayoutDashboard),
+                (settings::TabPosition::Side, "Sidebar", Icons::PanelLeft),
+            ]
+            .map(|(value, label, icon)| Segment {
+                value,
+                label,
+                icon,
+                selector: format!("tab-position-{}", value.as_str()),
+            }),
+            |value| click_sets(&tabs, move |prefs| prefs.tab_position = value),
+        )
+    });
+    let groups = handle.clone();
+    let sidebar_grouping = SettingField::render(move |_, _, cx| {
+        let grouping = prefs_of(&groups, cx).sidebar_grouping;
+        segmented(
+            &look_of(&groups, cx),
+            grouping,
+            [
+                (settings::SidebarGrouping::Project, "Project", Icons::Folder),
+                (settings::SidebarGrouping::Machine, "Machine", Icons::Server),
+                (settings::SidebarGrouping::None, "None", Icons::ListTree),
+            ]
+            .map(|(value, label, icon)| Segment {
+                value,
+                label,
+                icon,
+                selector: format!("sidebar-grouping-{}", value.as_str()),
+            }),
+            |value| click_sets(&groups, move |prefs| prefs.sidebar_grouping = value),
+        )
     });
     let (blur, solid) = (
         settings::WindowBackground::Blur,
@@ -977,7 +980,16 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                         "Tab placement",
                         resets(tab_position, handle, |prefs| &mut prefs.tab_position),
                     )
-                    .description("Keep tabs above your work, or in a compact side rail."),
+                    .description("Keep tabs above your work, or in the sidebar under their session."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Group sessions by",
+                        resets(sidebar_grouping, handle, |prefs| {
+                            &mut prefs.sidebar_grouping
+                        }),
+                    )
+                    .description("The same sessions, under projects, machines, or one list."),
                 )
                 .item(toggle(
                     handle,
@@ -1133,7 +1145,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         .title("Shortcuts")
         .items(rows.into_iter().map(|(title, group, chord, id)| {
             let shown = settings::display_chord(&chord);
-            let keystroke = super::view::keystroke(&chord);
+            let keystroke = super::ui::keystroke(&chord);
             let source =
                 settings::chord_source(desk.ghostty(), desk.prefs.ghostty_keys, &chord, &id);
             let applies = match source {
