@@ -196,6 +196,26 @@ conversation that may be revealed automatically. When its authenticated
 button and a matching control in its pane capsule. Passive discovery never
 switches faces or keyboard focus. Project open passes `--prefer-native` to the same CLI.
 
+**Native Agents** (`native-agents`, ⌃⌘A, the titlebar toggle and the View
+menu) is the one explicit exception. It is a window preference
+(`nativeAgents` in the layout's display object) that snaps every face the
+window holds to its conversation, or every one back to its terminal. While it
+is on, a pane whose agent publishes a conversation later opens on it; each pane
+can still switch back on its own until the preference changes again. An agent
+pane that publishes no AgentSession has no conversation to show. Its corner
+then offers the harness's documented phux plugin install, copied to the
+clipboard (Claude Code, Grok, OMP, Pi, OpenCode), or **New Agent…** for a
+harness with no hook plugin. The desktop still installs nothing itself.
+
+The face reads as a chat. Prompts sit in accent bubbles at the trailing edge.
+Replies are full-width markdown under the harness mark. Thinking and tool calls
+fold to a single line: live thinking and failed calls start open, and a
+reader's fold choice holds for that entry. A working turn ends the transcript
+with a shimmer line, and a blocked one with a "needs you" line. The composer is
+one card, with Stop and Send at its foot. These are GPUI Kit components
+(Collapsible, ShimmerText, Spinner, markdown TextView); no code is vendored
+from other chat clients.
+
 The ACP worker belongs to the durable server-owned guardian, not the GUI. Closing
 desktop/mobile viewers leaves that same provider session running. The terminal face
 of an ACP-owned session is diagnostics, not an interactive provider TUI. Existing

@@ -30,12 +30,14 @@ mod transcript;
 mod writes;
 
 pub(crate) use render::render;
-use transcript::{OMITTED_NOTICE, WAITING_NOTICE, conversation_list, readable, transcript_row};
+use transcript::{OMITTED_NOTICE, WAITING_NOTICE, conversation_list, readable};
 use writes::gate;
 
 use super::color::from_hex;
 use super::desk::{Desk, Modal};
+use super::notifications::Kind;
 use super::overlays::corner;
+use super::pane_identity::Harness;
 use super::skin::Look;
 use crate::connection::{Connection, ConnectionIdentity};
 use crate::settings::theme::Palette;
@@ -88,6 +90,8 @@ pub(crate) struct Face {
     interrupted_turn: Option<String>,
     question_status: HashMap<String, String>,
     questions: HashMap<String, questions::Draft>,
+    /// Thinking and tool rows a reader opened or folded, by entry id.
+    folds: HashMap<String, bool>,
 }
 
 impl Face {
@@ -186,22 +190,113 @@ impl Desk {
         self.resume_native_conversation(terminal, agent, activation);
     }
 
+    /// A pane's own face decides; an orphaned face it inherits next; a pane
+    /// with neither follows the window's native-agents preference.
     pub(crate) fn conversation_visible(&self, placement: &str) -> bool {
         if let Some(face) = self.conversation_faces.get(placement) {
             return face.visible;
         }
-        if !self
-            .conversation_faces
-            .values()
-            .any(|face| face.orphaned && face.visible)
-        {
+        let orphans = self.conversation_faces.values().any(|face| face.orphaned);
+        if !orphans && !self.prefs.native_agents {
             return false;
         }
-        self.conversation_binding(placement).is_some_and(|binding| {
-            self.conversation_faces
-                .values()
-                .any(|face| face.orphaned && face.visible && face.binding == binding)
+        let Some(binding) = self.conversation_binding(placement) else {
+            return false;
+        };
+        self.conversation_faces
+            .values()
+            .find(|face| face.orphaned && face.binding == binding)
+            .map_or(self.prefs.native_agents, |face| face.visible)
+    }
+
+    /// Whether `placement`'s composer owns the keyboard: its face shows, and
+    /// the conversation it binds is still on this connection. A face whose
+    /// session is gone renders `unavailable` and must not swallow keys.
+    pub(crate) fn conversation_has_keys(&self, placement: &str) -> bool {
+        if !self.conversation_visible(placement) {
+            return false;
+        }
+        let Some(face) = self.conversation_faces.get(placement) else {
+            // Shown without a face means a live binding was just resolved.
+            return true;
+        };
+        self.link.as_ref().is_some_and(|link| {
+            link.connection
+                .conversations
+                .contains_key(&face.binding.session)
         })
+    }
+
+    /// Whether the window has anything for the native-agents toggle to
+    /// switch: a live conversation on this server, or the toggle already on.
+    pub(crate) fn native_agents_offered(&self) -> bool {
+        self.prefs.native_agents
+            || self.link.as_ref().is_some_and(|link| {
+                link.connection
+                    .conversations
+                    .values()
+                    .any(|conversation| !conversation.closed)
+            })
+    }
+
+    /// Snap every agent pane in this window to its conversation, or every
+    /// one back to its terminal. Panes whose agent starts later follow.
+    pub(crate) fn toggle_native_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_prefs(|prefs| prefs.native_agents = !prefs.native_agents, cx);
+        let focused = self
+            .focused_placement()
+            .map(|placement| placement.id.clone());
+        if let (Some(tab), Some(placement)) = (self.active_tab_id(), focused) {
+            self.focus_placement(&tab, &placement, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Every face this window holds shows its conversation, or its terminal.
+    pub(crate) fn snap_conversations(&mut self, native: bool) {
+        for face in self.conversation_faces.values_mut() {
+            face.visible = native;
+        }
+    }
+
+    /// The way to a native view for an agent pane that has none: copy the
+    /// harness's phux plugin install, or open New Agent for one with no
+    /// plugin. Nothing is installed from here.
+    pub(crate) fn offer_native_setup(
+        &mut self,
+        harness: Harness,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(command) = harness.plugin_install() else {
+            self.execute("native-agent", window, cx);
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(command.to_owned()));
+        self.post(
+            Kind::Info,
+            &format!("{} conversation setup copied", harness.label()),
+            Some(format!(
+                "Run `{command}`, then restart {} in this pane. Its conversation appears here.",
+                harness.label()
+            )),
+        );
+        cx.notify();
+    }
+
+    /// The focused pane's conversation, or its terminal.
+    pub(crate) fn toggle_focused_conversation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(placement) = self
+            .focused_placement()
+            .map(|placement| placement.id.clone())
+            .filter(|placement| self.conversation_eligible(placement))
+        {
+            self.toggle_conversation(&placement, window, cx);
+        }
     }
 
     pub(crate) fn conversation_eligible(&self, placement: &str) -> bool {
@@ -287,6 +382,7 @@ impl Desk {
                 interrupted_turn: None,
                 question_status: HashMap::new(),
                 questions: HashMap::new(),
+                folds: HashMap::new(),
             },
         );
         questions::prepare(self, placement, window, cx);
@@ -314,6 +410,13 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if !self.conversation_faces.contains_key(placement) && self.conversation_visible(placement)
+        {
+            self.prepare_conversation(placement, window, cx);
+        }
+        if !self.conversation_has_keys(placement) {
+            return false;
+        }
         let Some(face) = self
             .conversation_faces
             .get(placement)

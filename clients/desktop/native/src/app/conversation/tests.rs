@@ -2,7 +2,10 @@
 //! readers announce for the transcript.
 
 use super::receipts::resolve_prompt_receipt;
-use super::transcript::{entry_body, entry_label, tool_details};
+use super::transcript::{
+    Style, entry_body, entry_label, fold_header, foldable, opens_by_default, tool_icon,
+    tool_output, tool_summary, transcript_row,
+};
 use super::writes::prompt_available;
 use super::*;
 use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion};
@@ -130,11 +133,14 @@ fn transcript_rows_are_labeled_list_items() {
         &colors,
         &crate::settings::default_display(),
     );
+    let mono = "Menlo".into();
+    let style = style(&colors, &look, &mono);
     let row = transcript_row(
         &entry(TranscriptRole::User, "Run the tests\nthen push"),
-        &colors,
-        &look,
-        &"Menlo".into(),
+        false,
+        false,
+        &style,
+        Box::new(|_, _, _| {}),
     );
     let (role, node) = a11y(&row);
     assert_eq!(role, Some(gpui::Role::ListItem));
@@ -143,6 +149,99 @@ fn transcript_rows_are_labeled_list_items() {
     let (role, node) = a11y(&conversation_list(vec![row]));
     assert_eq!(role, Some(gpui::Role::List));
     assert_eq!(node.label(), Some("Conversation"));
+    for role in [
+        TranscriptRole::Assistant,
+        TranscriptRole::Thinking,
+        TranscriptRole::System,
+    ] {
+        let mut call = entry(role, "Checked the tree\nall clean");
+        call.id = format!("{role:?}");
+        let (_, node) = a11y(&transcript_row(
+            &call,
+            true,
+            true,
+            &style,
+            Box::new(|_, _, _| {}),
+        ));
+        assert_eq!(
+            node.label().map(str::to_owned),
+            Some(entry_label(&call)),
+            "{role:?} rows keep their spoken name whatever they look like"
+        );
+    }
+}
+
+fn style<'a>(
+    colors: &'a crate::settings::theme::Palette,
+    look: &'a Look,
+    mono: &'a SharedString,
+) -> Style<'a> {
+    Style {
+        colors,
+        look,
+        mono,
+        harness: crate::app::pane_identity::Harness::Claude,
+        provider: "Claude Code",
+    }
+}
+
+#[test]
+fn live_thinking_and_failed_calls_open_while_quiet_rows_fold() {
+    let mut thought = entry(TranscriptRole::Thinking, "Weighing the options");
+    assert!(foldable(&thought) && !opens_by_default(&thought));
+    thought.is_final = false;
+    assert!(
+        opens_by_default(&thought),
+        "live reasoning reads as it streams"
+    );
+    assert!(!foldable(&entry(TranscriptRole::Thinking, "  ")));
+    assert!(!foldable(&entry(TranscriptRole::Assistant, "Done")));
+    let mut call = entry(TranscriptRole::Tool, "");
+    call.tool = Some(tool("ls", ""));
+    assert!(
+        !foldable(&call),
+        "a call with nothing beyond its header stays a line"
+    );
+    call.tool = Some(tool("ls", "denied"));
+    assert!(
+        foldable(&call) && opens_by_default(&call),
+        "a failed call shows why"
+    );
+    call.tool.as_mut().unwrap().status = ToolStatus::Ok;
+    assert!(!opens_by_default(&call));
+}
+
+#[test]
+fn only_a_header_that_folds_is_announced_as_a_button() {
+    let (role, node) = a11y(&fold_header(
+        "fold".into(),
+        true,
+        true,
+        "Hide thinking".into(),
+        Box::new(|_, _, _| {}),
+    ));
+    assert_eq!(role, Some(gpui::Role::Button));
+    assert_eq!(node.label(), Some("Hide thinking"));
+    assert_eq!(node.is_expanded(), Some(true));
+    let (role, _) = a11y(&fold_header(
+        "quiet".into(),
+        false,
+        false,
+        "Show thinking".into(),
+        Box::new(|_, _, _| {}),
+    ));
+    assert_eq!(role, None, "an empty live thought has nothing to open");
+}
+
+#[test]
+fn tool_glyphs_follow_what_the_tool_does() {
+    use gpui_kit::assets::IconName;
+    assert_eq!(tool_icon("Bash"), IconName::SquareTerminal);
+    assert_eq!(tool_icon("edit_file"), IconName::Pencil);
+    assert_eq!(tool_icon("Grep"), IconName::Search);
+    assert_eq!(tool_icon("read"), IconName::FileText);
+    assert_eq!(tool_icon("WebFetch"), IconName::Globe);
+    assert_eq!(tool_icon("todo"), IconName::Wrench);
 }
 
 #[test]
@@ -154,7 +253,16 @@ fn whole_bodies_and_tool_details_reach_screen_readers() {
         assert_eq!(role, Some(gpui::Role::Label));
         assert_eq!(node.value(), Some("Run the tests\nthen push"));
     }
-    let details = tool_details(&tool("ls -la", "denied\nexit 1"), &colors, &"Menlo".into());
+    let look = Look::of(
+        &crate::settings::skin::TERMINAL,
+        &colors,
+        &crate::settings::default_display(),
+    );
+    let mono = "Menlo".into();
+    let style = style(&colors, &look, &mono);
+    let call = tool("ls -la\n--color", "denied\nexit 1");
+    let mut details = vec![tool_summary(&call, &style)];
+    details.extend(tool_output(&call, &style));
     let values: Vec<_> = details
         .iter()
         .map(|detail| {
@@ -165,12 +273,13 @@ fn whole_bodies_and_tool_details_reach_screen_readers() {
         .collect();
     assert_eq!(
         values,
-        [Some("ls -la".to_owned()), Some("denied\nexit 1".to_owned())]
+        [
+            Some("ls -la\n--color".to_owned()),
+            Some("denied\nexit 1".to_owned())
+        ],
+        "the one-line summary still speaks the whole command"
     );
-    assert_eq!(
-        tool_details(&tool("ls", ""), &colors, &"Menlo".into()).len(),
-        1
-    );
+    assert!(tool_output(&tool("ls", ""), &style).is_none());
     for (id, text) in [
         ("conversation-omitted", OMITTED_NOTICE),
         ("conversation-waiting", WAITING_NOTICE),

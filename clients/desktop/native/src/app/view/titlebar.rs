@@ -22,7 +22,7 @@ use super::super::desk::{self, Desk};
 use super::super::menus;
 use super::super::notifications::{Kind, Notification};
 use super::super::skin::Look;
-use super::super::ui::icon_button;
+use super::super::ui::{ghost_icon, icon_button};
 use super::{navigator, tabs, tabs_at};
 
 /// Left inset that clears the traffic lights.
@@ -195,6 +195,9 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                             ))
                         },
                     )
+                    .when(desk.native_agents_offered(), |actions| {
+                        actions.child(native_agents_toggle(desk, cx))
+                    })
                     .child(bell(desk, look, cx)),
             )
         })
@@ -222,6 +225,39 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                 )),
         )
         .child(update_button(desk, cx))
+}
+
+/// Snap every agent pane to its conversation or back to its terminal; lit
+/// while the window shows conversations.
+fn native_agents_toggle(desk: &Desk, cx: &mut Context<Desk>) -> impl IntoElement {
+    let on = desk.prefs.native_agents;
+    let label = if on {
+        "Show Agent Terminals"
+    } else {
+        "Show Agent Conversations"
+    };
+    let tip = match desk.shown_chord("native-agents") {
+        Some(chord) => format!("{label}  {chord}"),
+        None => label.to_owned(),
+    };
+    div()
+        .debug_selector(|| "native-agents-toggle".into())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            ghost_icon(
+                "native-agents",
+                if on {
+                    IconName::MessagesSquare
+                } else {
+                    IconName::SquareTerminal
+                },
+                label,
+            )
+            .small()
+            .toggled(on)
+            .tooltip(tip)
+            .on_click(cx.listener(|desk, _, window, cx| desk.execute("native-agents", window, cx))),
+        )
 }
 
 /// The main menu trigger: the session this window shows, its machine when

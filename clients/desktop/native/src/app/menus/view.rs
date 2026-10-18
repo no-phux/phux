@@ -47,6 +47,8 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
             command(desk, handle, "changes", IconName::GitBranch).checked(desk.changes.open),
             command(desk, handle, "plain-terminal", IconName::SquareTerminal)
                 .checked(desk.prefs.plain),
+            command(desk, handle, "native-agents", IconName::MessagesSquare)
+                .checked(desk.prefs.native_agents),
         ],
     )
 }
