@@ -913,71 +913,6 @@ match = { contains = "-- pager --" }
         );
     }
 
-    /// `docs/spec/L3.md` §3.7 states the shipped per-state rule counts as the
-    /// basis of its level-versus-edge ruling. If this fails, update that
-    /// sentence and re-read its paragraph: a new `idle` or `done` rule may
-    /// invalidate the reasoning, not just the arithmetic.
-    #[test]
-    fn the_spec_paragraph_reports_the_real_manifest_rule_counts() {
-        const WORDS: [&str; 21] = [
-            "zero",
-            "one",
-            "two",
-            "three",
-            "four",
-            "five",
-            "six",
-            "seven",
-            "eight",
-            "nine",
-            "ten",
-            "eleven",
-            "twelve",
-            "thirteen",
-            "fourteen",
-            "fifteen",
-            "sixteen",
-            "seventeen",
-            "eighteen",
-            "nineteen",
-            "twenty",
-        ];
-        let count = |state: &str| -> String {
-            let n: usize = super::BUILTIN_MANIFESTS
-                .iter()
-                .map(|(_, text)| {
-                    let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
-                    spec.rules
-                        .iter()
-                        .filter(|rule| rule.state.as_deref() == Some(state))
-                        .count()
-                })
-                .sum();
-            WORDS
-                .get(n)
-                .map_or_else(|| n.to_string(), |w| (*w).to_owned())
-        };
-        let expected = format!(
-            "declare {} `working` rules, {} `blocked` rules, exactly {} `idle` rule and {} \
-             `done` rules between them.",
-            count("working"),
-            count("blocked"),
-            count("idle"),
-            count("done"),
-        );
-        let spec_path = std::path::PathBuf::from(
-            std::env::var_os("CARGO_MANIFEST_DIR")
-                .expect("the test runner sets CARGO_MANIFEST_DIR"),
-        )
-        .join("../../docs/spec/L3.md");
-        let spec = std::fs::read_to_string(&spec_path).expect("read L3.md");
-        let flattened = spec.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(
-            flattened.contains(&expected),
-            "docs/spec/L3.md §3.7 no longer matches the shipped manifests; expected: {expected}",
-        );
-    }
-
     /// Windowed regions are distinct: two rules with different N read
     /// different text, and a top-anchored window reads only the banner.
     #[test]
@@ -1586,7 +1521,7 @@ omp |  |  | @omp18-dialog-above-idle | not-blocked
             std::env::var_os("CARGO_MANIFEST_DIR")
                 .expect("the test runner sets CARGO_MANIFEST_DIR"),
         )
-        .join("../../research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap");
+        .join("src/fixtures/claude/osc-9-4-capture/claude-title-enabled.rawcap");
         let raw = std::fs::read_to_string(&capture).unwrap_or_else(|e| {
             panic!(
                 "{}: {e}. If this capture is removed, re-verify `title-busy-spinner` against a \

@@ -45,10 +45,8 @@ SUBJECT=work    # the pane that pane records
 CAST="$REPO/docs/assets/recording-demo.cast"
 GIF="$REPO/docs/assets/recording-demo.gif"
 
-# Hard budget: this lands in a README-adjacent doc and GitHub serves the
-# whole file before the first frame paints. docs/demo.md allows 2 MB; we
-# hold half that, and repo history is permanent, so the check is a gate
-# and not a warning.
+# Hard budget: GitHub serves the whole file before the first frame paints,
+# and repo history is permanent, so the check is a gate and not a warning.
 MAX_BYTES=1048576
 
 # Every pause longer than this collapses to it at render time. It doubles

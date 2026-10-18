@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo-setup.sh — stage the product demo session (docs/demo.md).
+# demo-setup.sh — stage the product demo session and print its runbook.
 #
 # Creates a session named "demo" headlessly, then prints the recording
 # runbook. The payload itself (docs/assets/payload.sh) is run from inside
@@ -38,7 +38,7 @@ if ! "$PHUX" new --json -s "$SESSION" >/dev/null 2>&1; then
 fi
 
 cat <<EOF
-Session "$SESSION" is up. The storyboard is docs/demo.md; the short version:
+Session "$SESSION" is up. The runbook:
 
 Beat 1 — it survives (record real pixels; asciinema cannot carry kitty
 graphics). In a graphics-capable terminal (Ghostty, kitty, WezTerm),

@@ -40,7 +40,7 @@ binaries = ["claude", "claude-code"]
 # and the highest-priority working signal was silently dead there.
 #
 # VERIFIED for 2.1.228 against the committed raw-byte capture
-# `research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap`, whose
+# `src/fixtures/claude/osc-9-4-capture/claude-title-enabled.rawcap`, whose
 # twelve OSC 0 titles contain exactly three distinct prefixes: U+2733 (quiet),
 # U+25D0 and U+25D1 (busy). No braille appears in that capture. The 2.1.207
 # braille pair is KEPT rather than replaced: it was verified against a real

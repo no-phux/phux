@@ -1,9 +1,8 @@
 //! Generated reference documentation behind the hidden `phux
-//! gen-reference-docs` subcommand (ADR-0069). [`pages`] is the single
-//! registry: the generator writes, the freshness test compares, and the index
-//! lists exactly these pages. Rendering is deterministic (no timestamps,
-//! environment, or terminal width), and every page carries the frontmatter,
-//! TL;DR, and GENERATED FILE marker `just docs-check` expects.
+//! gen-reference-docs` subcommand. [`pages`] is the single registry: the
+//! generator writes it, the freshness test compares it, and the index lists
+//! exactly these pages. Rendering is deterministic (no timestamps,
+//! environment, or terminal width).
 
 pub(crate) mod actions;
 pub(crate) mod cli;
@@ -17,13 +16,7 @@ pub(crate) mod kinds;
 pub(crate) mod parity;
 pub(crate) mod widgets;
 
-/// The fixed `last-reviewed` date for generated pages, so regeneration is
-/// byte-idempotent. Bump it when the pages meaningfully change.
-pub(crate) const GENERATED_LAST_REVIEWED: &str = "2026-09-15";
-
-/// The reader-facing warning embedded in every generated page, right after
-/// the TL;DR (the docs gate requires the TL;DR to be the first content, so
-/// the marker cannot come earlier).
+/// The warning embedded in every generated page, after the lede.
 const GENERATED_MARKER: &str = "<!--\n\
     GENERATED FILE - do not edit. A unit test byte-compares this page\n\
     against `phux gen-reference-docs` output and fails on any drift, so\n\
@@ -39,30 +32,24 @@ pub(crate) struct Page {
     title: &'static str,
     /// One-line description, used by the index page's table.
     summary: &'static str,
-    /// TL;DR paragraph text (without the `**TL;DR.**` prefix).
-    tldr: &'static str,
+    /// One-sentence description under the H1.
+    lede: &'static str,
     /// Markdown body following the generated-file marker.
     body: String,
 }
 
 impl Page {
-    /// The complete file contents: frontmatter, H1, TL;DR, generated-file
-    /// marker, body — exactly what the generator writes and the freshness
-    /// test expects on disk.
+    /// The complete file contents: H1, lede, generated-file marker, body --
+    /// exactly what the generator writes and the freshness test expects on
+    /// disk.
     pub(crate) fn render(&self) -> String {
         let Self {
-            title, tldr, body, ..
+            title, lede, body, ..
         } = self;
         format!(
-            "---\n\
-             audience: humans, agents, contributors\n\
-             stability: evolving\n\
-             last-reviewed: {GENERATED_LAST_REVIEWED}\n\
-             ---\n\
+            "# {title}\n\
              \n\
-             # {title}\n\
-             \n\
-             **TL;DR.** {tldr}\n\
+             {lede}\n\
              \n\
              {GENERATED_MARKER}\n\
              \n\
@@ -99,11 +86,9 @@ fn index_page(content: &[Page]) -> Page {
     use std::fmt::Write as _;
 
     let mut body = String::from(
-        "Every file in this directory is rendered from the compiled `phux` \
-         binary by `just docs-gen`; none of it is written by hand. A unit \
-         test re-renders each page and byte-compares it against this tree, \
-         so the reference cannot drift from the binary without failing the \
-         test suite.\n\n\
+        "Run `just docs-gen` after changing a command, setting, or other \
+         surface listed here; a unit test fails until the pages match the \
+         binary.\n\n\
          | Page | Contents |\n\
          |---|---|\n",
     );
@@ -115,10 +100,7 @@ fn index_page(content: &[Page]) -> Page {
         file: "README.md",
         title: "phux reference",
         summary: "Index of the generated reference pages.",
-        tldr: "Generated reference documentation, rendered from the compiled \
-               binary and byte-pinned by a freshness test so it cannot drift \
-               from the code. The table below routes to each page; none of \
-               these files is edited by hand.",
+        lede: "Every page in this directory is generated from the `phux` binary.",
         body,
     }
 }
@@ -176,28 +158,15 @@ mod tests {
         }
     }
 
-    /// Every page renders the scaffolding `scripts/check-docs.sh` gates on
-    /// (frontmatter, H1, TL;DR) plus the generated-file marker, so the
-    /// generated tree needs no docs-check carve-out.
+    /// Every page opens with its H1 and carries the generated-file marker.
     #[test]
-    fn every_page_renders_compliant_scaffolding() {
+    fn every_page_renders_its_scaffolding() {
         for page in pages() {
             let rendered = page.render();
             let file = page.file;
             assert!(
-                rendered.starts_with("---\naudience: "),
-                "{file}: page must open with YAML frontmatter"
-            );
-            assert!(
-                rendered.contains(&format!(
-                    "last-reviewed: {}\n",
-                    super::GENERATED_LAST_REVIEWED
-                )),
-                "{file}: frontmatter must carry the generator-owned date"
-            );
-            assert!(
-                rendered.contains("\n**TL;DR.** "),
-                "{file}: page must carry a TL;DR block"
+                rendered.starts_with("# "),
+                "{file}: page must open with its H1"
             );
             assert!(
                 rendered.contains("GENERATED FILE"),

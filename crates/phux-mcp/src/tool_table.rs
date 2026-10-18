@@ -329,14 +329,14 @@ pub(crate) const TOOLS: &[Row] = &[
     residue(
         "phux_agent_send_keys",
         "agent send-keys",
-        "key-spec validation, the occupant check, operation-id minting, and the ADR-0076 \
+        "key-spec validation, the occupant check, operation-id minting, and the \
          error-code table live in the CLI command",
         Touches::Wire(&[RESOLVE, "GET_METADATA", "APPLY_INPUT"]),
     ),
     residue(
         "phux_agent_prompt",
         "agent prompt",
-        "operation-id minting, the fused wait's result document, and the ADR-0076 error-code \
+        "operation-id minting, the fused wait's result document, and the error-code \
          table live in the CLI command",
         Touches::Wire(&[
             RESOLVE,
@@ -478,7 +478,7 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
     ("mcp", "launches this adapter itself"),
     (
         "deny",
-        "`phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128)",
+        "`phux_approve` decides both ways: `decision: deny` is `phux deny`",
     ),
     ("resize", "not exposed over MCP yet; a known parity gap"),
     (
@@ -521,8 +521,8 @@ pub(crate) const UNMAPPED: Hints = Hints {
 };
 
 /// Where the `destructive` column comes from.
-pub(crate) const DESTRUCTIVE_SOURCE: &str = "the kind table's `MethodSpec.dangerous` flag \
-     (ADR-0128), or a method that needs `INPUT`";
+pub(crate) const DESTRUCTIVE_SOURCE: &str = "the kind table's `MethodSpec.dangerous` flag, \
+     or a method that needs `INPUT`";
 
 /// Whether a method is destructive: the kind table marks it `dangerous`
 /// (it can end a process, eject a client, stop the server, or release a

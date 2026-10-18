@@ -2,7 +2,7 @@
 // .github/workflows/conventional-commits.yml (all commits AND the PR title).
 //
 // release-please computes the next version and the changelog from this
-// commit log (see docs/RELEASING.md), so a malformed message either drops
+// commit log (see docs/releasing.md), so a malformed message either drops
 // work from the release notes or misses a version bump entirely.
 //
 // Deviations from @commitlint/config-conventional, matched to house style:

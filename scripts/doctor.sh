@@ -19,7 +19,7 @@ need() {
     if command -v "$1" >/dev/null 2>&1; then ok "$1"; else fail "$1" "$2"; fi
 }
 # Prefer the environment the caller is in. Native helpers are CI fallbacks,
-# not the human path (docs/SETUP.md).
+# not the human path (docs/development.md).
 env_remedy() {
     local fallback="$1"
     if [[ -n "${IN_NIX_SHELL:-}" ]]; then
@@ -29,7 +29,7 @@ env_remedy() {
     fi
 }
 # Advisory: libghostty-vt-sys downloads a prebuilt libghostty-vt with curl and
-# tar (docs/SETUP.md#libghostty-vt). Without them, or with a flavor override,
+# tar (docs/development.md#libghostty-vt). Without them, or with a flavor override,
 # every fresh target directory runs the ~200 s Zig build instead. Nothing
 # here needs Nix trust configuration.
 ghostty_engine() {
@@ -37,7 +37,7 @@ ghostty_engine() {
         ok 'curl and tar (prebuilt libghostty-vt download)'
     else
         phux_warn 'curl or tar missing; libghostty-vt builds from source with Zig'
-        phux_hint 'install curl and tar; see docs/SETUP.md#libghostty-vt'
+        phux_hint 'install curl and tar; see docs/development.md#libghostty-vt'
     fi
     local name
     for name in LIBGHOSTTY_VT_SYS_FROM_SOURCE LIBGHOSTTY_VT_SYS_CPU LIBGHOSTTY_VT_SYS_LIB_DIR GHOSTTY_SOURCE_DIR CARGO_NET_OFFLINE; do
@@ -57,12 +57,12 @@ rust_tools() {
         ok "Cargo, rustfmt, clippy"
     else fail "Cargo/rustfmt/clippy" "$(env_remedy "bash scripts/setup-rust.sh $1")"; fi
     # Advisory: Cargo works without mbx, but parallel worktrees then each pay a
-    # cold build and an unmanaged target/ (docs/SETUP.md#build-cache-mbx).
+    # cold build and an unmanaged target/ (docs/development.md#build-cache-mbx).
     if command -v mbx >/dev/null 2>&1; then ok "$(mbx --version)"; else
         phux_warn 'mbx not on PATH; Cargo runs without the shared build cache'
-        phux_hint 'mise install, or nix develop (docs/SETUP.md#build-cache-mbx)'
+        phux_hint 'mise install, or nix develop (docs/development.md#build-cache-mbx)'
     fi
-    need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
+    need cc 'Install platform compiler tools; see docs/development.md#platform-packages'
     rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then
         need mold 'sudo apt-get install -y mold (required by .cargo/config.toml on Linux GNU)'
@@ -87,7 +87,7 @@ rust_link_probe() {
         detail="$(grep -m1 -E 'unknown architecture|symbol\(s\) not found' "$dir/log" ||
             grep -m1 -E 'error' "$dir/log" || true)"
         fail "Rust link probe (${detail:-no output})" \
-            'Make cc and the SDK agree: open a clean shell so no SDKROOT/DEVELOPER_DIR is inherited, and see docs/SETUP.md#platform-packages'
+            'Make cc and the SDK agree: open a clean shell so no SDKROOT/DEVELOPER_DIR is inherited, and see docs/development.md#platform-packages'
     fi
     rm -rf "$dir"
 }
@@ -118,12 +118,12 @@ node_tools() {
     if [[ "$version" =~ ^[0-9]+$ ]] && [[ "$version" -ge 24 ]]; then ok "Node $version"; else
         fail 'Node 24+ (CI uses 24)' "$(env_remedy 'Install Node 24 LTS from https://nodejs.org or brew install node@24; put its bin directory on PATH')"
     fi
-    need npm 'Install npm with Node 24; see docs/SETUP.md'
+    need npm 'Install npm with Node 24; see docs/development.md'
 }
 
 desktop_tools() {
     if ! check_desktop_toolchain; then
-        fail 'desktop toolchain selection' 'Choose one environment; see docs/SETUP.md#gpui-desktop'
+        fail 'desktop toolchain selection' 'Choose one environment; see docs/development.md#gpui-desktop'
         return
     fi
     if [[ "$(uname -s)" == Darwin ]]; then
@@ -152,7 +152,7 @@ linux_desktop_tools() {
     local library
     for library in fontconfig freetype2 xkbcommon xkbcommon-x11 wayland-client x11 xcb; do
         if pkg-config --exists "$library"; then ok "$library"; else
-            fail "$library development libraries" 'Install the Linux desktop packages in docs/SETUP.md#gpui-desktop; or use nix develop'
+            fail "$library development libraries" 'Install the Linux desktop packages in docs/development.md#gpui-desktop; or use nix develop'
         fi
     done
     if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then ok 'graphical session'; else
@@ -187,28 +187,28 @@ case "$scope" in
             fail 'Rust WASM target' "$(env_remedy 'bash scripts/setup-rust.sh web')"
         fi
         if [[ -f clients/phux-vt-web/vendor/ghostty-vt.wasm ]]; then ok 'Committed WASM engine present (run tests to verify ABI)'; else
-            fail 'committed ghostty-vt.wasm' 'Restore clients/phux-vt-web/vendor/ghostty-vt.wasm from the checkout; see docs/SETUP.md#browser-client'
+            fail 'committed ghostty-vt.wasm' 'Restore clients/phux-vt-web/vendor/ghostty-vt.wasm from the checkout; see docs/development.md#browser-client'
         fi
         ;;
     ci)
         native_tools
         node_tools
-        for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/SETUP.md#full-root-validation')"; done
+        for tool in just actionlint shellcheck jq python3 bun curl; do need "$tool" "$(env_remedy 'See docs/development.md#full-root-validation')"; done
         if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then fail 'Bash 4+ for the workflow gate scripts' 'brew install bash; put Homebrew bin on PATH'; fi
         for tool in nextest deny; do
             if cargo "$tool" --version >/dev/null 2>&1; then ok "cargo-$tool"; else
                 if [[ "$tool" == nextest ]]; then
                     fail "cargo-nextest" 'Install the official prebuilt binary: https://nexte.st/docs/installation/pre-built-binaries/ (Mise has no registry entry; Nix provides it)'
                 else
-                    fail "cargo-$tool" "$(env_remedy "Install the prebuilt cargo-$tool binary; see docs/SETUP.md#full-root-validation")"
+                    fail "cargo-$tool" "$(env_remedy "Install the prebuilt cargo-$tool binary; see docs/development.md#full-root-validation")"
                 fi
             fi
         done
         ;;
 esac
 if [[ "$failures" -eq 0 ]]; then
-    phux_ok "doctor $scope: $failures problem(s). See docs/SETUP.md."
+    phux_ok "doctor $scope: $failures problem(s). See docs/development.md."
 else
-    phux_error "doctor $scope: $failures problem(s). See docs/SETUP.md."
+    phux_error "doctor $scope: $failures problem(s). See docs/development.md."
 fi
 [[ "$failures" -eq 0 ]]

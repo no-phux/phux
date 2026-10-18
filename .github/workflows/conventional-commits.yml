@@ -6,7 +6,7 @@
 #   * squash merge -> the PR title becomes the commit subject on main
 #   * rebase merge -> the PR commits land on main verbatim
 # release-please parses that log to decide the next version and the
-# changelog (docs/RELEASING.md), so a malformed message silently drops the
+# changelog (docs/releasing.md), so a malformed message silently drops the
 # change from the release notes or skips a version bump.
 #
 # The `commitlint` context is intended to be required alongside ci.yml's

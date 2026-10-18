@@ -1,14 +1,8 @@
----
-audience: contributors, agents
-stability: evolving
-last-reviewed: 2026-10-17
----
-
 # phux-desktop (native crate)
 
-**TL;DR.** One Rust crate, one executable: `phux-desktop`, a GPUI + GPUI Kit
-application over the shared client runtime (ADR-0165). It has its own Cargo
-workspace and lock so the GPUI graph never enters other phux consumers.
+One Rust crate, one executable: `phux-desktop`, a GPUI and GPUI Kit
+application over the shared client runtime. It has its own Cargo workspace
+and lock so the GPUI dependency graph never enters the other phux crates.
 `just desktop-source` once, then `just desktop-test` and `just desktop-app`.
 
 ## Layout
@@ -47,10 +41,7 @@ identities and no automatic approval or recommendation selection.
 Existing extension/hook streams remain **Attached TUI**: their composer and Stop
 still operate the terminal, and approvals stay there. Passive stream discovery
 never takes focus. Missing harness/adapter prerequisites are actionable UI;
-installation and authentication remain operator responsibilities. See
-[architecture](../../../docs/architecture/desktop.md#native-agent-conversation) and
-[verification](../../../docs/architecture/desktop-verification.md#native-conversation-gates)
-for the distinct attached-mode, scene-fixture and genuine ACP acceptance gates.
+installation and authentication remain operator responsibilities.
 
 
 ## Command line
@@ -69,10 +60,15 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
-- **Native performance window:** runtime controls and metric semantics are in
-  [Performance monitor](../README.md#performance-monitor).
-  The view owns its sampler and cancellable task; `telemetry::Sampler` itself
-  does no background work. `diag::report()` exposes the existing typed report.
+- **Performance monitor:** search the palette for **Performance Monitor** to
+  open a window that samples the desktop process (not the server) once a
+  second: CPU over the elapsed interval, current and peak resident memory,
+  and the kernel, runtime, painter, and UI-thread metrics as rates, means,
+  and estimated p95. **Copy JSON** copies them. Nothing is sampled until the
+  window opens, and nothing is uploaded. `--dev-telemetry` or
+  `PHUX_DESKTOP_DEV_TELEMETRY=1` opens it at launch. The view owns its
+  sampler and cancellable task; `telemetry::Sampler` itself does no
+  background work. `diag::report()` exposes the typed report.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr
   (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`). Lines are redacted
   (URL passwords, labeled tokens and secrets including `PREFIX_TOKEN=` keys
@@ -110,4 +106,4 @@ just desktop-app      # debug build against a same-checkout CLI
 ```
 
 Never point a development build at the production socket or replace the
-installed app; see `docs/operations.md`.
+installed app.

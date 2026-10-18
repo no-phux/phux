@@ -1,16 +1,8 @@
----
-audience: agents, contributors
-stability: evolving
-last-reviewed: 2026-10-13
----
-
 # Native presentation acknowledgement
 
-**TL;DR.** Unknown-delivery recovery clears only after the platform reports
+Unknown-delivery recovery clears only after the platform reports
 that the exact drawable was presented on a still-visible window. Paint,
 `on_next_frame`, and command-buffer completion do not mint `Presented`.
-
-The product contract lives in [desktop architecture](../../../docs/architecture/desktop.md#frames-wakes-and-input).
 
 ## Ticket and lifetime
 

@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux deprecations reference
 
-**TL;DR.** Deprecated spellings the current binary still accepts, each pinned with its replacement and lifecycle releases; empty when nothing is currently deprecated. Every row still parses, warns once on stderr with its replacement, is hidden from help and completions, and is scheduled for removal one release cycle or more after deprecation.
+Old spellings the binary still accepts, what replaces them, and when they go away.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page

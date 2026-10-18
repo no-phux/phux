@@ -14,13 +14,12 @@ const SHARED: Surface[] = ["phux", "web", "native"];
 const ZIG: Surface[] = ["native", "web_engine", "desktop"];
 
 /**
- * Documentation that code or a guard reads: Rust tests byte-compare the spec,
- * generated reference, agent guide and recorded casts; the workflow gate reads
- * the root changelog. These leave the docs-only fast path.
+ * Documentation that code or a guard reads: Rust tests byte-compare the wire
+ * schema, generated reference and recorded casts; the workflow gate reads the
+ * root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
   "docs/{spec,reference,assets}/**": ["phux"],
-  "docs/consumers/agents.md": ["phux"],
   "CHANGELOG.md": [],
 };
 

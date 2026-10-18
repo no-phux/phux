@@ -13,7 +13,7 @@ if [ ! -f "$archive" ]; then
 fi
 
 if [ -n "${PHUX_SOCKET:-}" ]; then
-    "$phux_bin" workspace restore "$archive" --socket "$PHUX_SOCKET"
+    "$phux_bin" archive import "$archive" --socket "$PHUX_SOCKET"
 else
-    "$phux_bin" workspace restore "$archive"
+    "$phux_bin" archive import "$archive"
 fi

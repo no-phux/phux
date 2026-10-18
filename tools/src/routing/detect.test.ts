@@ -52,10 +52,10 @@ test("push, pull_request and merge_group resolve to the same paths", () => {
 });
 
 test("a pull request diffs from the merge base, not the advanced base branch", () => {
-  const head = commitFiles({ "docs/SETUP.md": "fixture\n" });
+  const head = commitFiles({ "docs/development.md": "fixture\n" });
   const advanced = commitFiles({ "new-product/unrelated.xyz": "fixture\n" });
   const event = { pull_request: { base: { sha: advanced }, head: { sha: head } } };
-  expect(run("pull_request", event)).toEqual({ kind: "paths", paths: ["docs/SETUP.md"] });
+  expect(run("pull_request", event)).toEqual({ kind: "paths", paths: ["docs/development.md"] });
 });
 
 test("unknown history, unrepresentable paths and explicit events request full validation", () => {

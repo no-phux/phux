@@ -17,18 +17,17 @@ pub(crate) fn page() -> Page {
     let mut body = String::from(
         "Everything below is compiled into the binary from \
          `phux_protocol::kinds`. The same rows drive `phux --capabilities \
-         --json` and the workload-auth classifier \
-         (`docs/spec/workload-auth.md` §6), so the verbs listed for a method \
+         --json` and the workload-auth classifier, so the verbs listed for a method \
          are the verbs dispatch requires. A method is invoked through its \
          typed frame or command. The catalog describes methods and is never \
          an invocation handle, and reading it grants nothing.\n\n\
-         Verbs are the closed set of workload-auth §5. A method whose rows \
+         Verbs are a closed set. A method whose rows \
          need only `INVENTORY` or `OBSERVE` is read-only; any other verb can \
          change server state; a method no row admits by verb (the `COMMAND` \
          envelope, a denied method) counts as mutating. A gate is the \
          `HELLO_OK` feature bit a client must see before relying on the \
          method, named as `phux status --json` names it; a gate in the \
-         trailing `features_ext` word (ADR-0137) is marked `(features_ext)`, \
+         trailing `features_ext` word is marked `(features_ext)`, \
          and any other lives in `features`. In `phux --capabilities --json` \
          every gate is `feature_gate: { \"word\": \"features\" | \
          \"features_ext\", \"feature\": name, \"mask\": value }`, where \
@@ -72,11 +71,7 @@ pub(crate) fn page() -> Page {
         file: "kinds.md",
         title: "phux kind catalog reference",
         summary: "Every resource kind, its methods and events, and the verb each frame and command needs.",
-        tldr: "The compiled kind catalog: server-level, substrate, and \
-               per-kind methods, the events each kind emits, and the \
-               workload-auth verb classification of every client frame and \
-               command. Rendered from `phux_protocol::kinds`, the table the \
-               classifier reads, so the page cannot drift from dispatch.",
+        lede: "Resource kinds, their methods and events, and the authorization verb each wire method needs.",
         body,
     }
 }

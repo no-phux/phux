@@ -143,10 +143,10 @@ doc:
     RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 
 
-# Doc system gates: frontmatter, TL;DR, dead links, ADR status, spec version.
-# See docs/CONVENTIONS.md.
+# Dead links, dead anchors, and `phux`/`just` commands in docs that no
+# longer exist.
 [group('gates')]
-[doc('Doc gates: frontmatter, TL;DR, dead links, ADR status, spec version.')]
+[doc('Docs gate: dead links and anchors, stale phux and just commands.')]
 docs-check:
     bash scripts/check-docs.sh
 
@@ -155,7 +155,7 @@ docs-check:
 # binary. Run after any change to the CLI surface: a freshness unit test in
 # crates/phux/src/refdocs/ byte-compares the tree against this generator's
 # output on every `just test`, so a stale tree fails CI with this recipe as
-# the remedy. Idempotent. See docs/CONVENTIONS.md §"Generated reference docs".
+# the remedy. Idempotent.
 [group('gates')]
 [doc('Regenerate docs/reference/ from the compiled binary; run after CLI changes.')]
 docs-gen:
@@ -251,7 +251,7 @@ worktree-release:
     @bash scripts/worktree-release.sh worktree-release
 
 
-# Full root gate set; iterate with scoped checks from docs/SETUP.md first.
+# Full root gate set; iterate with scoped checks from docs/development.md first.
 # Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
@@ -276,7 +276,7 @@ ci-repo-gates: docs-check workflow-check font-check e2e-lane-check zig-pin-check
 
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.
-# Browser and desktop clients have separate gates; see docs/SETUP.md.
+# Browser and desktop clients have separate gates; see docs/development.md.
 [group('gates')]
 [doc('Full root PR bar: ci plus the real-server e2e and agent smoke lanes.')]
 ci-full: ci e2e agents-fleet-smoke

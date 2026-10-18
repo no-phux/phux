@@ -34,7 +34,7 @@ const DISTRO_SCAFFOLD_HEADER: &str = "\
 # The `extends` line below layers the distro at
 #   {distro}
 # between phux's built-in defaults and this file (defaults <- distro <-
-# you; see docs/CONFIG.md \"Layered configs\"). Every key you leave unset
+# you; see docs/config.md). Every key you leave unset
 # tracks the distro, and every key the distro leaves unset tracks the
 # shipped default — so updates to either keep reaching you. Uncomment a
 # line below and edit it to override that one setting.

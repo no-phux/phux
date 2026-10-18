@@ -49,7 +49,7 @@ let child: Box<dyn portable_pty::Child + Send + Sync> =
 
 > **TODO(extract).** This crate currently lives inside the
 > [phux](https://github.com/no-phux/phux) workspace, where it backs phux's
-> graceful server upgrade (ADR-0032). It has no phux-specific dependencies and
+> graceful server upgrade. It has no phux-specific dependencies and
 > is meant to be split into its own repository and published to crates.io.
 > Until then it tracks the `portable-pty` version pinned by that workspace.
 

@@ -1,12 +1,6 @@
----
-audience: agents, contributors
-stability: evolving
-last-reviewed: 2026-10-16
----
-
 # Native terminal input
 
-**TL;DR.** `input::TerminalInput` is a GPUI `EntityInputHandler` holding
+`input::TerminalInput` is a GPUI `EntityInputHandler` holding
 `Weak<Client>` and an actual runtime `ViewId`. The terminal view wires it.
 There is no string registry and no second listener.
 

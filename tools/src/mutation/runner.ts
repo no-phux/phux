@@ -34,7 +34,7 @@ Selects at most --limit mutants (default 8), the first deterministic slice.
 --test-timeout 60, --run-timeout 1800 (seconds, per tool invocation).
 Reports: a new target/mutation/rust-* directory or a NEW --output directory.
 Exit 0 findings or empty scope, 1 tool error, 2 usage, 4 baseline failed, 130/143 signal.
-See docs/TESTING_MUTATIONS.md.`;
+See docs/development.md#mutation-testing.`;
 
 const BOUNDS = { limit: 8, jobs: 1, "build-timeout": 300, "test-timeout": 60, "run-timeout": 1800 };
 

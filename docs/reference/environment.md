@@ -1,12 +1,6 @@
----
-audience: humans, agents, contributors
-stability: evolving
-last-reviewed: 2026-09-15
----
-
 # phux environment variables reference
 
-**TL;DR.** The canonical environment-variable table: the socket path, the remote listeners and their TLS and token material, the helper programs (`ssh`, `tailscale`), the auto-spawn idle limit, and logging. Rendered from the same in-code table `phux help environment` uses, so the two cannot disagree.
+Environment variables phux reads. `phux help environment` prints the same table.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page

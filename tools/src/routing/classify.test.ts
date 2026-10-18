@@ -34,9 +34,9 @@ function expectField<K extends keyof Classification>(
 test.each<[string[], Surface[]]>([
   [[], ALL],
   [["new-product/source.xyz"], ALL],
-  [["docs/RELEASING.md"], []],
-  [["docs/spec/proto.md"], ["phux"]],
-  [["docs/consumers/agents.md"], ["phux"]],
+  [["docs/releasing.md"], []],
+  [["docs/spec/wire-schema.json"], ["phux"]],
+  [["docs/agents.md"], []],
   [["CHANGELOG.md"], []],
   [[".agents/skills/using-phux/SKILL.md"], ["phux"]],
   [["clients/desktop/native/src/main.rs"], ["desktop"]],
@@ -83,8 +83,8 @@ test.each<[string[], Surface[]]>([
   [["tools/src/desktop/source.ts"], ["desktop"]],
   [["tools/src/lib/git.ts"], ["web", "desktop"]],
   [["tools/src/routing/routes.ts"], []],
-  [["docs/SETUP.md", "scripts/doctor.sh"], ["native"]],
-  [["docs/SETUP.md", "clients/phux-web/src/lib.rs"], ["web"]],
+  [["docs/development.md", "scripts/doctor.sh"], ["native"]],
+  [["docs/development.md", "clients/phux-web/src/lib.rs"], ["web"]],
 ])("%p routes to %p", (paths, wanted) => {
   expect(lanes(paths)).toEqual(SURFACES.filter((surface) => wanted.includes(surface)));
 });
@@ -124,15 +124,15 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   );
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
-  expect(plan(["docs/SETUP.md"])).toEqual(["skip", "", false]);
+  expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
   expect(plan([])).toEqual(["workspace", "", true]);
 });
 
 test("docs_only holds only for documentation no build reads", () => {
   expectField("docsOnly", [
-    [["docs/SETUP.md", "clients/desktop/README.md"], true],
-    [["docs/adr/0001-x.md", "README.md", "docs/INSTALL.md"], true],
-    [["docs/SETUP.md", "docs/spec/proto.md"], false],
+    [["docs/development.md", "clients/desktop/README.md"], true],
+    [["docs/install.md", "README.md", "docs/README.md"], true],
+    [["docs/development.md", "docs/spec/wire-schema.json"], false],
     [["docs/reference/cli.md"], false],
     [["CHANGELOG.md"], false],
     [[".agents/skills/using-phux/SKILL.md"], false],
@@ -162,11 +162,11 @@ test("docs a crate reads leave the docs-only path", () => {
 test("the rdeps filterset is exact for crate diffs and fails safe otherwise", () => {
   expectField("testFilterset", [
     [[], ""],
-    [["docs/SETUP.md"], ""],
+    [["docs/development.md"], ""],
     [["Cargo.toml"], ""],
     [[".agents/skills/using-phux/SKILL.md"], ""],
     [["new-product/source.xyz"], ""],
-    [["crates/phux-tui/src/lib.rs", "docs/SETUP.md"], "rdeps(=phux-tui)"],
+    [["crates/phux-tui/src/lib.rs", "docs/development.md"], "rdeps(=phux-tui)"],
     [
       ["crates/phux-protocol/src/lib.rs", "crates/phux-tui/src/lib.rs"],
       "rdeps(=phux-protocol) + rdeps(=phux-tui)",
@@ -210,14 +210,14 @@ test("UniFFI qualification skips only known unrelated crate inputs", () => {
     [["crates/phux-testkit/src/lib.rs"], true],
     [["crates/quictun/src/lib.rs"], true],
     [["crates/phux-mcp/src/lib.rs"], false],
-    [["crates/phux-tui/src/lib.rs", "docs/SETUP.md"], false],
+    [["crates/phux-tui/src/lib.rs", "docs/development.md"], false],
     [["crates/phux-tui/src/lib.rs", "crates/phux-core/src/lib.rs"], true],
     [["crates/phux-mcp/src/lib.rs", "Cargo.lock"], true],
     [["crates/phux-mcp/src/lib.rs", "new-product/source.xyz"], true],
     [["crates/new-crate/src/lib.rs"], true],
     [["Cargo.toml"], true],
     [[".github/workflows/ci.yml"], true],
-    [["docs/SETUP.md"], false],
+    [["docs/development.md"], false],
   ]);
 });
 

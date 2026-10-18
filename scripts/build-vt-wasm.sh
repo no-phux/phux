@@ -36,7 +36,7 @@ mode="${1:-build}"
   echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;
 }
 for tool in node tar; do
-  command -v "$tool" >/dev/null || { echo "$tool missing; see docs/SETUP.md#browser-client" >&2; exit 1; }
+  command -v "$tool" >/dev/null || { echo "$tool missing; see docs/development.md#browser-client" >&2; exit 1; }
 done
 toolchains="${PHUX_TOOLCHAIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/phux/toolchains}"
 zig="$("$BASH" "$repo/scripts/install-zig.sh" "$toolchains")/zig"

@@ -12,7 +12,7 @@ case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-macos ;;
     Linux/x86_64) target=x86_64-linux ;;
     Linux/aarch64|Linux/arm64) target=aarch64-linux ;;
-    *) phux_error "No release-pinned Zig archive for this host. Install Zig $ZIG_VERSION manually; see docs/SETUP.md."; exit 1 ;;
+    *) phux_error "No release-pinned Zig archive for this host. Install Zig $ZIG_VERSION manually; see docs/development.md."; exit 1 ;;
 esac
 sha="$(zig_digest "$target")"
 [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { phux_error "missing Zig digest for $target"; exit 1; }

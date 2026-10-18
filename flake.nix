@@ -387,7 +387,7 @@
                 echo "phux: warning: xcrun cannot resolve the SDK or nmedit under" >&2
                 echo "  DEVELOPER_DIR=$DEVELOPER_DIR; libghostty-vt-sys's Darwin build" >&2
                 echo "  will likely fail. Install Apple's Command Line Tools; see" >&2
-                echo "  docs/SETUP.md#platform-packages." >&2
+                echo "  docs/development.md#platform-packages." >&2
               fi
             ''
             + ''
@@ -428,7 +428,7 @@
 
         # Browser CI gets a browser matched to chromedriver without making
         # every native Linux lane download Chromium. Darwin uses host Chrome
-        # and an explicitly matching driver (see docs/SETUP.md).
+        # and an explicitly matching driver (see docs/development.md).
         devShells.browser = self.devShells.${system}.default.overrideAttrs (old: {
           nativeBuildInputs =
             old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];

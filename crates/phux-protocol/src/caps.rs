@@ -1610,13 +1610,10 @@ mod tests {
         assert_eq!(withdrawn, base);
     }
 
-    /// Every variant has exactly one name, each bit is unique, the known
-    /// mask is their union, and each bit appears in `docs/spec/proto.md`
-    /// §6.2 by name and value in both the bitset block and the
-    /// `ServerCapabilities` sentence.
+    /// Every variant has exactly one name, each bit is unique, and the
+    /// known mask is their union.
     #[test]
     fn every_server_feature_has_one_name_and_a_unique_bit() {
-        let proto = include_str!("../../../docs/spec/proto.md");
         let mut union = 0_u32;
         let mut names = Vec::new();
         let mut snakes = Vec::new();
@@ -1639,19 +1636,6 @@ mod tests {
             );
             names.push(name);
             snakes.push(snake);
-            let block = format!("{name} ");
-            let block_value = format!("0x{bits:08X}");
-            let prose = format!("`{name} = 0x{bits:X}`");
-            assert!(
-                proto
-                    .lines()
-                    .any(|l| l.trim_start().starts_with(&block) && l.contains(&block_value)),
-                "proto.md §6.2 bitset block lacks `{name} = {block_value}`"
-            );
-            assert!(
-                proto.replace('\n', " ").contains(&prose),
-                "proto.md §6.2 ServerCapabilities sentence lacks {prose}"
-            );
         }
         assert_eq!(names.len(), ServerFeature::ALL.len());
         assert_eq!(snakes.len(), ServerFeature::ALL.len());

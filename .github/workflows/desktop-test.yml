@@ -4,14 +4,14 @@
 # nothing red (phux-piaf7). `macos` runs `just desktop-lint`,
 # `just desktop-test` and the headless perf budget on that test build;
 # `package` builds Phux.app and runs the packaged smoke against an isolated
-# same-checkout server. Real-GPU qualification stays manual (docs/CI.md).
+# same-checkout server. Real-GPU qualification stays manual (docs/development.md#gpui-desktop).
 #
 # The shared classifier routes it (desktop_needed): the crate's root path
 # dependencies, the toolchain inputs, the root files it embeds, this file,
 # and every unrouted clients/desktop path.
 # Not part of the required `ci` aggregate, like web-check and native-setup.
 # No build cache: a PR may not write one, and a main entry would compete with
-# the release lanes for the 10 GB budget docs/CI.md describes.
+# the release lanes for the 10 GB cache budget docs/development.md#ci describes.
 name: desktop-test
 
 on:
