@@ -56,6 +56,9 @@ pub(crate) struct QuicListener {
     /// Where the enrollment ALPN issues into, when this listener offers it
     /// (`workload-auth.md` §8.2): the configured listener only.
     enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
+    /// Where satellites that dial in under the satellite ALPN go (ADR-0182):
+    /// the configured listener only.
+    satellites: Option<crate::hub::adopt::SatelliteAdopter>,
     admissions: super::Admissions<QuicAccepted>,
     /// Refused preambles, warned about at a bounded rate.
     refusals: Arc<super::RefusalWarnings>,
@@ -98,6 +101,7 @@ impl QuicListener {
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
             enrollment: enrollment.map(Arc::new),
+            satellites: None,
             admissions: super::Admissions::new(),
             refusals: Arc::new(super::RefusalWarnings::new()),
         })
@@ -126,6 +130,15 @@ impl QuicListener {
 
     pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
         self.endpoint.local_addr()
+    }
+
+    /// Adopt satellites that dial in under the satellite ALPN into `adopter`
+    /// (ADR-0182). The ALPN is offered only when this listener verifies
+    /// workload certificates; without this call it is refused.
+    #[must_use]
+    pub(crate) fn with_satellites(mut self, adopter: crate::hub::adopt::SatelliteAdopter) -> Self {
+        self.satellites = Some(adopter);
+        self
     }
 }
 
@@ -327,6 +340,9 @@ impl Incoming for QuicListener {
                     self.workload_registry.clone(),
                     self.enrollment.clone(),
                     Arc::clone(&self.refusals),
+                    self.satellites
+                        .clone()
+                        .map(|adopter| (adopter, self.endpoint.clone())),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
                     as super::Admission<QuicAccepted>)
@@ -351,6 +367,7 @@ async fn admit_connection(
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
     enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
     refusals: Arc<super::RefusalWarnings>,
+    satellites: Option<(crate::hub::adopt::SatelliteAdopter, quinn::Endpoint)>,
 ) -> Option<QuicAccepted> {
     let remote = incoming.remote_address();
     let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
@@ -368,6 +385,17 @@ async fn admit_connection(
         // Never a phux connection: one exchange, then closed.
         match enrollment {
             Some(paths) => enroll::serve(&conn, &paths).await,
+            None => conn.close(AUTH_FAILED_CODE.into(), b"unauthorized"),
+        }
+        return None;
+    }
+    if negotiated_alpn(&conn).as_deref() == Some(phux_protocol::policy::SATELLITE_ALPN) {
+        // Never a consumer: the hub's link supervisor adopts it, or it is
+        // closed before any stream (ADR-0182).
+        match satellites {
+            Some((adopter, endpoint)) => {
+                crate::hub::adopt::admit(conn, endpoint, workload_registry.as_ref(), &adopter);
+            }
             None => conn.close(AUTH_FAILED_CODE.into(), b"unauthorized"),
         }
         return None;

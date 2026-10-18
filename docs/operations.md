@@ -841,6 +841,15 @@ local `--hub` without dropping listeners already baked into the unit.
   and that label grants nothing: its trust is exactly the UDS peer's.
   Treat `ssh_client` as a label the connecting side reported, not a
   verified address.
+- **Inbound (`inbound://`):** the satellite dials the hub instead
+  ([ADR-0182](adr/0182-satellites-enroll-and-dial-out-to-the-hub.md)),
+  under the QUIC ALPN `phux-satellite/1`. It presents a satellite
+  certificate it enrolled with a single-use `phux host ticket` code, and it
+  pins the hub's CA. The hub must run `paired`. Each stream the hub opens is
+  spliced into the satellite's own Unix socket, so, as with SSH-stdio, the
+  hub holds the satellite owner's authority; the satellite's operator granted
+  it by running `phux host join`. A satellite credential is never admitted
+  as a terminal client. Revoking it on the hub ends the link within a second.
 
 A satellite is authoritative for its own Terminals and nothing else. The
 hub re-tags or vets every id a satellite sends before a hub consumer sees

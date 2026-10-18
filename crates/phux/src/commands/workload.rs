@@ -135,9 +135,13 @@ pub(crate) enum WorkloadAction {
     ///
     /// A running server observes the registry write and closes every
     /// connection the credential admitted; no restart is needed. `phux pair
-    /// revoke` accepts the same `sha256:` ids.
+    /// revoke` accepts the same `sha256:` ids. A satellite's credential ends
+    /// its link to this hub. A `t-...` ticket id withdraws an enrollment code
+    /// nobody has used yet.
     Revoke {
-        /// Credential id (`sha256:...`) printed by `add-key` or `list`.
+        /// Credential id (`sha256:...`) printed by `add-key` or `list`, or
+        /// an unspent enrollment ticket (`t-...`) printed by `phux pair
+        /// --enroll` or `phux host ticket`.
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
@@ -553,7 +557,10 @@ fn credential_lines(credential: &WorkloadCredential, now: i64, public_keys: bool
         .map_or_else(|| "never".to_owned(), timestamp);
     let mut lines = vec![
         format!("{}  {}", credential.id, status(credential, now)),
-        format!("  scopes:  {}", credential.scopes.join(" ")),
+        credential.satellite.as_ref().map_or_else(
+            || format!("  scopes:  {}", credential.scopes.join(" ")),
+            |name| format!("  satellite: {name} (no terminal scope)"),
+        ),
         format!("  principal: {}", credential.enrolled_for().as_str()),
         format!("  expires: {expires}"),
     ];
@@ -585,10 +592,16 @@ fn credential_document(
     if public_keys {
         document["public_key"] = json!(hex_lower(&credential.public_key));
     }
+    if let Some(name) = &credential.satellite {
+        document["satellite"] = json!(name);
+    }
     document
 }
 
 fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError> {
+    if workload::tickets::is_ticket_id(credential_id) {
+        return revoke_ticket(paths, credential_id);
+    }
     let outcome = WorkloadRegistry::revoke(&paths.registry, credential_id)
         .map_err(|error| cli_error(&error))?;
     let prose = if outcome.newly_revoked {
@@ -614,6 +627,31 @@ fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError
             "revoked_at": outcome.revoked_at,
             "newly_revoked": outcome.newly_revoked,
             "registry_generation": outcome.generation,
+        }),
+        prose,
+        payload: None,
+    })
+}
+
+/// Withdraw an unspent enrollment ticket (`t-…`): it is refused from now on,
+/// like a consumed one (ADR-0154, ADR-0182).
+fn revoke_ticket(paths: &WorkloadPaths, ticket_id: &str) -> Result<Report, CliError> {
+    let newly_revoked = workload::tickets::revoke_ticket(
+        &workload::tickets::tickets_path(&paths.registry),
+        ticket_id,
+    )
+    .map_err(|error| cli_error(&error))?;
+    let prose = vec![if newly_revoked {
+        format!("Revoked enrollment ticket {ticket_id}; nothing can enroll with it now.")
+    } else {
+        format!("Enrollment ticket {ticket_id} was already used, expired, or revoked.")
+    }];
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "operation": "revoke_ticket",
+            "ticket_id": ticket_id,
+            "newly_revoked": newly_revoked,
         }),
         prose,
         payload: None,

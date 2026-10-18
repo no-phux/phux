@@ -87,7 +87,11 @@ async fn forward(mut inbound: TcpStream, target_port: u16) {
 
 /// Spawn `/bin/cat` on the hub (`host: None`) or on satellite `host`, with
 /// no owner, retrying while the hub's link to `host` is still dialing.
-async fn spawn_cat(hub: &mut UnixStream, request_id: u32, host: Option<&str>) -> ResourceId {
+pub(super) async fn spawn_cat(
+    hub: &mut UnixStream,
+    request_id: u32,
+    host: Option<&str>,
+) -> ResourceId {
     let spawn = || {
         let spawn = Spawn {
             owner_terminal: None,

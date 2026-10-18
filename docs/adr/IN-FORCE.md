@@ -98,6 +98,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Federation and transport
 
+- [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) A satellite the hub cannot reach enrolls with a single-use `phux host ticket` code and dials the hub under `phux-satellite/1`; the hub opens the phux streams and adopts the connection as an `inbound://` satellite's link, and the satellite splices them to its owner socket.
 - [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) The relay is `crates/quictun`, which depends on no phux crate: a deployment supplies its ALPNs and connection-ID tag as a `Protocol`, and `phux-relay` is phux's binding.
 - [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) `phux attach --ssh` bootstraps over ssh: the host's server opens a QUIC listener for one attach on a local-socket-only `OPEN_LISTENER`, admits only an in-memory token, and closes it after its linger; `ssh://` entries try this before `ssh -t`.
 - [0115](./0115-quic-stream-per-terminal.md) QUIC carries one control stream plus one bidi stream per attached Terminal; UDS/ws keep the single-stream shape.

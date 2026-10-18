@@ -30,6 +30,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
+| `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths (ADR-0182). |
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>` (ADR-0055, ADR-0122). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe (ADR-0152). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
@@ -537,6 +538,20 @@ which-key-delay-ms = 400
 # relay = "relay.example:4433"
 # token-file = "/home/me/.local/state/phux/connectors/relay.token"
 # cert-fingerprint = "AB:CD:..."
+
+# Uplinks make this server a satellite of a hub that cannot dial it (a
+# sandbox behind NAT, ADR-0182): the server dials the hub and serves the
+# hub's streams over that one connection, so it needs no listener. `phux
+# host join CODE` (the code comes from `phux host ticket NAME` on the hub)
+# enrolls a key it keeps and writes the entry; edit by hand only to disable
+# one. The key stays in an owner-only file, never inline.
+#
+# [[uplink]]
+# name = "sandbox"
+# hub = "hub.example:8788"
+# ca-fingerprint = "sha256:..."
+# client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
+# client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
 
 # Remote phux servers this machine attaches TO (ADR-0055): `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so

@@ -94,6 +94,13 @@ const SECTIONS: &[Section] = &[
                   (ADR-0052).",
     },
     Section {
+        key: "uplink",
+        header: "[[uplink]]",
+        summary: "Hubs this server dials out to as a satellite, written by \
+                  `phux host join`: satellite name, hub endpoint, the hub's \
+                  CA pin, and the enrolled identity's paths (ADR-0182).",
+    },
+    Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
@@ -311,7 +318,7 @@ mod tests {
 
     use phux_config::{
         Action, Config, ConnectorConfigEntry, HookEntry, RemoteConfigEntry, SatelliteConfigEntry,
-        Widget,
+        UplinkConfigEntry, Widget,
     };
 
     use super::{SECTIONS, default_scalar_rows, page, scalar_rows};
@@ -355,6 +362,15 @@ mod tests {
             relay: "relay.example:4433".to_owned(),
             token_file: Some(PathBuf::from("/tokens/relay.token")),
             cert_fingerprint: Some("AB:CD".to_owned()),
+        }];
+        config.uplink = vec![UplinkConfigEntry {
+            name: "sandbox".to_owned(),
+            hub: "hub.example:8788".to_owned(),
+            server_name: Some("hub.example".to_owned()),
+            ca_fingerprint: "sha256:ab".to_owned(),
+            client_cert: PathBuf::from("/state/uplinks/uplink.sandbox.pem"),
+            client_key: PathBuf::from("/state/uplinks/uplink.sandbox.key"),
+            enabled: true,
         }];
         config.remote = vec![RemoteConfigEntry {
             name: "mini".to_owned(),

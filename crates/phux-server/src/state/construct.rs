@@ -29,6 +29,7 @@ impl ServerState {
             agent: AgentState::new(),
             config: super::ServerConfig::default(),
             hub: HubState::new(),
+            uplinks: crate::uplink::Uplinks::default(),
             hook_dispatcher: None,
             push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —

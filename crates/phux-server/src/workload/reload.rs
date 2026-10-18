@@ -168,6 +168,24 @@ impl ReloadingWorkloadRegistry {
             .map(|credential| credential.authenticated(&snapshot))
     }
 
+    /// The active satellite credential for a verified TLS leaf (ADR-0182):
+    /// its id and the satellite name it enrolled as.
+    #[must_use]
+    pub fn lookup_satellite_certificate(&self, certificate: &[u8]) -> Option<(String, String)> {
+        let snapshot = self.current();
+        snapshot
+            .lookup_satellite_certificate(certificate)
+            .and_then(|credential| Some((credential.id.clone(), credential.satellite.clone()?)))
+    }
+
+    /// Whether satellite credential `id` is still active as `name` right now.
+    #[must_use]
+    pub fn satellite_is_active(&self, id: &str, name: &str) -> bool {
+        self.current()
+            .lookup_satellite(id)
+            .is_some_and(|credential| credential.satellite.as_deref() == Some(name))
+    }
+
     fn lock(&self) -> MutexGuard<'_, Cached> {
         self.cached.lock().unwrap_or_else(PoisonError::into_inner)
     }

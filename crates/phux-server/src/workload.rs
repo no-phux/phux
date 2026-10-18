@@ -283,6 +283,11 @@ pub struct WorkloadCredential {
     /// Who it was enrolled for, as recorded; `None` for a record that
     /// predates the field ([`Self::enrolled_for`] infers it).
     pub recorded_for: Option<EnrolledFor>,
+    /// The satellite this credential is (`workload-auth.md` §8.3,
+    /// ADR-0182): admitted only on the satellite ALPN, never on the terminal
+    /// endpoint, and it carries no scope ceiling. `None` for every other
+    /// credential.
+    pub satellite: Option<String>,
 }
 
 impl WorkloadCredential {
@@ -358,6 +363,10 @@ struct RegistryRecord {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     principal: Option<EnrolledFor>,
+    /// The satellite name, on a satellite credential only (ADR-0182), so a
+    /// registry with none stays readable by readers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    satellite: Option<String>,
 }
 
 /// A validated snapshot of the workload-key registry.
@@ -492,21 +501,45 @@ impl WorkloadRegistry {
         &self.credentials
     }
 
-    /// Find an active credential by its public-key-derived id.
+    /// Find an active terminal-endpoint credential by its public-key-derived
+    /// id. A satellite credential is never one (ADR-0182): every terminal
+    /// admission path reads the registry through here, so it is refused on
+    /// all of them alike.
     #[must_use]
     pub fn lookup(&self, id: &str) -> Option<&WorkloadCredential> {
+        self.find_active(id)
+            .filter(|credential| credential.satellite.is_none())
+    }
+
+    /// Find an active terminal-endpoint credential by a verified TLS leaf's
+    /// public key (see [`Self::lookup`]).
+    #[must_use]
+    pub fn lookup_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
+        let public_key = subject_public_key_info(certificate).ok()?;
+        self.lookup(&credential_id(&public_key))
+    }
+
+    /// Find an active satellite credential by its id (ADR-0182).
+    #[must_use]
+    pub fn lookup_satellite(&self, id: &str) -> Option<&WorkloadCredential> {
+        self.find_active(id)
+            .filter(|credential| credential.satellite.is_some())
+    }
+
+    /// Find an active satellite credential by a verified TLS leaf's public
+    /// key (ADR-0182).
+    #[must_use]
+    pub fn lookup_satellite_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
+        let public_key = subject_public_key_info(certificate).ok()?;
+        self.lookup_satellite(&credential_id(&public_key))
+    }
+
+    fn find_active(&self, id: &str) -> Option<&WorkloadCredential> {
         let now = Utc::now().timestamp();
         self.credentials.iter().find(|credential| {
             bool::from(credential.id.as_bytes().ct_eq(id.as_bytes()))
                 && credential.is_active_at(now)
         })
-    }
-
-    /// Find an active credential by a verified TLS leaf's public key.
-    #[must_use]
-    pub fn lookup_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
-        let public_key = subject_public_key_info(certificate).ok()?;
-        self.lookup(&credential_id(&public_key))
     }
 
     /// Number of records in this validated snapshot.
@@ -598,6 +631,7 @@ impl WorkloadRegistry {
                 expires_at,
                 revoked_at: None,
                 recorded_for: enrolled_for,
+                satellite: None,
             });
             registry.commit(path, held)?;
             Ok(RegisteredCredential {
@@ -606,6 +640,85 @@ impl WorkloadRegistry {
                 replaced: revoked_predecessor,
             })
         })
+    }
+
+    /// Register `public_key` as satellite `name`'s credential (ADR-0182) and,
+    /// in the same locked write, revoke every other active credential of that
+    /// name: one satellite name has one live credential.
+    ///
+    /// # Errors
+    ///
+    /// An invalid name or expiry, a key that is already enrolled, or any
+    /// failure to read or atomically replace the registry.
+    pub fn register_satellite(
+        path: &Path,
+        public_key: &[u8],
+        name: &str,
+        expires_at: i64,
+    ) -> Result<RegisteredCredential, WorkloadError> {
+        validate_satellite_name(name)?;
+        validate_expiry(expires_at)?;
+        if public_key.is_empty() {
+            return Err(WorkloadError::Malformed(
+                "public key must be non-empty".to_owned(),
+            ));
+        }
+        let id = credential_id(public_key);
+        store::with_lock(path, |held| {
+            let mut registry = Self::load(path)?;
+            if registry
+                .credentials
+                .iter()
+                .any(|credential| credential.id == id)
+            {
+                return Err(WorkloadError::AlreadyRegistered(id.clone()));
+            }
+            let now = Utc::now().timestamp();
+            let replaced = registry.revoke_satellite_records(name, now) > 0;
+            registry.credentials.push(WorkloadCredential {
+                id: id.clone(),
+                public_key: public_key.to_vec(),
+                scopes: Vec::new(),
+                expires_at: Some(expires_at),
+                revoked_at: None,
+                recorded_for: Some(EnrolledFor::Automation),
+                satellite: Some(name.to_owned()),
+            });
+            registry.commit(path, held)?;
+            Ok(RegisteredCredential {
+                id: id.clone(),
+                generation: registry.generation,
+                replaced,
+            })
+        })
+    }
+
+    /// Revoke every active credential of satellite `name` (`phux host rm`).
+    /// Returns how many were revoked; nothing is written when none was.
+    ///
+    /// # Errors
+    ///
+    /// Any failure to read or atomically replace the registry.
+    pub fn revoke_satellite(path: &Path, name: &str) -> Result<usize, WorkloadError> {
+        store::with_lock(path, |held| {
+            let mut registry = Self::load(path)?;
+            let revoked = registry.revoke_satellite_records(name, Utc::now().timestamp());
+            if revoked > 0 {
+                registry.commit(path, held)?;
+            }
+            Ok(revoked)
+        })
+    }
+
+    fn revoke_satellite_records(&mut self, name: &str, now: i64) -> usize {
+        let mut revoked = 0;
+        for credential in &mut self.credentials {
+            if credential.satellite.as_deref() == Some(name) && credential.revoked_at.is_none() {
+                credential.revoked_at = Some(now);
+                revoked += 1;
+            }
+        }
+        revoked
     }
 
     /// Mark a credential revoked from now on. The record stays, so the key
@@ -662,6 +775,7 @@ impl WorkloadRegistry {
                 expires_at: credential.expires_at,
                 revoked_at: credential.revoked_at,
                 principal: credential.recorded_for,
+                satellite: credential.satellite.clone(),
             })
             .collect();
         let mut bytes = serde_json::to_vec_pretty(&RegistryFile {
@@ -687,7 +801,18 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
             "a credential id does not match its public key".to_owned(),
         ));
     }
-    validate_scopes(&record.scopes)?;
+    match &record.satellite {
+        // A satellite credential grants no terminal authority (ADR-0182).
+        Some(name) => {
+            validate_satellite_name(name)?;
+            if !record.scopes.is_empty() {
+                return Err(WorkloadError::Malformed(
+                    "a satellite credential carries no scope ceiling".to_owned(),
+                ));
+            }
+        }
+        None => validate_scopes(&record.scopes)?,
+    }
     Ok(WorkloadCredential {
         id: record.id.clone(),
         public_key,
@@ -695,7 +820,28 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         expires_at: record.expires_at,
         revoked_at: record.revoked_at,
         recorded_for: record.principal,
+        satellite: record.satellite.clone(),
     })
+}
+
+/// A satellite name obeys the federation host-key rules (`workload-auth.md`
+/// §5): 1..=255 UTF-8 bytes, no NUL or control character. A `/` or `:` is
+/// refused too, as `phux host` refuses them in a registry name.
+///
+/// # Errors
+///
+/// [`WorkloadError::Malformed`].
+pub fn validate_satellite_name(name: &str) -> Result<(), WorkloadError> {
+    let valid = !name.is_empty()
+        && name.len() <= 255
+        && !name.chars().any(|c| c.is_control() || c == '/' || c == ':');
+    if valid {
+        Ok(())
+    } else {
+        Err(WorkloadError::Malformed(
+            "a satellite name is 1 to 255 bytes with no control character, '/', or ':'".to_owned(),
+        ))
+    }
 }
 
 /// Every scope must parse, there must be at least one, and together they
@@ -962,6 +1108,12 @@ impl PreparedEnrollment {
     #[must_use]
     pub fn credential_id(&self) -> String {
         credential_id(&self.public_key)
+    }
+
+    /// The raw public key (DER `SubjectPublicKeyInfo`) the commit records.
+    #[must_use]
+    pub fn public_key(&self) -> &[u8] {
+        &self.public_key
     }
 
     /// For a signed CSR, the issued certificate then the CA certificate

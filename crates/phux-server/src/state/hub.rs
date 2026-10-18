@@ -45,6 +45,23 @@ impl ServerState {
         self.hub.arm_reload(source, cancel);
     }
 
+    /// Where the QUIC listener hands satellites that dial in (ADR-0182).
+    #[must_use]
+    pub(crate) fn satellite_adopter(&self) -> crate::hub::adopt::SatelliteAdopter {
+        self.hub.adopter()
+    }
+
+    /// The uplinks this server keeps to hubs as a satellite (ADR-0182).
+    #[must_use]
+    pub(crate) const fn uplinks(&self) -> &crate::uplink::Uplinks {
+        &self.uplinks
+    }
+
+    /// Mutable [`Self::uplinks`], to arm, start, and stop them.
+    pub(crate) const fn uplinks_mut(&mut self) -> &mut crate::uplink::Uplinks {
+        &mut self.uplinks
+    }
+
     /// Whether satellite link supervisors are installed.
     #[must_use]
     pub(crate) const fn hub_has_links(&self) -> bool {
