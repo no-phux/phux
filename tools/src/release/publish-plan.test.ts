@@ -1,5 +1,8 @@
 // Publish decisions stay deterministic: no network, no clock.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ROOT } from "../lib/repo.ts";
 import { decide, parseTag, splitLanes, validationState, type Release } from "./publish-plan.ts";
 
 const rel = (tag: string, draft: boolean, sha: string): Release => ({ tag, draft, sha });
@@ -219,5 +222,34 @@ describe("decide", () => {
     expect(decide(rows, () => "failure", { dispatchTag: tag }).fail).toContain("failure");
     // An event for any other commit sweeps it like every other green draft.
     expect(decide(rows, green, { eventSha: "other" }).publish).toEqual([tag]);
+  });
+});
+
+// publish.yml holds one concurrency slot; nothing slow may sit inside it.
+describe("publish workflow", () => {
+  const read = (name: string) => readFileSync(join(ROOT, ".github/workflows", name), "utf8");
+  const workflow = read("publish.yml");
+  const job = (name: string) => workflow.split(`\n  ${name}:\n`)[1]?.split("\n\n  ")[0] ?? "";
+
+  test("mobile FFI is dispatched after the CLI is public", () => {
+    for (const name of ["ffi-xcframework.yml", "ffi-android.yml"]) {
+      expect(workflow).not.toContain(`uses: ./.github/workflows/${name}`);
+    }
+    const mobile = job("mobile-ffi");
+    expect(mobile).toContain("needs: [plan, phux]");
+    expect(mobile).toContain("if: needs.phux.result == 'success'");
+    expect(mobile).toContain("for workflow in ffi-xcframework.yml ffi-android.yml; do");
+    expect(mobile).toContain('gh workflow run "$workflow" --ref main -f tag="$TAG"');
+  });
+
+  test("a publish rebuilds the site", () => {
+    const website = job("website");
+    expect(website).toContain("needs: [phux, desktop, channel-manifest]");
+    expect(website).toContain(
+      "needs.phux.result == 'success' || needs.desktop.result == 'success'",
+    );
+    expect(website).toContain("gh workflow run website-dispatch.yml --ref main");
+    const dispatch = read("website-dispatch.yml").split("\npermissions:")[0] ?? "";
+    expect(dispatch).toContain("  workflow_dispatch:\n");
   });
 });
