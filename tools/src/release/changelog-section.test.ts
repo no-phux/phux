@@ -1,9 +1,9 @@
 // Linear notes must come from the tagged changelog section, not a SHA stub.
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { repoPath } from "../lib/repo.ts";
+import { show } from "../lib/git.ts";
 import { extractSection, versionFromTag, writeSection } from "./changelog-section.ts";
 
 const CHANGELOG = `# Changelog
@@ -12,48 +12,34 @@ const CHANGELOG = `# Changelog
 
 ### Features
 
-* fleet inbox
+* fleet inbox\r
 
 ## [0.35.0](https://example/compare/v0.34.0...v0.35.0) (2026-09-13)
-
-### Features
 
 * quic streams
 `;
 
-describe("changelog section", () => {
-  test("the version from root and component tags", () => {
-    expect(versionFromTag("v0.36.0")).toBe("0.36.0");
-    expect(versionFromTag("desktop-v0.2.0")).toBe("0.2.0");
-    expect(versionFromTag("opencode-plugin-v0.3.0")).toBe("0.3.0");
-    expect(() => versionFromTag("next")).toThrow("unsupported release tag");
-  });
+test("the version from root and component tags", () => {
+  expect(["v0.36.0", "desktop-v0.2.0", "opencode-plugin-v0.3.0"].map(versionFromTag)).toEqual([
+    "0.36.0",
+    "0.2.0",
+    "0.3.0",
+  ]);
+  expect(() => versionFromTag("next")).toThrow("unsupported release tag");
+});
 
-  test("extracts one section and stops at the next heading", () => {
-    const section = extractSection(CHANGELOG, "0.36.0");
-    expect(section).toContain("fleet inbox");
-    expect(section).not.toContain("quic streams");
-    expect(section.startsWith("## [0.36.0]")).toBe(true);
-    expect(section.endsWith("* fleet inbox\n")).toBe(true);
-  });
+test("one section, up to the next heading; a missing one fails closed", () => {
+  expect(extractSection(CHANGELOG, "0.36.0")).toBe(
+    "## [0.36.0](https://example/compare/v0.35.0...v0.36.0) (2026-09-13)\n\n### Features\n\n* fleet inbox\n",
+  );
+  expect(() => extractSection(CHANGELOG, "9.9.9")).toThrow("no changelog heading");
+});
 
-  test("a missing section fails closed", () => {
-    expect(() => extractSection(CHANGELOG, "9.9.9")).toThrow("no changelog heading");
-  });
-
-  test("the CLI writes the tagged section", () => {
-    const dir = mkdtempSync(join(tmpdir(), "changelog-"));
-    const [changelog, output] = [join(dir, "CHANGELOG.md"), join(dir, "notes.md")];
-    writeFileSync(changelog, CHANGELOG);
-    expect(writeSection("v0.36.0", changelog, output)).toBe(0);
-    expect(readFileSync(output, "utf8")).toBe(extractSection(CHANGELOG, "0.36.0"));
-    expect(writeSection("v9.9.9", changelog, output)).toBe(1);
-  });
-
-  test("the real root changelog has the current head section", () => {
-    const text = readFileSync(repoPath("CHANGELOG.md"), "utf8");
-    const heading = text.split("\n").find((line) => line.startsWith("## ["));
-    const version = heading?.split("[")[1]?.split("]")[0] ?? "";
-    expect(extractSection(text, version).startsWith(`## [${version}]`)).toBe(true);
-  });
+test("the CLI writes the section from the changelog at a revision", () => {
+  const output = join(mkdtempSync(join(tmpdir(), "changelog-")), "notes.md");
+  const version = /^## \[([^\]]+)\]/m.exec(show("HEAD", "CHANGELOG.md") ?? "")?.[1] ?? "";
+  expect(writeSection(`v${version}`, "CHANGELOG.md", "HEAD", output)).toBe(0);
+  expect(readFileSync(output, "utf8")).toStartWith(`## [${version}]`);
+  expect(() => writeSection("v9.9.9", "CHANGELOG.md", "HEAD")).toThrow("no changelog heading");
+  expect(() => writeSection("v1.0.0", "CHANGELOG.md", "no-such-ref")).toThrow("cannot read");
 });

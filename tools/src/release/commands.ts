@@ -2,61 +2,12 @@ import { parseArgs } from "node:util";
 import { required, UsageError, type Command } from "../lib/command.ts";
 import { writeSection } from "./changelog-section.ts";
 import { main as dispatchIntegrations } from "./dispatch-integrations.ts";
-import { milestoneLabels } from "./milestone-labels.ts";
 import { main as publishPlan } from "./publish-plan.ts";
 import { releaseDrift } from "./release-drift.ts";
-import { execute, HELP as MANIFEST_HELP, isProduct, type Invocation } from "./release-manifest.ts";
+import { releaseManifest } from "./release-manifest.ts";
 import { run as validationReceipt } from "./validation-receipt.ts";
 
-function product(value: string | undefined): "phux" | "desktop" {
-  if (value === undefined || !isProduct(value)) {
-    throw new UsageError(`product must be phux or desktop, got ${String(value)}`);
-  }
-  return value;
-}
-
-export function parseManifestArgs(args: string[]): Invocation {
-  const [command, ...rest] = args;
-  switch (command) {
-    case "stable": {
-      const { values } = parseArgs({
-        args: rest,
-        options: { out: { type: "string" }, publish: { type: "boolean", default: false } },
-      });
-      return { command, out: required(values.out, "--out"), publish: values.publish };
-    }
-    case "next": {
-      const { values } = parseArgs({
-        args: rest,
-        options: {
-          product: { type: "string" },
-          sha: { type: "string" },
-          dist: { type: "string" },
-        },
-      });
-      return {
-        command,
-        product: product(required(values.product, "--product")),
-        sha: required(values.sha, "--sha"),
-        dist: required(values.dist, "--dist"),
-      };
-    }
-    case "next-sha": {
-      const { positionals } = parseArgs({ args: rest, allowPositionals: true });
-      if (positionals.length !== 1) throw new UsageError("next-sha takes one PRODUCT");
-      return { command, product: product(positionals[0]) };
-    }
-    case "fixtures": {
-      const { values } = parseArgs({
-        args: rest,
-        options: { check: { type: "boolean", default: false } },
-      });
-      return { command, check: values.check };
-    }
-    default:
-      throw new UsageError(`unknown command ${String(command)}`);
-  }
-}
+const text = { type: "string" } as const;
 
 export const commands: Record<string, Command> = {
   "publish-plan": {
@@ -64,51 +15,43 @@ export const commands: Record<string, Command> = {
       "Choose the drafts publish.yml ships and delete superseded ones (env in, outputs out).",
     run: () => publishPlan(),
   },
-  "release-manifest": {
-    summary: "Build or publish the stable/next channel manifests, or check their fixtures.",
-    usage: "stable|next|next-sha|fixtures [args]",
-    help: MANIFEST_HELP,
-    run: (args) => execute(parseManifestArgs(args)),
-  },
+  "release-manifest": releaseManifest,
   "dispatch-integration-publishes": {
     summary: "Dispatch agent-integration-release.yml for each of TAGS and wait for it.",
     run: () => dispatchIntegrations(),
   },
   "changelog-section": {
-    summary: "Print or write one release tag's Keep-a-Changelog section.",
-    usage: "--tag TAG --changelog PATH [--output PATH]",
+    summary: "Print or write one release tag's Keep-a-Changelog section, as of the tag.",
+    usage: "--tag TAG [--changelog PATH] [--ref REF] [--output PATH]",
+    help: "PATH defaults to CHANGELOG.md and REF to refs/tags/TAG.",
     run(args) {
-      const { values } = parseArgs({
-        args,
-        options: {
-          tag: { type: "string" },
-          changelog: { type: "string" },
-          output: { type: "string" },
-        },
-      });
+      const options = { tag: text, changelog: text, ref: text, output: text };
+      const { values } = parseArgs({ args, options });
       const tag = required(values.tag, "--tag");
-      return writeSection(tag, required(values.changelog, "--changelog"), values.output);
+      const ref = values.ref ?? `refs/tags/${tag}`;
+      return writeSection(tag, values.changelog ?? "CHANGELOG.md", ref, values.output);
     },
   },
   "validation-receipt": {
     summary: "Write, or on a push find, a receipt of validation for this exact tree and workflow.",
     usage: "check|write WORKFLOW",
-    run(args) {
-      const { positionals } = parseArgs({ args, allowPositionals: true });
-      const [mode, workflow] = positionals;
-      if (positionals.length !== 2 || (mode !== "check" && mode !== "write")) {
+    async run(args) {
+      const [mode, workflow, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;
+      if ((mode !== "check" && mode !== "write") || workflow === undefined || extra.length > 0) {
         throw new UsageError("expected a mode (check or write) and a workflow path");
       }
-      validationReceipt(mode, required(workflow, "WORKFLOW"));
+      await validationReceipt(mode, workflow);
       return 0;
     },
   },
   "release-drift": {
     summary: "Report stuck releases: old drafts, assetless publishes, untagged release PRs.",
-    run: () => releaseDrift(),
-  },
-  "milestone-labels": {
-    summary: "Check every non-closed bead carries exactly one of rc-1.0 / post-1.0 (local).",
-    run: () => milestoneLabels(),
+    usage: "[--grace-minutes N]",
+    run(args) {
+      const options = { "grace-minutes": { ...text, default: "120" } };
+      const grace = Number(parseArgs({ args, options }).values["grace-minutes"]);
+      if (!(grace >= 0)) throw new UsageError("--grace-minutes must be a number >= 0");
+      return releaseDrift(grace);
+    },
   },
 };

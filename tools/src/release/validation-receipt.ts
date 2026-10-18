@@ -3,12 +3,14 @@
 // Receipts contain metadata, never executable artifacts. API/network failure
 // is a cache miss. A main push without matching PR/main evidence runs normal
 // validation.
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { inflateRawSync } from "node:zlib";
+import { writeOutputs } from "../lib/actions.ts";
+import { describe, Failure } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
-import { api as ghApi, type Api } from "../lib/github.ts";
-import { deepEqual, isTable, table, type Table } from "../lib/value.ts";
+import { api, gh } from "../lib/github.ts";
+import { deepEqual, list, table, type Table } from "../lib/value.ts";
 
 export interface Receipt extends Table {
   readonly schema: number;
@@ -16,9 +18,20 @@ export interface Receipt extends Table {
   readonly workflow: string;
 }
 
-export function identity(workflow: string, cwd = process.cwd()): Receipt {
-  const tree = git(["rev-parse", "HEAD^{tree}"], cwd).trim();
-  return { schema: 1, tree, workflow, coverage: process.env["VALIDATION_COVERAGE"] ?? "" };
+/** GitHub as the lookup reads it; tests stand in a fake. */
+export interface Source {
+  json(path: string): unknown;
+  /** Extract run `runId`'s artifact `name` into the empty directory `dir`. */
+  download(runId: string, name: string, dir: string): void;
+}
+
+function ghSource(repository: string): Source {
+  return {
+    json: (path) => api.json(path),
+    download(runId, name, dir) {
+      gh(["run", "download", runId, "--repo", repository, "--name", name, "--dir", dir], 30_000);
+    },
+  };
 }
 
 export function artifactName(receipt: Receipt): string {
@@ -30,160 +43,74 @@ function trustedRun(run: Table, repository: string, workflow: string): boolean {
     run["conclusion"] === "success" &&
     (run["event"] === "pull_request" || run["event"] === "push") &&
     run["path"] === workflow &&
+    typeof run["head_sha"] === "string" &&
     table(run["head_repository"])["full_name"] === repository &&
     table(run["repository"])["full_name"] === repository
   );
 }
 
-class ZipError extends Error {}
-
-interface ZipEntry {
-  readonly name: string;
-  readonly method: number;
-  readonly crc: number;
-  readonly compressedSize: number;
-  readonly size: number;
-  readonly offset: number;
+/** The receipt in the run's artifact, when that holds exactly a small `receipt.json`. */
+function downloadReceipt(source: Source, runId: string, name: string): unknown {
+  const dir = mkdtempSync(join(tmpdir(), "validation-receipt-"));
+  try {
+    source.download(runId, name, dir);
+    const path = join(dir, "receipt.json");
+    if (readdirSync(dir).join("/") !== "receipt.json") return undefined;
+    const stat = lstatSync(path);
+    return stat.isFile() && stat.size <= 4096 ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
-const EOCD = 0x06054b50;
-const CENTRAL = 0x02014b50;
-const LOCAL = 0x04034b50;
-
-/** The central directory: the archive's authoritative member list. */
-function zipEntries(archive: Uint8Array): ZipEntry[] {
-  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
-  let end = -1;
-  for (let at = archive.length - 22; at >= Math.max(0, archive.length - 22 - 0xffff); at--) {
-    if (view.getUint32(at, true) === EOCD) {
-      end = at;
-      break;
-    }
-  }
-  if (end < 0) throw new ZipError("not a zip archive");
-  const count = view.getUint16(end + 10, true);
-  let at = view.getUint32(end + 16, true);
-  const entries: ZipEntry[] = [];
-  for (let index = 0; index < count; index++) {
-    if (at + 46 > archive.length || view.getUint32(at, true) !== CENTRAL) {
-      throw new ZipError("bad central directory");
-    }
-    const nameLength = view.getUint16(at + 28, true);
-    const skip = view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
-    entries.push({
-      name: new TextDecoder().decode(archive.subarray(at + 46, at + 46 + nameLength)),
-      method: view.getUint16(at + 10, true),
-      crc: view.getUint32(at + 16, true),
-      compressedSize: view.getUint32(at + 20, true),
-      size: view.getUint32(at + 24, true),
-      offset: view.getUint32(at + 42, true),
-    });
-    at += 46 + nameLength + skip;
-  }
-  return entries;
-}
-
-function zipRead(archive: Uint8Array, entry: ZipEntry): Uint8Array {
-  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
-  if (entry.offset + 30 > archive.length || view.getUint32(entry.offset, true) !== LOCAL) {
-    throw new ZipError(`bad local header for ${entry.name}`);
-  }
-  const start =
-    entry.offset +
-    30 +
-    view.getUint16(entry.offset + 26, true) +
-    view.getUint16(entry.offset + 28, true);
-  const raw = archive.subarray(start, start + entry.compressedSize);
-  let data: Uint8Array;
-  if (entry.method === 0) data = raw;
-  // Bound the inflate by the declared size; the size check below catches a lie.
-  else if (entry.method === 8) data = inflateRawSync(raw, { maxOutputLength: entry.size + 1 });
-  else throw new ZipError(`unsupported compression ${entry.method} for ${entry.name}`);
-  if (data.length !== entry.size || Bun.hash.crc32(data) !== entry.crc) {
-    throw new ZipError(`bad CRC or size for ${entry.name}`);
-  }
-  return data;
-}
-
-/** The receipt in an artifact archive that holds exactly `receipt.json`, small. */
-export function readReceipt(archive: Uint8Array): unknown {
-  const entries = zipEntries(archive);
-  const [entry] = entries;
-  if (entries.length !== 1 || entry?.name !== "receipt.json") return undefined;
-  if (entry.size > 4096) return undefined;
-  return JSON.parse(new TextDecoder().decode(zipRead(archive, entry)));
-}
-
-function matches(artifact: Table, expected: Receipt, repository: string, api: Api): boolean {
+function matches(artifact: Table, expected: Receipt, repository: string, source: Source): boolean {
   const size = artifact["size_in_bytes"] ?? 0;
+  const runId = table(artifact["workflow_run"])["id"];
   if (artifact["expired"] || typeof size !== "number" || size > 65536) return false;
-  const runId = required(table(artifact["workflow_run"]), "id");
-  const run = table(api.json(`repos/${repository}/actions/runs/${String(runId)}`));
+  if (typeof runId !== "number") return false;
+  const run = table(source.json(`repos/${repository}/actions/runs/${runId}`));
   if (!trustedRun(run, repository, expected.workflow)) return false;
   // Artifact JSON is not provenance. Bind it to the source run's immutable
   // commit through GitHub's Git database, including the workflow implementation
   // in that tree. For PRs this deliberately requires the head tree to equal
   // the tested merge tree; a stale PR base is a safe cache miss.
-  const commit = api.json(`repos/${repository}/git/commits/${String(required(run, "head_sha"))}`);
+  const commit = source.json(`repos/${repository}/git/commits/${String(run["head_sha"])}`);
   if (table(table(commit)["tree"])["sha"] !== expected.tree) return false;
-  const archive = api.bytes(
-    `repos/${repository}/actions/artifacts/${String(required(artifact, "id"))}/zip`,
-  );
-  return deepEqual(readReceipt(archive), expected);
+  return deepEqual(downloadReceipt(source, String(runId), artifactName(expected)), expected);
 }
 
-/** A missing field aborts the lookup, which the caller treats as a cache miss. */
-function required(document: Table, key: string): unknown {
-  if (!(key in document)) throw new Error(`missing ${key}`);
-  return document[key];
+/** The id of the run that already validated `expected`, or undefined. */
+export function findValidation(
+  expected: Receipt,
+  repository: string,
+  source = ghSource(repository),
+): number | undefined {
+  const path = `repos/${repository}/actions/artifacts?name=${artifactName(expected)}&per_page=100`;
+  const artifacts = list(table(source.json(path))["artifacts"]).map(table);
+  const found = artifacts.find((artifact) => matches(artifact, expected, repository, source));
+  return found === undefined ? undefined : Number(table(found["workflow_run"])["id"]);
 }
 
-/** The run that already validated `expected`, or undefined. */
-export function findValidation(expected: Receipt, repository: string, api: Api = ghApi): unknown {
-  const name = artifactName(expected);
-  const result = table(api.json(`repos/${repository}/actions/artifacts?name=${name}&per_page=100`));
-  const artifacts = required(result, "artifacts");
-  if (!Array.isArray(artifacts)) throw new Error("artifacts is not a list");
-  for (const artifact of artifacts) {
-    if (!isTable(artifact)) throw new Error("artifact is not an object");
-    if (matches(artifact, expected, repository, api)) {
-      return required(table(artifact["workflow_run"]), "id");
-    }
-  }
-  return undefined;
-}
-
-function lookup(expected: Receipt, repository: string): unknown {
+function check(receipt: Receipt): boolean {
+  if (process.env["GITHUB_EVENT_NAME"] !== "push") return false;
+  const repository = process.env["GITHUB_REPOSITORY"];
+  if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
   try {
-    return findValidation(expected, repository);
+    const run = findValidation(receipt, repository);
+    if (run !== undefined) console.log(`Identical tree already validated by workflow run ${run}`);
+    return run !== undefined;
   } catch (error) {
-    console.log(`Validation receipt unavailable; running checks: ${String(error)}`);
-    return undefined;
+    console.log(`Validation receipt unavailable; running checks: ${describe(error)}`);
+    return false;
   }
 }
 
-export function run(mode: "check" | "write", workflow: string): void {
-  const receipt = identity(workflow);
-  const output = { name: artifactName(receipt), validated: "false" };
+export async function run(mode: "check" | "write", workflow: string): Promise<void> {
+  const tree = git(["rev-parse", "HEAD^{tree}"], process.cwd()).trim();
+  const coverage = process.env["VALIDATION_COVERAGE"] ?? "";
+  const receipt: Receipt = { schema: 1, tree, workflow, coverage };
   if (mode === "write") {
-    const destination = "target/validation-receipt";
-    mkdirSync(destination, { recursive: true });
-    writeFileSync(join(destination, "receipt.json"), `${JSON.stringify(receipt)}\n`);
-  } else if (process.env["GITHUB_EVENT_NAME"] === "push") {
-    const repository = process.env["GITHUB_REPOSITORY"];
-    if (repository === undefined) throw new Error("GITHUB_REPOSITORY is unset");
-    const run = lookup(receipt, repository);
-    if (run !== undefined && run !== null) {
-      console.log(`Identical tree already validated by workflow run ${JSON.stringify(run)}`);
-      output.validated = "true";
-    }
+    await Bun.write("target/validation-receipt/receipt.json", `${JSON.stringify(receipt)}\n`);
   }
-  const path = process.env["GITHUB_OUTPUT"];
-  if (path === undefined) throw new Error("GITHUB_OUTPUT is unset");
-  appendFileSync(
-    path,
-    Object.entries(output)
-      .map(([key, value]) => `${key}=${value}\n`)
-      .join(""),
-  );
+  writeOutputs({ name: artifactName(receipt), validated: mode === "check" && check(receipt) });
 }

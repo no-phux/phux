@@ -48,8 +48,7 @@ jobs:
           test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
           # The extractor runs from main before the checkout, so an older tag
           # still gets today's helper; the notes are the tag's own changelog.
-          git show "refs/tags/$TAG:CHANGELOG.md" > "$RUNNER_TEMP/CHANGELOG.md"
-          bun tools/main.ts changelog-section --tag "$TAG" --changelog "$RUNNER_TEMP/CHANGELOG.md" --output release-notes.md
+          bun tools/main.ts changelog-section --tag "$TAG" --output release-notes.md
           git checkout --quiet "refs/tags/$TAG"
           base="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           echo "base=$base" >> "$GITHUB_OUTPUT"

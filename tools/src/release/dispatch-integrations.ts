@@ -3,102 +3,59 @@
 // npm trusted publishing matches the entry workflow filename. Calling that
 // workflow with workflow_call makes the token say publish.yml, and npm
 // answers 404. A workflow_dispatch keeps the filename npm trusts.
+import { Failure } from "../lib/command.ts";
 import { gh, ghInherit } from "../lib/github.ts";
 import { list, table } from "../lib/value.ts";
 
 const WORKFLOW = "agent-integration-release.yml";
-const DEADLINE_SECONDS = 180;
-const POLL_SECONDS = 5;
-
-export interface WorkflowRun {
-  readonly databaseId: unknown;
-  readonly event: unknown;
-}
+const POLLS = 36;
+const POLL_MS = 5_000;
 
 export interface Dispatcher {
-  listRuns(repo: string): WorkflowRun[];
+  /** The ids of recent `workflow_dispatch` runs of the workflow. */
+  dispatchRuns(repo: string): unknown[];
   /** Run `gh` with these arguments; a non-zero exit throws. */
   run(args: string[]): void;
-  sleep(seconds: number): void;
-  /** Seconds since the epoch. */
-  clock(): number;
+  sleep(ms: number): Promise<void>;
 }
 
-function runIds(repo: string): WorkflowRun[] {
-  const raw: unknown = JSON.parse(
-    gh([
-      "run",
-      "list",
-      "--repo",
-      repo,
-      "--workflow",
-      WORKFLOW,
-      "--limit",
-      "30",
-      "--json",
-      "databaseId,event",
-    ]),
-  );
-  return list(raw).map((row) => {
-    const run = table(row);
-    return { databaseId: run["databaseId"], event: run["event"] };
-  });
-}
-
-export const GH_DISPATCHER: Dispatcher = {
-  listRuns: runIds,
-  run(args) {
-    if (ghInherit(args) !== 0) throw new Error(`gh ${args.join(" ")} failed`);
+const GH: Dispatcher = {
+  dispatchRuns(repo) {
+    const args = ["run", "list", "--repo", repo, "--workflow", WORKFLOW, "--limit", "30"];
+    const runs = list(JSON.parse(gh([...args, "--json", "databaseId,event"]))).map(table);
+    return runs
+      .filter((run) => run["event"] === "workflow_dispatch")
+      .map((run) => run["databaseId"]);
   },
-  sleep: (seconds) => Bun.sleepSync(seconds * 1000),
-  clock: () => Date.now() / 1000,
+  run: (args) => void gh(args),
+  sleep: (ms) => Bun.sleep(ms),
 };
 
 /** Dispatch the workflow for `tag` and return the id of the run it created. */
-export function dispatch(repo: string, tag: string, deps: Dispatcher = GH_DISPATCHER): unknown {
-  const before = new Set(deps.listRuns(repo).map((run) => run.databaseId));
-  deps.run([
-    "workflow",
-    "run",
-    WORKFLOW,
-    "--repo",
-    repo,
-    "--ref",
-    "main",
-    "-f",
-    `tag=${tag}`,
-    "-f",
-    "dry_run=false",
-  ]);
-  const deadline = deps.clock() + DEADLINE_SECONDS;
-  while (deps.clock() < deadline) {
-    deps.sleep(POLL_SECONDS);
-    for (const run of deps.listRuns(repo)) {
-      if (!before.has(run.databaseId) && run.event === "workflow_dispatch") return run.databaseId;
-    }
+export async function dispatch(repo: string, tag: string, deps = GH): Promise<unknown> {
+  const before = new Set(deps.dispatchRuns(repo));
+  const inputs = ["-f", `tag=${tag}`, "-f", "dry_run=false"];
+  deps.run(["workflow", "run", WORKFLOW, "--repo", repo, "--ref", "main", ...inputs]);
+  for (let poll = 0; poll < POLLS; poll++) {
+    await deps.sleep(POLL_MS);
+    const created = deps.dispatchRuns(repo).find((id) => !before.has(id));
+    if (created !== undefined) return created;
   }
-  throw new Error(`no ${WORKFLOW} run appeared for ${tag}`);
-}
-
-function watch(repo: string, runId: unknown): number {
-  return ghInherit(["run", "watch", String(runId), "--repo", repo, "--exit-status"]);
+  throw new Failure(`no ${WORKFLOW} run appeared for ${tag}`);
 }
 
 /** publish.yml's `integration` job: TAGS (a JSON list) in, one watched run each. */
-export function main(): number {
+export async function main(): Promise<number> {
   const [repo, raw] = [process.env["GITHUB_REPOSITORY"], process.env["TAGS"]];
-  if (repo === undefined || raw === undefined)
-    throw new Error("GITHUB_REPOSITORY and TAGS are required");
-  const tags = list(JSON.parse(raw));
+  if (!repo || raw === undefined) throw new Failure("GITHUB_REPOSITORY and TAGS are required");
   const failed: string[] = [];
-  for (const tag of tags) {
-    const runId = dispatch(repo, String(tag));
-    console.log(`watching ${String(tag)} in run ${String(runId)}`);
-    if (watch(repo, runId) !== 0) failed.push(`${String(tag)} (run ${String(runId)})`);
+  for (const tag of list(JSON.parse(raw)).map(String)) {
+    const runId = String(await dispatch(repo, tag));
+    console.log(`watching ${tag} in run ${runId}`);
+    if (ghInherit(["run", "watch", runId, "--repo", repo, "--exit-status"]) !== 0) {
+      failed.push(`${tag} (run ${runId})`);
+    }
   }
-  if (failed.length > 0) {
-    console.error(`integration publish failed: ${failed.join(", ")}`);
-    return 1;
-  }
+  if (failed.length > 0) throw new Failure(`integration publish failed: ${failed.join(", ")}`);
   return 0;
 }

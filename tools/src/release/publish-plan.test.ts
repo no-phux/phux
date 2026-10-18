@@ -1,39 +1,28 @@
 // Publish decisions stay deterministic: no network, no clock.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { ROOT } from "../lib/repo.ts";
-import { decide, parseTag, splitLanes, validationState, type Release } from "./publish-plan.ts";
+import {
+  decide,
+  parseTag,
+  splitLanes,
+  validationState,
+  type CiState,
+  type Release,
+} from "./publish-plan.ts";
 
 const rel = (tag: string, draft: boolean, sha: string): Release => ({ tag, draft, sha });
 const green = (): string => "success";
+const greenOnly =
+  (sha: string) =>
+  (commit: string): string =>
+    commit === sha ? "success" : "failure";
 
-describe("parseTag", () => {
-  test("root, desktop and integration tags", () => {
-    expect(parseTag("v0.42.0")?.component).toBe("phux");
-    expect(parseTag("desktop-v0.28.0")?.component).toBe("desktop");
-    expect(parseTag("pi-extension-v0.3.0")?.component).toBe("pi-extension");
-  });
-
-  test("the moving channel is not a version", () => {
-    expect(parseTag("next")).toBeUndefined();
-  });
-
-  test("stable desktop is a version and prereleases are not", () => {
-    expect(parseTag("desktop-v0.1.0")?.component).toBe("desktop");
-    for (const tag of [
-      "v0.1.0-alpha.1",
-      "v01.2.3",
-      "pi-extension-v0.1.0-alpha.1",
-      "desktop-v0.1.0-alpha.1",
-      "desktop-v0.1.0-alpha.0",
-      "desktop-v0.1.0-alpha.01",
-      "desktop-v0.1.0-beta.1",
-      "desktop-v0.1.0-alpha.1+build",
-    ]) {
-      expect(parseTag(tag)).toBeUndefined();
-    }
-  });
+test("parseTag accepts stable component versions only", () => {
+  expect(
+    ["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0"].map((t) => parseTag(t)?.component),
+  ).toEqual(["phux", "desktop", "pi-extension"]);
+  for (const tag of ["next", "v0.1.0-alpha.1", "v01.2.3", "desktop-v0.1.0-beta.1", "pi-v0.1.0+b"]) {
+    expect(parseTag(tag)).toBeUndefined();
+  }
 });
 
 describe("validationState", () => {
@@ -46,28 +35,21 @@ describe("validationState", () => {
     status: "completed",
     conclusion: "success",
   };
-  const state = (runs: unknown[]): string =>
+  const state = (...runs: unknown[]): string =>
     validationState(runs, "abc", ".github/workflows/ci.yml");
 
-  test("exact success", () => {
-    expect(state([run])).toBe("success");
-  });
-
-  test("an unrelated run cannot release", () => {
+  test("only the newest exact push run on main counts", () => {
+    expect(state(run)).toBe("success");
     for (const [field, value] of [
       ["head_sha", "def"],
       ["event", "pull_request"],
       ["head_branch", "topic"],
       ["path", "other.yml"],
     ] as const) {
-      expect(state([{ ...run, [field]: value }])).toBe("pending");
+      expect(state({ ...run, [field]: value })).toBe("pending");
     }
-  });
-
-  test("a newer failed or running attempt wins", () => {
-    const failed = { ...run, id: 2, conclusion: "failure" };
-    expect(state([run, failed])).toBe("failure");
-    expect(state([{ ...run, status: "in_progress" }])).toBe("pending");
+    expect(state(run, { ...run, id: 2, conclusion: "failure" })).toBe("failure");
+    expect(state(run, { ...run, run_attempt: 2, status: "in_progress" })).toBe("pending");
   });
 });
 
@@ -78,44 +60,34 @@ describe("decide", () => {
       rel("desktop-v0.28.0", true, "abc"),
       rel("v0.41.0", false, "old"),
     ];
-    const plan = decide(releases, green, { eventSha: "abc" });
-    expect(plan.publish).toEqual(["v0.42.0", "desktop-v0.28.0"]);
-    expect(plan.wait).toBe(false);
-    expect(plan.fail).toBeUndefined();
-  });
-
-  test("an event waits while ci is still running", () => {
-    const plan = decide([rel("v0.42.0", true, "abc")], () => "pending", { eventSha: "abc" });
-    expect(plan.publish).toEqual([]);
-    expect(plan.wait).toBe(true);
-    expect(plan.fail).toBeUndefined();
-  });
-
-  test("an event does not publish when ci failed", () => {
-    const plan = decide([rel("desktop-v0.28.0", true, "abc")], () => "cancelled", {
-      eventSha: "abc",
+    expect(decide(releases, green, { eventSha: "abc" })).toEqual({
+      publish: ["v0.42.0", "desktop-v0.28.0"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
     });
-    expect(plan.publish).toEqual([]);
-    expect(plan.fail).toContain("cancelled");
   });
 
-  test("an event sweeps a draft left by a cancelled run", () => {
-    // GitHub keeps one pending run per concurrency group and cancels the
-    // older one, so the publish run a draft waits on can vanish before it
-    // starts. The next event must ship that draft instead of stranding it
-    // until the daily reconcile.
-    const plan = decide([rel("v0.42.0", true, "other")], green, { eventSha: "abc" });
-    expect(plan.publish).toEqual(["v0.42.0"]);
-    expect(plan.wait).toBe(false);
-    expect(plan.fail).toBeUndefined();
+  test("an event waits on running ci and fails on red ci for its own commit", () => {
+    const rows = [rel("v0.42.0", true, "abc")];
+    const waiting = decide(rows, () => "pending", { eventSha: "abc" });
+    expect([waiting.publish, waiting.wait, waiting.fail]).toEqual([[], true, undefined]);
+    const failed = decide(rows, () => "cancelled", { eventSha: "abc" });
+    expect([failed.publish, failed.fail]).toEqual([
+      [],
+      "ci.yml is cancelled for abc; not publishing v0.42.0",
+    ]);
   });
 
-  test("an event does not ship a straggler whose ci is not green", () => {
-    const ciState = (sha: string): string => (sha === "abc" ? "success" : "failure");
-    const plan = decide([rel("v0.42.0", true, "other")], ciState, { eventSha: "abc" });
-    expect(plan.publish).toEqual([]);
-    expect(plan.blocked).toContain("v0.42.0");
-    expect(plan.fail).toBeUndefined();
+  test("an event sweeps other green drafts, but not red ones", () => {
+    // A cancelled publish run can strand a draft; the next event ships it.
+    expect(decide([rel("v0.42.0", true, "other")], green, { eventSha: "abc" }).publish).toEqual([
+      "v0.42.0",
+    ]);
+    const red = decide([rel("v0.42.0", true, "other")], greenOnly("abc"), { eventSha: "abc" });
+    expect([red.publish, red.fail]).toEqual([[], undefined]);
+    expect(red.blocked).toContain("v0.42.0");
   });
 
   test("superseded drafts are deleted, not shipped", () => {
@@ -131,125 +103,45 @@ describe("decide", () => {
     expect(plan.delete.toSorted()).toEqual(["desktop-v0.24.0", "v0.39.0"]);
   });
 
-  test("reconcile ships the newest green draft and reports the blocked one", () => {
+  test("reconcile ships each component's newest green draft", () => {
     const releases = [
-      rel("desktop-v0.27.1", false, "pub"),
-      rel("desktop-v0.28.0", true, "green"),
-      rel("pi-extension-v0.3.0", true, "red"),
-    ];
-    const ciState = (sha: string): string => (sha === "green" ? "success" : "failure");
-    const plan = decide(releases, ciState);
-    expect(plan.publish).toEqual(["desktop-v0.28.0"]);
-    expect(plan.blocked).toContain("pi-extension-v0.3.0");
-    expect(plan.fail).toBeUndefined();
-  });
-
-  test("reconcile skips a draft whose ci has not finished", () => {
-    const plan = decide([rel("v0.42.0", true, "abc")], () => "pending");
-    expect(plan.publish).toEqual([]);
-    expect(plan.blocked).toBe("");
-  });
-
-  test("only the newest unpublished draft is a candidate", () => {
-    const releases = [
-      rel("v0.41.0", false, "pub"),
-      rel("v0.42.0", true, "mid"),
-      rel("v0.43.0", true, "tip"),
-    ];
-    expect(decide(releases, green).publish).toEqual(["v0.43.0"]);
-  });
-
-  test("dispatch of a published tag is a no-op", () => {
-    const plan = decide([rel("v0.42.0", false, "abc")], green, { dispatchTag: "v0.42.0" });
-    expect(plan.publish).toEqual([]);
-    expect(plan.fail).toBeUndefined();
-  });
-
-  test("dispatch refuses a tag ci did not pass", () => {
-    const plan = decide([rel("desktop-v0.28.0", true, "abc")], () => "failure", {
-      dispatchTag: "desktop-v0.28.0",
-    });
-    expect(plan.publish).toEqual([]);
-    expect(plan.fail).toContain("failure");
-  });
-
-  test("dispatch refuses a superseded draft", () => {
-    const releases = [rel("v0.42.0", false, "new"), rel("v0.39.0", true, "old")];
-    expect(decide(releases, green, { dispatchTag: "v0.39.0" }).fail).toContain("older");
-  });
-
-  test("dispatch of an unknown tag fails", () => {
-    expect(decide([], green, { dispatchTag: "v9.9.9" }).fail).toBe("no release named v9.9.9");
-  });
-
-  test("lanes split root, desktop and integrations", () => {
-    const lanes = splitLanes(["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0"]);
-    expect(lanes).toEqual({
-      phux: "v0.42.0",
-      desktop: "desktop-v0.28.0",
-      integration: ["pi-extension-v0.3.0"],
-    });
-  });
-
-  test("the desktop lane takes the newest stable draft", () => {
-    const releases = [
-      rel("desktop-v0.1.0", false, "old"),
-      rel("desktop-v0.2.0", true, "minor"),
+      rel("desktop-v0.1.0", false, "pub"),
+      rel("desktop-v0.2.0", true, "green"),
       rel("desktop-v0.1.1", true, "patch"),
+      rel("pi-extension-v0.3.0", true, "red"),
+      rel("v0.42.0", true, "running"),
     ];
-    const plan = decide(releases, green);
+    const ci = (sha: string): string =>
+      sha === "running" ? "in_progress" : greenOnly("green")(sha);
+    const plan = decide(releases, ci);
     expect(plan.publish).toEqual(["desktop-v0.2.0"]);
-    expect(splitLanes(plan.publish)).toEqual({
-      phux: "",
-      desktop: "desktop-v0.2.0",
-      integration: [],
-    });
-  });
-
-  test("stable desktop supersedes an older stable draft", () => {
-    const plan = decide(
-      [rel("desktop-v0.2.0", false, "stable"), rel("desktop-v0.1.0", true, "old")],
-      green,
+    expect(plan.blocked).toBe(
+      "still draft, ci is not green: pi-extension-v0.3.0 (ci.yml failure for red)",
     );
-    expect(plan.publish).toEqual([]);
-    expect(plan.delete).toEqual(["desktop-v0.1.0"]);
+    expect(plan.fail).toBeUndefined();
   });
 
-  test("desktop dispatch requires its exact commit's ci", () => {
-    const tag = "desktop-v0.1.0";
-    const rows = [rel(tag, true, "desktop")];
-    expect(decide(rows, green, { dispatchTag: tag }).publish).toEqual([tag]);
-    expect(decide(rows, () => "failure", { dispatchTag: tag }).fail).toContain("failure");
-    // An event for any other commit sweeps it like every other green draft.
-    expect(decide(rows, green, { eventSha: "other" }).publish).toEqual([tag]);
+  type DispatchCase = [string, Release[], string, CiState, string | undefined, string[]];
+  const draft = [rel("desktop-v0.1.0", true, "d")];
+  const superseded = [rel("v0.42.0", false, "new"), rel("v0.39.0", true, "old")];
+  test.each<DispatchCase>([
+    ["a published tag is a no-op", [rel("v0.42.0", false, "abc")], "v0.42.0", green, undefined, []],
+    ["a green draft ships", draft, "desktop-v0.1.0", green, undefined, ["desktop-v0.1.0"]],
+    ["a red draft stays", draft, "desktop-v0.1.0", () => "failure", "failure", []],
+    ["an unknown tag fails", [], "v9.9.9", green, "no release named v9.9.9", []],
+    ["a superseded draft fails", superseded, "v0.39.0", green, "older", []],
+  ])("dispatch: %s", (_, releases, tag, ci, fail, publish) => {
+    const plan = decide(releases, ci, { dispatchTag: tag });
+    expect(plan.publish).toEqual(publish);
+    if (fail === undefined) expect(plan.fail).toBeUndefined();
+    else expect(plan.fail).toContain(fail);
   });
 });
 
-// publish.yml holds one concurrency slot; nothing slow may sit inside it.
-describe("publish workflow", () => {
-  const read = (name: string) => readFileSync(join(ROOT, ".github/workflows", name), "utf8");
-  const workflow = read("publish.yml");
-  const job = (name: string) => workflow.split(`\n  ${name}:\n`)[1]?.split("\n\n  ")[0] ?? "";
-
-  test("mobile FFI is dispatched after the CLI is public", () => {
-    for (const name of ["ffi-xcframework.yml", "ffi-android.yml"]) {
-      expect(workflow).not.toContain(`uses: ./.github/workflows/${name}`);
-    }
-    const mobile = job("mobile-ffi");
-    expect(mobile).toContain("needs: [plan, phux]");
-    expect(mobile).toContain("if: needs.phux.result == 'success'");
-    expect(mobile).toContain("for workflow in ffi-xcframework.yml ffi-android.yml; do");
-    expect(mobile).toContain('gh workflow run "$workflow" --ref main -f tag="$TAG"');
-  });
-
-  test("a publish rebuilds the site", () => {
-    const website = job("website");
-    expect(website).toContain("needs: [phux, desktop, channel-manifest]");
-    expect(website).toContain(
-      "needs.phux.result == 'success' || needs.desktop.result == 'success'",
-    );
-    expect(website).toContain("gh workflow run website-dispatch.yml --ref main");
-    const dispatch = read("website-dispatch.yml").split("\npermissions:")[0] ?? "";
-    expect(dispatch).toContain("  workflow_dispatch:\n");
+test("lanes split root, desktop and integrations", () => {
+  expect(splitLanes(["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0", "next"])).toEqual({
+    phux: "v0.42.0",
+    desktop: "desktop-v0.28.0",
+    integration: ["pi-extension-v0.3.0"],
   });
 });

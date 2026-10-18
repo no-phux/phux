@@ -49,7 +49,6 @@ jobs:
         name: Decide
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
           EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
           DISPATCH_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
         run: bun tools/main.ts publish-plan

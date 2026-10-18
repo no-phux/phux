@@ -1,201 +1,83 @@
-// Build and publish the channel manifests (ADR-0176).
+// Build and publish the channel manifests (ADR-0176) from git and GitHub.
 //
 // `stable` derives channels/stable.json from the newest published releases.
 // `next` publishes one product's build onto the moving `next` prerelease and
-// records it in channels/next.json. `next-sha` prints the commit next.json
-// names for a product. `fixtures` renders the golden manifests every client
-// tests.
+// records it in channels/next.json.
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { Failure } from "../lib/command.ts";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { describe, Failure, required, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { gh, ghLines } from "../lib/github.ts";
+import { status } from "../lib/output.ts";
 import { ProcessError } from "../lib/process.ts";
-import { ROOT } from "../lib/repo.ts";
 import { isTable, list, str, table, type Table } from "../lib/value.ts";
+import {
+  assetName,
+  bridgeRecord,
+  DIGEST,
+  entry,
+  fixtures,
+  isProduct,
+  manifest,
+  now,
+  PRODUCTS,
+  PROTOCOL,
+  render,
+  SHA,
+  TARGETS,
+  valid,
+  VERSION,
+  type Channel,
+  type Product,
+} from "./manifest.ts";
 import { compareVersions, parseTag, type Version } from "./publish-plan.ts";
 
 const REPO = "no-phux/phux";
-const DOWNLOAD = `https://github.com/${REPO}/releases/download`;
-export const CHANNELS = ["stable", "next"] as const;
-export type Channel = (typeof CHANNELS)[number];
-export const PRODUCTS = ["phux", "desktop"] as const;
-export type Product = (typeof PRODUCTS)[number];
-export const TARGETS: Record<Product, readonly string[]> = {
-  phux: ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
-  desktop: ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
-};
-export const DESKTOP_ARCHIVES: Record<string, string> = {
-  "aarch64-apple-darwin": "macos-arm64.zip",
-  "x86_64-unknown-linux-gnu": "linux-x64.tar.gz",
-  "aarch64-unknown-linux-gnu": "linux-arm64.tar.gz",
-};
-const FIXTURES = "scripts/fixtures/release-manifest";
-
-// The POSIX installers parse the rendered file with awk, so values stay in
-// this alphabet and the document has no arrays.
-const SAFE = /^[A-Za-z0-9._:/+-]*$/;
-const KEY = /^[A-Za-z0-9_-]+$/;
-const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const SHA = /^[0-9a-f]{40}$/;
-const DIGEST = /^[0-9a-f]{64}$/;
-const PROTOCOL = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const PROTOCOL_SOURCE =
   /pub const PROTOCOL_VERSION: Version = Version \{\s*major: (\d+),\s*minor: (\d+),/;
 
-export class ManifestError extends Failure {}
-
-export function isProduct(value: string): value is Product {
-  return (PRODUCTS as readonly string[]).includes(value);
-}
-
-function require(pattern: RegExp, value: unknown, what: string): string {
-  if (typeof value !== "string" || !pattern.test(value)) {
-    throw new ManifestError(`${what} is not valid: ${JSON.stringify(value) ?? String(value)}`);
-  }
-  return value;
-}
-
-function releaseOf(product: Product, channel: Channel, version: string): string {
-  if (channel === "next") return "next";
-  return product === "phux" ? `v${version}` : `desktop-v${version}`;
-}
-
-/** The naming rule every client derives on its own (ADR-0176 decision 1). */
-export function assetName(
-  product: Product,
-  channel: Channel,
-  version: string | undefined,
-  sha: string | undefined,
-  target: string,
-): string {
-  const next = `next.${sha}`;
-  if (product === "phux") {
-    return `phux-${channel === "next" ? next : `v${version}`}-${target}.tar.gz`;
-  }
-  const archive = DESKTOP_ARCHIVES[target];
-  if (archive === undefined) throw new ManifestError(`no desktop archive for ${target}`);
-  return `phux-desktop-${channel === "next" ? next : version}-${archive}`;
-}
-
-/**
- * One product's entry. `release`, `name`, `url` and `minimum_macos` are
- * derived, and current clients ignore them; v0.87.0 and Desktop 0.26.0 check
- * them (ADR-0176 decision 8).
- */
-export function entry(
-  product: Product,
-  channel: Channel,
-  version: string,
-  sha: string,
-  protocol: string,
-  digests: Record<string, string>,
-): Table {
-  const targets = TARGETS[product];
-  const given = Object.keys(digests);
-  if (given.length !== targets.length || !targets.every((target) => target in digests)) {
-    throw new ManifestError(`${product} needs digests for exactly ${targets.join(", ")}`);
-  }
-  const release = releaseOf(product, channel, version);
-  const artifacts: Table = {};
-  for (const target of targets) {
-    const name = assetName(product, channel, version, sha, target);
-    artifacts[target] = {
-      name,
-      url: `${DOWNLOAD}/${release}/${name}`,
-      sha256: require(DIGEST, digests[target], `${name} sha256`),
-    };
-  }
-  const document: Table = {
-    version: require(VERSION, version, `${product} version`),
-    release,
-    sha: require(SHA, sha, `${product} sha`),
-    protocol: require(PROTOCOL, protocol, `${product} protocol`),
-  };
-  if (product === "desktop") document["minimum_macos"] = "27.0";
-  document["artifacts"] = artifacts;
-  return document;
-}
-
-export function manifest(channel: Channel, products: Table, generatedAt: string): Table {
-  const ordered: Table = {};
-  for (const name of PRODUCTS) if (name in products) ordered[name] = products[name];
-  return { schema_version: 1, channel, generated_at: generatedAt, products: ordered };
-}
-
-function checkRenderable(value: unknown, path: string): void {
-  if (isTable(value)) {
-    if (Object.keys(value).length === 0) throw new ManifestError(`${path} is an empty object`);
-    for (const [key, child] of Object.entries(value)) {
-      require(KEY, key, `key at ${path}`);
-      checkRenderable(child, `${path}.${key}`);
-    }
-  } else if (typeof value === "string") {
-    require(SAFE, value, path);
-  } else if (!Number.isInteger(value)) {
-    const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-    throw new ManifestError(`${path} has unsupported type ${type}`);
-  }
-}
-
-export function render(document: Table): string {
-  checkRenderable(document, "manifest");
-  return `${JSON.stringify(document, null, 2)}\n`;
-}
-
-function now(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
 // --- git ---------------------------------------------------------------------
+
+const gitHere = (args: string[]): string => git(args, process.cwd()).trim();
 
 /** The commit `tag` names, fetching the tag when this checkout predates it. */
 function tagCommit(tag: string): string {
-  const cwd = process.cwd();
   try {
-    return git(["rev-parse", `${tag}^{commit}`], cwd).trim();
-  } catch (error) {
-    if (!(error instanceof ProcessError)) throw error;
-    git(["fetch", "--quiet", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`], cwd);
-    return git(["rev-parse", `${tag}^{commit}`], cwd).trim();
+    return gitHere(["rev-parse", `${tag}^{commit}`]);
+  } catch {
+    gitHere(["fetch", "--quiet", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`]);
+    return gitHere(["rev-parse", `${tag}^{commit}`]);
   }
 }
 
-function showAt(ref: string, path: string): string {
-  return git(["show", `${ref}:${path}`], process.cwd());
-}
+const showAt = (ref: string, path: string): string => gitHere(["show", `${ref}:${path}`]);
 
 function protocolAt(ref: string, product: Product): string {
   if (product === "desktop") {
-    const pin = showAt(ref, "clients/desktop/phux-protocol").trim();
-    return require(PROTOCOL, pin, `clients/desktop/phux-protocol at ${ref}`);
+    const pin = showAt(ref, "clients/desktop/phux-protocol");
+    return valid(PROTOCOL, pin, `clients/desktop/phux-protocol at ${ref}`);
   }
   const match = PROTOCOL_SOURCE.exec(showAt(ref, "crates/phux-protocol/src/lib.rs"));
-  if (match === null) throw new ManifestError(`PROTOCOL_VERSION not found at ${ref}`);
+  if (match === null) throw new Failure(`PROTOCOL_VERSION not found at ${ref}`);
   return `${Number(match[1])}.${Number(match[2])}`;
 }
 
 function versionAt(ref: string, product: Product): string {
+  const cargo = (): Table => table(Bun.TOML.parse(showAt(ref, "Cargo.toml")));
   const version =
     product === "desktop"
       ? table(JSON.parse(showAt(ref, "clients/desktop/package.json")))["version"]
-      : table(table(table(Bun.TOML.parse(showAt(ref, "Cargo.toml")))["workspace"])["package"])[
-          "version"
-        ];
-  return require(VERSION, version, `${product} version at ${ref}`);
+      : table(table(cargo()["workspace"])["package"])["version"];
+  return valid(VERSION, version, `${product} version at ${ref}`);
 }
 
 // --- GitHub ------------------------------------------------------------------
 
-function ghRelease(...args: string[]): string {
-  return gh(["release", ...args, "--repo", REPO]);
-}
+const ghRelease = (...args: string[]): string => gh(["release", ...args, "--repo", REPO]);
 
-/**
- * The release named `tag`, or undefined when there is none. Any other
- * failure throws: an unreadable release is not an unpublished one.
- */
+/** The release named `tag`, or undefined when there is none; any other failure throws. */
 function release(tag: string): Table | undefined {
   try {
     return table(JSON.parse(gh(["api", `repos/${REPO}/releases/tags/${tag}`])));
@@ -205,28 +87,25 @@ function release(tag: string): Table | undefined {
   }
 }
 
-function assetsOf(release: Table | undefined): Table[] {
-  return list(release?.["assets"]).map(table);
-}
+const assetsOf = (release: Table | undefined): Table[] => list(release?.["assets"]).map(table);
 
-/** `{name: hex}` from the SHA-256 GitHub records for each uploaded asset. */
+/** `{target: hex}` from the SHA-256 GitHub records for each of a build's assets. */
 export function assetDigests(
   assets: readonly unknown[],
-  names: Iterable<string>,
+  product: Product,
+  channel: Channel,
+  id: string,
 ): Record<string, string> {
-  const recorded = new Map<string, string>();
-  for (const asset of assets.map(table)) {
-    const name = str(asset["name"]);
-    if (name !== undefined) recorded.set(name, str(asset["digest"]) ?? "");
-  }
-  const digests: Record<string, string> = {};
-  for (const name of names) {
-    const digest = recorded.get(name);
-    if (digest === undefined) throw new ManifestError(`${name} is not published`);
-    if (!digest.startsWith("sha256:")) throw new ManifestError(`${name} has no recorded sha256`);
-    digests[name] = require(DIGEST, digest.slice("sha256:".length), `${name} sha256`);
-  }
-  return digests;
+  const recorded = new Map(assets.map(table).map((asset) => [asset["name"], asset["digest"]]));
+  const digest = (name: string): string => {
+    if (!recorded.has(name)) throw new Failure(`${name} is not published`);
+    const value = str(recorded.get(name)) ?? "";
+    if (!value.startsWith("sha256:")) throw new Failure(`${name} has no recorded sha256`);
+    return valid(DIGEST, value.slice("sha256:".length), `${name} sha256`);
+  };
+  return Object.fromEntries(
+    TARGETS.map((target) => [target, digest(assetName(product, channel, id, target))]),
+  );
 }
 
 /** Create a prerelease that is never Latest, unless it already exists. */
@@ -241,45 +120,36 @@ function ensurePrerelease(tag: string, notes: string, target?: string): void {
   }
 }
 
-function upload(tag: string, paths: readonly string[]): void {
-  ghRelease("upload", tag, ...paths, "--clobber");
-}
-
-/** The manifest clients see now, or undefined before the first publish. */
-function publishedManifest(channel: Channel): Table | undefined {
-  const channels = release("channels");
-  const name = `${channel}.json`;
-  if (channels === undefined || !assetsOf(channels).some((asset) => asset["name"] === name)) {
-    return undefined;
-  }
-  return table(JSON.parse(ghRelease("download", "channels", "--pattern", name, "--output", "-")));
-}
-
-function withScratch<T>(body: (dir: string) => T): T {
+/** Upload files written to a scratch directory, then remove it. */
+function uploadFiles(tag: string, files: Record<string, string>): void {
   const dir = mkdtempSync(join(tmpdir(), "release-manifest-"));
   try {
-    return body(dir);
+    const paths = Object.entries(files).map(([name, text]) => {
+      writeFileSync(join(dir, name), text);
+      return join(dir, name);
+    });
+    ghRelease("upload", tag, ...paths, "--clobber");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function sameIgnoringTime(left: Table, right: Table): boolean {
-  return Bun.deepEquals({ ...left, generated_at: null }, { ...right, generated_at: null }, true);
+/** The manifest clients see now, or undefined before the first publish. */
+function publishedManifest(channel: Channel): Table | undefined {
+  const name = `${channel}.json`;
+  if (!assetsOf(release("channels")).some((asset) => asset["name"] === name)) return undefined;
+  return table(JSON.parse(ghRelease("download", "channels", "--pattern", name, "--output", "-")));
 }
 
 function publishManifest(document: Table, current: Table | undefined): void {
   const name = `${String(document["channel"])}.json`;
-  if (current !== undefined && sameIgnoringTime(current, document)) {
+  const timeless = (value: Table): Table => ({ ...value, generated_at: null });
+  if (current !== undefined && Bun.deepEquals(timeless(current), timeless(document), true)) {
     console.log(`${name} is already current`);
     return;
   }
   ensurePrerelease("channels", "Release manifests: stable.json and next.json. Not a release.");
-  withScratch((scratch) => {
-    const path = join(scratch, name);
-    writeFileSync(path, render(document));
-    upload("channels", [path]);
-  });
+  uploadFiles("channels", { [name]: render(document) });
   console.log(`published ${name}`);
 }
 
@@ -290,45 +160,21 @@ export function newestStable(rows: Iterable<unknown>): Partial<Record<Product, T
   const newest: Partial<Record<Product, { version: Version; row: Table }>> = {};
   for (const row of [...rows].map(table)) {
     const identity = parseTag(str(row["tag_name"]) ?? "");
-    if (row["draft"] || row["prerelease"] || identity === undefined) continue;
-    const product = identity.component;
-    if (!isProduct(product)) continue;
-    const best = newest[product];
+    if (row["draft"] || row["prerelease"] || !identity || !isProduct(identity.component)) continue;
+    const best = newest[identity.component];
     if (best === undefined || compareVersions(identity.version, best.version) > 0) {
-      newest[product] = { version: identity.version, row };
+      newest[identity.component] = { version: identity.version, row };
     }
   }
-  const result: Partial<Record<Product, Table>> = {};
-  for (const product of PRODUCTS) {
-    const best = newest[product];
-    if (best !== undefined) result[product] = best.row;
-  }
-  return result;
+  return Object.fromEntries(PRODUCTS.flatMap((p) => (newest[p] ? [[p, newest[p].row]] : [])));
 }
 
 function stableEntry(product: Product, row: Table): Table {
   const tag = str(row["tag_name"]) ?? "";
-  const identity = parseTag(tag);
-  if (identity === undefined) throw new ManifestError(`${tag} is not a release tag`);
-  const version = identity.version.join(".");
+  const version = parseTag(tag)?.version.join(".") ?? "";
   const sha = tagCommit(tag);
-  const names = Object.fromEntries(
-    TARGETS[product].map((target) => [
-      target,
-      assetName(product, "stable", version, undefined, target),
-    ]),
-  );
-  const digests = assetDigests(list(row["assets"]), Object.values(names));
-  return entry(
-    product,
-    "stable",
-    version,
-    sha,
-    protocolAt(sha, product),
-    Object.fromEntries(
-      Object.entries(names).map(([target, name]) => [target, digests[name] ?? ""]),
-    ),
-  );
+  const digests = assetDigests(list(row["assets"]), product, "stable", version);
+  return entry(product, "stable", version, sha, protocolAt(sha, product), digests);
 }
 
 function stable(out: string, publish: boolean): number {
@@ -339,24 +185,21 @@ function stable(out: string, publish: boolean): number {
     "--jq",
     ".[] | {tag_name, draft, prerelease, assets: [.assets[] | {name, digest}]}",
   ]);
-  const newest = newestStable(listing);
   const current = publishedManifest("stable");
   const products: Table = {};
   let failed = false;
-  for (const product of PRODUCTS) {
-    const row = newest[product];
-    if (row === undefined) continue;
+  for (const [product, row] of Object.entries(newestStable(listing)) as [Product, Table][]) {
     try {
       products[product] = stableEntry(product, row);
     } catch (error) {
       // Keep what clients see now; the red job says the lane needs a look.
-      console.error(`error: stable ${product}: ${describe(error)}`);
+      status("error", `stable ${product}: ${describe(error)}`);
       failed = true;
       const previous = table(current?.["products"])[product];
       if (isTable(previous) && Object.keys(previous).length > 0) products[product] = previous;
     }
   }
-  if (Object.keys(products).length === 0) throw new ManifestError("nothing is published on stable");
+  if (Object.keys(products).length === 0) throw new Failure("nothing is published on stable");
   const document = manifest("stable", products, now());
   writeFileSync(out, render(document));
   console.log(`wrote ${out}`);
@@ -366,52 +209,27 @@ function stable(out: string, publish: boolean): number {
 
 // --- next --------------------------------------------------------------------
 
-interface Built {
-  readonly path: string;
-  readonly digest: string;
-}
-
 /**
- * `{target: {path, digest}}` for each built asset whose sidecar matches it and
+ * `{target: digest}` for each built asset whose sidecar matches it and
  * carries a signature (ADR-0178).
  */
-export function verifiedDist(product: Product, sha: string, dist: string): Record<string, Built> {
-  const verified: Record<string, Built> = {};
-  for (const target of TARGETS[product]) {
-    const name = assetName(product, "next", undefined, sha, target);
+export function verifiedDist(product: Product, sha: string, dist: string): Record<string, string> {
+  const verified: Record<string, string> = {};
+  for (const target of TARGETS) {
+    const name = assetName(product, "next", sha, target);
     const path = join(dist, name);
     const digest = new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
-    const sidecar = readFileSync(join(dist, `${name}.sha256`), "utf8")
-      .trim()
-      .split(/\s+/);
+    const sidecar = readFileSync(`${path}.sha256`, "utf8").trim().split(/\s+/);
     if (sidecar.length !== 2 || sidecar[0] !== digest || sidecar[1] !== name) {
-      throw new ManifestError(`${name}.sha256 does not match ${name}`);
+      throw new Failure(`${name}.sha256 does not match ${name}`);
     }
-    const signature = join(dist, `${name}.sha256.minisig`);
+    const signature = `${path}.sha256.minisig`;
     if (!existsSync(signature) || !statSync(signature).isFile()) {
-      throw new ManifestError(`${name}.sha256 is not signed`);
+      throw new Failure(`${name}.sha256 is not signed`);
     }
-    verified[target] = { path, digest };
+    verified[target] = digest;
   }
   return verified;
-}
-
-/** The pre-manifest next pointer an older binary reads (ADR-0176 decision 8). */
-export function bridgeRecord(
-  product: Product,
-  sha: string,
-  version: string,
-  digests: Record<string, string>,
-): [string, string] {
-  const record: Table = { schema_version: 1, channel: "next", product, sha, version };
-  if (product === "desktop") {
-    record["archive"] = assetName("desktop", "next", undefined, sha, "aarch64-apple-darwin");
-    record["sha256"] = digests["aarch64-apple-darwin"];
-    record["minimum_macos"] = "27.0";
-  }
-  record["published_at"] = now();
-  const name = product === "phux" ? "channel.json" : "desktop-channel.json";
-  return [name, `${JSON.stringify(record, null, 2)}\n`];
 }
 
 /**
@@ -420,21 +238,18 @@ export function bridgeRecord(
  */
 function pruneNext(product: Product, keep: readonly string[]): void {
   const family = product === "phux" ? "phux-next." : "phux-desktop-next.";
-  const kept = keep.map((sha) => `${family}${sha}-`);
   const next = release("next");
-  if (next === undefined) throw new ManifestError("the next release is missing");
-  for (const asset of assetsOf(next)) {
-    const name = str(asset["name"]) ?? "";
-    if (name.startsWith(family) && !kept.some((prefix) => name.startsWith(prefix))) {
+  if (next === undefined) throw new Failure("the next release is missing");
+  for (const name of assetsOf(next).map((asset) => str(asset["name"]) ?? "")) {
+    if (name.startsWith(family) && !keep.some((sha) => name.startsWith(`${family}${sha}-`))) {
       ghRelease("delete-asset", "next", name, "--yes");
       console.log(`pruned ${name}`);
     }
   }
 }
 
-export function nextSha(product: Product): string {
-  const current = publishedManifest("next") ?? {};
-  return str(table(table(current["products"])[product])["sha"]) ?? "";
+function nextSha(product: Product): string {
+  return str(table(table(publishedManifest("next")?.["products"])[product])["sha"]) ?? "";
 }
 
 /**
@@ -444,113 +259,80 @@ export function nextSha(product: Product): string {
  * the published next.json cannot lose the other product's update.
  */
 function publishNext(product: Product, sha: string, dist: string): void {
-  require(SHA, sha, "sha");
+  valid(SHA, sha, "sha");
   const built = verifiedDist(product, sha, dist);
   const [version, protocol] = [versionAt(sha, product), protocolAt(sha, product)];
   const current = publishedManifest("next");
 
   ensurePrerelease("next", "Moving next channel (green main). Not a stable release.", sha);
-  upload(
-    "next",
-    Object.values(built).flatMap(({ path }) => [path, `${path}.sha256`, `${path}.sha256.minisig`]),
-  );
-  const recorded = assetDigests(
-    assetsOf(release("next")),
-    Object.values(built).map(({ path }) => basename(path)),
-  );
-  if (Object.values(built).some(({ path, digest }) => recorded[basename(path)] !== digest)) {
-    throw new ManifestError("the uploaded bytes do not match the build");
+  const paths = TARGETS.map((target) => join(dist, assetName(product, "next", sha, target)));
+  const files = paths.flatMap((path) => [path, `${path}.sha256`, `${path}.sha256.minisig`]);
+  ghRelease("upload", "next", ...files, "--clobber");
+  const digests = assetDigests(assetsOf(release("next")), product, "next", sha);
+  if (TARGETS.some((target) => digests[target] !== built[target])) {
+    throw new Failure("the uploaded bytes do not match the build");
   }
-  const digests = Object.fromEntries(
-    Object.entries(built).map(([target, { digest }]) => [target, digest]),
-  );
 
   const products: Table = { ...table(current?.["products"]) };
   const previousSha = str(table(products[product])["sha"]);
   products[product] = entry(product, "next", version, sha, protocol, digests);
   publishManifest(manifest("next", products, now()), current);
 
-  withScratch((scratch) => {
-    const [name, text] = bridgeRecord(product, sha, version, digests);
-    writeFileSync(join(scratch, name), text);
-    upload("next", [join(scratch, name)]);
-  });
+  const [name, text] = bridgeRecord(product, sha, version, digests);
+  uploadFiles("next", { [name]: text });
 
   if (previousSha) pruneNext(product, [sha, previousSha]);
   console.log(`published ${product} ${version} at ${sha} on next`);
 }
 
-// --- fixtures ----------------------------------------------------------------
+// --- CLI ---------------------------------------------------------------------
 
-export function fixture(channel: Channel): Table {
-  const digests = Object.fromEntries(
-    TARGETS.phux.map((target, index) => [target, (index + 1).toString(16).repeat(64)]),
-  );
-  return manifest(
-    channel,
-    {
-      phux: entry("phux", channel, "9.8.7", "a".repeat(40), "0.9", digests),
-      desktop: entry(
-        "desktop",
-        channel,
-        "1.2.3",
-        "b".repeat(40),
-        "0.9",
-        Object.fromEntries(
-          TARGETS.desktop.map((target, index) => [target, (index + 13).toString(16).repeat(64)]),
-        ),
-      ),
-    },
-    "2026-01-01T00:00:00Z",
-  );
-}
-
-/** Rewrite the golden fixtures, or with `check` fail when one is stale. */
-export function fixtures(check: boolean, root = ROOT): number {
-  const stale: string[] = [];
-  for (const channel of CHANNELS) {
-    const relative = `${FIXTURES}/${channel}.json`;
-    const path = join(root, relative);
-    const text = render(fixture(channel));
-    if (!check) writeFileSync(path, text);
-    else if (!existsSync(path) || readFileSync(path, "utf8") !== text) stale.push(relative);
+function product(value: string | undefined): Product {
+  if (value === undefined || !isProduct(value)) {
+    throw new UsageError(`product must be phux or desktop, got ${String(value)}`);
   }
-  if (stale.length > 0) {
-    throw new ManifestError(
-      `stale: ${stale.join(", ")}; run bun tools/main.ts release-manifest fixtures`,
-    );
-  }
-  return 0;
+  return value;
 }
 
-export function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export const HELP = `  stable --out PATH [--publish]            build stable.json from the published releases
+export const releaseManifest: Command = {
+  summary: "Build or publish the stable/next channel manifests, or check their fixtures.",
+  usage: "stable|next|next-sha|fixtures [args]",
+  help: `  stable --out PATH [--publish]            build stable.json from the published releases
   next --product P --sha SHA --dist DIR    publish one product's build to the next channel
   next-sha PRODUCT                         print the commit next.json names for a product
   fixtures [--check]                       rewrite or check the golden fixtures
 
-PRODUCT is one of: ${PRODUCTS.join(", ")}`;
-
-export type Invocation =
-  | { command: "stable"; out: string; publish: boolean }
-  | { command: "next"; product: Product; sha: string; dist: string }
-  | { command: "next-sha"; product: Product }
-  | { command: "fixtures"; check: boolean };
-
-export function execute(invocation: Invocation): number {
-  switch (invocation.command) {
-    case "stable":
-      return stable(invocation.out, invocation.publish);
-    case "next":
-      publishNext(invocation.product, invocation.sha, invocation.dist);
-      return 0;
-    case "next-sha":
-      console.log(nextSha(invocation.product));
-      return 0;
-    case "fixtures":
-      return fixtures(invocation.check);
-  }
-}
+PRODUCT is one of: ${PRODUCTS.join(", ")}`,
+  run(args) {
+    const flag = { type: "string" } as const;
+    const options = { out: flag, product: flag, sha: flag, dist: flag };
+    const switches = { publish: { type: "boolean" }, check: { type: "boolean" } } as const;
+    const { values, positionals } = parseArgs({
+      args,
+      options: { ...options, ...switches },
+      allowPositionals: true,
+    });
+    const [command, ...rest] = positionals;
+    if (rest.length !== (command === "next-sha" ? 1 : 0)) {
+      throw new UsageError(
+        command === "next-sha" ? "next-sha takes one PRODUCT" : "too many arguments",
+      );
+    }
+    switch (command) {
+      case "stable":
+        return stable(required(values.out, "--out"), values.publish === true);
+      case "next": {
+        const which = product(required(values.product, "--product"));
+        publishNext(which, required(values.sha, "--sha"), required(values.dist, "--dist"));
+        return 0;
+      }
+      case "next-sha":
+        console.log(nextSha(product(rest[0])));
+        return 0;
+      case "fixtures":
+        return fixtures(values.check === true);
+      default:
+        throw new UsageError(`unknown command ${String(command)}`);
+    }
+  },
+};
