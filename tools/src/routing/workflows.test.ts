@@ -43,10 +43,10 @@ test("lanes share one detection and have no outer path filter", () => {
     const workflow = read(`.github/workflows/${name}.yml`);
     const triggers = workflow.split("concurrency:")[0] ?? "";
     expect([name, triggers.includes("paths:")]).toEqual([name, false]);
-    // desktop-test keeps main's running run; only pull requests cancel.
+    // desktop-test keeps main's running run, pushed or dispatched.
     const cancel =
       name === "desktop-test"
-        ? "cancel-in-progress: ${{ github.event_name != 'push' }}"
+        ? "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}"
         : "cancel-in-progress: true";
     for (const needle of [
       "merge_group:",
