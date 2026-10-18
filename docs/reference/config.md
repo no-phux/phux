@@ -579,6 +579,13 @@ which-key-delay-ms = 400
 # --relay-route ROUTE` on the server prints a link that `phux attach
 # --remote NAME --code` registers this way.
 #
+# A routed entry also needs the server's certificate authority pinned for
+# that relay pin and route in `known-authorities` beside this file (ADR-0180):
+# every dial runs end to end with the server inside the relayed stream, so the
+# relay sees only ciphertext. `phux attach --remote NAME --code LINK` and
+# `phux host add ... --ca-fingerprint` write that pin; a hand-written entry
+# without it is refused on every dial.
+#
 # [[remote]]
 # name = "studio"
 # endpoint = "quic://relay.example:4433"

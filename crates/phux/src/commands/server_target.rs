@@ -169,7 +169,7 @@ pub(crate) fn plan_entry(
     let DialPlan { dial, loopback } = plan
         .and_then(|plan| {
             plan.with_identity(identity)
-                .with_authority(&entry.authority_pin())
+                .with_authority(&entry.name, &entry.authority_pin())
         })
         .map_err(|refusal| entry_refusal(entry, &refusal))?;
     Ok(RemoteServer {

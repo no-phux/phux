@@ -1294,7 +1294,17 @@ fn spawn_connector_supervisors(
         // Fail closed in every posture: a bridged consumer is admitted only
         // inside its end-to-end session, so the relay never reads it
         // (ADR-0180).
-        error!("relay connectors disabled: the end-to-end TLS they need could not be built");
+        // Named per connector, beside the cause logged above, so an embedder
+        // that used to ride the plain relayed stream sees exactly which
+        // routes went dark and why (ADR-0180 Decision 6).
+        for spec in &specs {
+            error!(
+                connector = %spec,
+                "relay connector disabled: the end-to-end TLS session every relayed consumer \
+                 now runs could not be built; fix the cause logged above (an embedder \
+                 supplies the server certificate and key as ServerEnv tls_cert/tls_key)"
+            );
+        }
         return;
     };
     crate::connector::spawn_connectors(specs, tokens, &inner, state, input_lane, root_token);

@@ -215,6 +215,25 @@ async fn first_answer(plan: &QuicDial) -> Result<FrameKind, DialError> {
     }
 }
 
+/// The connector's first-byte gate refused a plain relayed stream: the
+/// route was up, the stream reached the server, and the server reset it on
+/// the tunnel with `AUTH_FAILED`. The relay forwards no reset code (it only
+/// splices bytes), so the consumer sees the relay end its bridged
+/// connection with code 0 (or, should the stream's FIN be read before that
+/// close lands, the stream end), after the dial succeeded and before any
+/// answer. Not a timeout ("no answer"), not `ROUTE_OFFLINE`, not a dial
+/// failure.
+fn assert_plain_refused(answer: &Result<FrameKind, DialError>) {
+    assert!(
+        matches!(
+            answer,
+            Err(DialError::Connect(detail))
+                if detail == "closed by peer: 0" || detail == "early eof"
+        ),
+        "a plain bridged consumer must be refused by the connector gate, got {answer:?}"
+    );
+}
+
 /// Wait until the server's connector holds the route.
 async fn wait_for_route(t: &Topology) {
     let answer = first_answer(&t.plan(None)).await;
@@ -244,13 +263,8 @@ fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(false);
         wait_for_route(&t).await;
-        assert!(
-            !matches!(
-                first_answer(&t.plan(None)).await,
-                Ok(FrameKind::HelloOk { .. })
-            ),
-            "a plain bridged consumer is refused in every posture"
-        );
+        // In every posture.
+        assert_plain_refused(&first_answer(&t.plan(None)).await);
         let session = inner(&t.authority, TlsClientIdentity::None);
         let answer = first_answer(&t.plan(Some(session)))
             .await
@@ -279,13 +293,7 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(true);
         wait_for_route(&t).await;
-        assert!(
-            !matches!(
-                first_answer(&t.plan(None)).await,
-                Ok(FrameKind::HelloOk { .. })
-            ),
-            "a plain bridged consumer is refused under paired"
-        );
+        assert_plain_refused(&first_answer(&t.plan(None)).await);
         let bare = inner(&t.authority, TlsClientIdentity::None);
         assert!(
             !matches!(

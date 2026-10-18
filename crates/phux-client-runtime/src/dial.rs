@@ -118,13 +118,15 @@ fn relayed_session(resolved: &Resolved) -> Result<Option<phux_dial::quic::InnerT
 }
 
 /// Why a relay route without the server's CA is not dialed, and the fix.
+///
+/// Transport-neutral: native embedders (phux-mobile through the FFI) get
+/// this text too, so it names no CLI command; the CLI appends its own.
 #[must_use]
 pub fn unpinned_relay_route(name: &str, route: &str) -> String {
     format!(
         "{name} is reached through relay route {route:?}, but no certificate authority is \
-         pinned for the server behind it, so the relay could read the session; re-pair from \
-         a relay link (`phux pair --relay-route {route}` on the server), or register it with \
-         the server's `--ca-fingerprint`"
+         pinned for the server behind it, so the relay could read the session; pin the \
+         server's CA from its relay link and dial again"
     )
 }
 
@@ -484,7 +486,9 @@ mod tests {
             .block_on(plan_quic(&routed, "127.0.0.1:4433"))
             .expect_err("a relay route without the server's CA");
         assert!(
-            refused.contains("mini-route") && refused.contains("--ca-fingerprint"),
+            refused.contains("mini-route")
+                && refused.contains("pin the server's CA")
+                && !refused.contains("phux "),
             "{refused}"
         );
 
