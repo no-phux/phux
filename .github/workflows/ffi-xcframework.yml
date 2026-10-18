@@ -8,9 +8,9 @@
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
 # verified assets to an existing release, the same contract release.yml and
-# desktop-release.yml follow, and publish.yml calls it for every root
-# release. It never gates the draft's publication: the CLI tarballs are the
-# release contract; the xcframework is the mobile pin's input.
+# desktop-release.yml follow, and publish.yml dispatches it once each root
+# release is public. It never gates the draft's publication: the CLI tarballs
+# are the release contract; the xcframework is the mobile pin's input.
 #
 # No pull request triggers this workflow, so its caches are saved from every
 # run without thrashing the PR budget docs/RELEASING.md describes.

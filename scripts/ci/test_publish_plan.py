@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Publish decisions stay deterministic: no network, no clock."""
 
+from pathlib import Path
 import unittest
 
 from publish_plan import decide, parse_tag, split_lanes, validation_state
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def rel(tag, draft, sha):
@@ -195,6 +199,33 @@ class DecideTests(unittest.TestCase):
         self.assertIn("failure", decide(rows, lambda _: "failure", dispatch_tag=tag)["fail"])
         # An event for any other commit sweeps it like every other green draft.
         self.assertEqual(decide(rows, green, event_sha="other")["publish"], [tag])
+
+
+class PublishWorkflowTests(unittest.TestCase):
+    """publish.yml holds one concurrency slot; nothing slow may sit inside it."""
+
+    def setUp(self):
+        self.workflow = (ROOT / ".github/workflows/publish.yml").read_text()
+
+    def job(self, name):
+        return self.workflow.split(f"\n  {name}:\n", 1)[1].split("\n\n  ", 1)[0]
+
+    def test_mobile_ffi_is_dispatched_after_the_cli_is_public(self):
+        for workflow in ("ffi-xcframework.yml", "ffi-android.yml"):
+            self.assertNotIn(f"uses: ./.github/workflows/{workflow}", self.workflow)
+        job = self.job("mobile-ffi")
+        self.assertIn("needs: [plan, phux]", job)
+        self.assertIn("if: needs.phux.result == 'success'", job)
+        self.assertIn("for workflow in ffi-xcframework.yml ffi-android.yml; do", job)
+        self.assertIn('gh workflow run "$workflow" --ref main -f tag="$TAG"', job)
+
+    def test_a_publish_rebuilds_the_site(self):
+        job = self.job("website")
+        self.assertIn("needs: [phux, desktop, channel-manifest]", job)
+        self.assertIn("needs.phux.result == 'success' || needs.desktop.result == 'success'", job)
+        self.assertIn("gh workflow run website-dispatch.yml --ref main", job)
+        dispatch = (ROOT / ".github/workflows/website-dispatch.yml").read_text()
+        self.assertIn("  workflow_dispatch:\n", dispatch.split("\npermissions:", 1)[0])
 
 
 if __name__ == "__main__":

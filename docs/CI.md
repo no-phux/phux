@@ -37,8 +37,10 @@ ceilings catch only gross regressions. `package` builds the debug CLI and
 `just desktop-package`, then runs `smoke-app.ts` with
 `--allow-unconfirmed-present` and uploads the evidence directory. Neither job
 holds a build cache, so each run is two cold GPUI and libghostty builds on the
-5 macOS slots shared with the release lanes; a burst of core-crate merges to
-`main` can queue a release behind them. A hosted virtual display never
+5 macOS slots shared with the release lanes. So `main` keeps one running and
+one pending desktop-test run, not one per merge: per-SHA runs once stacked
+~35 macOS jobs ahead of the release builds and left drafts unpublished for
+hours. A hosted virtual display never
 confirms a presented drawable, so real-GPU qualification stays manual:
 `just desktop-native-test` on an Apple silicon Mac with a graphical login
 requires `confirmed` presentation.

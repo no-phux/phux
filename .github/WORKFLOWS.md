@@ -54,15 +54,20 @@ Its concurrency group includes the commit SHA, so every
 them, and `release-please` refuses to build a tag until it finds a
 successful run at that exact SHA.
 
-`web-check`, `native-setup` and `desktop-test` use the same SHA-keyed pattern as `ci` on
+`web-check` and `native-setup` use the same SHA-keyed pattern as `ci` on
 `main`, so consecutive merges do not cancel each other's validation.
+`desktop-test` does not: its two `xcode-27` jobs per SHA queued faster than
+the macOS pool drained and starved the release lanes. On `main` it keeps one
+running and one pending run, newest commit wins the pending slot, and the
+running run is never cancelled.
 
 Publishing lanes set `cancel-in-progress: false` so an upload is never
 interrupted. `publish-crate` also declares an explicit per-tag concurrency
 group; the `crates-io` environment reviewer is not enough on its own.
 `website-dispatch` tells `no-phux/website` to rebuild on a published
-release. GitHub suppresses `repository_dispatch` from `GITHUB_TOKEN`, so
-the dispatch uses the release App token. The site's Monday cron remains
+release: `publish` dispatches it, because a `GITHUB_TOKEN` publish fires no
+`release` event. GitHub also suppresses `repository_dispatch` from
+`GITHUB_TOKEN`, so the dispatch itself uses the release App token. The site's Monday cron remains
 the backstop if a dispatch is missed.
 
 The site's deploy, rollback, and kill switch share one concurrency group
