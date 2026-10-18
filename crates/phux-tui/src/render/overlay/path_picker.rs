@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{OverlayCommand, RenderOverlay, SelectItem, SelectList};
-use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::{ChromeBreakpoints, Theme, home_to_tilde};
 
 /// A filterable result list. Nonempty input requests recursive fuzzy search
 /// on the host; empty input browses one directory level.
@@ -36,24 +36,6 @@ impl PathPicker {
             .with_footer_status(status)
             .without_vi_navigation(),
         }
-    }
-}
-
-/// `root` as the shell shows it: `home` becomes `~`; empty means home.
-pub(crate) fn home_to_tilde(root: &str, home: Option<&str>) -> String {
-    if root.is_empty() {
-        return "~".to_owned();
-    }
-    let Some(home) = home
-        .map(|h| h.trim_end_matches('/'))
-        .filter(|h| !h.is_empty())
-    else {
-        return root.to_owned();
-    };
-    match root.strip_prefix(home) {
-        Some("") => "~".to_owned(),
-        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
-        _ => root.to_owned(),
     }
 }
 
@@ -187,15 +169,7 @@ mod tests {
     use phux_protocol::wire::frame::{PathResults, PathRow};
 
     #[test]
-    fn footer_status_shortens_home_and_keeps_the_deepest_directory() {
-        assert_eq!(home_to_tilde("/Users/p", Some("/Users/p")), "~");
-        assert_eq!(home_to_tilde("/Users/p/src/x", Some("/Users/p")), "~/src/x");
-        assert_eq!(
-            home_to_tilde("/Users/pat/x", Some("/Users/p")),
-            "/Users/pat/x"
-        );
-        assert_eq!(home_to_tilde("", Some("/Users/p")), "~");
-
+    fn footer_status_keeps_the_deepest_directory() {
         let long = "/private/tmp/claude-501/-Users-phall-workspace-phux/deepest";
         let picker = PathPicker::new(long.to_owned(), &Theme::default());
         let area = Rect::new(0, 0, 60, 20);
