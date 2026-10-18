@@ -328,9 +328,10 @@ fn split_tab_selects_only_its_focused_terminal_and_keyless_tabs_still_activate(
         click_count: 2,
         first_mouse: false,
     });
+    // Selection is decided on press, even if Command is released before up.
     cx.simulate_event(gpui::MouseUpEvent {
         position: a,
-        modifiers: modifier,
+        modifiers: Modifiers::none(),
         button: MouseButton::Left,
         click_count: 2,
     });

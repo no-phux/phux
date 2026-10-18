@@ -214,6 +214,18 @@ fn tab_detail(tab: &DeskTab, side: bool) -> Option<String> {
     }
 }
 
+/// Rename follows an ordinary double click, not an organization selection
+/// whose modifier happened to be released between press and release.
+fn rename_requested(event: &ClickEvent) -> bool {
+    if event.click_count() < 2 || event.modifiers().platform {
+        return false;
+    }
+    match event {
+        ClickEvent::Mouse(click) => !click.down.modifiers.platform,
+        _ => true,
+    }
+}
+
 fn tab_button(
     desk: &Desk,
     tab: &DeskTab,
@@ -336,7 +348,7 @@ fn tab_button(
             }),
         )
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
-            if !event.modifiers().platform && event.click_count() >= 2 {
+            if rename_requested(event) {
                 desk.open_modal(
                     Modal::Rename {
                         tab_id: rename_id.clone(),
