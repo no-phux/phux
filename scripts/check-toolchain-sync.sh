@@ -67,6 +67,10 @@ grep -Fq "pkgs.nodejs_$node_version" "$FLAKE" ||
 grep -Fq 'miseTools.bun' "$FLAKE" || fail 'flake.nix must read the Bun pin from mise.toml (bunVersion = miseTools.bun)'
 grep -Eq "^[[:space:]]*\"$bun_version\" = \{" "$FLAKE" ||
     fail "flake.nix bunDigests has no entry for Bun $bun_version; add the per-system hashes (see the comment there)"
+# CI installs Bun from the mise pin, so each Bun package must declare the same engine.
+for package in clients/desktop/package.json tools/package.json; do
+    grep -Fq "\"bun\": \"$bun_version\"" "$ROOT/$package" || fail "$package engines.bun must be $bun_version"
+done
 
 # usage CLI: same bun-style pin. The flake reads mise.toml, so the two
 # cannot hold different versions; the digest table is what can rot.

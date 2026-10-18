@@ -22,8 +22,7 @@ desktop-install:
 [doc('Check script tooling, qualification guards and the desktop host lock')]
 desktop-check: worktree-claim
     cd clients/desktop && bun run check:tooling
-    python3 scripts/check-desktop-host-lock.py
-    python3 scripts/test-check-desktop-host-lock.py
+    bun tools/main.ts desktop-host-lock
 
 [group('desktop')]
 [doc('Run the native desktop crate tests (model, painter, input, presentation, launch)')]
@@ -49,7 +48,7 @@ desktop-lint: worktree-claim desktop-source
 [group('desktop')]
 [doc('Repair repairable desktop host lock drift without resolving GPUI')]
 desktop-lock-fix:
-    python3 scripts/check-desktop-host-lock.py --fix
+    bun tools/main.ts desktop-host-lock --fix
 
 [group('desktop')]
 [doc('Re-resolve the desktop host lock against the pinned GPUI snapshot')]

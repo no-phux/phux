@@ -48,6 +48,9 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
 
+      # The version contract runs from the tools package.
+      - uses: ./.github/actions/setup-bun
+
       - name: Validate tag, commit, and component version
         id: release
         shell: bash
@@ -86,7 +89,7 @@ jobs:
             echo "::error::${package_name} repository.url must be ${expected_repository} for npm trusted publishing, found ${package_repository}"
             exit 1
           fi
-          node scripts/check-agent-integration-versions.mjs
+          bun tools/main.ts integration-versions-check
 
           {
             echo "tag=$tag"
