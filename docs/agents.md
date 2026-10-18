@@ -4,7 +4,9 @@ Two things meet here. phux tracks the coding agents running in its panes,
 so you can see which one needs you and hand it input without finding its
 window. And agents use phux to run commands, read output, and wait for
 things, through the same [commands scripts use](./scripting.md), an MCP
-server, or a plugin for their host.
+server, or a plugin for their host. Check the
+[source versus installed-release boundary](./README.md#source-and-installed-releases)
+before relying on a command from these pages.
 
 ## What phux knows about an agent
 

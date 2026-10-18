@@ -6,6 +6,18 @@ wire frames) is generated under [reference](./reference/README.md) and
 [spec](./spec/wire-schema.json), so the pages here link to it instead of
 repeating it.
 
+## Source and installed releases
+
+These live guides and generated references track the **main-source revision**,
+which may include behavior not yet released. The same Cargo version string
+does not prove that an installed binary contains a command from this tree.
+Use the installed command's `--help` and skill output (`phux skill`, or
+`--skill` where supported), and check the running server's
+[feature availability](./protocol.md#capabilities-not-versions). Compare
+source commit SHA/build provenance, not SemVer alone, when reporting a
+mismatch. A missing command is not a reason to point a checkout build at
+production state or install an unreleased build.
+
 ## Use phux
 
 - [Install](./install.md): installer, Homebrew, desktop app, updating, from source.
