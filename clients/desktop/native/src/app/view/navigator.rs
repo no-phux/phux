@@ -687,7 +687,9 @@ fn pane_row(
     };
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
-    child_row(SharedString::from(format!("pane-{terminal}")), look)
+    let selector = SharedString::from(format!("pane-{terminal}"));
+    child_row(selector.clone(), look)
+        .debug_selector(move || selector.to_string())
         .when(selected, |row| row.bg(look.active))
         .child(row_icon(glyph))
         .child(row_label(
