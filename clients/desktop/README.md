@@ -33,24 +33,24 @@ and settings; `>` switches it to commands.
 Closing a pane, tab, or window detaches. Only **Terminate Terminal Process**
 and **Kill Session** end anything, and Kill Session asks first.
 
-| Keys | Action |
-|---|---|
-| ⌘P, ⇧⌘P | palette: go to a terminal, agent, or tab; commands |
-| ⌘T, ⌘O | new terminal in the focused pane's folder; open a folder |
-| ⌘D, ⇧⌘D | split right, split down |
-| ⌥⌘D | another view of the focused terminal |
-| ⌘W, ⇧⌘W | close pane, close tab (the process keeps running) |
-| ⌥⌘ arrows, ⌘[ ⌘] | focus a direction, cycle panes |
-| ⇧⌘↩ | zoom |
-| ⌘1-⌘9, ⇧⌘[ ⇧⌘] | select a tab |
-| ⌘F, ⌘G, ⇧⌘G, ⌘E | find, next, previous, find selection |
-| ⌘↑ ⌘↓ | previous / next shell prompt (needs OSC 133 marks) |
-| ⇧⌘A | jump to the agent that most needs you |
-| ⌘B, ⌘, | sidebar, settings |
-| ⌘N, ⌥⌘N | new window; move the focused pane to its own window |
-| ⇧⌘I | insert a path from the focused terminal's host |
-| ⇧⌘R | reconnect, restarting the server if it stopped |
-| ⌘-click | open the link under the pointer |
+| Keys             | Action                                                   |
+| ---------------- | -------------------------------------------------------- |
+| ⌘P, ⇧⌘P          | palette: go to a terminal, agent, or tab; commands       |
+| ⌘T, ⌘O           | new terminal in the focused pane's folder; open a folder |
+| ⌘D, ⇧⌘D          | split right, split down                                  |
+| ⌥⌘D              | another view of the focused terminal                     |
+| ⌘W, ⇧⌘W          | close pane, close tab (the process keeps running)        |
+| ⌥⌘ arrows, ⌘[ ⌘] | focus a direction, cycle panes                           |
+| ⇧⌘↩              | zoom                                                     |
+| ⌘1-⌘9, ⇧⌘[ ⇧⌘]   | select a tab                                             |
+| ⌘F, ⌘G, ⇧⌘G, ⌘E  | find, next, previous, find selection                     |
+| ⌘↑ ⌘↓            | previous / next shell prompt (needs OSC 133 marks)       |
+| ⇧⌘A              | jump to the agent that most needs you                    |
+| ⌘B, ⌘,           | sidebar, settings                                        |
+| ⌘N, ⌥⌘N          | new window; move the focused pane to its own window      |
+| ⇧⌘I              | insert a path from the focused terminal's host           |
+| ⇧⌘R              | reconnect, restarting the server if it stopped           |
+| ⌘-click          | open the link under the pointer                          |
 
 On Linux, Super replaces ⌘; `Ctrl-Shift-P/T/W/F` also work, and
 `Ctrl-Shift-C/V` copy and paste without intercepting the shell's `Ctrl-C`.
