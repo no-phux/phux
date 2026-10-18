@@ -45,12 +45,10 @@ export const commands: Record<string, Command> = {
         process.env["GITHUB_EVENT_PATH"],
       );
       let result: Classification;
-      let releaseMetadataOnly = false;
       switch (detection.kind) {
         case "release-metadata":
           console.error("Release metadata only; compile lanes skipped");
           result = RELEASE_METADATA;
-          releaseMetadataOnly = true;
           break;
         case "full":
           console.error(`Full validation: ${detection.reason}`);
@@ -59,9 +57,7 @@ export const commands: Record<string, Command> = {
         case "paths":
           result = new Classifier().classify(detection.paths);
       }
-      console.log(
-        formatOutputs({ ...toOutputs(result), release_metadata_only: releaseMetadataOnly }),
-      );
+      console.log(formatOutputs(toOutputs(result)));
       return 0;
     },
   },

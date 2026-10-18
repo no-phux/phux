@@ -106,3 +106,9 @@ test("both FFI workflows build on the one mobile_ffi_needed output", () => {
     ]);
   }
 });
+
+test("a failed classification still builds both FFI artifacts", () => {
+  for (const name of ["ffi-xcframework", "ffi-android"]) {
+    expect(read(`.github/workflows/${name}.yml`)).toContain("needs.changes.result == 'failure'");
+  }
+});

@@ -58,7 +58,7 @@ jobs:
 
   # Always check cheap contracts. A docs-only diff (the classifier's
   # docs_only: no file that code or a guard reads) runs the two guards that
-  # read docs, with the runner's own bash and python and no Nix, Bun or
+  # read docs, with the runner's own bash, the pinned Bun, and no Nix or
   # desktop install. Every other diff resolves the full tool set from the
   # pinned nixpkgs input: no devshell, Rust or Zig realization or build-cache
   # restore on this runner.

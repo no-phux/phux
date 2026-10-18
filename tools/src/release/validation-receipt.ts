@@ -96,7 +96,8 @@ function zipRead(archive: Uint8Array, entry: ZipEntry): Uint8Array {
   const raw = archive.subarray(start, start + entry.compressedSize);
   let data: Uint8Array;
   if (entry.method === 0) data = raw;
-  else if (entry.method === 8) data = inflateRawSync(raw);
+  // Bound the inflate by the declared size; the size check below catches a lie.
+  else if (entry.method === 8) data = inflateRawSync(raw, { maxOutputLength: entry.size + 1 });
   else throw new ZipError(`unsupported compression ${entry.method} for ${entry.name}`);
   if (data.length !== entry.size || Bun.hash.crc32(data) !== entry.crc) {
     throw new ZipError(`bad CRC or size for ${entry.name}`);

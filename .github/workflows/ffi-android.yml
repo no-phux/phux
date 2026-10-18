@@ -10,8 +10,8 @@ name: ffi-android
 
 on:
   # Main pushes build only when the classifier's mobile_ffi_needed says
-  # so. Both FFI workflows read that one output, so phux-mobile's pin
-  # always finds the pair at the same commit.
+  # so, or when classification failed. Both FFI workflows read that one
+  # output, so phux-mobile's pin always finds the pair at the same commit.
   push:
     branches: [main]
   workflow_call:
@@ -65,8 +65,9 @@ jobs:
     name: build Android UniFFI zip
     needs: changes
     if: >-
-      !cancelled() && needs.changes.result != 'failure' &&
-      (github.event_name != 'push' || needs.changes.outputs.mobile_ffi_needed == 'true')
+      !cancelled() &&
+      (github.event_name != 'push' || needs.changes.result == 'failure' ||
+       needs.changes.outputs.mobile_ffi_needed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
