@@ -43,15 +43,28 @@ test("lanes share one detection and have no outer path filter", () => {
     const workflow = read(`.github/workflows/${name}.yml`);
     const triggers = workflow.split("concurrency:")[0] ?? "";
     expect([name, triggers.includes("paths:")]).toEqual([name, false]);
+    // desktop-test keeps main's running run; only pull requests cancel.
+    const cancel =
+      name === "desktop-test"
+        ? "cancel-in-progress: ${{ github.event_name != 'push' }}"
+        : "cancel-in-progress: true";
     for (const needle of [
       "merge_group:",
       "fetch-depth: 0",
       "uses: ./.github/actions/classify-changes",
-      "cancel-in-progress: true",
+      cancel,
     ]) {
       expect([name, workflow.includes(needle)]).toEqual([name, true]);
     }
   }
+});
+
+test("desktop-test does not queue every main SHA on macOS", () => {
+  // Per-SHA main runs stacked xcode-27 jobs ahead of the release lanes.
+  const workflow = read(".github/workflows/desktop-test.yml");
+  const concurrency = workflow.split("\nconcurrency:\n")[1]?.split("\n\n")[0] ?? "";
+  expect(concurrency).toContain("group: mini-v1-desktop-test-${{ github.ref }}\n");
+  expect(concurrency).not.toContain("github.sha");
 });
 
 test("the archived cockpit has no workflows", () => {
