@@ -1,6 +1,6 @@
 {
   "name": "@phux/opencode",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "OpenCode V2 plugin: phux owns the terminals, OpenCode owns the session",
   "type": "module",
   "license": "Apache-2.0",

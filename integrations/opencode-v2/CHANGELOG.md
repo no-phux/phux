@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.6.0...opencode-plugin-v0.6.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **opencode:** align stable SDK and compile terminal companion ([#1606](https://github.com/no-phux/phux/issues/1606)) ([b0187d6](https://github.com/no-phux/phux/commit/b0187d61c3994bdb6779e8e2cc20fddc97d2109a))
+
 ## [0.6.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.5.0...opencode-plugin-v0.6.0) (2026-10-16)
 
 
