@@ -31,6 +31,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.38.0](https://github.com/no-phux/phux/compare/desktop-v0.37.1...desktop-v0.38.0) (2026-10-18)
+
+
+### Features
+
+* **desktop:** ship native Linux desktop on X11 and Wayland ([#1602](https://github.com/no-phux/phux/issues/1602)) ([1d77164](https://github.com/no-phux/phux/commit/1d771648c37eaf395576b46b9e50f912f13553a3))
+
 ## [0.37.1](https://github.com/no-phux/phux/compare/desktop-v0.37.0...desktop-v0.37.1) (2026-10-17)
 
 
