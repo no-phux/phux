@@ -16,9 +16,9 @@
 //! **Claims** reserve absolute paths. A claim covers its path and everything
 //! under it, so `/repo` and `/repo/src` overlap. Shared claims coexist;
 //! an exclusive claim excludes every other holder. A claim expires at its
-//! deadline, and the holder renews it by claiming again, which keeps its
-//! fence. Each new claim takes the next fence number, so a writer that held
-//! a lease can prove it was not superseded.
+//! deadline. Each atomic acquisition receives one fence; renewing or
+//! releasing requires that exact fence and the holder. Taking again never
+//! adopts an existing lease, even from the same pane.
 
 use rusqlite::{OptionalExtension as _, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::id::{OpaqueId, OperationId};
 use crate::store::{Store, digest, timestamp};
+
+mod claims;
+pub use claims::{
+    Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, ReleaseClaim, RenewClaim, TakeClaim,
+};
 
 /// Tables this module owns. Additive: they do not change `user_version`, so
 /// a binary that predates them still opens the store and ignores them.
@@ -73,14 +78,6 @@ const MAX_THREAD_BYTES: usize = 64;
 const MAX_MAIL_BODY_BYTES: usize = 64 * 1024;
 /// Most recipients one message names.
 const MAX_RECIPIENTS: usize = 32;
-/// Most paths one claim names.
-const MAX_CLAIM_PATHS: usize = 64;
-/// Longest claimed path, in bytes.
-const MAX_PATH_BYTES: usize = 4096;
-/// Longest claim note, in bytes.
-const MAX_NOTE_BYTES: usize = 512;
-/// Longest claim, so a forgotten one cannot hold a path for days.
-pub const MAX_CLAIM_SECS: u64 = 24 * 60 * 60;
 /// Most messages one read returns.
 const MAX_READ: u32 = 500;
 
@@ -167,39 +164,6 @@ fn parse_mail_body(text: &str) -> Result<String, Error> {
     Ok(text.to_owned())
 }
 
-/// An absolute, normalized path: no `.` or `..` segment, no trailing `/`.
-fn parse_path(text: &str) -> Result<String, Error> {
-    let invalid = |reason| Error::invalid_text("path", reason);
-    if !text.starts_with('/') || text.len() > MAX_PATH_BYTES || text.bytes().any(|b| b == 0) {
-        return Err(invalid("must be an absolute path under 4 KiB"));
-    }
-    if text == "/" {
-        return Err(invalid("cannot claim the whole filesystem"));
-    }
-    let trimmed = text.trim_end_matches('/');
-    if trimmed
-        .split('/')
-        .skip(1)
-        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-    {
-        return Err(invalid(
-            "must be normalized, without empty, `.` or `..` segments",
-        ));
-    }
-    Ok(trimmed.to_owned())
-}
-
-/// Whether claims on `a` and `b` cover a common path.
-fn overlaps(a: &str, b: &str) -> bool {
-    let within = |inner: &str, outer: &str| {
-        inner == outer
-            || inner
-                .strip_prefix(outer)
-                .is_some_and(|rest| rest.starts_with('/'))
-    };
-    within(a, b) || within(b, a)
-}
-
 /// `send` arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMail {
@@ -268,74 +232,6 @@ pub struct AckMail {
     pub reader: String,
     /// Which message.
     pub id: OpaqueId,
-}
-
-/// `claim` arguments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TakeClaim {
-    /// Who holds it.
-    pub holder: String,
-    /// Absolute paths. All are granted, or none.
-    pub paths: Vec<String>,
-    /// Exclude every other holder, rather than sharing with other shared claims.
-    pub exclusive: bool,
-    /// Seconds until it expires, at most [`MAX_CLAIM_SECS`].
-    pub ttl_secs: u64,
-    /// Why, shown to anyone it blocks.
-    pub note: String,
-}
-
-/// One live claim.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Claim {
-    /// The claimed path and everything under it.
-    pub path: String,
-    /// Holder, as written.
-    pub holder: String,
-    /// Excludes other holders.
-    pub exclusive: bool,
-    /// Increases with every new claim; a renewal keeps it.
-    pub fence: u64,
-    /// Why.
-    pub note: String,
-    /// Unix seconds when it lapses.
-    pub expires_at: u64,
-}
-
-/// The answer to a claim: all of it, or who is in the way.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "outcome", content = "claims", rename_all = "snake_case")]
-pub enum ClaimOutcome {
-    /// Every path is now held.
-    Granted(Vec<Claim>),
-    /// Nothing was taken; these claims conflict.
-    Conflict(Vec<Claim>),
-}
-
-/// `release` arguments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReleaseClaim {
-    /// Whose claims.
-    pub holder: String,
-    /// Exact paths it claimed. Empty releases all of the holder's claims.
-    pub paths: Vec<String>,
-}
-
-/// Which claims to list.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaimFilter {
-    /// Only claims overlapping this path.
-    pub path: Option<String>,
-    /// Only this holder's.
-    pub holder: Option<String>,
-}
-
-fn now_secs() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
-}
-
-fn sql_secs(secs: u64) -> i64 {
-    i64::try_from(secs).unwrap_or(i64::MAX)
 }
 
 impl Store {
@@ -544,146 +440,6 @@ impl Store {
         tx.commit()?;
         Ok(mail)
     }
-
-    /// Take or renew claims on every path, or none if any conflicts.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors. A conflict is an outcome, not an error.
-    pub fn take_claim(&mut self, request: &TakeClaim) -> Result<ClaimOutcome, Error> {
-        let holder = Address::parse(&request.holder)?;
-        if request.paths.is_empty() || request.paths.len() > MAX_CLAIM_PATHS {
-            return Err(Error::invalid_text("paths", "name 1 to 64 paths"));
-        }
-        if request.ttl_secs == 0 || request.ttl_secs > MAX_CLAIM_SECS {
-            return Err(Error::invalid_text("ttl", "must be 1 second to 24 hours"));
-        }
-        if request.note.len() > MAX_NOTE_BYTES || request.note.contains('\0') {
-            return Err(Error::invalid_text(
-                "note",
-                "is over 512 bytes or contains NUL",
-            ));
-        }
-        let mut paths: Vec<String> = Vec::with_capacity(request.paths.len());
-        for path in &request.paths {
-            let path = parse_path(path)?;
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        let now = now_secs();
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        sweep(&tx, now)?;
-        let live = claims(&tx, &ClaimFilter::default())?;
-        let conflicts: Vec<Claim> = live
-            .into_iter()
-            .filter(|claim| {
-                Address::parse(&claim.holder).is_ok_and(|other| other.key != holder.key)
-                    && (claim.exclusive || request.exclusive)
-                    && paths.iter().any(|path| overlaps(path, &claim.path))
-            })
-            .collect();
-        if !conflicts.is_empty() {
-            return Ok(ClaimOutcome::Conflict(conflicts));
-        }
-        let expires = sql_secs(now.saturating_add(request.ttl_secs));
-        let created = timestamp();
-        let mut granted = Vec::with_capacity(paths.len());
-        for path in paths {
-            let existing: Option<i64> = tx
-                .query_row(
-                    "SELECT fence FROM claim WHERE path = ?1 AND holder_key = ?2",
-                    params![&path, holder.key()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let fence = match existing {
-                Some(fence) => fence,
-                None => next_fence(&tx)?,
-            };
-            tx.execute(
-                "INSERT INTO claim (path, holder, holder_key, exclusive, fence, note, expires_at, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(path, holder_key) DO UPDATE SET
-                    holder = excluded.holder, exclusive = excluded.exclusive,
-                    note = excluded.note, expires_at = excluded.expires_at",
-                params![
-                    &path,
-                    holder.display(),
-                    holder.key(),
-                    request.exclusive,
-                    fence,
-                    &request.note,
-                    expires,
-                    &created
-                ],
-            )?;
-            granted.push(Claim {
-                path,
-                holder: holder.display().to_owned(),
-                exclusive: request.exclusive,
-                fence: u64::try_from(fence).unwrap_or(0),
-                note: request.note.clone(),
-                expires_at: u64::try_from(expires).unwrap_or(0),
-            });
-        }
-        append_event(&tx, holder.display(), "claim_taken", &granted)?;
-        tx.commit()?;
-        Ok(ClaimOutcome::Granted(granted))
-    }
-
-    /// Release a holder's claims on exactly these paths, or all of them.
-    /// Returns how many were released.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors.
-    pub fn release_claim(&mut self, request: &ReleaseClaim) -> Result<u64, Error> {
-        let holder = Address::parse(&request.holder)?;
-        let paths = request
-            .paths
-            .iter()
-            .map(|path| parse_path(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut released = 0;
-        if paths.is_empty() {
-            released += tx.execute(
-                "DELETE FROM claim WHERE holder_key = ?1",
-                params![holder.key()],
-            )?;
-        }
-        for path in &paths {
-            released += tx.execute(
-                "DELETE FROM claim WHERE holder_key = ?1 AND path = ?2",
-                params![holder.key(), path],
-            )?;
-        }
-        if released > 0 {
-            append_event(&tx, holder.display(), "claim_released", &paths)?;
-        }
-        tx.commit()?;
-        Ok(u64::try_from(released).unwrap_or(u64::MAX))
-    }
-
-    /// Live claims, by path.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors.
-    pub fn claims(&mut self, filter: &ClaimFilter) -> Result<Vec<Claim>, Error> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        sweep(&tx, now_secs())?;
-        let live = claims(&tx, filter)?;
-        tx.commit()?;
-        Ok(live)
-    }
 }
 
 fn recipients(tx: &Transaction<'_>, id: OpaqueId) -> Result<Vec<String>, Error> {
@@ -691,61 +447,6 @@ fn recipients(tx: &Transaction<'_>, id: OpaqueId) -> Result<Vec<String>, Error> 
         tx.prepare("SELECT recipient FROM mail_delivery WHERE mail_id = ?1 ORDER BY rowid")?;
     let rows = statement.query_map(params![id.as_slice()], |row| row.get(0))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
-}
-
-fn sweep(tx: &Transaction<'_>, now: u64) -> Result<(), Error> {
-    tx.execute(
-        "DELETE FROM claim WHERE expires_at <= ?1",
-        params![sql_secs(now)],
-    )?;
-    Ok(())
-}
-
-fn next_fence(tx: &Transaction<'_>) -> Result<i64, Error> {
-    let fence = tx.query_row(
-        "INSERT INTO claim_fence (id, next) VALUES (1, 1)
-         ON CONFLICT(id) DO UPDATE SET next = next + 1
-         RETURNING next",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(fence)
-}
-
-fn claims(tx: &Transaction<'_>, filter: &ClaimFilter) -> Result<Vec<Claim>, Error> {
-    let path = filter.path.as_deref().map(parse_path).transpose()?;
-    let holder = filter.holder.as_deref().map(Address::parse).transpose()?;
-    let mut statement = tx.prepare(
-        "SELECT path, holder, holder_key, exclusive, fence, note, expires_at
-         FROM claim ORDER BY path, fence",
-    )?;
-    let rows = statement.query_map([], |row| {
-        let fence: i64 = row.get(4)?;
-        let expires: i64 = row.get(6)?;
-        Ok((
-            row.get::<_, String>(2)?,
-            Claim {
-                path: row.get(0)?,
-                holder: row.get(1)?,
-                exclusive: row.get(3)?,
-                fence: u64::try_from(fence).unwrap_or(0),
-                note: row.get(5)?,
-                expires_at: u64::try_from(expires).unwrap_or(0),
-            },
-        ))
-    })?;
-    let mut live = Vec::new();
-    for row in rows {
-        let (key, claim) = row?;
-        let by_path = path
-            .as_deref()
-            .is_none_or(|path| overlaps(path, &claim.path));
-        let by_holder = holder.as_ref().is_none_or(|holder| holder.key == key);
-        if by_path && by_holder {
-            live.push(claim);
-        }
-    }
-    Ok(live)
 }
 
 fn replayed<T: serde::de::DeserializeOwned>(
@@ -797,8 +498,8 @@ fn record(
     Ok(())
 }
 
-/// An event with no client operation id: claims are not replayed by id,
-/// because taking a claim again renews it.
+/// Claim lifecycle changes are conditioned on their acquisition fence, not
+/// replayed by a client operation id. Each committed audit event gets its own id.
 fn append_event(
     tx: &Transaction<'_>,
     actor: &str,
@@ -852,18 +553,6 @@ mod tests {
                 all,
                 mark_read: true,
                 limit: 0,
-            })
-            .unwrap()
-    }
-
-    fn take(store: &mut Store, holder: &str, paths: &[&str], exclusive: bool) -> ClaimOutcome {
-        store
-            .take_claim(&TakeClaim {
-                holder: holder.into(),
-                paths: paths.iter().map(|path| (*path).to_owned()).collect(),
-                exclusive,
-                ttl_secs: 600,
-                note: "test".into(),
             })
             .unwrap()
     }
@@ -958,103 +647,6 @@ mod tests {
             store.send_mail(&changed),
             Err(Error::OperationConflict { .. })
         ));
-    }
-
-    #[test]
-    fn claims_cover_their_subtree_and_exclusive_excludes_others() {
-        let (_dir, mut store) = store();
-        let ClaimOutcome::Granted(first) = take(&mut store, "pi@749", &["/w/phux-int"], true)
-        else {
-            panic!("free path")
-        };
-        let ClaimOutcome::Conflict(holders) = take(&mut store, "@730", &["/w/phux-int/src"], false)
-        else {
-            panic!("inside an exclusive claim")
-        };
-        assert_eq!(holders[0].holder, "pi@749");
-        assert!(
-            matches!(
-                take(&mut store, "@730", &["/w/phux-int-other"], true),
-                ClaimOutcome::Granted(_)
-            ),
-            "a sibling with a shared prefix is a different path"
-        );
-        let ClaimOutcome::Granted(renewed) = take(&mut store, "@749", &["/w/phux-int"], true)
-        else {
-            panic!("the holder renews")
-        };
-        assert_eq!(
-            renewed[0].fence, first[0].fence,
-            "a renewal keeps its fence"
-        );
-        assert_eq!(
-            store
-                .release_claim(&ReleaseClaim {
-                    holder: "pi@749".into(),
-                    paths: Vec::new()
-                })
-                .unwrap(),
-            1
-        );
-        let ClaimOutcome::Granted(next) = take(&mut store, "@730", &["/w/phux-int/src"], true)
-        else {
-            panic!("released")
-        };
-        assert!(
-            next[0].fence > first[0].fence,
-            "a new claim takes a new fence"
-        );
-    }
-
-    #[test]
-    fn shared_claims_coexist_and_a_conflict_takes_nothing() {
-        let (_dir, mut store) = store();
-        assert!(matches!(
-            take(&mut store, "a", &["/r"], false),
-            ClaimOutcome::Granted(_)
-        ));
-        assert!(matches!(
-            take(&mut store, "b", &["/r/x"], false),
-            ClaimOutcome::Granted(_)
-        ));
-        assert!(matches!(
-            take(&mut store, "c", &["/elsewhere", "/r/y"], true),
-            ClaimOutcome::Conflict(_)
-        ));
-        let held = store
-            .claims(&ClaimFilter {
-                path: Some("/elsewhere".into()),
-                holder: None,
-            })
-            .unwrap();
-        assert!(held.is_empty(), "all or nothing");
-    }
-
-    #[test]
-    fn expired_claims_free_their_path() {
-        let (_dir, mut store) = store();
-        assert!(matches!(
-            take(&mut store, "a", &["/r"], true),
-            ClaimOutcome::Granted(_)
-        ));
-        store
-            .conn
-            .execute("UPDATE claim SET expires_at = 1", [])
-            .unwrap();
-        assert!(matches!(
-            take(&mut store, "b", &["/r"], true),
-            ClaimOutcome::Granted(_)
-        ));
-        assert_eq!(store.claims(&ClaimFilter::default()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn paths_must_be_absolute_and_normalized() {
-        for bad in ["relative", "/", "/a/../b", "/a//b", "/a/./b"] {
-            assert!(parse_path(bad).is_err(), "{bad}");
-        }
-        assert_eq!(parse_path("/a/b/").unwrap(), "/a/b");
-        assert!(overlaps("/a", "/a/b") && overlaps("/a/b", "/a") && !overlaps("/a", "/ab"));
     }
 
     #[test]

@@ -107,6 +107,12 @@ pub enum Error {
         /// The reader that asked.
         reader: String,
     },
+    /// This holder has no live lease at the supplied fence.
+    #[error("no live claim at fence {fence} for this holder")]
+    NoClaim {
+        /// The requested lease incarnation.
+        fence: u64,
+    },
     /// The operating system could not mint an id.
     #[error("could not mint an id: {0}")]
     Random(String),

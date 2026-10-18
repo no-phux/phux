@@ -406,6 +406,12 @@ pub(crate) const TOOLS: &[Row] = &[
     residue("phux_mail_ack", "mail ack", COORD, Touches::LocalWrite),
     residue("phux_claim_take", "claim take", COORD, Touches::LocalWrite),
     residue(
+        "phux_claim_renew",
+        "claim renew",
+        COORD,
+        Touches::LocalWrite,
+    ),
+    residue(
         "phux_claim_release",
         "claim release",
         COORD,

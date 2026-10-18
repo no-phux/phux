@@ -1,6 +1,6 @@
 //! Agent coordination over MCP (ADR-0187): `phux_mail_send`,
 //! `phux_mail_read`, `phux_mail_ack`, `phux_claim_take`,
-//! `phux_claim_release`, and `phux_claim_list`. Each is a transport for
+//! `phux_claim_renew`, `phux_claim_release`, and `phux_claim_list`. Each is a transport for
 //! the canonical CLI's `phux.coord/v1` document, so the work store has one
 //! client and one identity rule: the adapter runs in the agent's pane and
 //! speaks as that pane unless `as` says otherwise.
@@ -30,6 +30,7 @@ pub(crate) fn schemas() -> Vec<Value> {
         mail_read_schema(),
         mail_ack_schema(),
         claim_take_schema(),
+        claim_renew_schema(),
         claim_release_schema(),
         claim_list_schema(),
     ]
@@ -44,6 +45,7 @@ pub(crate) fn owns(name: &str) -> bool {
             | "phux_mail_read"
             | "phux_mail_ack"
             | "phux_claim_take"
+            | "phux_claim_renew"
             | "phux_claim_release"
             | "phux_claim_list"
     )
@@ -125,28 +127,34 @@ fn argv(name: &str, args: &Value) -> Result<Vec<String>, ToolError> {
     match name {
         "phux_mail_send" => mail_send_argv(args),
         "phux_mail_read" => mail_read_argv(args),
-        "phux_mail_ack" => {
-            strict_object(args, &["id", "as"], &["id"])?;
-            let mut argv = vec!["mail".into(), "ack".into(), "--json".into()];
-            push_as(&mut argv, args)?;
-            argv.push("--".into());
-            argv.push(string(args, "id")?.unwrap_or_default().to_owned());
-            Ok(argv)
-        }
+        "phux_mail_ack" => mail_ack_argv(args),
         "phux_claim_take" => claim_take_argv(args),
-        "phux_claim_release" => {
-            strict_object(args, &["paths", "as"], &[])?;
-            let mut argv = vec!["claim".into(), "release".into(), "--json".into()];
-            push_as(&mut argv, args)?;
-            argv.push("--".into());
-            argv.extend(absolute_paths(args)?);
-            Ok(argv)
-        }
+        "phux_claim_renew" => claim_receipt_argv("renew", args),
+        "phux_claim_release" => claim_receipt_argv("release", args),
         "phux_claim_list" => claim_list_argv(args),
         other => Err(ToolError::new(format!(
             "unknown coordination tool: {other}"
         ))),
     }
+}
+
+fn mail_ack_argv(args: &Value) -> Result<Vec<String>, ToolError> {
+    strict_object(args, &["id", "as"], &["id"])?;
+    let mut argv = vec!["mail".into(), "ack".into(), "--json".into()];
+    push_as(&mut argv, args)?;
+    argv.push("--".into());
+    argv.push(string(args, "id")?.unwrap_or_default().to_owned());
+    Ok(argv)
+}
+
+fn push_ttl(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
+    if let Some(ttl) = args.get("ttl_secs") {
+        let ttl = ttl
+            .as_u64()
+            .ok_or_else(|| ToolError::new("`ttl_secs` must be a positive integer"))?;
+        argv.extend(["--ttl".into(), ttl.to_string()]);
+    }
+    Ok(())
 }
 
 fn mail_send_argv(args: &Value) -> Result<Vec<String>, ToolError> {
@@ -202,25 +210,38 @@ fn claim_take_argv(args: &Value) -> Result<Vec<String>, ToolError> {
         &["paths"],
     )?;
     let paths = absolute_paths(args)?;
-    if paths.is_empty() {
-        return Err(ToolError::new("`paths` names at least one path"));
-    }
     let mut argv: Vec<String> = vec!["claim".into(), "take".into(), "--json".into()];
     if flag(args, "shared")? {
         argv.push("--shared".into());
     }
-    if let Some(ttl) = args.get("ttl_secs") {
-        let ttl = ttl
-            .as_u64()
-            .ok_or_else(|| ToolError::new("`ttl_secs` must be a positive integer"))?;
-        argv.extend(["--ttl".into(), ttl.to_string()]);
-    }
+    push_ttl(&mut argv, args)?;
     if let Some(note) = string(args, "note")? {
         argv.extend(["--note".into(), note.to_owned()]);
     }
     push_as(&mut argv, args)?;
     argv.push("--".into());
     argv.extend(paths);
+    Ok(argv)
+}
+
+fn claim_receipt_argv(verb: &str, args: &Value) -> Result<Vec<String>, ToolError> {
+    let fields: &[&str] = if verb == "renew" {
+        &["fence", "ttl_secs", "as"]
+    } else {
+        &["fence", "as"]
+    };
+    strict_object(args, fields, &["fence"])?;
+    let fence = args
+        .get("fence")
+        .and_then(Value::as_u64)
+        .filter(|fence| *fence > 0 && i64::try_from(*fence).is_ok())
+        .ok_or_else(|| {
+            ToolError::new("`fence` must be a positive signed 64-bit integer from acquisition")
+        })?;
+    let mut argv = vec!["claim".into(), verb.into(), "--json".into()];
+    push_ttl(&mut argv, args)?;
+    push_as(&mut argv, args)?;
+    argv.extend(["--".into(), fence.to_string()]);
     Ok(argv)
 }
 
@@ -251,6 +272,9 @@ fn require_absolute(path: &str) -> Result<(), ToolError> {
 
 fn absolute_paths(args: &Value) -> Result<Vec<String>, ToolError> {
     let paths = strings(args, "paths")?;
+    if paths.is_empty() {
+        return Err(ToolError::new("`paths` names at least one path"));
+    }
     for path in &paths {
         require_absolute(path)?;
     }
@@ -336,8 +360,9 @@ fn claim_take_schema() -> Value {
         "phux_claim_take",
         "Claim absolute paths before working there, so other agents know to leave them alone. A \
          claim covers its path and everything under it. All paths are claimed or none. An \
-         exclusive claim (default) conflicts with any other holder's overlapping claim; \
-         `shared` claims coexist. Claiming again renews and keeps the fence. A CONFLICT IS AN \
+         exclusive claim (default) conflicts with any overlapping acquisition; \
+         `shared` claims coexist. Taking never renews an existing lease, even at the same \
+         address. Every path in one acquisition shares its fence. A CONFLICT IS AN \
          ANSWER, NOT AN ERROR: branch on `claim.outcome` (`granted` or `conflict`); a conflict \
          lists the holders, so mail them. Claims are advisory and lapse after `ttl_secs` \
          (default 3600, at most 86400). Result: `{schema: \"phux.coord/v1\", holder, claim: \
@@ -353,16 +378,35 @@ fn claim_take_schema() -> Value {
     )
 }
 
+fn fence_schema() -> Value {
+    json!({"type": "integer", "minimum": 1, "maximum": i64::MAX, "description": "Exact fence returned by the acquisition, shared by all its paths."})
+}
+
+fn claim_renew_schema() -> Value {
+    schema(
+        "phux_claim_renew",
+        "Renew precisely the live acquisition at this holder and fence. Paths, sharing mode \
+         and note are unchanged; its whole path set renews atomically. An expired, foreign \
+         or superseded receipt fails with claim_not_found and never acquires anew. \
+         Result: {schema: phux.coord/v1, holder, claims: [...] }.",
+        json!({
+            "fence": fence_schema(),
+            "ttl_secs": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "as": address(),
+        }),
+        &["fence"],
+    )
+}
+
 fn claim_release_schema() -> Value {
     schema(
         "phux_claim_release",
-        "Release your claims on exactly these absolute paths, or all of yours when `paths` is \
-         empty. Result: `{schema: \"phux.coord/v1\", holder, released}`.",
-        json!({
-            "paths": path_list("Exact paths you claimed. Empty releases all of yours."),
-            "as": address(),
-        }),
-        &[],
+        "Release precisely the acquisition at this holder and fence, including every path \
+         it acquired. Stale or repeated cleanup returns released=0 and cannot remove a \
+         replacement. No name-only, path-only or release-all mutation is supported. \
+         Result: {schema: phux.coord/v1, holder, released}.",
+        json!({"fence": fence_schema(), "as": address()}),
+        &["fence"],
     )
 }
 
@@ -423,6 +467,39 @@ mod tests {
                 "claim", "take", "--json", "--shared", "--ttl", "60", "--as", "pi@749", "--", "/a"
             ]
         );
+    }
+
+    #[test]
+    fn lease_mutations_require_the_exact_receipt_and_reject_unsafe_forms() {
+        for tool in ["phux_claim_renew", "phux_claim_release"] {
+            for bad in [
+                json!({}),
+                json!({"fence": 0}),
+                json!({"fence": -1}),
+                json!({"fence": "1"}),
+                json!({"fence": 1.5}),
+                json!({"fence": u64::MAX}),
+                json!({"paths": ["/a"]}),
+                json!({"fence": 1, "paths": []}),
+            ] {
+                assert!(argv(tool, &bad).is_err(), "{tool}: {bad}");
+            }
+        }
+        assert_eq!(
+            argv(
+                "phux_claim_renew",
+                &json!({"fence": 12, "ttl_secs": 60, "as": "@749"})
+            )
+            .unwrap(),
+            [
+                "claim", "renew", "--json", "--ttl", "60", "--as", "@749", "--", "12"
+            ]
+        );
+        assert_eq!(
+            argv("phux_claim_release", &json!({"fence": 12})).unwrap(),
+            ["claim", "release", "--json", "--", "12"]
+        );
+        assert!(argv("phux_claim_release", &json!({"fence": 12, "ttl_secs": 60})).is_err());
     }
 
     #[test]

@@ -11,8 +11,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::coord::{
-    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, SendMail, Sent,
-    TakeClaim,
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail,
+    Sent, TakeClaim,
 };
 use crate::error::Error;
 use crate::id::Alias;
@@ -257,7 +257,7 @@ impl Client {
         }
     }
 
-    /// Take or renew claims. See [`crate::Store::take_claim`].
+    /// Acquire a new lease. See [`crate::Store::take_claim`].
     ///
     /// # Errors
     ///
@@ -265,6 +265,18 @@ impl Client {
     pub fn take_claim(&self, request: TakeClaim) -> Result<ClaimOutcome, Error> {
         match self.call(Request::TakeClaim(request))? {
             Response::ClaimOutcome(outcome) => Ok(outcome),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Renew a live lease. See [`crate::Store::renew_claim`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], or [`Error::NoClaim`] for a stale receipt.
+    pub fn renew_claim(&self, request: RenewClaim) -> Result<Vec<Claim>, Error> {
+        match self.call(Request::RenewClaim(request))? {
+            Response::Claims(claims) => Ok(claims),
             other => Err(unexpected(&other)),
         }
     }
@@ -293,12 +305,55 @@ impl Client {
         }
     }
 
-    fn call(&self, request: Request) -> Result<Response, Error> {
-        let mut line = serde_json::to_string(&Envelope {
-            build: BUILD.to_owned(),
-            request,
+    /// A legacy parser can reject a new operation before checking compatibility.
+    /// Probe it once with the stable, read-only v1 List shape. With a different
+    /// compatibility stamp it retires before dispatching even that operation.
+    /// Only an explicit Stale response permits replacement; compatible parser
+    /// errors are returned unchanged and never retried as mutations.
+    fn compatible_exchange(
+        &self,
+        stream: &UnixStream,
+        line: &str,
+        allow_upgrade: bool,
+    ) -> Result<Option<Response>, Error> {
+        let response = exchange(stream, line)?;
+        let legacy_rejection = matches!(
+            &response,
+            Response::Fault(Fault::BadRequest { keeper: None, .. })
+        );
+        if !allow_upgrade || !legacy_rejection {
+            return classify_reply(response, allow_upgrade);
+        }
+        let probe = encode_request(Request::List(ListFilter {
+            repo: None,
+            archived: false,
+        }))?;
+        let probe_stream = UnixStream::connect(&self.endpoint.socket)
+            .map_err(|err| Error::Keeper(format!("legacy compatibility probe: {err}")))?;
+        match exchange(&probe_stream, &probe)? {
+            stale @ Response::Fault(Fault::Stale { .. }) => classify_reply(stale, allow_upgrade),
+            _ => classify_reply(response, allow_upgrade),
+        }
+    }
+
+    fn start_if_needed(&self, keeper: &mut Option<Child>, spawns: &mut u32) -> Result<(), Error> {
+        let launcher = self.launcher.as_ref().ok_or_else(|| {
+            Error::Keeper(format!("no keeper at {}", self.endpoint.socket.display()))
         })?;
-        line.push('\n');
+        // Only the exact Child we started is considered in-flight. This is not
+        // an ownership check or a reason to kill another process.
+        let starting = keeper
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if !starting && *spawns < MAX_SPAWNS {
+            *keeper = Some(launcher.spawn()?);
+            *spawns += 1;
+        }
+        Ok(())
+    }
+
+    fn call(&self, request: Request) -> Result<Response, Error> {
+        let line = encode_request(request)?;
         let started = Instant::now();
         let mut pause = PAUSE_START;
         let mut keeper: Option<Child> = None;
@@ -306,35 +361,16 @@ impl Client {
         let mut replaced_stale = false;
         loop {
             match UnixStream::connect(&self.endpoint.socket) {
-                Ok(stream) => match exchange(&stream, &line)? {
+                Ok(stream) => match self.compatible_exchange(&stream, &line, !replaced_stale)? {
                     // That keeper exits after saying so; start this build's.
-                    Response::Fault(Fault::Stale { .. }) if !replaced_stale => {
+                    None => {
                         replaced_stale = true;
                         keeper = None;
                     }
-                    Response::Fault(fault) => return Err(fault.into()),
-                    response => return Ok(response),
+                    Some(response) => return Ok(response),
                 },
-                Err(err)
-                    if matches!(
-                        err.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    ) =>
-                {
-                    let Some(launcher) = &self.launcher else {
-                        return Err(Error::Keeper(format!(
-                            "no keeper at {}",
-                            self.endpoint.socket.display()
-                        )));
-                    };
-                    // Start one unless the one we started is still coming up.
-                    let starting = keeper
-                        .as_mut()
-                        .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-                    if !starting && spawns < MAX_SPAWNS {
-                        keeper = Some(launcher.spawn()?);
-                        spawns += 1;
-                    }
+                Err(err) if socket_unavailable(&err) => {
+                    self.start_if_needed(&mut keeper, &mut spawns)?;
                 }
                 Err(err) => {
                     return Err(Error::Keeper(format!(
@@ -351,6 +387,33 @@ impl Client {
             pause = (pause * 2).min(PAUSE_CAP);
         }
     }
+}
+
+/// None is an explicit incompatibility acknowledgement, never a missing reply.
+/// Transport failures remain errors; no extra allocation or owner state is needed.
+fn classify_reply(response: Response, allow_upgrade: bool) -> Result<Option<Response>, Error> {
+    match response {
+        Response::Fault(Fault::Stale { .. }) if allow_upgrade => Ok(None),
+        Response::Fault(fault) => Err(fault.into()),
+        response => Ok(Some(response)),
+    }
+}
+
+/// A transport condition only; the store lock still decides writer ownership.
+fn socket_unavailable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+fn encode_request(request: Request) -> Result<String, Error> {
+    let mut line = serde_json::to_string(&Envelope {
+        build: BUILD.to_owned(),
+        request,
+    })?;
+    line.push('\n');
+    Ok(line)
 }
 
 fn exchange(stream: &UnixStream, line: &str) -> Result<Response, Error> {
@@ -382,4 +445,36 @@ fn applied(response: Response) -> Result<Applied, Error> {
 
 fn unexpected(response: &Response) -> Error {
     Error::Keeper(format!("unexpected reply: {response:?}"))
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #![allow(clippy::unwrap_used, reason = "test assertions")]
+    use super::*;
+
+    #[test]
+    fn versioned_errors_and_a_used_upgrade_budget_never_trigger_a_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(Endpoint::new(dir.path(), dir.path()), None);
+        for (keeper, allow_upgrade) in [(Some(BUILD.to_owned()), true), (None, false)] {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            let fault = Response::Fault(Fault::BadRequest {
+                message: "invalid payload".into(),
+                keeper,
+            });
+            let reply = serde_json::to_string(&fault).unwrap() + "\n";
+            std::io::Write::write_all(&mut peer, reply.as_bytes()).unwrap();
+            let line = encode_request(Request::List(ListFilter {
+                repo: None,
+                archived: false,
+            }))
+            .unwrap();
+            // The endpoint has no listener. Any compatibility probe would fail,
+            // rather than returning this unchanged parser error.
+            let response = client.compatible_exchange(&stream, &line, allow_upgrade);
+            assert!(
+                matches!(response, Err(Error::Keeper(message)) if message == "invalid payload")
+            );
+        }
+    }
 }

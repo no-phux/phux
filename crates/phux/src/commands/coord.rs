@@ -20,8 +20,8 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 use phux_work::{
-    AckMail, Address, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, SendMail,
-    TakeClaim,
+    AckMail, Address, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim,
+    SendMail, TakeClaim,
 };
 
 use super::json_err::{self, codes};
@@ -91,7 +91,7 @@ pub(crate) enum ClaimAction {
         /// Paths to claim. Each covers everything under it.
         #[usage(required, value_name = "PATH")]
         paths: Vec<String>,
-        /// Share with other shared claims instead of excluding every other holder.
+        /// Share with shared acquisitions; taking never renews a live lease.
         #[usage(long)]
         shared: bool,
         /// Seconds until the claim lapses unless renewed. Default 3600, at most 86400.
@@ -105,11 +105,24 @@ pub(crate) enum ClaimAction {
         #[usage(flatten)]
         json: super::JsonOpt,
     },
-    /// Release your claims on these paths, or all of them
+    /// Renew a live acquisition without changing its paths or sharing mode
+    Renew {
+        /// The fence returned when this acquisition was granted.
+        #[usage(value_name = "FENCE")]
+        fence: u64,
+        /// New lifetime from now. Default 3600, at most 86400 seconds.
+        #[usage(long, value_name = "SECS")]
+        ttl: Option<u64>,
+        #[usage(flatten)]
+        me: AsOpt,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+    /// Release precisely one acquisition; repeating stale cleanup is harmless
     Release {
-        /// Exact paths you claimed. None releases all of yours.
-        #[usage(value_name = "PATH")]
-        paths: Vec<String>,
+        /// The fence returned when this acquisition was granted.
+        #[usage(value_name = "FENCE")]
+        fence: u64,
         #[usage(flatten)]
         me: AsOpt,
         #[usage(flatten)]
@@ -145,12 +158,12 @@ fn whoami(me: &AsOpt) -> String {
     me.me
         .clone()
         .or_else(|| env(ADDRESS_ENV))
-        .or_else(|| {
-            env("PHUX_TERMINAL_ID")
-                .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit()))
-                .map(|id| format!("@{id}"))
-        })
+        .or_else(|| env("PHUX_TERMINAL_ID").map(|id| terminal_address(&id)))
         .unwrap_or_else(super::mission::actor)
+}
+
+fn terminal_address(value: &str) -> String {
+    format!("@{}", value.strip_prefix('@').unwrap_or(value))
 }
 
 pub(crate) fn run_mail(action: &MailAction, socket: Option<PathBuf>) -> ExitCode {
@@ -199,7 +212,13 @@ pub(crate) fn run_claim(action: &ClaimAction) -> ExitCode {
             &whoami(me),
             json.json,
         ),
-        ClaimAction::Release { paths, me, json } => release(paths, &whoami(me), json.json),
+        ClaimAction::Renew {
+            fence,
+            ttl,
+            me,
+            json,
+        } => renew(*fence, *ttl, &whoami(me), json.json),
+        ClaimAction::Release { fence, me, json } => release(*fence, &whoami(me), json.json),
         ClaimAction::List { path, holder, json } => {
             list(path.as_deref(), holder.clone(), json.json)
         }
@@ -535,7 +554,7 @@ fn take(
         }
         ClaimOutcome::Conflict(claims) => {
             if !json {
-                error!("held by someone else; nothing was claimed");
+                error!("a live acquisition overlaps; nothing was claimed");
                 print_claims(&claims);
                 hint!(
                     "ask the holder with `phux mail send HOLDER -t THREAD -m ...`, or wait for it to lapse"
@@ -546,18 +565,35 @@ fn take(
     }
 }
 
-fn release(paths: &[String], me: &str, json: bool) -> ExitCode {
-    let paths = match absolutes(json, paths) {
-        Ok(paths) => paths,
+fn renew(fence: u64, ttl: Option<u64>, me: &str, json: bool) -> ExitCode {
+    let client = match store(json) {
+        Ok(client) => client,
         Err(code) => return code,
     };
+    match client.renew_claim(RenewClaim {
+        holder: me.to_owned(),
+        fence,
+        ttl_secs: ttl.unwrap_or(DEFAULT_TTL_SECS),
+    }) {
+        Ok(claims) => {
+            if json {
+                emit(&serde_json::json!({"schema": SCHEMA, "holder": me, "claims": claims}));
+            } else {
+                print_claims(&claims);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => super::mission::report_as(json, &err, SCHEMA),
+    }
+}
+fn release(fence: u64, me: &str, json: bool) -> ExitCode {
     let client = match store(json) {
         Ok(client) => client,
         Err(code) => return code,
     };
     match client.release_claim(ReleaseClaim {
         holder: me.to_owned(),
-        paths,
+        fence,
     }) {
         Ok(released) => {
             if json {
@@ -637,6 +673,22 @@ mod tests {
     fn claimed_paths_are_absolute_and_normalized_without_touching_disk() {
         assert_eq!(absolute("/a/./b/../c/").unwrap(), "/a/c");
         assert!(absolute("rel").unwrap().starts_with('/'));
+    }
+
+    #[test]
+    fn native_and_legacy_terminal_context_keep_their_pane_identity() {
+        for id in [730, 749] {
+            let native = ResourceId::local(id).to_string();
+            let expected = format!("@{id}");
+            assert_eq!(terminal_address(&native), expected);
+            assert_eq!(terminal_address(&id.to_string()), expected);
+            assert_eq!(
+                Address::parse(&terminal_address(&native)).unwrap().key(),
+                expected
+            );
+        }
+        assert_ne!(terminal_address("@730"), terminal_address("@749"));
+        assert!(Address::parse(&terminal_address("malformed")).is_err());
     }
 
     #[test]

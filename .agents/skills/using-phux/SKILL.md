@@ -109,10 +109,16 @@ phux mail send pi@749 -t pr-1622 -m "rebased; CI is green"
 phux mail read                           # unread mail to your pane; marks it read
 phux mail ack 0123...cdef                # tell the sender it was handled
 phux claim take ~/work/shared-checkout --note "landing #1622"
-phux claim release                       # all of yours, when done
+phux claim renew 42 --ttl 3600           # use the fence returned by take
+phux claim release 42                    # exactly that acquisition, when done
 ```
 
-You speak as your pane (`@N`). Claims are advisory and lapse unless renewed.
+You speak as your pane (`@N`), including headless children. Keep the returned
+fence: it identifies the whole acquired path set. Taking again never renews
+another acquisition, even from your own pane. Renew/release require that exact
+fence; stale cleanup cannot remove a replacement. Do not replace a stale
+receipt with a newly listed fence automatically. Claims are advisory; only
+explicit release or expiry frees them, not a worker exit or a quiet pane.
 
 <!-- phux-skill-region: terminal -->
 ## Driving interactive terminals

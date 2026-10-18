@@ -730,6 +730,11 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
             1,
             "retry; if it persists, check `keeper.log` beside the work store",
         ),
+        phux_work::Error::NoClaim { .. } => (
+            codes::CLAIM_NOT_FOUND,
+            1,
+            "inspect `phux claim list`; acquire anew rather than renewing an expired receipt",
+        ),
         phux_work::Error::NoMail { .. } => (
             codes::MAIL_NOT_FOUND,
             1,

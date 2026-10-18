@@ -990,10 +990,18 @@ read unless `--peek`; with `--thread` it includes what the reader sent there.
 `claim take` returns `{schema, holder, claim: {outcome, claims}}` with
 `outcome` `granted` or `conflict`; a conflict exits 1 and takes nothing.
 Each claim is `{path, holder, exclusive, fence, note, expires_at}`
-(`expires_at` in Unix seconds). A claim covers its absolute path and
-everything under it; renewing keeps `fence`, a new claim takes the next one.
-`claim release` returns `{schema, holder, released}`; `claim list` returns
-`{schema, claims}`.
+(`expires_at` in Unix seconds). Each atomic acquisition shares one `fence`
+across its path set. Taking again never adopts or renews an existing lease,
+even from the same pane. `claim renew FENCE` returns `{schema, holder, claims}`
+and extends only that live acquisition, preserving its paths and sharing
+mode; a stale or foreign receipt is `claim_not_found`, exit 1.
+`claim release FENCE` returns `{schema, holder, released}` and removes only
+that acquisition. Repeated or stale cleanup returns zero, never removing a
+replacement. There is no path-only or release-all mutation.
+`claim list` returns `{schema, claims}`. A worker exit is not lease expiry;
+handoff requires stopping writes, releasing the exact old receipt, then
+acquiring a fresh fence. Do not silently upgrade a stale receipt to a newly
+listed fence.
 
 ### Other `--json` verbs
 

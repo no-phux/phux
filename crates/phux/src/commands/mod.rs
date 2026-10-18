@@ -1404,14 +1404,15 @@ pub(crate) enum Command {
     /// Claim paths so other agents leave them alone
     ///
     /// A claim covers its path and everything under it, lives in the work
-    /// store, and lapses at its deadline unless renewed by claiming again.
-    /// An exclusive claim (the default) excludes every other holder;
-    /// `--shared` claims coexist. Each new claim takes the next fence
-    /// number. Claims are advisory: they tell agents who is working where,
-    /// and nothing stops a write.
+    /// store, and lapses at its deadline. Every atomic acquisition receives
+    /// one fence. Taking again never adopts a live lease, even from the same
+    /// pane; `renew FENCE` and `release FENCE` require its exact receipt.
+    /// Exclusive acquisitions conflict on overlapping paths; shared holders
+    /// can coexist. Process exit does not free a lease. Claims are advisory:
+    /// they tell agents who is working where, and nothing stops a write.
     ///
     /// `--json` prints a document whose `schema` is `phux.coord/v1`. Exit
-    /// status: 0 success; 1 another holder conflicts, and nothing was
+    /// status: 0 success; 1 a live acquisition conflicts, and nothing was
     /// claimed, or the store failed; 2 the command line was refused.
     #[usage(help_heading = "Agents", display_order = 38)]
     Claim {

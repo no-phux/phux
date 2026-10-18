@@ -13,7 +13,7 @@
 //! starts a keeper when none answers. Nothing outside the keeper opens a
 //! [`Store`].
 //!
-//! Every mutation carries an [`OperationId`]. Replaying the same id with
+//! Objective and mail mutations carry an [`OperationId`]. Replaying the same id with
 //! the same contents is a no-op; a different body is a conflict. Structural
 //! edits bump the objective's revision, and a write that names a stale
 //! revision fails.
@@ -45,7 +45,7 @@ mod wire;
 pub use client::{Client, Launcher};
 pub use coord::{
     AckMail, Address, Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, Mail, ReadMail,
-    ReleaseClaim, SendMail, Sent, TakeClaim,
+    ReleaseClaim, RenewClaim, SendMail, Sent, TakeClaim,
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};

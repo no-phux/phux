@@ -1957,6 +1957,56 @@
       "claim"
     ]
   },
+  "phux_claim_renew": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "phux.coord/v1"
+      },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "exclusive": {
+              "type": "boolean"
+            },
+            "fence": {
+              "type": "integer"
+            },
+            "note": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "holder",
+            "exclusive",
+            "fence",
+            "expires_at"
+          ]
+        }
+      },
+      "holder": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema",
+      "claims",
+      "holder"
+    ]
+  },
   "phux_claim_release": {
     "type": "object",
     "properties": {

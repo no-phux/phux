@@ -61,8 +61,12 @@ pane: the mail is stored and the recipient's pane is rung with one line naming
 you and the thread. Read with `phux_mail_read`, acknowledge handled messages
 with `phux_mail_ack`, and reply in the same thread. Before working in a shared
 checkout, `phux_claim_take` its absolute path; a `conflict` outcome names the
-holder, so mail them. `phux_claim_release` when done. You speak as your own
-pane. Claims are advisory and lapse unless renewed.
+holder, so mail them. Keep the returned fence, shared by that acquisition's
+whole path set. Use `phux_claim_renew` with that fence to extend it, and
+`phux_claim_release` with it when done. Taking again never adopts a live
+acquisition, including one from your own pane. A stale receipt must not be
+replaced with a newly listed fence automatically. You speak as your own pane;
+claims lapse at expiry, not when a worker appears finished.
 
 ## Safety
 

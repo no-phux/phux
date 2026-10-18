@@ -64,6 +64,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_mail_read` | `phux mail read` | CLI | no | no |
 | `phux_mail_ack` | `phux mail ack` | CLI | no | no |
 | `phux_claim_take` | `phux claim take` | CLI | no | no |
+| `phux_claim_renew` | `phux claim renew` | CLI | no | no |
 | `phux_claim_release` | `phux claim release` | CLI | no | no |
 | `phux_claim_list` | `phux claim list` | CLI | yes | no |
 | `phux_status` | `phux status` | CLI | yes | no |
@@ -100,6 +101,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_mail_read`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
 - `phux_mail_ack`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
 - `phux_claim_take`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
+- `phux_claim_renew`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
 - `phux_claim_release`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
 - `phux_claim_list`: the work store's keeper is started and addressed by the phux binary, and the caller's address comes from its pane, which the CLI resolves.
 - `phux_status`: the status document (peer-credential pid, service state, log paths) is assembled by the CLI command.

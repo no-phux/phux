@@ -1080,20 +1080,24 @@ Global flags:
 Claim paths so other agents leave them alone
 
 A claim covers its path and everything under it, lives in the work store, and
-lapses at its deadline unless renewed by claiming again. An exclusive claim (the
-default) excludes every other holder; `--shared` claims coexist. Each new claim
-takes the next fence number. Claims are advisory: they tell agents who is
-working where, and nothing stops a write.
+lapses at its deadline. Every atomic acquisition receives one fence. Taking
+again never adopts a live lease, even from the same pane; `renew FENCE` and
+`release FENCE` require its exact receipt. Exclusive acquisitions conflict on
+overlapping paths; shared holders can coexist. Process exit does not free a
+lease. Claims are advisory: they tell agents who is working where, and nothing
+stops a write.
 
 `--json` prints a document whose `schema` is `phux.coord/v1`. Exit status: 0
-success; 1 another holder conflicts, and nothing was claimed, or the store
+success; 1 a live acquisition conflicts, and nothing was claimed, or the store
 failed; 2 the command line was refused.
 
 Usage: phux claim <SUBCOMMAND>
 
 Commands:
   list     List live claims
-  release  Release your claims on these paths, or all of them
+  release  Release precisely one acquisition; repeating stale cleanup is
+           harmless
+  renew    Renew a live acquisition without changing its paths or sharing mode
   take     Claim paths, all or none; exits 1 naming the holders on a conflict
   help     Print this message or the help of the given subcommand(s)
 
@@ -1126,14 +1130,37 @@ Global flags:
 ## `phux claim release`
 
 ```text
-Release your claims on these paths, or all of them
+Release precisely one acquisition; repeating stale cleanup is harmless
 
-Usage: phux claim release [--as <ADDRESS>] [--json] [PATH]…
+Usage: phux claim release [--as <ADDRESS>] [--json] <FENCE>
 
 Arguments:
-  [PATH]…  Exact paths you claimed. None releases all of yours.
+  <FENCE>  The fence returned when this acquisition was granted.
 
 Flags:
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux claim renew`
+
+```text
+Renew a live acquisition without changing its paths or sharing mode
+
+Usage: phux claim renew [FLAGS] <FENCE>
+
+Arguments:
+  <FENCE>  The fence returned when this acquisition was granted.
+
+Flags:
+      --ttl <SECS>     New lifetime from now. Default 3600, at most 86400
+                       seconds.
       --as <ADDRESS>   Speak as this address instead of this pane.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
@@ -1155,8 +1182,8 @@ Arguments:
   <PATH>…  Paths to claim. Each covers everything under it.
 
 Flags:
-      --shared         Share with other shared claims instead of excluding every
-                       other holder.
+      --shared         Share with shared acquisitions; taking never renews a
+                       live lease.
       --ttl <SECS>     Seconds until the claim lapses unless renewed. Default
                        3600, at most 86400.
       --note <TEXT>    Why, shown to anyone the claim blocks.
