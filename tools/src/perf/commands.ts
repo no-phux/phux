@@ -28,7 +28,7 @@ function run(sub: string | undefined, args: string[]): number {
       const { lines, failures } = compare(measured(args), loadBaseline());
       console.log(lines.join("\n"));
       if (failures.length === 0) return 0;
-      console.error(`perf-icount: see docs/performance-ci.md\n${failures.join("\n")}`);
+      console.error(`perf-icount: see docs/development.md#performance\n${failures.join("\n")}`);
       return 1;
     }
     case "update":

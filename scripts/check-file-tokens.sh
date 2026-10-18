@@ -56,12 +56,15 @@ is_lockfile() {
 
 has_exempt_attribute() {
     git check-attr --cached linguist-generated linguist-vendored -- "$1" |
-        grep -qE ': (set|true)$'
+        grep -E ': (set|true)$' >/dev/null
 }
 
 has_generated_header() {
-    git cat-file blob ":$1" 2>/dev/null | head -c 2048 |
-        LC_ALL=C grep -qiE '@generated|code generated|auto-?generated|do not edit'
+    # Inspect only the prefix, but drain the blob so pipefail cannot turn an
+    # exemption into a platform-dependent SIGPIPE. Keep producer/read failures.
+    git cat-file blob ":$1" 2>/dev/null |
+        { head -c 2048 && cat >/dev/null; } |
+        LC_ALL=C grep -iE '@generated|code generated|auto-?generated|do not edit' >/dev/null
 }
 
 parent_has_blob() {

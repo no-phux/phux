@@ -31,7 +31,7 @@ Wake GPUI from the runtime's `Listener`, drain `Client::take_activity` on
 the UI thread, and `cx.notify()` the terminal on `Event::TerminalChanged`.
 [`examples/embed.rs`](examples/embed.rs) does all of it in one file:
 
-Use the [isolated example command](../../../../docs/consumers/embedding.md#gpui)
+Use the [isolated example command](../../../../docs/embedding.md#gpui)
 from the repository root after `just desktop-source`. It requires an explicit
 disposable socket and non-production profile; do not use an inherited pane
 socket or the installed CLI.
@@ -45,7 +45,7 @@ one view that should resize the PTY. The rest of the view's contract is in
 
 The crate depends on `gpui` as `gpui-fast = "=0.1.9"` (its library is named
 `gpui`) and on the phux client crates by path; nothing here is on crates.io
-yet. The [embedding guide](../../../../docs/consumers/embedding.md#build-requirements)
+yet. The [embedding guide](../../../../docs/embedding.md#build-requirements)
 has the one build setting libghostty needs, and the routes for apps that are
 not GPUI.
 

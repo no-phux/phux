@@ -71,7 +71,7 @@ stopping this monitor changes the server.
 ### Updates
 
 **Settings > Updates** checks the channel's release manifest
-([ADR-0175](../../docs/adr/0175-one-release-manifest-per-channel.md)) at launch
+([release contract](../../docs/releasing.md)) at launch
 and every six hours without blocking terminal input. Turn automatic checks off
 or use **Check now** at any time. **Download update** downloads the bundle,
 verifies its checksum and signature, and stages it beside `Phux.app` while you
@@ -275,7 +275,7 @@ authenticate the native ACP executable or maintained adapter explicitly.
 The picker explains unavailable prerequisites and never installs or accepts
 terms for you. For remote sessions, launch on the executing host; the desktop
 does not create a local SDK to impersonate remote work. Setup and exact receipt
-semantics are in [the agent CLI guide](../../docs/consumers/agents.md#acp-owned-native-sessions).
+semantics are in [the ACP guide](../../docs/acp.md).
 
 Project panes declared with `integration:` can prefer their configured native
 backend. Arbitrary `command:` or `exec:` panes remain terminals, even when their

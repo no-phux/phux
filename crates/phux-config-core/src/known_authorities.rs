@@ -115,7 +115,7 @@ pub fn record(
         return Ok(false);
     }
     let mut text = String::from(
-        "# phux: the certificate authority each paired server's leaf was issued by (ADR-0153).\n\
+        "# phux: the certificate authority each paired server's leaf was issued by.\n\
          # Written by `phux host add` and on first connection; delete a line to forget a pin.\n",
     );
     for line in existing.lines() {

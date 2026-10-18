@@ -33,11 +33,7 @@ pub(crate) fn page() -> Page {
         file: "environment.md",
         title: "phux environment variables reference",
         summary: "Every environment variable the binary reads and what each one does.",
-        tldr: "The canonical environment-variable table: the socket path, the \
-               remote listeners and their TLS and token material, the helper \
-               programs (`ssh`, `tailscale`), the auto-spawn idle limit, and \
-               logging. Rendered from the same in-code table `phux help \
-               environment` uses, so the two cannot disagree.",
+        lede: "Environment variables phux reads. `phux help environment` prints the same table.",
         body,
     }
 }

@@ -9,7 +9,7 @@
 #      excludes paths (sources and nixpkgs tarballs). libghostty-vt is not
 #      part of the shell: its build script downloads a prebuilt archive.
 #   3. mbx (jdx/mr-boxington), the same pinned build cache local shells use
-#      (docs/SETUP.md#build-cache-mbx). It content-keys every compilation,
+#      (docs/development.md#build-cache-mbx). It content-keys every compilation,
 #      build-script run, and native (mold) link. The GitHub `objects` payload
 #      carries only what that lane's builds used or produced; saves are
 #      restricted to pushes to main so PR writes cannot thrash the shared
@@ -189,6 +189,6 @@ runs:
         # flake.lock pins the Zig and mold a dependency build script uses;
         # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
         key: ${{ steps.deps-env.outputs.flake }}
-        # Pull requests restore only (see docs/RELEASING.md "Cache budget").
+        # Pull requests restore only (see docs/development.md#ci).
         save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         cache-on-failure: "true"

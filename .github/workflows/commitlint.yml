@@ -8,7 +8,7 @@
 # Integration merges do not land in linear main history. Select by Git parent
 # count, never by a message prefix that could hide malformed authored commits.
 # release-please parses that log to decide the next version and the
-# changelog (docs/RELEASING.md), so a malformed message silently drops the
+# changelog (docs/releasing.md), so a malformed message silently drops the
 # change from the release notes or skips a version bump.
 #
 # The ruleset requires the `commitlint` context beside ci.yml's `ci`. Release

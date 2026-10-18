@@ -42,44 +42,15 @@ expect_fail() {
 # A docs contributor has only shell/Git utilities; no compiler or Node probes.
 expect_pass "$repo/scripts/doctor.sh" docs
 cp "$root/scripts/check-docs.sh" "$repo/scripts/"
-mkdir -p "$repo/docs/adr"
-touch "$repo/docs/adr/0008-first.md" "$repo/docs/adr/0009-second.md"
-printf '| [0008](./0008-first.md) | First |\n| [0009](./0009-second.md) | Second |\n' >"$repo/docs/adr/README.md"
-expect_pass "$repo/scripts/check-docs.sh" --only=adr-index-sync
-expect_pass "$repo/scripts/check-docs.sh" --only=adr-number-unique
-touch "$repo/docs/adr/0008-duplicate.md"
-expect_fail 'ADR number 0008 is also used' "$repo/scripts/check-docs.sh" --only=adr-number-unique
-rm -f "$repo/docs/adr/0008-duplicate.md"
-printf '| [0008](./0008-first.md) | Duplicate |\n' >>"$repo/docs/adr/README.md"
-expect_fail 'more than one row' "$repo/scripts/check-docs.sh" --only=adr-index-sync
-
-# spec-id-unique: the spec allocation tables are registries on the wire ID
-# column - a bare message table and appendix-reserved.md's backticked
-# command-tag table cover the two row shapes.
-mkdir -p "$repo/docs/spec"
-cat >"$repo/docs/spec/proto.md" <<'MD'
-| ID    | Direction | Name     | Reference | Status  |
-|-------|-----------|----------|-----------|---------|
-| 0x01  | C → S     | `HELLO`  | §6.1      | shipped |
-| 0x02  | C → S     | `ATTACH` | §7.1      | shipped |
-MD
-cat >"$repo/docs/spec/appendix-reserved.md" <<'MD'
-| Tag    | Command       | Owner            | Status  |
-|--------|---------------|------------------|---------|
-| `0x07` | `GET_SCREEN`  | [L1.md](./L1.md) | shipped |
-| `0x08` | `ROUTE_INPUT` | [L1.md](./L1.md) | shipped |
-MD
-expect_pass "$repo/scripts/check-docs.sh" --only=spec-id-unique
-printf '| 0x01  | C → S     | `BOGUS`  | §6.1      | shipped |\n' >>"$repo/docs/spec/proto.md"
-expect_fail 'more than one row for message ID 0x01' "$repo/scripts/check-docs.sh" --only=spec-id-unique
-cat >"$repo/docs/spec/proto.md" <<'MD'
-| ID    | Direction | Name     | Reference | Status  |
-|-------|-----------|----------|-----------|---------|
-| 0x01  | C → S     | `HELLO`  | §6.1      | shipped |
-| 0x02  | C → S     | `ATTACH` | §7.1      | shipped |
-MD
-printf '| `0x07` | `BOGUS`       | [L1.md](./L1.md) | shipped |\n' >>"$repo/docs/spec/appendix-reserved.md"
-expect_fail 'more than one row for command tag 0x07' "$repo/scripts/check-docs.sh" --only=spec-id-unique
+mkdir -p "$repo/docs"
+printf '# Guide\n\n## Build cache (mbx)\n\nSee [setup](#build-cache-mbx) and [index](./README.md).\n' >"$repo/docs/guide.md"
+printf '# Docs\n\n[Guide](./guide.md#build-cache-mbx)\n' >"$repo/docs/README.md"
+expect_pass "$repo/scripts/check-docs.sh" --only=links
+printf '[gone](./missing.md)\n' >>"$repo/docs/README.md"
+expect_fail 'missing.md does not exist' "$repo/scripts/check-docs.sh" --only=links
+printf '# Docs\n\n[Guide](./guide.md#no-such-heading)\n' >"$repo/docs/README.md"
+expect_fail 'has no heading #no-such-heading' "$repo/scripts/check-docs.sh" --only=links
+rm -rf "$repo/docs"
 expect_fail 'usage:' "$repo/scripts/doctor.sh" typo
 # Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
 # Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the

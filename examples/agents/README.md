@@ -1,17 +1,16 @@
-# examples/agents — driving phux end to end from the CLI
+# examples/agents
 
-Runnable, self-documenting scripts that show an agent operating phux
-**purely through the `phux` binary** — no client library, no TTY, no
-tmux. The CLI *is* the agent surface (ADR-0022); anything that can spawn
-a process and read JSON can drive a real terminal this way. The placed-fleet
-example extends the single-pane loop into launch, topology, concurrent bounded
-watching, and advisory human attention.
+Runnable scripts that drive phux through the `phux` binary alone: no client
+library, no TTY, no tmux. Anything that can spawn a process and read JSON
+can drive a real terminal this way. The placed-fleet example extends the
+single-pane loop into launch, topology, concurrent bounded watching, and
+asking a person for attention.
 
-The introductory `01`–`04` scripts and `agent_loop.py` stand up their own
+The introductory `01`-`04` scripts and `agent_loop.py` stand up their own
 throwaway server on a private socket (see [`lib.sh`](./lib.sh)). The fleet
-example is intentionally production-shaped: it uses the caller's normal socket,
-creates a named session, and leaves that fleet running. Set `PHUX_SOCKET` to a
-private server when experimenting.
+example uses the caller's normal socket, creates a named session, and leaves
+that fleet running; set `PHUX_SOCKET` to a private server when
+experimenting.
 
 ## The loop these examples teach
 
@@ -77,20 +76,18 @@ PHUX_DOGFOOD_REAL_AGENTS=1 just agents-fleet-live
   `phux --socket P send-keys ...`). The `phux()` wrapper in `lib.sh`
   inserts it in the right place.
 - **`wait --until` matches the echo of the command you just typed**, not
-  only its output. Match on text that appears *only* in output — the
+  only its output. Match on text that appears *only* in output: the
   examples wait on a value the program *computes at runtime*
   (`result=49`), which never appears in the command's own source.
 
 ## See also
 
-- [`using-phux`](../../.agents/skills/using-phux/SKILL.md) — the canonical
+- [`using-phux`](../../.agents/skills/using-phux/SKILL.md): the canonical
   CLI skill, including when to use phux and the full supervision loop.
-- [`using-phux-mcp`](../../.agents/skills/using-phux-mcp/SKILL.md) — the
+- [`using-phux-mcp`](../../.agents/skills/using-phux-mcp/SKILL.md): the
   canonical MCP skill and live-schema workflow.
 - Install the published copies with `npx skills add no-phux/skills`.
-- [`../../docs/consumers/tui.md`](../../docs/consumers/tui.md) — the full
-  CLI shape.
-- [`../../docs/consumers/pi.md`](../../docs/consumers/pi.md) — package setup
-  when Pi should drive the same CLI surface.
-- [`../../docs/adr/0022-tool-for-agents.md`](../../docs/adr/0022-tool-for-agents.md) —
-  why the CLI is the agent surface.
+- [Driving terminals from scripts](../../docs/scripting.md) and
+  [coding agents](../../docs/agents.md).
+- [`integrations/pi`](../../integrations/pi) when pi should drive the same
+  CLI surface.

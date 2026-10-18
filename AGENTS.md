@@ -1,83 +1,75 @@
----
-audience: agents, contributors
-stability: stable
-last-reviewed: 2026-10-17
----
-# Agent Instructions
+# Agent instructions
 
-**TL;DR.** `mise install` or `nix develop`, then `just doctor` and a scoped
-check. Work in an isolated branch/worktree, use non-interactive shell commands,
-track agent work with Beads, commit verified changes before handoff, and report
-actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
+Rules for coding agents working in this repository. Humans: see
+[CONTRIBUTING](./CONTRIBUTING.md). Architecture and conventions are in
+[docs/architecture.md](./docs/architecture.md); setup and gates in
+[docs/development.md](./docs/development.md).
+Live contracts and their rationale belong in the current docs. For an old
+`ADR-NNNN` citation, use the [searchable historical snapshot](./docs/architecture.md#historical-decisions).
+Do not treat an obsolete proposal as shipping behavior; if an operative
+constraint is missing from the live docs, verify it against code/tests and
+restore that constraint rather than silently dropping it.
+
 <!-- bd-doctor-divergence: ok -->
 
-## Setup and validation scope
+## Build and validate
 
-- Start at [`docs/SETUP.md`](./docs/SETUP.md): `mise install` or
-  `nix develop`, then `just doctor <area>` and the smallest relevant gate.
-  Expand validation for shared APIs, protocol/FFI, Cargo inputs, or build
-  scripts. Report exact checks; a scoped pass is not a full CI pass.
-- The Zig Cockpit is archived outside `main`. Recovery refs and bot-friendly
-  reintegration steps live in [the archive guide](./docs/consumers/cockpit.md).
-  Do not restore its automation without an explicit revival decision.
-- Beads is maintainer/agent task tracking, not a contributor gate; outside
-  contributors can use a GitHub issue/PR.
-- Use non-interactive shell commands (`-f` / `-y` where appropriate).
-- [`CLAUDE.md`](./CLAUDE.md) holds architecture and code conventions;
-  [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) governs documentation.
+`mise install` or `nix develop`, then `just doctor <area>` and the smallest
+gate that covers the change (`just crate-check <crate>`, `just test`,
+`just check` for the diff-routed PR bar). Widen for shared APIs,
+protocol, FFI, Cargo inputs, or build scripts. Report the exact checks you
+ran; a scoped pass is not a full pass. Use non-interactive flags (`-f`,
+`-y`, `--yes`).
 
-## Worktree Isolation
+A CLI, config, or widget change needs `just docs-gen`; a wire change needs
+the schema regenerated ([protocol](./docs/protocol.md#changing-the-wire)).
+`just docs-check` gates the hand-written docs.
 
-- **Never implement on `main` or in the primary repository worktree.** Create
-  a dedicated branch and linked worktree from current `main` for all code,
-  docs, tests, and commits. The primary worktree is for integration only:
-  update `main`, fast-forward verified work, push, remove finished worktrees.
-- Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
-  your work in a new worktree instead.
-- One agent session per worktree. Every just recipe that builds, tests or
-  formats the tree (`check`, `test`, `crate-check`/`core-check`, `lint`,
-  `e2e`, the desktop and integration gates, ...) leases the worktree to the
-  running session (`PHUX_WORKTREE_OWNER`, else the harness session id) and
-  refuses another live session's run with exit 3. `test` and `e2e` also
-  fail with exit 3 when HEAD moved or the lease changed hands mid-run. Hand a
-  worktree on with `just worktree-release`; a lease idle for 6h is taken over,
-  and `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. Human
-  shells and CI are never checked. The guard detects a shared worktree at the
-  next guarded run; it does not stop raw `git` or editor use, so isolation is
-  still yours to keep. See `scripts/lib/worktree-owner.sh`.
+## Worktree isolation
+
+Never implement on `main` or in the primary checkout. Make a branch and a
+linked worktree from current `main` for every change. The primary checkout
+is for integration only: update `main`, fast-forward verified work, push,
+remove finished worktrees. Never stash, reset, clean, or overwrite a dirty
+primary worktree.
+
+One agent session per worktree. Build and test recipes lease the worktree
+to the session that runs them (`PHUX_WORKTREE_OWNER`, else the harness
+session id) and refuse another live session with exit 3; `test` and
+`e2e` also fail if HEAD moves or the lease changes hands mid-run. Hand a
+worktree on with `just worktree-release`. An idle lease is taken over after
+six hours; `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. The
+guard does not stop raw `git` or editor use, so isolation is still yours to
+keep (`scripts/lib/worktree-owner.sh`).
 
 ## Never touch the installed phux
 
-- The user's installed `phux` and its server are production. Never copy a
-  build over an installed binary (`~/.local/bin/phux`, Homebrew, and so on),
-  never aim a build at the production socket (`--socket`, `PHUX_SOCKET`,
-  `PHUX_PROFILE=default`) or its state (an inherited `PHUX_WS_TOKENS` /
-  `PHUX_WS_TLS_*` from a phux pane), and never `phux upgrade` the
-  production server.
-- Verify fixes against the dev-profile server (`just rebuild`), or an
-  explicit temp socket. Shipping a fix to the user's machine means a release
-  they install, not a hand-deployed build. See
-  [`docs/operations.md`](./docs/operations.md) "Hard guards".
+The user's installed `phux` and its server are production. Never copy a
+build over an installed binary (`~/.local/bin/phux`, Homebrew, and so on),
+never aim a build at the production socket (`--socket`, `PHUX_SOCKET`,
+`PHUX_PROFILE=default`, or `PHUX_WS_TOKENS` / `PHUX_WS_TLS_*` inherited from
+a phux pane), and never `phux upgrade` the production server. Verify
+against the dev-profile server (`just rebuild`) or an explicit temp socket.
+A fix reaches the user's machine as a release they install.
 
 ## Finish the work
 
-- **Commit verified task changes before the final handoff.** This is standing
-  authorization for local commits on the isolated feature branch; do not ask
-  whether to commit. An explicit "do not commit" wins.
-- Stage only task-owned changes, make scoped conventional commits, and report
-  commit IDs and checks run.
-- When asked to push, merge, or land on `main`, carry it through integration
-  and validation without re-asking, and keep local `main` synchronized.
-  Ownership boundaries, branch protections, and no-push instructions still
-  apply; local commit authorization does not authorize remote operations.
-- Routine commits, pushes, merges, and cleanup are steps of the existing
-  task, not new Beads tasks.
-- If a step is genuinely blocked, report what failed and the exact remedy.
+Commit verified task changes on the feature branch before handing off; this
+is standing authorization for local commits, and an explicit "do not
+commit" wins. Stage only task-owned changes, write scoped conventional
+commits, and report commit ids and the checks run. When asked to push,
+merge, or land on `main`, carry it through integration and validation
+without re-asking and keep local `main` synchronized; ownership boundaries,
+branch protection, and no-push instructions still apply. Routine commits,
+pushes, merges, and cleanup are steps of the task, not new Beads issues. If
+a step is blocked, say what failed and the exact remedy.
 
-This policy overrides the conservative/minimal commit defaults in the managed
-Beads guidance below and in `bd prime`.
+This policy overrides the conservative commit defaults in the managed Beads
+block below and in `bd prime`. Beads is maintainer and agent task tracking,
+not a gate for outside contributors.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
+
 ## Beads Issue Tracker
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
@@ -128,7 +120,9 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
 
 **Critical rules:**
+
 - Explicit user or orchestrator instructions override this Beads block.
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
+
 <!-- END BEADS INTEGRATION -->

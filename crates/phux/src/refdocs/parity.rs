@@ -62,11 +62,7 @@ pub(crate) fn page() -> Page {
         file: "parity.md",
         title: "phux CLI/MCP parity reference",
         summary: "Every MCP tool, the CLI verb it mirrors, how it runs, and its annotations.",
-        tldr: "Every MCP tool the adapter serves, mapped to the `phux` verb it \
-               mirrors (or why it has none), whether it runs in-process or \
-               through the CLI residue and why, and its read-only and \
-               destructive annotations. Rendered from the tool table the \
-               parity gate checks, so it cannot drift from the adapter.",
+        lede: "Each MCP tool, the `phux` command it mirrors, and its read-only and destructive hints.",
         body,
     }
 }
@@ -105,8 +101,8 @@ fn push_automation_only(body: &mut String) {
 
 fn push_cli_only(body: &mut String) {
     body.push_str(
-        "\n## CLI verbs without a tool\n\nAgent-facing verbs in the JSON index \
-         of `docs/consumers/agents.md` that have no MCP tool yet:\n\n",
+        "\n## CLI verbs without a tool\n\nAgent-facing verbs that have no MCP \
+         tool yet:\n\n",
     );
     for (verb, reason) in CLI_ONLY {
         let _ = writeln!(body, "- `phux {verb}`: {reason}.");

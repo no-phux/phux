@@ -37,11 +37,7 @@ pub(crate) fn page() -> Page {
         file: "exit-codes.md",
         title: "phux exit codes reference",
         summary: "Every exit code the binary uses and what each one means.",
-        tldr: "The canonical exit-code table: 0 success, 1 failure, 2 \
-               usage error or server refusal, 3 partial-fleet \
-               unanswerable, 124 `wait` timeout, 125 `run` timeout. \
-               Rendered from the same in-code table `phux help exit-codes` \
-               uses, so the two cannot disagree.",
+        lede: "Exit statuses, for scripts. `phux help exit-codes` prints the same table.",
         body,
     }
 }

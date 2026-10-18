@@ -96,7 +96,6 @@ bindgen_version="$(sed -n -E 's/^wasm-bindgen = "=([^"]+)"/\1/p' "$ROOT/clients/
 for manifest in "$ROOT"/clients/phux-web/Cargo.toml "$ROOT"/clients/phux-vt-web/Cargo.toml; do
     grep -Fq "wasm-bindgen = \"=$bindgen_version\"" "$manifest" || fail "$(basename "$(dirname "$manifest")") must pin wasm-bindgen $bindgen_version"
 done
-grep -Fq "wasm-bindgen-cli --version $bindgen_version" "$ROOT/docs/SETUP.md" || fail "SETUP.md must name wasm-bindgen-cli $bindgen_version"
 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*node-version: ([0-9]+).*/\1/p')"

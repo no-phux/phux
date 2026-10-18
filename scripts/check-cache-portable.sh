@@ -3,7 +3,7 @@
 #
 # env!("CARGO_MANIFEST_DIR") and env!("CARGO_BIN_EXE_*") compile the current
 # checkout's absolute path into the crate. A content-addressed build cache
-# (mbx, docs/SETUP.md#build-cache-mbx) then keys that crate, and every crate
+# (mbx, docs/development.md#build-cache-mbx) then keys that crate, and every crate
 # that links it, to one checkout, so each new worktree recompiles them instead
 # of restoring them: before this gate, phux-config's one baked path rebuilt
 # phux-server and everything above it in every fresh worktree.

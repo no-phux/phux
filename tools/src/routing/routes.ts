@@ -20,7 +20,7 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
   "docs/{spec,reference,assets}/**": ["phux"],
-  "docs/consumers/agents.md": ["phux"],
+  "docs/agents.md": ["phux"],
   "CHANGELOG.md": [],
 };
 

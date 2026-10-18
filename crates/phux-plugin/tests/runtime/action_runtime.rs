@@ -204,7 +204,7 @@ async fn checked_in_continuum_autosave_honors_archive_override()
         &fake_phux,
         r#"#!/bin/sh
 set -eu
-if [ "$1" != "workspace" ] || [ "$2" != "save" ]; then
+if [ "$1" != "archive" ] || [ "$2" != "export" ]; then
     printf 'unexpected command: %s\n' "$*" >&2
     exit 9
 fi

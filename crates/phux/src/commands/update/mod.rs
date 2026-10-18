@@ -144,7 +144,7 @@ impl UpdateError {
                     .to_owned()
             }
             Self::UnsupportedPlatform(_) => {
-                "build from source: see docs/INSTALL.md#from-source".to_owned()
+                "build from source: see docs/install.md#from-source".to_owned()
             }
             Self::Fetch(_) => "check network access to github.com, then retry; \
                  `phux update --check` re-reads the release manifest, and \
@@ -170,7 +170,7 @@ impl UpdateError {
                  restores them"
                 .to_owned(),
             Self::NoBackup(_) => "a backup exists only after a successful `phux update`; \
-                 reinstall with the curl installer in docs/INSTALL.md"
+                 reinstall with the curl installer in docs/install.md"
                 .to_owned(),
         }
     }
@@ -358,7 +358,7 @@ impl Refusal {
             } else {
                 remedy.push_str(
                     "\nReinstall into one of those with the curl installer in \
-                     docs/INSTALL.md, or set PHUX_INSTALL_DIR to this directory.",
+                     docs/install.md, or set PHUX_INSTALL_DIR to this directory.",
                 );
             }
             remedy

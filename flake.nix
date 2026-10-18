@@ -42,6 +42,7 @@
         # rest of the matrix (Cargo manifests, clippy MSRV, CI, containers) and
         # now also gates this file, so no surface can move alone.
         miseTools = (builtins.fromTOML (builtins.readFile ./mise.toml)).tools;
+        darwinSdk = import ./nix/darwin-sdk.nix { inherit pkgs; };
 
         # Bun is pinned to an exact release rather than whatever nixpkgs
         # carries. nixpkgs lagged at 1.3.13 while the pin was 1.4.0, so the
@@ -358,38 +359,24 @@
             pkgs.vulkan-loader
             pkgs.mesa
           ]
-          # Darwin archive tools, including the `nmedit` Ghostty's build
-          # invokes through `xcrun`; with it the shell's own Apple SDK is
-          # all a cold Ghostty build needs (see the shellHook).
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.cctools ];
+          ++ darwinSdk.packages;
 
           env.RUST_BACKTRACE = "1";
 
-          # The wrapped cc/ld derive both -isysroot and -syslibroot from
-          # DEVELOPER_DIR (nixpkgs' darwin-sdk-setup.bash), so this shell keeps
-          # nixpkgs' default: its own Apple SDK. It used to adopt a host Xcode
-          # here so Ghostty's build could find `xcrun nmedit`; that swapped the
-          # linker's SDK under nixpkgs' ld64, which predates the `arm64e.x1`
-          # TBD targets Xcode 27 ships, and every link in the shell failed.
-          # `cctools` above provides nmedit, and xcrun resolves both the SDK
-          # and nmedit under this DEVELOPER_DIR. The probe below only reports
-          # a host where that resolution is broken (no Command Line Tools).
           shellHook =
             pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               # wgpu and xkbcommon load these at runtime, not through the linker.
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.vulkan-loader pkgs.libxkbcommon pkgs.wayland pkgs.libx11 pkgs.libxcb ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export LD_LIBRARY_PATH="${
+                pkgs.lib.makeLibraryPath [
+                  pkgs.vulkan-loader
+                  pkgs.libxkbcommon
+                  pkgs.wayland
+                  pkgs.libx11
+                  pkgs.libxcb
+                ]
+              }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             ''
-            +
-            pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-              if ! command -v xcrun >/dev/null 2>&1 ||
-                 ! xcrun --show-sdk-path >/dev/null 2>&1 ||
-                 ! xcrun --find nmedit >/dev/null 2>&1; then
-                echo "phux: warning: xcrun cannot resolve the SDK or nmedit under" >&2
-                echo "  DEVELOPER_DIR=$DEVELOPER_DIR; libghostty-vt-sys's Darwin build" >&2
-                echo "  will likely fail. Install Apple's Command Line Tools; see" >&2
-                echo "  docs/SETUP.md#platform-packages." >&2
-              fi
-            ''
+            + darwinSdk.shellHook
             + ''
               # CARGO_HOME/bin holds `just install-dev`'s phux, which should
               # beat a `curl | sh` install in ~/.local/bin. It goes after this
@@ -428,7 +415,7 @@
 
         # Browser CI gets a browser matched to chromedriver without making
         # every native Linux lane download Chromium. Darwin uses host Chrome
-        # and an explicitly matching driver (see docs/SETUP.md).
+        # and an explicitly matching driver (see docs/development.md).
         devShells.browser = self.devShells.${system}.default.overrideAttrs (old: {
           nativeBuildInputs =
             old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];

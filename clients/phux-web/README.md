@@ -1,12 +1,11 @@
 # phux-web
 
-The **phux browser client**, compiled to WebAssembly. It renders a live phux
-terminal in a `<canvas>` using the *real* `libghostty-vt` engine and the *real*
-phux wire codec — no JavaScript terminal, no reimplementation. A peer of the
-reference TUI and the agent SDK ([ADR-0017]); same wire, different projection.
-
-See [`docs/consumers/web.md`](../../docs/consumers/web.md) for the full
-architecture; this is the crate-level summary.
+The phux browser client, compiled to WebAssembly. It renders a live phux
+terminal in a `<canvas>` with libghostty-vt (also compiled to wasm) and the
+same `phux-protocol` codec the server uses: no JavaScript terminal, no
+reimplementation. It is a working client and a starting point for
+embedding, not a shipped product; nothing serves it today. See
+[clients](../../docs/clients.md).
 
 ## What it glues together
 
@@ -59,7 +58,7 @@ web-sys ──────┘
 (the engine, Zig) as embedded bytes. At runtime the Rust module instantiates the
 Zig module as a **second, separate** wasm instance and calls across to it. Two
 wasm instances live in the page; bytes are copied across the boundary (fine for
-terminal traffic). See [ADR-0024]/[ADR-0025] for why this beats linking them.
+terminal traffic). See / for why this beats linking them.
 
 ## Public API
 
@@ -87,13 +86,14 @@ client.set_ctrl_latch(true);   // Ctrl for the next typed key; fires phux-modifi
 ```
 
 Input, touch, scrollback, selection, find, mouse and focus reporting, links,
-the bell and title events, and the connection attribute are described in
-[the web client guide](../../docs/consumers/web.md#in-the-page).
+the bell and title events, and the connection attribute are documented on
+the exported `Client` type (`cargo doc` or the `pkg/phux_web.d.ts` wasm-pack
+writes).
 
 ## Building
 
-Follow [Contributor setup](../../docs/SETUP.md#browser-client) for native or Nix
-tools. The engine module is committed, so ordinary client work needs only the
+Follow [development: browser client](../../docs/development.md#browser-client)
+for the tools. The engine module is committed, so ordinary client work needs only the
 Rust/WASM tools:
 
 ```sh
@@ -120,13 +120,8 @@ nix develop .#browser -c bun tools/main.ts web-browser
 ## Scope
 
 Up to four independent terminal panes on one transport, with text, color, and
-cursor rendering. Pane controls, shortcuts, and events are documented in
-[the web client guide](../../docs/consumers/web.md#in-the-page). Images
-(sixel/Kitty graphics, which the engine parses) are not drawn.
-
-[ADR-0017]: ../../docs/adr/0017-tui-not-protocol-privileged.md
-[ADR-0024]: ../../docs/adr/0024-wire-owns-input-atoms.md
-[ADR-0025]: ../../docs/adr/0025-browser-web-client.md
+cursor rendering. Images (sixel and Kitty graphics, which the engine parses)
+are not drawn.
 
 ## License
 
