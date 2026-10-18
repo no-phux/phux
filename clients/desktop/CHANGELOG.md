@@ -31,6 +31,28 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.40.0](https://github.com/no-phux/phux/compare/desktop-v0.39.1...desktop-v0.40.0) (2026-10-18)
+
+
+### Features
+
+* **agents:** agents coordinate through phux: mail and claims in the work store ([#1642](https://github.com/no-phux/phux/issues/1642)) ([45e5d3d](https://github.com/no-phux/phux/commit/45e5d3d9bca364c121ce8bd500ce6295693e97d1))
+* **desktop:** agent panes sit behind a person's, with harness marks ([#1651](https://github.com/no-phux/phux/issues/1651)) ([9c3833e](https://github.com/no-phux/phux/commit/9c3833e2f3eaecd27c309ea99f6d86c2e80cdf23))
+* **desktop:** native changes panel for the focused pane's checkout ([#1650](https://github.com/no-phux/phux/issues/1650)) ([956f6fa](https://github.com/no-phux/phux/commit/956f6fa7b810c1decc6be3b2c6caeafed41103d5))
+* **desktop:** quick capture from thought to agent ([#1645](https://github.com/no-phux/phux/issues/1645)) ([6942284](https://github.com/no-phux/phux/commit/6942284a5215c3bdf73cff2dadd329a00249c63e))
+* make the phux terminal embeddable in GPUI and other native apps ([#1640](https://github.com/no-phux/phux/issues/1640)) ([3cd9dda](https://github.com/no-phux/phux/commit/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4))
+
+
+### Bug Fixes
+
+* **desktop:** clicks never resize the sidebar or other chrome unless they mean to ([#1648](https://github.com/no-phux/phux/issues/1648)) ([7079fcd](https://github.com/no-phux/phux/commit/7079fcdbb94d591f268b37e96822768b782e3a50))
+* **desktop:** make capture keyboard-first with a native composer ([#1649](https://github.com/no-phux/phux/issues/1649)) ([aada35b](https://github.com/no-phux/phux/commit/aada35bde5a114990fc2484566f0132528b9468a))
+
+
+### Refactors
+
+* **config:** split the client-neutral config into phux-config-core ([#1609](https://github.com/no-phux/phux/issues/1609)) ([74f732e](https://github.com/no-phux/phux/commit/74f732eed52aaf04a4e38fc8fa023c35edfd86b8))
+
 ## [0.39.1](https://github.com/no-phux/phux/compare/desktop-v0.39.0...desktop-v0.39.1) (2026-10-18)
 
 
