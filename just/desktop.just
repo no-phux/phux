@@ -20,7 +20,7 @@ desktop-install:
 
 [group('desktop')]
 [doc('Check script tooling, qualification guards and the desktop host lock')]
-desktop-check: worktree-claim
+desktop-check: worktree-claim desktop-install
     cd clients/desktop && bun run check:tooling
     bun tools/main.ts desktop-host-lock
 
@@ -77,7 +77,7 @@ desktop-demo: desktop-host-debug desktop-cli
 # PHUX_DESKTOP_SMOKE_ARGS passes extra smoke flags (evidence dir, backend).
 [group('desktop')]
 [doc('Package the desktop and qualify it against an isolated same-checkout server')]
-desktop-framework-check: desktop-package desktop-cli
+desktop-framework-check: desktop-cli desktop-package
     #!/usr/bin/env bash
     set -euo pipefail
     phux="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
@@ -88,24 +88,22 @@ desktop-framework-check: desktop-package desktop-cli
         bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "$phux" ${extra[@]+"${extra[@]}"}
     fi
 
-# The `desktop` lane: tooling, lint, tests, then the packaged app against an
-# isolated same-checkout server. Linux runs the tests under Xvfb and the
-# pinned wgpu renderer; macOS runs the headless perf budget.
+# The desktop lane's tests: Linux runs them under Xvfb (unless a display is
+# set) plus the pinned wgpu renderer; macOS adds the headless perf budget.
 [group('desktop')]
-[doc('Desktop lane: tooling, lint, tests, perf or renderer, package and smoke.')]
-desktop-qualify: desktop-install desktop-check desktop-lint
+[doc('Desktop lane tests: crate tests, then the renderer (Linux) or perf budget (macOS).')]
+desktop-tests:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ "$(uname -s)" == Linux ]]; then
-        if [[ -n "${DISPLAY:-}" ]]; then just desktop-test; else
-            xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
-        fi
-        just desktop-renderer-test
-    else
+    if [[ "$(uname -s)" != Linux ]]; then
         just desktop-test
         just desktop-perf-budget
+        exit 0
     fi
-    just desktop-framework-check
+    if [[ -n "${DISPLAY:-}" ]]; then just desktop-test; else
+        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+    fi
+    just desktop-renderer-test
 
 [group('desktop')]
 [doc('Build the release GPUI desktop executable')]

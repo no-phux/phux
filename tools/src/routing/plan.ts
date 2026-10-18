@@ -22,7 +22,11 @@ export const LANES = [
 export type Lane = (typeof LANES)[number];
 export type Trigger = "pull_request" | "push";
 
-/** The just recipes one lane's job runs, in order. */
+/**
+ * The just recipes one lane's job runs, in order. CI gives each its own step:
+ * Bun leaves a shared stdout non-blocking, and a Cargo build that follows it
+ * in one process panics on EAGAIN (os error 35).
+ */
 export const LANE_RECIPES: Record<Lane, readonly string[]> = {
   guards: ["guards"],
   lint: ["rust-lint"],
@@ -32,7 +36,7 @@ export const LANE_RECIPES: Record<Lane, readonly string[]> = {
   icount: ["perf-icount"],
   integrations: ["agent-integrations-check"],
   web: ["web-check"],
-  desktop: ["desktop-qualify"],
+  desktop: ["desktop-lint", "desktop-tests", "desktop-check", "desktop-framework-check"],
   native: ["native-smoke"],
 };
 

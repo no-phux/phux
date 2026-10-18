@@ -48,7 +48,7 @@ every lane too.
 | icount | `rust icount` | `just perf-icount` | hot-path crates and the baseline ([performance CI](./performance-ci.md)) |
 | integrations | `agent integrations` | `just agent-integrations-check` | `integrations/` and plugin manifests |
 | web | `web` | `just web-check` | the browser clients and the Cargo closure they build |
-| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-qualify` | the desktop host and the Cargo closure it builds; PRs only |
+| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-lint`, `desktop-tests`, `desktop-check`, `desktop-framework-check` | the desktop host and the Cargo closure it builds; PRs only |
 | native | `native setup` | `just native-smoke` | toolchain, setup, and link inputs on a clean runner |
 
 On a pull request, a library change runs only its reverse dependencies

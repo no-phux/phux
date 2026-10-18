@@ -350,12 +350,17 @@ jobs:
       - uses: ./.github/actions/setup-linux-desktop
         if: runner.os == 'Linux'
       - uses: ./.github/actions/setup-bun
+      # One step per recipe: Bun leaves a shared stdout non-blocking, and a
+      # Cargo build after it in the same step panics on EAGAIN.
+      - run: just desktop-lint
+      - run: just desktop-tests
+      - run: just desktop-check
       # Hosted macOS never confirms a presented drawable; Linux must render
       # through lavapipe's Vulkan.
-      - name: just desktop-qualify
+      - name: just desktop-framework-check
         env:
           PHUX_DESKTOP_SMOKE_ARGS: --output ${{ runner.temp }}/desktop-evidence ${{ matrix.smoke }}
-        run: just desktop-qualify
+        run: just desktop-framework-check
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
