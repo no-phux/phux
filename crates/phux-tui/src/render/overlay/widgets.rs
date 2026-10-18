@@ -22,6 +22,14 @@ pub const fn modal_inner_width(area_width: u16) -> u16 {
     area_width.saturating_sub(2 + MODAL_PAD * 2)
 }
 
+/// Cells the footer's left status may use: the border minus both corners,
+/// the key legend with its padding, the status's own padding and one gap.
+#[must_use]
+pub fn footer_status_budget(modal_width: u16, keys: &str) -> usize {
+    let keys_w = crate::render::display_width(keys) + 2;
+    usize::from(modal_width).saturating_sub(2 + keys_w + 2 + 1)
+}
+
 /// A centered, bordered modal box: themed border and left title around
 /// pre-styled body [`Line`]s. Render with [`Modal::render_into`] into a rect
 /// from [`centered`] or [`centered_panel`].
