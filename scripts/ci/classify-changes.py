@@ -25,6 +25,105 @@ ALL = set(SURFACES)
 RUST = {"phux"}
 SHARED = RUST | {"web", "native"}
 ZIG = SHARED | {"web_engine", "desktop"}
+ROOT = Path(__file__).resolve().parents[2]
+
+# What each separately built lane compiles from crates/*: manifests whose path
+# dependencies (every kind) it builds, plus root crates it builds directly,
+# all with default features. The rest of the lane's closure follows the
+# manifests the way Cargo resolves them: an optional dependency counts only
+# when an enabled feature turns it on. Every other clients/desktop path is
+# unrouted, so it requests every surface.
+LANE_ROOTS = {
+    # The browser workspaces, plus web-browser.py's harness build:
+    # phux-server's ws_demo_server example (dev dependencies) and the phux bin.
+    "web": (("clients/phux-web/Cargo.toml", "clients/phux-vt-web/Cargo.toml",
+             "crates/phux-server/Cargo.toml"), ("phux-server", "phux")),
+    "desktop": (("clients/desktop/native/Cargo.toml",), ()),
+}
+ALL_KINDS = ("dependencies", "dev-dependencies", "build-dependencies")
+# Cargo builds dev dependencies only for the crate under test, not for the
+# crates it depends on.
+BUILD_KINDS = ("dependencies", "build-dependencies")
+
+
+def dependency_edges(manifest, kinds, inherited):
+    """`(key, package, optional, features)` per dependency, every target.
+
+    `features` is what the edge itself requests, `default` included unless
+    the edge (or the `[workspace.dependencies]` entry it inherits) opts out.
+    """
+    tables = [manifest, *manifest.get("target", {}).values()]
+    for table in tables:
+        for kind in kinds:
+            for key, spec in table.get(kind, {}).items():
+                spec = spec if isinstance(spec, dict) else {}
+                base = inherited.get(key, {}) if spec.get("workspace") else {}
+                base = base if isinstance(base, dict) else {}
+                features = set(base.get("features", [])) | set(spec.get("features", []))
+                if spec.get("default-features", base.get("default-features", True)):
+                    features.add("default")
+                package = spec.get("package", base.get("package", key))
+                yield key, package, spec.get("optional", False), features
+
+
+def activated(manifest, requested):
+    """Optional dependency keys the `requested` features turn on, and the
+    features each dependency key receives through `key/feature` entries."""
+    table = manifest.get("features", {})
+    seen, deps, forwarded = set(), set(), {}
+    pending = list(requested)
+    while pending:
+        feature = pending.pop()
+        if feature in seen:
+            continue
+        seen.add(feature)
+        if feature not in table:
+            # An optional dependency's implicit feature.
+            deps.add(feature)
+            continue
+        for item in table[feature]:
+            if item.startswith("dep:"):
+                deps.add(item[len("dep:"):])
+            elif "/" in item:
+                key, sub = item.split("/", 1)
+                if not key.endswith("?"):
+                    deps.add(key)
+                    # Cargo also enables a feature that shares the key's name.
+                    pending.append(key)
+                forwarded.setdefault(key.rstrip("?"), set()).add(sub)
+            else:
+                pending.append(item)
+    return deps, forwarded
+
+
+def lane_closures(root=ROOT):
+    """Root crate directories each lane in LANE_ROOTS compiles."""
+    crates = {path.parent.name: tomllib.loads(path.read_text())
+              for path in (root / "crates").glob("*/Cargo.toml")}
+    inherited = tomllib.loads((root / "Cargo.toml").read_text()).get(
+        "workspace", {}).get("dependencies", {})
+
+    def edges(manifest, requested, kinds):
+        deps, forwarded = activated(manifest, requested)
+        for key, package, optional, features in dependency_edges(manifest, kinds, inherited):
+            if package in crates and (not optional or key in deps):
+                yield package, features | forwarded.get(key, set())
+
+    closures = {}
+    for lane, (manifests, direct) in LANE_ROOTS.items():
+        pending = [(name, {"default"}) for name in direct]
+        for path in manifests:
+            pending += edges(tomllib.loads((root / path).read_text()), {"default"}, ALL_KINDS)
+        enabled = {}
+        while pending:
+            name, features = pending.pop()
+            if name in enabled and features <= enabled[name]:
+                continue
+            enabled[name] = enabled.get(name, set()) | features
+            pending += edges(crates[name], enabled[name], BUILD_KINDS)
+        closures[lane] = set(enabled)
+    return closures
+
 
 # Documentation that code or a guard reads as an input. Each row leaves the
 # docs-only fast path and routes like its reader: Rust tests byte-compare the
@@ -56,24 +155,10 @@ ROUTES = DOC_INPUTS + (
     # route on their own. classify-changes-test.py checks every desktop file
     # input outside clients/desktop against this table.
     (("scripts/fixtures/release-manifest/*",), RUST | {"desktop"}),
-    # Browser Rust consumers plus the live demo server and local-owner CLI
-    # fixture dependency closures (including Cargo dev dependencies). The test checks this
-    # against manifests so a new local dependency cannot silently lose coverage.
-    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
-      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
-      "crates/phux-client-runtime/*",
-      "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
-      "crates/phux-server/*", "crates/phux-server-testkit/*",
-      "crates/phux-agent-rules/*", "crates/phux-agent-host/*", "crates/phux/*", "crates/phux-client/*",
-      "crates/phux-mission/*", "crates/phux-work/*",
-      "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
-      "crates/portable-pty-adopt/*", "crates/quictun/*"), {"web"}),
-    # The desktop host's path-dependency closure, checked against the
-    # manifests by the test. Every other clients/desktop path is unrouted, so
-    # it requests every surface, desktop included.
-    (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
-      "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
-      "crates/phux-client-runtime/*", "crates/phux-dial/*", "crates/quictun/*"), {"desktop"}),
+    # Root crates reach the web and desktop lanes only through Cargo, so their
+    # rows are computed from the manifests (LANE_ROOTS), not listed.
+    *(((f"crates/{name}/*",), {lane}) for lane, closure in lane_closures().items()
+      for name in sorted(closure)),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
     # Path crates inherit `workspace = true` keys from the root manifest, and
@@ -132,7 +217,6 @@ WORKFLOWS = (
     "scripts/ci/test_release_drift.py",
     "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
-ROOT = Path(__file__).resolve().parents[2]
 # nextest package matchers treat an unprefixed name as a glob; `=` is exact.
 CRATE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 

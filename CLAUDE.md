@@ -74,7 +74,7 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
-Crates: twenty-four, all under `crates/*`, all workspace members. The ones
+Crates: twenty-five, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
 `phux-agent-rules` (agent manifest evaluator: regions, TOML rules, offline
 explain), `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
@@ -86,7 +86,8 @@ layer: registry resolution, dial planning, reconnect policy, the relay tunnel;
 ADR-0133), `phux-client-ffi` (the one binding crate: `projection/` plus the
 `c-abi` encoder for native embedders and the
 `uniffi` encoder for phux-mobile; ADR-0135), `phux-config` (TOML + widgets + the settings
-catalogue), `phux-work` (the work store and its single-writer keeper),
+catalogue), `phux-config-core` (its client-neutral half: path, layer merge,
+`[[remote]]`, `[organize]`; what embedders depend on, ADR-0183), `phux-work` (the work store and its single-writer keeper),
 `phux-mission` (mission control documents over it), `phux` (binary). Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
 — read it before assuming a capability is missing. `phux-protocol` is

@@ -11,24 +11,18 @@
 pub mod check;
 pub mod connector;
 pub mod distro;
-mod error;
-pub mod instance;
 pub mod integration;
 pub mod keybind;
-pub mod known_authorities;
-mod layer;
 pub mod loader;
 pub mod overlay;
 pub mod plugin;
 pub mod production;
 pub mod project;
-pub mod remote;
 pub mod satellite;
 pub mod scaffold;
 mod schema;
 pub mod session_name;
 pub mod settings;
-pub mod socket;
 pub mod theme;
 pub mod toml_registry;
 pub mod uplink;
@@ -37,12 +31,12 @@ pub mod widget;
 
 pub use check::{CheckReport, Fault, Finding};
 pub use connector::ConnectorConfigEntry;
-pub use error::{ConfigError, byte_offset_to_line_col};
-pub use layer::{
-    ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, merged_config_with_provenance,
+use phux_config_core::layer;
+pub use phux_config_core::{
+    ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
+    RemoteConfigEntry, byte_offset_to_line_col, instance, known_authorities, remote, socket,
 };
 pub use project::ProjectConfigEntry;
-pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{
     Action, ChromeCfg, ClipboardWrite, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES,
@@ -52,9 +46,9 @@ pub use schema::{
     DEFAULT_RETAIN_ON_EXIT_SECS, DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg,
     LimitsCfg, MAX_AGENT_LOG_BYTES, MAX_APPROVAL_MAX_PENDING, MAX_APPROVAL_MAX_PENDING_TOTAL,
     MAX_APPROVAL_TTL_SECS, MAX_EVENT_JOURNAL_BYTES, MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES,
-    MAX_RETAIN_ON_EXIT_MAX, NotificationsCfg, NotifyMode, NotifyProtocol, OrganizeCfg, ParamAction,
-    PolicyCfg, PolicyMode, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
-    StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+    MAX_RETAIN_ON_EXIT_MAX, NotificationsCfg, NotifyMode, NotifyProtocol, ParamAction, PolicyCfg,
+    PolicyMode, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg, StatusPosition, ThemeCfg,
+    VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
 pub use session_name::{
     NameRng, RANDOM_NAME_PLACEHOLDER, random_name, render_session_name_template_with,
@@ -125,7 +119,8 @@ pub fn parse_with_defaults_bounded(
     path: &Path,
     max_read_bytes: usize,
 ) -> Result<Config, ConfigError> {
-    let (merged, _) = layer::merged_with_budget(user_input, path, Some(max_read_bytes))?;
+    let (merged, _) =
+        layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, Some(max_read_bytes))?;
     deserialize_merged(merged, user_input, path)
 }
 
@@ -149,4 +144,39 @@ pub(crate) fn deserialize_merged(
 /// As [`parse_with_defaults`], minus schema failures.
 pub fn merged_config_table(user_input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
     merged_config_with_provenance(user_input, path).map(|(table, _)| table)
+}
+
+/// Merge [`DEFAULT_CONFIG_TOML`], the `extends` layers and `user_input`, and
+/// record which layer set each leaf. `path` anchors relative `extends`
+/// entries; with no `extends`, no I/O occurs.
+///
+/// # Errors
+///
+/// As [`parse_with_defaults`], minus schema failures.
+pub fn merged_config_with_provenance(
+    user_input: &str,
+    path: &Path,
+) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
+    layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use phux_config_core::{ClientConfig, loader::parse_client};
+
+    /// `phux-config-core`'s client view starts from an empty stack, which is
+    /// right only while the shipped defaults set none of its tables.
+    #[test]
+    fn shipped_defaults_set_nothing_the_client_view_reads() {
+        let path = Path::new("default.toml");
+        assert_eq!(
+            parse_client(super::DEFAULT_CONFIG_TOML, path).expect("defaults parse"),
+            ClientConfig::default()
+        );
+        let full = super::parse_with_defaults("", path).expect("defaults load");
+        assert_eq!(full.remote, ClientConfig::default().remote);
+        assert_eq!(full.organize, ClientConfig::default().organize);
+    }
 }

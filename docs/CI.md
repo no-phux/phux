@@ -26,6 +26,10 @@ routes, and `scripts/ci/detect-changes.py` resolves the diff for pull
 requests, pushes, and merge groups. `ci.yml`, `native-setup.yml`,
 `web-check.yml`, and `desktop-test.yml` read it through
 `.github/actions/classify-changes`, with no outer path filters.
+The web and desktop lanes' `crates/*` routes are not listed: the classifier
+walks the Cargo manifests from each lane's entry points (`LANE_ROOTS`) and
+follows an optional dependency only when an enabled feature turns it on, so
+a dependency added or dropped re-routes without a table edit.
 `desktop_needed` runs two `xcode-27` jobs and native Ubuntu 24.04 x64/ARM64
 jobs for the desktop host's path crates,
 the toolchain inputs, the root files the crate embeds, its own workflow, and
