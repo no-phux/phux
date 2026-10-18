@@ -156,3 +156,9 @@ loads the tarball outside the checkout and checks registration against the
 public SDK. Source tests cover cross-session selection/deletion, terminal
 ownership and release, lifecycle identity, parent write protection, and
 cancellation.
+
+The checkout's paired Seroval overrides keep its dependency audit clean. npm
+does not apply a dependency's overrides in a consuming project: a fresh tarball
+install still reports Seroval advisories through the host-pinned Solid 1.9.12.
+Fixing that consumer graph requires a compatible host update, not independently
+upgrading the plugin's Solid, OpenTUI, or SDK internals.

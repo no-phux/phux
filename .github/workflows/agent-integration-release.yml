@@ -108,7 +108,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -132,7 +132,7 @@ jobs:
           npm_config_audit: "false"
           npm_config_fund: "false"
         run: |
-          npm install --global npm@11.5.1
+          npm install --global npm@11.19.1
           npm --prefix integrations/runtime ci
           npm --prefix integrations/runtime run gates
           git diff --exit-code -- integrations/runtime/dist
@@ -145,7 +145,7 @@ jobs:
           npm_config_fund: "false"
           COMPONENT: ${{ needs.prepare.outputs.component }}
         run: |
-          npm install --global npm@11.5.1
+          npm install --global npm@11.19.1
           case "$COMPONENT" in
             opencode-plugin|omp-extension) bun install --frozen-lockfile; bun run gates ;;
             grok-plugin) npm test ;;
@@ -199,7 +199,7 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/release/$TARBALL"
           npm ls --depth=0 "${PACKAGE_NAME}@${VERSION}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release/*
@@ -218,12 +218,12 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -259,7 +259,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          npm install --global npm@11.5.1
+          npm install --global npm@11.19.1
           # npm versions are immutable, so a replay compares contents (npm pack
           # does not order files reproducibly) and moves on.
           if npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum >/dev/null 2>&1; then
