@@ -34,6 +34,17 @@ its last process.
 The UI says "tab". Key binding actions say "window" (`new-window`), and
 targets say "group". They are the same thing.
 
+## Identity and execution
+
+A **record key** is the persistent identity of a session or resource. A
+**live handle** (such as `@7`) names the current runtime object, not a
+process or a durable identity. An **activation** is one execution of a
+resource record; its PID alone is not enough to identify it across reuse.
+A **server incarnation** identifies the serving run used for protocol
+retry fences. Reconnect can reuse numeric handles without preserving
+execution. [Organization](./organization.md) explains the ownership and
+reconciliation rules.
+
 ## Targets
 
 Commands that act on something take a target:
@@ -70,13 +81,17 @@ time; the most recent resize sets it.
 | --------------------------------------------------- | ------------ | ------------------------------------ |
 | detach, close the terminal, lose the SSH connection | keep running | kept                                 |
 | `phux update`, `phux upgrade`                       | keep running | kept                                 |
-| server crash, `phux kill --server`, reboot          | stop         | kept, with the panes marked as ended |
+| server crash, `phux kill --server`, reboot          | not preserved | durable records reconciled on start |
 
-The session layout is stored on disk, so it comes back after a crash or a
-reboot, but the processes in it do not. Scrollback is not stored.
+Durable organization records come back after a crash or reboot; PTYs and
+scrollback do not. A surviving process whose engine was lost is marked
+Lost, not safely adopted or relaunched. Normal process exit uses Remove or
+Retain policy; not every exited pane stays. See
+[organization and execution](./organization.md) for the ownership and
+reconciliation contract.
 
 ```sh
-phux restore           # start again every pane that a restart ended
+phux restore           # explicitly relaunch eligible ended records; Lost refuses
 phux relaunch @4       # start one ended pane again
 phux rm @4             # forget an ended pane
 ```

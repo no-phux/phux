@@ -50,9 +50,19 @@ rot. Plain sentences; sentence-case headings; no frontmatter.
 command in a code block that does not exist, or a crate missing from the
 architecture page.
 
-A decision that closes off a design space gets a bullet in
-[architecture: decisions](./docs/architecture.md#decisions) with its PR.
-A bug fix does not.
+Public behavior changes update their live task/interface home together
+with relevant tests, examples and generated references. Keep generated
+CLI/config/schema facts generated; keep each source-ownership map and
+its rationale in one home, linked from task entry points. A new guide must
+be discoverable from `docs/README.md` and its task parent; update the
+website consumer's navigation/routes when pages or anchors change.
+
+A future decision records a short reason and PR in its live home; a
+constraint that closes off a design space is also linked from
+[architecture: decisions](./docs/architecture.md#decisions). A bug fix is
+not a new decision. Query [history](./docs/architecture.md#historical-decisions)
+deliberately; still-current invariants stay live, not only in Git. No
+parallel narrative for every function or TODO ledger is needed.
 
 ## Not accepted
 

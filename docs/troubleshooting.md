@@ -16,6 +16,11 @@ phux config check      # is the config file valid
 To file a bug, press `Ctrl-A B` inside the TUI, which bundles versions,
 logs, and the current screen into a report under the state directory, or
 run `phux report new` from a shell. `phux report show` prints the newest.
+Review/redact reports before sharing: screen contents can contain secrets.
+Runtime input logging must remain structural, never typed text, codepoint
+content, paste/file bytes or private keys; logs are owner-only (0600). See
+[redaction tests](../crates/phux-protocol/src/input/mod.rs) and
+[log permissions](../crates/phux-server/src/telemetry.rs).
 
 ## Things that go wrong
 
@@ -47,11 +52,11 @@ headless commands ([scripting](./scripting.md)) there.
 of its own panes is refused, since it would nest. `Ctrl-A s` switches
 sessions from inside the TUI; `PHUX_ALLOW_NESTED=1` overrides the check.
 
-**My panes are gone after a reboot.** The processes are. The sessions,
-tabs, and pane records are not; `phux ls` lists them with their panes
-marked as ended. `phux restore` starts them again in the same directories.
-`phux service install` keeps the server running across logout and reboot,
-so this only happens on a cold boot.
+**My panes are gone after a reboot.** Durable records are not preserved
+PTYs. Inspect `phux ls` and explicitly restore eligible ended work; a Lost
+activation needs reconciliation, not blind relaunch. A login service
+starts a new server after reboot; it cannot keep a process alive through
+reboot. See [cold restart](#cold-restart-and-downgrade).
 
 **The server keeps restarting.** `phux doctor` reports a crash loop from
 `server-starts.log`, and whether the service unit's restart policy is the
@@ -71,6 +76,46 @@ works if the local terminal allows it.
 **An agent's state is wrong.** `phux agent explain @N` shows the evidence
 behind the decision: which source won and what it saw. If the screen rules
 for an agent misfire, override them in `~/.config/phux/agent-rules/`.
+
+## Lag and crash evidence
+
+Use [`phux perf --watch 1`](./reference/cli.md#phux-perf) to compare intervals;
+a one-shot sample covers the server lifetime. Separate input credit waits/
+timeouts from PTY parse/fan-out time and slow client output before blaming
+the network or restarting work. The [metric inventory](../crates/phux-server/src/perf.rs)
+and [bounded stream diagnostics](../crates/phux-server/src/stream_diagnostics.rs)
+are the current names, not a second hand-maintained metric table.
+
+TUI logs go to a file, never alt-screen stderr. Server stderr is captured
+by its spawner/service (with an optional file tee). Keep the failing process
+and profile straight; a daemon failure can affect many panes. For an
+authorized isolated reproduction, `RUST_BACKTRACE=1` records panic context.
+[Telemetry](../crates/phux-server/src/telemetry.rs) owns log routing and panic
+hooks. Preserve evidence and redact reports before sharing.
+
+## Cold restart and downgrade
+
+Hot `phux upgrade` hands live PTYs to the replacement binary; a cold start,
+crash or reboot does not. [Organization reconciliation](./organization.md#activations-and-reconciliation)
+checks boot/PID/start identity and never automatically relaunches or adopts
+arbitrary processes. Lost means a recorded process may still run without its
+engine; inspect and verify its termination before an explicit relaunch.
+Do not delete the record or substitute a new identity to bypass the refusal.
+
+Before an incompatible downgrade, export the supported organization/archive
+view, deliberately stop the owning server, and preserve its store plus
+backups using a consistent SQLite backup (or the complete stopped database,
+including any WAL state). A newer store schema is refused; migration makes
+a backup before changing an existing schema. Never rename away the store
+and start empty as a silent fallback: that loses execution ownership and
+receipts. See [store behavior](../crates/phux-server/src/org_store.rs) and
+[restore options](./reference/cli.md#phux-restore).
+
+A refused remote policy during hot handoff must keep adopted local work
+served, disable/report the remote door, and avoid killing adopted PTYs.
+Cold start with the same invalid posture refuses. The
+[resume-posture test](../crates/phux-server/src/runtime/mod.rs) owns this
+fail-safe distinction.
 
 ## Where things are
 

@@ -21,12 +21,20 @@ For every pane, phux keeps an agent record: the agent's `kind` (`claude`,
 
 The state comes from the strongest source available:
 
-1. a declaration (`phux agent set --state ...`), until it is cleared
+1. a declaration (`phux agent set --state ...`), for the occupant it describes
 2. the agent's own lifecycle stream (`phux agent emit`), when its host
    integration reports one
 3. a hook report (`phux agent report-state`)
 4. the pane's foreground process, which identifies the agent
 5. the screen, matched against built-in rules for that agent
+
+Confirmed departure or a changed occupant withdraws declared state to
+`unknown` and clears its attention, preserving explicitly authored identity
+and native-session fields. Failed process inspection is not evidence of
+vacancy. Derived reporting can resume subject to identity ownership; one
+source must not retract another source's ask or delete its declaration.
+The [pane event arbiter and regression tests](../crates/phux-server/src/runtime/client/pane_events.rs)
+own this provenance rule.
 
 Rules ship for Claude Code, Codex, OpenCode, pi, OMP, Grok, Amp, Cursor,
 Gemini CLI, Goose, and Aider. No match means `idle`, never `blocked`. Add or
@@ -53,8 +61,11 @@ phux launch claude-code -- --model opus                    # new pane running an
 ```
 
 `%name` addresses the pane whose agent record has that name. `agent prompt`
-is a single line, delivered once; a receipt means the text reached the
-pane, not that the agent acted on it. `agent wait` fires on a transition,
+is a single line with [bounded acknowledged-delivery semantics](./protocol.md#receipts-retries-and-backpressure);
+a receipt means the PTY write completed, not that the agent acted on it.
+Unknown delivery must not be resent under a new identity. A unique name is
+not fresh process attestation: inspect `agent list` address refusals and use
+exact ids for unattended targeting. `agent wait` fires on a transition,
 so an agent that is already `blocked` when you start waiting times out.
 
 `phux launch` needs a plugin that defines launch commands. The ones in
@@ -87,6 +98,75 @@ terminal opens it inside a phux pane with its hooks wired up.
 To make an agent read the manual, `phux skill` prints a guide to operating
 phux from the CLI, and `phux mcp --skill` prints one for the MCP tools. The
 same guides are installable as skills with `npx skills add no-phux/skills`.
+
+## Automatic fleet context
+
+Host adapters using the shared [integration runtime](../integrations/runtime)
+append bounded, sanitized fleet observations at the request tail, never in
+the stable system prompt or tool schema. Peer-controlled labels, cwd and
+state are **untrusted data, not instructions**. No terminal screens, prompt
+contents or credentials are fetched automatically. The first emission is a
+checkpoint, followed by changes only; compaction gets a checkpoint and
+forces a fresh one for the next normal turn. Unavailability/recovery is
+best-effort and must not block the model turn indefinitely.
+
+`PHUX_CONTEXT_AWARENESS=0` disables this context where supported by the host
+adapter. [Awareness code](../integrations/runtime/src/awareness.ts) and
+[tests](../integrations/runtime/test/awareness.test.ts) own timeout, byte,
+pane and checkpoint bounds. Host adapters remain siblings over this neutral
+runtime; do not duplicate its state machine in each integration.
+
+## ACP-owned sessions
+
+Attached TUI agents use terminal integrations above. ACP-owned agents instead
+run a provider subprocess through the server-owned `phux-agent-host`
+guardian and a reserved AgentSession controller. The operator on the executing
+host must install and authenticate the provider first; phux neither downloads
+it nor falls back to typing into a terminal when ACP is unavailable.
+
+Inspect enabled integration templates without starting a provider:
+
+```sh
+phux launch --list --acp
+phux launch opencode --print --acp
+```
+
+For example, the shipped [OpenCode template](../examples/plugins/agent-tools/integrations/opencode.toml)
+declares argv, not a shell string:
+
+```toml
+[acp]
+provider = "opencode"
+command = ["opencode", "acp"]
+required_executables = ["opencode"]
+working_directory = "workspace"
+```
+
+With that plugin enabled and provider ready, `phux launch opencode --acp
+--session work` launches into an existing owning session. The server must
+advertise `NATIVE_AGENT`; legacy peers refuse before transmitting the new
+command, not by key/paste fallback. Successful provider initialization is
+not evidence of a completed model turn or full provider feature parity.
+Current capability flags are authoritative; client filesystem/terminal
+callbacks are not advertised. Stable conversation restore requires the
+provider's `loadSession` capability and current trusted launch template.
+
+Use [`agent native-command`](./reference/cli.md#phux-agent-native-command)
+with the exact AgentSession, activation, nonzero operation identity and
+turn/question ids from its structured view. A queued result is only server
+reservation or provider-RPC scheduling, **not provider admission**. Completion
+reports the actual ACP stop reason. RPC/transport loss is unknown, not proof
+of failure: retain/query the original operation identity, inspect state, and
+never automatically replay it or make a replacement id to retry side effects.
+A provider question is a human-only first-responder reservation; an automation
+principal cannot answer, and a dialog response queued is not proof it was
+consumed. Ordinary terminal asks and native questions are different lanes.
+
+The [guardian ACP seam](../crates/phux-agent-host/src/session/acp.rs) owns
+readiness and stop reasons; the [native operation ledger](../crates/phux-server/src/state/native_agent.rs)
+and [command authority](../crates/phux-server/src/runtime/native_agent.rs)
+own identity, queue bounds, human role and first response. Generic lifecycle
+emit cannot forge these reserved native publications.
 
 ## JSON index
 
@@ -136,8 +216,14 @@ Record types are `session_start`, `prompt`, `tool_start`, `tool_end`,
 `notification`, `ask`, `stop`, `session_end`, `state`, and `provider_raw`.
 `prompt` and `tool_start` mean working, `ask` means blocked, `stop` means
 done. An `ask` with a `question` also shows up as a question the user (or
-`phux agent answer`) can answer. Only the client that opened the session may
-append to it.
+`phux agent answer`) can answer. Generic appends require permitted local
+producer ingress and BIND+INPUT through the parent; they are not exclusive
+to the connection that opened the stream. Same-owner socket clients share
+that trust boundary. SDK-owned streams instead require their reserved
+native controller; generic emit cannot impersonate one. See the
+[append guard](../crates/phux-server/src/runtime/resource_commands.rs) and
+[parent authorization](../crates/phux-server/src/policy/enforce.rs).
+Native ACP questions use the separate human-only broker described above.
 
 Without a stream, `phux agent set --name NAME --kind KIND @7` at least tells
 phux who is in the pane, and `phux agent report-state` can set the state
@@ -149,7 +235,11 @@ Agent coordination in the host's work store
 ([ADR-0187](https://github.com/no-phux/phux/blob/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/adr/0187-agents-coordinate-through-phux.md)). An address is a
 pane (`@749`), a labelled pane (`pi@749`, keyed by the pane), or a bare name
 for something outside a pane; you speak as `--as`, else
-`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. These are host-local
+advisory addresses/claims, not authenticated execution identity or filesystem
+enforcement. [Claim transitions](../crates/phux-work/src/coord/claims.rs) and
+the [keeper protocol](../crates/phux-work/src/wire.rs) own expiry and stale
+keeper replacement; process liveness alone never authorizes stealing a lease.
 
 `mail send` returns `{schema, mail, bells}`: `mail` is
 `{id, thread, from, to, body, created_at, read_at, acked_at}` and each bell is
@@ -176,6 +266,24 @@ handoff requires stopping writes, releasing the exact old receipt, then
 acquiring a fresh fence. Do not silently upgrade a stale receipt to a newly
 listed fence.
 
+## Delegated execution identity
+
+`agent start` can mint a narrowed session credential and a separate local
+capability socket, inherited through `PHUX_SOCKET`. It grants at most
+Inventory, Observe, Input and Bind on the launcher's session, never Create,
+Organize, Terminate or Signal, and never more than the launcher holds.
+It can take a free lease but not one a human holds. This is not a same-UID
+sandbox: the ordinary owner socket is still reachable by that user's
+processes. A pane label, `--as` coordination address or path-claim holder is
+advisory identity, not this authenticated principal.
+
+Hot handoff carries live credentials and bound sockets; cold restart carries
+none. Session deletion, explicit withdrawal or expiry revokes the socket
+and its live authority. The [grant ledger](../crates/phux-server/src/delegation.rs)
+and [socket lifecycle](../crates/phux-server/src/runtime/delegation.rs) own
+these rules. Do not manufacture credentials or adopt stale fences to work
+around a refusal.
+
 ## Safety
 
 **The focused pane is a person's.** Scripts and agents should address panes
@@ -195,5 +303,6 @@ so a script has to say what it means.
 **Approvals.** Connections authenticated with a scoped workload credential
 (see [remote](./remote.md)) can be made to hold kill and signal actions for
 a person to approve: `phux approvals`, `phux approve ID`, `phux deny ID`.
-Connections over the local socket run with the owner's authority and are
-never held.
+Connections over the ordinary owner socket are never held. A delegated
+local socket is not that full-owner path; see
+[connection authority](./remote.md#connection-authority).

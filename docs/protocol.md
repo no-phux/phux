@@ -14,9 +14,10 @@ non-native implementation to read alongside.
 
 A Unix socket for local clients. QUIC (one bidirectional stream per
 connection, more with `QUIC_STREAMS`), WebSocket (one binary message per
-frame), or WebTransport for remote ones, all under TLS. SSH carries frames
-over stdio through `phux stdio-bridge`. The frame format is the same on
-every transport.
+frame), or WebTransport for remote ones, all under TLS. Manual
+`phux stdio-bridge` carries frames over SSH stdio; this is not the normal
+[`attach --ssh` bootstrap path](./remote.md#other-ways-in). The frame format
+is the same on every transport.
 
 ## Framing
 
@@ -36,10 +37,13 @@ value:     bytes
 ```
 
 Decoders match fields by id in any order and skip ids they do not know, so
-adding a field never breaks an older peer. Inside a value, records are
-positional and big-endian, with strings as `u32 length || bytes`. Field
-ids are append-only; a retired id is never reused, and the schema lists
-them.
+additive optional fields can be skipped by an older peer. Most nested
+records are positional and big-endian, with string leaves encoded as
+`u32 length || bytes`; top-level UTF-8 field values are raw bytes.
+Organization bodies/records and selected extensible event bodies instead
+use nested tagged fields: see the [organization codec](../crates/phux-protocol/src/wire/frame/org.rs).
+Do not infer a nested grammar from a type name in the schema. Field ids
+are append-only; a retired id is never reused, and the schema lists them.
 
 `FRAME_COMPRESSED` (`0x9A`) wraps one deflated frame. A server uses it only
 if the client's `HELLO` offered compression, and only for bodies of 4 KiB
@@ -52,8 +56,8 @@ or more.
    keyboard protocols, which bootstrap profiles it can consume, compression).
 2. The server checks `major.minor` against its own. On a mismatch it sends
    `ERROR` with `VERSION_INCOMPATIBLE` and closes.
-3. The server authorizes the connection (owner on the Unix socket; a scoped
-   grant from the client certificate otherwise) and picks a bootstrap
+3. The server authorizes the connection ([owner, delegated, or scoped
+   remote authority](./remote.md#connection-authority)) and picks a bootstrap
    profile the client offered.
 4. The server replies `HELLO_OK` (`0x80`): its version, `ServerCapabilities`
    (two words of feature bits, `features` and `features_ext`), a server
@@ -109,6 +113,55 @@ bypass input leases, authorization, or acknowledged-input checks.
 A client that only wants text does not attach: it sends `GET_SCREEN`
 through `COMMAND` and gets the server's rendering.
 
+### Generations, publication, and history
+
+An attach cuts one terminal actor's state at an inclusive `base_seq`.
+A generation has nonzero application `stream_id` and `bootstrap_id`;
+bootstrap chunks are contiguous, and live output begins at `base_seq + 1`.
+Native checkpoint bytes belong to the engine: transport and UI layers must
+not rewrite them. Decode into invisible staging. Publish atomically only
+when both the matching engine decode and protocol `BOOTSTRAP_READY` are
+ready; `ATTACH_READY` is not a substitute for either.
+
+A tombstone retires that generation even if late chunks/output arrive.
+Keep the last published view display-only until the replacement is ready.
+On gaps, overflow, resize or codec discontinuity, fence and recut; never
+silently skip bytes or replay them into an obsolete replica. Consumer
+mailboxes, stale-output recovery and resync attempts are bounded; failure
+ends in an explicit error rather than unbounded backlog or a frozen view.
+Only StateSync live output gets a cumulative, generation-bound `FRAME_ACK`,
+after application to the replica; raw output and bootstrap never do.
+Normal reliable StateSync advances its server reference on emit: an ACK is
+not proof of a paint or application consumption, nor a lossy-delivery promise.
+
+Native history is a bounded, pull-based lease on retained engine history,
+not durable scrollback and not part of the attach's eager work. Follow the
+engine cursor and authenticate each page before requesting its successor.
+The final page must authenticate the engine's `FINISH`; no row-count guess
+or protocol cursor alone substitutes for it, and trailing bytes after
+`FINISH` are rejected.
+A rejected page/request and an invalidated cursor are distinct outcomes;
+a history tombstone invalidates that history, not the live replica or input.
+Pruning or history decode failure must not retire a healthy live generation.
+The [kernel](../crates/phux-client-core/src/session.rs), its
+[generation/ACK/history tests](../crates/phux-client-core/src/session/tests.rs)
+and the server [pump](../crates/phux-server/src/runtime/pump.rs) own these transitions.
+
+### QUIC stream routing
+
+With negotiated `QUIC_STREAMS`, keep connection control on the control
+stream and terminal traffic on client-opened bidirectional terminal streams.
+Each begins with `STREAM_BIND`; its application stream id is not the QUIC
+stream number. Binding requires authorization for that terminal and frame
+provenance must match the binding. A control-stream viewport update must
+cross the ordering barrier before dependent terminal-stream work; ordering
+within two separate QUIC streams does not provide that barrier for you.
+See [server stream admission](../crates/phux-server/src/transport/quic.rs)
+and the [runtime stream router](../crates/phux-client-runtime/src/session/multistream.rs).
+The [viewport barrier](../crates/phux-client-runtime/src/session.rs) uses a
+control `PING`/matching `PONG` while retaining preceding control frames.
+Without the capability, use the single-stream path.
+
 ## Input
 
 Input is structured. `INPUT_KEY` (`0x10`) carries a key event in
@@ -117,12 +170,47 @@ unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
 `VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
 the PTY according to the terminal's current modes (application cursor
 keys, kitty keyboard protocol, bracketed paste...), so clients never
-generate escape sequences. `INPUT_TERMINAL_REPLY` is the one opaque
-exception, for a reply the client's emulator must make itself.
+generate escape sequences.
 
-With `ACKNOWLEDGED_INPUT`, batches go through `APPLY_INPUT` and are
-acknowledged, which is what lets a client replay input across a reconnect
-without duplicating it.
+### Terminal queries
+
+The canonical server terminal answers each child query once. Replica
+emulator replies are not another source of PTY input. `INPUT_TERMINAL_REPLY`
+remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/commands.rs).
+New clients suppress replica replies; never resend them as paste or raw input.
+The [engine regression tests](../crates/phux-client-core/src/engine/ghostty.rs)
+exercise this single-reply boundary.
+
+### Receipts, retries, and backpressure
+
+With `ACKNOWLEDGED_INPUT`, one logical batch uses `APPLY_INPUT`. Retry an
+unresolved request with the same random operation id and unchanged semantic
+payload, not its connection-local `request_id`. This is safe only against
+the same `HELLO_OK` server incarnation within the dedupe retention horizon
+(currently ten minutes from admission). Keyed spawn/session creates and
+supervisory operations have the same bounded incarnation rule. Saturation
+refuses new ids rather than evicting live receipts. After a changed
+incarnation or expired horizon, read current state and reconcile; never
+blindly replay, even with the old key. A cached create result may name a
+resource that has since closed.
+
+Input OK means the PTY writer completed `write_all`/flush, not child
+consumption, shell completion, or model admission. A provably not-written
+refusal differs from `INPUT_DELIVERY_UNKNOWN`, which may already have
+written bytes: report/reconcile unknown, never resubmit under a fresh id.
+Looking up the retained outcome under the original id is not permission to
+execute it again. Legacy `INPUT_*`/`ROUTE_INPUT` are ordered and bounded by
+connected backpressure, not reconnect receipts. Do not fragment one logical
+command into fire-and-forget paste events. See the shared
+[dedupe store](../crates/phux-server/src/runtime/operation_dedupe.rs),
+[acknowledged lane](../crates/phux-server/src/runtime/input_lane/acknowledged.rs)
+and [incarnation recovery tests](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs).
+
+Events are bounded in-memory wakeups over level state. On a journal gap,
+reread authoritative state rather than inferring the missing transitions.
+For delayed cleanup, `KILL_RESOURCE_IF` binds the allocation instance token
+(not `HELLO_OK.server_id`) and attachment/use conditions atomically. A
+refusal leaves the resource alone; never fall back to unconditional kill.
 
 ## Commands, events, resources
 
@@ -141,8 +229,30 @@ method with the authorization verb it needs; the generated
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some
-are read by the server (`phux.agent/v1` is the agent record; the TUI's
-layout rides under `phux.tui.layout/v1`).
+are read by the server (`phux.agent/v1` is the agent record).
+`ORGANIZATION` gates typed server-owned organization commands;
+`phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
+membership or arrangement authority. See [organization](./organization.md).
+
+An `AgentSession` has an immutable, one-level Terminal parent. Purging the
+parent closes its children atomically; closing a child never kills its
+parent. Process exit under Retain is not purge: see
+[activations and exit policy](./organization.md#activations-and-reconciliation).
+
+### File transfer
+
+`PUT_FILE` uses a live Terminal to select the destination host, not to grant
+arbitrary filesystem writes. The server chooses the sandbox root and name;
+offsets and overlapping bytes continue the same principal's immutable
+upload. Only whole-file digest verification, sync and rename publish a final
+path. Digest mismatch discards the partial file and sidecar: restart rather
+than trying to repair retained corrupt bytes. Completed artifacts belong to
+the user and are not silently TTL-deleted; quotas refuse with a remedy.
+Keep payloads and completed paths out of routine telemetry. Transfer files
+through this lane, not fragmented PTY input. The [upload implementation and
+tests](../crates/phux-server/src/runtime/upload.rs) own continuation and
+quota behavior; [CLI](./reference/cli.md#phux-upload) and
+[environment](./reference/environment.md) own syntax and limits.
 
 ## Minimal client
 
@@ -150,7 +260,9 @@ layout rides under `phux.tui.layout/v1`).
 2. `HELLO` offering the synthesized raw profile and no compression; check
    `HELLO_OK`.
 3. `ATTACH`; handle `ATTACHED`, the bootstrap frames, `ATTACH_READY`,
-   `RESOURCE_OUTPUT` in sequence order, `RESOURCE_CLOSED`, `ERROR`.
+   `BOOTSTRAP_TOMBSTONE` and replacement, `RESOURCE_OUTPUT` with exact
+   generation/sequence checks, `RESOURCE_CLOSED`, `ERROR`. Publish only at
+   the readiness boundary above; raw/bootstrap never send `FRAME_ACK`.
 4. Send `PING` for liveness and handle `PONG`. Send `INPUT_KEY` and
    `VIEWPORT_RESIZE`. `DETACH` to leave.
 5. Feed terminal bytes to an emulator. Tolerate unknown kinds, events, and
@@ -162,6 +274,7 @@ layout rides under `phux.tui.layout/v1`).
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.
 - Gate new behavior on a feature bit in `caps.rs`. Do not bump the minor.
+  A shipped capability bit is never withdrawn or repointed.
 - Classify any new command in `kinds.rs`, or dispatch denies it.
 - Regenerate the schema (`PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p
   phux-protocol wire_schema_matches`), fill in any `?` types, and

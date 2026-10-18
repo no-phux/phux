@@ -31,7 +31,8 @@ repeating it.
 ## Work on phux
 
 - [Architecture](./architecture.md): process model, crates, clients, the decisions behind them.
-- [Protocol](./protocol.md): framing, handshake, capabilities, how to change the wire.
+- [Organization](./organization.md): durable records, transaction ordering, execution and restore authority.
+- [Protocol](./protocol.md): framing, handshake, capabilities, replica recovery and bounded retries.
 - [Development](./development.md): environments, build cache, per-area setup, gates, CI.
 - [Releasing](./releasing.md): what ships, how, and the manual controls.
 - [Contributing](../CONTRIBUTING.md) and [agent instructions](../AGENTS.md).

@@ -11,7 +11,11 @@ against. It renders pane contents with libghostty, the same emulator the
 server uses, so what you see is what the server has.
 
 Shipped in every release. [Getting started](./getting-started.md) is about
-this client.
+this client. `Ctrl-A S` opens settings (edits the config file; see
+[apply boundaries](./config.md#when-a-change-takes-effect)).
+[Recording](./reference/cli.md#phux-rec) observes output without becoming a
+process backup; [playback](./reference/cli.md#phux-play) creates a new pane,
+never overwrites the target.
 
 ## Desktop
 
@@ -48,7 +52,11 @@ of it. [`clients/desktop`](../clients/desktop) has the details.
 with libghostty compiled to WebAssembly, over WebTransport or WebSocket.
 It is a working client but not a shipped one: nothing serves it, and the
 server's browser-facing listeners are off by default. Use it as the
-starting point for embedding a terminal in a web page.
+starting point for embedding a terminal in a web page. Paired WebSocket
+requires an enrolled client certificate installed in the browser. Browser
+WebTransport cannot perform the required inner mTLS session and is refused
+under paired policy; see the [admission test](../crates/phux-server/src/transport/webtransport.rs).
+A bearer alone does not make either transport authorized.
 
 ## Phones
 

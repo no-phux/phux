@@ -11,11 +11,32 @@ phux config init            # write a starter file with every setting commented 
 phux config show --default  # print the built-in defaults
 phux config show            # print what is in effect
 phux config check           # validate the file
-phux config reload          # make attached clients pick up changes
+phux config reload          # apply the reloadable subset below
 ```
 
-The file is not watched; run `phux config reload` after editing it. Every
-section and setting is listed in the [config reference](./reference/config.md).
+The file is not watched; apply changes according to their owner below.
+Every section and setting is listed in the [config reference](./reference/config.md).
+
+## When a change takes effect
+
+| Owner | Apply boundary |
+| --- | --- |
+| TUI keybindings, theme, chrome/status, plugin UI rows, which-key, clipboard-write, notifications | Explicit config reload. Failure leaves the previous settings intact. |
+| TUI sidebar geometry/hosts settings and mouse capture | Next attach; detach/reattach the client, not the server. |
+| Server policy mode, listeners, hooks and server-owned defaults | Read at server start/handoff; client reload does not replace them. |
+| Hub satellites and reverse uplinks | The config-reload doorbell reconciles changed links. |
+| Workload registry and bearer stores | Their own admission/revocation reload path, not a universal config reload. |
+
+Use `phux config show --layers` and `phux config check` to diagnose the file.
+Runtime toggles do not silently write it back. The TUI settings page edits
+validated keys in the file; it is not a second source of authority. Do not
+restart live workloads to test a client-only knob. Server changes use the
+planned in-place handoff, not a cold stop/start; confirm the new settings
+and [remote authority](./remote.md#connection-authority) afterwards.
+The [TUI settings/tests](../crates/phux-tui/src/settings.rs),
+[reload adoption](../crates/phux-tui/src/attach/driver/config_ui.rs),
+[server startup](../crates/phux-server/src/runtime/mod.rs) and
+[link doorbell](../crates/phux-server/src/runtime/client.rs) define the boundaries.
 
 ## Keys
 
@@ -55,6 +76,26 @@ phux theme set tokyo-night
 Individual colors can be overridden in `[theme]`; `phux config init` writes
 the full list of color slots, commented out.
 
+## Predictive echo
+
+The TUI's predictive echo defaults on for remote non-loopback connections,
+off for local/loopback ones. Set an explicit override for sensitive displays:
+
+```toml
+[experimental]
+predictive-echo = false
+```
+
+Prediction changes only this client's display, never wire input, other
+clients or recordings. It does **not** know the child's no-echo/password
+mode: characters typed at a password prompt can briefly appear locally
+until contradicted or the adaptive one-to-five-second display lifetime
+expires. Disable it if that shoulder-surfing risk is unacceptable. Do not
+assume server ECHO awareness or an initial confirmation gate on the primary
+screen. [Dial defaults/tests](../crates/phux/src/commands/attach.rs) and the
+[prediction state machine](../crates/phux-client-core/src/predict/state.rs)
+own the behavior.
+
 ## Status bar and sidebar
 
 `[status]` sets what the bar shows, as lists of widgets for the left,
@@ -79,7 +120,8 @@ command gets are in [hooks](./reference/hooks.md).
 A plugin is a directory with a manifest that can add actions, status
 widgets, sidebar sections, themes, hooks, and agent launch commands. phux
 never loads code into the server; a plugin's actions run as separate
-processes.
+processes. This is not sandboxing: package build steps at install/update
+execute as the invoking user. Inspect and trust the package before installing.
 
 ```sh
 phux plugin install https://github.com/someone/phux-plugin

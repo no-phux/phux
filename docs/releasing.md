@@ -93,6 +93,31 @@ The desktop is qualified before upload: `smoke-app.ts` on macOS, and
 `smoke-linux.ts` under Xvfb and lavapipe on Linux, against an isolated
 server built from the same checkout.
 
+## Release-key custody and rotation
+
+The verifier [trusts current and next public keys](../crates/phux-client-runtime/src/release/signature.rs);
+the installer embeds the same list and tests pin parity. Keep the **next
+private key encrypted and off machines holding the current private key**,
+including the build workstation. Never put private key material in docs,
+logs, source or review artifacts. Separating custody prevents one compromise
+from stealing both the signer and its pre-trusted replacement.
+
+For an authorized rotation:
+
+1. Switch the Actions signing secret to the already pre-published next key.
+   Existing clients trust it; do not generate an untrusted signer first.
+2. Ship that key as current plus a fresh next public key in both the Rust
+   verifier and installer, with parity/signature tests. Secure the fresh
+   next private key separately before relying on it.
+3. If current leaks, rotate to the pre-trusted next immediately. If only
+   next leaks, replace next through a release signed by the safe current.
+
+Clients too old to trust either remaining key need an externally trusted
+reinstall after missed rotations. Signed checksum sidecars authenticate
+artifacts, not freshness: the channel manifest is unsigned, and a next-channel
+rollback to an older validly signed build remains possible. These are trust
+limitations, not permission to skip signature verification.
+
 ## npm and crates.io
 
 npm packages publish with trusted publishing (OIDC), so there is no npm

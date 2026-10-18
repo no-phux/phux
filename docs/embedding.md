@@ -15,7 +15,7 @@ None of these crates is on crates.io yet; depend on them by path or git.
 | ------------------------------------------------------ | -------------------------- | ------------------------------------------------------------- |
 | GPUI (gpui-fast 0.1.9)                                 | `phux-gpui`                | Wake GPUI from the runtime and place the view.                |
 | Another Rust UI (egui, iced, Slint, a custom renderer) | `phux-client-runtime`      | Map cells to pixels and draw the [draw list](#the-draw-list). |
-| Swift, Objective-C, C, C++, Zig                        | `phux-client-ffi` (C ABI)  | Feed transport bytes, paint the C draw list.                  |
+| Swift, Objective-C, C, C++, Zig                        | `phux-client-ffi` (C ABI)  | Connect, poll on wake, paint the C draw list.                  |
 | A phone app                                            | `phux-client-ffi` (UniFFI) | See [phones](./clients.md#phones).                            |
 
 Every route starts the same way: open a client, attach a session, and create a
@@ -55,18 +55,27 @@ that phux's own GPUI patches provide.
 
 ## Any Rust toolkit
 
-```rust
-use phux_client_runtime::{Runtime, Target, ClientOptions};
-use phux_client_runtime::draw::{DrawList, Theme, Visibility};
+Enable the runtime's `engine` feature. This sketch separates connection from
+UI callbacks; `options.control.attach` must select the intended disposable
+server session. Keep the returned client/view alive between callbacks.
 
-let client = Runtime::connect(Target::uds(socket), options)?;
-// After Event::StatusChanged(Status::Attached):
-let view = client.create_view(&terminal_id)?;
-// On every Event::TerminalChanged:
-if let Some(frame) = client.acquire_view(view) {
-    let list = DrawList::build(&frame, &theme, Visibility::default());
-    // fill list.background, then each run, block, decoration and the cursor
+```rust
+use phux_client_runtime::draw::{DrawList, Theme, Visibility};
+use phux_client_runtime::publication::Rgb;
+use phux_client_runtime::runtime::RuntimeError;
+use phux_client_runtime::{Client, ClientOptions, Runtime, Target, ViewId};
+
+fn connect(socket: std::path::PathBuf, options: ClientOptions) -> Result<Client, RuntimeError> {
+    Runtime::connect(Target::uds(socket), options)
 }
+
+// After attached/readiness, call client.create_view(&terminal_id)? once.
+// On UI invalidation, acquire the latest immutable frame:
+fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rgb>> {
+    let frame = client.acquire_view(view)?;
+    Some(DrawList::build(&frame, theme, Visibility::default()))
+}
+// On closing that view, call client.destroy_view(view)? once.
 ```
 
 `Theme<C>` is generic over your colour type: give it a `fn(Rgb) -> C` and
@@ -76,7 +85,18 @@ resize the terminal from the view that owns its size.
 
 ## C and Swift
 
-`include/phux/client.h` is the C ABI. Every root release attaches the
+[`include/phux/client.h`](../crates/phux-client-ffi/include/phux/client.h)
+is the C ABI. For product connections use `phux_client_connect`: the runtime
+owns socket, HELLO, framing and reconnect. Post its wake to your event loop,
+then call `phux_client_poll` on the owning thread. Never feed frames, queue
+a second HELLO or drain outgoing bytes on a connected handle. The wake
+callback runs off-thread and must not call this ABI.
+
+`phux_client_new` plus `feed_frame`/`outgoing_*` is the separate embedded
+lane for offline use, harnesses and fault injection: the host then owns
+dialing, framing, reconnect and bounds. The lanes are mutually exclusive.
+
+Every root release attaches the
 `PhuxFFI` xcframework (macOS and iOS, header included); on other platforms
 build the static library with `just ffi-release`. Call
 `phux_client_terminal_draw_list(client, &terminal, &options, &list)` after
@@ -84,6 +104,53 @@ output arrives and paint the records it lends, which stay valid until your
 next mutable call on the client. The low-level `phux_client_terminal_grid`
 and `phux_client_terminal_grid_metadata` are still there for a renderer that
 wants every cell.
+
+## Runtime consumer contract
+
+Native Rust consumers normally use the runtime's **Fed** delivery: the
+driver feeds the control plane, and the UI consumes events and immutable
+`GridFrame` publications. A binding with owning-thread per-frame catalog
+state (the C ABI) uses **Queued** delivery: the driver retains inbound bytes,
+and the owner drains/polls and decodes them. Do not build another dialer to
+move the decode point. Queues and frame publications are bounded.
+
+Use `take_observation` to drain events and sample status, topology, failure
+and `connection_epoch` under one lock. An identical terminal id after
+reconnect is not the same observation. For queued batches, carry the drained
+epoch and check `accepts_inbound(epoch)` under the same control guard used
+to feed **each** frame; reconnect can retire a batch after it was drained.
+Caller-validated recovery reads inventory and validates stable identities
+before attaching, never blindly adopts reused handles. Deliberate lease
+takeover is spent once, not repeated automatically on reconnect. Geometry
+comes from authoritative frames; the designated size-owning view sends
+resize intent, while observers do not create resize feedback loops.
+
+A listener is a coalesced wake, not an event payload. Drain then invalidate
+only affected views. Callbacks run on the runtime thread outside locks;
+post to the UI rather than blocking or re-entering locked control state.
+`with_control` is non-reentrant and must not block or call back into the
+client. Dropping the last `Client` closes the driver, retires callbacks,
+waits out callbacks on other threads, and joins the driver (never joins
+itself from its own callback). Free callback context only after retirement;
+C `phux_client_free` performs that stop/join.
+
+Immutable Rust grid frames can outlive a later publication. C grid/draw/effect
+pointers instead last only until the next mutable call: copy before retaining.
+A pointer borrow ending is **not delivery acceptance**. Ordinary event drains
+accept agent publications; leased drains retain their journal allocation
+until explicit `accept_agent_publication` (C: `phux_client_effect_clear`).
+Unaccepted publications replay after replacement once catalog/attach are
+ready. This acceptance is also not the drawable-presented receipt that
+clears an unknown-input fence; see
+[GPUI presentation](../clients/desktop/native/phux-gpui/PRESENTATION.md).
+
+The [runtime API](../crates/phux-client-runtime/src/runtime.rs),
+[publication delivery seam](../crates/phux-client-runtime/src/control/agent_delivery.rs),
+[epoch observations](../crates/phux-client-runtime/tests/it/control_plane/observation.rs)
+and [recovery tests](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs)
+own these contracts. The C header owns ABI versions, open enums, thread and
+borrow lifetimes; tolerate additive enum members rather than inventing a
+new binding vocabulary.
 
 ## The draw list
 

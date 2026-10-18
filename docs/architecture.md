@@ -1,7 +1,10 @@
 # Architecture
 
 For people changing phux. [Concepts](./concepts.md) is the user-level model;
-[protocol](./protocol.md) is the wire.
+[protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
+durable records, activations and restore; [remote authority](./remote.md#connection-authority)
+owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
+owns the runtime consumer boundary.
 
 ## One server, many clients
 
@@ -18,7 +21,9 @@ is the reason for the single-threaded runtime. Around that runtime: a
 writer thread per pane, a shared poller that wakes quiet PTY readers (a
 busy pane gets its own reader thread), one input-lane thread that routes
 and encodes keystrokes, and blocking pools for uploads and path searches.
-Shared state is a `ServerState` behind a mutex.
+Shared state is a `ServerState` behind a mutex; never hold its synchronous
+lock across an await or send a live `!Send` terminal across threads. Input
+lanes receive Send mode snapshots, not another borrower of the terminal.
 
 `phux upgrade` re-executes the server binary in place: the old process
 hands its listening socket and every PTY file descriptor to the new one,
@@ -77,7 +82,9 @@ Cargo manifests define the actual edges.
 | `phux`                | the `phux` binary: argument parsing and dispatch                                                                                                      |
 
 `phux-core` and `phux-protocol` do not depend on each other; the server
-bridges their id spaces. Where both are in scope, import the protocol type
+bridges their id spaces through [IdBridge](../crates/phux-server/src/id_bridge.rs):
+core generational keys are not wire ids; wire ids are monotonically allocated
+and retired, not recycled within an incarnation. Where both are in scope, import the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
 Outside the root workspace: `clients/desktop/native` (the desktop and
@@ -98,7 +105,9 @@ core alone and does its own I/O in the page.
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. The desktop app
 uses `clients/desktop/native/phux-gpui`, the embeddable GPUI terminal view.
-The runtime's `draw::DrawList` shares colour, face, cursor, block and
+The [runtime consumer contract](./embedding.md#runtime-consumer-contract)
+owns epochs, delivery acceptance and callback retirement. The runtime's
+`draw::DrawList` shares colour, face, cursor, block and
 decoration rules across GPUI and the C ABI's `c/draw_list.rs`; other
 toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi` derives one binding
 vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
@@ -151,23 +160,23 @@ A host integration's lifecycle stream, when present, outranks detection.
 The record is published as `phux.agent/v1` metadata and consumed by every
 client.
 
-Every connection holds one grant, minted at `HELLO`: the owner's full
-authority over the Unix socket, or a scoped grant from the mTLS workload
-registry for anything remote. Each dispatched frame is classified by the
-kind catalog into the verb it needs, and the grant must hold that verb.
-Scoped grants can be configured to hold kill and signal actions for human
-approval. Input leases let one connection take exclusive input to a pane;
-agent and automation principals cannot take a lease a human holds.
+Connection authority is checked on every dispatch, not just at admission.
+The kind catalog classifies each frame; the grant must cover its verbs and
+authoritative subject. [Connection authority](./remote.md#connection-authority)
+distinguishes ordinary owner sockets, delegated sockets, scoped mTLS, live
+revocation and reverse-hub trust. [Agents](./agents.md#safety) owns input
+leases and held approvals; humans retain input priority.
 
-`phux-work` is a per-host SQLite store with one keeper process as its only
-writer; `phux mission` builds on it. A multi-host coordinator is designed
-and not built.
+[Work and missions](./organization.md#work-and-missions) use a separate
+per-host keeper/store, not the organization database. A multi-host
+coordinator and autonomous Lead are not shipping contracts.
 
 ## Where to look
 
 | To change       | Start at                                                                                                                                                                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/client.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/`                                                         |
+| organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling  | `phux-server/src/runtime/input_lane/`                                                                                                                                                                        |
 | TUI rendering   | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay`                                                                                                                        |
 | the wire        | `phux-protocol/src/wire/frame/mod.rs` (types and tags), `wire/field.rs` (field ids), `caps.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
@@ -189,10 +198,11 @@ records explain history; [look them up deliberately](#historical-decisions).
 
 - One server per user per profile; one current-thread runtime; a pane is a
   `LocalSet` task that owns its `!Send` libghostty terminal.
-- Upgrades re-exec the server and re-adopt PTYs; a server restart is never
-  the reason a process dies.
-- Exit is a facet, close is a purge: an exited pane stays inspectable until
-  it is removed or its retention expires.
+- Hot upgrades re-exec and re-adopt live PTYs; cold restarts, crashes and
+  reboots do not preserve PTYs. Records are not process recovery.
+- Exit is a facet, close is a purge. Remove policy removes on exit; Retain
+  keeps an inspectable result until purge/expiry. [Organization](./organization.md)
+  owns commit and reconciliation rules.
 - Events are journaled and resumable; a reconnecting watcher gets what it
   missed or a gap marker, never silence.
 
@@ -220,9 +230,11 @@ records explain history; [look them up deliberately](#historical-decisions).
 **Agents and authority**
 
 - The server derives agent state. A host's lifecycle stream outranks the
-  detector; a declaration outranks both.
-- The owner socket has full authority. Everything remote is a scoped mTLS
-  grant plus a bearer token; bearer-only and anonymous paths are gone.
+  detector; an occupant-bounded declaration outranks both.
+- The ordinary owner socket has full same-UID authority; delegated sockets
+  only narrow it. Remote consumer ingress requires scoped mTLS plus bearer
+  admission; reverse federation grants the trusted hub satellite-owner
+  authority. Bearer-only and anonymous remote ingress are gone.
 - Clients pin the server's certificate authority at pairing and never learn
   one from a connection. Devices and satellites enroll with single-use
   tickets.
