@@ -827,6 +827,7 @@ pub(crate) fn run_pair(
         Door::Listener { enroll } => enroll,
         Door::Relay { route, enroll } => {
             let replace = replace_token.as_deref();
+            let enroll = phone_enrollment_requested(enroll, output, true);
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
@@ -838,13 +839,20 @@ pub(crate) fn run_pair(
         }
     };
     let addresses = resolve_pair_addresses(host.as_deref(), live);
+    // Both explicit camera QR and a QR shown by default must enroll a new
+    // phone. With no link there is no default QR; ordinary mints still work.
+    let enroll = phone_enrollment_requested(enroll, output, addresses.server_url.is_some());
     let refusal = link_refusal(
         host.as_deref(),
         qr,
         &addresses.live,
         addresses.server_url.as_deref(),
     )
-    .or_else(|| (enroll && addresses.live.quic.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned()));
+    .or_else(|| {
+        let camera = qr || (output.default_qr && addresses.server_url.is_some());
+        (enroll && !addresses.enrollment_endpoint_ready(camera))
+            .then(|| ENROLL_NEEDS_QUIC.to_owned())
+    });
     if let Some(refusal) = refusal {
         error!("pair: {refusal}");
         return ExitCode::FAILURE;
@@ -986,13 +994,23 @@ pub(crate) enum Door {
     },
 }
 
-/// Why `--enroll` refuses a server certificate no workload CA issued.
-const ENROLL_NEEDS_AUTHORITY: &str = "--enroll needs the server's certificate to chain to its \
-     workload CA (ADR-0153), and this one does not (it predates the CA, or the operator \
-     supplied it). `phux workload authority --rotate` issues one (every device then re-pairs)";
+/// Any QR actually shown to a phone must let it enroll; without a link the
+/// implicit QR is skipped. Piped, JSON and secret-file mints remain opt-in.
+const fn phone_enrollment_requested(enroll: bool, output: LinkOutput<'_>, has_link: bool) -> bool {
+    enroll || output.qr || (output.default_qr && has_link)
+}
 
-const ENROLL_NEEDS_QUIC: &str = "--enroll needs a bound QUIC listener: a device enrolls over \
-     QUIC (`phux server --quic ADDR`, or the overlay auto-listener)";
+/// Why phone enrollment refuses a server certificate no workload CA issued.
+const ENROLL_NEEDS_AUTHORITY: &str = "phone enrollment needs a server certificate issued by its \
+     workload CA, but this certificate predates the CA or was supplied separately; nothing was \
+     minted. `phux workload authority --rotate` then `phux upgrade` repairs an auto-provisioned \
+     legacy certificate, but rotates the CA: every paired device must re-pair and every workload \
+     credential must re-enroll. Operator-supplied certificates must be replaced by their owner";
+
+const ENROLL_NEEDS_QUIC: &str = "phone pairing needs a device-dialable QUIC listener to enroll \
+     its certificate; none was minted. Bind one with `phux server --quic ADDR` (or use the \
+     overlay auto-listener), then retry. A loopback or wildcard bind without an overlay \
+     address cannot be advertised to a phone";
 
 /// The fields a mint document gained after its first schema: the CA pin
 /// (ADR-0153) and an enrollment ticket (ADR-0154). Additive: `phux host add`
@@ -1277,6 +1295,16 @@ struct PairAddresses {
 }
 
 impl PairAddresses {
+    /// Phone QRs need an advertised route. Explicit machine-readable enrollment
+    /// can use a bound loopback listener without advertising it to a phone.
+    const fn enrollment_endpoint_ready(&self, camera: bool) -> bool {
+        if camera {
+            self.quic_endpoint.is_some()
+        } else {
+            self.live.quic.is_some()
+        }
+    }
+
     /// The advertised names an existing certificate is warned about. The
     /// `MagicDNS` name is claimed by a certificate this run generates but is
     /// not warned about: it stands for an overlay address that is checked,
@@ -2066,10 +2094,11 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names, build_connect_link,
-        build_connect_link_pinned, build_relay_connect_link, legacy_connect_link, link_refusal,
-        live_listeners, pair_document, parse_connect_link, percent_encode, resolve_quic_endpoint,
-        resolve_server_url, select_relay_connector, shows_default_qr,
+        LinkOutput, LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names,
+        build_connect_link, build_connect_link_pinned, build_relay_connect_link,
+        legacy_connect_link, link_refusal, live_listeners, pair_document, parse_connect_link,
+        percent_encode, phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
+        select_relay_connector, shows_default_qr,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
@@ -2422,6 +2451,26 @@ mod tests {
         assert_eq!(without.checked_names(), without.advertised);
     }
 
+    #[test]
+    fn machine_enrollment_accepts_loopback_but_phone_qrs_need_a_dialable_route() {
+        let mut addresses = PairAddresses {
+            overlay: vec![],
+            live: live(None, Some("127.0.0.1:8788")),
+            server_url: None,
+            quic_endpoint: None,
+            advertised: vec![],
+            magic_dns_name: None,
+        };
+        assert!(addresses.enrollment_endpoint_ready(false));
+        assert!(!addresses.enrollment_endpoint_ready(true));
+        addresses.quic_endpoint = Some("quic://100.64.0.2:8788".to_owned());
+        assert!(addresses.enrollment_endpoint_ready(true));
+        addresses.live.quic = None;
+        addresses.quic_endpoint = None;
+        assert!(!addresses.enrollment_endpoint_ready(false));
+        assert!(!addresses.enrollment_endpoint_ready(true));
+    }
+
     /// The QR beneath the text link is the default only on a terminal, and
     /// only when no other form was chosen: `--qr` (the camera form),
     /// `--no-qr`, `--json`, or `--secret-file`.
@@ -2431,6 +2480,32 @@ mod tests {
         assert!(!shows_default_qr(false, false), "piped output stays text");
         assert!(!shows_default_qr(true, true), "another form was chosen");
         assert!(!shows_default_qr(true, false));
+    }
+
+    #[test]
+    fn camera_pairing_enrolls_without_an_extra_flag_but_machine_mints_do_not() {
+        for (enroll, qr, default_qr, has_link, expected) in [
+            (false, true, false, true, true),
+            (false, true, false, false, true),
+            (false, false, true, true, true),
+            (true, false, false, false, true),
+            (false, false, true, false, false),
+            (false, false, false, true, false),
+        ] {
+            let output = LinkOutput {
+                name: None,
+                qr,
+                default_qr,
+                json: false,
+                secret_file: None,
+                expires_at: None,
+                expires_label: None,
+            };
+            assert_eq!(
+                phone_enrollment_requested(enroll, output, has_link),
+                expected
+            );
+        }
     }
 
     /// No listener report, or one with nothing bound, is a refusal naming

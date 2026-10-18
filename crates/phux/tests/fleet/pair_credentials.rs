@@ -26,6 +26,10 @@ struct Server {
 
 impl Server {
     fn start(state: &Path, tokens: Option<&Path>) -> Self {
+        Self::start_with_quic(state, tokens, false)
+    }
+
+    fn start_with_quic(state: &Path, tokens: Option<&Path>, quic: bool) -> Self {
         let socket = socket_path(state);
         let config = state.with_file_name("config");
         crate::paired::write_paired_policy(&config.join("phux/config.toml"));
@@ -46,6 +50,9 @@ impl Server {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if quic {
+            command.args(["--quic", crate::listeners::LOOPBACK_ANY_PORT]);
+        }
         match tokens {
             Some(tokens) => {
                 command.env("PHUX_WS_TOKENS", tokens);
@@ -417,30 +424,16 @@ fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
     assert_eq!(credential_count(&state, &tokens), 0, "nothing was minted");
 
     let host = format!("wss://{}", server.wss_addr);
-    let paired = phux(
+    let refused = phux(
         &state,
         Some(&tokens),
         &["pair", "--qr", "--expires", "15m", "--host", &host],
     );
-    let stdout = String::from_utf8_lossy(&paired.stdout);
-    let stderr = String::from_utf8_lossy(&paired.stderr);
-    assert!(paired.status.success(), "stderr={stderr}");
-    assert!(
-        stdout.contains("Scan to pair")
-            && stdout.contains("EXPIRES")
-            && stdout.contains("15m")
-            && (stdout.contains('█') || stdout.contains('▀') || stdout.contains('▄')),
-        "stdout={stdout}"
-    );
-    assert!(
-        !stdout.contains("token=") && !stdout.contains("Pairing token"),
-        "the bearer must not be printed beside the QR: {stdout}"
-    );
-    assert!(
-        !stderr.contains("token="),
-        "stderr must not carry the bearer: {stderr}"
-    );
-    assert_eq!(credential_count(&state, &tokens), 1);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty(), "no unusable phone QR is printed");
+    assert!(stderr.contains("device-dialable QUIC"), "stderr={stderr}");
+    assert_eq!(credential_count(&state, &tokens), 0);
 
     let secret = dir.path().join("pair-secret");
     let hidden = phux(
@@ -483,7 +476,23 @@ fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
         .expect("secret must admit");
     let expiry = admitted.expires_at.expect("expires");
     assert!(expiry > chrono::Utc::now() + chrono::Duration::minutes(14));
-    assert_eq!(credential_count(&state, &tokens), 2);
+    assert_eq!(credential_count(&state, &tokens), 1);
+}
+
+/// A bound QUIC listener on loopback is still not an enrollment route for a phone.
+#[test]
+fn a_phone_qr_refuses_an_unreachable_quic_listener_before_minting() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+    let server = Server::start_with_quic(&state, Some(&tokens), true);
+    let host = format!("wss://{}", server.wss_addr);
+    let refused = phux(&state, Some(&tokens), &["pair", "--qr", "--host", &host]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("device-dialable QUIC"), "stderr={stderr}");
+    assert!(refused.stdout.is_empty());
+    assert_eq!(credential_count(&state, &tokens), 0);
 }
 
 /// The QR is the default only on a terminal: piped output keeps the link as
