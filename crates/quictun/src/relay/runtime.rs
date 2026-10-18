@@ -82,7 +82,7 @@ const TUNNEL_STREAM_RECEIVE_WINDOW: u32 = 64 * 1024;
 
 /// The QUIC transport config for relay connections, with
 /// [`TUNNEL_STREAM_RECEIVE_WINDOW`] for a `tunnel`.
-fn transport_config(tunnel: bool) -> quinn::TransportConfig {
+fn transport_config(tunnel: bool, protocol: &Protocol) -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     if let Ok(idle) = quinn::IdleTimeout::try_from(IDLE_TIMEOUT) {
         transport.max_idle_timeout(Some(idle));
@@ -90,6 +90,9 @@ fn transport_config(tunnel: bool) -> quinn::TransportConfig {
     transport.keep_alive_interval(Some(KEEP_ALIVE));
     if tunnel {
         transport.stream_receive_window(quinn::VarInt::from_u32(TUNNEL_STREAM_RECEIVE_WINDOW));
+    } else if protocol.consumer_streams > 1 {
+        // A multiplexed consumer may have this many streams open at once.
+        transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(protocol.consumer_streams));
     }
     transport
 }
@@ -220,8 +223,8 @@ impl RelayRuntime {
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
         // Same crypto, bounded per-stream window, chosen per connection.
         let mut tunnel_config = server_config.clone();
-        server_config.transport_config(Arc::new(transport_config(false)));
-        tunnel_config.transport_config(Arc::new(transport_config(true)));
+        server_config.transport_config(Arc::new(transport_config(false, &config.protocol)));
+        tunnel_config.transport_config(Arc::new(transport_config(true, &config.protocol)));
 
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
         let local_addr = endpoint.local_addr()?;
@@ -482,7 +485,7 @@ async fn handle_connection(admitted: AdmittedHandshake, shared: Arc<Shared>) {
             shared.observers.consumer_sni.as_ref(),
             server_name.as_deref(),
         );
-        bridge_consumer(conn, server_name, source, &shared).await;
+        bridge_consumer(conn, server_name, source, shared).await;
     } else {
         // rustls only negotiates advertised protocols; defensive.
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unknown protocol");
@@ -600,15 +603,16 @@ async fn admit_tunnel(
     tracing::info!(route = %route, %remote, "tunnel down");
 }
 
-/// Bridge one consumer's first stream onto a fresh stream over its route's
-/// live tunnel. What crosses is the consumer's end-to-end TLS session with
-/// the service, ciphertext the relay holds no key for; the tap records it
-/// for tests.
+/// Bridge a consumer onto its route's live tunnel: its first stream, and
+/// with [`Protocol::consumer_streams`] above one every stream it opens,
+/// each onto a fresh tunnel stream. What crosses is the consumer's
+/// end-to-end TLS session with the service, ciphertext the relay holds no
+/// key for; the tap records it for tests.
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
     source: Share<(IpAddr, bool)>,
-    shared: &Shared,
+    shared: Arc<Shared>,
 ) {
     let remote = conn.remote_address();
     // Defensive: the SniGate already refused absent SNI at TLS.
@@ -623,9 +627,9 @@ async fn bridge_consumer(
         return;
     };
     // Bounded so a handshake-only consumer cannot pin its cap permit.
-    let consumer_streams = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi()).await;
+    let first = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi()).await;
     drop(source);
-    let consumer_streams = match consumer_streams {
+    let first = match first {
         Ok(Ok(streams)) => streams,
         Ok(Err(_)) => return,
         Err(_) => {
@@ -637,56 +641,162 @@ async fn bridge_consumer(
             return;
         }
     };
+    let leg = ConsumerLeg {
+        conn,
+        tunnel,
+        route,
+        shared,
+    };
+    if leg.shared.protocol.consumer_streams > 1 {
+        leg.multiplexed(first).await;
+    } else {
+        leg.single_stream(first).await;
+    }
+}
+
+/// One admitted consumer connection and the tunnel it is bridged to.
+struct ConsumerLeg {
+    conn: quinn::Connection,
+    tunnel: quinn::Connection,
+    route: String,
+    shared: Arc<Shared>,
+}
+
+/// Why one consumer stream was not bridged.
+enum StreamRefusal {
+    /// The route is at its consumer cap.
+    OverCap,
+    /// The tunnel did not open a stream in time.
+    Offline,
+}
+
+impl ConsumerLeg {
+    /// One stream per connection: the tunnel wire has no consumer-group
+    /// envelope, so for a protocol whose service treats each tunnel stream
+    /// as its own authenticated consumer, a forwarded second stream would
+    /// look like a new one. Extra streams are refused.
+    async fn single_stream(self, first: (quinn::SendStream, quinn::RecvStream)) {
+        let remote = self.conn.remote_address();
+        let route = &self.route;
+        let bridge = bridge_stream(
+            first,
+            self.conn.clone(),
+            self.tunnel.clone(),
+            Arc::clone(&self.shared),
+            route.clone(),
+        );
+        tokio::pin!(bridge);
+        let mut refused_streams = 0_u64;
+        loop {
+            tokio::select! {
+                bridged = &mut bridge => {
+                    match bridged {
+                        Err(StreamRefusal::OverCap) => {
+                            tracing::warn!(%remote, route = %route, "refused: route at its consumer cap");
+                            self.conn.close(OVER_CAP_CODE.into(), b"route at its consumer capacity");
+                        }
+                        Err(StreamRefusal::Offline) => {
+                            tracing::warn!(%remote, route = %route, "tunnel dropped while bridging; refusing consumer");
+                            self.conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
+                        }
+                        // Dropping the connection discards stream data quinn
+                        // has not delivered yet, such as the tail of a reply;
+                        // the consumer closes once it has read the FIN, so
+                        // give it that long.
+                        Ok(()) => {
+                            let _ = tokio::time::timeout(SHUTDOWN_DRAIN, self.conn.closed()).await;
+                        }
+                    }
+                    break;
+                }
+                opened = self.conn.accept_bi() => {
+                    let Ok((mut send, mut recv)) = opened else { break };
+                    refused_streams = refused_streams.saturating_add(1);
+                    let _ = send.reset(PROTOCOL_VIOLATION_CODE.into());
+                    let _ = recv.stop(PROTOCOL_VIOLATION_CODE.into());
+                    tracing::debug!(%remote, route = %route, refused_streams, "refused extra stream on single-stream relay route");
+                }
+                _ = self.conn.closed() => break,
+            }
+        }
+        tracing::debug!(route = %route, %remote, refused_streams, "consumer bridge ended");
+    }
+
+    /// Every stream the consumer opens is bridged onto its own tunnel
+    /// stream, until the consumer closes the connection. quinn's stream
+    /// limit (set from [`Protocol::consumer_streams`]) bounds how many are
+    /// open at once; each takes one of the route's units while it lasts.
+    async fn multiplexed(self, first: (quinn::SendStream, quinn::RecvStream)) {
+        let remote = self.conn.remote_address();
+        let mut bridges = tokio::task::JoinSet::new();
+        let mut next = Some(first);
+        loop {
+            if let Some(streams) = next.take() {
+                bridges.spawn(bridge_stream(
+                    streams,
+                    self.conn.clone(),
+                    self.tunnel.clone(),
+                    Arc::clone(&self.shared),
+                    self.route.clone(),
+                ));
+            }
+            tokio::select! {
+                opened = self.conn.accept_bi() => {
+                    let Ok(streams) = opened else { break };
+                    next = Some(streams);
+                }
+                Some(ended) = bridges.join_next(), if !bridges.is_empty() => {
+                    if matches!(ended, Ok(Err(StreamRefusal::Offline))) {
+                        tracing::warn!(%remote, route = %self.route, "tunnel dropped; closing multiplexed consumer");
+                        self.conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
+                        break;
+                    }
+                }
+                _ = self.conn.closed() => break,
+            }
+        }
+        bridges.abort_all();
+        tracing::debug!(route = %self.route, %remote, "multiplexed consumer ended");
+    }
+}
+
+/// Bridge one consumer stream onto a fresh stream over `tunnel`, holding one
+/// of the route's units while it lasts. A refused stream is reset with the
+/// matching close code, so a multiplexed consumer learns why.
+async fn bridge_stream(
+    (consumer_send, consumer_recv): (quinn::SendStream, quinn::RecvStream),
+    conn: quinn::Connection,
+    tunnel: quinn::Connection,
+    shared: Arc<Shared>,
+    route: String,
+) -> Result<(), StreamRefusal> {
+    let refuse = |mut send: quinn::SendStream, mut recv: quinn::RecvStream, code: u32| {
+        let _ = send.reset(code.into());
+        let _ = recv.stop(code.into());
+    };
     // Taken only once the consumer has opened its stream, so a
     // handshake-only consumer never holds one of the route's units.
     let Some(_route_share) = shared.take_route_share(&route) else {
-        tracing::warn!(%remote, route = %route, "refused: route at its consumer cap");
-        conn.close(OVER_CAP_CODE.into(), b"route at its consumer capacity");
-        return;
+        refuse(consumer_send, consumer_recv, OVER_CAP_CODE);
+        return Err(StreamRefusal::OverCap);
     };
     let Ok(Ok((tun_send, tun_recv))) =
         tokio::time::timeout(CONSUMER_STREAM_DEADLINE, tunnel.open_bi()).await
     else {
-        tracing::warn!(%remote, route = %route, "tunnel dropped while bridging; refusing consumer");
-        conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
-        return;
+        refuse(consumer_send, consumer_recv, ROUTE_OFFLINE_CODE);
+        return Err(StreamRefusal::Offline);
     };
-    tracing::info!(route = %route, %remote, "consumer bridged");
-    let window = SendWindow::new(conn.clone());
+    tracing::info!(route = %route, remote = %conn.remote_address(), "consumer bridged");
     let observed = &shared.observers.consumer_bytes;
-    let control_bridge = splice(
-        Tee::new(consumer_streams.1, observed.clone()),
+    splice(
+        Tee::new(consumer_recv, observed.clone()),
         tun_send,
         Tee::new(tun_recv, observed.clone()),
-        TrackedSend::new(consumer_streams.0, window),
+        TrackedSend::new(consumer_send, SendWindow::new(conn)),
         shared.protocol.half_close,
-    );
-    tokio::pin!(control_bridge);
-
-    // The tunnel wire has no consumer-group envelope: a forwarded second
-    // stream would look like a new authenticated consumer to the connector.
-    // Relay routes stay single-stream, so extra streams are refused.
-    let mut refused_streams = 0_u64;
-    loop {
-        tokio::select! {
-            () = &mut control_bridge => {
-                // Dropping the connection discards stream data quinn has not
-                // delivered yet, such as the tail of a reply; the consumer
-                // closes once it has read the FIN, so give it that long.
-                let _ = tokio::time::timeout(SHUTDOWN_DRAIN, conn.closed()).await;
-                break;
-            }
-            opened = conn.accept_bi() => {
-                let Ok((mut cons_send, mut cons_recv)) = opened else { break };
-                refused_streams = refused_streams.saturating_add(1);
-                let _ = cons_send.reset(PROTOCOL_VIOLATION_CODE.into());
-                let _ = cons_recv.stop(PROTOCOL_VIOLATION_CODE.into());
-                tracing::debug!(%remote, route = %route, refused_streams, "refused extra stream on single-stream relay route");
-            }
-            _ = conn.closed() => break,
-        }
-    }
-    tracing::debug!(route = %route, %remote, refused_streams, "consumer bridge ended");
+    )
+    .await;
+    Ok(())
 }
 
 #[cfg(test)]
