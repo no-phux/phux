@@ -48,8 +48,9 @@ Terminate Terminal ends execution.
 
 | Path | Owns |
 |---|---|
-| `native/src` | GPUI application, connection, workspace, terminal, settings, platform integration. |
-| `native/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
+| `native/src` | GPUI application, connection, workspace, settings, platform integration. |
+| `native/phux-gpui` | The embeddable terminal view the app is built on: painter, input, attachments, presentation receipts. |
+| `native/phux-gpui/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
 | `scripts`, `packaging` | Checkout build, isolated smoke/perf, and macOS/Linux package preparation. |
 | `toolchain` | Parent-managed GPUI snapshot pin and patch. |
 | `dist/app/Phux.app` | Release executable, fonts, icon, ad-hoc signature. No `.node` addon. |
@@ -77,6 +78,8 @@ and app quit flush outstanding saves. Save failures still surface as errors.
   `ResourceId`, including a satellite route.
 - A runtime view is a generation-fenced handle for that terminal.
 - A placement is a stable local layout identity and owns one view attachment.
+  `Terminal::new` does not own or destroy the runtime `ViewId`; the host
+  calls `Client::destroy_view` when closing that view on a shared client.
 - A frame carries stream, bootstrap, publication generation, and applied
   sequence. Those are not the server incarnation.
 

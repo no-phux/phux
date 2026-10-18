@@ -44,8 +44,10 @@ pub(super) fn present(
         &focus,
         // Terminal keys repeat instead of opening macOS's press-and-hold accent
         // picker. GPUI still sends marked text through the native IME path.
-        gpui::ElementInputHandler::new(report.geometry.bounds, input.clone())
-            .with_apple_press_and_hold_enabled(false),
+        crate::platform::terminal_input_handler(gpui::ElementInputHandler::new(
+            report.geometry.bounds,
+            input.clone(),
+        )),
         cx,
     );
     // Zed's terminal invalidates the IME candidate on every wakeup so the panel

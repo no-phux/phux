@@ -141,6 +141,24 @@ fn default_log_path(home: &Path, state: Option<std::ffi::OsString>) -> PathBuf {
 }
 
 #[cfg(test)]
+mod report_tests {
+    #[test]
+    fn report_carries_every_layer() {
+        let json = super::report().to_json();
+        for name in [
+            "kernel.frames",
+            "runtime.publish",
+            "desktop.key_to_paint",
+            "desktop.render",
+            "desktop.prepare_reused",
+            "desktop.prepare_patched",
+        ] {
+            assert!(json.contains(name), "{name} missing from {json}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod path_tests {
     use super::default_log_path;
     use std::path::Path;

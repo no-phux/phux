@@ -40,6 +40,7 @@ client is a demo and developer integration. The Zig Cockpit is archived outside 
 | You want to | Start with |
 |---|---|
 | Emit lifecycle events from a harness | [Harness author guide](./harness.md) |
+| Put a phux terminal in your own native app | [Embed a terminal](./embedding.md) |
 | Speak the wire from a new client | [Build a client](./build-a-client.md) |
 | Use the in-tree Rust library or native bindings | [Client library guide](./sdk.md) |
 | Understand the GPUI desktop contract | [Desktop contract](./desktop.md); Apple-silicon, not release-verified |
