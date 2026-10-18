@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.108.1](https://github.com/no-phux/phux/compare/v0.108.0...v0.108.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **desktop:** preserve organization selection on tabs ([#1633](https://github.com/no-phux/phux/issues/1633)) ([da5a600](https://github.com/no-phux/phux/commit/da5a60009da970a937c28d6c42277c9880cb7b10))
+
 ## [0.108.0](https://github.com/no-phux/phux/compare/v0.107.0...v0.108.0) (2026-10-18)
 
 
