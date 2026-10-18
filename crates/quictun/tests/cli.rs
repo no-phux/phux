@@ -176,68 +176,62 @@ async fn pair_relay_expose_and_connect_carry_tcp_end_to_end() {
     .expect("deadline");
 }
 
+/// Invocations the binary refuses, and what its error must say.
+const REFUSALS: &[(&str, &str)] = &[
+    ("relay", "--listen is required"),
+    ("pair --route Bad_Name", "invalid route name"),
+    ("frobnicate", "unknown command"),
+    (
+        "relay --listen 127.0.0.1:0 --max-conns-per-rout 4",
+        "unknown flag",
+    ),
+    (
+        "relay --listen 127.0.0.1:0 --domain x.dev",
+        "--domain needs --tcp-listen",
+    ),
+    ("relay --listen 127.0.0.1:0 --max-conns 0", "at least 1"),
+    (
+        "expose --relay 127.0.0.1:1 --relay-pin x --token-file /nonexistent --to 127.0.0.1:1 \
+         --passthrough --cert c",
+        "takes no --cert",
+    ),
+    (
+        "expose --relay 127.0.0.1:1 --relay-pin x --token-file /nonexistent --to 127.0.0.1:1 \
+         --acme-email a@b.test",
+        "need --acme-domain",
+    ),
+    (
+        "expose --relay 127.0.0.1:1 --relay-pin x --token-file /nonexistent --to 127.0.0.1:1 \
+         --acme-domain a.test --cert c --key k",
+        "obtains the certificate",
+    ),
+    (
+        "connect --relay 127.0.0.1:1 --relay-pin x --route r --listen 127.0.0.1:0",
+        "--service-pin",
+    ),
+    (
+        "connect --relay 127.0.0.1:1 --relay-pin x --route r --listen 127.0.0.1:0 \
+         --service-pin p --service-name a.test",
+        "exactly one of",
+    ),
+    (
+        "connect --relay 127.0.0.1:1 --relay-pin x --route r --listen 127.0.0.1:0 \
+         --service-pin p --service-ca ca.pem",
+        "--service-ca needs --service-name",
+    ),
+];
+
 #[tokio::test]
 async fn bad_invocations_fail_and_name_the_problem() {
     let state = tempfile::tempdir().expect("state");
-    for (args, needle) in [
-        (&["relay"][..], "--listen is required"),
-        (&["pair", "--route", "Bad_Name"][..], "invalid route name"),
-        (&["frobnicate"][..], "unknown command"),
-        (
-            &[
-                "relay",
-                "--listen",
-                "127.0.0.1:0",
-                "--max-conns-per-rout",
-                "4",
-            ][..],
-            "unknown flag",
-        ),
-        (
-            &["relay", "--listen", "127.0.0.1:0", "--domain", "x.dev"][..],
-            "--domain needs --tcp-listen",
-        ),
-        (
-            &["relay", "--listen", "127.0.0.1:0", "--max-conns", "0"][..],
-            "at least 1",
-        ),
-        (
-            &[
-                "expose",
-                "--relay",
-                "127.0.0.1:1",
-                "--relay-pin",
-                "x",
-                "--token-file",
-                "/nonexistent",
-                "--to",
-                "127.0.0.1:1",
-                "--passthrough",
-                "--cert",
-                "c",
-            ][..],
-            "takes no --cert",
-        ),
-        (
-            &[
-                "connect",
-                "--relay",
-                "127.0.0.1:1",
-                "--relay-pin",
-                "x",
-                "--route",
-                "r",
-                "--listen",
-                "127.0.0.1:0",
-            ][..],
-            "--service-pin",
-        ),
-    ] {
+    for (line, needle) in REFUSALS {
+        let args: Vec<&str> = line.split_whitespace().collect();
+        // `connect` keeps no state, so it takes no --state.
         let state = (args[0] != "connect").then(|| state.path());
-        let output = quictun(state, args).output().await.expect("run");
+        let output = quictun(state, &args).output().await.expect("run");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{args:?} succeeded");
-        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+        assert!(!output.status.success(), "{line} succeeded");
+        assert!(stderr.contains(needle), "{line}: {stderr}");
     }
     assert!(
         std::fs::read_dir(state.path())

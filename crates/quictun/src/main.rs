@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use quictun::Protocol;
 use quictun::connect::RelayAddr;
-use quictun::forward::{self, Route, ServiceTls};
+use quictun::forward::{self, Route, ServiceTls, ServiceTrust};
 use quictun::relay::{self, RelayConfig, RelayRuntime, TcpIngress};
 
 const USAGE: &str = "\
@@ -30,9 +30,12 @@ USAGE:
                   [--max-conns N] [--max-conns-per-route N] [--state DIR]
   quictun pair    --route NAME [--state DIR]
   quictun expose  --relay HOST:PORT --relay-pin FP --token-file PATH --to ADDR
-                  [--cert PEM --key PEM | --passthrough] [--state DIR]
+                  [--cert PEM --key PEM | --acme-domain NAME [--acme-email E]
+                   [--acme-directory URL] [--acme-ca PEM] | --passthrough]
+                  [--alpn LIST] [--state DIR]
   quictun connect --relay HOST:PORT --relay-pin FP --route NAME --listen ADDR
-                  (--service-pin FP | --passthrough)
+                  (--service-pin FP | --service-name NAME [--service-ca PEM]
+                   | --passthrough) [--single-stream]
 
 relay    Serve tunnels and consumers on UDP ADDR. With --tcp-listen, TLS
          clients without QUIC reach route R by the server name R.<--domain>.
@@ -40,17 +43,25 @@ pair     Enroll a route (or rotate its token) and print the token and the
          relay's pin. Run it where the relay's state lives.
 expose   Dial out to the relay and forward each consumer to the local TCP
          ADDR. TLS ends here, under a certificate kept in --state (or --cert
-         and --key); its pin is printed for connect. --passthrough forwards
-         the stream raw to a target that speaks TLS itself.
-connect  Listen on local TCP ADDR and carry each connection to the route,
-         pinning the service's certificate.
+         and --key); its pin is printed for connect. With --acme-domain, a
+         public certificate for NAME comes from Let's Encrypt (or
+         --acme-directory) by TLS-ALPN-01 through the relay's TCP ingress,
+         which must listen on 443, and is renewed before it expires.
+         --passthrough forwards the stream raw to a target that speaks TLS
+         itself. --alpn lists the service's ALPNs (http/1.1 with ACME).
+connect  Listen on local TCP ADDR and carry every connection to the route
+         as a stream on one QUIC connection, pinning the service's
+         certificate (--service-pin) or verifying it for NAME against
+         Mozilla's roots plus --service-ca (--service-name). --single-stream
+         dials a connection per local connection, for a relay that bridges
+         one stream per consumer.
 
 The state directory defaults to $XDG_STATE_HOME/quictun. RUST_LOG sets the
 log level (default info).
 ";
 
 /// Flags that take no value.
-const SWITCHES: &[&str] = &["passthrough"];
+const SWITCHES: &[&str] = &["passthrough", "single-stream"];
 
 /// The flags each command takes; anything else is a usage error, so a
 /// misspelled flag never runs silently with its default.
@@ -72,6 +83,11 @@ fn flags_of(command: &str) -> Option<&'static [&'static str]> {
             "to",
             "cert",
             "key",
+            "acme-domain",
+            "acme-email",
+            "acme-directory",
+            "acme-ca",
+            "alpn",
             "passthrough",
             "state",
         ],
@@ -81,6 +97,9 @@ fn flags_of(command: &str) -> Option<&'static [&'static str]> {
             "route",
             "listen",
             "service-pin",
+            "service-name",
+            "service-ca",
+            "single-stream",
             "passthrough",
         ],
         _ => return None,
@@ -281,11 +300,18 @@ fn run_pair(args: &Args) -> Result<(), Failure> {
 }
 
 async fn run_expose(args: &Args) -> Result<(), Failure> {
-    let tls = service_tls(args)?;
+    let (tls, acme) = service_tls(args)?;
     let relay = relay_addr(args).await?;
     let token = read_token(Path::new(args.required("token-file")?))?;
     let target = resolve(args.required("to")?).await?;
-    forward::expose(&relay, &Protocol::quictun(), &token, target, tls)
+    // Issuance validates through the tunnel, so it runs beside it and waits
+    // for it to be admitted.
+    let (reachable, admitted) = tokio::sync::watch::channel(false);
+    if let Some((config, certs)) = acme {
+        tokio::spawn(quictun::acme::maintain(config, certs, admitted));
+    }
+    let protocol = Protocol::quictun();
+    forward::expose(&relay, &protocol, &token, target, tls, Some(&reachable))
         .await
         .map_err(run("the relay refused the token"))
 }
@@ -293,15 +319,7 @@ async fn run_expose(args: &Args) -> Result<(), Failure> {
 async fn run_connect(args: &Args) -> Result<(), Failure> {
     let relay = relay_addr(args).await?;
     let name = args.required("route")?.to_owned();
-    let service_pin = match (args.optional("service-pin"), args.switch("passthrough")) {
-        (Some(pin), false) => Some(pin.to_owned()),
-        (None, true) => None,
-        _ => {
-            return Err(Failure::Usage(
-                "give exactly one of --service-pin and --passthrough".to_owned(),
-            ));
-        }
-    };
+    let service = service_trust(args)?;
     let listen = args
         .parsed::<SocketAddr>("listen")?
         .ok_or_else(|| Failure::Usage("--listen is required".to_owned()))?;
@@ -317,10 +335,48 @@ async fn run_connect(args: &Args) -> Result<(), Failure> {
         relay,
         name,
         alpn,
-        service_pin,
+        service,
+        // The quictun relay bridges every stream: one connection, one
+        // handshake, for every local connection. An older relay does not.
+        multiplex: !args.switch("single-stream"),
     };
     forward::connect(listener, route).await;
     Ok(())
+}
+
+/// How `connect` trusts the service: exactly one of `--service-pin`,
+/// `--service-name` (with optional extra CAs from `--service-ca`), and
+/// `--passthrough`.
+fn service_trust(args: &Args) -> Result<ServiceTrust, Failure> {
+    let pin = args.optional("service-pin");
+    let name = args.optional("service-name");
+    let passthrough = args.switch("passthrough");
+    if usize::from(pin.is_some()) + usize::from(name.is_some()) + usize::from(passthrough) != 1 {
+        return Err(Failure::Usage(
+            "give exactly one of --service-pin, --service-name, and --passthrough".to_owned(),
+        ));
+    }
+    if args.optional("service-ca").is_some() && name.is_none() {
+        return Err(Failure::Usage(
+            "--service-ca needs --service-name".to_owned(),
+        ));
+    }
+    if let Some(pin) = pin {
+        return Ok(ServiceTrust::Pin(pin.to_owned()));
+    }
+    let Some(name) = name else {
+        return Ok(ServiceTrust::Passthrough);
+    };
+    let mut roots = forward::web_roots();
+    if let Some(ca) = args.optional("service-ca") {
+        for cert in quictun::cert::load_certs(Path::new(ca)).map_err(run("--service-ca"))? {
+            roots.add(cert).map_err(run("--service-ca"))?;
+        }
+    }
+    Ok(ServiceTrust::Name {
+        name: name.to_owned(),
+        roots: Arc::new(roots),
+    })
 }
 
 /// The relay's address and pin, from `--relay` and `--relay-pin`.
@@ -352,15 +408,32 @@ fn read_token(path: &Path) -> Result<Vec<u8>, Failure> {
 }
 
 /// The service end's TLS, printing the pin `connect` needs.
-fn service_tls(args: &Args) -> Result<ServiceTls, Failure> {
+fn service_tls(args: &Args) -> Result<(ServiceTls, Option<Acme>), Failure> {
+    let has = |flags: &[&str]| flags.iter().any(|flag| args.optional(flag).is_some());
+    let acme_flags = ["acme-email", "acme-directory", "acme-ca"];
+    if has(&acme_flags) && !has(&["acme-domain"]) {
+        return Err(Failure::Usage(
+            "--acme-email, --acme-directory, and --acme-ca need --acme-domain".to_owned(),
+        ));
+    }
     if args.switch("passthrough") {
-        if args.optional("cert").is_some() || args.optional("key").is_some() {
+        if has(&["cert", "key", "acme-domain", "alpn"]) {
             return Err(Failure::Usage(
-                "--passthrough forwards TLS untouched; it takes no --cert or --key".to_owned(),
+                "--passthrough forwards TLS untouched; it takes no --cert, --key, --acme-domain, or --alpn"
+                    .to_owned(),
             ));
         }
-        return Ok(ServiceTls::Passthrough);
+        return Ok((ServiceTls::Passthrough, None));
     }
+    if let Some(domain) = args.optional("acme-domain") {
+        if has(&["cert", "key"]) {
+            return Err(Failure::Usage(
+                "--acme-domain obtains the certificate; it takes no --cert or --key".to_owned(),
+            ));
+        }
+        return acme_tls(args, domain);
+    }
+    let alpns = alpns(args, &[]);
     let (cert, key) = match (args.optional("cert"), args.optional("key")) {
         (Some(cert), Some(key)) => (PathBuf::from(cert), PathBuf::from(key)),
         (None, None) => {
@@ -372,10 +445,53 @@ fn service_tls(args: &Args) -> Result<ServiceTls, Failure> {
         _ => return Err(Failure::Usage("give --cert and --key together".to_owned())),
     };
     let config =
-        forward::service_tls_config(&cert, &key, Vec::new()).map_err(run("service certificate"))?;
+        forward::service_tls_config(&cert, &key, alpns).map_err(run("service certificate"))?;
     let pin = quictun::cert::cert_fingerprint(&cert).map_err(run("service certificate"))?;
     println!("service pin: {pin}");
-    Ok(ServiceTls::Terminate(Arc::new(config)))
+    Ok((ServiceTls::Terminate(Arc::new(config)), None))
+}
+
+/// An ACME-maintained certificate and where it comes from.
+type Acme = (quictun::acme::AcmeConfig, Arc<quictun::acme::AcmeCerts>);
+
+/// TLS under a certificate ACME obtains for `domain` and keeps renewed.
+fn acme_tls(args: &Args, domain: &str) -> Result<(ServiceTls, Option<Acme>), Failure> {
+    use quictun::acme::{AcmeCerts, AcmeConfig, LETS_ENCRYPT, service_config};
+    let directory = args.optional("acme-directory").unwrap_or(LETS_ENCRYPT);
+    let mut config = AcmeConfig::new(directory, domain, &args.state_dir());
+    config.contact = args.optional("acme-email").map(str::to_owned);
+    if let Some(ca) = args.optional("acme-ca") {
+        let mut roots = forward::web_roots();
+        for cert in quictun::cert::load_certs(Path::new(ca)).map_err(run("--acme-ca"))? {
+            roots.add(cert).map_err(run("--acme-ca"))?;
+        }
+        config.roots = Arc::new(roots);
+    }
+    let certs = Arc::new(AcmeCerts::default());
+    // A web service by default: a browser offering h2 and http/1.1 needs
+    // one it shares, or the handshake fails.
+    let tls = service_config(Arc::clone(&certs), alpns(args, &["http/1.1"]));
+    println!("service name: {domain} (ACME, from {directory})");
+    Ok((ServiceTls::Terminate(Arc::new(tls)), Some((config, certs))))
+}
+
+/// The service's ALPNs from `--alpn a,b`, else `default`.
+fn alpns(args: &Args, default: &[&str]) -> Vec<Vec<u8>> {
+    args.optional("alpn").map_or_else(
+        || {
+            default
+                .iter()
+                .map(|alpn| alpn.as_bytes().to_vec())
+                .collect()
+        },
+        |list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|alpn| !alpn.is_empty())
+                .map(|alpn| alpn.as_bytes().to_vec())
+                .collect()
+        },
+    )
 }
 
 #[cfg(test)]

@@ -18,6 +18,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Keep-alive interval, well under [`IDLE_TIMEOUT`] to hold NAT bindings.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
+/// Consumers the relay may have bridged onto one tunnel at once (quinn's
+/// default of 100 would make the 101st wait).
+const TUNNEL_STREAMS: u32 = 4096;
+
 /// Why a client leg could not be established.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -98,7 +102,7 @@ impl Tunnel {
         token: &[u8],
     ) -> Result<Self, ConnectError> {
         let preamble = encode_preamble(token).ok_or(ConnectError::TokenTooLong)?;
-        let mut config = quic_config(&relay.pin, &protocol.tunnel_alpn)?;
+        let mut config = quic_config(&relay.pin, &protocol.tunnel_alpn, Some(TUNNEL_STREAMS))?;
         // One endpoint per dial, so one tagged ID serves its one connection.
         let cid = protocol
             .cid_tag
@@ -164,15 +168,35 @@ pub async fn dial_route(
     route: &str,
     alpn: &[u8],
 ) -> Result<Consumer, ConnectError> {
-    let config = quic_config(&relay.pin, alpn)?;
-    let (endpoint, conn) = connect(relay.addr, route, config).await?;
+    let (endpoint, conn) = dial_route_connection(relay, route, alpn).await?;
     let (send, recv) = conn.open_bi().await?;
     Ok((endpoint, conn, send, recv))
 }
 
+/// [`dial_route`] without opening a stream: for a relay whose protocol
+/// bridges every stream ([`Protocol::consumer_streams`] above one), one
+/// connection then carries many consumers, each `open_bi` its own.
+///
+/// # Errors
+///
+/// The dial or the handshake failed.
+pub async fn dial_route_connection(
+    relay: &RelayAddr,
+    route: &str,
+    alpn: &[u8],
+) -> Result<(quinn::Endpoint, quinn::Connection), ConnectError> {
+    let config = quic_config(&relay.pin, alpn, None)?;
+    connect(relay.addr, route, config).await
+}
+
 /// The quinn client config: the pinned TLS config plus the relay's idle and
-/// keep-alive timings.
-fn quic_config(pin: &str, alpn: &[u8]) -> Result<quinn::ClientConfig, ConnectError> {
+/// keep-alive timings. `accept_streams` raises how many streams the relay may
+/// open toward us at once: a tunnel's bridged consumers.
+fn quic_config(
+    pin: &str,
+    alpn: &[u8],
+    accept_streams: Option<u32>,
+) -> Result<quinn::ClientConfig, ConnectError> {
     let crypto =
         crate::pin::client_config(pin, alpn).map_err(|err| ConnectError::Tls(err.to_string()))?;
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
@@ -182,6 +206,9 @@ fn quic_config(pin: &str, alpn: &[u8]) -> Result<quinn::ClientConfig, ConnectErr
     transport.keep_alive_interval(Some(KEEP_ALIVE));
     if let Ok(idle) = IDLE_TIMEOUT.try_into() {
         transport.max_idle_timeout(Some(idle));
+    }
+    if let Some(streams) = accept_streams {
+        transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(streams));
     }
     config.transport_config(Arc::new(transport));
     Ok(config)
