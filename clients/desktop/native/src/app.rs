@@ -22,6 +22,7 @@ mod notifications;
 mod organization;
 mod organize;
 mod overlays;
+mod pane_identity;
 mod panes;
 mod performance;
 mod session;

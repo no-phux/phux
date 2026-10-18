@@ -122,6 +122,44 @@ callback, after the window is visible and the terminal bounds are unclipped.
 Paint and `on_next_frame` do not clear the fence. A late callback must not
 clear a newer fence.
 
+## Pane identity
+
+`app/pane_identity.rs` classifies each placement once, as a `PaneIdentity`
+of what it shows (`PaneKind`) and who drives it (`PaneOrigin`). Pane cards,
+tabs and navigator rows style from that value, not from their own agent
+checks. The [agent panes guide](../consumers/desktop-panes.md) owns behavior.
+
+- `PaneKind` is `Terminal` or `Conversation` (the native face of a bound
+  AgentSession). `view/panes.rs` picks the body by matching on it. A future
+  kind such as an embedded browser adds a variant and a body renderer. It also
+  needs a non-terminal placement payload in `workspace::layout` and the layout
+  file, which today names only terminals. Every identity-styled surface then
+  follows without change.
+- `PaneOrigin` is `Human` or `Agent(Harness)`. Clients do not receive the
+  server's resource `Provenance.created_by`. Every CLI connection, an agent's
+  `phux spawn` and a person's alike, announces the same `phux-cli` client
+  name. Terminal spawns record no parent. Origin therefore comes from what the
+  server already publishes: a `phux.agent/v1` badge on the terminal, or an
+  `AgentSession` bound to it. The session's provider outranks the badge's
+  declared kind. No wire change is involved. A human shell in which a person
+  starts an agent reads as agent-driven. A shell an agent spawned and that
+  runs no agent reads as a person's. A creator field on the wire would be
+  one more input to `PaneOrigin::classify`.
+- `Harness` maps provider slugs to a generic Lucide mark and a fixed
+  `[light, dark]` tint. The slugs are the `phux-agent-rules` built-in kinds,
+  their binary aliases, and ACP `[acp] provider` slugs with an `-acp` suffix.
+  Unknown slugs get a generic bot mark in muted ink. No vendor logo ships.
+
+Depth is a skin value, `Material.depth`: an inset, a veil, a lower lift and
+an inner well. It blends with every other skin field, so the plain terminal
+skin (veil only, no inset or shadow) morphs rather than pops. `Motion::depth`
+eases each placement toward recessed whenever it is agent-driven, unfocused,
+not hovered and not leaving. Reduced motion or animations off land it at once.
+The pane padding absorbs the inset. The terminal content box, and with it
+grid geometry and size proposals, is identical at every depth. A tab recedes
+(shorter and fainter) only while every placement in it is agent-driven,
+nothing in it needs a person, and it is not selected.
+
 ## Native agent conversation
 
 **New ACP Agent** opens the CLI's configured native integration inventory, including

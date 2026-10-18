@@ -17,7 +17,19 @@ gpui_kit::assets::icon_assets!(
         ListTree,
         Pencil,
         Trash,
-        GitBranch
+        GitBranch,
+        // Agent harness marks (`app::pane_identity::Harness::glyph`); Asterisk
+        // and Bot ship in Kit's component bundle.
+        CodeXml,
+        Braces,
+        Pi,
+        SquarePi,
+        Orbit,
+        Zap,
+        MousePointer2,
+        Sparkle,
+        Feather,
+        WandSparkles
     ]
 );
 

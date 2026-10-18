@@ -1,7 +1,9 @@
 //! One tab renderer and one set of tab actions for both placements: a
 //! compact strip in the titlebar, or rows under the current session in the
 //! navigator. A tab whose agent needs a person wears that state itself: a
-//! wash and a mark on its corner, not an entry in a separate list.
+//! wash and a mark on its corner, not an entry in a separate list. A tab
+//! leads with its agent's harness mark, and one only agents drive sits back
+//! (shorter and fainter) until it is selected or hovered.
 
 use gpui::prelude::*;
 use gpui::{
@@ -18,10 +20,11 @@ use crate::workspace::layout::{self, DeskTab};
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
+use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
 use super::super::ui::list::{ICON, ROW, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
-use super::super::ui::status::{attention_wash, state_dot, strongest};
+use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
 use super::super::ui::{attention_mark, ghost_icon};
 use super::tab_glow;
 
@@ -100,15 +103,44 @@ fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// A sidebar tab's leading slot: its agent's state, else a terminal glyph.
-fn side_lead(attention: Option<AgentState>, agent: Option<AgentState>, look: &Look) -> AnyElement {
-    if attention.is_some() || agent.is_some() {
+/// A sidebar tab's leading slot: a lit dot while it needs a person, else its
+/// agent's harness mark, else its agent's state, else a terminal glyph.
+fn side_lead(
+    attention: Option<AgentState>,
+    agent: Option<AgentState>,
+    harness: Option<Harness>,
+    look: &Look,
+) -> AnyElement {
+    if attention.is_some() {
         return state_dot(attention, agent).into_any_element();
+    }
+    if let Some(harness) = harness {
+        return harness_mark(harness, agent, 13., look).into_any_element();
+    }
+    if agent.is_some() {
+        return state_dot(None, agent).into_any_element();
     }
     Icon::new(IconName::SquareTerminal)
         .size(px(13.))
         .text_color(from_hex(&look.chrome.faint))
         .into_any_element()
+}
+
+/// A titlebar tab's leading slot: nothing while its corner mark asks for a
+/// person, else its harness mark, else its agent's quiet state.
+fn top_lead(
+    attention: Option<AgentState>,
+    agent: Option<AgentState>,
+    harness: Option<Harness>,
+    look: &Look,
+) -> Option<AnyElement> {
+    if attention.is_some() {
+        return None;
+    }
+    Some(match harness {
+        Some(harness) => harness_mark(harness, agent, 13., look).into_any_element(),
+        None => state_dot(None, agent).into_any_element(),
+    })
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -243,6 +275,17 @@ fn tab_button(
     let hover = look.hover;
     let attention = tab_attention(desk, tab);
     let agent = tab_agent(desk, tab);
+    let harness = desk.tab_harness(tab);
+    // Only agents drive it and nothing asks for a person: it sits back until
+    // selected or hovered, as its panes do.
+    let depth = look.skin.material.depth;
+    let recessed = !selected && attention.is_none() && desk.tab_recessed(tab);
+    let fade = if recessed {
+        (1. - 2. * depth.veil).clamp(0., 1.)
+    } else {
+        1.
+    };
+    let sunk = if recessed { depth.inset } else { 0. };
     let (drag_id, rename_id, middle_id, menu_id) = (
         tab.id.clone(),
         tab.id.clone(),
@@ -262,7 +305,7 @@ fn tab_button(
             tab.min_h(px(ROW)).w_full().pl(px(8. + ICON))
         })
         .when(!side, |tab| {
-            tab.h(px(height))
+            tab.h(px(height - sunk))
                 .min_w(px(100.))
                 .max_w(px(220.))
                 .flex_1()
@@ -284,7 +327,8 @@ fn tab_button(
             }))
             .border_1()
             .border_color(gpui::transparent_black())
-            .hover(move |style| style.bg(hover))
+            .when(fade < 1., |tab| tab.opacity(fade))
+            .hover(move |style| style.bg(hover).opacity(1.))
         })
         .when_some(attention.filter(|_| !selected), |tab, state| {
             tab.bg(attention_wash(state))
@@ -292,10 +336,10 @@ fn tab_button(
         .when(organizing, |tab| tab.bg(look.active))
         .block_mouse_except_scroll()
         .when(side, |tab| {
-            tab.child(row_icon(side_lead(attention, agent, look)))
+            tab.child(row_icon(side_lead(attention, agent, harness, look)))
         })
         .when(!side, |tab| {
-            tab.children(attention.is_none().then(|| state_dot(None, agent)))
+            tab.children(top_lead(attention, agent, harness, look))
         })
         .child(
             div()

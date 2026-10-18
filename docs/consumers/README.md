@@ -17,6 +17,7 @@ client is a demo and developer integration. The Zig Cockpit is archived outside 
 | Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
 | Use the native macOS app | [Desktop](./desktop.md) |
 | Review and commit a pane's Git changes in the desktop | [Desktop Changes panel](./desktop-changes.md) |
+| See which desktop panes agents drive | [Desktop agent panes](./desktop-panes.md) |
 | Recover the archived Zig client | [Cockpit archive](./cockpit.md) |
 | Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
