@@ -1359,5 +1359,19 @@ mod tests {
             badge.style.fg.as_deref(),
             Some(crate::render::theme::color_to_string(theme.agent_working).as_str())
         );
+
+        // An unread `done` is the diamond; once looked at it is the ring.
+        let done = AgentEntry {
+            state: AgentMetaState::Done,
+            seen: false,
+            ..agents[0].clone()
+        };
+        badge_windows(&mut infos, &workspace, std::slice::from_ref(&done), &theme);
+        let badge = infos[0].badge.as_ref().expect("badged");
+        assert_eq!(badge.glyph, crate::render::chrome::AGENT_DONE_GLYPH);
+        let reviewed = AgentEntry { seen: true, ..done };
+        badge_windows(&mut infos, &workspace, &[reviewed], &theme);
+        let badge = infos[0].badge.as_ref().expect("badged");
+        assert_eq!(badge.glyph, crate::render::chrome::AGENT_IDLE_GLYPH);
     }
 }

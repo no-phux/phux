@@ -51,6 +51,7 @@ jobs:
         with:
           ref: ${{ steps.select.outputs.sha }}
           fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
 
       - name: Decide which products to build
         id: decide
@@ -64,23 +65,26 @@ jobs:
           changed() {
             local product="$1" previous outputs key
             shift
-            previous="$(python3 scripts/ci/release_manifest.py next-sha "$product")"
+            previous="$(bun tools/main.ts release-manifest next-sha "$product")"
             if [ "$previous" = "$SHA" ]; then
               echo "$product: already published" >&2; echo false; return
             fi
             if [ -z "$previous" ] || ! git cat-file -e "${previous}^{commit}" 2>/dev/null; then
               echo "$product: no usable previous commit" >&2; echo true; return
             fi
-            outputs="$(git diff --name-only "$previous" "$SHA" -- | python3 scripts/ci/classify-changes.py)"
+            if ! outputs="$(bun tools/main.ts classify --since "$previous" --until "$SHA")"; then
+              echo "$product: classification failed" >&2; echo true; return
+            fi
             for key in "$@"; do
               if grep -qx "${key}=true" <<<"$outputs"; then
                 echo "$product: $key changed" >&2; echo true; return
               fi
             done
-            # Desktop is its own workspace, outside the root classifier.
+            # The release workflow is compile-free to the classifier but
+            # changes what a desktop release ships.
             if [ "$product" = desktop ] && ! git diff --quiet "$previous" "$SHA" -- \
-                clients/desktop scripts/install.sh just/desktop.just .github/workflows/desktop-release.yml; then
-              echo "$product: desktop inputs changed" >&2; echo true; return
+                .github/workflows/desktop-release.yml; then
+              echo "$product: desktop release workflow changed" >&2; echo true; return
             fi
             echo "$product: unchanged" >&2; echo false
           }
@@ -118,6 +122,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -125,7 +130,7 @@ jobs:
           merge-multiple: true
 
       # The signature over each sidecar is the trust root `phux update` and
-      # the installer check (ADR-0178); release_manifest.py refuses an
+      # the installer check (ADR-0178); `release-manifest next` refuses an
       # unsigned build.
       - name: Sign the checksums
         env:
@@ -139,11 +144,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: python3 scripts/ci/release_manifest.py next --product phux --sha "$SHA" --dist dist
+        run: bun tools/main.ts release-manifest next --product phux --sha "$SHA" --dist dist
 
       - name: Publish desktop
         if: ${{ !cancelled() && needs.desktop.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.gate.outputs.sha }}
-        run: python3 scripts/ci/release_manifest.py next --product desktop --sha "$SHA" --dist dist
+        run: bun tools/main.ts release-manifest next --product desktop --sha "$SHA" --dist dist

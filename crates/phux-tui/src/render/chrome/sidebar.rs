@@ -2023,6 +2023,24 @@ mod tests {
         assert_eq!(p.counts().needs_you, 0, "neither needs a human");
     }
 
+    /// An agent row carries the shared glyph for its state: an unread
+    /// `done` is the diamond and `working` the half ring.
+    #[test]
+    fn agent_rows_use_the_shared_state_glyphs() {
+        let p = SidebarPainter::new(Theme::default());
+        let text = |e: &AgentEntry| -> String {
+            p.agent_line(e, 28)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let done = agent(0, "a", "claude", AgentMetaState::Done);
+        assert!(text(&done).contains('◆'), "done");
+        let working = agent(0, "a", "claude", AgentMetaState::Working);
+        assert!(text(&working).contains('◐'), "working");
+    }
+
     /// `seen` is a real display input, so a flip must bust the paint cache —
     /// otherwise visiting a finished pane would leave the "look at me" glyph
     /// on screen.

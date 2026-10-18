@@ -62,8 +62,8 @@ spread across ADR-0113, ADR-0175, and an 816-line runbook.
    [ADR-0074](./0074-self-update-trust-boundary.md) states, with the manifest
    as its anchor.
 4. **The manifest is generated from published state.**
-   `scripts/ci/release_manifest.py` reads GitHub's `digest` for each derived
-   asset name, so it downloads nothing. Stable takes the newest published
+   `tools/src/release/release-manifest.ts` reads GitHub's `digest` for each
+   derived asset name, so it downloads nothing. Stable takes the newest published
    `vX.Y.Z` and `desktop-vX.Y.Z`, and `publish.yml` rebuilds it on every run.
    For next, the same script runs when a product's build lands on the `next`
    prerelease: it replaces that product's entry and keeps the other one.

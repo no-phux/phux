@@ -114,7 +114,7 @@ verified source acquisition and the byte-for-byte regeneration check.
 wasm-pack test --node                 # session/codec, input, search, and link routing
 # headless Chrome suites against a fresh ws_demo_server, as CI runs them
 # (from the repository root):
-nix develop .#browser -c python3 scripts/ci/web-browser.py
+nix develop .#browser -c bun tools/main.ts web-browser
 ```
 
 ## Scope

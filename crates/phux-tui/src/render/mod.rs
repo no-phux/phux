@@ -48,6 +48,30 @@ pub fn clip_left(text: &str, max: usize) -> String {
     tail.into_iter().rev().collect()
 }
 
+/// `path` as the shell shows it: `home` becomes `~`; an empty path means home.
+///
+/// A path under home becomes `~/rest`. A sibling that merely shares the
+/// prefix (`/Users/pat` under home `/Users/p`) is left alone, since the match
+/// must end at a `/` boundary. `home` is a parameter so callers read `$HOME`
+/// once and tests pass their own.
+#[must_use]
+pub fn home_to_tilde(path: &str, home: Option<&str>) -> String {
+    if path.is_empty() {
+        return "~".to_owned();
+    }
+    let Some(home) = home
+        .map(|h| h.trim_end_matches('/'))
+        .filter(|h| !h.is_empty())
+    else {
+        return path.to_owned();
+    };
+    match path.strip_prefix(home) {
+        Some("") => "~".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_owned(),
+    }
+}
+
 /// Clip `s` to at most `max` display cells, marking a cut with [`ELLIPSIS`]
 /// (which replaces the last cell, so the result never exceeds `max`).
 ///
@@ -95,6 +119,24 @@ pub fn clip_text(s: &str, max: usize) -> String {
 /// Chrome measures text with the status bar's rules: one definition of what
 /// is printable and how wide it is.
 pub use phux_config::widget::{cell_width, display_width, is_bidi_control};
+
+#[cfg(test)]
+mod home_to_tilde_tests {
+    use super::home_to_tilde;
+
+    #[test]
+    fn home_becomes_tilde_at_a_path_boundary_only() {
+        assert_eq!(home_to_tilde("/Users/p", Some("/Users/p")), "~");
+        assert_eq!(home_to_tilde("/Users/p/src/x", Some("/Users/p")), "~/src/x");
+        assert_eq!(home_to_tilde("/Users/p/src", Some("/Users/p/")), "~/src");
+        assert_eq!(
+            home_to_tilde("/Users/pat/x", Some("/Users/p")),
+            "/Users/pat/x"
+        );
+        assert_eq!(home_to_tilde("/Users/p/x", None), "/Users/p/x");
+        assert_eq!(home_to_tilde("", Some("/Users/p")), "~");
+    }
+}
 
 #[cfg(test)]
 mod clip_text_tests {

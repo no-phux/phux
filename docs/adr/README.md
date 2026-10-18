@@ -215,6 +215,8 @@ column is the base status word plus at most one relationship clause, about
 | [0181](./0181-the-relay-is-a-standalone-quic-tunnel-crate.md) | The relay is a standalone QUIC tunnel crate | Accepted (supersedes in part [0057](./0057-minimal-reference-relay.md)) |
 | [0182](./0182-satellites-enroll-and-dial-out-to-the-hub.md) | Satellites enroll with a ticket and dial out to the hub | Accepted (builds on [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md), [0038](./0038-hub-satellite-auth.md), [0051](./0051-outbound-dial-out-connector-transport.md)) |
 | [0183](./0183-quictun-is-a-standalone-tunnel-product.md) | quictun is a standalone tunnel product | Accepted (supersedes in part [0057](./0057-minimal-reference-relay.md)) |
+| [0184](./0184-build-and-ci-logic-is-one-bun-package.md) | Build and CI logic is one Bun package | Accepted |
+| [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) | quictun gets ACME certificates and multiplexes consumers | Accepted (builds on [0183](./0183-quictun-is-a-standalone-tunnel-product.md)) |
 
 ## When to write an ADR
 
