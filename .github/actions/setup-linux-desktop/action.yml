@@ -17,7 +17,7 @@ runs:
           libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev \
           libssl-dev libvulkan-dev mesa-vulkan-drivers libegl1-mesa-dev \
           xvfb xauth dbus-x11 tesseract-ocr fonts-dejavu-core openbox xdotool xclip \
-          x11-utils imagemagick just
+          x11-utils imagemagick
         icd="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
         test -n "$icd"
         echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
@@ -28,8 +28,17 @@ runs:
       working-directory: ${{ inputs.source }}
       run: |
         set -euo pipefail
-        bash scripts/setup-rust.sh native
-        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash scripts/setup-rust.sh native
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+    - name: Install the repository-pinned command runner
+      shell: bash
+      working-directory: ${{ inputs.source }}
+      run: |
+        set -euo pipefail
+        version="$(python3 -c 'import tomllib; print(tomllib.load(open("mise.toml", "rb"))["tools"]["just"])')"
+        cargo install --locked --version "$version" --root "$RUNNER_TEMP/phux-desktop-tools" just
+        echo "$RUNNER_TEMP/phux-desktop-tools/bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/phux-desktop-tools/bin/just" --version
     - name: Select pinned Bun
       id: bun
       shell: bash
