@@ -349,6 +349,7 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
             "tabs-side",
             "group-machines",
             "group-none",
+            "tabs-bottom",
             "tabs-top",
             "main-menu",
         ] {

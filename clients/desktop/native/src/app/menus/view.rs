@@ -26,6 +26,11 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
             ),
             checked("tabs-side", IconName::PanelLeft, tabs == TabPosition::Side),
             checked(
+                "tabs-bottom",
+                IconName::PanelsTopLeft,
+                tabs == TabPosition::Bottom,
+            ),
+            checked(
                 "group-projects",
                 IconName::Folder,
                 grouping == SidebarGrouping::Project,

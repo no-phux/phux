@@ -107,7 +107,7 @@ fn a_dragged_tab_lands_after_the_last_center_left_of_the_pointer() {
 #[test]
 fn tab_reordering_uses_the_painted_axis_and_rejects_stale_geometry() {
     let mut geometry = TabGeometry::default();
-    for position in [TabPosition::Top, TabPosition::Side] {
+    for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
         geometry.prepare(position, 3);
         // Before the new strip has painted, no drop may reorder the workspace.
         assert_eq!(geometry.drop_index(1, position, 500., 500.), 1);
@@ -123,7 +123,7 @@ fn tab_reordering_uses_the_painted_axis_and_rejects_stale_geometry() {
             geometry.record(index, position, bounds);
         }
         match position {
-            TabPosition::Top => {
+            TabPosition::Top | TabPosition::Bottom => {
                 assert_eq!(geometry.drop_index(0, position, 500., -1000.), 2);
                 assert_eq!(geometry.drop_index(2, position, 220., 1000.), 0);
             }
