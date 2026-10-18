@@ -9,8 +9,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Failure } from "../lib/command.ts";
-import { git, GitError } from "../lib/git.ts";
-import { gh, GhError, ghLines } from "../lib/github.ts";
+import { git } from "../lib/git.ts";
+import { gh, ghLines } from "../lib/github.ts";
+import { ProcessError } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { isTable, list, str, table, type Table } from "../lib/value.ts";
 import { compareVersions, parseTag, type Version } from "./publish-plan.ts";
@@ -155,7 +156,7 @@ function tagCommit(tag: string): string {
   try {
     return git(["rev-parse", `${tag}^{commit}`], cwd).trim();
   } catch (error) {
-    if (!(error instanceof GitError)) throw error;
+    if (!(error instanceof ProcessError)) throw error;
     git(["fetch", "--quiet", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`], cwd);
     return git(["rev-parse", `${tag}^{commit}`], cwd).trim();
   }
@@ -199,7 +200,7 @@ function release(tag: string): Table | undefined {
   try {
     return table(JSON.parse(gh(["api", `repos/${REPO}/releases/tags/${tag}`])));
   } catch (error) {
-    if (error instanceof GhError && error.stderr.includes("HTTP 404")) return undefined;
+    if (error instanceof ProcessError && error.stderr.includes("HTTP 404")) return undefined;
     throw error;
   }
 }

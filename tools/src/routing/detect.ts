@@ -4,7 +4,7 @@
 // fetch is needed. Missing or invalid history, schedule and dispatch request
 // every surface. A release-please version-field diff requests none.
 import { readFileSync } from "node:fs";
-import { git, gitBytes, show } from "../lib/git.ts";
+import { git, show } from "../lib/git.ts";
 import { ROOT } from "../lib/repo.ts";
 import { isTable, str, table } from "../lib/value.ts";
 import { releaseMetadataOnly } from "./release-metadata.ts";
@@ -19,7 +19,7 @@ function commit(value: unknown, cwd: string): string {
   if (sha === undefined || !/^[0-9a-fA-F]{40,64}$/.test(sha)) {
     throw new Error("missing or malformed event commit");
   }
-  gitBytes(["cat-file", "-e", `${sha}^{commit}`], cwd);
+  git(["cat-file", "-e", `${sha}^{commit}`], cwd);
   return sha;
 }
 

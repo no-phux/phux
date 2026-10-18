@@ -7,7 +7,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { git } from "../lib/git.ts";
-import { gh, GhError, ghLines } from "../lib/github.ts";
+import { gh, ghLines } from "../lib/github.ts";
+import { ProcessError } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { str, table, type Table } from "../lib/value.ts";
 
@@ -52,7 +53,7 @@ function stableManifest(repo: string, failures: string[]): Table | undefined {
     return table(JSON.parse(gh([...args, "--pattern", "stable.json", "--output", "-"])));
   } catch (error) {
     const reason =
-      (error instanceof GhError && error.stderr.trim()) ||
+      (error instanceof ProcessError && error.stderr.trim()) ||
       (error instanceof Error ? error.message : String(error));
     failures.push(`channels/stable.json is unreadable: ${reason}`);
     return undefined;

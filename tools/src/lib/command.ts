@@ -30,6 +30,11 @@ export function isParseArgsError(error: unknown): error is Error {
   );
 }
 
+/** An error's message, or the thrown value as text. */
+export function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** A flag or positional the command cannot run without. */
 export function required<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new UsageError(`${name} is required`);
