@@ -168,7 +168,7 @@ fn agent(index: usize, tick: usize) -> AgentInfo {
 }
 
 /// Every terminal outside the live one carries an agent badge; the blocked
-/// and finished ones list under "Needs you".
+/// and finished ones also carry attention marks.
 fn set_agents(desk: &mut Desk, tick: usize) {
     let Some(link) = desk.link.as_mut() else {
         return;
@@ -344,6 +344,32 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
         std::fs::create_dir_all(&dir).unwrap();
         before.save(dir.join("window-perf-before.png")).unwrap();
         after.save(dir.join("window-perf-after.png")).unwrap();
+        // The same work under each tab placement and sidebar grouping.
+        for command in [
+            "tabs-side",
+            "group-machines",
+            "group-none",
+            "tabs-top",
+            "main-menu",
+        ] {
+            cx.update_window(window, |_, window, cx| {
+                desk.update(cx, |desk, cx| desk.execute(command, window, cx))
+            })
+            .expect("view command");
+            settle(&mut cx, window);
+            cx.capture_screenshot(window)
+                .expect("view pixels")
+                .save(dir.join(format!("window-{command}.png")))
+                .unwrap();
+        }
+        let menu = desk.read_with(&cx, |desk, _| desk.menu_window());
+        if let Some(menu) = menu {
+            settle(&mut cx, menu);
+            cx.capture_screenshot(menu)
+                .expect("menu pixels")
+                .save(dir.join("glass-main-menu.png"))
+                .unwrap();
+        }
     }
     assert_ne!(
         before.as_raw(),

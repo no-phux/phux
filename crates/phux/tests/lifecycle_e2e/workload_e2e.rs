@@ -657,6 +657,115 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     assert_eq!(listed["registry_generation"], 2);
 }
 
+fn bearer_bytes(encoded: &str) -> Vec<u8> {
+    encoded
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+/// A ticket-store failure must not mint a bearer or replace the old one,
+/// regardless of the CLI output mode. A healthy retry still mints both.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn pair_enroll_ticket_failure_preserves_credentials_and_output() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    paired(dir.path());
+    let _server = start_server(
+        dir.path(),
+        &["--quic", listeners::LOOPBACK_ANY_PORT],
+        &[("PHUX_WS_SECURE", "1")],
+    );
+    let socket = dir.path().join("s.sock");
+    let socket_arg = socket.to_str().expect("utf-8 socket");
+    let first = json_doc(&await_success(
+        dir.path(),
+        &["--socket", socket_arg, "pair", "--json"],
+        &[],
+    ));
+    let old = first["token"].as_str().expect("bearer");
+    let tokens = PathBuf::from(first["tokens_path"].as_str().expect("token store"));
+    let before = std::fs::read(&tokens).expect("credential store");
+    let registry = dir.path().join("blocked/workload-keys");
+    std::fs::create_dir_all(registry.parent().unwrap()).expect("store parent");
+    let blocked_ticket = registry.with_file_name("enrollment-tickets");
+    std::fs::create_dir(&blocked_ticket).expect("block ticket store with directory");
+    for mode in ["--json", "--no-qr"] {
+        let out = phux_with(
+            dir.path(),
+            &[
+                "--socket",
+                socket_arg,
+                "pair",
+                "--enroll",
+                mode,
+                "--replace-token",
+                old,
+            ],
+            b"",
+            &[("PHUX_WORKLOAD_KEYS", &registry)],
+        );
+        assert!(!out.status.success(), "ticket store must refuse");
+        assert!(
+            out.stdout.is_empty(),
+            "failure must not expose a bearer or ticket: {}",
+            text(&out.stdout)
+        );
+        assert!(text(&out.stderr).contains("could not mint an enrollment ticket"));
+        assert!(
+            !text(&out.stderr).contains(old),
+            "old bearer must stay secret"
+        );
+        assert_eq!(
+            std::fs::read(&tokens).unwrap(),
+            before,
+            "replacement must not run"
+        );
+        assert!(
+            phux_server::auth::TokenStore::load(&tokens)
+                .unwrap()
+                .verify(&bearer_bytes(old))
+        );
+    }
+    std::fs::remove_dir(&blocked_ticket).expect("unblock tickets");
+    let out = phux_with(
+        dir.path(),
+        &[
+            "--socket",
+            socket_arg,
+            "pair",
+            "--enroll",
+            "--json",
+            "--replace-token",
+            old,
+        ],
+        b"",
+        &[("PHUX_WORKLOAD_KEYS", &registry)],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let next = json_doc(&out);
+    assert_eq!(next["enrollment_ticket"].as_str().unwrap().len(), 64);
+    assert_ne!(next["token"], first["token"]);
+    assert!(blocked_ticket.is_file(), "ticket was committed");
+    let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
+    assert!(!store.verify(&bearer_bytes(old)));
+    assert!(store.verify(&bearer_bytes(next["token"].as_str().unwrap())));
+
+    let plain = phux_with(
+        dir.path(),
+        &["--socket", socket_arg, "pair", "--enroll", "--no-qr"],
+        b"",
+        &[("PHUX_WORKLOAD_KEYS", &registry)],
+    );
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert!(text(&plain.stdout).contains("Enrollment ticket t-"));
+    assert!(text(&plain.stdout).contains("Pairing token"));
+}
+
 /// ADR-0154 end to end through the CLI: a `paired` server mints a ticket
 /// with `phux pair --enroll`; a connect code carrying it registers the host
 /// and enrolls a key the client generated, which then reaches the paired

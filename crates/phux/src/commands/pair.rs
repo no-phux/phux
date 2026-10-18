@@ -863,22 +863,30 @@ pub(crate) fn run_pair(
         return ExitCode::FAILURE;
     }
 
-    let Some(minted) = mint_pairing_credential(&tokens, replace_token.as_deref(), expires_at)
+    let Some((minted, ticket)) =
+        mint_pairing_bundle(&tokens, replace_token.as_deref(), expires_at, enroll)
     else {
         return ExitCode::FAILURE;
     };
-    present_listener_credential(&minted, &tokens, &certificate, &addresses, output, enroll)
+    present_listener_credential(
+        &minted,
+        ticket.as_ref(),
+        &tokens,
+        &certificate,
+        &addresses,
+        output,
+    )
 }
 
 /// Print or file a listener mint. `--json` is the only path that writes the
 /// bearer to stdout; camera and secret-file mints keep it out of the text.
 fn present_listener_credential(
     minted: &phux_server::auth::MintedCredential,
+    ticket: Option<&phux_server::workload::tickets::MintedTicket>,
     tokens: &Path,
     certificate: &CertificatePaths,
     addresses: &PairAddresses,
     output: LinkOutput<'_>,
-    enroll: bool,
 ) -> ExitCode {
     let token = minted.secret();
     let hide_bearer = hides_bearer(output.qr, output.secret_file.is_some(), output.json);
@@ -888,10 +896,9 @@ fn present_listener_credential(
 
     let fingerprint = read_pairing_fingerprint(&certificate.cert, output.json || hide_bearer);
     let authority = read_pairing_authority(&certificate.cert, output.json);
-    let ticket = match enroll.then(|| mint_enrollment_ticket(output.json, secret_surface(output))) {
-        Some(None) => return ExitCode::FAILURE,
-        minted_ticket => minted_ticket.flatten(),
-    };
+    if let Some(ticket) = ticket {
+        print_enrollment_ticket(ticket, output.json, secret_surface(output));
+    }
     let checked = addresses.checked_names();
     warn_on_uncovered_names(&certificate.cert, &certificate.key, &checked);
 
@@ -929,7 +936,7 @@ fn present_listener_credential(
             minted.generation,
             expires_text.as_deref(),
         );
-        add_pins_to_document(&mut document, authority.as_deref(), ticket.as_ref());
+        add_pins_to_document(&mut document, authority.as_deref(), ticket);
         return crate::output::json(&document);
     }
 
@@ -1075,16 +1082,17 @@ fn mint_relay_link(
         );
         return ExitCode::FAILURE;
     };
-    let Some(minted) = mint_pairing_credential(tokens, replace_token, output.expires_at) else {
+    let Some((minted, ticket)) =
+        mint_pairing_bundle(tokens, replace_token, output.expires_at, enroll)
+    else {
         return ExitCode::FAILURE;
     };
     let token = minted.secret().to_owned();
     let hide_bearer = hides_bearer(output.qr, output.secret_file.is_some(), output.json);
     let fingerprint = connector.cert_fingerprint.as_deref();
-    let ticket = match enroll.then(|| mint_enrollment_ticket(output.json, secret_surface(output))) {
-        Some(None) => return ExitCode::FAILURE,
-        minted => minted.flatten(),
-    };
+    if let Some(ticket) = ticket.as_ref() {
+        print_enrollment_ticket(ticket, output.json, secret_surface(output));
+    }
     let pins = ServerPins {
         leaf: fingerprint,
         authority: Some(authority.as_str()),
@@ -1332,6 +1340,36 @@ fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[S
     }
 }
 
+/// Mint the ticket before touching the credential store. A failed ticket write
+/// must not leave a live bearer or revoke the predecessor of `replace_token`.
+/// If credential mint fails, withdraw the unexposed ticket best-effort.
+fn mint_pairing_bundle(
+    tokens: &Path,
+    replace_token: Option<&str>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    enroll: bool,
+) -> Option<(
+    phux_server::auth::MintedCredential,
+    Option<phux_server::workload::tickets::MintedTicket>,
+)> {
+    use phux_server::workload::{WorkloadPaths, tickets};
+    let ticket = if enroll {
+        Some(mint_enrollment_ticket()?)
+    } else {
+        None
+    };
+    let Some(credential) = mint_pairing_credential(tokens, replace_token, expires_at) else {
+        if let Some(ticket) = ticket.as_ref() {
+            let path = tickets::tickets_path(&WorkloadPaths::from_env().registry);
+            if let Err(err) = tickets::revoke_ticket(&path, &ticket.id) {
+                warn!("pair: could not withdraw unused enrollment ticket: {err}");
+            }
+        }
+        return None;
+    };
+    Some((credential, ticket))
+}
+
 /// Mint a credential, reporting failures on stderr (`None` means exit with
 /// failure). `replace_token` revokes the matching old bearer in the same
 /// rewrite.
@@ -1392,10 +1430,7 @@ fn read_pairing_fingerprint(cert: &std::path::Path, json: bool) -> Option<String
 /// Mint the single-use enrollment ticket a `--enroll` link carries
 /// (ADR-0154), with the ceiling `phux host add` enrolls with. `None` after
 /// reporting a failure.
-fn mint_enrollment_ticket(
-    json: bool,
-    surface: SecretSurface,
-) -> Option<phux_server::workload::tickets::MintedTicket> {
+fn mint_enrollment_ticket() -> Option<phux_server::workload::tickets::MintedTicket> {
     use phux_server::workload::tickets;
     let paths = phux_server::workload::WorkloadPaths::from_env();
     match tickets::mint_ticket(
@@ -1404,40 +1439,43 @@ fn mint_enrollment_ticket(
         tickets::DEFAULT_CREDENTIAL_SECONDS,
         tickets::DEFAULT_TICKET_SECONDS,
     ) {
-        Ok(ticket) => {
-            if !json {
-                let where_held = match surface {
-                    SecretSurface::Text => "in the link below",
-                    SecretSurface::Qr => "in the QR below, not printed as text",
-                    SecretSurface::File => "in the secret file, not printed",
-                    SecretSurface::QrAndFile => {
-                        "in the QR and the secret file, not printed as text"
-                    }
-                };
-                let when = chrono::DateTime::from_timestamp(ticket.expires_at, 0).map_or_else(
-                    || format!("unix {}", ticket.expires_at),
-                    |stamp| stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                );
-                outln!(
-                    "Enrollment ticket {} ({where_held}; single use):",
-                    ticket.id
-                );
-                outln!(
-                    "  EXPIRES {when} ({} minutes)",
-                    tickets::DEFAULT_TICKET_SECONDS / 60
-                );
-                outln!(
-                    "  the device enrolls its own key with it; nothing secret leaves the device"
-                );
-                outln!();
-            }
-            Some(ticket)
-        }
+        Ok(ticket) => Some(ticket),
         Err(err) => {
             error!("pair: could not mint an enrollment ticket: {err}");
             None
         }
     }
+}
+
+/// Report a committed ticket only after its companion credential was minted.
+fn print_enrollment_ticket(
+    ticket: &phux_server::workload::tickets::MintedTicket,
+    json: bool,
+    surface: SecretSurface,
+) {
+    if json {
+        return;
+    }
+    let where_held = match surface {
+        SecretSurface::Text => "in the link below",
+        SecretSurface::Qr => "in the QR below, not printed as text",
+        SecretSurface::File => "in the secret file, not printed",
+        SecretSurface::QrAndFile => "in the QR and the secret file, not printed as text",
+    };
+    let when = chrono::DateTime::from_timestamp(ticket.expires_at, 0).map_or_else(
+        || format!("unix {}", ticket.expires_at),
+        |stamp| stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    );
+    outln!(
+        "Enrollment ticket {} ({where_held}; single use):",
+        ticket.id
+    );
+    outln!(
+        "  EXPIRES {when} ({} minutes)",
+        phux_server::workload::tickets::DEFAULT_TICKET_SECONDS / 60
+    );
+    outln!("  the device enrolls its own key with it; nothing secret leaves the device");
+    outln!();
 }
 
 /// The workload CA the server's certificate chains to, printed for a human

@@ -1,0 +1,316 @@
+//! One tab renderer and one set of tab actions for both placements: a
+//! compact strip in the titlebar, or rows under the current session in the
+//! navigator. A tab whose agent needs a person wears that state itself: a
+//! wash and a mark on its corner, not an entry in a separate list.
+
+use gpui::prelude::*;
+use gpui::{
+    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, SharedString, div, px,
+};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
+
+use crate::connection::AgentState;
+use crate::settings::TabPosition;
+use crate::workspace::layout::{self, DeskTab};
+
+use super::super::color::from_hex;
+use super::super::desk::{self, Desk, Modal};
+use super::super::skin::{Look, Surface, Surfaced};
+use super::super::ui::list::{ICON, ROW, row_icon, row_radius};
+use super::super::ui::menu::Anchor;
+use super::super::ui::status::{attention_wash, state_dot, strongest};
+use super::super::ui::{attention_mark, ghost_icon};
+use super::tab_glow;
+
+/// Titlebar tab height for a bar `titlebar` points tall.
+pub(super) fn tab_height(titlebar: f32) -> f32 {
+    (titlebar - 14.).clamp(22., 30.)
+}
+
+/// The tabs at `position`, measured as painted for drag reordering.
+pub(super) fn strip(
+    desk: &Desk,
+    position: TabPosition,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let (tabs, active) = desk.link.as_ref().map_or((&[][..], ""), |link| {
+        (
+            link.workspace.tabs.as_slice(),
+            link.workspace.active_id.as_str(),
+        )
+    });
+    let geometry = desk.tab_geometry.clone();
+    geometry.borrow_mut().prepare(position, tabs.len());
+    let side = position == TabPosition::Side;
+    div()
+        .id(if side { "side-tabs" } else { "top-tabs" })
+        .when(side, |list| list.w_full())
+        .when(!side, |list| {
+            list.flex_1().min_w_0().h_full().overflow_x_scroll()
+        })
+        .child(
+            // Measure inside the scroller: its children then include the actual
+            // painted scroll offset, not the unscrolled layout coordinates.
+            div()
+                .flex()
+                .when(side, |list| list.flex_col().gap(px(1.)).w_full())
+                .when(!side, |list| {
+                    list.gap(px(5.))
+                        .w_full()
+                        .min_w(px(tabs.len() as f32 * 105. + 3.))
+                        .h_full()
+                        .items_center()
+                        .px(px(4.))
+                })
+                .children(tabs.iter().map(|tab| {
+                    tab_button(desk, tab, active, position, look, cx).into_any_element()
+                }))
+                .on_children_prepainted(move |bounds, _, _| {
+                    let mut geometry = geometry.borrow_mut();
+                    for (index, bounds) in bounds.into_iter().enumerate() {
+                        geometry.record(index, position, bounds);
+                    }
+                }),
+        )
+}
+
+/// The most pressing agent state in `tab`, only when it needs a person.
+pub(super) fn tab_attention(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
+    strongest(
+        layout::placements(&tab.root)
+            .into_iter()
+            .filter_map(|placement| placement.terminal_id.as_ref().and_then(|id| desk.agent(id)))
+            .filter(|info| info.needs_you())
+            .map(|info| info.state),
+    )
+}
+
+/// The calmer state an agent in `tab` is in, for a quiet leading dot.
+fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
+    strongest(
+        layout::placements(&tab.root)
+            .into_iter()
+            .filter_map(|placement| placement.terminal_id.as_ref().and_then(|id| desk.agent(id)))
+            .map(|info| info.state)
+            .filter(|state| *state != AgentState::Unknown),
+    )
+}
+
+/// A sidebar tab's leading slot: its agent's state, else a terminal glyph.
+fn side_lead(attention: Option<AgentState>, agent: Option<AgentState>, look: &Look) -> AnyElement {
+    if attention.is_some() || agent.is_some() {
+        return state_dot(attention, agent).into_any_element();
+    }
+    Icon::new(IconName::SquareTerminal)
+        .size(px(13.))
+        .text_color(from_hex(&look.chrome.faint))
+        .into_any_element()
+}
+
+/// A titlebar tab's close button: on hover, and always on the selected tab.
+fn tab_close(id: &str, selected: bool, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let hover = look.hover;
+    let selector = SharedString::from(format!("tab-close-{id}"));
+    let close = id.to_owned();
+    div()
+        .id(selector.clone())
+        .debug_selector(move || selector.to_string())
+        .flex_shrink_0()
+        .size(px(18.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_xs()
+        .text_color(from_hex(&look.chrome.muted))
+        .invisible()
+        .group_hover("tab", |style| style.visible())
+        .when(selected, |close| close.visible())
+        .hover(move |style| style.bg(hover))
+        .child("✕")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |desk, _, window, cx| {
+            desk.close_tab(&close);
+            desk.after_command(window, cx);
+            cx.stop_propagation();
+        }))
+}
+
+/// A sidebar tab's actions, as a row's are: an ellipsis on hover, always on
+/// the selected tab and while its menu shows.
+fn tab_more(desk: &Desk, id: &str, selected: bool, cx: &mut Context<Desk>) -> impl IntoElement {
+    let key = format!("tab-more-{id}");
+    let open = desk.menu_open(&format!("tab-{id}"));
+    let (tab, anchor) = (id.to_owned(), key.clone());
+    div()
+        .relative()
+        .flex_shrink_0()
+        .debug_selector({
+            let key = key.clone();
+            move || key.clone()
+        })
+        .invisible()
+        .group_hover("tab", |style| style.visible())
+        .when(selected || open, |more| more.visible())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(desk.anchors.probe(key.clone()))
+        .child(
+            ghost_icon(SharedString::from(key), IconName::Ellipsis, "Tab actions")
+                .toggled(open)
+                .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    let anchor = desk
+                        .anchors
+                        .get(&anchor)
+                        .map_or(Anchor::At(event.position()), Anchor::Below);
+                    desk.open_tab_menu(&tab, anchor, window, cx);
+                })),
+        )
+}
+
+fn tab_button(
+    desk: &Desk,
+    tab: &DeskTab,
+    active: &str,
+    position: TabPosition,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let height = tab_height(look.skin.chrome.titlebar);
+    let id = &tab.id;
+    let tab_selector = SharedString::from(format!("tab-{id}"));
+    let selected = tab.id == active;
+    let panes = layout::placements(&tab.root).len();
+    let zoomed = tab.zoomed_id.is_some();
+    let hover = look.hover;
+    let attention = tab_attention(desk, tab);
+    let agent = tab_agent(desk, tab);
+    let (drag_id, rename_id, middle_id, menu_id) = (
+        tab.id.clone(),
+        tab.id.clone(),
+        tab.id.clone(),
+        tab.id.clone(),
+    );
+    let side = position == TabPosition::Side;
+    let detail = match (zoomed, panes) {
+        (true, _) => Some("⤢".to_owned()),
+        (false, 0 | 1) => None,
+        (false, count) if side => Some(count.to_string()),
+        _ => None,
+    };
+    div()
+        .id(tab_selector.clone())
+        .debug_selector(move || tab_selector.to_string())
+        .group("tab")
+        .relative()
+        .flex_shrink_0()
+        .when(side, |tab| {
+            // A row under its session, indented past the session's caret.
+            tab.min_h(px(ROW)).w_full().pl(px(8. + ICON))
+        })
+        .when(!side, |tab| {
+            tab.h(px(height))
+                .min_w(px(100.))
+                .max_w(px(220.))
+                .flex_1()
+                .pl(px(10.))
+        })
+        .pr(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .when(selected, |tab| {
+            tab.surface(look, if side { Surface::SideTab } else { Surface::Tab })
+                .shadow(tab_glow(look))
+        })
+        .when(!selected, |tab| {
+            tab.rounded(px(if side {
+                row_radius(&look.skin)
+            } else {
+                look.skin.shape.tab_radius[0]
+            }))
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .hover(move |style| style.bg(hover))
+        })
+        .when_some(attention.filter(|_| !selected), |tab, state| {
+            tab.bg(attention_wash(state))
+        })
+        .block_mouse_except_scroll()
+        .when(side, |tab| {
+            tab.child(row_icon(side_lead(attention, agent, look)))
+        })
+        .when(!side, |tab| {
+            tab.children(attention.is_none().then(|| state_dot(None, agent)))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
+                .text_color(if selected {
+                    look.ink
+                } else {
+                    from_hex(&look.chrome.subtext)
+                })
+                .child(desk::tab_title(desk, tab)),
+        )
+        .children(detail.map(|detail| {
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(from_hex(&look.chrome.muted))
+                .child(detail)
+        }))
+        .child(if side {
+            tab_more(desk, &tab.id, selected, cx).into_any_element()
+        } else {
+            tab_close(&tab.id, selected, look, cx).into_any_element()
+        })
+        .children(
+            attention
+                .filter(|_| !side)
+                .map(|state| attention_mark(state, look)),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
+                desk.select_tab(&drag_id);
+                desk.begin_tab_drag(
+                    drag_id.clone(),
+                    event.position.x.as_f32(),
+                    event.position.y.as_f32(),
+                    cx,
+                );
+                desk.after_command(window, cx);
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(move |desk, _, window, cx| {
+                desk.close_tab(&middle_id);
+                desk.after_command(window, cx);
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
+                desk.open_tab_menu(&menu_id, Anchor::At(event.position), window, cx);
+            }),
+        )
+        .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
+            if event.click_count() >= 2 {
+                desk.open_modal(
+                    Modal::Rename {
+                        tab_id: rename_id.clone(),
+                    },
+                    window,
+                    cx,
+                );
+            }
+        }))
+}
