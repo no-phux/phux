@@ -9,6 +9,24 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.105.0](https://github.com/no-phux/phux/compare/v0.104.0...v0.105.0) (2026-10-18)
+
+
+### Features
+
+* **tui:** fleet rows name the kind only when it adds to the name ([e326ecf](https://github.com/no-phux/phux/commit/e326ecf83b66753ff7770b9c700e1d3835134610))
+
+
+### Bug Fixes
+
+* **opencode:** prepare host-compatible dependency release 0.6.2 ([#1616](https://github.com/no-phux/phux/issues/1616)) ([78341ce](https://github.com/no-phux/phux/commit/78341ce743883d03a6da0ce815e46e433cf7c219))
+* **tui:** one agent-state glyph vocabulary across the sidebar, tab bar and fleet ([605dfe2](https://github.com/no-phux/phux/commit/605dfe2eb4defdba24f206b24f0db4e756e0d69f))
+
+
+### Refactors
+
+* **tui:** one home-to-tilde rule for the Settings path and the pickers ([1f1859b](https://github.com/no-phux/phux/commit/1f1859b666895574665bf875c0612d0c35082fe4))
+
 ## [0.104.0](https://github.com/no-phux/phux/compare/v0.103.0...v0.104.0) (2026-10-18)
 
 
