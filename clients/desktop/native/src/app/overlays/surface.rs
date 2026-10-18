@@ -3,16 +3,14 @@
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, IntoElement, MouseButton, Window, div, px};
-use gpui_kit::component::input::Input;
 
 use super::dialogs::{add_host_dialog, confirm, paste_question, rename_dialog, session_dialog};
+use super::launcher;
 use super::notifications::notifications_panel;
 use super::path_panel::path_panel;
-use super::{InputSlot, launcher};
 use crate::app::color::from_hex;
 use crate::app::desk::{Desk, Modal};
 use crate::app::skin::{Look, Surface, Surfaced};
-use crate::app::ui::muted;
 use crate::settings::theme::Palette;
 
 pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
@@ -20,7 +18,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
     let colors = &look.chrome;
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
-        Modal::Capture => capture_panel(desk, &look),
+        Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -80,33 +78,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
     };
     backdrop(colors, window, cx, card)
-}
-
-pub(super) fn capture_panel(desk: &Desk, look: &Look) -> AnyElement {
-    let input = desk.input_entity(InputSlot::Capture);
-    sheet(look, 560.)
-        .id("capture-panel")
-        .debug_selector(|| "capture-panel".into())
-        .p(px(16.))
-        .flex()
-        .flex_col()
-        .gap(px(10.))
-        .child("Capture · OpenCode")
-        .children(input.map(|input| Input::new(&input)))
-        .when(desk.capture.is_pending(), |panel| {
-            panel.child(muted(look, "Dispatching…"))
-        })
-        .child(muted(
-            look,
-            "Enter: dispatch & follow · Shift+Enter: dispatch & stay · @session: route",
-        ))
-        .children(
-            desk.capture
-                .error
-                .clone()
-                .map(|error| div().text_sm().child(error)),
-        )
-        .into_any_element()
 }
 
 /// The gap between a transient surface and the window's edges.

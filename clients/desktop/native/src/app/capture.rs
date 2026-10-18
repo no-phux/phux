@@ -1,16 +1,21 @@
 //! Desktop launch spike. Durable cross-client intake is specified by ADR-0188;
 //! this adapter deliberately uses the existing server spawn contract.
 
-use gpui::{Context, Window};
+use gpui::{AppContext as _, Context, Entity, Subscription, Window};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use phux_client_runtime::control::{Event, PaneDescriptor, SpawnRequest, Topology};
 
 use super::desk::{Desk, Modal};
+
+mod composer;
+pub(super) use composer::panel;
 
 #[derive(Default)]
 pub(crate) struct State {
     pub draft: String,
     pub error: Option<String>,
     pending: Option<Pending>,
+    pub(super) editor: Option<(Entity<TextareaState>, Subscription)>,
 }
 
 struct Pending {
@@ -23,6 +28,14 @@ struct Pending {
 }
 
 impl State {
+    fn matches_draft(&self, text: &str, cx: &gpui::App) -> bool {
+        self.draft == text
+            && self
+                .editor
+                .as_ref()
+                .is_none_or(|(input, _)| input.read(cx).value().as_str() == text)
+    }
+
     pub(super) fn is_pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -155,6 +168,50 @@ fn session_cwd(topology: &Topology, session: u32) -> Result<String, String> {
 }
 
 impl Desk {
+    pub(super) fn prepare_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = match self.capture.editor.as_ref() {
+            Some((input, _)) => input.clone(),
+            None => {
+                let input = cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .placeholder("What needs changing?")
+                        .default_value(self.capture.draft.clone())
+                        .auto_grow(3, 8)
+                        .submit_on_enter(true)
+                });
+                let subscription = cx.subscribe_in(
+                    &input,
+                    window,
+                    |desk, input, event: &InputEvent, window, cx| {
+                        if !matches!(
+                            event,
+                            InputEvent::Change | InputEvent::PressEnter { shift: false, .. }
+                        ) {
+                            return;
+                        }
+                        desk.capture.draft = input.read(cx).value().to_string();
+                        if let InputEvent::PressEnter {
+                            shift: false,
+                            secondary,
+                        } = event
+                        {
+                            desk.submit_capture(!secondary, window, cx);
+                        }
+                        cx.notify();
+                    },
+                );
+                self.capture.editor = Some((input.clone(), subscription));
+                input
+            }
+        };
+        input.update(cx, |input, cx| {
+            if input.value().as_str() != self.capture.draft {
+                input.set_value(self.capture.draft.clone(), window, cx);
+            }
+            input.focus(window, cx);
+        });
+    }
+
     pub(super) fn submit_capture(
         &mut self,
         follow: bool,
@@ -228,12 +285,15 @@ impl Desk {
                 // Check at UI handoff, not before deferring: an edit or a new
                 // submit in the meantime owns the field now.
                 if !desk.capture_source_matches(&pending)
-                    || desk.capture.draft != pending.text
+                    || !desk.capture.matches_draft(&pending.text, cx)
                     || desk.capture.is_pending()
                 {
                     return;
                 }
                 desk.capture.draft.clear();
+                if let Some((input, _)) = desk.capture.editor.as_ref() {
+                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                }
                 if desk.modal != Modal::Capture {
                     return;
                 }

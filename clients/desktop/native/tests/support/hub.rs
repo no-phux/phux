@@ -59,6 +59,7 @@ fn render_appearance(light: bool) {
         .unwrap();
     let appearance = if light { "light" } else { "dark" };
     for (command, name) in [
+        ("capture", "capture-empty"),
         ("goto", "work"),
         ("palette", "actions"),
         ("settings", "settings"),
@@ -69,6 +70,33 @@ fn render_appearance(light: bool) {
         .unwrap();
         draw(&mut cx, window.into());
         save(&mut cx, window.into(), &format!("{appearance}-{name}"));
+        if command == "capture" {
+            type_text(&mut cx, window.into(), "Make the keyboard feel effortless.");
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_keystroke(Keystroke::parse("shift-enter").unwrap(), cx);
+            })
+            .unwrap();
+            type_text(
+                &mut cx,
+                window.into(),
+                "Keep every thought, including 東京.",
+            );
+            save(
+                &mut cx,
+                window.into(),
+                &format!("{appearance}-capture-draft"),
+            );
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            })
+            .unwrap();
+            draw(&mut cx, window.into());
+            save(
+                &mut cx,
+                window.into(),
+                &format!("{appearance}-capture-refused"),
+            );
+        }
     }
     for character in "layout".chars() {
         cx.update_window(window.into(), |_, window, cx| {
@@ -97,6 +125,12 @@ fn render_appearance(light: bool) {
     save(&mut cx, window.into(), &format!("{appearance}-layout"));
     ghostty_settings_render(&mut cx, window.into(), &desk, appearance);
     cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
+    // Release the window and its real-I/O wake subscriptions before the
+    // deterministic scheduler enters App::shutdown's blocking quit hook drain.
+    cx.update_window(window.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    drop(desk);
+    cx.run_until_parked();
     drop(cx);
     std::fs::remove_dir_all(root).unwrap();
 }

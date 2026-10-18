@@ -8,7 +8,7 @@ use super::CommandSpec;
 /// space-separated.
 const CATALOG: &str = "\
     palette | Command Palette | General | cmd+shift+p | Search and run desktop commands. |
-    capture | Capture… | General |  | Dispatch a thought to OpenCode. Enter follows; Shift+Enter stays. | thought idea bug intake
+    capture | Capture… | General | cmd+shift+space | Dispatch a thought to OpenCode. Enter follows; Command/Control+Enter stays; Shift+Enter adds a line. | thought idea bug intake
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
