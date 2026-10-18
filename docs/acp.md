@@ -117,4 +117,3 @@ readiness and stop reasons; the [native operation ledger](../crates/phux-server/
 and [command authority](../crates/phux-server/src/runtime/native_agent.rs)
 own identity, queue bounds, human role and first response. Generic lifecycle
 emit cannot forge these reserved native publications.
-
