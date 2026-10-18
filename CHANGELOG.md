@@ -9,6 +9,27 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.103.0](https://github.com/no-phux/phux/compare/v0.102.0...v0.103.0) (2026-10-18)
+
+
+### Features
+
+* **desktop:** ship native Linux desktop on X11 and Wayland ([#1602](https://github.com/no-phux/phux/issues/1602)) ([1d77164](https://github.com/no-phux/phux/commit/1d771648c37eaf395576b46b9e50f912f13553a3))
+* **federation:** reverse enrollment, satellites dial out and the hub adopts the link ([#1592](https://github.com/no-phux/phux/issues/1592)) ([7c8a9ff](https://github.com/no-phux/phux/commit/7c8a9ffe5b44f0b2130a53d1fd5623bb0d11b8bb))
+* **tui:** context menus name what they act on ([0b5587d](https://github.com/no-phux/phux/commit/0b5587d1917289e246e7dcb11c35780b56175da1))
+* **tui:** pickers, prompts and the kill confirm say what their chord says ([479b8f8](https://github.com/no-phux/phux/commit/479b8f847f7776fa7cd4bec5cc0baf5c238e5c94))
+* **tui:** the copy-mode strip reads as a sentence and keeps a key legend when narrow ([a970ad7](https://github.com/no-phux/phux/commit/a970ad72d12ad920a50582303ea1f8f46a604ea5))
+
+
+### Bug Fixes
+
+* **relay:** keep direct QUIC uploads direct and tighten the blind-relay refusals ([#1596](https://github.com/no-phux/phux/issues/1596)) ([ac360b4](https://github.com/no-phux/phux/commit/ac360b4071515dfce22e550a2a976817eff00cf6))
+* **release:** stop macOS queue starvation from stranding drafts ([#1608](https://github.com/no-phux/phux/issues/1608)) ([3f6d2b5](https://github.com/no-phux/phux/commit/3f6d2b56c7a963bd5a5caccf1bd5c2d5a7098479))
+* **tui:** modal footers stay apart on a narrow box and a filtered picker says no matches ([c17fb56](https://github.com/no-phux/phux/commit/c17fb56a6fd69b73c6495a3c1ec4b0d9d573ea19))
+* **tui:** narrow and short viewports keep the ends of what they show ([cfa0074](https://github.com/no-phux/phux/commit/cfa0074999f27f1779d490497a708d8483bff98a))
+* **tui:** right-aligned widgets move left of the prefix chip whole ([e4051da](https://github.com/no-phux/phux/commit/e4051daea129a0f2d1d14981cf5f3aed1e8d02fb))
+* **tui:** the which-key panel fits a short viewport and says what it left out ([3bbb23f](https://github.com/no-phux/phux/commit/3bbb23f33abd589677a2deeb7e65a54e1df8269c))
+
 ## [0.102.0](https://github.com/no-phux/phux/compare/v0.101.0...v0.102.0) (2026-10-17)
 
 
