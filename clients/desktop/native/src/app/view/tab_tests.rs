@@ -124,6 +124,250 @@ fn ids(desk: &Entity<Desk>, cx: &VisualTestContext) -> Vec<String> {
     })
 }
 
+fn resource_key(byte: u8) -> phux_protocol::ids::ResourceKey {
+    phux_protocol::ids::ResourceKey::new([byte; 16]).unwrap()
+}
+
+/// Three tab-backed terminals and a fourth that is only in the navigator.
+fn selectable_work(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
+    use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status, Topology};
+    use phux_protocol::ResourceId;
+
+    desk.session = "fixture".into();
+    let link = desk.link.as_mut().unwrap();
+    link.workspace.tabs = tabs(3);
+    link.workspace.active_id = "fixture-c".into();
+    for (index, tab) in link.workspace.tabs.iter_mut().enumerate() {
+        let LayoutNode::Leaf { placement } = &mut tab.root else {
+            unreachable!()
+        };
+        placement.terminal_id = Some(ResourceId::local(index as u32 + 1));
+    }
+    link.connection.status = Status::Attached;
+    link.connection.topology = Some(Topology {
+        sessions: vec![SessionDescriptor {
+            id: 1,
+            name: "fixture".into(),
+            attached_client_count: 1,
+            keep_empty: true,
+            created_at_unix_secs: 0,
+            key: None,
+            lifetime: None,
+            revision: None,
+            members: 4,
+            arrangement: None,
+            awaiting_organization: false,
+        }],
+        panes: (1..=4)
+            .map(|index| PaneDescriptor {
+                terminal_id: ResourceId::local(index),
+                session_id: 1,
+                session_name: "fixture".into(),
+                cols: 80,
+                rows: 24,
+                title: None,
+                cwd: None,
+                is_focused: index == 3,
+                key: Some(resource_key(index as u8)),
+                revision: None,
+                name: None,
+                activation: None,
+                exec: None,
+            })
+            .collect(),
+        agent_sessions: Vec::new(),
+        focused_session: 1,
+        focused_pane: ResourceId::local(3),
+        authority: None,
+        inbox: None,
+        handles: Default::default(),
+    });
+    desk.organization.selected.clear();
+    cx.notify();
+}
+
+#[gpui::test]
+fn modifier_click_selects_tab_subset_without_activation_or_drag_on_both_axes(
+    cx: &mut TestAppContext,
+) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    let modifier = Modifiers {
+        platform: true,
+        ..Modifiers::none()
+    };
+    for command in ["tabs-top", "tabs-side"] {
+        desk.update(cx, selectable_work);
+        run(&desk, command, cx);
+        for selector in ["tab-fixture-a", "tab-fixture-b"] {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            cx.simulate_mouse_down(bounds.center(), MouseButton::Left, modifier);
+            desk.read_with(cx, |desk, _| {
+                assert!(
+                    desk.drag_cursor().is_none(),
+                    "selection must not arm tab reorder"
+                );
+                assert_eq!(desk.link.as_ref().unwrap().workspace.active_id, "fixture-c");
+            });
+            cx.simulate_mouse_up(bounds.center(), MouseButton::Left, modifier);
+            draw(cx);
+        }
+        desk.read_with(cx, |desk, _| {
+            assert_eq!(
+                desk.organization.selected,
+                [resource_key(1), resource_key(2)]
+            );
+            assert_eq!(desk.modal, Modal::None);
+        });
+        assert_eq!(ids(&desk, cx), ["fixture-a", "fixture-b", "fixture-c"]);
+        run(&desk, "move-resources", cx);
+        desk.read_with(cx, |desk, _| {
+            assert_eq!(desk.modal, Modal::MoveResources);
+            assert_eq!(
+                desk.organization.selected,
+                [resource_key(1), resource_key(2)],
+                "Move receives exactly A+B, not C"
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        let a = cx.debug_bounds("tab-fixture-a").unwrap();
+        cx.simulate_click(a.center(), modifier);
+        draw(cx);
+        desk.read_with(cx, |desk, _| {
+            assert_eq!(desk.organization.selected, [resource_key(2)])
+        });
+        cx.simulate_click(a.center(), Modifiers::none());
+        draw(cx);
+        desk.read_with(cx, |desk, _| {
+            assert_eq!(desk.link.as_ref().unwrap().workspace.active_id, "fixture-a");
+            assert_eq!(
+                desk.organization.selected,
+                [resource_key(2)],
+                "ordinary activation preserves selection"
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn tab_and_background_terminal_share_selection_and_busy_guard(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    let modifier = Modifiers {
+        platform: true,
+        ..Modifiers::none()
+    };
+    let background = cx
+        .debug_bounds("pane-@4")
+        .expect("unplaced terminal stays selectable");
+    cx.simulate_click(background.center(), modifier);
+    draw(cx);
+    let a = cx.debug_bounds("tab-fixture-a").unwrap();
+    cx.simulate_click(a.center(), modifier);
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.organization.selected,
+            [resource_key(4), resource_key(1)]
+        );
+        assert_eq!(desk.link.as_ref().unwrap().workspace.active_id, "fixture-c");
+    });
+    desk.update(cx, |desk, _| desk.organization.planning = true);
+    cx.simulate_click(a.center(), modifier);
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.organization.selected,
+            [resource_key(4), resource_key(1)]
+        );
+        assert!(desk.drag_cursor().is_none());
+    });
+    desk.update(cx, |desk, _| desk.organization.planning = false);
+}
+
+#[gpui::test]
+fn split_tab_selects_only_its_focused_terminal_and_keyless_tabs_still_activate(
+    cx: &mut TestAppContext,
+) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        let LayoutNode::Leaf { placement } = workspace.tabs.remove(1).root else {
+            unreachable!()
+        };
+        let tab = &mut workspace.tabs[0];
+        layout::split_at(
+            &mut tab.root,
+            "fixture-a",
+            placement,
+            layout::Axis::Row,
+            false,
+        );
+        tab.focused_id = "fixture-b".into();
+        cx.notify();
+    });
+    run(&desk, "tabs-top", cx);
+    let modifier = Modifiers {
+        platform: true,
+        ..Modifiers::none()
+    };
+    let a = cx.debug_bounds("tab-fixture-a").unwrap().center();
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: a,
+        modifiers: modifier,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: a,
+        modifiers: modifier,
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.organization.selected,
+            [resource_key(2)],
+            "not every terminal in the split tab"
+        );
+        assert_eq!(
+            desk.modal,
+            Modal::None,
+            "modifier double-click never renames"
+        );
+        assert_eq!(desk.link.as_ref().unwrap().workspace.active_id, "fixture-c");
+    });
+    desk.update(cx, |desk, cx| {
+        let link = desk.link.as_mut().unwrap();
+        link.workspace.tabs[0].focused_id = "fixture-a".into();
+        link.connection.topology.as_mut().unwrap().panes[0].key = None;
+        cx.notify();
+    });
+    draw(cx);
+    cx.simulate_mouse_down(a, MouseButton::Left, modifier);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.organization.selected, [resource_key(2)]);
+        assert_eq!(desk.link.as_ref().unwrap().workspace.active_id, "fixture-a");
+        assert!(
+            desk.drag_cursor().is_some(),
+            "keyless tabs keep normal activation/reorder"
+        );
+    });
+    cx.simulate_mouse_up(a, MouseButton::Left, modifier);
+    draw(cx);
+}
+
 #[gpui::test]
 fn placement_switch_keeps_workspace_and_tab_actions_work_on_both_axes(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
