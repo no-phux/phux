@@ -321,19 +321,21 @@ parent terminal usable. Use `phux agent log` to inspect the complete record stre
 
 ## Verification
 
-`wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
-engine (including its bell, copy formatting, hyperlink, and mouse-mode
-reads), the codec, frame reassembly, the viewport's pixel size, key, IME,
-paste, mouse, wheel, and selection routing, on-screen keys, touch gesture
-classification, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
-starts `ws_demo_server` and runs the headless Chrome suites against it: the
-`src/` unit tests, the canvas pixel tests (including a wide character's
-right half), live connect, input and paste, resize, scrollback and copy,
-find, mouse reporting (including after another client reports other cells),
-focus reporting, the alternate screen's wheel, links, the bell, wide
-character copy, touch scrolling, selection, and link taps, on-screen keys and
-the Ctrl latch, and the authenticated WebTransport-to-WebSocket fallback.
-The runner starts the demo server with `PHUX_DEMO_PANE=cat` and strips every
-other inherited `PHUX_*` variable: the pane runs `cat`, so a test makes the
-"program" emit mouse modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the
-bootstrap sequence and the WebTransport handshake and token gate.
+`wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real engine
+(including its bell, copy formatting, hyperlink, and mouse-mode reads), the
+codec, frame reassembly, the viewport's pixel size, key, IME, paste, mouse,
+wheel, and selection routing, on-screen keys, touch gesture classification,
+search, and link detection. `bun tools/main.ts web-browser` (inside
+`nix develop .#browser`) starts `ws_demo_server` and runs the headless Chrome
+suites against it: the `src/` unit tests, the canvas pixel tests (including a
+wide character's right half), live connect, input and paste, resize,
+scrollback and copy, find, mouse reporting (including after another client
+reports other cells), focus reporting, the alternate screen's wheel, links,
+the bell, wide character copy, touch scrolling, selection, and link taps,
+on-screen keys and the Ctrl latch, and the authenticated
+WebTransport-to-WebSocket fallback. The runner starts the demo server with
+`PHUX_DEMO_PANE=cat` and strips every other inherited `PHUX_*` variable: the
+pane runs `cat`, so a test makes the "program" emit mouse modes, OSC 8 links,
+and BEL by typing them. The server's attach and `transport::webtransport`
+tests cover the bootstrap sequence and the WebTransport handshake and token
+gate.

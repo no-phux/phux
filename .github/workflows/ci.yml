@@ -33,7 +33,6 @@ jobs:
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
       phux_needed: ${{ steps.detect.outputs.phux_needed }}
-      workflow_only: ${{ steps.detect.outputs.workflow_only }}
       web_needed: ${{ steps.detect.outputs.web_needed }}
       web_engine_needed: ${{ steps.detect.outputs.web_engine_needed }}
       integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
@@ -59,7 +58,7 @@ jobs:
 
   # Always check cheap contracts. A docs-only diff (the classifier's
   # docs_only: no file that code or a guard reads) runs the two guards that
-  # read docs, with the runner's own bash and python and no Nix, Bun or
+  # read docs, with the runner's own bash, the pinned Bun, and no Nix or
   # desktop install. Every other diff resolves the full tool set from the
   # pinned nixpkgs input: no devshell, Rust or Zig realization or build-cache
   # restore on this runner.
@@ -76,23 +75,14 @@ jobs:
           # Prefer local Git objects for source-pin validation; squash-merged
           # release commits fall back to the checksummed source archive.
           fetch-depth: 0
+      # Both paths run tools commands (install-surface-check among them).
+      - uses: ./.github/actions/setup-bun
       # The docs-check and install-surface-check recipe bodies.
       - name: docs guards
         if: env.DOCS_ONLY == 'true'
         run: |
           bash scripts/check-docs.sh
           bash scripts/check-install-surface.sh
-      - name: read desktop Bun pin
-        if: env.DOCS_ONLY != 'true'
-        id: desktop-bun
-        run: |
-          version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: env.DOCS_ONLY != 'true'
-        with:
-          bun-version: ${{ steps.desktop-bun.outputs.version }}
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: env.DOCS_ONLY != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -128,15 +118,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: integrations/*/package-lock.json
-      - name: read desktop Bun pin
-        id: desktop-bun
-        run: |
-          version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.desktop-bun.outputs.version }}
+      - uses: ./.github/actions/setup-bun
       - name: agent integration gates
         run: bash scripts/ci/agent-integrations.sh
 

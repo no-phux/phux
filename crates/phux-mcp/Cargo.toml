@@ -23,7 +23,7 @@ path = "src/main.rs"
 # serde_json so the surface stays reimplementable in any language.
 # MCP only uses control/transport APIs. Since ADR-0100 the TUI is its own
 # crate (`phux-tui`), so depending on `phux-client` cannot pull in the chrome
-# or the native replica engine; `scripts/check-build-features.py` still pins
+# or the native replica engine; `bun tools/main.ts build-features-check` still pins
 # that no `ratatui` reaches this graph. Protocol server conversions still use
 # libghostty.
 phux-client.workspace = true

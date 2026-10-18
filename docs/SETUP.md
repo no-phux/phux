@@ -75,12 +75,10 @@ newer compiler than this repository's Rust pin. Install the
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
-The runner-policy storage-collapse regression uses `hardlink` when that
-binary is on `PATH`. Darwin's util-linux build is keg-only and has no
-`--reflink` option, so a shell without it still collapses copies with
-`os.link` (and `clonefile` if a hard link is refused). The regression
-verifies shared storage and preserved target metadata rather than accepting
-an unchanged copy.
+The mbx storage-collapse regression (`tools/src/mbx/`) hard-links duplicate
+target files to the object store with link(2), so it needs no `hardlink`
+binary. It verifies shared inodes and preserved target metadata rather than
+accepting an unchanged copy.
 
 ## libghostty-vt
 
@@ -199,14 +197,14 @@ the shell, Cargo, and npm commands below also work directly.
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
-| GPUI desktop development | Apple-silicon Mac with Xcode/Metal, or x86-64/ARM64 Linux with desktop libraries; native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
+| GPUI desktop development | Apple-silicon Mac with Xcode/Metal, or x86-64/ARM64 Linux with desktop libraries; native Rust/Zig, Bun, Node | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
 availability/versions and prints remedies; it does not install, compile, or
 claim your change passes tests. `docs` and `integrations` do not invoke Rust or
-Zig. The scripts work with macOS's Bash 3.2; workflow routing checks additionally
-use Python 3.11+ and Node.
+Zig. The scripts work with macOS's Bash 3.2; the workflow gate additionally uses
+Bun (the `tools/` package), Node, and Python for the demo setup test.
 
 ### Where the pins actually live
 

@@ -17,6 +17,7 @@ outputs:
 runs:
   using: composite
   steps:
+    - uses: ./.github/actions/setup-bun
     - id: receipt
       shell: bash
       env:
@@ -24,7 +25,7 @@ runs:
         RECEIPT_WORKFLOW: ${{ inputs.workflow }}
         VALIDATION_COVERAGE: ${{ inputs.coverage }}
         GH_TOKEN: ${{ github.token }}
-      run: python3 scripts/ci/validation_receipt.py "$RECEIPT_MODE" "$RECEIPT_WORKFLOW"
+      run: bun tools/main.ts validation-receipt "$RECEIPT_MODE" "$RECEIPT_WORKFLOW"
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: inputs.mode == 'write'
       with:
