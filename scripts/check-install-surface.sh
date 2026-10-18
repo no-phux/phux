@@ -34,6 +34,7 @@ bun tools/main.ts release-manifest fixtures --check
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
-python3 scripts/test-install-desktop.py
+# The Desktop installer tests skip themselves off their platform.
+bun test ./tools/src/install/desktop.e2e.ts
 python3 scripts/test-install-desktop-linux.py
 phux_ok "install surface check passed"
