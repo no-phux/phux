@@ -14,12 +14,14 @@
 
 use std::path::{Path, PathBuf};
 
+mod ingress;
 mod registry;
 mod runtime;
-mod splice;
+mod shares;
 mod tls;
 mod tokens;
 
+pub use ingress::TcpIngress;
 pub use runtime::{
     BoundRelay, DEFAULT_HANDSHAKES_PER_SOURCE, DEFAULT_MAX_CONNS, RelayConfig, RelayRuntime,
 };
@@ -68,6 +70,8 @@ impl RelayConfig {
             tokens_path: dir.join(TOKENS_FILE),
             max_conns: DEFAULT_MAX_CONNS,
             protocol,
+            max_conns_per_route: None,
+            tcp_ingress: None,
         }
     }
 }

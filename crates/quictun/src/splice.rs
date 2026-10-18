@@ -41,14 +41,30 @@ impl<R: AsyncRead + Unpin> AsyncRead for Tee<R> {
     }
 }
 
-/// Splice `a_recv -> b_send` and `b_recv -> a_send` concurrently until
-/// EITHER direction finishes; that direction's writer is shut down
-/// (propagating a FIN) and the other halves drop with the caller.
+/// What a bridge does when one direction reaches end of stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HalfClose {
+    /// The finished direction's FIN is forwarded and the whole bridge ends:
+    /// the other direction stops forwarding. For a protocol whose peers
+    /// never half-close, this frees a bridge as soon as either side is done.
+    #[default]
+    EndsBridge,
+    /// The finished direction's FIN is forwarded and the other direction
+    /// keeps flowing until it finishes too, as TCP does. A client may send
+    /// its request, half-close, and still read the whole reply.
+    Propagate,
+}
+
+/// Splice `a_recv -> b_send` and `b_recv -> a_send` concurrently. When a
+/// direction reaches end of stream (or fails), its writer is shut down,
+/// propagating a FIN; `half_close` decides whether the other direction
+/// keeps flowing. Unused halves drop with the caller.
 pub(crate) async fn splice<AR, AW, BR, BW>(
     mut a_recv: AR,
     mut b_send: BW,
     mut b_recv: BR,
     mut a_send: AW,
+    half_close: HalfClose,
 ) where
     AR: AsyncRead + Unpin,
     AW: AsyncWrite + Unpin,
@@ -63,9 +79,16 @@ pub(crate) async fn splice<AR, AW, BR, BW>(
         let _ = tokio::io::copy(&mut b_recv, &mut a_send).await;
         let _ = a_send.shutdown().await;
     };
-    tokio::select! {
-        () = a_to_b => {}
-        () = b_to_a => {}
+    match half_close {
+        HalfClose::EndsBridge => {
+            tokio::select! {
+                () = a_to_b => {}
+                () = b_to_a => {}
+            }
+        }
+        HalfClose::Propagate => {
+            tokio::join!(a_to_b, b_to_a);
+        }
     }
 }
 
@@ -81,7 +104,13 @@ mod tests {
         let (mut tunnel, b_side) = duplex(64);
         let (a_recv, a_send) = split(a_side);
         let (b_recv, b_send) = split(b_side);
-        let bridge = tokio::spawn(splice(a_recv, b_send, b_recv, a_send));
+        let bridge = tokio::spawn(splice(
+            a_recv,
+            b_send,
+            b_recv,
+            a_send,
+            HalfClose::EndsBridge,
+        ));
 
         consumer.write_all(b"to-tunnel").await.unwrap();
         let mut buf = [0u8; 9];
@@ -117,7 +146,13 @@ mod tests {
             let (mut tunnel, b_side) = duplex(64);
             let (a_recv, a_send) = split(a_side);
             let (b_recv, b_send) = split(b_side);
-            let bridge = tokio::spawn(splice(a_recv, b_send, b_recv, a_send));
+            let bridge = tokio::spawn(splice(
+                a_recv,
+                b_send,
+                b_recv,
+                a_send,
+                HalfClose::EndsBridge,
+            ));
 
             let (closer, reader) = if consumer_closes {
                 (&mut consumer, &mut tunnel)
@@ -131,5 +166,29 @@ mod tests {
             assert_eq!(received, b"final");
             bridge.await.unwrap();
         }
+    }
+
+    /// Under [`HalfClose::Propagate`] a side that half-closes still reads
+    /// everything the other side sends afterwards.
+    #[tokio::test]
+    async fn propagated_half_close_keeps_the_other_direction_flowing() {
+        let (mut consumer, a_side) = duplex(64);
+        let (mut tunnel, b_side) = duplex(64);
+        let (a_recv, a_send) = split(a_side);
+        let (b_recv, b_send) = split(b_side);
+        let bridge = tokio::spawn(splice(a_recv, b_send, b_recv, a_send, HalfClose::Propagate));
+
+        consumer.write_all(b"request").await.unwrap();
+        consumer.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        tunnel.read_to_end(&mut request).await.unwrap();
+        assert_eq!(request, b"request", "the FIN arrives after the bytes");
+
+        tunnel.write_all(b"reply after the FIN").await.unwrap();
+        tunnel.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        consumer.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply, b"reply after the FIN");
+        bridge.await.unwrap();
     }
 }

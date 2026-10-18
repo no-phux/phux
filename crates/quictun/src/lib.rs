@@ -22,7 +22,10 @@
 //! - [`connect`]: the two client legs, a service's [`connect::Tunnel`] and a
 //!   consumer's [`connect::dial_route`], with the relay's leaf pinned
 //!   ([`pin`]).
-//! - [`relay`] (feature `relay`): the relay itself.
+//! - [`relay`] (feature `relay`): the relay itself, with an optional TCP
+//!   ingress for clients that cannot speak QUIC.
+//! - [`forward`] (feature `forward`): TCP forwarding through a relay with
+//!   TLS end to end; what the `quictun` binary's `expose` and `connect` run.
 //! - [`window`]: the congestion-tracked QUIC send window the relay holds its
 //!   consumer writers to; useful to any quinn writer on a slow path.
 //! - [`cert`] and [`secret_file`] (feature `provision`): self-signed
@@ -39,16 +42,20 @@
 #[cfg(feature = "provision")]
 pub mod cert;
 pub mod connect;
+#[cfg(feature = "forward")]
+pub mod forward;
 pub mod pin;
 #[cfg(feature = "relay")]
 pub mod relay;
 #[cfg(feature = "provision")]
 pub mod secret_file;
+mod splice;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tunnel;
 pub mod window;
 
+pub use splice::HalfClose;
 pub use tunnel::CidTag;
 
 /// Compiles the README's example, so the published front page cannot rot.
@@ -74,16 +81,31 @@ pub struct Protocol {
     /// The tag a tunnel dial puts on its initial destination connection ID,
     /// so the relay can pick the tunnel's flow control before the handshake.
     pub cid_tag: CidTag,
+    /// What a bridge does when one direction finishes.
+    pub half_close: HalfClose,
 }
 
 impl Protocol {
-    /// A protocol with one consumer ALPN.
+    /// A protocol with one consumer ALPN whose bridges end when either
+    /// direction finishes ([`HalfClose::EndsBridge`]).
     #[must_use]
     pub fn new(tunnel_alpn: &[u8], consumer_alpn: &[u8], cid_tag: CidTag) -> Self {
         Self {
             tunnel_alpn: tunnel_alpn.to_vec(),
             consumer_alpns: vec![consumer_alpn.to_vec()],
             cid_tag,
+            half_close: HalfClose::EndsBridge,
+        }
+    }
+
+    /// The protocol the `quictun` binary speaks: `quictun-tunnel/1` for
+    /// tunnels, `quictun/1` for consumers, the `qtnT` tag, and TCP's
+    /// half-close ([`HalfClose::Propagate`]), since it forwards TCP.
+    #[must_use]
+    pub fn quictun() -> Self {
+        Self {
+            half_close: HalfClose::Propagate,
+            ..Self::new(b"quictun-tunnel/1", b"quictun/1", CidTag(*b"qtnT"))
         }
     }
 
