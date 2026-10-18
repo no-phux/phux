@@ -28,9 +28,11 @@ ZIG = SHARED | {"web_engine", "desktop"}
 ROOT = Path(__file__).resolve().parents[2]
 
 # What each separately built lane compiles from crates/*: manifests whose path
-# dependencies (every kind) it builds, plus root crates it builds directly.
-# The rest of the lane's closure follows the manifests. Every other
-# clients/desktop path is unrouted, so it requests every surface.
+# dependencies (every kind) it builds, plus root crates it builds directly,
+# all with default features. The rest of the lane's closure follows the
+# manifests the way Cargo resolves them: an optional dependency counts only
+# when an enabled feature turns it on. Every other clients/desktop path is
+# unrouted, so it requests every surface.
 LANE_ROOTS = {
     # The browser workspaces, plus web-browser.py's harness build:
     # phux-server's ws_demo_server example (dev dependencies) and the phux bin.
@@ -44,27 +46,82 @@ ALL_KINDS = ("dependencies", "dev-dependencies", "build-dependencies")
 BUILD_KINDS = ("dependencies", "build-dependencies")
 
 
-def manifest_dependencies(manifest, kinds):
+def dependency_edges(manifest, kinds, inherited):
+    """`(key, package, optional, features)` per dependency, every target.
+
+    `features` is what the edge itself requests, `default` included unless
+    the edge (or the `[workspace.dependencies]` entry it inherits) opts out.
+    """
     tables = [manifest, *manifest.get("target", {}).values()]
-    return {name for table in tables for kind in kinds for name in table.get(kind, {})}
+    for table in tables:
+        for kind in kinds:
+            for key, spec in table.get(kind, {}).items():
+                spec = spec if isinstance(spec, dict) else {}
+                base = inherited.get(key, {}) if spec.get("workspace") else {}
+                base = base if isinstance(base, dict) else {}
+                features = set(base.get("features", [])) | set(spec.get("features", []))
+                if spec.get("default-features", base.get("default-features", True)):
+                    features.add("default")
+                package = spec.get("package", base.get("package", key))
+                yield key, package, spec.get("optional", False), features
+
+
+def activated(manifest, requested):
+    """Optional dependency keys the `requested` features turn on, and the
+    features each dependency key receives through `key/feature` entries."""
+    table = manifest.get("features", {})
+    seen, deps, forwarded = set(), set(), {}
+    pending = list(requested)
+    while pending:
+        feature = pending.pop()
+        if feature in seen:
+            continue
+        seen.add(feature)
+        if feature not in table:
+            # An optional dependency's implicit feature.
+            deps.add(feature)
+            continue
+        for item in table[feature]:
+            if item.startswith("dep:"):
+                deps.add(item[len("dep:"):])
+            elif "/" in item:
+                key, sub = item.split("/", 1)
+                if not key.endswith("?"):
+                    deps.add(key)
+                    # Cargo also enables a feature that shares the key's name.
+                    pending.append(key)
+                forwarded.setdefault(key.rstrip("?"), set()).add(sub)
+            else:
+                pending.append(item)
+    return deps, forwarded
 
 
 def lane_closures(root=ROOT):
     """Root crate directories each lane in LANE_ROOTS compiles."""
     crates = {path.parent.name: tomllib.loads(path.read_text())
               for path in (root / "crates").glob("*/Cargo.toml")}
+    inherited = tomllib.loads((root / "Cargo.toml").read_text()).get(
+        "workspace", {}).get("dependencies", {})
+
+    def edges(manifest, requested, kinds):
+        deps, forwarded = activated(manifest, requested)
+        for key, package, optional, features in dependency_edges(manifest, kinds, inherited):
+            if package in crates and (not optional or key in deps):
+                yield package, features | forwarded.get(key, set())
+
     closures = {}
     for lane, (manifests, direct) in LANE_ROOTS.items():
-        pending = set(direct)
-        for manifest in manifests:
-            pending |= manifest_dependencies(tomllib.loads((root / manifest).read_text()), ALL_KINDS)
-        closure = set()
-        pending &= crates.keys()
+        pending = [(name, {"default"}) for name in direct]
+        for path in manifests:
+            pending += edges(tomllib.loads((root / path).read_text()), {"default"}, ALL_KINDS)
+        enabled = {}
         while pending:
-            name = pending.pop()
-            closure.add(name)
-            pending |= manifest_dependencies(crates[name], BUILD_KINDS) & crates.keys() - closure
-        closures[lane] = closure
+            name, features = pending.pop()
+            if name in enabled and features <= enabled[name]:
+                continue
+            enabled[name] = enabled.get(name, set()) | features
+            pending += edges(crates[name], enabled[name], BUILD_KINDS)
+        closures[lane] = set(enabled)
     return closures
 
 

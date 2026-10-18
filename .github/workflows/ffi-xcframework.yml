@@ -39,6 +39,7 @@ on:
       - crates/phux-client-core/**
       - crates/phux-protocol/**
       - crates/phux-dial/**
+      - crates/phux-config-core/**
       - scripts/build-ffi-xcframework.sh
       - scripts/build-mobile-ffi-xcframework.sh
       - scripts/build-mobile-ffi-android.sh

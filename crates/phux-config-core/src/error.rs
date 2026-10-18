@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-/// Errors raised by [`crate::parse_str`] and related loaders.
+/// Errors raised by the config loaders, here and in `phux-config`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigError {
@@ -75,7 +75,8 @@ pub enum ConfigError {
 
 impl ConfigError {
     /// A [`ConfigError::Parse`] positioned at `span` within `input`.
-    pub(crate) fn parse(
+    #[must_use]
+    pub fn parse(
         path: &Path,
         input: &str,
         span: Option<Range<usize>>,

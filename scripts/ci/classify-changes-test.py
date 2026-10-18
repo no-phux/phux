@@ -2,6 +2,7 @@
 """Routing policy regressions; run without a compiler or third-party packages."""
 
 from pathlib import Path
+import importlib.util
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SURFACES = ("phux", "web", "web_engine", "integrations", "native", "desktop")
@@ -242,11 +244,12 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(crate=name):
                 self.assertEqual(classify([f"crates/{name}/src/lib.rs"])["web_needed"], "true")
 
-    def test_desktop_routes_exactly_its_path_dependency_closure(self):
+    def test_desktop_routes_its_unconditional_path_dependency_closure(self):
         # clients/desktop/native is its own workspace; a root crate reaches it
         # only through a path dependency, directly or transitively. Cargo
         # builds dev-dependencies for the desktop crate alone, not for its
-        # dependencies (the `cargo metadata` set).
+        # dependencies. Non-optional edges are a lower bound; the classifier
+        # adds optional ones only when a feature enables them.
         manifests = {path.parent.name: tomllib.loads(path.read_text())
                      for path in (ROOT / "crates").glob("*/Cargo.toml")}
 
@@ -254,7 +257,8 @@ class RoutingTests(unittest.TestCase):
             tables = [manifest, *manifest.get("target", {}).values()]
             return {dependency for table in tables
                     for key in keys
-                    for dependency in table.get(key, {})}
+                    for dependency, spec in table.get(key, {}).items()
+                    if not (isinstance(spec, dict) and spec.get("optional"))}
 
         desktop = tomllib.loads((ROOT / "clients/desktop/native/Cargo.toml").read_text())
         closure = set()
@@ -267,12 +271,47 @@ class RoutingTests(unittest.TestCase):
                 continue
             closure.add(name)
             pending.extend(dependencies(manifests[name]) & manifests.keys() - closure)
-        for name in manifests:
+        for name in closure:
+            with self.subTest(crate=name):
+                self.assertEqual(classify([f"crates/{name}/src/lib.rs"])["desktop_needed"], "true")
+
+    def test_desktop_stays_off_the_tui_config(self):
+        # ADR-0183: phux-client-ffi's `c-abi` names phux-config, but the
+        # desktop builds it without that feature.
+        for name, wanted in (("phux-config-core", "true"), ("phux-config", "false"),
+                             ("phux-tui", "false"), ("phux-client", "false")):
             with self.subTest(crate=name):
                 self.assertEqual(
-                    classify([f"crates/{name}/src/lib.rs"])["desktop_needed"],
-                    "true" if name in closure else "false",
-                )
+                    classify([f"crates/{name}/src/lib.rs"])["desktop_needed"], wanted)
+
+    def test_lane_closures_follow_optional_dependencies_only_when_enabled(self):
+        spec = importlib.util.spec_from_file_location(
+            "classify_changes", ROOT / "scripts/ci/classify-changes.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        crates = {
+            "a": '[features]\ndefault = ["b-on"]\nb-on = ["dep:b"]\nweak = ["e?/x"]\n'
+                 '[dependencies]\nb = { path = "../b", optional = true }\n'
+                 'c = { path = "../c", optional = true }\nd = { workspace = true }\n'
+                 'e = { path = "../e", optional = true }\n',
+            "b": '[dependencies]\nf = { path = "../f", features = ["g"] }\n',
+            "c": "", "d": "", "e": "", "g": "",
+            "f": '[features]\ng = ["dep:g"]\n'
+                 '[dependencies]\ng = { path = "../g", optional = true }\n',
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text(
+                '[workspace.dependencies]\nd = { path = "crates/d" }\n')
+            for name, body in crates.items():
+                (root / "crates" / name).mkdir(parents=True)
+                (root / "crates" / name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{name}"\n{body}')
+            (root / "lane.toml").write_text('[dependencies]\na = { path = "crates/a" }\n')
+            with unittest.mock.patch.dict(module.LANE_ROOTS, {"lane": (("lane.toml",), ())},
+                                          clear=True):
+                closures = module.lane_closures(root)
+        self.assertEqual(closures, {"lane": {"a", "b", "d", "f", "g"}})
 
     def test_desktop_file_inputs_outside_its_tree_run_desktop(self):
         # include_str!/include_bytes! reach past the Cargo graph; each target

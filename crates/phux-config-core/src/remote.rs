@@ -1,7 +1,7 @@
 //! Client-side remote-server registry schema (ADR-0055): `[[remote]]`
 //! entries `phux attach <name>` resolves.
 //!
-//! A sibling of [`crate::satellite`], not a reuse: the trust direction is
+//! A sibling of `phux_config::satellite`, not a reuse: the trust direction is
 //! opposite (a satellite is dialed by a hub for its users; a remote by this
 //! client for itself).
 
