@@ -2,20 +2,18 @@
 
 use phux_client::ask::AskedPayload;
 use phux_client::selector;
-use phux_client::state;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    ToolError, num_arg, optional_string_array, parse_selector, required_str, resolve_one,
+    ToolError, num_arg, optional_string_array, parse_selector, required_str, resolve_selector,
     socket_or_default,
 };
 
 pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_selector(required_str(args, "target")?)?;
-    let view = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &view).await?;
+    let pane = resolve_selector(&socket, &selector, false).await?;
     let payload = AskedPayload {
         id: required_str(args, "id")?.to_owned(),
         question: required_str(args, "question")?.to_owned(),

@@ -9,7 +9,9 @@ metadata:
 # Using phux through MCP
 
 Treat the live MCP catalog as the API contract. Inspect `tools/list` in an MCP
-session or run `phux mcp --schema` outside one. Do not copy argument schemas or
+session or run `phux mcp --schema` outside one: both publish input and output
+schemas. Read object-valued `structuredContent`; the text block is only a
+compatibility copy. Do not copy argument schemas or
 infer fields from examples. `phux mcp` is the installed stdio entry point;
 registration does not start a phux server.
 
@@ -20,8 +22,9 @@ MCP's `phux_ls`, or native `retain_seconds` with MCP's `retain_secs`.
 
 ## Workflow
 
-1. Discover sessions with `phux_ls` and choose a returned direct selector such
-   as `@7` for writes.
+1. Discover sessions with `phux_ls` and use an exact `resource_id`, such as
+   `@7`, for writes. `target` selectors remain supported, but may resolve
+   differently later. Spawn/new results also expose `resource_id`.
 2. Read with `phux_snapshot` or an agent level read before acting.
 3. Act with `phux_run` for one command, paste plus `phux_send_keys` for
    multiline interactive input, or `phux_agent_prompt` for an agent turn.
@@ -66,8 +69,21 @@ must not be reported as a successful process exit.
 - Before kill, detach, or a destructive signal, resolve and display the target,
   inspect its state, explain the effect, obtain affirmative confirmation, pass
   `confirm: true`, then verify the inventory change.
-- A call the server holds for approval waits for a human decision:
-  `phux_approvals` lists it, and you cannot approve your own.
+- Missing confirmation returns `confirmation_required` and an exact
+  `approval.retry` recipe. Only retry after your controller has authorized
+  that effect; the recipe is not permission.
+- To avoid blocking on a server-held approval, submit a mutation with
+  `background: true` and `idempotency_key` (nonzero 32 hex digits), then call
+  `phux_operation_status` with that key. A pending result supplies an
+  `approval_check`: `phux_approvals` lists held actions. Correlate the method,
+  subjects, and requester; delegate discovery if Global inventory/observe is
+  refused. A separate authorized caller can decide with
+  `phux_approve`. You cannot approve your own held grant.
+- All mutating tools accept retry keys, but the new ledger is limited to this
+  adapter's lifetime (128 keys, no eviction). New/spawn/kill/signal also
+  forward server-backed keys. A reused key with different arguments is
+  refused. Cancellation stops observation, not a keyed invocation; reconcile
+  state before resubmitting after reconnect/restart.
 - Tool failures use `isError: true`; inspect their content. A stopped server or
   failed diagnostic check may be structured successful output.
 

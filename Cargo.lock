@@ -2823,11 +2823,14 @@ dependencies = [
 name = "phux-mcp"
 version = "0.107.0"
 dependencies = [
+ "jsonschema",
  "phux-client",
  "phux-client-runtime",
  "phux-config",
  "phux-plugin",
  "phux-protocol",
+ "phux-server",
+ "phux-server-testkit",
  "serde",
  "serde_json",
  "tempfile",
