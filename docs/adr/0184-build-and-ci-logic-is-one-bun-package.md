@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-17
 ---
 
-# 0183 — Build and CI logic is one Bun package
+# 0184 — Build and CI logic is one Bun package
 
 **TL;DR.** Every piece of build, release and CI *logic* lives in `tools/`,
 one TypeScript package run by the pinned Bun: `bun tools/main.ts

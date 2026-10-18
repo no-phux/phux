@@ -7,7 +7,7 @@ last-reviewed: 2026-10-17
 # tools
 
 **TL;DR.** phux's build and CI logic in one TypeScript package on the pinned
-Bun ([ADR-0183](../docs/adr/0183-build-and-ci-logic-is-one-bun-package.md)).
+Bun ([ADR-0184](../docs/adr/0184-build-and-ci-logic-is-one-bun-package.md)).
 Run `bun tools/main.ts` for the command list, `just tools-check` to
 format-check, typecheck, lint and test it.
 
