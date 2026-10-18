@@ -28,18 +28,37 @@ use serde_json::{Value, json};
 
 /// A tool-level failure: surfaced to the caller as a `tools/call` result
 /// with `isError: true`, never as a process crash.
-#[derive(Debug)]
-pub(crate) struct ToolError(pub(crate) String);
+#[derive(Clone, Debug)]
+pub(crate) struct ToolError(pub(crate) String, Value);
 
 impl ToolError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        let message = message.into();
+        let document = serde_json::from_str::<Value>(&message)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({ "schema_version": 1, "error": { "code": "tool_error", "message": message } }));
+        Self(message, document)
+    }
+
+    pub(crate) const fn with_document(message: String, document: Value) -> Self {
+        Self(message, document)
+    }
+
+    pub(crate) fn document(&self) -> Value {
+        self.1.clone()
+    }
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
 impl From<AttachError> for ToolError {
     fn from(err: AttachError) -> Self {
-        Self(err.to_string())
+        Self::new(err.to_string())
     }
 }
 
@@ -50,7 +69,7 @@ const TARGET_DESC: &str = "Target selector: session, session:group, \
     the focused session.";
 
 /// The MCP tool catalog `tools/list` returns: name, description, and
-/// JSON-Schema input shape.
+/// JSON-Schema input and output shapes.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -236,7 +255,11 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::approval_tools::schemas());
     }
     // Hints derived from the kind catalog, never hand-set (ADR-0125).
+    if let Value::Array(entries) = &mut tools {
+        entries.push(crate::contracts::operation_status_schema());
+    }
     crate::annotations::annotate(&mut tools);
+    crate::contracts::enhance(&mut tools);
     tools
 }
 
@@ -323,8 +346,7 @@ async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
     let read = SnapshotRead::parse(args)?;
-    let view = state::get_state(&socket).await?;
-    let terminal_id = resolve_one(&socket, &selector, &view).await?;
+    let terminal_id = resolve_selector(&socket, &selector, false).await?;
     let screen = phux_client::snapshot::get_screen_scrollback_format(
         &socket,
         terminal_id,
@@ -428,8 +450,7 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
             "`keys` must be a non-empty array of strings",
         ));
     }
-    let view = state::get_state(&socket).await?;
-    let pane = resolve_one_for_input(&socket, &selector, &view).await?;
+    let pane = resolve_selector(&socket, &selector, true).await?;
     phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
 }
@@ -451,8 +472,7 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     } else {
         PasteTrust::Trusted
     };
-    let view = state::get_state(&socket).await?;
-    let pane = resolve_one_for_input(&socket, &selector, &view).await?;
+    let pane = resolve_selector(&socket, &selector, true).await?;
     phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
 }
@@ -465,30 +485,13 @@ async fn phux_upload(args: &Value) -> Result<Value, ToolError> {
         &["target", "path"],
     )?;
     let selector = required_target(args)?;
-    let path = crate::cli_adapter::bounded_string(args, "path", true)?
-        .ok_or_else(|| ToolError::new("missing `path`"))?;
-    if path.contains('\0') {
-        return Err(ToolError::new("`path` must not contain NUL"));
-    }
-    let extension = crate::cli_adapter::bounded_string(args, "extension", false)?;
-    if extension.as_deref().is_some_and(|ext| {
-        ext.is_empty() || ext.len() > 16 || !ext.bytes().all(|byte| byte.is_ascii_alphanumeric())
-    }) {
-        return Err(ToolError::new(
-            "`extension` must be 1–16 ASCII alphanumeric characters",
-        ));
-    }
-    let secs = args.get("timeout_secs").map_or(Ok(60), |value| {
-        value
-            .as_u64()
-            .filter(|secs| (1..=3600).contains(secs))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
-    })?;
+    let path = upload_path(args)?;
+    let extension = upload_extension(args)?;
+    let secs = upload_timeout_secs(args)?;
     let socket = socket_arg(args)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     let pane = tokio::time::timeout_at(deadline, async {
-        let view = state::get_state(&socket).await?;
-        resolve_one(&socket, &selector, &view).await
+        resolve_selector(&socket, &selector, false).await
     })
     .await
     .map_err(|_| {
@@ -504,6 +507,36 @@ async fn phux_upload(args: &Value) -> Result<Value, ToolError> {
     .await
     .map_err(|err| ToolError::new(err.to_string()))?;
     upload_document(&receipt)
+}
+
+fn upload_path(args: &Value) -> Result<String, ToolError> {
+    let path = crate::cli_adapter::bounded_string(args, "path", true)?
+        .ok_or_else(|| ToolError::new("missing `path`"))?;
+    if path.contains('\0') {
+        return Err(ToolError::new("`path` must not contain NUL"));
+    }
+    Ok(path)
+}
+
+fn upload_extension(args: &Value) -> Result<Option<String>, ToolError> {
+    let extension = crate::cli_adapter::bounded_string(args, "extension", false)?;
+    if extension.as_deref().is_some_and(|ext| {
+        ext.is_empty() || ext.len() > 16 || !ext.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    }) {
+        return Err(ToolError::new(
+            "`extension` must be 1–16 ASCII alphanumeric characters",
+        ));
+    }
+    Ok(extension)
+}
+
+fn upload_timeout_secs(args: &Value) -> Result<u64, ToolError> {
+    args.get("timeout_secs").map_or(Ok(60), |value| {
+        value
+            .as_u64()
+            .filter(|secs| (1..=3600).contains(secs))
+            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
+    })
 }
 
 fn upload_document(receipt: &phux_client::upload::UploadReceipt) -> Result<Value, ToolError> {
@@ -568,8 +601,7 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     );
     let timeout = num_arg(args, "timeout_secs").map(Duration::from_secs);
 
-    let view = state::get_state(&socket).await?;
-    let terminal_id = resolve_one(&socket, &selector, &view).await?;
+    let terminal_id = resolve_selector(&socket, &selector, false).await?;
     let result = phux_client::wait::poll_until(
         &socket,
         terminal_id,
@@ -864,6 +896,23 @@ pub(crate) fn incomplete_view_miss(subject: &str, notices: &[String]) -> ToolErr
          miss here does not mean the target is gone",
         notices.join("; ")
     ))
+}
+
+/// Exact IDs bypass inventory/name resolution, including for retained resources.
+pub(crate) async fn resolve_selector(
+    socket: &Path,
+    selector: &Selector,
+    for_input: bool,
+) -> Result<ResourceId, ToolError> {
+    if let Some(id) = selector.explicit_id() {
+        return Ok(id);
+    }
+    let view = state::get_state(socket).await?;
+    if for_input {
+        resolve_one_for_input(socket, selector, &view).await
+    } else {
+        resolve_one(socket, selector, &view).await
+    }
 }
 
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),

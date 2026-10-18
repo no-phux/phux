@@ -27,10 +27,16 @@ mod approval_tools;
 mod ask_tool;
 mod cli_adapter;
 mod cli_tools;
+#[cfg(test)]
+mod contract_tests;
+mod contracts;
 mod diagnostic_tools;
 #[cfg(test)]
 mod goldens;
 mod jsonrpc;
+#[cfg(test)]
+mod operation_tests;
+mod operations;
 mod org_tools;
 mod pane_tools;
 mod plugin_tools;
@@ -57,7 +63,7 @@ type DispatchFuture =
 type Dispatcher = Arc<dyn Fn(String, Value) -> DispatchFuture + Send + Sync>;
 
 /// The MCP protocol revision this adapter implements.
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 const SKILL: &str = include_str!("../../../.agents/skills/using-phux-mcp/SKILL.md");
 const HELP: &str = "phux-mcp - MCP stdio adapter for phux\n\n\
@@ -192,7 +198,7 @@ async fn serve() -> std::io::Result<()> {
 }
 
 fn default_dispatcher() -> Dispatcher {
-    Arc::new(|name, args| Box::pin(async move { tools::dispatch(&name, &args).await }))
+    operations::dispatcher()
 }
 
 /// Drive the protocol with each tool call an abortable task. Only this loop
@@ -371,7 +377,10 @@ async fn handle_request(request: Request) -> Option<Value> {
     let id = request.id.clone().unwrap_or(Value::Null);
 
     match request.method.as_str() {
-        "initialize" => Some(jsonrpc::success(id, initialize_result())),
+        "initialize" => Some(jsonrpc::success(
+            id,
+            initialize_result(request.params.as_ref()),
+        )),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => Some(jsonrpc::success(id, json!({ "tools": tools::catalog() }))),
         "tools/call" if is_notification => None,
@@ -387,10 +396,16 @@ async fn handle_request(request: Request) -> Option<Value> {
 }
 
 /// The `initialize` result: protocol version, advertised capabilities, and
-/// server identity. The client's params are tolerated and ignored.
-fn initialize_result() -> Value {
+/// server identity. Preserve older hosts' supported revision when requested.
+fn initialize_result(params: Option<&Value>) -> Value {
+    let requested = params
+        .and_then(|params| params.get("protocolVersion"))
+        .and_then(Value::as_str);
+    let version = requested
+        .filter(|version| ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION].contains(version))
+        .unwrap_or(MCP_PROTOCOL_VERSION);
     json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": {
             "name": "phux",
@@ -424,22 +439,23 @@ async fn handle_tools_call_with(
 
     match dispatcher(name.to_owned(), args).await {
         Ok(value) => jsonrpc::success(id, tool_content(&value, false)),
-        Err(tools::ToolError(message)) => {
-            jsonrpc::success(id, tool_content(&Value::String(message), true))
-        }
+        Err(error) => jsonrpc::success(id, tool_content(&error.document(), true)),
     }
 }
 
-/// The `tools/call` result envelope: one text block carrying a string
-/// verbatim or other values as pretty JSON, plus `isError`.
+/// Object-valued structured content and its equivalent JSON text fallback,
+/// with tool failures marked by `isError`.
 fn tool_content(value: &Value, is_error: bool) -> Value {
-    let text = match value {
-        Value::String(s) => s.clone(),
-        other => serde_json::to_string_pretty(other)
-            .unwrap_or_else(|err| format!("<failed to serialize result: {err}>")),
+    let document = if value.is_object() {
+        value.clone()
+    } else {
+        json!({ "result": value })
     };
+    let text = serde_json::to_string_pretty(&document)
+        .unwrap_or_else(|err| format!("<failed to serialize result: {err}>"));
     json!({
         "content": [ { "type": "text", "text": text } ],
+        "structuredContent": document,
         "isError": is_error,
     })
 }

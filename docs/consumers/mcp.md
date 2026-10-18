@@ -27,9 +27,9 @@ register MCP with a host. Start phux first so the server is running
 claude mcp add phux -- phux mcp
 ```
 
-`phux mcp` does not auto-start the phux server, and neither does
-`phux_new`. Leave the server running while the host calls tools such as
-`phux_ls`.
+`phux mcp` does not auto-start the phux server. `phux_new` follows the
+CLI create path and can start one; leave the server running for other
+tools such as `phux_ls`.
 
 For another MCP host, stdio with no adapter arguments:
 
@@ -64,8 +64,9 @@ The reusable MCP skill is also published as `using-phux-mcp`. Install it
 with `npx skills add no-phux/skills`. `phux mcp --skill` remains the
 version-matched copy compiled into this binary.
 
-`--schema` is the exact `tools/list` descriptor array (input schemas, not
-output schemas). These are standalone modes, not part of the host's server
+`--schema` is the exact `tools/list` descriptor array, including each tool's
+`inputSchema` and `outputSchema`. Outputs are extensible objects: ignore
+unknown fields. These are standalone modes, not part of the host's server
 command. `phux mcp` execs the `phux-mcp` companion; registering `phux-mcp`
 directly also works.
 
@@ -99,11 +100,13 @@ every current argument. Do not infer required fields from this page.
 
 JSON-RPC 2.0 over the MCP stdio transport: newline-delimited JSON, one
 message per line. The JSON-RPC is hand-rolled over `serde_json`. The MCP
-protocol version is pinned to `2024-11-05`.
+protocol version is `2025-06-18`, including structured tool results.
+Initialization also accepts `2024-11-05` and `2025-03-26` for older hosts,
+which can read the equivalent JSON text content block.
 
 | Method | Reply |
 |---|---|
-| `initialize` | `protocolVersion`, `capabilities` (`{ "tools": {} }`), `serverInfo` (`name` = `"phux"`, `version` = the crate version) |
+| `initialize` | `protocolVersion` (requested supported revision, otherwise latest), `capabilities` (`{ "tools": {} }`), `serverInfo` (`name` = `"phux"`, `version` = the crate version) |
 | `notifications/initialized` | none |
 | `notifications/cancelled` | none; aborts the in-flight `requestId` and returns error `-32800` for that original id |
 | `tools/list` | the tool catalog |
@@ -119,8 +122,13 @@ CLI-backed task triggers `kill_on_drop` child cleanup.
 
 ## Target resolution
 
-Every targeted tool takes a `target` selector string in the same grammar
-as the CLI. Resolution is client-side. `=` is unsupported: an MCP
+Prefer `resource_id: "@7"` (or `host/@7`) for tools that expose `target`.
+It is mutually exclusive with `target` and refuses names, tags, or focus
+selectors. IDs come from inventory or the additive `resource_id` on resource
+results, including spawn/new receipts; they belong to one server incarnation.
+Existing `target` selectors remain compatible with the CLI grammar. Exact
+IDs bypass inventory resolution for snapshot, input, wait, upload, ask, and
+resource reads; name-based resolution is client-side. `=` is unsupported: an MCP
 request has no attached-client focus history. Use `.` or an explicit
 target.
 
@@ -157,14 +165,17 @@ cancellation or deadline.
 Every strict schema caps each string at 4096 bytes and arrays at 64 entries and
 sets `additionalProperties: false`. A `phux_snapshot` with `tail` or
 `unwrap` is refused over 1 MiB of document, the bound the subprocess path
-had. Tool-error text is prose, not a contract; where the CLI's `--json`
-error line carried a stable `code` (`phux_spawn`, the spatial tools), the
-tool error is that same one-line document.
+had. Every result has an object-valued `structuredContent`, also encoded in
+`content[0].text` for older hosts. CLI error documents keep their stable
+`error.code`, receipt, remedy, and exit status. Other failures have
+`{schema_version: 1, error: {code: "tool_error", message}}`; branch on
+`isError` and the code, not message prose.
 
 Additional tool contracts:
 
-- **`phux_wait`** is a bounded `{ "outcome": "met"|"timed_out", "polls": N }`
-  gate, not the CLI's `ScreenState` document. It exposes `until` /
+- **`phux_wait`** returns `{ "outcome": "met"|"timed_out", "polls": N }`,
+  not the CLI's `ScreenState` document. Set `timeout_secs` to bound it;
+  omitting that argument can wait indefinitely. It exposes `until` /
   `idle_ms` / `timeout_secs`; it does not expose `--regex`, `--tail`, or
   `--output-only`.
 - **`phux_run`** bounds `timeout_secs` to `1..=3600` so a tool call
@@ -182,8 +193,7 @@ Additional tool contracts:
 - **`phux_detach`** sends `DETACH_CLIENTS` through the same library call
   as `phux detach`, and reports the count the server acked (`phux detach`
   has no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
-  stream has no request/response shape for the one-text-content-block
-  `tools/call` envelope.
+  stream has no bounded request/response shape for a `tools/call` result.
 - **`phux_status`**: a stopped server is an answer, not an error. Branch
   on `running`. A null `pid` is a peer-credential gap, not "no server".
 - **`phux_doctor`**: a failing check is an answer; branch on `ok` and
@@ -243,14 +253,45 @@ mutate local trust. Those stay outside the model-facing set.
 for interrupt/terminate/kill (`freeze` and `resume` are the reversible
 brake), and `phux_approve` requires it to approve (a denial releases
 nothing). Before `phux_kill`, a caller must display the resolved target and
-obtain explicit human confirmation.
+obtain affirmative authorization under its operating policy. Missing
+confirmation returns `error.code: "confirmation_required"` with
+`approval.kind`, the wire `effect`, and an exact `approval.retry` tool call.
+A noninteractive controller may authorize that exact effect and retry with
+`confirm: true`; the returned recipe is not itself permission or a grant.
 
 **Approvals (ADR-0128).** When this server holds an agent's kill, signal, or
 forced detach for approval (its workload grant spells `?signal`), the tool
-call waits for the decision. `phux_approvals` lists what is held (the
-document `phux approvals --json` prints), and `phux_approve` decides one by
-`id` with `decision: approve|deny`. Deciding needs un-held `signal` on the
-held subject, so the agent whose action is held cannot approve it.
+call normally waits for the decision. Noninteractive callers should submit
+with `background: true` and a nonzero 32-hex-digit `idempotency_key`. This
+returns `{schema_version: 1, operation_id, state: "pending", status_tool:
+"phux_operation_status"}` immediately, keeping the requester connected.
+Observe with `phux_operation_status` using that same key: `completed` carries
+`result`; `failed` carries a structured `error` document. `pending` provides
+an `approval_check` call to `phux_approvals` and the canonical `request`.
+Listing requires `inventory` and `observe` on Global approval records: delegate
+that check to an authorized controller if the requester is refused.
+A pending operation is not
+necessarily held; correlate the listed method, subjects, and requester
+before requesting a decision. `phux_approve` decides an approval by `id`
+with `decision: approve|deny`. It still needs un-held `signal` on the held
+subject: the requesting workload cannot approve itself, and `confirm`
+never bypasses this server check. Hosts may apply policy or delegate to a
+separate authorized approver; the adapter never auto-approves.
+
+**Mutation retries.** Every mutating tool accepts `idempotency_key`. Same
+key, tool, and arguments join the in-flight invocation or replay its exact
+result (including failure); a mismatch returns `idempotency_conflict`.
+`background` changes observation only and is excluded from that comparison.
+The bounded adapter ledger holds 128 keys without eviction and refuses new
+keys with `idempotency_capacity` rather than risking duplicate execution.
+This guarantee is adapter-lifetime only, not a durable transaction: it is
+lost on disconnect/restart. The existing new/spawn/kill/signal keys are
+also forwarded to the server, retaining their server-backed guarantees and
+feature checks. Other tools' keys are not safe across adapter restarts.
+Cancellation ends observation of a keyed call, not the invocation. Adapter
+exit cancels unfinished workers, but effects may already have happened:
+reconcile state before retrying. Serialize writes to the same pane even
+when using different keys.
 
 No tool in the orchestration sequence moves a human's local focus,
 stores remote credentials, grants a persistent input lease, or schedules
@@ -261,16 +302,18 @@ future work. Serialize topology writes.
 Request (one line on stdin):
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"phux_run","arguments":{"target":"work:1.0","command":"cargo test"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"phux_run","arguments":{"resource_id":"@7","command":"cargo test"}}}
 ```
 
 Success:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\n  \"command\": \"cargo test\",\n  \"exit_code\": 0,\n  \"output\": \"...\",\n  \"duration_ms\": 8123,\n  \"truncated\": false\n}"}],"isError":false}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":0,\"output\":\"...\",\"duration_ms\":8123,\"truncated\":false}"}],"structuredContent":{"command":"cargo test","exit_code":0,"output":"...","duration_ms":8123,"truncated":false},"isError":false}}
 ```
 
-The result is a single text content block. Tool failures (no target, no
-server, malformed arguments) return JSON-RPC `result` with `isError: true`.
+The result also contains `structuredContent` with that same JSON object;
+agents do not need to parse the text block. Tool failures (no target, no
+server, malformed arguments) return a structured error document in JSON-RPC
+`result` with `isError: true`.
 Protocol failures (parse error, unknown method, missing params) return
 JSON-RPC `error`.

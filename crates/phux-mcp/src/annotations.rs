@@ -90,9 +90,25 @@ pub(crate) fn require_confirmation(tool: &str, args: &Value) -> Result<(), ToolE
     {
         return Ok(());
     }
-    Err(ToolError::new(format!(
-        "{tool} is destructive; pass `confirm: true`"
-    )))
+    let message = format!("{tool} is destructive; pass `confirm: true`");
+    let mut retry_args = args.clone();
+    if let Some(object) = retry_args.as_object_mut() {
+        object.insert("confirm".to_owned(), Value::Bool(true));
+    }
+    Err(ToolError::with_document(
+        message.clone(),
+        json!({
+            "schema_version": 1,
+            "error": { "code": "confirmation_required", "message": message },
+            "approval": {
+                "kind": "explicit_confirmation",
+                "required": true,
+                "effect": method,
+                "retry": { "tool": tool, "arguments": retry_args },
+                "policy": "An authorized caller must approve this exact effect before retrying. This is not server authorization.",
+            },
+        }),
+    ))
 }
 
 /// Whether this call's instance of `method` is dangerous, asked of the

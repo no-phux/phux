@@ -104,6 +104,14 @@ const fn residue(
 
 /// Every tool in the catalog.
 pub(crate) const TOOLS: &[Row] = &[
+    Row {
+        name: "phux_operation_status",
+        surface: Surface::AutomationOnly(
+            "observe an adapter-scoped mutation without blocking on approval",
+        ),
+        exec: Exec::InProcess,
+        touches: Touches::LocalRead,
+    },
     cli("phux_ls", "ls", Touches::Wire(&[RESOLVE])),
     cli(
         "phux_upload",
