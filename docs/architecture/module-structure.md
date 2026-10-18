@@ -287,7 +287,10 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
   `ControlPlane`, the engine owner thread, grid publication,
   `Runtime::connect`, and the one-shot `session::Session` that verbs ride
-  (ADR-0171). Rust API only. `release.rs` is the release model `phux update`
+  (ADR-0171). Rust API only. `draw.rs` is how a published frame paints for
+  any toolkit (ADR-0189): colour, face, cursor and block rules generic over
+  the renderer's colour type, and the `DrawList` of runs, blocks,
+  decorations and cursor that `phux-gpui` and the C ABI share. `release.rs` is the release model `phux update`
   and Desktop share: channels, builds, the one asset name derivation, and
   the channel manifest parser (ADR-0176); `release/signature.rs` holds the
   embedded release keys and the minisign check both updaters run before
@@ -308,7 +311,8 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   phux-mobile consumes. The projection is lossless: keys, revisions,
   lifetime, members, arrangements, and execution state all cross.
   `c/arrangement/` wraps the shared arrangement and `c/organization.rs`
-  the organization commands. Packaging lives in `scripts/build-*ffi*.sh`
+  the organization commands; `c/draw_list.rs` lends the runtime's draw
+  list to C renderers. Packaging lives in `scripts/build-*ffi*.sh`
   ([`../RELEASING.md`](../RELEASING.md)).
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): `quictun`'s
   relay bound to phux's ALPNs, `phxT` tunnel tag, and state directory

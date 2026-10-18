@@ -4967,6 +4967,7 @@ dependencies = [
  "phux-client-core",
  "phux-client-ffi",
  "phux-client-runtime",
+ "phux-gpui",
  "phux-perf",
  "phux-protocol",
  "serde",
@@ -4990,6 +4991,21 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "phux-gpui"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "gpui-fast",
+ "gpui-fast-platform",
+ "log",
+ "phux-client-core",
+ "phux-client-runtime",
+ "phux-perf",
+ "phux-protocol",
+ "unicode-segmentation",
 ]
 
 [[package]]

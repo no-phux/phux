@@ -20,7 +20,8 @@ Choose an interface:
 | A coding agent or script | CLI / MCP | [`agents.md`](./agents.md), [`mcp.md`](./mcp.md) |
 | A harness that can emit lifecycle | AgentSession producer | [`harness.md`](./harness.md) |
 | A new graphical or headless client | Speak L1, carry an engine | [`../spec/L1.md`](../spec/L1.md), [`web.md`](./web.md) |
-| A native app | GPUI desktop, in process | [`desktop.md`](./desktop.md) |
+| A native app with a terminal in it | `phux-gpui`, the runtime's draw list, or the C ABI | [`embedding.md`](./embedding.md) |
+| The phux desktop itself | GPUI desktop, in process | [`desktop.md`](./desktop.md) |
 | An archived C ABI embedder | `phux-client-ffi` | [`cockpit.md`](./cockpit.md) (recovery refs) |
 
 `phux-protocol` is the publishable codec (`publish = true`).

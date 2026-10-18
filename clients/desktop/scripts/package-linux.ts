@@ -75,7 +75,7 @@ export function createLinuxBundle(options: LinuxBundleOptions): string {
   for (const name of ["LICENSE", "NOTICE"]) cpSync(join(repoRoot, name), join(share, name));
   writeFileSync(join(share, "THIRD-PARTY-NOTICES.txt"), notices);
   for (const name of ["PaperMono-OFL.txt", "JetBrainsMono-OFL.txt"]) {
-    cpSync(join(desktopRoot, "native/assets/fonts", name), join(share, name));
+    cpSync(join(desktopRoot, "native/phux-gpui/assets/fonts", name), join(share, name));
   }
   mkdirSync(join(bundle, "share/applications"), { recursive: true });
   mkdirSync(join(bundle, "share/icons/hicolor/scalable/apps"), { recursive: true });

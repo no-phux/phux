@@ -6,11 +6,13 @@ last-reviewed: 2026-10-13
 
 # Native presentation acknowledgement
 
-**TL;DR.** Unknown-delivery recovery clears only after the platform reports
-that the exact drawable was presented on a still-visible window. Paint,
-`on_next_frame`, and command-buffer completion do not mint `Presented`.
+**TL;DR.** With `patched-gpui`, unknown-delivery recovery clears only after
+the platform reports that the exact drawable was presented on a still-visible
+window. Paint, `on_next_frame`, and command-buffer completion do not mint
+`Presented`. Without the feature the receipt is the next frame's start, a
+weaker signal (see [README.md](README.md#patched-gpui)).
 
-The product contract lives in [desktop architecture](../../../docs/architecture/desktop.md#frames-wakes-and-input).
+The product contract lives in [desktop architecture](../../../../docs/architecture/desktop.md#frames-wakes-and-input).
 
 ## Ticket and lifetime
 
@@ -47,8 +49,9 @@ clear the fence.
 
 ## Platform receipt
 
-`toolchain/patches/0001-drawable-presented.patch` adds `Window::on_drawable_presented`
-and `Window::native_visibility` to gpui-fast. Paint-time callbacks are bound
+`clients/desktop/toolchain/patches/0001-drawable-presented.patch` adds
+`Window::on_drawable_presented` and `Window::native_visibility` to gpui-fast;
+`src/platform.rs` calls them under `patched-gpui`. Paint-time callbacks are bound
 to that submission's scene. The terminal schedules recovery only for a
 successful, unclipped paint of the ticket's frame; the callback rechecks
 visibility and bounds, then `Ticket::acknowledge` revalidates on the control

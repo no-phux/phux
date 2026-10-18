@@ -18,7 +18,7 @@ const repo = repoRoot;
 const app = resolve(root, "dist/app/Phux.app");
 const contents = join(app, "Contents");
 const binary = process.env.PHUX_DESKTOP_BIN ?? desktopBinary("release");
-const fonts = resolve(root, "native/assets/fonts");
+const fonts = resolve(root, "native/phux-gpui/assets/fonts");
 
 if (import.meta.main) {
   if (!existsSync(binary)) {
