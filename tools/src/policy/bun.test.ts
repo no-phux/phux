@@ -2,6 +2,8 @@
 // the setup-bun composite, or from the Nix devshell that pins the same
 // release (flake.nix reads mise.toml).
 import { expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
+import { repoPath } from "../lib/repo.ts";
 import {
   action,
   actionText,
@@ -13,6 +15,7 @@ import {
   withInput,
   workflow,
   workflowNames,
+  workflowText,
 } from "./workflows.ts";
 
 const SETUP_BUN = "./.github/actions/setup-bun";
@@ -32,6 +35,20 @@ test("setup-bun installs the mise pin", () => {
     uses(step).startsWith("oven-sh/setup-bun@"),
   );
   expect(withInput(install ?? {}, "bun-version")).toBe("${{ steps.pin.outputs.version }}");
+});
+
+test("setup-bun is the only reader of the Bun pin", () => {
+  const actions = readdirSync(repoPath(".github/actions")).filter((name) => name !== "setup-bun");
+  const texts = [
+    ...workflowNames().map((name) => [name, workflowText(name)]),
+    ...actions.map((name) => [name, actionText(name)]),
+  ];
+  for (const [name, text] of texts) {
+    expect([name, /oven-sh\/setup-bun@|\^bun = |engines\.bun/.test(text ?? "")]).toEqual([
+      name,
+      false,
+    ]);
+  }
 });
 
 test("the classifier gets Bun before it routes", () => {

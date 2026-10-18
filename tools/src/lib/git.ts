@@ -1,6 +1,7 @@
+import { Failure } from "./command.ts";
 import { ROOT } from "./repo.ts";
 
-export class GitError extends Error {}
+export class GitError extends Failure {}
 
 /** Run git and return stdout bytes; a non-zero exit throws GitError. */
 export function gitBytes(args: string[], cwd = ROOT): Uint8Array {

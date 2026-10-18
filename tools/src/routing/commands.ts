@@ -23,7 +23,8 @@ export const RELEASE_METADATA: Classification = {
 
 export const commands: Record<string, Command> = {
   classify: {
-    summary: "Route changed paths (stdin, or --since REV [--until REV]) to CI lanes.",
+    summary: "Route changed paths (one per line on stdin, or a git range) to CI lanes.",
+    usage: "[--since REV [--until REV]]",
     run(args) {
       const { values } = parseArgs({
         args,

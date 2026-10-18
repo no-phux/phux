@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { ROOT } from "../lib/repo.ts";
-import { CARGO_MUTANTS_VERSION } from "./pin.ts";
 import { living, parseSnapshot, trackDescendants } from "./processes.ts";
-import { parseOptions, UsageError } from "./runner.ts";
+import { UsageError } from "../lib/command.ts";
+import { parseOptions } from "./runner.ts";
 
 describe("parseOptions", () => {
   test("defaults are the bounded pilot", () => {
@@ -32,12 +30,8 @@ describe("parseOptions", () => {
     expect(() => parseOptions(["--limit", "0"])).toThrow(UsageError);
     expect(() => parseOptions(["--limit", "2.5"])).toThrow("invalid int value");
     expect(() => parseOptions(["--jobs", "5"])).toThrow("invalid choice");
-    expect(() => parseOptions(["--unknown"])).toThrow(UsageError);
+    expect(() => parseOptions(["--unknown"])).toThrow("Unknown option");
     expect(parseOptions(["--jobs", "4"])?.jobs).toBe(4);
-  });
-
-  test("--help is not a run", () => {
-    expect(parseOptions(["--help"])).toBeUndefined();
   });
 });
 
@@ -64,15 +58,4 @@ describe("process tracking", () => {
     trackDescendants(owned, snapshot);
     expect([...owned.keys()]).toEqual([10]);
   });
-});
-
-test("the workflow's sed reader finds the one cargo-mutants pin", () => {
-  const pin = readFileSync(join(ROOT, "tools/src/mutation/pin.ts"), "utf8");
-  const result = Bun.spawnSync(
-    ["sed", "-n", String.raw`s/^export const CARGO_MUTANTS_VERSION = "\(.*\)";$/\1/p`],
-    { stdin: new TextEncoder().encode(pin), stdout: "pipe" },
-  );
-  expect(result.stdout.toString().trim()).toBe(CARGO_MUTANTS_VERSION);
-  const workflow = readFileSync(join(ROOT, ".github/workflows/mutation.yml"), "utf8");
-  expect(workflow).toContain(String.raw`s/^export const CARGO_MUTANTS_VERSION = "\(.*\)";$/\1/p`);
 });

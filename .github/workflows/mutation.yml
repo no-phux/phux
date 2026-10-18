@@ -28,11 +28,7 @@ jobs:
       - name: Pinned project Rust
         run: bash scripts/setup-rust.sh core
       - name: Pinned cargo-mutants
-        run: |
-          version="$(sed -n 's/^export const CARGO_MUTANTS_VERSION = "\(.*\)";$/\1/p' tools/src/mutation/pin.ts)"
-          test -n "$version"
-          cargo install cargo-mutants --version "$version" --locked --jobs 2 \
-            --root "target/mutation-tools/cargo-mutants-$version"
+        run: bun tools/main.ts mutation-install
       - name: Runner outcome and cleanup contracts
         run: bun tools/main.ts mutation-check
       - name: Bounded pure-Rust pilot

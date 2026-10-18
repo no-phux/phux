@@ -8,6 +8,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { Failure } from "../lib/command.ts";
 import { git, GitError } from "../lib/git.ts";
 import { gh, GhError, ghLines } from "../lib/github.ts";
 import { ROOT } from "../lib/repo.ts";
@@ -42,7 +43,7 @@ const PROTOCOL = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const PROTOCOL_SOURCE =
   /pub const PROTOCOL_VERSION: Version = Version \{\s*major: (\d+),\s*minor: (\d+),/;
 
-export class ManifestError extends Error {}
+export class ManifestError extends Failure {}
 
 export function isProduct(value: string): value is Product {
   return (PRODUCTS as readonly string[]).includes(value);
@@ -525,9 +526,7 @@ export function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export const USAGE = `usage: bun tools/main.ts release-manifest <command>
-
-  stable --out PATH [--publish]            build stable.json from the published releases
+export const HELP = `  stable --out PATH [--publish]            build stable.json from the published releases
   next --product P --sha SHA --dist DIR    publish one product's build to the next channel
   next-sha PRODUCT                         print the commit next.json names for a product
   fixtures [--check]                       rewrite or check the golden fixtures
@@ -541,21 +540,16 @@ export type Invocation =
   | { command: "fixtures"; check: boolean };
 
 export function execute(invocation: Invocation): number {
-  try {
-    switch (invocation.command) {
-      case "stable":
-        return stable(invocation.out, invocation.publish);
-      case "next":
-        publishNext(invocation.product, invocation.sha, invocation.dist);
-        return 0;
-      case "next-sha":
-        console.log(nextSha(invocation.product));
-        return 0;
-      case "fixtures":
-        return fixtures(invocation.check);
-    }
-  } catch (error) {
-    console.error(`error: ${describe(error)}`);
-    return 1;
+  switch (invocation.command) {
+    case "stable":
+      return stable(invocation.out, invocation.publish);
+    case "next":
+      publishNext(invocation.product, invocation.sha, invocation.dist);
+      return 0;
+    case "next-sha":
+      console.log(nextSha(invocation.product));
+      return 0;
+    case "fixtures":
+      return fixtures(invocation.check);
   }
 }

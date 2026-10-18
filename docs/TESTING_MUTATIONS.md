@@ -56,12 +56,11 @@ just mutation-rust --help
 ### Rust
 
 Install the runner's exact `cargo-mutants` version into a checkout-local tool
-directory (the version pin lives in `tools/src/mutation/pin.ts`):
+directory under `target/mutation-tools` (the version pin lives in
+`tools/src/mutation/runner.ts`):
 
 ```sh
-version="$(sed -n 's/^export const CARGO_MUTANTS_VERSION = "\(.*\)";$/\1/p' tools/src/mutation/pin.ts)"
-cargo install cargo-mutants --version "$version" --locked --jobs 2 \
-  --root "target/mutation-tools/cargo-mutants-$version"
+just mutation-rust-install
 just mutation-rust
 just mutation-rust --file crates/phux-core/src/window.rs --limit 16
 just mutation-rust --in-diff origin/main --list

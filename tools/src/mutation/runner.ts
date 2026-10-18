@@ -11,18 +11,20 @@ import {
 import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { UsageError } from "../lib/command.ts";
 import { ROOT } from "../lib/repo.ts";
 import { list, table } from "../lib/value.ts";
-import { CARGO_MUTANTS_VERSION as VERSION } from "./pin.ts";
 import { stopInvocation, type Cleanup } from "./processes.ts";
 
-export const DESCRIPTION =
-  "Bounded cargo-mutants adapter; all mutations run in cargo-mutants scratch copies.";
+/** The one cargo-mutants pin; `mutation-install` installs exactly this. */
+export const VERSION = "27.0.0";
 
-export const HELP = `
-Install with the repository's Rust 1.99 toolchain (no global overwrite):
-  cargo install --locked cargo-mutants --version ${VERSION} \\
-    --root target/mutation-tools/cargo-mutants-${VERSION}
+/** Where `mutation-install` puts the pinned tool, checkout-local. */
+export const TOOL_ROOT = join(ROOT, `target/mutation-tools/cargo-mutants-${VERSION}`);
+
+export const HELP = `Install the pinned cargo-mutants ${VERSION} with the repository's Rust
+toolchain, under target/mutation-tools (no global overwrite):
+  just mutation-rust-install
 Alternatively set CARGO_MUTANTS_BIN to that version's cargo-mutants executable.
 An exact-version executable on PATH is also accepted; nothing is auto-installed.
 
@@ -63,11 +65,9 @@ running host tests. cargo-mutants 27 has cargo/nextest test tools, no arbitrary
 post-build Zig command hook. This runner does not claim cross-language coverage.
 `;
 
-export const USAGE = `usage: bun tools/main.ts mutation-run [--file GLOB] [--package NAME] [--in-diff REF]
+export const USAGE = `[--file GLOB] [--package NAME] [--in-diff REF]
   [--re REGEX] [--features LIST] [--limit N] [--jobs 1-4] [--build-timeout S]
   [--test-timeout S] [--run-timeout S] [--output DIR] [--list] [--root DIR]`;
-
-export class UsageError extends Error {}
 
 export interface Options {
   file: string[];
@@ -93,33 +93,26 @@ function positive(name: string, value: string | undefined, fallback: number): nu
   return number;
 }
 
-/** Parsed options, or undefined for --help. A bad command line throws UsageError. */
-export function parseOptions(args: string[]): Options | undefined {
-  let values;
-  try {
-    ({ values } = parseArgs({
-      args,
-      options: {
-        file: { type: "string", multiple: true, default: [] },
-        package: { type: "string", multiple: true, default: [] },
-        "in-diff": { type: "string" },
-        re: { type: "string" },
-        features: { type: "string" },
-        limit: { type: "string" },
-        jobs: { type: "string" },
-        "build-timeout": { type: "string" },
-        "test-timeout": { type: "string" },
-        "run-timeout": { type: "string" },
-        output: { type: "string" },
-        list: { type: "boolean", default: false },
-        root: { type: "string" },
-        help: { type: "boolean", short: "h" },
-      },
-    }));
-  } catch (error) {
-    throw new UsageError(error instanceof Error ? error.message : String(error));
-  }
-  if (values.help) return undefined;
+/** Parsed options. A bad command line throws UsageError or a parseArgs error. */
+export function parseOptions(args: string[]): Options {
+  const { values } = parseArgs({
+    args,
+    options: {
+      file: { type: "string", multiple: true, default: [] },
+      package: { type: "string", multiple: true, default: [] },
+      "in-diff": { type: "string" },
+      re: { type: "string" },
+      features: { type: "string" },
+      limit: { type: "string" },
+      jobs: { type: "string" },
+      "build-timeout": { type: "string" },
+      "test-timeout": { type: "string" },
+      "run-timeout": { type: "string" },
+      output: { type: "string" },
+      list: { type: "boolean", default: false },
+      root: { type: "string" },
+    },
+  });
   const jobs = positive("jobs", values.jobs, 1);
   if (jobs > 4) throw new UsageError(`--jobs: invalid choice: ${jobs} (choose from 1, 2, 3, 4)`);
   return {
@@ -244,10 +237,10 @@ class Runner {
   }
 
   async tool(): Promise<string[]> {
-    const local = join(ROOT, `target/mutation-tools/cargo-mutants-${VERSION}/bin/cargo-mutants`);
+    const local = join(TOOL_ROOT, "bin/cargo-mutants");
     let binary = process.env["CARGO_MUTANTS_BIN"] || Bun.which("cargo-mutants");
     if (existsSync(local)) binary = process.env["CARGO_MUTANTS_BIN"] ?? local;
-    if (!binary) throw new Error("cargo-mutants missing; see --help for scoped installation");
+    if (!binary) throw new Error("cargo-mutants missing; run just mutation-rust-install");
     const command = [binary, "mutants"];
     const version = (await this.checked([...command, "--version"], "version")).trim();
     if (version !== `cargo-mutants ${VERSION}`) {

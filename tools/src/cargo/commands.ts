@@ -1,58 +1,28 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { Command } from "../lib/command.ts";
+import { UsageError, type Command } from "../lib/command.ts";
 import { report } from "../lib/expect.ts";
 import { status } from "../lib/output.ts";
 import { repoPath } from "../lib/repo.ts";
 import { readGraphs, violations } from "./build-features.ts";
 import { compare, repairHostLock, reportFindings, requiredDependencies } from "./host-lock.ts";
-import { LockError } from "./lock.ts";
 import { configViolations, locksInStep, readConfig } from "./release-orchestration.ts";
 import { syncLocks } from "./sync.ts";
 
-const SYNC_USAGE =
-  "usage: bun tools/main.ts sync-path-lock-versions [--check] ROOT_LOCK TARGET_LOCK...";
-const HOST_LOCK_USAGE =
-  "usage: bun tools/main.ts desktop-host-lock [--fix] [ROOT_LOCK [HOST_LOCK]]";
-
-/** Parse flags and positionals; undefined (after printing `usage`) on a bad command line. */
-function parse(
-  args: string[],
-  flag: string,
-  usage: string,
-): { set: boolean; positionals: string[] } | undefined {
-  try {
-    const { values, positionals } = parseArgs({
-      args,
-      options: { [flag]: { type: "boolean", default: false } },
-      allowPositionals: true,
-    });
-    return { set: values[flag] === true, positionals };
-  } catch (error) {
-    console.error(`${String(error instanceof Error ? error.message : error)}\n${usage}`);
-    return undefined;
-  }
-}
-
 function hostLock(args: string[]): number {
-  const parsed = parse(args, "fix", HOST_LOCK_USAGE);
-  if (parsed === undefined || parsed.positionals.length > 2) {
-    if (parsed !== undefined) console.error(HOST_LOCK_USAGE);
-    return 2;
-  }
+  const { values, positionals } = parseArgs({
+    args,
+    options: { fix: { type: "boolean", default: false } },
+    allowPositionals: true,
+  });
+  if (positionals.length > 2) throw new UsageError("at most two locks");
   const [rootLock = repoPath("Cargo.lock"), host = repoPath("clients/desktop/native/Cargo.lock")] =
-    parsed.positionals;
+    positionals;
   const rootText = readFileSync(rootLock, "utf8");
   let hostText = readFileSync(host, "utf8");
   const required = requiredDependencies(dirname(resolve(rootLock)));
-  try {
-    if (parsed.set) hostText = repairHostLock(rootText, hostText, required, host);
-  } catch (error) {
-    if (!(error instanceof LockError)) throw error;
-    status("error", error.message);
-    return 1;
-  }
+  if (values.fix) hostText = repairHostLock(rootText, hostText, required, host);
   return reportFindings(compare(rootText, hostText, required), host, rootLock);
 }
 
@@ -60,18 +30,23 @@ export const commands: Record<string, Command> = {
   "sync-path-lock-versions": {
     summary:
       "Align standalone Cargo.locks' path crate versions with the root lock (--check: report).",
+    usage: "[--check] ROOT_LOCK TARGET_LOCK...",
     run(args) {
-      const parsed = parse(args, "check", SYNC_USAGE);
-      if (parsed === undefined || parsed.positionals.length < 2) {
-        if (parsed !== undefined) console.error(SYNC_USAGE);
-        return 2;
+      const { values, positionals } = parseArgs({
+        args,
+        options: { check: { type: "boolean", default: false } },
+        allowPositionals: true,
+      });
+      const [rootLock, ...targets] = positionals;
+      if (rootLock === undefined || targets.length === 0) {
+        throw new UsageError("a root lock and at least one target lock are required");
       }
-      const [rootLock = "", ...targets] = parsed.positionals;
-      return syncLocks(rootLock, targets, parsed.set) ? 0 : 1;
+      return syncLocks(rootLock, targets, values.check) ? 0 : 1;
     },
   },
   "desktop-host-lock": {
     summary: "Check (--fix: repair) that the desktop host lock satisfies a --locked build.",
+    usage: "[--fix] [ROOT_LOCK [HOST_LOCK]]",
     run: hostLock,
   },
   "release-orchestration-check": {

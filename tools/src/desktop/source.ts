@@ -24,11 +24,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { Failure } from "../lib/command.ts";
 import { git as runGit } from "../lib/git.ts";
 import { repoPath } from "../lib/repo.ts";
 import { isTable, str, table } from "../lib/value.ts";
 
-export class SourceError extends Error {}
+export class SourceError extends Failure {}
 
 export interface Crate {
   readonly version: string;

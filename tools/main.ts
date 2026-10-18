@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Build and CI logic for phux: `bun tools/main.ts <command> [args]`.
 // Each area owns its commands; this file only lists them.
-import type { Command } from "./src/lib/command.ts";
+import { invoke, type Command } from "./src/lib/command.ts";
 import { commands as cargo } from "./src/cargo/commands.ts";
 import { commands as desktop } from "./src/desktop/commands.ts";
 import { commands as font } from "./src/font/commands.ts";
@@ -36,9 +36,9 @@ function usage(): string {
 
 const [name, ...args] = process.argv.slice(2);
 const command = name === undefined ? undefined : COMMANDS[name];
-if (command === undefined) {
+if (name === undefined || command === undefined) {
   const help = name === undefined || name === "--help" || name === "-h";
   (help ? console.log : console.error)(usage());
   process.exit(help ? 0 : 2);
 }
-process.exit(await command.run(args));
+process.exit(await invoke(name, command, args));

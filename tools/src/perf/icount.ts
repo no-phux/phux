@@ -15,7 +15,8 @@
 // `number` stays exact.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative } from "node:path";
-import { GitError, git } from "../lib/git.ts";
+import { Failure } from "../lib/command.ts";
+import { git } from "../lib/git.ts";
 import { ROOT, repoPath } from "../lib/repo.ts";
 import { isTable, list, str, table, type Table } from "../lib/value.ts";
 
@@ -47,7 +48,7 @@ function repr(value: unknown): string {
 export function scenarioName(summary: Table): string {
   const fn = summary["function_name"];
   if (typeof fn !== "string" || fn === "") {
-    throw new Error("benchmark summary has no function_name");
+    throw new Failure("benchmark summary has no function_name");
   }
   const id = summary["id"];
   return typeof id === "string" && id !== "" ? `${fn}/${id}` : fn;
@@ -61,26 +62,26 @@ function intMetric(node: unknown): number {
   } else if (isCount(node)) {
     return node;
   }
-  throw new Error(`instruction metric is not an integer: ${repr(node)}`);
+  throw new Failure(`instruction metric is not an integer: ${repr(node)}`);
 }
 
 /** The current run is Left, or the first element of Both. */
 function metricNew(metrics: unknown): number {
-  if (!isTable(metrics)) throw new Error(`metrics object missing: ${repr(metrics)}`);
+  if (!isTable(metrics)) throw new Failure(`metrics object missing: ${repr(metrics)}`);
   if ("Left" in metrics) return intMetric(metrics["Left"]);
   if ("Both" in metrics) {
     const pair = metrics["Both"];
     if (!Array.isArray(pair) || pair.length === 0) {
-      throw new Error(`Both metrics are empty: ${repr(metrics)}`);
+      throw new Failure(`Both metrics are empty: ${repr(metrics)}`);
     }
     return intMetric(pair[0]);
   }
-  throw new Error(`no new instruction metric in ${repr(metrics)}`);
+  throw new Failure(`no new instruction metric in ${repr(metrics)}`);
 }
 
 export function instructionCount(summary: Table): number {
   const profiles = summary["profiles"];
-  if (!Array.isArray(profiles)) throw new Error("benchmark summary has no profiles list");
+  if (!Array.isArray(profiles)) throw new Failure("benchmark summary has no profiles list");
   for (const profile of list(profiles)) {
     if (!isTable(profile)) continue;
     const tool = profile["tool"];
@@ -91,7 +92,7 @@ export function instructionCount(summary: Table): number {
     return metricNew(table(callgrind["Ir"])["metrics"]);
   }
   const keys = Object.keys(summary).sort();
-  throw new Error(`no Callgrind Ir total in summary (keys=${repr(keys)})`);
+  throw new Failure(`no Callgrind Ir total in summary (keys=${repr(keys)})`);
 }
 
 /** One scenario per iai-callgrind JSON line; other JSON lines are ignored. */
@@ -105,40 +106,40 @@ export function loadMeasurements(text: string): Measurements {
     try {
       summary = JSON.parse(line);
     } catch (error) {
-      throw new Error(`iai json line ${index + 1} is not JSON: ${String(error)}`, {
+      throw new Failure(`iai json line ${index + 1} is not JSON: ${String(error)}`, {
         cause: error,
       });
     }
     if (!isTable(summary) || !("function_name" in summary)) continue;
     const name = scenarioName(summary);
-    if (name in found) throw new Error(`duplicate scenario ${name}`);
+    if (name in found) throw new Failure(`duplicate scenario ${name}`);
     found[name] = instructionCount(summary);
   }
-  if (Object.keys(found).length === 0) throw new Error("iai output has no benchmark summaries");
+  if (Object.keys(found).length === 0) throw new Failure("iai output has no benchmark summaries");
   return found;
 }
 
 export function parseBaseline(text: string, path: string): Baseline {
   const data: unknown = JSON.parse(text);
-  if (!isTable(data)) throw new Error(`${path} must hold a JSON object`);
-  if (data["schema"] !== 1) throw new Error(`${path} schema must be 1`);
+  if (!isTable(data)) throw new Failure(`${path} must hold a JSON object`);
+  if (data["schema"] !== 1) throw new Failure(`${path} schema must be 1`);
   if (data["tool"] !== "callgrind" || data["profile"] !== "icount") {
-    throw new Error(`${path} must record the icount profile under callgrind`);
+    throw new Failure(`${path} must record the icount profile under callgrind`);
   }
   const limit = data["increase_limit_percent"];
   if (!isCount(limit) || limit < 0) {
-    throw new Error("increase_limit_percent must be a non-negative integer");
+    throw new Failure("increase_limit_percent must be a non-negative integer");
   }
   const scenarios = data["scenarios"];
   if (!isTable(scenarios) || Object.keys(scenarios).length === 0) {
-    throw new Error("baseline scenarios must be a non-empty object");
+    throw new Failure("baseline scenarios must be a non-empty object");
   }
   const parsed: Measurements = {};
   for (const [name, count] of Object.entries(scenarios)) {
     if (!isCount(count)) {
-      throw new Error(`scenario ${repr(name)} must map to an integer instruction count`);
+      throw new Failure(`scenario ${repr(name)} must map to an integer instruction count`);
     }
-    if (count < 0) throw new Error(`scenario ${name} has a negative count`);
+    if (count < 0) throw new Failure(`scenario ${name} has a negative count`);
     parsed[name] = count;
   }
   return { increase_limit_percent: limit, scenarios: parsed };
@@ -150,7 +151,7 @@ export function loadBaseline(path: string): Baseline {
     text = readFileSync(path, "utf8");
   } catch (error) {
     if (isMissing(error)) {
-      throw new Error(
+      throw new Failure(
         `missing ${path}. Run \`just perf-icount --update\` on x86_64 ` +
           "inside nix develop and commit the file.",
         { cause: error },
@@ -236,7 +237,7 @@ function baselineDiffers(base: string, cwd: string): boolean {
   });
   if (result.exitCode === 0) return false;
   if (result.exitCode === 1) return true;
-  throw new Error(
+  throw new Failure(
     `git diff against ${base} failed (exit ${result.exitCode}: ${result.stderr.toString().trim()}). ` +
       "Fetch the pull request base before running the guard.",
   );
@@ -253,22 +254,16 @@ export function authorize(
   cwd = ROOT,
 ): string | undefined {
   if (event !== "pull_request") return undefined;
-  if (base === "") throw new Error("PHUX_BASE_SHA is required on pull_request");
+  if (base === "") throw new Failure("PHUX_BASE_SHA is required on pull_request");
   if (!baselineDiffers(base, cwd)) return undefined;
   if (labelUpdate === "1") {
     return "perf-icount: baseline change authorized by the perf-baseline label";
   }
-  let message: string;
-  try {
-    message = git(["log", "--format=%B", `${base}..HEAD`], cwd);
-  } catch (error) {
-    if (error instanceof GitError) throw new Error(error.message, { cause: error });
-    throw error;
-  }
+  const message = git(["log", "--format=%B", `${base}..HEAD`], cwd);
   if (trailerPresent(message)) {
     return `perf-icount: baseline change authorized by ${TRAILER}`;
   }
-  throw new Error(
+  throw new Failure(
     `${BASELINE_FILE} changed without authorization. ` +
       `Add a commit whose message contains a line \`${TRAILER}\`, ` +
       "or push again after adding the `perf-baseline` label. " +
@@ -289,7 +284,7 @@ export function runnerVersion(lockText: string): string {
     .map((pkg) => str(pkg["version"]));
   const [version] = versions;
   if (versions.length !== 1 || version === undefined) {
-    throw new Error("Cargo.lock must contain exactly one iai-callgrind");
+    throw new Failure("Cargo.lock must contain exactly one iai-callgrind");
   }
   return version;
 }

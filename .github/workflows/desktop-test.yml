@@ -112,6 +112,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-linux-desktop
+      - uses: ./.github/actions/setup-bun
       - name: Native desktop lint
         run: just desktop-lint
       - name: Native desktop tests under X11 and lavapipe

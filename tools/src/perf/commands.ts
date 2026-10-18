@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import type { Command } from "../lib/command.ts";
+import { required, UsageError, type Command } from "../lib/command.ts";
 import { repoPath } from "../lib/repo.ts";
 import {
   BASELINE_PATH,
@@ -12,9 +12,9 @@ import {
   writeBaseline,
 } from "./icount.ts";
 
-const USAGE = `usage: bun tools/main.ts perf-icount compare|update --measured FILE [--baseline FILE]
-       bun tools/main.ts perf-icount authorize --base SHA [--event NAME] [--label-update 0|1]
-       bun tools/main.ts perf-icount runner-version`;
+const USAGE = `compare|update --measured FILE [--baseline FILE]
+       perf-icount authorize --base SHA [--event NAME] [--label-update 0|1]
+       perf-icount runner-version`;
 
 function measuredArgs(args: string[]): { measured: string; baseline: string } {
   const { values } = parseArgs({
@@ -24,11 +24,8 @@ function measuredArgs(args: string[]): { measured: string; baseline: string } {
       baseline: { type: "string", default: BASELINE_PATH },
     },
   });
-  if (values.measured === undefined) throw new UsageError("--measured is required");
-  return { measured: values.measured, baseline: values.baseline };
+  return { measured: required(values.measured, "--measured"), baseline: values.baseline };
 }
-
-class UsageError extends Error {}
 
 function run(sub: string | undefined, args: string[]): number {
   switch (sub) {
@@ -58,8 +55,11 @@ function run(sub: string | undefined, args: string[]): number {
           "label-update": { type: "string", default: "0" },
         },
       });
-      if (values.base === undefined) throw new UsageError("--base is required");
-      const notice = authorize(values.base, values.event, values["label-update"]);
+      const notice = authorize(
+        required(values.base, "--base"),
+        values.event,
+        values["label-update"],
+      );
       if (notice !== undefined) console.log(notice);
       return 0;
     }
@@ -75,16 +75,7 @@ function run(sub: string | undefined, args: string[]): number {
 export const commands: Record<string, Command> = {
   "perf-icount": {
     summary: "Compare, update or authorize the callgrind instruction-count baseline.",
-    run([sub, ...args]) {
-      try {
-        return run(sub, args);
-      } catch (error) {
-        const usage =
-          error instanceof UsageError || (error instanceof TypeError && "code" in error);
-        console.error(`perf-icount: ${error instanceof Error ? error.message : String(error)}`);
-        if (usage) console.error(USAGE);
-        return usage ? 2 : 1;
-      }
-    },
+    usage: USAGE,
+    run: ([sub, ...args]) => run(sub, args),
   },
 };

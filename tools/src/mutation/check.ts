@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { Failure } from "../lib/command.ts";
 import { ROOT } from "../lib/repo.ts";
 import { deepEqual, list, str, table, type Table } from "../lib/value.ts";
 
@@ -75,7 +76,7 @@ if (next === undefined) {
 setInterval(() => {}, 1000);
 `;
 
-export class CheckFailed extends Error {}
+export class CheckFailed extends Failure {}
 
 function check(condition: boolean, detail: unknown): void {
   if (!condition) throw new CheckFailed(JSON.stringify(detail, null, 2));

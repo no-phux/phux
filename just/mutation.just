@@ -9,6 +9,12 @@ mutation-rust *args:
     bun tools/main.ts mutation-run "$@"
 
 
+# The runner's exact cargo-mutants, checkout-local under target/mutation-tools.
+[group('mutation')]
+mutation-rust-install:
+    bun tools/main.ts mutation-install
+
+
 # Real-tool adapter acceptance in disposable fixtures (requires the pinned tool).
 [group('mutation')]
 mutation-rust-check:

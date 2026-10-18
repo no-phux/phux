@@ -1,6 +1,7 @@
 // Cargo.lock text, edited in place. Both lock commands rewrite single lines and
 // must leave every other byte untouched, so packages are matched as text
 // blocks rather than parsed and re-serialized.
+import { Failure } from "../lib/command.ts";
 
 /** One `[[package]]` block, through to the next block or the end of the file. */
 export const PACKAGE = /^\[\[package\]\]\n.*?(?=^\[\[package\]\]|(?![\s\S]))/gms;
@@ -10,7 +11,7 @@ const SOURCE = /^source = /m;
 export const DEPENDENCIES = /^dependencies = \[\n(.*?)^\]/ms;
 const DEPENDENCY_LINE = /^ "(.+)",$/gm;
 
-export class LockError extends Error {}
+export class LockError extends Failure {}
 
 export interface Package {
   readonly block: string;

@@ -1,8 +1,9 @@
 // The GitHub CLI and REST API through an authenticated `gh`. Every call is a
 // child process, so a test stands in a fake `gh` on PATH, or injects an Api.
+import { Failure } from "./command.ts";
 
 /** A `gh` invocation that failed, with what it printed on stderr. */
-export class GhError extends Error {
+export class GhError extends Failure {
   constructor(
     readonly args: readonly string[],
     readonly stderr: string,

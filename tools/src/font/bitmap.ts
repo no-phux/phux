@@ -22,6 +22,7 @@
 // is not 8x16, or a glyph whose BBX disagrees with it, is a hard error.
 // Silently accepting a differently-shaped face would produce a table that
 // compiles and renders garbage, which is far worse than refusing to generate.
+import { Failure } from "../lib/command.ts";
 
 export const CELL_W = 8;
 export const CELL_H = 16;
@@ -32,7 +33,7 @@ export const CELL_H = 16;
 // between Latin and the Private Use Area would embed megabytes of zeroes.
 const MAX_GAP = 8;
 
-export class FontError extends Error {}
+export class FontError extends Failure {}
 
 export type Glyphs = Map<number, number[]>;
 
