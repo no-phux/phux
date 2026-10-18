@@ -244,3 +244,9 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     expect([paths, classifier.classify(paths).mobileFfiNeeded]).toEqual([paths, wanted]);
   }
 });
+
+test("tools code routes to the lane that runs it", () => {
+  expect(lanes(["tools/src/desktop/source.ts"])).toEqual(["desktop"]);
+  expect(lanes(["tools/src/mutation/runner.ts"])).toEqual([]);
+  expect(lanes(["tools/src/cargo/build-features.ts"])).toEqual(["phux"]);
+});
