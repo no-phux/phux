@@ -50,7 +50,7 @@ fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
     }
     // The flattened --remote option must not contradict upload's headless policy.
     let remote_help = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(remote_help.contains("except `upload` and calls with `--json`: these never pair and refuse unregistered hosts"), "{remote_help}");
+    assert!(remote_help.contains("except `upload`, `download`, and calls with `--json`: these never pair and refuse unregistered hosts"), "{remote_help}");
     for options in [
         vec!["--timeout", "0"],
         vec!["--timeout", "3601"],

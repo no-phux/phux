@@ -113,9 +113,13 @@ fn resolve_remote(
     let target = remote_target::parse_target(raw).map_err(|err| {
         json_err::emit(json, &CliError::new(codes::REMOTE_UNRESOLVED, err, ""), 2)
     })?;
-    // Attach's own resolver; JSON automation and deadline-bounded uploads never pair.
-    let entry = remote_target::resolve(&target, None, bootstrap_for(json || verb == "upload"))
-        .map_err(|report| emit_ladder_refusal(json, &report))?;
+    // Attach's own resolver; JSON automation and deadline-bounded transfers never pair.
+    let entry = remote_target::resolve(
+        &target,
+        None,
+        bootstrap_for(json || matches!(verb, "upload" | "download")),
+    )
+    .map_err(|report| emit_ladder_refusal(json, &report))?;
     dial_entry(rt, &entry, verb, json)
 }
 

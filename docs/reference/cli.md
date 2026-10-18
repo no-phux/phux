@@ -70,6 +70,7 @@ Machines:
   pair          Mint, rotate, revoke, list, or prune remote credentials
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
+  download      Download a file from a server or one of its satellites
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -1475,11 +1476,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -h, --help                      Print help
 
 Global flags:
@@ -1507,6 +1508,56 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux download`
+
+```text
+Download a file from the server you connect to, or from one of its satellites,
+to this client's filesystem.
+
+SOURCE is an absolute path on that server (`/Users/me/deck.pptx`) or
+`HOST:/path` for a satellite the server federates; any regular file the serving
+user can read. LOCAL defaults to SOURCE's file name in the current directory,
+and a directory LOCAL receives the file under its name. An existing LOCAL is
+refused unless --force replaces it. Bytes land in a fresh sibling `.phux-part`
+file and move into place only after the whole-file SHA-256 verifies, so a
+refusal leaves nothing behind.
+
+Download dials configured remote transports headlessly; it never pairs over SSH.
+The timeout covers resolution and transfer. Completed prints LOCAL; --json
+prints the receipt for completed or refused outcomes. Refused exits nonzero.
+
+Usage: phux download [FLAGS] <SOURCE> [LOCAL]
+
+Arguments:
+  <SOURCE>  Absolute path on the server, or `HOST:/path` on a satellite.
+  [LOCAL]   Destination file or directory on this client's filesystem.
+
+Flags:
+      --force                     Replace an existing LOCAL.
+      --timeout <SECS>            Overall deadline in seconds, bounded to
+                                  1..=3600.
+                                  (default: 60)
+      --json                      Print the structured receipt on stdout,
+                                  including refusals.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux give`
@@ -2005,11 +2056,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -h, --help                      Print help
 
 Global flags:
@@ -2139,11 +2190,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -a, --all                       List this machine and every registered host
                                   (`phux host ls`), grouped by machine. Hosts
                                   are queried at once with a short deadline; one
@@ -2567,11 +2618,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
       --empty                     Create the session with no process. It is
                                   persistent, so it stays until `phux rm` or
                                   `phux kill` deletes it. Without `--json` the
@@ -3686,11 +3737,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -h, --help                      Print help
 
 Global flags:
@@ -4985,11 +5036,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -h, --help                      Print help
 
 Global flags:
@@ -5161,11 +5212,11 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload` and calls with
-                                  `--json`: these never pair and refuse
-                                  unregistered hosts, naming remedies). PORT
-                                  defaults to 8788. Cannot combine with
-                                  `--socket`.
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
   -h, --help                      Print help
 
 Global flags:

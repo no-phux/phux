@@ -22,16 +22,16 @@ use crate::wire::frame::{
 use crate::wire::frame::{
     AttachTarget, COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT,
     COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES,
-    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
-    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
-    COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
-    EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_FILE,
+    COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
+    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
+    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED, EVENT_TAG_BELL,
+    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
+    EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
     EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, FrameKind,
     RESOURCE_AGENT_KEY, RESOURCE_AGENT_SESSION_KEY, RESOURCE_LINK_KEY, RESOURCE_PANE_OCCUPANT_KEY,
     RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
@@ -725,6 +725,7 @@ static C_AGENT_REPORT: Rule = Rule::verbs(
     Subject::NamedTerminal,
 );
 static C_PUT_FILE: Rule = Rule::verbs("`PUT_FILE`", &[Verb::Input], Subject::NamedTerminal);
+static C_GET_FILE: Rule = Rule::verbs("`GET_FILE`", &[Verb::Input], GLOBAL);
 static C_TRANSCRIBE: Rule = Rule::verbs("`TRANSCRIBE`", &[Verb::Input], Subject::NamedTerminal);
 static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: Some }`",
@@ -839,7 +840,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 46] = [
+pub static COMMAND_RULES: [&Rule; 47] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -859,6 +860,7 @@ pub static COMMAND_RULES: [&Rule; 46] = [
     &C_SIGNAL_TERMINAL,
     &C_AGENT_REPORT,
     &C_PUT_FILE,
+    &C_GET_FILE,
     &C_TRANSCRIBE,
     &C_DETACH_CLIENTS_SESSION,
     &C_DETACH_CLIENTS_ALL,
@@ -1011,6 +1013,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::SignalTerminal { .. } => &C_SIGNAL_TERMINAL,
         Command::ReportAsked { .. } | Command::ReportAgentState { .. } => &C_AGENT_REPORT,
         Command::PutFile { .. } => &C_PUT_FILE,
+        Command::GetFile { .. } => &C_GET_FILE,
         Command::DetachClients { session: Some(_) } => &C_DETACH_CLIENTS_SESSION,
         Command::DetachClients { session: None } => &C_DETACH_CLIENTS_ALL,
         Command::Shutdown => &C_SHUTDOWN,
@@ -1900,6 +1903,15 @@ pub static KINDS: [KindSpec; 2] = [
                 Carrier::Command(COMMAND_TAG_PUT_FILE),
                 [C_PUT_FILE],
                 Some(FeatureGate::Features(ServerFeature::FileUpload))
+            ),
+            method!(
+                "GET_FILE",
+                Carrier::Command(COMMAND_TAG_GET_FILE),
+                [C_GET_FILE],
+                Some(FeatureGate::FeaturesExt {
+                    mask: ServerFeatureExt::FileDownload.mask(),
+                    wire_name: ServerFeatureExt::FileDownload.wire_name(),
+                })
             ),
             method!(
                 "TRANSCRIBE",

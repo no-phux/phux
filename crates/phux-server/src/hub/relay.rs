@@ -1506,6 +1506,19 @@ impl RelaySession {
                 message,
             });
         }
+        if let Command::GetFile { .. } = command
+            && !self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::FileDownload)
+        {
+            return Some(CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!(
+                    "satellite {} lacks FILE_DOWNLOAD; nothing was forwarded",
+                    self.host
+                ),
+            });
+        }
         self.keyed_capability_rejection(command)
     }
 
@@ -5171,6 +5184,50 @@ mod tests {
             panic!("expected COMMAND on the wire");
         };
         command
+    }
+
+    /// A `GET_FILE` reaches only a satellite that advertises `FILE_DOWNLOAD`;
+    /// an older satellite is refused `UNSUPPORTED_SATELLITE_ROUTE` and never
+    /// sees the unknown tag.
+    #[test]
+    fn hub_refuses_get_file_to_a_satellite_without_file_download() {
+        let get_file = || Command::GetFile {
+            host: None,
+            path: "/tmp/deck.pptx".to_owned(),
+            offset: 0,
+            max_bytes: 1,
+        };
+        let mut older = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let wire = older.handle_request_checked(RelayRequest::Command {
+            command: get_file(),
+            reply,
+            subscribe: None,
+        });
+        assert!(wire.is_none(), "an older satellite never sees GET_FILE");
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                ref message,
+            } if message.contains("lacks FILE_DOWNLOAD")
+        ));
+        assert!(older.pending.is_empty());
+
+        let mut newer = RelaySession::new(host(), BootstrapLimits::default());
+        newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[
+            ServerFeatureExt::FileDownload,
+        ]));
+        let (reply, _rx) = oneshot::channel();
+        let wire = newer.handle_request_checked(RelayRequest::Command {
+            command: get_file(),
+            reply,
+            subscribe: None,
+        });
+        assert!(
+            matches!(forwarded(wire), Command::GetFile { host: None, .. }),
+            "a capable satellite receives the read with no host"
+        );
     }
 
     #[test]

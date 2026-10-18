@@ -802,6 +802,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::ReleaseInput { .. } => "release_input",
         Command::SignalTerminal { .. } => "signal_terminal",
         Command::PutFile { .. } => "put_file",
+        Command::GetFile { .. } => "get_file",
         Command::GetPerf { .. } => "get_perf",
         Command::PerfControl { .. } => "perf_control",
         Command::Transcribe { .. } => "transcribe",
@@ -943,9 +944,20 @@ async fn route_command(
         return None;
     }
 
+    // GET_FILE names its host by name, not through a Terminal id: a named
+    // satellite reads its own filesystem, and the link refuses one that
+    // does not advertise FILE_DOWNLOAD.
+    let mut command = command;
+    if let Command::GetFile { host, .. } = &mut command
+        && let Some(host) = host.take()
+    {
+        let host = phux_protocol::ids::SatelliteHost::new(host);
+        handle_satellite_command(ctx, request_id, &host, command).await;
+        return None;
+    }
+
     // PUT_FILE chunks may carry 8 MiB: rewrite a satellite id in place rather
     // than cloning the payload through the generic router below.
-    let mut command = command;
     if let Command::PutFile { terminal_id, .. } = &mut command
         && let Some((sat_host, local_id)) = crate::hub::relay::satellite_route(terminal_id)
     {
@@ -1001,6 +1013,7 @@ async fn route_command(
 /// Run a routed command on this server and return its result.
 #[allow(
     clippy::too_many_lines,
+    clippy::cognitive_complexity,
     reason = "one flat dispatch arm per wire command keeps the catalog auditable"
 )]
 async fn dispatch_local(
@@ -1187,6 +1200,19 @@ async fn dispatch_local(
                     principal: state.with(|s| super::upload::upload_principal(s, client_id)),
                 },
             )
+            .await
+        }
+        Command::GetFile {
+            host: _,
+            path,
+            offset,
+            max_bytes,
+        } => {
+            super::download::handle_get_file(super::download::GetFileRequest {
+                path,
+                offset,
+                max_bytes,
+            })
             .await
         }
         Command::ReportAsked {

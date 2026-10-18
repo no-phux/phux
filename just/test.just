@@ -135,12 +135,12 @@ e2e: worktree-claim && (worktree-verify "e2e")
     fi
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e)'
+      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf)'
 
-E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test perf --test discovery"
+E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test perf --test discovery"
 
 
 # Heavy stress storms — off CI entirely: starvation-sensitive on 2-core
