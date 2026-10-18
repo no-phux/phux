@@ -9,6 +9,50 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.106.0](https://github.com/no-phux/phux/compare/v0.105.1...v0.106.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** get public certificates by ACME TLS-ALPN-01 and multiplex consumers ([#1623](https://github.com/no-phux/phux/issues/1623)) ([c5e03b7](https://github.com/no-phux/phux/commit/c5e03b726d20d373825b69e526226934946eea57))
+
+## [0.105.1](https://github.com/no-phux/phux/compare/v0.105.0...v0.105.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **server:** preserve PTY output order during inline writes ([#1618](https://github.com/no-phux/phux/issues/1618)) ([aac312b](https://github.com/no-phux/phux/commit/aac312bdf23c704d8855927a39a1e3acf921ff9e))
+
+## [0.105.0](https://github.com/no-phux/phux/compare/v0.104.0...v0.105.0) (2026-10-18)
+
+
+### Features
+
+* **tui:** fleet rows name the kind only when it adds to the name ([e326ecf](https://github.com/no-phux/phux/commit/e326ecf83b66753ff7770b9c700e1d3835134610))
+
+
+### Bug Fixes
+
+* **opencode:** prepare host-compatible dependency release 0.6.2 ([#1616](https://github.com/no-phux/phux/issues/1616)) ([78341ce](https://github.com/no-phux/phux/commit/78341ce743883d03a6da0ce815e46e433cf7c219))
+* **tui:** one agent-state glyph vocabulary across the sidebar, tab bar and fleet ([605dfe2](https://github.com/no-phux/phux/commit/605dfe2eb4defdba24f206b24f0db4e756e0d69f))
+
+
+### Refactors
+
+* **tui:** one home-to-tilde rule for the Settings path and the pickers ([1f1859b](https://github.com/no-phux/phux/commit/1f1859b666895574665bf875c0612d0c35082fe4))
+
+## [0.104.0](https://github.com/no-phux/phux/compare/v0.103.0...v0.104.0) (2026-10-18)
+
+
+### Features
+
+* **quictun:** a standalone tunnel: binary, TCP ingress, half-close, per-route caps ([#1612](https://github.com/no-phux/phux/issues/1612)) ([2df25c3](https://github.com/no-phux/phux/commit/2df25c32adcdad354269c54e502a1814a24811c0))
+
+
+### Bug Fixes
+
+* **ci:** a desktop-test dispatch on main never cancels the running main run ([ea62987](https://github.com/no-phux/phux/commit/ea62987f3fa30e9d4b4721cc69cae884d3dfc9c0))
+
 ## [0.103.0](https://github.com/no-phux/phux/compare/v0.102.0...v0.103.0) (2026-10-18)
 
 

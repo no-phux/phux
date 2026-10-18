@@ -30,10 +30,11 @@ done
 
 [[ $failures -eq 0 ]] || { phux_error "install surface check failed"; exit 1; }
 
-python3 scripts/ci/release_manifest.py fixtures --check
+bun tools/main.ts release-manifest fixtures --check
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
-python3 scripts/test-install-desktop.py
-python3 scripts/test-install-desktop-linux.py
+# The macOS Desktop installer test skips itself off macOS 27+ arm64.
+bun test ./tools/src/install/desktop.e2e.ts
+bun test ./tools/src/install/desktop-linux.e2e.ts
 phux_ok "install surface check passed"

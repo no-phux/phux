@@ -42,7 +42,7 @@ cannot pass.
    secret no shipped binary trusts fails the release, not the user. Stable
    CLI assets are signed in `release.yml`; stable Desktop in a Linux job of
    `desktop-release.yml` before the draft publishes; next builds in
-   `next-release.yml`, where `release_manifest.py` refuses an unsigned build.
+   `next-release.yml`, where `release-manifest next` refuses an unsigned build.
    The macOS build host never sees the key.
 3. **Clients embed the public keys.** `RELEASE_KEYS` in
    `crates/phux-client-runtime/src/release/signature.rs`, which `phux update`

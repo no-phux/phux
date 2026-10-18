@@ -8,9 +8,9 @@
 //! `/THIRD-PARTY-NOTICES.md` in the repository root. Do not delete that file, and do not
 //! swap this face for an OFL-1.1 one -- OFL-1.1 is not on deny.toml's allow list.
 //!
-//! Regenerate with `scripts/gen-bitmap-font.py` after upgrading the .bdf. The
-//! script is documentation of how this file came to be, never a build step:
-//! this file is committed and compiled as ordinary Rust.
+//! Regenerate with `bun tools/main.ts gen-bitmap-font` after upgrading the .bdf.
+//! The generator is documentation of how this file came to be, never a build
+//! step: this file is committed and compiled as ordinary Rust.
 //!
 //! One byte per pixel row, most significant bit at the leftmost of the eight
 //! columns. 969 glyphs in 35 contiguous ranges.

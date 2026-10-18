@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.6.1...opencode-plugin-v0.6.2) (2026-10-18)
+
+### Bug Fixes
+
+* **opencode:** refresh Bun types and pin the paired Seroval packages to 1.6.9 while preserving OpenCode 2.0.32 and its native UI runtime versions.
+
 ## [0.6.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.6.0...opencode-plugin-v0.6.1) (2026-10-18)
 
 

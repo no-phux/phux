@@ -34,14 +34,10 @@ chmod 755 "$TMP/bin/curl"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() { PATH="$TMP/bin:${TEST_PATH:-/usr/bin:/bin}" "$SH" "$ROOT/scripts/install.sh" "$@"; }
 serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$SERVED/"; }
-# Rewrite a served manifest with a Python statement over `m`.
+# Rewrite a served manifest with a jq filter.
 mutate() {
-  python3 - "$SERVED/$1.json" "$2" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-exec(sys.argv[2])
-open(sys.argv[1], "w").write(json.dumps(m, indent=2) + "\n")
-PY
+  jq --indent 2 "$2" "$SERVED/$1.json" >"$SERVED/$1.json.new"
+  mv "$SERVED/$1.json.new" "$SERVED/$1.json"
 }
 refused() {
   local message="$1"
@@ -86,15 +82,15 @@ refuse_manifest() {
   mutate "$1" "$2"
   refused "$3" --dry-run --os darwin --arch arm64 --channel "$1"
 }
-refuse_manifest stable 'm["schema_version"] = 2' 'unsupported schema'
-refuse_manifest stable 'm["channel"] = "next"' 'names another channel'
-refuse_manifest stable 'del m["products"]["phux"]' 'no phux release is published'
-refuse_manifest stable 'del m["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]' 'no phux digest for aarch64-apple-darwin'
-refuse_manifest stable 'm["products"]["phux"]["artifacts"]["aarch64-apple-darwin"]["sha256"] = "F" * 64' 'no phux digest'
-refuse_manifest stable 'm["products"]["phux"]["version"] = "09.8.7"' 'invalid phux version'
-refuse_manifest next 'm["products"]["phux"]["sha"] = "A" * 40' 'invalid phux commit'
-for value in '[1]' 'True' '{}' '"has space"'; do
-  refuse_manifest stable "m['products']['phux']['extra'] = $value" 'malformed'
+refuse_manifest stable '.schema_version = 2' 'unsupported schema'
+refuse_manifest stable '.channel = "next"' 'names another channel'
+refuse_manifest stable 'del(.products.phux)' 'no phux release is published'
+refuse_manifest stable 'del(.products.phux.artifacts["aarch64-apple-darwin"])' 'no phux digest for aarch64-apple-darwin'
+refuse_manifest stable '.products.phux.artifacts["aarch64-apple-darwin"].sha256 = ("F" * 64)' 'no phux digest'
+refuse_manifest stable '.products.phux.version = "09.8.7"' 'invalid phux version'
+refuse_manifest next '.products.phux.sha = ("A" * 40)' 'invalid phux commit'
+for value in '[1]' 'true' '{}' '"has space"'; do
+  refuse_manifest stable ".products.phux.extra = $value" 'malformed'
 done
 serve_golden
 head -n 12 "$GOLDEN/stable.json" > "$SERVED/stable.json"
@@ -141,8 +137,8 @@ package() { # ID: pack a release whose binaries say ID, and serve it
 digest_stable="$(package v9.8.7)"
 digest_next="$(package "next.$sha_a")"
 serve_golden
-mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
-mutate next "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_next'"
+mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_stable\""
+mutate next ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_next\""
 install_to() { local dir="$1"; shift; installer --os linux --arch x86_64 --install-dir "$dir" "$@"; }
 
 : > "$CALLS"
@@ -171,11 +167,11 @@ mv "$TMP/held.tar.gz" "$SERVED/$archive"
 [[ ! -e $TMP/sidecarless/phux && ! -e $TMP/assetless/phux ]] || fail "a failed download installed"
 
 # A digest the archive does not match installs nothing.
-mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
+mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"
 printf 'old phux\n' > "$TMP/stable/phux"
 refused 'checksum mismatch' --os linux --arch x86_64 --install-dir "$TMP/stable"
 grep -Fxq 'old phux' "$TMP/stable/phux" || fail "a mismatch replaced the binary"
-mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_stable\""
 
 # --- signatures (ADR-0178) ------------------------------------------------------
 
@@ -197,10 +193,10 @@ grep -Fq "$archive.sha256.minisig" "$CALLS" || fail "a signed install must fetch
 grep -Fq "minisign -V -H -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked, prehashed only, against the release key"
 MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
-mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '0' * 64"
+mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"
 TEST_PATH="$SIG_PATH" refused "the signed checksum for $archive is $digest_stable" \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
-mutate stable "m['products']['phux']['artifacts']['$TARGET']['sha256'] = '$digest_stable'"
+mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_stable\""
 rm "$SERVED/$archive.sha256.minisig"
 TEST_PATH="$SIG_PATH" refused 'an unsigned release is never installed' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"

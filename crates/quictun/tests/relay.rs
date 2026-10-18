@@ -41,13 +41,23 @@ impl Relay {
     }
 
     fn start_with(protocol: Protocol, tune: impl FnOnce(&mut RelayConfig)) -> Self {
+        Self::start_tuned(protocol, tune, |runtime| runtime)
+    }
+
+    fn start_tuned(
+        protocol: Protocol,
+        tune: impl FnOnce(&mut RelayConfig),
+        tune_runtime: impl FnOnce(RelayRuntime) -> RelayRuntime,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let listen: SocketAddr = "127.0.0.1:0".parse().expect("addr");
         let mut config = RelayConfig::in_dir(listen, dir.path(), protocol);
         tune(&mut config);
         let tokens = config.tokens_path.clone();
         let cert = config.cert_path.clone();
-        let bound = RelayRuntime::new(config).bind().expect("bind");
+        let bound = tune_runtime(RelayRuntime::new(config))
+            .bind()
+            .expect("bind");
         let addr = bound.local_addr();
         let tcp = bound.tcp_addr();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -281,6 +291,44 @@ async fn with_propagated_half_close_a_consumer_reads_the_reply_after_its_fin() {
         send.finish().expect("half-close");
         let reply = recv.read_to_end(1024).await.expect("reply after the FIN");
         assert_eq!(reply, b"got 5 bytes");
+    })
+    .await
+    .expect("deadline");
+}
+
+/// A multiplexed consumer carries many streams on one connection, each
+/// bridged on its own; once it has none for the idle period the relay closes
+/// it, so an idle client gives its connection slot back.
+#[tokio::test]
+async fn a_multiplexed_consumer_is_bridged_per_stream_and_reaped_when_idle() {
+    timeout(DEADLINE, async {
+        let mut multiplexed = protocol();
+        multiplexed.consumer_streams = 8;
+        let relay = Relay::start_tuned(
+            multiplexed.clone(),
+            |_| {},
+            |runtime| runtime.with_multiplexed_idle(Duration::from_millis(300)),
+        );
+        let token = relay.enroll("echo");
+        let tunnel = Tunnel::open(&relay.addr, &multiplexed, &token)
+            .await
+            .expect("tunnel");
+        let _service = serve_echo(tunnel);
+
+        let (_endpoint, conn) =
+            quictun::connect::dial_route_connection(&relay.addr, "echo", b"echo/1")
+                .await
+                .expect("consumer");
+        for message in [&b"one"[..], b"two", b"three"] {
+            let (mut send, mut recv) = conn.open_bi().await.expect("stream");
+            send.write_all(message).await.expect("write");
+            let mut echoed = vec![0u8; message.len()];
+            recv.read_exact(&mut echoed).await.expect("read");
+            assert_eq!(echoed, message.to_ascii_uppercase(), "each stream bridged");
+            send.finish().expect("finish");
+        }
+        let closed = ConnectError::from(conn.closed().await);
+        assert_eq!(closed.close_code(), Some(0), "closed as idle: {closed}");
     })
     .await
     .expect("deadline");

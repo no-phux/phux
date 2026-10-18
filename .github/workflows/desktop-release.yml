@@ -73,7 +73,7 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate tagged source and select Bun
+      - name: Validate tagged source and select archive
         id: version
         working-directory: source
         run: |
@@ -85,24 +85,19 @@ jobs:
           fi
           git merge-base --is-ancestor HEAD origin/main
           echo "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          package = json.loads(Path('clients/desktop/package.json').read_text())
-          manifest = json.loads(Path('.release-please-manifest.json').read_text())
-          version = package['version']
-          assert manifest['clients/desktop'] == version
-          channel = os.environ['PHUX_BUILD_CHANNEL']
-          if channel == 'stable':
-              assert os.environ['RELEASE_TAG'] == f'desktop-v{version}'
-          identity = f"next.{os.environ['PHUX_BUILD_SHA']}" if channel == 'next' else version
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f"bun={package['engines']['bun']}\n")
-              output.write(f"archive=phux-desktop-{identity}-macos-arm64.zip\n")
-          PY
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+          # The archive name is release-manifest's naming rule.
+          version="$(jq -er .version clients/desktop/package.json)"
+          test "$(jq -er '."clients/desktop"' .release-please-manifest.json)" = "$version"
+          identity="$version"
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            identity="next.$PHUX_BUILD_SHA"
+          else
+            test "$RELEASE_TAG" = "desktop-v$version"
+          fi
+          echo "archive=phux-desktop-$identity-macos-arm64.zip" >> "$GITHUB_OUTPUT"
+      - uses: ./harness/.github/actions/setup-bun
         with:
-          bun-version: ${{ steps.version.outputs.bun }}
+          source: source
       - name: Contributor Rust, Zig and Metal setup
         working-directory: source
         run: |
@@ -157,7 +152,7 @@ jobs:
           # presented drawable; the evidence records `submitted` instead.
           bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence" --allow-unconfirmed-present
       - name: Exercise installer transactions
-        run: python3 harness/scripts/test-install-desktop.py
+        run: bun test ./harness/tools/src/install/desktop.e2e.ts
       - name: Retain packaged runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -265,19 +260,20 @@ jobs:
           PHUX_BUILD_SHA="$(git rev-parse HEAD)"
           export PHUX_BUILD_SHA
           echo "PHUX_BUILD_SHA=$PHUX_BUILD_SHA" >> "$GITHUB_ENV"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          version = json.loads(Path('clients/desktop/package.json').read_text())['version']
-          assert json.loads(Path('.release-please-manifest.json').read_text())['clients/desktop'] == version
-          channel = os.environ['PHUX_BUILD_CHANNEL']
-          if channel == 'stable':
-              assert os.environ['RELEASE_TAG'] == f'desktop-v{version}'
-          identity = f"next.{os.environ['PHUX_BUILD_SHA']}" if channel == 'next' else version
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f"archive=phux-desktop-{identity}-linux-{os.environ['ARCH']}.tar.gz\n")
-          PY
+          # The archive name is release-manifest's naming rule.
+          version="$(jq -er .version clients/desktop/package.json)"
+          test "$(jq -er '."clients/desktop"' .release-please-manifest.json)" = "$version"
+          identity="$version"
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            identity="next.$PHUX_BUILD_SHA"
+          else
+            test "$RELEASE_TAG" = "desktop-v$version"
+          fi
+          echo "archive=phux-desktop-$identity-linux-$ARCH.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: ./harness/.github/actions/setup-linux-desktop
+        with:
+          source: source
+      - uses: ./harness/.github/actions/setup-bun
         with:
           source: source
       - name: Build and test native desktop and same-checkout CLI
@@ -302,16 +298,12 @@ jobs:
           sha256sum -c "$ARCHIVE.sha256"
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/desktop-qualified"
           cd "$GITHUB_WORKSPACE"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          bundle = Path(os.environ['RUNNER_TEMP']) / 'desktop-qualified/phux-desktop'
-          metadata = json.loads((bundle / 'share/phux-desktop/release.json').read_text())
-          assert metadata['sha'] == os.environ['PHUX_BUILD_SHA']
-          assert metadata['target'] == os.environ['PHUX_DESKTOP_TARGET']
-          assert metadata['channel'] == os.environ['PHUX_BUILD_CHANNEL']
-          assert (bundle / 'bin/phux-desktop').is_file()
-          PY
+          bundle="$RUNNER_TEMP/desktop-qualified/phux-desktop"
+          jq -e --arg sha "$PHUX_BUILD_SHA" --arg target "$PHUX_DESKTOP_TARGET" \
+            --arg channel "$PHUX_BUILD_CHANNEL" \
+            '.sha == $sha and .target == $target and .channel == $channel' \
+            "$bundle/share/phux-desktop/release.json" >/dev/null
+          test -f "$bundle/bin/phux-desktop"
           xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- \
             bun harness/clients/desktop/scripts/smoke-linux.ts \
             --app "$RUNNER_TEMP/desktop-qualified/phux-desktop" \

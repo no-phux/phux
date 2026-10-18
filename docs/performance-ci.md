@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-17
 ---
 
 # Performance CI
@@ -49,7 +49,8 @@ the checked-in file. A rustc or flake bump that changes codegen moves the
 counts; the path filter runs the job on those files, and the baseline has to
 be updated in the same change.
 
-The comparison reads `benchmarks/icount-baseline.json`. Each scenario's
+The comparison (`bun tools/main.ts perf-icount`, in `tools/src/perf/`) reads
+`benchmarks/icount-baseline.json`. Each scenario's
 instruction count may rise by at most 5 percent. An equal rise passes. A drop
 passes. A missing or extra scenario fails. Exact allocation counts for encode
 and decode stay in `crates/phux-protocol/tests/it/hot_path_alloc.rs` and run
@@ -92,6 +93,8 @@ also refuses the file change unless one of these is true:
 - The pull request has the `perf-baseline` label before the workflow runs.
   Add the label, then push. Labeling alone does not start `ci`, and a re-run
   keeps the event payload from before the label existed.
+
+That check runs before the bench, so an unauthorized edit fails in seconds.
 
 Pushes to `main` and merge-queue runs do not repeat the trailer check. Squash
 and the merge queue can drop trailers; the pull request already authorized

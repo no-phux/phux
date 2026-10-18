@@ -70,13 +70,7 @@ jobs:
           brew install just
           xcodebuild -downloadComponent MetalToolchain
           xcrun metal --version
-      - name: Select Bun
-        id: bun
-        run: |
-          python3 -c 'import json; print("version=" + json.load(open("clients/desktop/package.json"))["engines"]["bun"])' >> "$GITHUB_OUTPUT"
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.bun.outputs.version }}
+      - uses: ./.github/actions/setup-bun
       - name: Desktop lint
         run: just desktop-lint
       - name: Desktop tests
@@ -118,6 +112,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-linux-desktop
+      - uses: ./.github/actions/setup-bun
       - name: Native desktop lint
         run: just desktop-lint
       - name: Native desktop tests under X11 and lavapipe
@@ -171,13 +166,7 @@ jobs:
           brew install just
           xcodebuild -downloadComponent MetalToolchain
           xcrun metal --version
-      - name: Select Bun
-        id: bun
-        run: |
-          python3 -c 'import json; print("version=" + json.load(open("clients/desktop/package.json"))["engines"]["bun"])' >> "$GITHUB_OUTPUT"
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.bun.outputs.version }}
+      - uses: ./.github/actions/setup-bun
       - name: Build the same-checkout CLI and Phux.app
         run: |
           set -euo pipefail
