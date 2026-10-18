@@ -18,7 +18,7 @@ g() {
         -c commit.gpgsign=false -c rerere.enabled=false -c core.autocrlf=false "$@"
 }
 
-gate() { (cd "$REPO" && bash "$GATE" 2>"${WORK}/gate.err"); }
+gate() { (cd "$REPO" && "$BASH" "$GATE" 2>"${WORK}/gate.err"); }
 write_bytes() { head -c "$2" /dev/zero | tr '\0' 'x' >"$1"; }
 
 new_repo() {
@@ -318,6 +318,25 @@ test_exemptions() {
     expect_gate 0 'merge: newly staged existing exemption types still pass'
 }
 
+# The producer must drain blobs larger than a pipe buffer, but only the first
+# 2048 bytes may grant the generated-header exemption.
+test_generated_prefix() {
+    new_repo generated-prefix
+    { printf 'Code generated\n'; head -c 1048576 /dev/zero | tr '\0' 'x'; } >"${REPO}/early.md"
+    { head -c 2034 /dev/zero | tr '\0' 'x'; printf 'Code generated'; head -c 1048576 /dev/zero | tr '\0' 'x'; } >"${REPO}/boundary.md"
+    g add early.md boundary.md
+    expect_gate 0 'generated headers: large blobs drain and a marker ending at byte 2048 passes'
+
+    { head -c 2048 /dev/zero | tr '\0' 'x'; printf 'Code generated\n'; head -c 1048576 /dev/zero | tr '\0' 'x'; } >"${REPO}/late.md"
+    write_bytes "${REPO}/plain.md" 1048576
+    g add late.md plain.md
+    expect_gate 1 'generated headers: a later marker and plain authored content remain subject to budget'
+    expect_named late.md
+    expect_named plain.md
+    expect_not_named early.md
+    expect_not_named boundary.md
+}
+
 test_ordinary_commits
 test_conflict_resolutions
 test_clean_inheritance
@@ -327,6 +346,7 @@ test_head_inheritance
 test_merge_metadata
 test_linked_worktree
 test_exemptions
+test_generated_prefix
 
 if ((FAILURES > 0)); then
     printf 'check-file-tokens_test: %d failure(s)\n' "$FAILURES" >&2

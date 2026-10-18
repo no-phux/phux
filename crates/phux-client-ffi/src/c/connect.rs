@@ -27,7 +27,9 @@ const MAX_PATH_BYTES: usize = 4096;
 /// The longest `HELLO` client name a connect call accepts.
 const MAX_CLIENT_NAME_BYTES: usize = 256;
 
-/// Notification that consumer-visible state changed. Driver wakes run off-thread;
+/// Notification that consumer-visible state changed.
+///
+/// Driver wakes run off-thread;
 /// registration and explicit runtime wakes may invoke it inline on the caller,
 /// including before either connect call returns a handle. One outstanding wake
 /// covers any number of frames; the next `phux_client_poll` re-arms it.
@@ -262,7 +264,9 @@ fn connect(
 }
 
 /// Feed everything the driver has read since the last poll, then publish the
-/// resulting effects. The embedded lane does this inside
+/// resulting effects.
+///
+/// The embedded lane does this inside
 /// `phux_client_feed_frame`; a connected client calls this from owning-loop
 /// work posted by its wake, never inline in that callback or before connect
 /// returns a valid handle.
