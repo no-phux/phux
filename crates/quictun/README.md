@@ -75,8 +75,9 @@ Validation is TLS-ALPN-01: the CA connects to the name on port 443, the
 relay routes that connection to the laptop like any other, and the laptop
 answers. There is no inbound port at the laptop and no change at the
 relay, and the certificate's key never leaves the laptop. It is renewed
-30 days before it expires. `connect --service-name laptop.tunnel.example.com`
-then verifies the service the way a browser does, so renewal never breaks
+once a third of its lifetime is left.
+`connect --service-name laptop.tunnel.example.com` then verifies the
+service the way a browser does, so renewal never breaks
 a pin. `--cert` and `--key` still take any certificate you already have.
 
 ## Shape

@@ -87,17 +87,24 @@ fn parse_url(url: &str) -> Result<Url<'_>, AcmeError> {
     Ok(Url { host, port, path })
 }
 
-/// `method url`, with `body` as `application/jose+json` when given, trusting
-/// the server's certificate to `roots`.
+/// The `Accept` an ACME request sends for a JSON object.
+pub(crate) const JSON: &str = "application/json";
+
+/// `method url`, with `body` as `application/jose+json` when given, asking
+/// for `accept`, trusting the server's certificate to `roots`.
 pub(crate) async fn request(
     roots: &Arc<rustls::RootCertStore>,
     method: &str,
     url: &str,
     body: Option<&[u8]>,
+    accept: &str,
 ) -> Result<Response, AcmeError> {
-    tokio::time::timeout(EXCHANGE_DEADLINE, exchange(roots, method, url, body))
-        .await
-        .map_err(|_| AcmeError::Http(format!("{method} {url}: timed out")))?
+    tokio::time::timeout(
+        EXCHANGE_DEADLINE,
+        exchange(roots, method, url, body, accept),
+    )
+    .await
+    .map_err(|_| AcmeError::Http(format!("{method} {url}: timed out")))?
 }
 
 async fn exchange(
@@ -105,6 +112,7 @@ async fn exchange(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
+    accept: &str,
 ) -> Result<Response, AcmeError> {
     let parsed = parse_url(url)?;
     let http = |err: std::io::Error| AcmeError::Http(format!("{method} {url}: {err}"));
@@ -126,7 +134,7 @@ async fn exchange(
         .map_err(http)?;
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: quictun\r\n\
-         Accept: application/json\r\nConnection: close\r\n",
+         Accept: {accept}\r\nConnection: close\r\n",
         path = parsed.path,
         host = parsed.host_header(),
     );
@@ -146,25 +154,26 @@ async fn exchange(
         .take(u64::try_from(MAX_RESPONSE + 1).unwrap_or(u64::MAX))
         .read_to_end(&mut raw)
         .await;
-    // A server that closes without TLS close_notify still sent a whole
-    // response; keep what arrived.
-    if let Err(err) = read
-        && raw.is_empty()
-    {
-        return Err(http(err));
-    }
+    // A server may close without TLS close_notify after a whole response,
+    // which a length or the chunk framing proves; only a body read to a
+    // clean close may stand without either.
+    let clean_close = match read {
+        Ok(_) => true,
+        Err(_) if !raw.is_empty() => false,
+        Err(err) => return Err(http(err)),
+    };
     if raw.len() > MAX_RESPONSE {
         return Err(AcmeError::Http(format!(
             "{method} {url}: response too large"
         )));
     }
-    parse_response(&raw)
-        .ok_or_else(|| AcmeError::Http(format!("{method} {url}: malformed response")))
+    parse_response(&raw, clean_close)
+        .ok_or_else(|| AcmeError::Http(format!("{method} {url}: malformed or cut-off response")))
 }
 
-/// Status line, headers, and body (by `Content-Length`, chunked, or to the
-/// close).
-fn parse_response(raw: &[u8]) -> Option<Response> {
+/// Status line, headers, and body: by `Content-Length`, chunked, or (only
+/// after a `clean_close`) to the close.
+fn parse_response(raw: &[u8], clean_close: bool) -> Option<Response> {
     let split = raw.windows(4).position(|window| window == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..split]).ok()?;
     let rest = &raw[split + 4..];
@@ -179,8 +188,10 @@ fn parse_response(raw: &[u8]) -> Option<Response> {
         dechunk(rest)?
     } else if let Some(len) = find("content-length") {
         rest.get(..len.parse::<usize>().ok()?)?.to_vec()
-    } else {
+    } else if clean_close {
         rest.to_vec()
+    } else {
+        return None;
     };
     Some(Response {
         status,
@@ -233,6 +244,7 @@ mod tests {
     fn responses_parse_by_length_chunks_or_close() {
         let fixed = parse_response(
             b"HTTP/1.1 201 Created\r\nReplay-Nonce: abc\r\nContent-Length: 2\r\n\r\n{}extra",
+            false,
         )
         .unwrap();
         assert_eq!(fixed.status, 201);
@@ -241,12 +253,21 @@ mod tests {
 
         let chunked = parse_response(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=y\r\nde\r\n0\r\n\r\n",
+            false,
         )
         .unwrap();
         assert_eq!(chunked.body, b"abcde");
 
-        let to_close = parse_response(b"HTTP/1.1 200 OK\r\n\r\nall of it").unwrap();
+        let to_close = parse_response(b"HTTP/1.1 200 OK\r\n\r\nall of it", true).unwrap();
         assert_eq!(to_close.body, b"all of it");
-        assert!(parse_response(b"garbage").is_none());
+        assert!(
+            parse_response(b"HTTP/1.1 200 OK\r\n\r\nall of i", false).is_none(),
+            "an unframed body cut off by an error is not a response"
+        );
+        assert!(
+            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nall of", true).is_none(),
+            "shorter than its length"
+        );
+        assert!(parse_response(b"garbage", true).is_none());
     }
 }

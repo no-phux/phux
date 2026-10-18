@@ -244,6 +244,29 @@ impl MockCa {
         order
     }
 
+    /// Sign the order's CSR, refusing one whose common name is not the
+    /// order's identifier, as Boulder does (a CN is one of a CSR's names).
+    fn finalize(&self, payload: &Value) -> Answer {
+        let der = URL_SAFE_NO_PAD
+            .decode(payload["csr"].as_str().unwrap())
+            .unwrap();
+        let csr = rcgen::CertificateSigningRequestParams::from_der(&der.into()).unwrap();
+        let foreign_cn = csr.params.distinguished_name.iter().any(|(kind, value)| {
+            *kind == rcgen::DnType::CommonName
+                && !matches!(value, rcgen::DnValue::Utf8String(name) if name == DOMAIN)
+        });
+        if foreign_cn {
+            return problem("badCSR");
+        }
+        let leaf = csr.signed_by(&self.ca.issuer).unwrap();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.chain = Some(format!("{}{}", leaf.pem(), self.ca.root_pem));
+            state.order_status = "valid";
+        }
+        json_answer(200, Vec::new(), &self.order())
+    }
+
     async fn handle(&self, request: Request) -> Answer {
         // URLs are built from the Host header, as real CAs do, so a client
         // that drops the port gets URLs that lead nowhere.
@@ -315,18 +338,7 @@ impl MockCa {
                     &json!({ "type": "tls-alpn-01", "status": "processing" }),
                 )
             }
-            "/finalize/1" => {
-                let der = URL_SAFE_NO_PAD
-                    .decode(payload["csr"].as_str().unwrap())
-                    .unwrap();
-                let csr = rcgen::CertificateSigningRequestParams::from_der(&der.into()).unwrap();
-                let leaf = csr.signed_by(&self.ca.issuer).unwrap();
-                let mut state = self.state.lock().unwrap();
-                state.chain = Some(format!("{}{}", leaf.pem(), self.ca.root_pem));
-                state.order_status = "valid";
-                drop(state);
-                json_answer(200, Vec::new(), &self.order())
-            }
+            "/finalize/1" => self.finalize(&payload),
             "/cert/1" => {
                 let chain = self.state.lock().unwrap().chain.clone().unwrap();
                 (
@@ -584,7 +596,7 @@ async fn acme_issues_through_the_relay_and_connect_multiplexes_over_it() {
             service_dir
                 .path()
                 .join("acme")
-                .join(format!("{DOMAIN}.cert.pem"))
+                .join(format!("{DOMAIN}.pem"))
                 .exists()
         );
 
