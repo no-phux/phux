@@ -23,7 +23,10 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
+use super::widgets::{
+    Modal, centered_panel, footer_status_budget, modal_inner_width, paint_scrollbar,
+    scroll_into_view,
+};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 use crate::render::{clip_left, clip_text};
@@ -520,13 +523,16 @@ impl SelectList {
     }
 
     /// The bottom-left border text: the selection's position among the
-    /// selectable rows (`3 of 61`), or the match count alone when nothing is
-    /// selected.
+    /// selectable rows (`3 of 61`), the match count alone when nothing is
+    /// selected, or `no matches` when the query filtered every row out.
     fn footer(&self, indices: &[usize]) -> String {
         let selectable = indices
             .iter()
             .filter(|&&idx| !self.items[idx].is_header())
             .count();
+        if selectable == 0 && !self.query.is_empty() {
+            return "no matches".to_owned();
+        }
         if selectable == 0 || !self.row_selectable(indices, self.selected) {
             return format!("{selectable} rows");
         }
@@ -659,13 +665,6 @@ fn session_management_command(item: &SelectItem) -> OverlayCommand {
     );
     "session-actions".clone_into(&mut action.action);
     OverlayCommand::RunAbove(action)
-}
-
-/// Cells the footer's left status may use: the border minus both corners,
-/// the key legend with its padding, the status's own padding and one gap.
-fn footer_status_budget(modal_width: u16, keys: &str) -> usize {
-    let keys_w = crate::render::display_width(keys) + 2;
-    usize::from(modal_width).saturating_sub(2 + keys_w + 2 + 1)
 }
 
 impl RenderOverlay for SelectList {
@@ -1055,6 +1054,15 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn a_query_matching_nothing_says_no_matches_in_the_footer() {
+        let mut sl = sample();
+        type_str(&mut sl, "zzzz");
+        let out = render_to_string(&sl, 60, 12);
+        assert!(out.contains("no matches"), "{out}");
+        assert!(!out.contains("0 rows"), "{out}");
     }
 
     #[test]

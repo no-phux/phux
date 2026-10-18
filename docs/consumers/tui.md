@@ -787,7 +787,8 @@ file; editing `sidebar.enabled` here does.
 Enter or Space toggles a bool or opens the inline editor. Left / Right
 cycle a choice or step an integer. Del or `C-r` removes your override. The
 bottom border says which row of the section you are on and repeats these
-keys.
+keys; the legend shortens on a narrow box so it never collides with the
+position.
 `C-z` undoes the last edit made on this page. A refused edit names its
 reason and leaves the file alone. Composite settings (widget lists,
 binding tables, hooks, plugin and host registries) stay in the file; the
