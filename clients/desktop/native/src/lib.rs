@@ -25,6 +25,7 @@ pub mod chrome;
 pub mod connection;
 pub mod diag;
 pub mod fonts;
+pub mod git;
 pub mod hotkeys;
 pub mod input;
 pub mod launch;

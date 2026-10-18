@@ -13,18 +13,22 @@
 //! |---|---|
 //! | [`titlebar`] | traffic-light lead, the main menu trigger, top tabs, actions, bell |
 //! | [`navigator`] | the one sidebar: sessions, their tabs, background terminals |
+//! | [`changes`] | the Changes panel: the focused pane's Git checkout |
 //! | [`tabs`] | one tab renderer for the titlebar and the navigator |
 //! | [`panes`] | the split tree, pane cards, their controls and the empty state |
 //! | [`status`] | the exceptions-only status line and the notification peek |
 //!
 //! Shared pieces come from [`super::ui`]; menus from [`super::menus`].
 
+mod changes;
 mod navigator;
 mod panes;
 mod status;
 mod tabs;
 mod titlebar;
 
+#[cfg(test)]
+mod changes_tests;
 #[cfg(test)]
 mod tab_tests;
 
@@ -121,6 +125,7 @@ fn drag_label(keys: &[ResourceKey], name: &str) -> String {
 pub(super) struct ChromeCache {
     titlebar: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
+    changes: Option<Entity<CachedChrome>>,
     overlays: Option<Entity<CachedChrome>>,
 }
 
@@ -260,7 +265,18 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                         cx,
                     ))
                 })
-                .child(panes::main_column(desk, &look, window, cx)),
+                .child(panes::main_column(desk, &look, window, cx))
+                .when(desk.changes.open && !quick(desk), |row| {
+                    row.child(chrome_slot(
+                        &mut desk.chrome.changes,
+                        changes::build,
+                        StyleRefinement::default()
+                            .w(px(changes::WIDTH))
+                            .flex_shrink_0()
+                            .h_full(),
+                        cx,
+                    ))
+                }),
         )
         .child(chrome_slot(
             &mut desk.chrome.overlays,

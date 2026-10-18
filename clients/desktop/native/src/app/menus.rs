@@ -13,12 +13,13 @@ use std::time::{Duration, Instant};
 use gpui::{App, Context, Point, SharedString, WeakEntity, Window, WindowHandle, point, px};
 use gpui_kit::assets::IconName;
 
-use crate::settings::{SidebarGrouping, TabPosition};
-
 use super::actions::title;
 use super::desk::{Desk, Modal};
 use super::ui::keystroke;
 use super::ui::menu::{self, Anchor, Closed, GlassMenu, Heading, MenuItem, MenuPage, MenuSpec};
+
+mod view;
+use view::{view_menu, view_page};
 
 /// A click that dismissed a menu by deactivating it arrives at its trigger
 /// this soon after; it closes rather than reopens.
@@ -350,53 +351,6 @@ fn folder_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Where tabs go and how the sidebar groups sessions: different views of the
-/// same work, never different work.
-fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
-    let checked =
-        |id: &'static str, icon: IconName, on: bool| command(desk, handle, id, icon).checked(on);
-    let tabs = desk.prefs.tab_position;
-    let grouping = desk.prefs.sidebar_grouping;
-    MenuPage::titled(
-        "View",
-        vec![
-            checked(
-                "tabs-top",
-                IconName::PanelsTopLeft,
-                tabs == TabPosition::Top,
-            ),
-            checked("tabs-side", IconName::PanelLeft, tabs == TabPosition::Side),
-            checked(
-                "group-projects",
-                IconName::Folder,
-                grouping == SidebarGrouping::Project,
-            )
-            .gap(),
-            checked(
-                "group-machines",
-                IconName::Server,
-                grouping == SidebarGrouping::Machine,
-            ),
-            checked(
-                "group-none",
-                IconName::ListTree,
-                grouping == SidebarGrouping::None,
-            ),
-            command(desk, handle, "sidebar", IconName::PanelLeft)
-                .checked(desk.prefs.sidebar_visible)
-                .gap(),
-            command(desk, handle, "plain-terminal", IconName::SquareTerminal)
-                .checked(desk.prefs.plain),
-        ],
-    )
-}
-
-fn view_menu(desk: &Desk, cx: &mut Context<Desk>) -> MenuSpec {
-    let mut page = view_page(desk, &cx.weak_entity());
-    page.heading = None;
-    spec("Sidebar view", page, 260., desk)
-}
-
 fn pane_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
     MenuPage::titled(
         "Pane",
@@ -588,28 +542,4 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pane_and_session_menus_use_palette_titles() {
-        let titles: Vec<_> = PANE_MENU.into_iter().map(title).collect();
-        assert_eq!(
-            titles,
-            ["Split Right", "Split Down", "Mirror Pane", "Close Pane"]
-        );
-        for id in [
-            "select-session-work",
-            "rename-session",
-            "kill-session",
-            "rename",
-            "close-tab",
-            "group-projects",
-            "group-machines",
-            "group-none",
-            "main-menu",
-        ] {
-            assert!(!title(id).is_empty());
-        }
-    }
-}
+mod tests;
