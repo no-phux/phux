@@ -164,7 +164,16 @@ export function routes(root = ROOT): Route[] {
       surfaces: ["native", "web_engine", "desktop"],
     },
     { paths: ["flake.nix", "flake.lock"], surfaces: [...RUST, "web"] },
-    { paths: ["just/gates.just", "just/test.just", "just/build.just"], surfaces: ["phux"] },
+    // The check job runs build-features-check against the real graph.
+    {
+      paths: [
+        "just/gates.just",
+        "just/test.just",
+        "just/build.just",
+        "tools/src/cargo/build-features.ts",
+      ],
+      surfaces: ["phux"],
+    },
     // The root justfile is imports + `default`; product recipes live in
     // just/*.just. Perf, release, mutation and release-please config are
     // compile-free, as are the product-skills publish mirror and the FFI
