@@ -10,6 +10,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::coord::{
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, SendMail, Sent,
+    TakeClaim,
+};
 use crate::error::Error;
 use crate::id::Alias;
 use crate::service::Endpoint;
@@ -213,6 +217,78 @@ impl Client {
     pub fn commit_start(&self, request: StartRequest) -> Result<StartApplied, Error> {
         match self.call(Request::CommitStart(request))? {
             Response::StartApplied(applied) => Ok(applied),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Send a message. See [`crate::Store::send_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn send_mail(&self, request: SendMail) -> Result<Sent, Error> {
+        match self.call(Request::SendMail(request))? {
+            Response::Sent(sent) => Ok(sent),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// A reader's mail. See [`crate::Store::read_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn read_mail(&self, request: ReadMail) -> Result<Vec<Mail>, Error> {
+        match self.call(Request::ReadMail(request))? {
+            Response::Mail(mail) => Ok(mail),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Acknowledge a message. See [`crate::Store::ack_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], plus [`Error::NoMail`].
+    pub fn ack_mail(&self, request: AckMail) -> Result<Mail, Error> {
+        match self.call(Request::AckMail(request))? {
+            Response::Acked(mail) => Ok(mail),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Take or renew claims. See [`crate::Store::take_claim`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn take_claim(&self, request: TakeClaim) -> Result<ClaimOutcome, Error> {
+        match self.call(Request::TakeClaim(request))? {
+            Response::ClaimOutcome(outcome) => Ok(outcome),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Release claims. See [`crate::Store::release_claim`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn release_claim(&self, request: ReleaseClaim) -> Result<u64, Error> {
+        match self.call(Request::ReleaseClaim(request))? {
+            Response::Released(count) => Ok(count),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Live claims. See [`crate::Store::claims`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn claims(&self, filter: ClaimFilter) -> Result<Vec<Claim>, Error> {
+        match self.call(Request::Claims(filter))? {
+            Response::Claims(claims) => Ok(claims),
             other => Err(unexpected(&other)),
         }
     }

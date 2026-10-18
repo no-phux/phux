@@ -257,6 +257,7 @@ pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod confirm;
+pub(crate) mod coord;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
@@ -412,6 +413,12 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
+        Command::Claim { .. } => Some("claim"),
+        Command::Mail { action } => match action {
+            coord::MailAction::Send { .. } => None,
+            coord::MailAction::Read { .. } => Some("mail read"),
+            coord::MailAction::Ack { .. } => Some("mail ack"),
+        },
         Command::Mission { action } => match action {
             Some(MissionAction::Keeper { .. }) => Some("mission keeper"),
             Some(MissionAction::Start { .. } | MissionAction::Add { start: true, .. }) => None,
@@ -1372,6 +1379,44 @@ pub(crate) enum Command {
     Mission {
         #[usage(subcommand)]
         action: Option<MissionAction>,
+    },
+
+    /// Send, read and acknowledge mail between agents
+    ///
+    /// Mail lives in the work store beside `phux mission` tasks and survives
+    /// restarts. An agent is addressed by its pane, `@749`, optionally
+    /// labelled, `pi@749`; anything outside a pane uses a name. `send`
+    /// stores the message, then rings each recipient pane with one
+    /// acknowledged single-line prompt naming the sender and the thread, so
+    /// an idle agent wakes and reads; a pane with no agent is not rung.
+    /// You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else
+    /// `$USER`.
+    ///
+    /// `--json` prints a document whose `schema` is `phux.coord/v1`. Exit
+    /// status: 0 success; 1 the message is unknown or the store failed; 2
+    /// the command line was refused.
+    #[usage(help_heading = "Agents", display_order = 37)]
+    Mail {
+        #[usage(subcommand)]
+        action: coord::MailAction,
+    },
+
+    /// Claim paths so other agents leave them alone
+    ///
+    /// A claim covers its path and everything under it, lives in the work
+    /// store, and lapses at its deadline unless renewed by claiming again.
+    /// An exclusive claim (the default) excludes every other holder;
+    /// `--shared` claims coexist. Each new claim takes the next fence
+    /// number. Claims are advisory: they tell agents who is working where,
+    /// and nothing stops a write.
+    ///
+    /// `--json` prints a document whose `schema` is `phux.coord/v1`. Exit
+    /// status: 0 success; 1 another holder conflicts, and nothing was
+    /// claimed, or the store failed; 2 the command line was refused.
+    #[usage(help_heading = "Agents", display_order = 38)]
+    Claim {
+        #[usage(subcommand)]
+        action: coord::ClaimAction,
     },
 
     /// List actions held for approval

@@ -140,6 +140,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0187](./0187-agents-coordinate-through-phux.md) Mail between agents and advisory path claims live in the work store, keyed by pane (`@749`); `mail send` stores, then rings each recipient pane with one acknowledged prompt. Blackbird is retired.
 - [0159](./0159-agent-streams-resume-from-committed-records.md) A reconnect resumes an AgentSession after its committed record sequence; eviction or an incompatible shared relay cut yields an explicit full replacement, never a silent gap.
 - [0156](./0156-agent-transcript-records.md) First-party Pi and Claude integrations append the conversation as `provider_raw` records in the `phux.transcript/v1` convention, on by default with what the pane shows; tool output needs `PHUX_AGENT_TRANSCRIPT=full`, and `=0` opts out.
 - [0155](./0155-host-originated-push-through-a-blind-gateway.md) A suspended phone is pushed by its own server through a blind first-party gateway, with a content-free notice and a per-device grant under `phux.push/v1/<device>`.
@@ -147,7 +148,6 @@ by a newer one, the newer line is the operative reading.
 - [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Pi and OpenCode are sibling adapters over one private, neutral Node integration runtime; neither imports the other.
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
 - [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable work rides a separate, fenced, bounded `phux-coordinator/1` endpoint, never L1 or L3.
-- [0095](./0095-the-blackbird-boundary.md) phux and Blackbird never connect; one optional field in the agent record joins their ledgers.
 - [0085](./0085-hook-sourced-agent-state.md) Hook-reported working, blocked, and done states are detector evidence, published immediately.
 - [0084](./0084-starting-an-agent-in-an-existing-shell.md) `phux agent start` types the integration argv into a live shell; detection verifies the kind.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

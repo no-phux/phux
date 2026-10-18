@@ -160,6 +160,12 @@ fn handle(store: &mut Store, request: Request) -> Response {
         Request::PlanStart(request) => store.plan_start(&request).map(Response::StartPlan),
         Request::ReplayStart(request) => store.replay_start(&request).map(Response::StartReplay),
         Request::CommitStart(request) => store.commit_start(request).map(Response::StartApplied),
+        Request::SendMail(request) => store.send_mail(&request).map(Response::Sent),
+        Request::ReadMail(request) => store.read_mail(&request).map(Response::Mail),
+        Request::AckMail(request) => store.ack_mail(&request).map(Response::Acked),
+        Request::TakeClaim(request) => store.take_claim(&request).map(Response::ClaimOutcome),
+        Request::ReleaseClaim(request) => store.release_claim(&request).map(Response::Released),
+        Request::Claims(filter) => store.claims(&filter).map(Response::Claims),
     };
     result.unwrap_or_else(|err| Response::Fault(err.into()))
 }

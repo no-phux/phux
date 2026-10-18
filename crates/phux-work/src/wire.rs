@@ -5,6 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::coord::{
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, SendMail, Sent,
+    TakeClaim,
+};
 use crate::error::Error;
 use crate::id::Alias;
 use crate::start::{StartApplied, StartPlan, StartRequest};
@@ -41,6 +45,12 @@ pub(crate) enum Request {
     PlanStart(StartRequest),
     ReplayStart(StartRequest),
     CommitStart(StartRequest),
+    SendMail(SendMail),
+    ReadMail(ReadMail),
+    AckMail(AckMail),
+    TakeClaim(TakeClaim),
+    ReleaseClaim(ReleaseClaim),
+    Claims(ClaimFilter),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +63,12 @@ pub(crate) enum Response {
     StartPlan(StartPlan),
     StartReplay(Option<StartApplied>),
     StartApplied(StartApplied),
+    Sent(Sent),
+    Mail(Vec<Mail>),
+    Acked(Mail),
+    ClaimOutcome(ClaimOutcome),
+    Released(u64),
+    Claims(Vec<Claim>),
     Fault(Fault),
 }
 
@@ -104,6 +120,10 @@ pub(crate) enum Fault {
         running: u64,
         max_agents: u64,
     },
+    NoMail {
+        id: String,
+        reader: String,
+    },
     Busy,
     Stale {
         keeper: String,
@@ -145,6 +165,7 @@ impl From<Error> for Fault {
                 running,
                 max_agents: limit,
             },
+            Error::NoMail { id, reader } => Self::NoMail { id, reader },
             Error::Busy => Self::Busy,
             other @ (Error::Io(_)
             | Error::Sqlite(_)
@@ -191,6 +212,7 @@ impl From<Fault> for Error {
                 running,
                 limit: max_agents,
             },
+            Fault::NoMail { id, reader } => Self::NoMail { id, reader },
             Fault::Busy => Self::Busy,
             Fault::Stale { keeper } => Self::Keeper(format!("keeper is from build {keeper}")),
             Fault::BadRequest { message } => Self::Keeper(message),

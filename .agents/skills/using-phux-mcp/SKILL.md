@@ -54,6 +54,16 @@ input or stop the terminal process. For `phux_resource_wait`, retain the
 returned cursor for resumption. `gone`, `timed_out`, or lost journal evidence
 must not be reported as a successful process exit.
 
+## Coordinating with other agents
+
+Message another agent with `phux_mail_send`, never by sending keys into its
+pane: the mail is stored and the recipient's pane is rung with one line naming
+you and the thread. Read with `phux_mail_read`, acknowledge handled messages
+with `phux_mail_ack`, and reply in the same thread. Before working in a shared
+checkout, `phux_claim_take` its absolute path; a `conflict` outcome names the
+holder, so mail them. `phux_claim_release` when done. You speak as your own
+pane. Claims are advisory and lapse unless renewed.
+
 ## Safety
 
 - MCP input mutates a real PTY that a human may share. Layout changes never
@@ -88,5 +98,5 @@ must not be reported as a successful process exit.
   failed diagnostic check may be structured successful output.
 
 There is no attach tool, headless focus tool, durable input lease, scheduler,
-credential mutation surface, or unbounded watch call. Keep those concerns in
+credential mutation surface, or unbounded watch call; claims are advisory. Keep those concerns in
 the orchestrator.

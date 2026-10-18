@@ -100,6 +100,9 @@ pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
             });
         }
     }
+    // Additive tables leave `user_version` alone, so an older binary still
+    // opens the store and ignores them.
+    conn.execute_batch(crate::coord::SCHEMA)?;
     Ok(())
 }
 

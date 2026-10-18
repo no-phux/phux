@@ -63,6 +63,8 @@ Agents:
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
   mission       Track tasks in the local work store
+  mail          Send, read and acknowledge mail between agents
+  claim         Claim paths so other agents leave them alone
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -1072,6 +1074,102 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux claim`
+
+```text
+Claim paths so other agents leave them alone
+
+A claim covers its path and everything under it, lives in the work store, and
+lapses at its deadline unless renewed by claiming again. An exclusive claim (the
+default) excludes every other holder; `--shared` claims coexist. Each new claim
+takes the next fence number. Claims are advisory: they tell agents who is
+working where, and nothing stops a write.
+
+`--json` prints a document whose `schema` is `phux.coord/v1`. Exit status: 0
+success; 1 another holder conflicts, and nothing was claimed, or the store
+failed; 2 the command line was refused.
+
+Usage: phux claim <SUBCOMMAND>
+
+Commands:
+  list     List live claims
+  release  Release your claims on these paths, or all of them
+  take     Claim paths, all or none; exits 1 naming the holders on a conflict
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux claim list`
+
+```text
+List live claims
+
+Usage: phux claim list [FLAGS]
+
+Flags:
+      --path <PATH>       Only claims covering this path or under it.
+      --holder <ADDRESS>  Only this holder's.
+      --json              Emit stable, versioned JSON on stdout instead of the
+                          human view. On failure, stdout stays empty and stderr
+                          carries one JSON error object.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux claim release`
+
+```text
+Release your claims on these paths, or all of them
+
+Usage: phux claim release [--as <ADDRESS>] [--json] [PATH]…
+
+Arguments:
+  [PATH]…  Exact paths you claimed. None releases all of yours.
+
+Flags:
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux claim take`
+
+```text
+Claim paths, all or none; exits 1 naming the holders on a conflict
+
+Usage: phux claim take [FLAGS] <PATH>…
+
+Arguments:
+  <PATH>…  Paths to claim. Each covers everything under it.
+
+Flags:
+      --shared         Share with other shared claims instead of excluding every
+                       other holder.
+      --ttl <SECS>     Seconds until the claim lapses unless renewed. Default
+                       3600, at most 86400.
+      --note <TEXT>    Why, shown to anyone the claim blocks.
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux completion`
 
 ```text
@@ -2037,6 +2135,104 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux mail`
+
+```text
+Send, read and acknowledge mail between agents
+
+Mail lives in the work store beside `phux mission` tasks and survives restarts.
+An agent is addressed by its pane, `@749`, optionally labelled, `pi@749`;
+anything outside a pane uses a name. `send` stores the message, then rings each
+recipient pane with one acknowledged single-line prompt naming the sender and
+the thread, so an idle agent wakes and reads; a pane with no agent is not rung.
+You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
+
+`--json` prints a document whose `schema` is `phux.coord/v1`. Exit status: 0
+success; 1 the message is unknown or the store failed; 2 the command line was
+refused.
+
+Usage: phux mail <SUBCOMMAND>
+
+Commands:
+  ack   Acknowledge a message, so its sender knows it was handled
+  read  Read your unread mail and mark it read
+  send  Send a message and ring each recipient's pane
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail ack`
+
+```text
+Acknowledge a message, so its sender knows it was handled
+
+Usage: phux mail ack [--as <ADDRESS>] [--json] <ID>
+
+Arguments:
+  <ID>  Message id, as `read` prints it.
+
+Flags:
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail read`
+
+```text
+Read your unread mail and mark it read
+
+Usage: phux mail read [FLAGS]
+
+Flags:
+  -t, --thread <SLUG>  Only this thread, including what you sent in it.
+      --all            Include messages already read.
+      --peek           Do not mark what is shown as read.
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail send`
+
+```text
+Send a message and ring each recipient's pane
+
+Usage: phux mail send <FLAGS> <TO>…
+
+Arguments:
+  <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
+
+Flags:
+  -m, --message <TEXT>  The message. `-` reads it from stdin.
+  -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
+                        about.
+      --no-ring         Store the message without prompting any pane.
+      --as <ADDRESS>    Speak as this address instead of this pane.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mcp`

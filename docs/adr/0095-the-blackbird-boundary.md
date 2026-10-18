@@ -15,8 +15,9 @@ ledgers can be joined after the fact. This deletes the "required by Blackbird
 ADR-0005" justification from `phux-pjc5` and `phux-ktzk`: that document was
 never written and its architecture is archived.
 
-Status: Accepted
+Status: Superseded by ADR-0187
 Date: 2026-09-02
+Superseded by [ADR-0187](./0187-agents-coordinate-through-phux.md): mail and path claims live in the phux work store, keyed by pane, and Blackbird is retired.
 
 ## Context
 

@@ -970,6 +970,31 @@ count bound evicts it, or it is killed; input and signals are refused. Gate
 on `RETAIN_ON_EXIT` (normative: [resource protocol](../spec/L1.md),
 [ADR-0124](../adr/0124-retain-on-exit.md)).
 
+### `mail` / `claim` (`schema` `phux.coord/v1`)
+
+Agent coordination in the host's work store
+([ADR-0187](../adr/0187-agents-coordinate-through-phux.md)). An address is a
+pane (`@749`), a labelled pane (`pi@749`, keyed by the pane), or a bare name
+for something outside a pane; you speak as `--as`, else
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
+
+`mail send` returns `{schema, mail, bells}`: `mail` is
+`{id, thread, from, to, body, created_at, read_at, acked_at}` and each bell is
+`{to, outcome}` with outcome `rung` or `not rung: REASON`. Mail is stored
+before any bell rings; a pane with no agent record is never rung. `mail read`
+returns `{schema, reader, mail: [...]}` oldest first and marks what it returns
+read unless `--peek`; with `--thread` it includes what the reader sent there.
+`mail ack` returns `{schema, mail}`; a message not sent to the reader is
+`mail_not_found`, exit 1.
+
+`claim take` returns `{schema, holder, claim: {outcome, claims}}` with
+`outcome` `granted` or `conflict`; a conflict exits 1 and takes nothing.
+Each claim is `{path, holder, exclusive, fence, note, expires_at}`
+(`expires_at` in Unix seconds). A claim covers its absolute path and
+everything under it; renewing keeps `fence`, a new claim takes the next one.
+`claim release` returns `{schema, holder, released}`; `claim list` returns
+`{schema, claims}`.
+
 ### Other `--json` verbs
 
 `logs`, `update`, and `channel` success documents are `schema_version` 2.
@@ -1161,8 +1186,9 @@ re-read that state, not substitutes for it. The AgentSession ring is live and bo
 not durable evidence
 ([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md)).
 The planned durable coordinator is a separate endpoint, not a property of
-this stream ([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md),
-[ADR-0095](../adr/0095-the-blackbird-boundary.md)).
+this stream ([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md)).
+Agent mail and path claims live in the host's work store, not in a separate
+service ([ADR-0187](../adr/0187-agents-coordinate-through-phux.md)).
 
 ## 12. MCP and SDK
 

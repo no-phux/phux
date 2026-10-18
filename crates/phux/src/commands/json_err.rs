@@ -322,6 +322,8 @@ pub(crate) mod codes {
     pub(crate) const MISSION_CONFIRMATION_REQUIRED: &str = "mission_confirmation_required";
     /// Creating the worktree, session, or agent failed. Exit 1.
     pub(crate) const MISSION_START_FAILED: &str = "mission_start_failed";
+    /// `phux mail ack` named a message not sent to the reader. Exit 1.
+    pub(crate) const MAIL_NOT_FOUND: &str = "mail_not_found";
 }
 
 /// One CLI failure, carrying everything both output channels need: a stable
