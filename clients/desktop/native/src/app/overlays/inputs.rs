@@ -13,18 +13,7 @@ use crate::app::desk::{self, Desk, Modal};
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     match desk.modal.clone() {
         Modal::None => {}
-        Modal::Capture => {
-            let draft = desk.capture.draft.clone();
-            let input = modal_input(
-                desk,
-                InputSlot::Capture,
-                &draft,
-                "What needs changing?",
-                window,
-                cx,
-            );
-            input.update(cx, |input, cx| input.focus(window, cx));
-        }
+        Modal::Capture => desk.prepare_capture(window, cx),
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -209,12 +198,6 @@ impl Desk {
         cx: &mut Context<Self>,
     ) {
         match (slot, submit) {
-            (InputSlot::Capture, submit) => {
-                self.capture.draft = value;
-                if let Some(shift) = submit {
-                    self.submit_capture(!shift, window, cx);
-                }
-            }
             (InputSlot::Find, None) => {
                 let case = self.find.as_ref().is_some_and(|find| find.case_sensitive);
                 self.run_search(value, case, cx);

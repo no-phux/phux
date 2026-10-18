@@ -39,17 +39,15 @@ fn built_in_chords_never_conflict() {
 }
 
 #[test]
-fn capture_is_catalogued_and_accepts_a_user_chord_without_a_global_default() {
+fn capture_has_a_local_chord_and_accepts_a_user_override() {
     let capture = super::builtin_commands()
         .iter()
         .find(|command| command.id == "capture")
         .unwrap();
     assert!(capture.is_listed());
-    assert!(capture.chord.is_none());
-    let config = parse_ghostty("keybind = super+shift+space=capture\n");
-    assert!(
-        effective_keymap(&config, true).contains(&("cmd+shift+space".into(), "capture".into()))
-    );
+    assert_eq!(capture.chord, Some("cmd+shift+space"));
+    let config = parse_ghostty("keybind = super+shift+k=capture\n");
+    assert!(effective_keymap(&config, true).contains(&("cmd+shift+k".into(), "capture".into())));
 }
 
 #[test]

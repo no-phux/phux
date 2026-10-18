@@ -59,7 +59,6 @@ pub(super) struct PaletteView {
 /// Text fields a modal or the find bar owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputSlot {
-    Capture,
     Find,
     Rename,
     SessionName,

@@ -8,7 +8,7 @@ last-reviewed: 2026-10-18
 
 **TL;DR.** Capture is server-side intake, not a desktop note or an agent
 session. Save one thought, resolve a destination using explicit rules, then
-dispatch with a receipt. Enter follows the result; Shift+Enter stays put.
+dispatch with a receipt. Enter follows the result; Command/Control+Enter stays put.
 The desktop spike proves launch and focus using existing spawn commands;
 durable capture and cross-device synchronization remain proposed.
 
@@ -38,17 +38,21 @@ advertises resource operations; it does not promise capture storage.
 
 ### Surface and submission
 
-- Desktop: Command Palette, then `!`, enters Capture in one additional
-  keystroke. Capture is also a catalog command and visible mode button.
-  Reuse the existing sheet and text input, not a second launcher framework.
+- Desktop: Command+Shift+Space opens Capture directly inside Phux. Command
+  Palette, then `!`, also enters Capture in one additional keystroke.
+  Capture is a catalog command and visible mode button.
+  Reuse the existing sheet and Kit's auto-growing textarea and input group,
+  not a second launcher framework or a handwritten editor. Keep the editor
+  across dismissal so selection and undo survive alongside the draft.
 - Later: an opt-in global capture chord uses the existing hotkey registrar
   and raises only the capture sheet. No new default OS-wide chord is reserved.
 - Mobile: a persistent Capture affordance and share-sheet text enter the same
   server contract. TUI: a capture action opens a one-line editor. Neither is
   implemented by the desktop spike.
 - Enter means dispatch and navigate after a confirmed spawn/delivery receipt.
-  Shift+Enter means dispatch without changing terminal/tab/app focus, empty the
-  capture field on confirmation, and keep it ready for the next thought.
+  Shift+Enter adds a line, matching the conversation composer.
+  Command+Enter (macOS) / Control+Enter dispatches without changing terminal/tab/app
+  focus, empties the capture field on confirmation, and keeps it ready for the next thought.
   This is not “run headlessly”: both modes launch the same interactive agent.
 - Keep the draft on refusal. While awaiting a receipt, suppress duplicate
   submits. Preserve edits made in flight. Never silently retry an ambiguous
@@ -110,7 +114,7 @@ keep text. Names containing spaces, repo/pane selectors, remote forwarding,
 keyword-intent classification and new worktree creation are deferred.
 
 Enter places the acknowledged, ready Terminal in a new local tab and focuses
-it. Shift+Enter creates no placement: it remains discoverable in server topology
+it. Command/Control+Enter creates no placement: it remains discoverable in server topology
 and the sidebar/Go To from other clients. Focus is client-local, consistent with
 [ADR-0049](./0049-client-local-focus-and-advisory-attention.md).
 Existing spawn idempotency protects same-incarnation replay only; it is not
