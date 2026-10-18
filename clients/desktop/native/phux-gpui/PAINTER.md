@@ -85,7 +85,8 @@ line is kept only when every character became one glyph from the cell fonts;
 otherwise its ASCII stretches are shaped again as lines and every other cell
 alone. Wide cells and graphemes of several characters are shaped alone.
 When a row is shaped, its glyphs are resolved against the window's sprite
-atlas (`Window::resolve_glyph`, toolchain patch 0006) and kept with the scene
+atlas (`Window::resolve_glyph`, toolchain patch 0006, under `patched-gpui`;
+without it every window is one without a retaining atlas) and kept with the scene
 as one sprite list per row. Painting a row is then one
 `Window::paint_glyph_sprites` call: no shaping, rasterizing or atlas lookup,
 and one GPUI paint operation for the whole row. A scroll moves a kept row's
@@ -128,7 +129,7 @@ reads that record. Production builds record none. **Never enable the feature
 in a shipping binary.** Rust unit tests cover scene reuse, colour provenance,
 hidden cells and cursor shape.
 
-`tests/pixels.rs` is the pixel oracle, a `harness = false` test binary.
+`clients/desktop/native/tests/pixels.rs` is the pixel oracle, a `harness = false` test binary.
 Cargo's default harness runs each `#[test]` on a worker thread, and GPUI's
 macOS platform panics ("Mac platform not created on main thread") unless
 `MacPlatform` is created on the process main thread. This binary's `main`
@@ -156,7 +157,7 @@ them on a 200×60 grid of faint, bold and coloured prose with box drawing,
 with whole-screen rewrites in place of one-row updates. Four `window_*` phases
 draw the whole desk window instead (titlebar, sidebar with five sessions and
 fourteen agent rows, tab strip, status bar, and one 120x40 terminal pane;
-`tests/support/window_perf.rs`). The window dials an embedded runtime and the
+`clients/desktop/native/tests/support/window_perf.rs`). The window dials an embedded runtime and the
 benchmark plays the server. `window_idle` forces a redraw with nothing changed,
 `window_agents` changes every agent's state each tick, `window_hover` moves the
 pointer across sidebar rows and the tab strip, and `window_stream` scrolls the

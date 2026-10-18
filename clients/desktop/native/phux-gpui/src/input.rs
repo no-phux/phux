@@ -810,7 +810,7 @@ fn queued(success: bool) -> Result<(), InputError> {
 /// Native guardians never accept terminal-input fallback, including when the
 /// retained controller view is disconnected. The server owns the final gate
 /// before a publication reaches this client.
-pub(crate) fn native_owned(control: &ControlPlane, terminal: &ResourceId) -> bool {
+pub fn native_owned(control: &ControlPlane, terminal: &ResourceId) -> bool {
     let Some(topology) = control.topology() else {
         return false;
     };
@@ -1301,8 +1301,8 @@ mod tests {
 mod delivery {
     use super::{FIT_SETTLE, KeyDisposition, TerminalInput, tests::metrics};
     use gpui::{
-        AppContext, Bounds, ElementInputHandler, Entity, EntityInputHandler, InputHandler,
-        KeyDownEvent, KeyUpEvent, Keystroke, PlatformWindow, TestAppContext, Window, point, px,
+        AppContext, Entity, EntityInputHandler, KeyDownEvent, KeyUpEvent, Keystroke,
+        TestAppContext, Window, point, px,
     };
     use phux_client_runtime::control::{ControlOptions, ControlPlane};
     use phux_client_runtime::{Client, Runtime, ViewId};
@@ -1665,8 +1665,10 @@ mod delivery {
         assert_eq!((back, fraction), (0, 0.));
     }
 
+    #[cfg(feature = "patched-gpui")]
     #[gpui::test]
     fn only_the_terminal_surface_disables_apple_press_and_hold(cx: &mut TestAppContext) {
+        use gpui::{Bounds, ElementInputHandler, InputHandler, PlatformWindow};
         let client = session(None);
         let view = client.create_view(&terminal()).expect("view");
         let handle = cx.add_window(|window, cx| {

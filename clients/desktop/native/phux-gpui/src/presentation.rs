@@ -221,7 +221,7 @@ pub(crate) fn schedule_recovery(
     let frame = Arc::clone(painted);
     let lifetime = ticket.lifetime.clone();
     let expected_window = ticket.window;
-    window.on_drawable_presented(move |window, cx| {
+    crate::platform::on_presented(window, move |window, cx| {
         if window.window_handle().window_id().as_u64() != expected_window {
             return;
         }
@@ -239,8 +239,7 @@ pub(crate) fn schedule_recovery(
 }
 
 fn visible_unclipped(bounds: gpui::Bounds<gpui::Pixels>, window: &Window) -> bool {
-    window.native_visibility() == gpui::NativeVisibility::Visible
-        && bounds_cover(window.content_mask().bounds, bounds)
+    crate::platform::visible(window) && bounds_cover(window.content_mask().bounds, bounds)
 }
 
 fn bounds_cover(mask: gpui::Bounds<gpui::Pixels>, bounds: gpui::Bounds<gpui::Pixels>) -> bool {

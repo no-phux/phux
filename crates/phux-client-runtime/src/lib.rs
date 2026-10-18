@@ -12,6 +12,8 @@
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
 //! - [`perf`]: owner-thread apply and publication telemetry.
 //! - `publication` (feature `engine`): the double-buffered grid.
+//! - `draw` (feature `engine`): how a published frame paints, for any UI
+//!   toolkit: colour, face, cursor and block rules, and a draw list.
 //! - [`handshake`]: `HELLO` and `HELLO_OK` acceptance, shared by every lane.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`project_identity`]: a checkout's repository identity, from git files.
@@ -35,6 +37,8 @@ pub mod approvals;
 pub mod connection;
 pub mod control;
 pub mod dial;
+#[cfg(feature = "engine")]
+pub mod draw;
 pub mod engine;
 pub mod enroll;
 pub mod handshake;

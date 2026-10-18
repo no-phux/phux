@@ -15,12 +15,16 @@ path = "src/main.rs"
 
 # The GPUI graph is large and platform-specific. Keep this host's resolved union
 # local instead of adding the platform renderer to every phux workspace consumer.
+# `phux-gpui` is the embeddable terminal view this host is built on; it shares
+# this lock and the patched GPUI below.
 [workspace]
+members = ["phux-gpui"]
+default-members = [".", "phux-gpui"]
 
 [features]
 # Record where each glyph landed in `terminal::PaintedFrame` for pixel
 # fixtures; off in shipping builds.
-terminal-fixtures = []
+terminal-fixtures = ["phux-gpui/terminal-fixtures"]
 # Native material preview. Excluded from the shipping binary.
 ui-fixtures = []
 
@@ -34,6 +38,8 @@ phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
 phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false }
 phux-perf = { path = "../../../crates/phux-perf" }
 phux-protocol = { path = "../../../crates/phux-protocol" }
+# The terminal view, painter, input and presentation, on this host's patched GPUI.
+phux-gpui = { path = "phux-gpui", features = ["patched-gpui"] }
 # GPUI, platform and Kit move together: Kit 0.7.3 pins gpui-pre 0.3.9, which
 # `[patch.crates-io]` below serves as gpui-fast 0.1.9 (same Zed revision).
 gpui = { package = "gpui-pre", version = "=0.3.9" }
