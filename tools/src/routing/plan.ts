@@ -36,7 +36,7 @@ export const LANE_RECIPES: Record<Lane, readonly string[]> = {
   icount: ["perf-icount"],
   integrations: ["agent-integrations-check"],
   web: ["web-check"],
-  desktop: ["desktop-lint", "desktop-tests", "desktop-check", "desktop-framework-check"],
+  desktop: ["desktop-lint", "desktop-tests", "desktop-check", "desktop-smoke"],
   native: ["native-smoke"],
 };
 
@@ -82,6 +82,15 @@ export function plan(c: Classification, trigger: Trigger): Plan {
     unitTargets: push ? "" : c.unitTargets,
     testFilterset: push ? "" : c.testFilterset,
   };
+}
+
+/**
+ * What a main push still runs when a pull request validated its exact tree.
+ * A receipt never suppresses the binding lane: a PR runs it only inside the
+ * binding's closure, while main always qualifies it.
+ */
+export function reused(p: Plan): Plan {
+  return { ...p, lanes: new Set([...p.lanes].filter((lane) => lane === "ffi")) };
 }
 
 /** Step outputs for ci.yml's `plan` job. */

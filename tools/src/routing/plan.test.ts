@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Classifier } from "./classify.ts";
-import { LANES, plan, planOutputs, type Lane, type Trigger } from "./plan.ts";
+import { LANES, plan, planOutputs, reused, type Lane, type Trigger } from "./plan.ts";
 
 const classifier = new Classifier();
 
@@ -49,4 +49,11 @@ test("outputs name every lane and the web engine only inside the web lane", () =
   const outputs = planOutputs(plan(c, "pull_request"), c);
   for (const lane of LANES) expect(typeof outputs[lane]).toBe("boolean");
   expect(outputs).toMatchObject({ web: true, web_engine: true });
+});
+
+test("a reused main tree still qualifies the binding, and nothing else", () => {
+  const rust = plan(classifier.classify(["crates/phux-mcp/src/lib.rs"]), "push");
+  expect([...reused(rust).lanes]).toEqual(["ffi"]);
+  const docs = plan(classifier.classify(["docs/SETUP.md"]), "push");
+  expect([...reused(docs).lanes]).toEqual([]);
 });

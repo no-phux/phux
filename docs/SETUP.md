@@ -97,8 +97,8 @@ target (iOS slices, WASM), `LIBGHOSTTY_VT_SYS_CPU` or
 `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, `CARGO_NET_OFFLINE=true`, or a failed
 download (the build prints a warning). A checksum mismatch fails the build.
 `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout and
-`LIBGHOSTTY_VT_SYS_LIB_DIR` links a directory you built. `just
-ghostty-pin-check` fails when the pinned libghostty-rs rev publishes no
+`LIBGHOSTTY_VT_SYS_LIB_DIR` links a directory you built. `bash
+scripts/check-ghostty-pin.sh` (in `just rust-lint`) fails when the pinned libghostty-rs rev publishes no
 archive for one of the four targets.
 
 CI caches its Nix dev shell in Cachix for its own runners; developer machines
@@ -167,8 +167,8 @@ make cache deletion part of every build.
 
 Two things keep a crate reusable across worktrees, and both are enforced:
 
-- No compile-time checkout path in library or test code (`just
-  cache-portable-check`): read `CARGO_MANIFEST_DIR` and the test binary paths
+- No compile-time checkout path in library or test code (`bash
+  scripts/check-cache-portable.sh`, in `just guards`): read `CARGO_MANIFEST_DIR` and the test binary paths
   from the test runner at run time (`crates/phux/tests/common/runner.rs`), and
   pass a binary's own checkout path in from its `main.rs`.
 - A Zig engine build runs once per input set, outside any target directory:

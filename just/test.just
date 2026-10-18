@@ -114,7 +114,7 @@ test-archive: worktree-claim
 # Fast e2e + perf gates (every PR). #[ignore]d out of `just test`; serial +
 # retries because these spin a real server+PTY. Keep --workspace so the
 # feature union matches `test` (a `-p` selection recompiles tokio). Filterset
-# names binaries; `just e2e-lane-check` fails if an ignored *_e2e.rs is in
+# names binaries; `scripts/check-e2e-lanes.sh` (in `just guards`) fails if an ignored *_e2e.rs is in
 # no lane. Flag-stability story: CONTRIBUTING.md.
 #
 # The `--test` targets limit a local build to the binaries the filtersets

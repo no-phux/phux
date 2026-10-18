@@ -18,9 +18,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # PRs are latest-wins. Every main SHA keeps its own run: release.yml
+  # PRs are latest-wins, keyed by number: a merged PR's `closed` event carries
+  # the base ref, not the PR's. Every main SHA keeps its own run: release.yml
   # publishes a draft only on a green ci for that exact commit.
-  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -172,7 +173,7 @@ jobs:
     needs: [plan, test-build]
     if: needs.plan.outputs.tests == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -281,11 +282,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # No npm cache: a PR-scoped entry is unrestorable after the PR closes
+      # and only evicts main's build caches.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: integrations/*/package-lock.json
       - uses: ./.github/actions/setup-bun
       # `just agent-integrations-check`, without installing just.
       - run: bash scripts/ci/agent-integrations.sh
@@ -330,7 +331,7 @@ jobs:
             os: ubuntu-24.04
             smoke: --require-backend Vulkan
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: 60
     env:
       LIBGHOSTTY_VT_SYS_CPU: baseline
     steps:
@@ -357,10 +358,10 @@ jobs:
       - run: just desktop-check
       # Hosted macOS never confirms a presented drawable; Linux must render
       # through lavapipe's Vulkan.
-      - name: just desktop-framework-check
+      - name: just desktop-smoke
         env:
           PHUX_DESKTOP_SMOKE_ARGS: --output ${{ runner.temp }}/desktop-evidence ${{ matrix.smoke }}
-        run: just desktop-framework-check
+        run: just desktop-smoke
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -431,7 +432,8 @@ jobs:
   content:
     name: publish content
     needs: [plan, ci]
-    if: github.event_name == 'push' && needs.plan.outputs.content == 'true' && needs.ci.result == 'success'
+    # always(): an implicit success() also requires the skipped desktop lane.
+    if: always() && github.event_name == 'push' && needs.plan.outputs.content == 'true' && needs.ci.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

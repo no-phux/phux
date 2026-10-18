@@ -74,10 +74,10 @@ desktop-demo: desktop-host-debug desktop-cli
     cp -L "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" clients/desktop/.cache/demo-target/debug/phux
     cd clients/desktop && CARGO_TARGET_DIR="$PWD/.cache/demo-target" bun scripts/desktop-demo.ts
 
+# Run the packaged app against an isolated same-checkout server.
 # PHUX_DESKTOP_SMOKE_ARGS passes extra smoke flags (evidence dir, backend).
-[group('desktop')]
-[doc('Package the desktop and qualify it against an isolated same-checkout server')]
-desktop-framework-check: desktop-cli desktop-package
+[private]
+desktop-packaged-smoke:
     #!/usr/bin/env bash
     set -euo pipefail
     phux="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux"
@@ -87,6 +87,24 @@ desktop-framework-check: desktop-cli desktop-package
     else
         bun clients/desktop/scripts/smoke-app.ts --app clients/desktop/dist/app/Phux.app --phux "$phux" ${extra[@]+"${extra[@]}"}
     fi
+
+[group('desktop')]
+[doc('Package the release desktop and qualify it against an isolated same-checkout server')]
+desktop-framework-check: desktop-cli desktop-package
+    @just desktop-packaged-smoke
+
+# The desktop lane's package smoke: the same packaging and smoke on a debug
+# host, which the lane's tests have already mostly compiled. A full-LTO
+# release build cost 17 of a 25-minute PR job; next.yml and release.yml still
+# qualify the release build before anything ships.
+[group('desktop')]
+[doc('Package a debug desktop host and smoke it against an isolated server (CI lane)')]
+desktop-smoke: desktop-cli desktop-host-debug
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PHUX_DESKTOP_BIN="{{ justfile_directory() }}/clients/desktop/native/target/debug/phux-desktop"
+    (cd clients/desktop && if [[ "$(uname -s)" == Linux ]]; then bun scripts/package-linux.ts; else bun scripts/package-app.ts; fi)
+    just desktop-packaged-smoke
 
 # The desktop lane's tests: Linux runs them under Xvfb (unless a display is
 # set) plus the pinned wgpu renderer; macOS adds the headless perf budget.

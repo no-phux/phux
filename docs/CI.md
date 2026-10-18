@@ -48,7 +48,7 @@ every lane too.
 | icount | `rust icount` | `just perf-icount` | hot-path crates and the baseline ([performance CI](./performance-ci.md)) |
 | integrations | `agent integrations` | `just agent-integrations-check` | `integrations/` and plugin manifests |
 | web | `web` | `just web-check` | the browser clients and the Cargo closure they build |
-| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-lint`, `desktop-tests`, `desktop-check`, `desktop-framework-check` | the desktop host and the Cargo closure it builds; PRs only |
+| desktop | `desktop (macOS)`, `desktop (Linux)` | `just desktop-lint`, `desktop-tests`, `desktop-check`, `desktop-smoke` | the desktop host and the Cargo closure it builds; PRs only |
 | native | `native setup` | `just native-smoke` | toolchain, setup, and link inputs on a clean runner |
 
 On a pull request, a library change runs only its reverse dependencies
@@ -57,7 +57,10 @@ PR's version-only hunks skip every compile lane. A `main` push runs the full
 Rust pool, because two green PRs can still merge into a red tree. The desktop
 lane is the exception: on `main`, `next.yml` qualifies every desktop change on
 the same macOS and Linux targets, and per-merge macOS jobs once starved the
-five-slot macOS pool the release builds share.
+five-slot macOS pool the release builds share. The PR lane packages and smokes
+a debug host; the full-LTO release build, 17 minutes cold, is qualified by
+`next.yml` and `release.yml` before anything ships, and locally by
+`just desktop-framework-check`.
 
 `just check` runs the pull-request plan for your working tree against
 `origin/main`, through the same recipes. `--dry-run` prints the lanes without
