@@ -109,6 +109,26 @@ Bundled fallback descriptors retain their embedded font data in the macOS
 GPUI patch. A family-name-only CoreText cascade can otherwise choose an
 installed font with the same name but a different glyph table.
 
+## Layout stability
+
+A click, a selection, a hover or a scroll never resizes or moves other UI
+unless the resize is the point, such as dragging the sidebar edge or a split.
+Chrome keeps the size its style names. Something that appears on interaction
+either has space held for it or floats over the content:
+
+- A cached chrome slot (titlebar, sidebar, overlays) is a layout leaf with no
+  measured content, so `chrome_slot` makes it refuse to shrink. Fixed boxes in
+  a flex row take `flex_shrink_0`.
+- A label that changes on click is laid out in a slot sized by its widest
+  label. A hint shown only on the highlighted row stays laid out, invisible,
+  on the others.
+- Controls depend on the mode, never on the highlighted row. Open details
+  keep their height when the highlighted row has none.
+
+Regression tests assert bounds are identical across the interaction, for
+example `switching_tabs_never_resizes_the_chrome` and
+`moving_the_highlight_never_resizes_the_palette`.
+
 ## Frames, wakes, and input
 
 One listener and one event drain exist per runtime client. Drain, then
@@ -130,7 +150,7 @@ tabs and navigator rows style from that value, not from their own agent
 checks. The [agent panes guide](../consumers/desktop-panes.md) owns behavior.
 
 - `PaneKind` is `Terminal` or `Conversation` (the native face of a bound
-  AgentSession). `view/panes.rs` picks the body by matching on it. A future
+  AgentSession). `view/panes/card.rs` picks the body by matching on it. A future
   kind such as an embedded browser adds a variant and a body renderer. It also
   needs a non-terminal placement payload in `workspace::layout` and the layout
   file, which today names only terminals. Every identity-styled surface then

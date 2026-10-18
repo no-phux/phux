@@ -251,6 +251,7 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::org_tools::schemas());
         entries.extend(crate::agent_tools::schemas());
         entries.extend(crate::diagnostic_tools::schemas());
+        entries.extend(crate::coord_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
         entries.extend(crate::approval_tools::schemas());
     }
@@ -308,6 +309,7 @@ async fn dispatch_family(name: &str, args: &Value) -> Result<Value, ToolError> {
         diagnostic if crate::diagnostic_tools::owns(diagnostic) => {
             crate::diagnostic_tools::call(diagnostic, args).await
         }
+        coord if crate::coord_tools::owns(coord) => crate::coord_tools::call(coord, args).await,
         resource if crate::resource_tools::owns(resource) => {
             crate::resource_tools::call(resource, args).await
         }

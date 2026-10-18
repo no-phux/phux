@@ -80,6 +80,16 @@ Cancellation ends the local observer, not the process or input already sent.
 `output_only` avoids command-echo matches only with OSC-133 integration; read
 any warning. Idle screens and quiet processes are not completion signals.
 
+## Other agents
+
+To ask another agent something, use mail (`phux mail send` or the
+`phux_mail_send` MCP tool), not a prompt into its pane: mail is stored, rings
+the recipient once, and carries a thread to reply in. Claim a shared checkout
+(`phux claim take PATH`) before working in it. Retain its returned fence;
+renew and release that exact acquisition with `phux claim renew FENCE` and
+`phux claim release FENCE`. A worker exit is not lease expiry, and an old
+receipt must never be upgraded silently to a replacement's fence.
+
 ## Human cooperation
 
 Input affects a real PTY a human may share. Inspect before writing; never

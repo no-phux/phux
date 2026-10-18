@@ -5,7 +5,7 @@
 //! [`PaneKind`] is the pane's content. Today a placement shows a terminal or
 //! the native conversation face of the agent bound to it; a future kind (an
 //! embedded browser, a preview) is a new variant here plus a body renderer in
-//! `view/panes.rs`, and every surface that styles by identity follows.
+//! `view/panes/card.rs`, and every surface that styles by identity follows.
 //!
 //! [`PaneOrigin`] is who drives it. The wire does not carry who created a
 //! Terminal to clients, and an agent's `phux spawn` and a person's share one
@@ -182,7 +182,7 @@ impl PaneOrigin {
     }
 }
 
-/// What a pane shows. The renderer in `view/panes.rs` matches on it.
+/// What a pane shows. The renderer in `view/panes/card.rs` matches on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneKind {
     /// A terminal view, or its placeholder while the terminal is missing.

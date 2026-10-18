@@ -99,6 +99,20 @@ pub enum Error {
         /// The cap the start named.
         limit: u64,
     },
+    /// No message with this id was sent to this reader.
+    #[error("no message {id} for {reader}")]
+    NoMail {
+        /// Hex message id.
+        id: String,
+        /// The reader that asked.
+        reader: String,
+    },
+    /// This holder has no live lease at the supplied fence.
+    #[error("no live claim at fence {fence} for this holder")]
+    NoClaim {
+        /// The requested lease incarnation.
+        fence: u64,
+    },
     /// The operating system could not mint an id.
     #[error("could not mint an id: {0}")]
     Random(String),

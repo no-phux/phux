@@ -13,13 +13,17 @@
 //! starts a keeper when none answers. Nothing outside the keeper opens a
 //! [`Store`].
 //!
-//! Every mutation carries an [`OperationId`]. Replaying the same id with
+//! Objective and mail mutations carry an [`OperationId`]. Replaying the same id with
 //! the same contents is a no-op; a different body is a conflict. Structural
 //! edits bump the objective's revision, and a write that names a stale
 //! revision fails.
 //!
 //! An unresolved `credential_lost` signal projects the objective to
 //! `needs_you`. The store will not leave that objective `working`.
+//!
+//! The same keeper holds agent coordination: mail between agents and claims
+//! on paths (ADR-0187). Those tables are additive and do not change
+//! `user_version`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -28,6 +32,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 mod client;
+mod coord;
 mod error;
 mod id;
 mod lock;
@@ -38,6 +43,10 @@ mod store;
 mod wire;
 
 pub use client::{Client, Launcher};
+pub use coord::{
+    AckMail, Address, Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, Mail, ReadMail,
+    ReleaseClaim, RenewClaim, SendMail, Sent, TakeClaim,
+};
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};
 pub use service::{Endpoint, KeeperExit, run_keeper};

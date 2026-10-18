@@ -1,4 +1,4 @@
-//! The split tree and the dividers between its panes.
+//! The split tree: each split's two sides and the divider between them.
 
 use std::time::Instant;
 
@@ -10,10 +10,11 @@ use gpui::{
 
 use crate::workspace::layout::{Axis, LayoutNode};
 
-use crate::app::color::from_hex;
-use crate::app::desk::Desk;
-use crate::app::motion;
-use crate::app::skin::Look;
+use super::super::super::color::from_hex;
+use super::super::super::desk::Desk;
+use super::super::super::motion;
+use super::super::super::skin::Look;
+use super::card::pane_view;
 
 /// The narrowest grab area a split keeps when its painted gap is thinner.
 const SPLIT_GRAB: f32 = 8.;
@@ -34,7 +35,7 @@ pub(super) fn split_tree(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     match node {
-        LayoutNode::Leaf { placement } => super::pane_view(desk, placement, window, cx),
+        LayoutNode::Leaf { placement } => pane_view(desk, placement, window, cx),
         LayoutNode::Split {
             id,
             axis,

@@ -339,7 +339,16 @@ fn tab_button(
             tab.child(row_icon(side_lead(attention, agent, harness, look)))
         })
         .when(!side, |tab| {
-            tab.children(top_lead(attention, agent, harness, look))
+            // A fixed slot, so the label holds still as an agent comes and goes.
+            tab.child(
+                div()
+                    .size(px(13.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(top_lead(attention, agent, harness, look)),
+            )
         })
         .child(
             div()
