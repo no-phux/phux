@@ -129,6 +129,39 @@ test("the ci aggregate needs every lane and rejects failed and cancelled ones", 
   }
 });
 
+test("UniFFI main pushes retain full qualification; PRs use the binding closure", () => {
+  const condition = str(job(workflow("ci.yml"), "uniffi")["if"]) ?? "";
+  for (const [event, phux, validated, binding, mode, wanted] of [
+    ["push", "true", "true", "false", "rdeps", true],
+    ["push", "false", "true", "true", "workspace", false],
+    ["pull_request", "true", "false", "false", "rdeps", false],
+    ["pull_request", "true", "false", "true", "rdeps", true],
+    ["merge_group", "true", "false", "true", "workspace", true],
+    ["pull_request", "true", "false", "true", "narrow", false],
+    ["pull_request", "true", "true", "true", "rdeps", false],
+  ] as const) {
+    let expression = condition;
+    for (const [key, value] of Object.entries({
+      "github.event_name": event,
+      "needs.changes.outputs.phux_needed": phux,
+      "needs.changes.outputs.validated": validated,
+      "needs.changes.outputs.uniffi_needed": binding,
+      "needs.changes.outputs.unit_mode": mode,
+    })) {
+      expression = expression.replaceAll(key, JSON.stringify(value));
+    }
+    const result = Bun.spawnSync([process.execPath, "-e", `process.exit((${expression}) ? 0 : 1)`]);
+    expect([event, phux, validated, binding, mode, result.exitCode]).toEqual([
+      event,
+      phux,
+      validated,
+      binding,
+      mode,
+      wanted ? 0 : 1,
+    ]);
+  }
+});
+
 test("both FFI workflows build on mobile_ffi_needed or a failed classification", () => {
   // phux-mobile pins one revision and fetches both artifacts at it.
   for (const name of FFI) {

@@ -38,6 +38,7 @@ jobs:
       integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
       native_needed: ${{ steps.detect.outputs.native_needed }}
       test_filterset: ${{ steps.detect.outputs.test_filterset }}
+      uniffi_needed: ${{ steps.detect.outputs.uniffi_needed }}
       unit_mode: ${{ steps.detect.outputs.unit_mode }}
       unit_targets: ${{ steps.detect.outputs.unit_targets }}
       e2e_needed: ${{ steps.detect.outputs.e2e_needed }}
@@ -385,7 +386,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     needs: changes
-    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode == 'workspace' || needs.changes.outputs.unit_mode == 'rdeps')
+    # Root receipts do not record binding-feature coverage. Never let a PR
+    # receipt suppress full UniFFI qualification on main.
+    if: needs.changes.outputs.phux_needed == 'true' && (github.event_name == 'push' || (needs.changes.outputs.validated != 'true' && needs.changes.outputs.uniffi_needed == 'true' && (needs.changes.outputs.unit_mode == 'workspace' || needs.changes.outputs.unit_mode == 'rdeps')))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust-lane
