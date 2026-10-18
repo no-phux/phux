@@ -215,7 +215,7 @@ impl Desk {
         else {
             return false;
         };
-        if !self.conversation_visible(&id) {
+        if !self.conversation_has_keys(&id) {
             return false;
         }
         if self.conversation_writable(&id, true) {
