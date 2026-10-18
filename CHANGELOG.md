@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.105.1](https://github.com/no-phux/phux/compare/v0.105.0...v0.105.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **server:** preserve PTY output order during inline writes ([#1618](https://github.com/no-phux/phux/issues/1618)) ([aac312b](https://github.com/no-phux/phux/commit/aac312bdf23c704d8855927a39a1e3acf921ff9e))
+
 ## [0.105.0](https://github.com/no-phux/phux/compare/v0.104.0...v0.105.0) (2026-10-18)
 
 
