@@ -11,6 +11,7 @@ import { commands as mutation } from "./src/mutation/commands.ts";
 import { commands as perf } from "./src/perf/commands.ts";
 import { commands as release } from "./src/release/commands.ts";
 import { commands as routing } from "./src/routing/commands.ts";
+import { commands as web } from "./src/web/commands.ts";
 
 const COMMANDS: Record<string, Command> = {
   ...cargo,
@@ -22,6 +23,7 @@ const COMMANDS: Record<string, Command> = {
   ...perf,
   ...release,
   ...routing,
+  ...web,
 };
 
 function usage(): string {
