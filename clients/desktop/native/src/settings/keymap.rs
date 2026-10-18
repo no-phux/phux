@@ -4,11 +4,11 @@
 //! `ghostty_keys`. A `global:` bind of `quick-terminal` is the system-wide
 //! quick terminal chord.
 
-use super::ghostty::{Bind, GhosttyConfig, Origin};
-use std::sync::LazyLock;
-
 mod catalog;
-use catalog::CATALOG;
+
+use super::ghostty::{Bind, GhosttyConfig, Origin};
+use catalog::catalog;
+use std::sync::LazyLock;
 
 /// One built-in command the palette and keymap share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,31 +107,6 @@ const UNSHIFTED: &[(&str, &str)] = &[
 pub fn builtin_commands() -> &'static [CommandSpec] {
     static COMMANDS: LazyLock<Vec<CommandSpec>> = LazyLock::new(catalog);
     &COMMANDS
-}
-
-fn catalog() -> Vec<CommandSpec> {
-    CATALOG
-        .lines()
-        .map(|line| {
-            let mut fields = line.split('|').map(str::trim);
-            let mut field = || fields.next().expect("a catalog row has six fields");
-            let (id, title, group) = (field(), field(), field());
-            let mut chords = field().split_whitespace();
-            let chord = chords.next();
-            let aliases = chords.collect::<Vec<_>>().leak();
-            let description = field();
-            let keywords = field().split_whitespace().collect::<Vec<_>>().leak();
-            CommandSpec {
-                id,
-                title,
-                description,
-                keywords,
-                group,
-                chord,
-                aliases,
-            }
-        })
-        .collect()
 }
 
 /// Built-in chord to command id, primary chord before aliases.

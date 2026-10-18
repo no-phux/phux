@@ -160,6 +160,7 @@ status changes. The docs gate checks identities, ordering, and membership.
 
 ## TUI conventions
 
+- [0189](./0189-the-terminal-view-is-a-crate-and-paint-rules-are-shared.md) The terminal view is a crate and paint rules are shared
 - [0172](./0172-tui-actions-and-jobs-are-declared-once.md) TUI actions and jobs are declared once
 - [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) Plugin sidebar sections are fixed bands of pane rows
 - [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) Plugin overlay panes float outside the layout

@@ -119,6 +119,12 @@ blended! {
 
 impl Shadow {
     pub const NONE: Self = shadow([0., 0.], 0., 0., 0.);
+
+    /// The shadow `t` of the way to `to`.
+    #[must_use]
+    pub fn lerp(self, to: Self, t: f32) -> Self {
+        self.blend(to, t.clamp(0., 1.))
+    }
 }
 
 const fn shadow(alpha: [f32; 2], y: f32, blur: f32, spread: f32) -> Shadow {
@@ -138,6 +144,33 @@ blended! {
         pub border: f32,
         pub divider: f32,
     }
+}
+
+blended! {
+    /// How far back a pane an agent drives sits behind a person's
+    /// (`app::pane_identity`). Views apply it in proportion to how recessed
+    /// the pane is right now, so focus and hover bring it forward.
+    pub struct Depth {
+        /// Points the card's edge draws in on every side. The pane padding
+        /// absorbs it, so the terminal grid never moves or resizes.
+        pub inset: f32,
+        /// Theme-background veil over its content, 0 to 1. A recessed tab
+        /// fades by twice this.
+        pub veil: f32,
+        /// Its lower, softer drop shadow, in place of the pane shadow.
+        pub lift: Shadow,
+        /// An inner shadow under its top edge, so the card reads as sunk in.
+        pub well: Shadow,
+    }
+}
+
+impl Depth {
+    pub const FLAT: Self = Self {
+        inset: 0.,
+        veil: 0.,
+        lift: Shadow::NONE,
+        well: Shadow::NONE,
+    };
 }
 
 blended! {
@@ -165,6 +198,8 @@ blended! {
         pub capsule_shadow: Shadow,
         /// The selected tab's lift.
         pub tab_shadow: Shadow,
+        /// Agent-driven panes and tabs, set back from a person's.
+        pub depth: Depth,
     }
 }
 
@@ -282,6 +317,12 @@ pub const GLASS: Skin = Skin {
         ],
         capsule_shadow: shadow([0.22, 0.22], 4., 14., -2.),
         tab_shadow: shadow([0.05, 0.12], 1., 4., 0.),
+        depth: Depth {
+            inset: 4.,
+            veil: 0.12,
+            lift: shadow([0.04, 0.1], 1., 6., -4.),
+            well: shadow([0.06, 0.18], 2., 10., -2.),
+        },
     },
     shape: Shape {
         radius: 12.,
@@ -334,6 +375,11 @@ pub const TERMINAL: Skin = Skin {
         popover_shadow: [Shadow::NONE; 2],
         capsule_shadow: Shadow::NONE,
         tab_shadow: Shadow::NONE,
+        // Plain keeps one cue, a faint veil: no inset and no shadow.
+        depth: Depth {
+            veil: 0.05,
+            ..Depth::FLAT
+        },
     },
     shape: Shape {
         radius: 0.,

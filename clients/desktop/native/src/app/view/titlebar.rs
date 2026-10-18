@@ -177,6 +177,24 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     .items_center()
                     .gap(px(2.))
                     .when(fit < 1., |actions| actions.opacity(fit))
+                    .when(
+                        desk.role != super::super::desk::WindowRole::Quick,
+                        |actions| {
+                            actions.child(icon_button(
+                                "changes",
+                                IconName::GitBranch,
+                                if desk.changes.open {
+                                    "Hide Changes"
+                                } else {
+                                    "Show Changes"
+                                },
+                                desk.shown_chord("changes"),
+                                cx.listener(|desk, _, window, cx| {
+                                    desk.execute("changes", window, cx)
+                                }),
+                            ))
+                        },
+                    )
                     .child(bell(desk, look, cx)),
             )
         })

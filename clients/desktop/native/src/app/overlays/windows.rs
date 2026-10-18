@@ -1,13 +1,17 @@
-//! Open-window overview rows and activation without opening another window.
+//! The window overview, the session list, and where Move sends a selection.
 
-use super::*;
+use gpui::{AnyWindowHandle, App, EntityId, WeakEntity};
+use phux_protocol::ids::SessionKey;
+
+use super::{CURRENT, Row, Section, Target, current_mark, simple_row};
+use crate::app::desk::{self, Desk};
 
 /// What one open window shows, read for the window overview.
-struct Shown {
-    session: String,
-    host: Option<String>,
-    tabs: Vec<(String, String)>,
-    active: Option<String>,
+pub(super) struct Shown {
+    pub(super) session: String,
+    pub(super) host: Option<String>,
+    pub(super) tabs: Vec<(String, String)>,
+    pub(super) active: Option<String>,
 }
 
 impl Shown {
@@ -39,7 +43,7 @@ impl Shown {
 }
 
 /// Section label of the window overview, whose tab rows sit under their window.
-pub(in crate::app) const WINDOWS: &str = "Windows";
+pub(super) const WINDOWS: &str = "Windows";
 
 /// One row per open native window, each followed by its tabs. Windows are
 /// numbered in the order they opened; the session and host are phux's. The
@@ -132,4 +136,125 @@ pub(super) fn raise_window(
             desk.after_command(window, cx);
         });
     });
+}
+
+pub(super) fn session_sections(desk: &Desk) -> Vec<Section> {
+    let Some(link) = desk.link.as_ref() else {
+        return Vec::new();
+    };
+    let Some(topology) = link.connection.topology.as_ref() else {
+        return Vec::new();
+    };
+    let rows = topology
+        .sessions
+        .iter()
+        .map(|session| {
+            let panes = link
+                .connection
+                .panes()
+                .iter()
+                .filter(|pane| pane.session_id == session.id)
+                .count();
+            let detail = format!(
+                "{panes} {}",
+                if panes == 1 { "terminal" } else { "terminals" }
+            );
+            let detail = if session.key.is_some() && session.key == topology.inbox {
+                format!("Intake · unorganized work · {detail}")
+            } else if session.awaiting_organization {
+                format!("Imported · awaiting organization · {detail}")
+            } else {
+                detail
+            };
+            Row {
+                title: session.name.clone().into(),
+                keywords: detail.clone(),
+                detail: Some(detail.into()),
+                target: Target::Session(session.name.clone()),
+                command: None,
+                category: "Sessions",
+                chord: None,
+                agent: None,
+                preview: None,
+            }
+        })
+        .collect();
+    vec![Section {
+        label: Some("Sessions"),
+        rows,
+    }]
+}
+
+pub(super) fn move_sections(desk: &Desk) -> Vec<Section> {
+    let Some(client) = desk.client() else {
+        return Vec::new();
+    };
+    let replica = client.organization();
+    let selected = &desk.organization.selected;
+    let destinations: Vec<_> = replica
+        .sessions()
+        .iter()
+        .filter(|session| {
+            selected.iter().any(|key| {
+                replica
+                    .resource(key)
+                    .is_some_and(|resource| resource.session != session.key)
+            })
+        })
+        .collect();
+    move_destination_sections(&destinations, replica.intake(), selected.len())
+}
+
+pub(super) fn move_destination_sections(
+    sessions: &[&phux_protocol::wire::frame::SessionRecord],
+    intake: Option<SessionKey>,
+    count: usize,
+) -> Vec<Section> {
+    let mut unorganized = Vec::new();
+    let mut named = Vec::new();
+    for session in sessions {
+        let designated = Some(session.key) == intake;
+        let row = move_destination_row(session, designated, count);
+        if designated {
+            unorganized.push(row);
+        } else {
+            named.push(row);
+        }
+    }
+    [("Unorganized work", unorganized), ("Named sessions", named)]
+        .into_iter()
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(label, rows)| Section {
+            label: Some(label),
+            rows,
+        })
+        .collect()
+}
+
+pub(super) fn move_destination_row(
+    session: &phux_protocol::wire::frame::SessionRecord,
+    designated: bool,
+    count: usize,
+) -> Row {
+    let (title, name) = if designated {
+        ("Leave unorganized (Intake)".to_owned(), "Intake".to_owned())
+    } else {
+        (session.name.clone(), session.name.clone())
+    };
+    let imported = if !designated && session.awaiting_organization {
+        " · imported"
+    } else {
+        ""
+    };
+    Row {
+        title: title.into(),
+        detail: Some(format!("{count} selected{imported}").into()),
+        keywords: session.name.clone(),
+        target: Target::Move(session.key, name),
+        command: None,
+        category: "Organization",
+        chord: None,
+        agent: None,
+        preview: None,
+    }
 }

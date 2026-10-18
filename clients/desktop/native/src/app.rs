@@ -7,6 +7,7 @@
 mod actions;
 mod approvals;
 mod capture;
+mod changes;
 mod color;
 mod conversation;
 mod desk;
@@ -21,6 +22,7 @@ mod notifications;
 mod organization;
 mod organize;
 mod overlays;
+mod pane_identity;
 mod panes;
 mod performance;
 mod session;

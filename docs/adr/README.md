@@ -209,6 +209,7 @@ Statuses and relationships are authoritative in each linked record. -->
 | [0186](./0186-the-client-neutral-config-is-its-own-crate.md) | The client-neutral config is its own crate |
 | [0187](./0187-agents-coordinate-through-phux.md) | Agents coordinate through phux |
 | [0188](./0188-quick-capture.md) | Quick capture |
+| [0189](./0189-the-terminal-view-is-a-crate-and-paint-rules-are-shared.md) | The terminal view is a crate and paint rules are shared |
 
 ## Writing decisions
 

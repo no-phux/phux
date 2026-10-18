@@ -4,10 +4,12 @@
 
 use gpui::prelude::*;
 use gpui::{Hsla, div, px};
+use gpui_kit::component::Icon;
 
 use crate::connection::{AgentState, state_rank};
 
 use super::super::color::from_hex;
+use super::super::pane_identity::Harness;
 use super::super::skin::Look;
 use super::atoms::{dot, shadow};
 
@@ -59,6 +61,46 @@ pub(crate) fn attention_mark(state: AgentState, look: &Look) -> gpui::Div {
         .border_1()
         .border_color(look.sheet.opacity(1.))
         .shadow(vec![shadow(color.opacity(0.45), 0., 6., 0., false)])
+}
+
+/// A harness mark's colour in this theme: its own tint, else muted ink.
+pub(crate) fn harness_tint(harness: Harness, look: &Look) -> Hsla {
+    harness.tint().map_or_else(
+        || from_hex(&look.chrome.muted),
+        |[light, dark]| from_hex(if look.light { light } else { dark }),
+    )
+}
+
+/// Which harness drives a pane: its mark `size` points across, with the
+/// agent's calm `state` as a small dot on its lower corner.
+pub(crate) fn harness_mark(
+    harness: Harness,
+    state: Option<AgentState>,
+    size: f32,
+    look: &Look,
+) -> gpui::Div {
+    let pip = (size * 0.45).max(4.);
+    div()
+        .flex_shrink_0()
+        .relative()
+        .size(px(size))
+        .child(
+            Icon::new(harness.glyph())
+                .size(px(size))
+                .text_color(harness_tint(harness, look)),
+        )
+        .children(
+            state
+                .filter(|state| *state != AgentState::Unknown)
+                .map(|state| {
+                    dot(pip, from_hex(agent_swatch(state)))
+                        .absolute()
+                        .right(px(-pip / 3.))
+                        .bottom(px(-pip / 3.))
+                        .border_1()
+                        .border_color(look.sheet.opacity(1.))
+                }),
+        )
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-18
 ---
 
 # Desktop architecture
@@ -48,8 +48,9 @@ Terminate Terminal ends execution.
 
 | Path | Owns |
 |---|---|
-| `native/src` | GPUI application, connection, workspace, terminal, settings, platform integration. |
-| `native/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
+| `native/src` | GPUI application, connection, workspace, settings, platform integration. |
+| `native/phux-gpui` | The embeddable terminal view the app is built on: painter, input, attachments, presentation receipts. |
+| `native/phux-gpui/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
 | `scripts`, `packaging` | Checkout build, isolated smoke/perf, and macOS/Linux package preparation. |
 | `toolchain` | Parent-managed GPUI snapshot pin and patch. |
 | `dist/app/Phux.app` | Release executable, fonts, icon, ad-hoc signature. No `.node` addon. |
@@ -77,6 +78,8 @@ and app quit flush outstanding saves. Save failures still surface as errors.
   `ResourceId`, including a satellite route.
 - A runtime view is a generation-fenced handle for that terminal.
 - A placement is a stable local layout identity and owns one view attachment.
+  `Terminal::new` does not own or destroy the runtime `ViewId`; the host
+  calls `Client::destroy_view` when closing that view on a shared client.
 - A frame carries stream, bootstrap, publication generation, and applied
   sequence. Those are not the server incarnation.
 
@@ -109,6 +112,26 @@ Bundled fallback descriptors retain their embedded font data in the macOS
 GPUI patch. A family-name-only CoreText cascade can otherwise choose an
 installed font with the same name but a different glyph table.
 
+## Layout stability
+
+A click, a selection, a hover or a scroll never resizes or moves other UI
+unless the resize is the point, such as dragging the sidebar edge or a split.
+Chrome keeps the size its style names. Something that appears on interaction
+either has space held for it or floats over the content:
+
+- A cached chrome slot (titlebar, sidebar, overlays) is a layout leaf with no
+  measured content, so `chrome_slot` makes it refuse to shrink. Fixed boxes in
+  a flex row take `flex_shrink_0`.
+- A label that changes on click is laid out in a slot sized by its widest
+  label. A hint shown only on the highlighted row stays laid out, invisible,
+  on the others.
+- Controls depend on the mode, never on the highlighted row. Open details
+  keep their height when the highlighted row has none.
+
+Regression tests assert bounds are identical across the interaction, for
+example `switching_tabs_never_resizes_the_chrome` and
+`moving_the_highlight_never_resizes_the_palette`.
+
 ## Frames, wakes, and input
 
 One listener and one event drain exist per runtime client. Drain, then
@@ -121,6 +144,44 @@ terminal-wide. `acknowledge_projection` runs only from GPUI's drawable-presented
 callback, after the window is visible and the terminal bounds are unclipped.
 Paint and `on_next_frame` do not clear the fence. A late callback must not
 clear a newer fence.
+
+## Pane identity
+
+`app/pane_identity.rs` classifies each placement once, as a `PaneIdentity`
+of what it shows (`PaneKind`) and who drives it (`PaneOrigin`). Pane cards,
+tabs and navigator rows style from that value, not from their own agent
+checks. The [agent panes guide](../consumers/desktop-panes.md) owns behavior.
+
+- `PaneKind` is `Terminal` or `Conversation` (the native face of a bound
+  AgentSession). `view/panes/card.rs` picks the body by matching on it. A future
+  kind such as an embedded browser adds a variant and a body renderer. It also
+  needs a non-terminal placement payload in `workspace::layout` and the layout
+  file, which today names only terminals. Every identity-styled surface then
+  follows without change.
+- `PaneOrigin` is `Human` or `Agent(Harness)`. Clients do not receive the
+  server's resource `Provenance.created_by`. Every CLI connection, an agent's
+  `phux spawn` and a person's alike, announces the same `phux-cli` client
+  name. Terminal spawns record no parent. Origin therefore comes from what the
+  server already publishes: a `phux.agent/v1` badge on the terminal, or an
+  `AgentSession` bound to it. The session's provider outranks the badge's
+  declared kind. No wire change is involved. A human shell in which a person
+  starts an agent reads as agent-driven. A shell an agent spawned and that
+  runs no agent reads as a person's. A creator field on the wire would be
+  one more input to `PaneOrigin::classify`.
+- `Harness` maps provider slugs to a generic Lucide mark and a fixed
+  `[light, dark]` tint. The slugs are the `phux-agent-rules` built-in kinds,
+  their binary aliases, and ACP `[acp] provider` slugs with an `-acp` suffix.
+  Unknown slugs get a generic bot mark in muted ink. No vendor logo ships.
+
+Depth is a skin value, `Material.depth`: an inset, a veil, a lower lift and
+an inner well. It blends with every other skin field, so the plain terminal
+skin (veil only, no inset or shadow) morphs rather than pops. `Motion::depth`
+eases each placement toward recessed whenever it is agent-driven, unfocused,
+not hovered and not leaving. Reduced motion or animations off land it at once.
+The pane padding absorbs the inset. The terminal content box, and with it
+grid geometry and size proposals, is identical at every depth. A tab recedes
+(shorter and fainter) only while every placement in it is agent-driven,
+nothing in it needs a person, and it is not selected.
 
 ## Native agent conversation
 
@@ -196,6 +257,23 @@ Terminal damage still notifies only affected cached entities, and native receipt
 do not clear the terminal's unknown-delivery presentation fence. No WebView or
 provider SDK process enters the GUI.
 
+## Changes panel
+
+The [Changes panel guide](../consumers/desktop-changes.md) owns behavior.
+`native/src/git.rs` owns Git: it shells out to the user's `git` with
+`GIT_OPTIONAL_LOCKS=0` and `GIT_TERMINAL_PROMPT=0`, parses
+`status --porcelain=v2 --branch -z` and unified diffs, and applies stage,
+unstage and commit. It has no GPUI dependency and is tested against a real
+temporary repository. No Git library is linked, so hooks, config, credential
+helpers and ignore rules match the terminal.
+
+`app/changes.rs` binds the panel to the focused placement's reported `cwd`,
+refusing remote windows and satellite terminals rather than resolving their
+paths locally. Every call runs through `smol::unblock`; a generation counter
+drops results for a folder the panel has left. An open panel polls status and
+notifies the desk only when the parsed status or open diff changed.
+`app/view/changes.rs` is a cached chrome slot like the sidebar, so terminal
+frames do not rebuild the file list or diff.
 
 ## Tooling
 

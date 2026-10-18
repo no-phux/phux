@@ -1,7 +1,12 @@
+//! The built-in command catalog: one row per command the palette, menus,
+//! key bindings and Ghostty binds share.
+
+use super::CommandSpec;
+
 /// One command per line: id | title | group | chords | description | keywords.
 /// The first chord is primary and the rest are aliases; keywords are
 /// space-separated.
-pub(super) const CATALOG: &str = "\
+const CATALOG: &str = "\
     palette | Command Palette | General | cmd+shift+p | Search and run desktop commands. |
     capture | Capture… | General | cmd+shift+space | Dispatch a thought to OpenCode. Enter follows; Command/Control+Enter stays; Shift+Enter adds a line. | thought idea bug intake
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
@@ -51,6 +56,7 @@ pub(super) const CATALOG: &str = "\
     terminate | Terminate Terminal Process… | Terminal |  | Confirm termination of the focused terminal process. | kill
     attention | Jump to Agent Needing Attention | Agents | cmd+shift+a | Focus the next agent that needs your attention. |
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
+    changes | Toggle Changes | View | cmd+alt+g | Show the focused terminal's Git changes beside the panes: diffs, staging and commit. | git diff stage commit status branch review
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar, under their session. | layout vertical placement side rail
@@ -103,3 +109,28 @@ pub(super) const CATALOG: &str = "\
     tab-8 | Go to Tab | Tabs | cmd+8 | Switch to the tab at this position. |
     tab-9 | Go to Last Tab | Tabs | cmd+9 | Switch to the last tab. |
 ";
+
+pub(super) fn catalog() -> Vec<CommandSpec> {
+    CATALOG
+        .lines()
+        .map(|line| {
+            let mut fields = line.split('|').map(str::trim);
+            let mut field = || fields.next().expect("a catalog row has six fields");
+            let (id, title, group) = (field(), field(), field());
+            let mut chords = field().split_whitespace();
+            let chord = chords.next();
+            let aliases = chords.collect::<Vec<_>>().leak();
+            let description = field();
+            let keywords = field().split_whitespace().collect::<Vec<_>>().leak();
+            CommandSpec {
+                id,
+                title,
+                description,
+                keywords,
+                group,
+                chord,
+                aliases,
+            }
+        })
+        .collect()
+}

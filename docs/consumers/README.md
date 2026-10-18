@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-14
+last-reviewed: 2026-10-18
 ---
 
 # Ways to use phux
@@ -16,6 +16,8 @@ client is a demo and developer integration. The Zig Cockpit is archived outside 
 |---|---|
 | Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
 | Use the native macOS app | [Desktop](./desktop.md) |
+| Review and commit a pane's Git changes in the desktop | [Desktop Changes panel](./desktop-changes.md) |
+| See which desktop panes agents drive | [Desktop agent panes](./desktop-panes.md) |
 | Recover the archived Zig client | [Cockpit archive](./cockpit.md) |
 | Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
@@ -38,6 +40,7 @@ client is a demo and developer integration. The Zig Cockpit is archived outside 
 | You want to | Start with |
 |---|---|
 | Emit lifecycle events from a harness | [Harness author guide](./harness.md) |
+| Put a phux terminal in your own native app | [Embed a terminal](./embedding.md) |
 | Speak the wire from a new client | [Build a client](./build-a-client.md) |
 | Use the in-tree Rust library or native bindings | [Client library guide](./sdk.md) |
 | Understand the GPUI desktop contract | [Desktop contract](./desktop.md); Apple-silicon, not release-verified |

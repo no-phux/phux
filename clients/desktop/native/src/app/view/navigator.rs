@@ -7,40 +7,31 @@
 //! Groupings are views of the same catalog ([`Desk::work_catalog`]); they
 //! never add, hide or reorder work within a session.
 
-use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, IntoElement, MouseButton, SharedString,
-    WeakEntity, Window, div, px,
-};
+use gpui::{AnyElement, Context, IntoElement, MouseButton, SharedString, Window, div, px};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable};
-use phux_client_runtime::control::{PaneDescriptor, Status};
-use phux_protocol::ResourceId;
-use phux_protocol::ResourceKind;
-use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use crate::connection::AgentState;
 use crate::settings::{SidebarGrouping, TabPosition};
-use crate::workspace::layout;
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk};
 use super::super::fleet::Work;
 use super::super::menus;
 use super::super::skin::Look;
-use super::super::ui::list::{Emphasis, ICON, row_detail, row_label};
-use super::super::ui::menu::Anchor;
+use super::super::ui::list::{Emphasis, row_detail, row_label};
 use super::super::ui::status::state_dot;
-use super::super::ui::{
-    ago, badge, dot, ghost_button, ghost_icon, muted, row, row_icon, section_label,
-};
-use super::{ResourceDrag, drag_label, tabs, tabs_at};
+use super::super::ui::{dot, ghost_button, ghost_icon, muted, row, row_icon, section_label};
+use super::{tabs, tabs_at};
+
+mod rows;
+mod session;
+
+use session::session_block;
 
 /// Whether the prefs show the sidebar in this window.
 pub(super) fn wanted(desk: &Desk) -> bool {
@@ -302,181 +293,6 @@ fn work_row(desk: &Desk, work: Work, look: &Look, cx: &mut Context<Desk>) -> Any
         .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(target.clone(), cx)))
         .into_any_element()
 }
-
-/// The session this window shows: its row, then its tabs when they live
-/// here, then the terminals no tab in this window holds.
-fn session_block(desk: &Desk, work: &Work, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
-    let Some(link) = desk.link.as_ref() else {
-        return div().into_any_element();
-    };
-    let (id, name) = (work.id, work.destination.name.clone());
-    let placed: HashSet<&ResourceId> = link
-        .workspace
-        .tabs
-        .iter()
-        .flat_map(|tab| layout::placements(&tab.root))
-        .filter_map(|placement| placement.terminal_id.as_ref())
-        .collect();
-    let background: Vec<PaneDescriptor> = link
-        .connection
-        .panes()
-        .iter()
-        .filter(|pane| pane.session_id == id && !placed.contains(&pane.terminal_id))
-        .cloned()
-        .collect();
-    let session = link
-        .connection
-        .topology
-        .as_ref()
-        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id));
-    let destination = session.and_then(|session| session.key);
-    let all_panes = link.connection.panes();
-    let extra: Vec<ResourceRecord> = destination
-        .and_then(|key| {
-            desk.client().map(|client| {
-                client
-                    .organization()
-                    .resources()
-                    .iter()
-                    .filter(|resource| {
-                        resource.session == key
-                            && resource.kind != ResourceKind::AgentSession
-                            && running(resource)
-                            && !all_panes.iter().any(|pane| pane.key == Some(resource.key))
-                    })
-                    .cloned()
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
-    let designated = link.connection.is_intake_session(id);
-    let imported = session.is_some_and(|session| session.awaiting_organization) && !designated;
-    let collapsed = desk.collapsed.contains(&name);
-    let side_tabs = tabs_at(desk, &look.skin, TabPosition::Side);
-    let terminals = all_panes
-        .iter()
-        .filter(|pane| pane.session_id == id)
-        .count()
-        + extra.len();
-    let session_tip = format!(
-        "{name} · {} · {}{terminals} terminals",
-        desk.remote.as_deref().unwrap_or("This Mac"),
-        if designated {
-            "Intake, the home for unorganized work · "
-        } else if imported {
-            "Imported, awaiting organization · "
-        } else {
-            ""
-        },
-    );
-    // The mark sits on the session while it is folded; open, the tab or
-    // terminal that needs a person carries it.
-    let attention = collapsed.then_some(work.attention).flatten();
-    let online = link.connection.status == Status::Attached;
-    let detail = match (host_word(desk, desk.remote.as_deref()), online) {
-        (Some(host), true) => Some(host),
-        (Some(host), false) => Some(format!("{host} · offline")),
-        (None, false) => Some("offline".into()),
-        (None, true) => None,
-    };
-    let toggle_name = name.clone();
-    let (menu_name, context_name) = (name.clone(), name.clone());
-    let header = row(SharedString::from(format!("session-{id}")), look)
-        .debug_selector(move || format!("session-{id}"))
-        .group("session")
-        .child(session_slot(
-            if collapsed { "▸" } else { "▾" },
-            attention,
-            look,
-        ))
-        .child(row_label(name.clone(), Emphasis::Current, look))
-        .when(imported, |row| row.child(badge("imported", look)))
-        .children(detail.map(|detail| row_detail(detail, look)))
-        .child(
-            div()
-                .flex_shrink_0()
-                .invisible()
-                .group_hover("session", |style| style.visible())
-                .when(desk.menu_open(&format!("session-{id}")), |slot| {
-                    slot.visible()
-                })
-                .child(
-                    ghost_icon(
-                        format!("session-menu-{id}"),
-                        IconName::Ellipsis,
-                        "Session actions",
-                    )
-                    .on_click(cx.listener(
-                        move |desk, event: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            desk.open_session_menu(
-                                id,
-                                &menu_name,
-                                Anchor::At(event.position()),
-                                window,
-                                cx,
-                            );
-                        },
-                    )),
-                ),
-        )
-        .on_click(
-            cx.listener(move |desk, _, _, cx| desk.toggle_session_collapsed(&toggle_name, cx)),
-        )
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
-                desk.open_session_menu(id, &context_name, Anchor::At(event.position), window, cx);
-            }),
-        )
-        .when_some(destination, |row, key| {
-            let destination_name = name.clone();
-            let wash = from_hex(&look.chrome.accent_wash);
-            row.drag_over::<ResourceDrag>(move |style, _, _, _| style.bg(wash))
-                .on_drop(cx.listener(move |desk, drag: &ResourceDrag, window, cx| {
-                    desk.move_resources_to(
-                        drag.keys.clone(),
-                        key,
-                        destination_name.clone(),
-                        window,
-                        cx,
-                    );
-                }))
-        })
-        .tooltip(move |window, cx| Tooltip::new(session_tip.clone()).build(window, cx));
-    let others = !background.is_empty() || !extra.is_empty();
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(1.))
-        .child(header)
-        .when(!collapsed, |block| {
-            block
-                .when(side_tabs, |block| {
-                    block.child(tabs::strip(desk, TabPosition::Side, look, cx))
-                })
-                .when(others && side_tabs, |block| {
-                    block.child(
-                        muted(look, "Not in a tab")
-                            .pl(px(8. + ICON + 8.))
-                            .pt(px(6.))
-                            .pb(px(2.)),
-                    )
-                })
-                .children(
-                    background
-                        .iter()
-                        .map(|pane| pane_row(desk, pane, look, cx).into_any_element()),
-                )
-                .children(
-                    extra
-                        .iter()
-                        .map(|resource| record_row(desk, resource, look, cx)),
-                )
-        })
-        .into_any_element()
-}
-
 /// This window's session while the catalog cannot list it: its name, how
 /// its connection stands, and its tabs when they live here.
 fn unlisted_session(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
@@ -599,164 +415,6 @@ fn organization_bar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
         .into_any_element()
 }
 
-/// A record worth a row: one whose process is coming up, up, or going down.
-/// An exited, failed, lost, or never-started record has nothing to show or
-/// attach to, so it stays out of the list.
-fn running(resource: &ResourceRecord) -> bool {
-    matches!(
-        exec_state(resource),
-        Some(ExecState::Starting | ExecState::Running | ExecState::Stopping)
-    )
-}
-
-fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
-    resource
-        .activation
-        .as_ref()
-        .map(|activation| activation.state)
-}
-
-/// Indented under its session, past the session's caret.
-fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
-    row(id, look).pl(px(8. + ICON))
-}
-
-fn record_row(
-    desk: &Desk,
-    resource: &ResourceRecord,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let key = resource.key;
-    let selected = desk.organization.selected.contains(&key);
-    let kind = match resource.kind {
-        ResourceKind::Terminal => "Terminal",
-        _ => "Item",
-    };
-    let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
-    let state = match exec_state(resource) {
-        Some(ExecState::Starting) => "Starting",
-        Some(ExecState::Running) => "Running",
-        Some(ExecState::Stopping) => "Stopping",
-        Some(ExecState::Completed) => "Exited",
-        Some(ExecState::Failed) => "Failed to start",
-        Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
-        None => "Not running",
-    };
-    let tooltip_label = label.clone();
-    let keys = desk.organization.drag_keys(key);
-    let drag = ResourceDrag {
-        label: drag_label(&keys, &label),
-        keys,
-    };
-    child_row(SharedString::from(format!("resource-{key}")), look)
-        .when(selected, |row| row.bg(look.active))
-        .child(row_icon(dot(5., from_hex(&look.chrome.muted))))
-        .child(row_label(label, Emphasis::Quiet, look))
-        .when(state != "Running", |row| row.child(row_detail(state, look)))
-        .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-        .on_click(cx.listener(move |desk, _, _, cx| desk.toggle_resource_selection(key, cx)))
-        .tooltip(move |window, cx| {
-            Tooltip::new(format!("{tooltip_label}\n{kind} · {state}\n{key}")).build(window, cx)
-        })
-        .into_any_element()
-}
-
-/// A terminal of this session that no tab here holds. Clicking opens it in
-/// a tab; Command-click selects it for organization.
-fn pane_row(
-    desk: &Desk,
-    pane: &PaneDescriptor,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    let terminal = pane.terminal_id.clone();
-    let key = pane.key;
-    let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
-    let title = desk.pane_title(Some(&pane.terminal_id));
-    let drag = key.map(|key| {
-        let keys = desk.organization.drag_keys(key);
-        let label = drag_label(&keys, &title);
-        ResourceDrag { keys, label }
-    });
-    let agent = desk.agent(&terminal);
-    let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
-    let glyph = match agent {
-        Some(info) => state_dot(attention, Some(info.state)),
-        None => dot(5., from_hex(&look.chrome.faint)),
-    };
-    let tooltip_terminal = terminal.clone();
-    let handle = cx.weak_entity();
-    let selector = SharedString::from(format!("pane-{terminal}"));
-    child_row(selector.clone(), look)
-        .debug_selector(move || selector.to_string())
-        .when(selected, |row| row.bg(look.active))
-        .child(row_icon(glyph))
-        .child(row_label(
-            title,
-            if attention.is_some() {
-                Emphasis::Normal
-            } else {
-                Emphasis::Quiet
-            },
-            look,
-        ))
-        .when_some(drag, |row, drag| {
-            row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-        })
-        .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
-            if event.modifiers().platform
-                && let Some(key) = key
-            {
-                desk.toggle_resource_selection(key, cx);
-            } else {
-                desk.reveal_terminal(&terminal);
-            }
-            desk.after_command(window, cx);
-        }))
-        .tooltip(move |window, cx| pane_tooltip(&tooltip_terminal, &handle, window, cx))
-}
-
-/// Detail stays available on hover without repeating it in every row.
-fn pane_tooltip(
-    terminal: &ResourceId,
-    handle: &WeakEntity<Desk>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyView {
-    let details = if let Some(desk) = handle.upgrade() {
-        let desk = desk.read(cx);
-        let mut details = desk.pane_title(Some(terminal));
-        if let Some(agent) = desk.agent(terminal) {
-            details.push_str(&format!("\n{} · {}", agent.name, agent.word()));
-            if let Some(provider) = &agent.kind {
-                details.push_str(&format!(" · {provider}"));
-            }
-            if agent.urgent() {
-                details.push_str(" · attention");
-            }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|since| since.as_millis() as u64)
-                .unwrap_or(0);
-            details.push_str(&format!(" · {}", ago(agent.changed_at_ms, now)));
-        }
-        if let Some(pane) = desk
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.pane(terminal))
-            && let Some(cwd) = &pane.cwd
-        {
-            details.push_str(&format!("\n{cwd}"));
-        }
-        details.push_str(&format!("\n{terminal}"));
-        details
-    } else {
-        terminal.to_string()
-    };
-    Tooltip::new(details).build(window, cx)
-}
-
 fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let active = desk.dragging_sidebar();
     let accent = from_hex(&look.chrome.theme.accent);
@@ -777,96 +435,4 @@ fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::super::fleet::Destination;
-    use super::*;
-
-    fn work(name: &str, host: Option<&str>, project: Option<&str>) -> Work {
-        Work {
-            destination: Destination {
-                host: host.map(str::to_owned),
-                authority: None,
-                key: None,
-                name: name.into(),
-            },
-            id: 1,
-            project: project.map(|name| (format!("id:{name}"), name.to_owned())),
-            terminals: 1,
-            attention: None,
-            intake: false,
-            online: true,
-        }
-    }
-
-    fn labels(groups: &[Group]) -> Vec<(Option<&str>, Vec<&str>)> {
-        groups
-            .iter()
-            .map(|group| {
-                (
-                    group.label.as_deref(),
-                    group
-                        .work
-                        .iter()
-                        .map(|work| work.destination.name.as_str())
-                        .collect(),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn every_grouping_lists_the_same_work() {
-        let catalog = vec![
-            work("api", Some("studio"), Some("phux")),
-            work("desk", None, Some("phux")),
-            work("notes", None, None),
-            work("build", Some("ci"), None),
-        ];
-        for grouping in [
-            SidebarGrouping::Project,
-            SidebarGrouping::Machine,
-            SidebarGrouping::None,
-        ] {
-            let mut names: Vec<_> = group(catalog.clone(), grouping)
-                .into_iter()
-                .flat_map(|group| group.work)
-                .map(|work| work.destination.name)
-                .collect();
-            names.sort();
-            assert_eq!(names, ["api", "build", "desk", "notes"], "{grouping:?}");
-        }
-        assert_eq!(
-            labels(&group(catalog.clone(), SidebarGrouping::Project)),
-            [
-                (Some("phux"), vec!["api", "desk"]),
-                (Some("Other"), vec!["build", "notes"]),
-            ]
-        );
-        assert_eq!(
-            labels(&group(catalog.clone(), SidebarGrouping::Machine)),
-            [
-                (Some("This Mac"), vec!["desk", "notes"]),
-                (Some("ci"), vec!["build"]),
-                (Some("studio"), vec!["api"]),
-            ]
-        );
-        assert_eq!(
-            labels(&group(catalog, SidebarGrouping::None)),
-            [(None, vec!["api", "build", "desk", "notes"])]
-        );
-    }
-
-    #[test]
-    fn a_lone_group_needs_no_heading() {
-        let catalog = vec![work("a", None, Some("phux")), work("b", None, Some("phux"))];
-        assert_eq!(
-            labels(&group(catalog.clone(), SidebarGrouping::Project)),
-            [(None, vec!["a", "b"])]
-        );
-        assert_eq!(
-            labels(&group(catalog, SidebarGrouping::Machine)),
-            [(None, vec!["a", "b"])]
-        );
-        assert!(group(Vec::new(), SidebarGrouping::Project).is_empty());
-    }
-}
+mod tests;

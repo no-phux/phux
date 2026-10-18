@@ -1,0 +1,39 @@
+[package]
+name = "phux-gpui"
+version = "0.1.0"
+description = "A phux terminal view for GPUI applications: painter, input and presentation over the phux client runtime."
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[features]
+# Build against phux's patched gpui-fast (`clients/desktop/toolchain/patches`):
+# retained glyph sprites (0006), drawable-presented receipts (0001) and the
+# terminal's press-and-hold opt-out (0005). Without it the crate builds on the
+# published gpui-fast: glyphs paint from shaped lines, a delivery fence clears
+# on the next frame, and macOS keeps its press-and-hold accent menu.
+patched-gpui = []
+# Record where each glyph landed in `PaintedFrame` for pixel fixtures; off in
+# shipping builds.
+terminal-fixtures = []
+
+[dependencies]
+phux-client-core = { path = "../../../../crates/phux-client-core" }
+phux-client-runtime = { path = "../../../../crates/phux-client-runtime" }
+phux-perf = { path = "../../../../crates/phux-perf" }
+phux-protocol = { path = "../../../../crates/phux-protocol" }
+# gpui-fast's library is named `gpui`. The desktop's `[patch.crates-io]`
+# serves its patched copy; an embedder gets the published crate.
+gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false }
+log = "0.4"
+unicode-segmentation = "1"
+
+[dev-dependencies]
+gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["test-support"] }
+# `examples/embed.rs` opens a real window and wakes it from the runtime's
+# listener, the way the desktop does. Both are already in the desktop lock.
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.9", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
+async-channel = "2"
+
+[lints.rust]
+unsafe_code = "forbid"

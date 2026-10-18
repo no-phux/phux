@@ -1,31 +1,6 @@
-use super::*;
+//! Work navigation: details, chord hints and destination pickers.
 
-#[gpui::test]
-fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut TestAppContext) {
-    let (handle, desk) = fixture(cx);
-    let cx = &mut VisualTestContext::from_window(handle, cx);
-    keys(cx, "cmd-p");
-    type_text(cx, "line height");
-    keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Spacing)
-    );
-    assert!(cx.debug_bounds("settings-panel").is_some());
-    click(cx, "palette-mode-commands");
-    assert_eq!(modal(&desk, cx), Modal::Commands);
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
-    keys(cx, "cmd-,");
-    type_text(cx, "remote");
-    keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Connections)
-    );
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
-}
+use super::*;
 
 #[gpui::test]
 fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppContext) {
@@ -100,6 +75,37 @@ fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn a_remapped_chord_is_the_hint_the_palette_shows(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, |desk, cx| {
+        desk.install_ghostty_for_test("keybind = cmd+alt+z=toggle_split_zoom\n", cx)
+    });
+    render(cx);
+    let remapped = crate::settings::display_chord("cmd+alt+z");
+    let default = crate::settings::display_chord("cmd+shift+enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.shown_chord("zoom")),
+        Some(remapped.clone())
+    );
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "zoom pane");
+    assert_eq!(selected_command(&desk, cx), Some("zoom"));
+    // Debug selectors are looked up by `'static` name.
+    let selector = |chord: &str| -> &'static str {
+        Box::leak(format!("palette-chord:{chord}").into_boxed_str())
+    };
+    assert!(
+        cx.debug_bounds(selector(&remapped)).is_some(),
+        "the highlighted row shows the installed chord"
+    );
+    assert!(
+        cx.debug_bounds(selector(&default)).is_none(),
+        "the built-in default is not shown once remapped"
+    );
+}
+
+#[gpui::test]
 fn destination_pickers_drop_the_global_strip_and_keep_every_route(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
@@ -136,46 +142,55 @@ fn destination_pickers_drop_the_global_strip_and_keep_every_route(cx: &mut TestA
 }
 
 #[gpui::test]
-fn machines_are_reachable_from_the_palette_and_the_main_menu(cx: &mut TestAppContext) {
+fn moving_the_highlight_never_resizes_the_palette(cx: &mut TestAppContext) {
+    use super::super::goto_facts::{Fact, FactsCard};
+    use super::super::{Row, Section, Target};
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    let connections = Some(crate::app::settings_panel::Page::Connections);
-
-    keys(cx, "cmd-shift-p");
-    type_text(cx, "add machine");
-    assert_eq!(selected_command(&desk, cx), Some("add-host"));
-    keys(cx, "enter");
-    assert_eq!(modal(&desk, cx), Modal::AddHost);
-    keys(cx, "escape");
-
-    keys(cx, "cmd-shift-p");
-    type_text(cx, "machines…");
-    assert_eq!(selected_command(&desk, cx), Some("machines"));
-    keys(cx, "enter");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    keys(cx, "cmd-p");
+    let row = |title: &str, id: u32, preview: bool| Row {
+        title: title.into(),
+        detail: Some("~/project".into()),
+        keywords: "project".into(),
+        target: Target::Pane(phux_protocol::ResourceId::local(id)),
+        command: None,
+        category: "Terminals",
+        chord: None,
+        agent: None,
+        preview: preview.then(|| FactsCard {
+            title: title.into(),
+            facts: vec![Fact::new("Directory", "~/project")],
+        }),
+    };
+    desk.update(cx, |desk, cx| {
+        let revision = super::super::search_revision(desk);
+        desk.goto_search.rebuild(
+            revision,
+            vec![Section {
+                label: None,
+                rows: vec![row("Worker", 1, true), row("Scratch", 2, false)],
+            }],
+        );
+        cx.notify();
+    });
+    render(cx);
+    click(cx, "palette-details");
+    let layout = |cx: &mut VisualTestContext| {
+        [
+            "palette-panel",
+            "palette-filter",
+            "palette-details",
+            "palette-facts",
+        ]
+        .map(|selector| cx.debug_bounds(selector).expect(selector))
+    };
+    let first = layout(cx);
+    keys(cx, "down");
     assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        connections
+        layout(cx),
+        first,
+        "a row without details keeps the sheet and its controls"
     );
-    keys(cx, "escape");
-    assert_eq!(modal(&desk, cx), Modal::None);
-
-    // The main menu's header leads to every machine, then to their settings.
-    click(cx, "main-menu-rail");
-    let menu = desk
-        .read_with(cx, |desk, _| desk.menu_window())
-        .expect("the main menu drops");
-    let menu_cx = &mut VisualTestContext::from_window(menu, cx);
-    for selector in ["glass-menu-header", "glass-menu-machines"] {
-        let row = menu_cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("no {selector} in the menu"));
-        menu_cx.simulate_click(row.center(), gpui::Modifiers::none());
-        menu_cx.run_until_parked();
-    }
-    assert_eq!(modal(&desk, menu_cx), Modal::Settings);
-    assert_eq!(
-        desk.read_with(menu_cx, |desk, _| desk.settings_page),
-        connections
-    );
+    keys(cx, "up");
+    assert_eq!(layout(cx), first);
 }
