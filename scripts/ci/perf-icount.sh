@@ -41,17 +41,7 @@ command -v valgrind >/dev/null 2>&1
 # The library spawns this binary. Its version has to match the
 # iai-callgrind crate in Cargo.lock. It is not a workspace member: the
 # bench only needs it on PATH.
-runner_version="$(
-  python3 -c '
-import tomllib
-from pathlib import Path
-lock = tomllib.loads(Path("Cargo.lock").read_text())
-versions = [pkg["version"] for pkg in lock["package"] if pkg["name"] == "iai-callgrind"]
-if len(versions) != 1:
-    raise SystemExit("Cargo.lock must contain exactly one iai-callgrind")
-print(versions[0])
-'
-)"
+runner_version="$(bun tools/main.ts perf-icount runner-version)"
 runner_root="${ROOT}/target/icount-runner"
 if [[ ! -x ${runner_root}/bin/iai-callgrind-runner ]]; then
   cargo install --locked --version "${runner_version}" --profile release \
@@ -80,16 +70,16 @@ fi
 "$executable" --output-format=json --home="${out}/iai" > "${out}/iai.jsonl"
 
 if [[ $UPDATE -eq 1 ]]; then
-  python3 "${ROOT}/scripts/ci/perf_icount.py" update \
+  bun tools/main.ts perf-icount update \
     --measured "${out}/iai.jsonl" \
     --baseline "${ROOT}/benchmarks/icount-baseline.json"
 else
-  python3 "${ROOT}/scripts/ci/perf_icount.py" compare \
+  bun tools/main.ts perf-icount compare \
     --measured "${out}/iai.jsonl" \
     --baseline "${ROOT}/benchmarks/icount-baseline.json"
 fi
 
-python3 "${ROOT}/scripts/ci/perf_icount.py" authorize \
+bun tools/main.ts perf-icount authorize \
   --base "${PHUX_BASE_SHA:-}" \
   --event "${GITHUB_EVENT_NAME:-}" \
   --label-update "${PHUX_PERF_BASELINE_UPDATE:-0}"

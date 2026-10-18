@@ -72,16 +72,17 @@ The Rust binary owns its presentation in `crates/phux/src/output.rs`, using
 [anstyle](https://docs.rs/anstyle/) and standard-library terminal detection.
 The existing usage-rs parser still owns help, parsing, and completions.
 Setup, build, release, and guard scripts source `scripts/lib/output.sh`;
-The tools package uses the equivalent `tools/src/lib/output.ts`, and the
-remaining Node checks `scripts/lib/output.mjs`.
+the tools package uses `tools/src/lib/output.ts`, and Node checks under
+`scripts/` use `scripts/lib/output.mjs`.
 Rendering helpers do not exit, count failures, or execute a remedy. Keep
 structured logic in its native language instead of launching another runtime
 just to print status.
 
 The served installer, `scripts/install.sh`, carries its own copy of the
 status format, because it must run standalone from `curl | sh`.
-`python3 -B scripts/test-output.py` verifies the shared stream and color rules
-in POSIX sh, Bash, Bun, and Node, including real terminal destinations.
+`tools/src/lib/output.test.ts` (in `just tools-check`) verifies the shared
+stream and color rules in POSIX sh, Bash, dash, and the TypeScript and Node
+helpers, including real terminal destinations.
 
 ## Runtime status
 
