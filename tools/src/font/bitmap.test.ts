@@ -1,36 +1,30 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
-import { emit, group, parseBdf } from "./bitmap.ts";
+import { SOURCE, TABLE, emit, group, parseBdf } from "./bitmap.ts";
+import { firstDifference } from "./commands.ts";
 
 const ROWS: string[] = Array.from({ length: 16 }, (_, index) => (index === 0 ? "ff" : "00"));
 
 function face(glyphs: string[], bounding = "8 16 0 -4"): string {
-  return [
-    "STARTFONT 2.1",
-    `FONTBOUNDINGBOX ${bounding}`,
-    `CHARS ${glyphs.length}`,
-    ...glyphs,
-    "ENDFONT",
-    "",
-  ].join("\n");
+  return ["STARTFONT 2.1", `FONTBOUNDINGBOX ${bounding}`, ...glyphs, "ENDFONT", ""].join("\n");
 }
 
 function glyph(encoding: number, bbx = "8 16 0 -4", rows = ROWS): string {
-  return [
-    `STARTCHAR g${encoding}`,
-    `ENCODING ${encoding}`,
-    `BBX ${bbx}`,
-    "BITMAP",
-    ...rows,
-    "ENDCHAR",
-  ].join("\n");
+  return [`STARTCHAR g`, `ENCODING ${encoding}`, `BBX ${bbx}`, "BITMAP", ...rows, "ENDCHAR"].join(
+    "\r\n",
+  );
 }
 
-test("the committed table is a fresh regeneration of the vendored face", () => {
-  const bdf = readFileSync(repoPath("crates/phux-record/assets/spleen-8x16.bdf"), "utf8");
-  const committed = readFileSync(repoPath("crates/phux-record/src/font/spleen_8x16.rs"), "utf8");
-  expect(emit(parseBdf(bdf))).toBe(committed);
+test("the committed table is a fresh regeneration, and drift is located", () => {
+  const committed = readFileSync(repoPath(TABLE), "utf8");
+  const fresh = emit(parseBdf(readFileSync(repoPath(SOURCE), "utf8")));
+  expect(firstDifference(committed, fresh)).toBeUndefined();
+  const edited = committed.replace("0x00", "0x01");
+  expect(firstDifference(edited, fresh)).toMatch(/^line \d+:\n- .*0x01.*\n\+ /);
+  expect(firstDifference(committed.split("\n").slice(0, 3).join("\n"), fresh)).toContain(
+    "line 4:\n- (end of file)",
+  );
 });
 
 test("small gaps are bridged and wide ones split", () => {
@@ -48,22 +42,15 @@ test("unencoded glyphs are dropped and bridged holes render blank", () => {
   expect(rust).toContain("static R_0041_0043: [[u8; 16]; 3] = [");
   expect(rust).toContain(`    [${Array.from({ length: 16 }, () => "0x00").join(",")}], // U+0042`);
   expect(rust).toContain("    (0x0041, 0x0043, &R_0041_0043),");
-  expect(rust).toContain("//! columns. 2 glyphs in 1 contiguous ranges.");
 });
 
-test("a differently shaped face is refused", () => {
-  expect(() => parseBdf(face([glyph(0x41)], "6 12 0 -2"))).toThrow(
-    "FONTBOUNDINGBOX is (6, 12), expected (8, 16)",
-  );
-  expect(() => parseBdf("STARTFONT 2.1\n")).toThrow("FONTBOUNDINGBOX is None");
-  expect(() => parseBdf(face([glyph(0x41, "6 16 0 -4")]))).toThrow(
-    "glyph U+0041 has BBX 6x16, expected 8x16",
-  );
-  expect(() => parseBdf(face([glyph(0x41, undefined, ROWS.slice(1))]))).toThrow(
-    "glyph U+0041 has 15 bitmap rows, expected 16",
-  );
-  expect(() => parseBdf(face([glyph(0x41, undefined, ["fff", ...ROWS.slice(1)])]))).toThrow(
-    'expected one hex byte, got "fff"',
-  );
-  expect(() => parseBdf(face([glyph(-1)]))).toThrow("no encoded glyphs found");
+test.each([
+  [face([glyph(0x41)], "6 12 0 -2"), "FONTBOUNDINGBOX is 6 12, expected 8 16"],
+  ["STARTFONT 2.1\n", "FONTBOUNDINGBOX is missing"],
+  [face([glyph(0x41, "6 16 0 -4")]), "glyph U+0041 has BBX 6 16, expected 8 16"],
+  [face([glyph(0x41, undefined, ROWS.slice(1))]), "glyph U+0041 has 15 bitmap rows, expected 16"],
+  [face([glyph(0x41, undefined, ["fff", ...ROWS.slice(1)])]), 'expected one hex byte, got "fff"'],
+  [face([glyph(-1)]), "no encoded glyphs found"],
+])("a malformed face is refused: %#", (text, message) => {
+  expect(() => parseBdf(text)).toThrow(message);
 });

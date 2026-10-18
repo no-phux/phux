@@ -94,6 +94,8 @@ also refuses the file change unless one of these is true:
   Add the label, then push. Labeling alone does not start `ci`, and a re-run
   keeps the event payload from before the label existed.
 
+That check runs before the bench, so an unauthorized edit fails in seconds.
+
 Pushes to `main` and merge-queue runs do not repeat the trailer check. Squash
 and the merge queue can drop trailers; the pull request already authorized
 the file. The percentage check still runs, so a number that does not match

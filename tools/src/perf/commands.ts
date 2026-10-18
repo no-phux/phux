@@ -1,70 +1,53 @@
 import { readFileSync } from "node:fs";
-import { parseArgs } from "node:util";
 import { required, UsageError, type Command } from "../lib/command.ts";
 import { repoPath } from "../lib/repo.ts";
 import {
-  BASELINE_PATH,
+  BASELINE,
   authorize,
   compare,
   loadBaseline,
   loadMeasurements,
   runnerVersion,
   writeBaseline,
+  type Measurements,
 } from "./icount.ts";
 
-const USAGE = `compare|update --measured FILE [--baseline FILE]
-       perf-icount authorize --base SHA [--event NAME] [--label-update 0|1]
-       perf-icount runner-version`;
+function measured(args: string[]): Measurements {
+  const [file, ...rest] = args;
+  if (rest.length > 0) throw new UsageError(`unexpected ${rest.join(" ")}`);
+  return loadMeasurements(readFileSync(required(file, "FILE"), "utf8"));
+}
 
-function measuredArgs(args: string[]): { measured: string; baseline: string } {
-  const { values } = parseArgs({
-    args,
-    options: {
-      measured: { type: "string" },
-      baseline: { type: "string", default: BASELINE_PATH },
-    },
-  });
-  return { measured: required(values.measured, "--measured"), baseline: values.baseline };
+function noArguments(args: string[]): void {
+  if (args.length > 0) throw new UsageError(`unexpected ${args.join(" ")}`);
 }
 
 function run(sub: string | undefined, args: string[]): number {
   switch (sub) {
     case "compare": {
-      const { measured, baseline } = measuredArgs(args);
-      const counts = loadMeasurements(readFileSync(measured, "utf8"));
-      const { lines, failures } = compare(counts, loadBaseline(baseline));
+      const { lines, failures } = compare(measured(args), loadBaseline());
       console.log(lines.join("\n"));
       if (failures.length === 0) return 0;
-      console.error(
-        "perf-icount: instruction count rose more than the limit, " +
-          "or the scenario set does not match. See docs/performance-ci.md.",
-      );
+      console.error(`perf-icount: see docs/performance-ci.md\n${failures.join("\n")}`);
       return 1;
     }
-    case "update": {
-      const { measured, baseline } = measuredArgs(args);
-      console.log(writeBaseline(baseline, loadMeasurements(readFileSync(measured, "utf8"))));
+    case "update":
+      writeBaseline(measured(args));
+      console.log(`wrote ${BASELINE}`);
       return 0;
-    }
     case "authorize": {
-      const { values } = parseArgs({
-        args,
-        options: {
-          base: { type: "string" },
-          event: { type: "string", default: "" },
-          "label-update": { type: "string", default: "0" },
-        },
-      });
+      noArguments(args);
+      const env = process.env;
       const notice = authorize(
-        required(values.base, "--base"),
-        values.event,
-        values["label-update"],
+        env["PHUX_BASE_SHA"] ?? "",
+        env["GITHUB_EVENT_NAME"] ?? "",
+        env["PHUX_PERF_BASELINE_UPDATE"] === "1",
       );
       if (notice !== undefined) console.log(notice);
       return 0;
     }
     case "runner-version":
-      parseArgs({ args, options: {} });
+      noArguments(args);
       console.log(runnerVersion(readFileSync(repoPath("Cargo.lock"), "utf8")));
       return 0;
     default:
@@ -75,7 +58,10 @@ function run(sub: string | undefined, args: string[]): number {
 export const commands: Record<string, Command> = {
   "perf-icount": {
     summary: "Compare, update or authorize the callgrind instruction-count baseline.",
-    usage: USAGE,
+    usage: "compare FILE | update FILE | authorize | runner-version",
+    help:
+      "FILE holds iai-callgrind JSON lines. authorize reads PHUX_BASE_SHA, GITHUB_EVENT_NAME\n" +
+      "and PHUX_PERF_BASELINE_UPDATE=1 (the perf-baseline label).",
     run: ([sub, ...args]) => run(sub, args),
   },
 };

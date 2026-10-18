@@ -1,34 +1,17 @@
 // Compare callgrind instruction counts to benchmarks/icount-baseline.json.
 //
-// `scripts/ci/perf-icount.sh` runs the bench and calls this. The checked-in
-// file is the contract: a scenario fails when its instruction count rises by
-// more than `increase_limit_percent`. A drop passes. Missing or extra
-// scenarios fail. `update` rewrites the scenario map from the measurement.
-//
-// On a pull request, a change to the baseline file also needs the commit
-// trailer `Perf-Baseline: update` or `PHUX_PERF_BASELINE_UPDATE=1` (the
-// `perf-baseline` label). That check authorizes the edit; it does not skip
-// the percentage comparison.
-//
-// Counts are JSON numbers. Callgrind totals for these scenarios are far below
-// 2^53, and so are their products with 100 + limit, so integer arithmetic on
-// `number` stays exact.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative } from "node:path";
+// A scenario fails when its count rises by more than `increase_limit_percent`;
+// a drop passes; a missing or extra scenario fails. On a pull request, editing
+// the baseline also needs the `Perf-Baseline: update` trailer or the
+// `perf-baseline` label. Counts stay far below 2^53, so `number` is exact.
+import { readFileSync, writeFileSync } from "node:fs";
 import { Failure } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { ROOT, repoPath } from "../lib/repo.ts";
 import { isTable, list, str, table, type Table } from "../lib/value.ts";
 
-export const BASELINE_PATH = repoPath("benchmarks/icount-baseline.json");
-const BASELINE_FILE = "benchmarks/icount-baseline.json";
-export const TRAILER = "Perf-Baseline: update";
-const SCHEMA = {
-  schema: 1,
-  profile: "icount",
-  tool: "callgrind",
-  increase_limit_percent: 5,
-} as const;
+export const BASELINE = "benchmarks/icount-baseline.json";
+const TRAILER = "Perf-Baseline: update";
 
 export type Measurements = Record<string, number>;
 
@@ -37,81 +20,37 @@ export interface Baseline {
   readonly scenarios: Measurements;
 }
 
-function isCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
-}
+const isCount = (value: unknown): value is number => Number.isInteger(value);
 
-function repr(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
-}
-
-export function scenarioName(summary: Table): string {
-  const fn = summary["function_name"];
-  if (typeof fn !== "string" || fn === "") {
-    throw new Failure("benchmark summary has no function_name");
-  }
-  const id = summary["id"];
-  return typeof id === "string" && id !== "" ? `${fn}/${id}` : fn;
-}
-
-function intMetric(node: unknown): number {
-  if (isTable(node) && "Int" in node) {
-    const value = node["Int"];
-    if (isCount(value)) return value;
-    if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) return Number(value);
-  } else if (isCount(node)) {
-    return node;
-  }
-  throw new Failure(`instruction metric is not an integer: ${repr(node)}`);
-}
-
-/** The current run is Left, or the first element of Both. */
-function metricNew(metrics: unknown): number {
-  if (!isTable(metrics)) throw new Failure(`metrics object missing: ${repr(metrics)}`);
-  if ("Left" in metrics) return intMetric(metrics["Left"]);
-  if ("Both" in metrics) {
-    const pair = metrics["Both"];
-    if (!Array.isArray(pair) || pair.length === 0) {
-      throw new Failure(`Both metrics are empty: ${repr(metrics)}`);
-    }
-    return intMetric(pair[0]);
-  }
-  throw new Failure(`no new instruction metric in ${repr(metrics)}`);
-}
-
+/** The current run's Callgrind Ir total: `Left`, or the first of `Both`. */
 export function instructionCount(summary: Table): number {
-  const profiles = summary["profiles"];
-  if (!Array.isArray(profiles)) throw new Failure("benchmark summary has no profiles list");
-  for (const profile of list(profiles)) {
-    if (!isTable(profile)) continue;
-    const tool = profile["tool"];
-    if (tool !== undefined && tool !== null && tool !== "Callgrind") continue;
-    const total = table(table(profile["summaries"])["total"]);
-    const callgrind = table(total["summary"])["Callgrind"];
-    if (!isTable(callgrind) || !("Ir" in callgrind)) continue;
-    return metricNew(table(callgrind["Ir"])["metrics"]);
+  for (const profile of list(summary["profiles"]).map(table)) {
+    if (profile["tool"] !== undefined && profile["tool"] !== "Callgrind") continue;
+    const callgrind = table(
+      table(table(table(profile["summaries"])["total"])["summary"])["Callgrind"],
+    );
+    const metrics = table(table(callgrind["Ir"])["metrics"]);
+    const current = table("Left" in metrics ? metrics["Left"] : list(metrics["Both"])[0]);
+    if (isCount(current["Int"])) return current["Int"];
   }
-  const keys = Object.keys(summary).sort();
-  throw new Failure(`no Callgrind Ir total in summary (keys=${repr(keys)})`);
+  throw new Failure(`no integer Callgrind Ir total for ${String(summary["function_name"])}`);
 }
 
-/** One scenario per iai-callgrind JSON line; other JSON lines are ignored. */
+/** One scenario per iai-callgrind JSON line, named `function/id`. */
 export function loadMeasurements(text: string): Measurements {
   const found: Measurements = {};
-  const lines = text.split(/\r\n|\r|\n/);
-  for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (line === "") continue;
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() === "") continue;
     let summary: unknown;
     try {
       summary = JSON.parse(line);
-    } catch (error) {
-      throw new Failure(`iai json line ${index + 1} is not JSON: ${String(error)}`, {
-        cause: error,
-      });
+    } catch {
+      throw new Failure(`iai json line ${index + 1} is not JSON`);
     }
-    if (!isTable(summary) || !("function_name" in summary)) continue;
-    const name = scenarioName(summary);
+    const fn = isTable(summary) ? str(summary["function_name"]) : undefined;
+    if (!isTable(summary) || !fn) continue;
+    const id = str(summary["id"]);
+    const name = id ? `${fn}/${id}` : fn;
     if (name in found) throw new Failure(`duplicate scenario ${name}`);
     found[name] = instructionCount(summary);
   }
@@ -119,93 +58,67 @@ export function loadMeasurements(text: string): Measurements {
   return found;
 }
 
-export function parseBaseline(text: string, path: string): Baseline {
-  const data: unknown = JSON.parse(text);
-  if (!isTable(data)) throw new Failure(`${path} must hold a JSON object`);
-  if (data["schema"] !== 1) throw new Failure(`${path} schema must be 1`);
-  if (data["tool"] !== "callgrind" || data["profile"] !== "icount") {
-    throw new Failure(`${path} must record the icount profile under callgrind`);
+export function parseBaseline(text: string): Baseline {
+  const data = table(JSON.parse(text));
+  if (data["schema"] !== 1 || data["tool"] !== "callgrind" || data["profile"] !== "icount") {
+    throw new Failure(`${BASELINE} must be schema 1 of the callgrind icount profile`);
   }
   const limit = data["increase_limit_percent"];
   if (!isCount(limit) || limit < 0) {
     throw new Failure("increase_limit_percent must be a non-negative integer");
   }
-  const scenarios = data["scenarios"];
-  if (!isTable(scenarios) || Object.keys(scenarios).length === 0) {
-    throw new Failure("baseline scenarios must be a non-empty object");
-  }
-  const parsed: Measurements = {};
+  const scenarios = table(data["scenarios"]);
+  if (Object.keys(scenarios).length === 0)
+    throw new Failure("baseline scenarios must not be empty");
   for (const [name, count] of Object.entries(scenarios)) {
-    if (!isCount(count)) {
-      throw new Failure(`scenario ${repr(name)} must map to an integer instruction count`);
+    if (!isCount(count) || count < 0) {
+      throw new Failure(`scenario ${name} must map to a non-negative integer`);
     }
-    if (count < 0) throw new Failure(`scenario ${name} has a negative count`);
-    parsed[name] = count;
   }
-  return { increase_limit_percent: limit, scenarios: parsed };
+  return { increase_limit_percent: limit, scenarios: scenarios as Measurements };
 }
 
-export function loadBaseline(path: string): Baseline {
+export function loadBaseline(): Baseline {
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
-  } catch (error) {
-    if (isMissing(error)) {
-      throw new Failure(
-        `missing ${path}. Run \`just perf-icount --update\` on x86_64 ` +
-          "inside nix develop and commit the file.",
-        { cause: error },
-      );
-    }
-    throw error;
+    text = readFileSync(repoPath(BASELINE), "utf8");
+  } catch {
+    throw new Failure(
+      `cannot read ${BASELINE}. Run \`just perf-icount --update\` on x86_64 inside nix develop and commit it.`,
+    );
   }
-  return parseBaseline(text, path);
+  return parseBaseline(text);
 }
 
-function isMissing(error: unknown): boolean {
-  return isTable(error) && error["code"] === "ENOENT";
-}
-
-/** True when the increase is strictly more than limitPercent. */
-export function overLimit(measured: number, baseline: number, limitPercent: number): boolean {
-  return measured * 100 > baseline * (100 + limitPercent);
-}
-
-function percent(got: number, want: number): string {
-  const change = ((got - want) * 100) / want;
-  return `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
-}
-
-export interface Comparison {
-  /** One line per scenario on both sides, ok or FAIL. */
-  readonly lines: string[];
-  /** Missing, extra, and over-limit scenarios. */
-  readonly failures: string[];
-}
-
-export function compare(measured: Measurements, baseline: Baseline): Comparison {
-  const limit = baseline.increase_limit_percent;
-  const expected = baseline.scenarios;
-  const lines: string[] = [];
-  const failures: string[] = [];
-  // Default sort: code-unit order, which is what Python's sorted() gives these names.
-  const want = Object.keys(expected).sort();
-  const got = Object.keys(measured).sort();
-  for (const name of want.filter((name) => !(name in measured))) {
-    failures.push(`FAIL ${name}: missing from this run`);
-  }
-  for (const name of got.filter((name) => !(name in expected))) {
-    failures.push(`FAIL ${name}: not in the baseline`);
-  }
-  for (const name of want.filter((name) => name in measured)) {
-    const count = measured[name] ?? 0;
-    const base = expected[name] ?? 0;
-    const pct = base === 0 ? "n/a" : percent(count, base);
-    const bad = base === 0 ? count > 0 : overLimit(count, base, limit);
-    const line = `${bad ? "FAIL" : "ok"} ${name}: measured ${count} baseline ${base} (${pct}, limit +${limit}%)`;
-    lines.push(line);
-    if (bad) failures.push(line);
-  }
+export function compare(
+  measured: Measurements,
+  baseline: Baseline,
+): { lines: string[]; failures: string[] } {
+  const { increase_limit_percent: limit, scenarios } = baseline;
+  const want = Object.keys(scenarios).sort();
+  const failures = [
+    ...want
+      .filter((name) => !(name in measured))
+      .map((name) => `FAIL ${name}: missing from this run`),
+    ...Object.keys(measured)
+      .sort()
+      .filter((name) => !(name in scenarios))
+      .map((name) => `FAIL ${name}: not in the baseline`),
+  ];
+  const lines = want
+    .filter((name) => name in measured)
+    .map((name) => {
+      const count = measured[name] ?? 0;
+      const base = scenarios[name] ?? 0;
+      const change =
+        base === 0
+          ? "n/a"
+          : `${count >= base ? "+" : ""}${(((count - base) * 100) / base).toFixed(2)}%`;
+      const over = count * 100 > base * (100 + limit);
+      const line = `${over ? "FAIL" : "ok"} ${name}: measured ${count} baseline ${base} (${change}, limit +${limit}%)`;
+      if (over) failures.push(line);
+      return line;
+    });
   return { lines, failures };
 }
 
@@ -215,31 +128,25 @@ export function baselineDocument(measured: Measurements): string {
       .sort()
       .map((name) => [name, measured[name]]),
   );
-  return `${JSON.stringify({ ...SCHEMA, scenarios }, null, 2)}\n`;
+  const document = {
+    schema: 1,
+    profile: "icount",
+    tool: "callgrind",
+    increase_limit_percent: 5,
+    scenarios,
+  };
+  return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-export function writeBaseline(path: string, measured: Measurements): string {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, baselineDocument(measured));
-  const shown = relative(ROOT, path);
-  return `wrote ${shown.startsWith("..") || isAbsolute(shown) ? path : shown}`;
+export function writeBaseline(measured: Measurements): void {
+  writeFileSync(repoPath(BASELINE), baselineDocument(measured));
 }
 
-export function trailerPresent(message: string): boolean {
-  return message.split(/\r\n|\r|\n/).some((line) => line === TRAILER);
-}
-
-function baselineDiffers(base: string, cwd: string): boolean {
-  const result = Bun.spawnSync(["git", "diff", "--quiet", `${base}...HEAD`, "--", BASELINE_FILE], {
-    cwd,
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-  if (result.exitCode === 0) return false;
-  if (result.exitCode === 1) return true;
+function baselineChanged(base: string, cwd: string): boolean {
+  const diff = Bun.spawnSync(["git", "diff", "--quiet", `${base}...HEAD`, "--", BASELINE], { cwd });
+  if (diff.exitCode === 0 || diff.exitCode === 1) return diff.exitCode === 1;
   throw new Failure(
-    `git diff against ${base} failed (exit ${result.exitCode}: ${result.stderr.toString().trim()}). ` +
-      "Fetch the pull request base before running the guard.",
+    `git diff against ${base} failed: ${diff.stderr.toString().trim()}. Fetch the pull request base first.`,
   );
 }
 
@@ -250,35 +157,29 @@ function baselineDiffers(base: string, cwd: string): boolean {
 export function authorize(
   base: string,
   event: string,
-  labelUpdate: string,
+  labeled: boolean,
   cwd = ROOT,
 ): string | undefined {
   if (event !== "pull_request") return undefined;
   if (base === "") throw new Failure("PHUX_BASE_SHA is required on pull_request");
-  if (!baselineDiffers(base, cwd)) return undefined;
-  if (labelUpdate === "1") {
-    return "perf-icount: baseline change authorized by the perf-baseline label";
-  }
-  const message = git(["log", "--format=%B", `${base}..HEAD`], cwd);
-  if (trailerPresent(message)) {
+  if (!baselineChanged(base, cwd)) return undefined;
+  if (labeled) return "perf-icount: baseline change authorized by the perf-baseline label";
+  if (
+    git(["log", "--format=%B", `${base}..HEAD`], cwd)
+      .split("\n")
+      .includes(TRAILER)
+  ) {
     return `perf-icount: baseline change authorized by ${TRAILER}`;
   }
   throw new Failure(
-    `${BASELINE_FILE} changed without authorization. ` +
-      `Add a commit whose message contains a line \`${TRAILER}\`, ` +
-      "or push again after adding the `perf-baseline` label. " +
-      "The label is read on the next pull_request run; labeling alone " +
-      "does not start ci.",
+    `${BASELINE} changed without authorization. Add a commit with a line \`${TRAILER}\`, ` +
+      "or add the `perf-baseline` label and push again (labeling alone does not start ci).",
   );
 }
 
-/**
- * The iai-callgrind version Cargo.lock pins. The bench spawns
- * iai-callgrind-runner, whose version has to match the library's.
- */
+/** The iai-callgrind version Cargo.lock pins; iai-callgrind-runner must match it. */
 export function runnerVersion(lockText: string): string {
-  const lock = table(Bun.TOML.parse(lockText));
-  const versions = list(lock["package"])
+  const versions = list(table(Bun.TOML.parse(lockText))["package"])
     .map(table)
     .filter((pkg) => pkg["name"] === "iai-callgrind")
     .map((pkg) => str(pkg["version"]));

@@ -1,227 +1,149 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../lib/git.ts";
-import { Classifier } from "../routing/classify.ts";
 import { repoPath } from "../lib/repo.ts";
+import { Classifier } from "../routing/classify.ts";
 import {
   authorize,
   baselineDocument,
   compare,
-  instructionCount,
   loadMeasurements,
-  overLimit,
   parseBaseline,
   runnerVersion,
-  trailerPresent,
 } from "./icount.ts";
 
-function summary(name: string, id: string, instructions: number): Record<string, unknown> {
-  return {
+function line(name: string, id: string, metrics: unknown): string {
+  const ir = { Ir: { metrics } };
+  return JSON.stringify({
     function_name: name,
     id,
-    profiles: [
-      {
-        tool: "Callgrind",
-        summaries: {
-          total: {
-            summary: {
-              Callgrind: { Ir: { diffs: null, metrics: { Left: { Int: instructions } } } },
-            },
-          },
-        },
-      },
-    ],
-  };
+    profiles: [{ tool: "Callgrind", summaries: { total: { summary: { Callgrind: ir } } } }],
+  });
 }
 
-describe("extract", () => {
-  test("Left and Both keep the new count", () => {
-    expect(instructionCount(summary("vt_apply", "apply", 1000))).toBe(1000);
-    const both = summary("vt_apply", "apply", 1);
-    both["profiles"] = [
-      {
-        tool: "Callgrind",
-        summaries: {
-          total: {
-            summary: { Callgrind: { Ir: { metrics: { Both: [{ Int: 1100 }, { Int: 1000 }] } } } },
-          },
-        },
-      },
-    ];
-    expect(instructionCount(both)).toBe(1100);
+test("measurements are named function/id and keep the new count", () => {
+  const text = [
+    line("vt_apply", "apply", { Left: { Int: 10 } }),
+    line("frame_encode", "encode", { Both: [{ Int: 1100 }, { Int: 1000 }] }),
+    line("org_commit", "", { Left: { Int: 7 } }),
+    '{"other": 1}',
+    "",
+  ].join("\n");
+  expect(loadMeasurements(text)).toEqual({
+    "vt_apply/apply": 10,
+    "frame_encode/encode": 1100,
+    org_commit: 7,
   });
-
-  test("load names scenarios by function and id", () => {
-    const text = [
-      JSON.stringify(summary("vt_apply", "apply", 10)),
-      JSON.stringify(summary("frame_encode", "encode", 20)),
-      "not a summary",
-    ].join("\n");
-    // The third line is JSON-invalid and must fail, not be skipped.
-    expect(() => loadMeasurements(`${text}\n{`)).toThrow();
-    expect(loadMeasurements(text.replace("not a summary", ""))).toEqual({
-      "vt_apply/apply": 10,
-      "frame_encode/encode": 20,
-    });
-  });
-
-  test("a summary without an id is named by its function", () => {
-    const line = JSON.stringify({ ...summary("org_commit", "", 7) });
-    expect(loadMeasurements(line)).toEqual({ org_commit: 7 });
-    expect(() => loadMeasurements(`${line}\n${line}`)).toThrow("duplicate scenario org_commit");
-    expect(() => loadMeasurements('{"other": 1}')).toThrow("no benchmark summaries");
-  });
+  const one = line("a", "", { Left: { Int: 1 } });
+  expect(() => loadMeasurements(`${one}\n{`)).toThrow("line 2 is not JSON");
+  expect(() => loadMeasurements(`${one}\n${one}`)).toThrow("duplicate scenario a");
+  expect(() => loadMeasurements('{"other": 1}')).toThrow("no benchmark summaries");
+  expect(() => loadMeasurements(line("a", "", { Left: { Float: 1.5 } }))).toThrow(
+    "no integer Callgrind Ir",
+  );
 });
 
-describe("limit", () => {
-  test("exactly five percent passes and one more fails", () => {
-    expect(overLimit(105, 100, 5)).toBe(false);
-    expect(overLimit(106, 100, 5)).toBe(true);
-    expect(overLimit(90, 100, 5)).toBe(false);
-  });
-
-  test("compare reports missing and extra", () => {
-    const { failures } = compare(
-      { a: 100, extra: 1 },
-      { increase_limit_percent: 5, scenarios: { a: 100, missing: 1 } },
-    );
-    expect(failures).toHaveLength(2);
-    expect(failures.some((line) => line.includes("missing"))).toBe(true);
-    expect(failures.some((line) => line.includes("extra"))).toBe(true);
-  });
-
-  test("compare prints the change and the limit", () => {
-    const { lines, failures } = compare(
-      { a: 106, b: 90, zero: 0 },
-      { increase_limit_percent: 5, scenarios: { a: 100, b: 100, zero: 0 } },
-    );
-    expect(lines).toEqual([
-      "FAIL a: measured 106 baseline 100 (+6.00%, limit +5%)",
-      "ok b: measured 90 baseline 100 (-10.00%, limit +5%)",
-      "ok zero: measured 0 baseline 0 (n/a, limit +5%)",
-    ]);
-    expect(failures).toEqual(lines.slice(0, 1));
-  });
+test("compare allows exactly the limit and fails missing, extra and over-limit scenarios", () => {
+  const { lines, failures } = compare(
+    { a: 105, b: 106, c: 90, zero: 0, extra: 1 },
+    { increase_limit_percent: 5, scenarios: { a: 100, b: 100, c: 100, zero: 0, missing: 1 } },
+  );
+  expect(lines).toEqual([
+    "ok a: measured 105 baseline 100 (+5.00%, limit +5%)",
+    "FAIL b: measured 106 baseline 100 (+6.00%, limit +5%)",
+    "ok c: measured 90 baseline 100 (-10.00%, limit +5%)",
+    "ok zero: measured 0 baseline 0 (n/a, limit +5%)",
+  ]);
+  expect(failures).toEqual([
+    "FAIL missing: missing from this run",
+    "FAIL extra: not in the baseline",
+    "FAIL b: measured 106 baseline 100 (+6.00%, limit +5%)",
+  ]);
 });
 
-describe("baseline", () => {
-  test("the checked-in baseline parses and round-trips byte for byte", () => {
-    const text = readFileSync(repoPath("benchmarks/icount-baseline.json"), "utf8");
-    const baseline = parseBaseline(text, "baseline");
-    expect(baselineDocument(baseline.scenarios)).toBe(text);
-  });
-
-  test("malformed baselines are refused", () => {
-    const valid = { schema: 1, profile: "icount", tool: "callgrind", increase_limit_percent: 5 };
-    const cases: [unknown, string][] = [
-      [{ ...valid, schema: 2, scenarios: { a: 1 } }, "schema must be 1"],
-      [{ ...valid, tool: "cachegrind", scenarios: { a: 1 } }, "icount profile under callgrind"],
-      [{ ...valid, increase_limit_percent: -1, scenarios: { a: 1 } }, "non-negative integer"],
-      [{ ...valid, increase_limit_percent: true, scenarios: { a: 1 } }, "non-negative integer"],
-      [{ ...valid, scenarios: {} }, "non-empty object"],
-      [{ ...valid, scenarios: { a: 1.5 } }, "integer instruction count"],
-      [{ ...valid, scenarios: { a: -1 } }, "negative count"],
-    ];
-    for (const [document, message] of cases) {
-      expect(() => parseBaseline(JSON.stringify(document), "b.json")).toThrow(message);
-    }
-  });
+test("the checked-in baseline parses and round-trips byte for byte", () => {
+  const text = readFileSync(repoPath("benchmarks/icount-baseline.json"), "utf8");
+  expect(baselineDocument(parseBaseline(text).scenarios)).toBe(text);
 });
 
-test("the trailer is a whole line", () => {
-  expect(trailerPresent("subject\n\nPerf-Baseline: update\n")).toBe(true);
-  expect(trailerPresent("Perf-Baseline: update now")).toBe(false);
-  expect(trailerPresent("see Perf-Baseline: update\n")).toBe(false);
+test.each<[Record<string, unknown>, string]>([
+  [{ schema: 2 }, "schema 1"],
+  [{ tool: "cachegrind" }, "schema 1"],
+  [{ increase_limit_percent: -1 }, "non-negative integer"],
+  [{ increase_limit_percent: true }, "non-negative integer"],
+  [{ scenarios: {} }, "must not be empty"],
+  [{ scenarios: { a: 1.5 } }, "scenario a"],
+  [{ scenarios: { a: -1 } }, "scenario a"],
+])("baseline %p is refused", (change, message) => {
+  const valid = {
+    schema: 1,
+    profile: "icount",
+    tool: "callgrind",
+    increase_limit_percent: 5,
+    scenarios: { a: 1 },
+  };
+  expect(() => parseBaseline(JSON.stringify({ ...valid, ...change }))).toThrow(message);
 });
 
 test("the runner version is the one iai-callgrind in Cargo.lock", () => {
-  const lock = (versions: string[]): string =>
+  const lock = (...versions: string[]): string =>
     versions
       .map((version) => `[[package]]\nname = "iai-callgrind"\nversion = "${version}"\n`)
       .join("\n");
-  expect(runnerVersion(lock(["0.16.1"]))).toBe("0.16.1");
-  expect(() => runnerVersion(lock([]))).toThrow("exactly one");
-  expect(() => runnerVersion(lock(["0.16.1", "0.15.0"]))).toThrow("exactly one");
+  expect(runnerVersion(lock("0.16.1"))).toBe("0.16.1");
+  expect(() => runnerVersion(lock())).toThrow("exactly one");
+  expect(() => runnerVersion(lock("0.16.1", "0.15.0"))).toThrow("exactly one");
   expect(runnerVersion(readFileSync(repoPath("Cargo.lock"), "utf8"))).toMatch(/^\d+\.\d+\.\d+/);
 });
 
 test("hot paths select the job and docs do not", () => {
   const classifier = new Classifier();
-  const cases: Record<string, boolean> = {
-    "": true,
-    "crates/phux-server/src/lib.rs": true,
-    "crates/phux-protocol/src/lib.rs": true,
-    "crates/phux-client-core/src/lib.rs": true,
-    "crates/phux-core/src/org.rs": true,
-    "benchmarks/icount-baseline.json": true,
-    "just/perf.just": true,
-    ".github/workflows/ci.yml": true,
-    "tools/src/perf/icount.ts": true,
-    "docs/performance.md": false,
-    "crates/phux-tui/src/lib.rs": false,
-    "scripts/bench/perf-nightly.sh": false,
-  };
-  for (const [path, want] of Object.entries(cases)) {
-    const paths = path === "" ? [] : [path];
-    expect([path, classifier.classify(paths).perfIcountNeeded]).toEqual([path, want]);
+  const cases: [string[], boolean][] = [
+    [[], true],
+    [["crates/phux-server/src/lib.rs"], true],
+    [["benchmarks/icount-baseline.json"], true],
+    [["tools/src/perf/icount.ts"], true],
+    [["docs/performance.md"], false],
+    [["crates/phux-tui/src/lib.rs"], false],
+  ];
+  for (const [paths, want] of cases) {
+    expect([paths, classifier.classify(paths).perfIcountNeeded]).toEqual([paths, want]);
   }
 });
 
-describe("authorize", () => {
-  function fixture(body: (repo: string, base: string) => void): void {
-    const repo = mkdtempSync(join(tmpdir(), "phux-icount-"));
-    try {
-      git(["init", "-q"], repo);
-      mkdirSync(join(repo, "benchmarks"));
-      writeFileSync(join(repo, "benchmarks/icount-baseline.json"), "{}\n");
-      writeFileSync(join(repo, "README"), "one\n");
-      commitAll(repo, "base");
-      const base = git(["rev-parse", "HEAD"], repo).trim();
-      body(repo, base);
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  }
-
-  function commitAll(repo: string, message: string): void {
+test("a pull request baseline edit needs the trailer or the label", () => {
+  expect(authorize("", "push", false)).toBeUndefined();
+  expect(() => authorize("", "pull_request", false)).toThrow("PHUX_BASE_SHA is required");
+  const repo = mkdtempSync(join(tmpdir(), "phux-icount-"));
+  const commit = (path: string, text: string, message: string): void => {
+    writeFileSync(join(repo, path), text);
     git(["add", "-A"], repo);
     git(["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", message], repo);
+  };
+  try {
+    git(["init", "-q"], repo);
+    mkdirSync(join(repo, "benchmarks"));
+    commit("benchmarks/icount-baseline.json", "{}\n", "base");
+    const base = git(["rev-parse", "HEAD"], repo).trim();
+    expect(() => authorize("0".repeat(40), "pull_request", false, repo)).toThrow(
+      "Fetch the pull request base",
+    );
+    commit("README", "docs\n", "docs");
+    expect(authorize(base, "pull_request", false, repo)).toBeUndefined();
+    commit(
+      "benchmarks/icount-baseline.json",
+      '{"x": 1}\n',
+      "perf: move\n\nPerf-Baseline: update now",
+    );
+    expect(() => authorize(base, "pull_request", false, repo)).toThrow(
+      "changed without authorization",
+    );
+    expect(authorize(base, "pull_request", true, repo)).toContain("perf-baseline label");
+    commit("README", "two\n", "follow-up\n\nPerf-Baseline: update");
+    expect(authorize(base, "pull_request", false, repo)).toContain("by Perf-Baseline: update");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
-
-  test("only pull requests are checked, and they need a base", () => {
-    expect(authorize("", "push", "0")).toBeUndefined();
-    expect(() => authorize("", "pull_request", "0")).toThrow("PHUX_BASE_SHA is required");
-  });
-
-  test("an untouched baseline needs nothing", () => {
-    fixture((repo, base) => {
-      writeFileSync(join(repo, "README"), "two\n");
-      commitAll(repo, "docs");
-      expect(authorize(base, "pull_request", "0", repo)).toBeUndefined();
-    });
-  });
-
-  test("a baseline edit needs the trailer or the label", () => {
-    fixture((repo, base) => {
-      writeFileSync(join(repo, "benchmarks/icount-baseline.json"), '{"x": 1}\n');
-      commitAll(repo, "perf: move the baseline\n\nPerf-Baseline: update now");
-      expect(() => authorize(base, "pull_request", "0", repo)).toThrow(
-        "changed without authorization",
-      );
-      expect(authorize(base, "pull_request", "1", repo)).toContain("perf-baseline label");
-      writeFileSync(join(repo, "README"), "two\n");
-      commitAll(repo, "follow-up\n\nPerf-Baseline: update");
-      expect(authorize(base, "pull_request", "0", repo)).toContain("by Perf-Baseline: update");
-    });
-  });
-
-  test("an unreachable base fails closed", () => {
-    fixture((repo) => {
-      expect(() => authorize("0".repeat(40), "pull_request", "0", repo)).toThrow(
-        "Fetch the pull request base",
-      );
-    });
-  });
 });

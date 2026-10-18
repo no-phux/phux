@@ -75,12 +75,10 @@ newer compiler than this repository's Rust pin. Install the
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
-The runner-policy storage-collapse regression uses `hardlink` when that
-binary is on `PATH`. Darwin's util-linux build is keg-only and has no
-`--reflink` option, so a shell without it still collapses copies with
-`os.link` (and `clonefile` if a hard link is refused). The regression
-verifies shared storage and preserved target metadata rather than accepting
-an unchanged copy.
+The mbx storage-collapse regression (`tools/src/mbx/`) hard-links duplicate
+target files to the object store with link(2), so it needs no `hardlink`
+binary. It verifies shared inodes and preserved target metadata rather than
+accepting an unchanged copy.
 
 ## libghostty-vt
 

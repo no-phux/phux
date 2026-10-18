@@ -208,7 +208,7 @@ skill-contract:
 [group('gates')]
 [private]
 font-check:
-    bash scripts/check-generated-font.sh
+    bun tools/main.ts gen-bitmap-font --check
 
 
 # Every #[ignore]d e2e binary is named by some lane — no test rots unrun.
