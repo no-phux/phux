@@ -35,10 +35,10 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 - Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
   your work in a new worktree instead.
 - One agent session per worktree. Every just recipe that builds, tests or
-  formats the tree (`ci`, `check`, `test`, `crate-check`/`core-check`, `lint`,
+  formats the tree (`check`, `test`, `crate-check`/`core-check`, `lint`,
   `e2e`, the desktop and integration gates, ...) leases the worktree to the
   running session (`PHUX_WORKTREE_OWNER`, else the harness session id) and
-  refuses another live session's run with exit 3. `ci`, `test` and `e2e` also
+  refuses another live session's run with exit 3. `test` and `e2e` also
   fail with exit 3 when HEAD moved or the lease changed hands mid-run. Hand a
   worktree on with `just worktree-release`; a lease idle for 6h is taken over,
   and `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. Human

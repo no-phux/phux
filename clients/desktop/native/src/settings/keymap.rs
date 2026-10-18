@@ -111,6 +111,7 @@ pub fn builtin_commands() -> &'static [CommandSpec] {
 /// space-separated.
 const CATALOG: &str = "\
     palette | Command Palette | General | cmd+shift+p | Search and run desktop commands. |
+    capture | Capture… | General |  | Dispatch a thought to OpenCode. Enter follows; Shift+Enter stays. | thought idea bug intake
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
@@ -672,6 +673,20 @@ mod tests {
                 "{chord} is bound to more than one built-in command"
             );
         }
+    }
+
+    #[test]
+    fn capture_is_catalogued_and_accepts_a_user_chord_without_a_global_default() {
+        let capture = super::builtin_commands()
+            .iter()
+            .find(|command| command.id == "capture")
+            .unwrap();
+        assert!(capture.is_listed());
+        assert!(capture.chord.is_none());
+        let config = parse_ghostty("keybind = super+shift+space=capture\n");
+        assert!(
+            effective_keymap(&config, true).contains(&("cmd+shift+space".into(), "capture".into()))
+        );
     }
 
     #[test]

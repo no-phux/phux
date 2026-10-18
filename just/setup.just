@@ -8,17 +8,19 @@ doctor SCOPE="native":
     bash scripts/doctor.sh "{{SCOPE}}"
 
 
+# Activate the tracked Git hooks. The relative path makes every worktree run
+# its own checkout's .beads/hooks. Beads owns the managed blocks there; the
+# repository's checks are chained after them.
+[group('setup')]
+[doc('Activate the tracked Git hooks (.beads/hooks) in every worktree.')]
+hooks-install:
+    git config core.hooksPath .beads/hooks
+
+
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
 [group('setup')]
 native-smoke: worktree-claim
     bash scripts/native-smoke.sh
-
-
-# Setup helper behavior, including missing tools and rejected compiler downloads.
-[group('setup')]
-[private]
-setup-check:
-    bash scripts/test-dev-setup.sh
 
 
 # Scaffold a commented starter config into a worktree-local XDG dir
@@ -34,7 +36,7 @@ scaffold-config:
 # Rust's native manifest, verified Zig manifest, Mise, the Nix flake, CI,
 # standalone WASM workspaces, and pinned container builders agree on their
 # toolchains. Static: reads files, so it runs on a CI checkout with no Nix, no
-# Mise and no compilers, which is why it can be a `ci` gate.
+# Mise and no compilers, which is why it runs in the `guards` lane.
 [group('setup')]
 [doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
@@ -42,7 +44,7 @@ toolchain-check:
 
 
 # Runtime half of toolchain-check: both environments, actual binaries.
-# Not in `ci` (no Mise on a CI checkout). Skips if either env is missing.
+# Local only (no Mise on a CI checkout). Skips if either env is missing.
 [group('setup')]
 toolchain-parity:
     bash scripts/check-toolchain-parity.sh

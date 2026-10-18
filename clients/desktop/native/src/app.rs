@@ -6,6 +6,7 @@
 
 mod actions;
 mod approvals;
+mod capture;
 mod color;
 mod conversation;
 mod desk;

@@ -149,7 +149,7 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// The bound rose from 93 to 97 with the organization verbs (`rm`,
 /// `relaunch`, `restore`, `mv`) and `archive`: four lines of discoverable
 /// lifecycle verbs are worth more than hiding them (R20). It rose to 99
-/// with `mail` and `claim` (ADR-0187): agents find coordination at the root.
+/// with `mail` and `claim` (ADR-0188): agents find coordination at the root.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();

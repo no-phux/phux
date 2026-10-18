@@ -22,7 +22,7 @@
 //! `needs_you`. The store will not leave that objective `working`.
 //!
 //! The same keeper holds agent coordination: mail between agents and claims
-//! on paths (ADR-0187). Those tables are additive and do not change
+//! on paths (ADR-0188). Those tables are additive and do not change
 //! `user_version`.
 
 #![forbid(unsafe_code)]

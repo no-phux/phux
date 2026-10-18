@@ -140,7 +140,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
-- [0187](./0187-agents-coordinate-through-phux.md) Mail between agents and advisory path claims live in the work store, keyed by pane (`@749`); `mail send` stores, then rings each recipient pane with one acknowledged prompt. Blackbird is retired.
+- [0188](./0188-agents-coordinate-through-phux.md) Mail between agents and advisory path claims live in the work store, keyed by pane (`@749`); `mail send` stores, then rings each recipient pane with one acknowledged prompt. Blackbird is retired.
 - [0159](./0159-agent-streams-resume-from-committed-records.md) A reconnect resumes an AgentSession after its committed record sequence; eviction or an incompatible shared relay cut yields an explicit full replacement, never a silent gap.
 - [0156](./0156-agent-transcript-records.md) First-party Pi and Claude integrations append the conversation as `provider_raw` records in the `phux.transcript/v1` convention, on by default with what the pane shows; tool output needs `PHUX_AGENT_TRANSCRIPT=full`, and `=0` opts out.
 - [0155](./0155-host-originated-push-through-a-blind-gateway.md) A suspended phone is pushed by its own server through a blind first-party gateway, with a content-free notice and a per-device grant under `phux.push/v1/<device>`.
@@ -224,6 +224,8 @@ by a newer one, the newer line is the operative reading.
 - [0170](./0170-acp-is-the-provider-seam.md) Native agents use the official pinned Rust ACP client and operator-installed native servers or maintained adapters; no private provider SDK bridges.
 
 ## Proposed
+
+- [0187](./0187-quick-capture.md) Quick capture saves intent before dispatch; the desktop launch spike does not yet implement durable cross-device capture.
 
 Drafted and under review; none of these governs anything yet.
 

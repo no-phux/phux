@@ -3,7 +3,6 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { workspaceMembers } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
-import { table } from "../lib/value.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { routes, SURFACES, type Surface } from "./routes.ts";
 
@@ -72,13 +71,17 @@ test.each<[string[], Surface[]]>([
   ],
   [["just/unknown.just"], ALL],
   [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
-  [[".github/workflows/desktop-test.yml"], ["desktop"]],
+  [[".github/workflows/ci.yml"], ALL],
+  [[".github/workflows/release.yml"], []],
   [["scripts/doctor.sh"], ["native"]],
   [["just/gates.just"], ["phux"]],
   [["justfile"], []],
+  [[".beads/issues.jsonl"], []],
+  [[".beads/config.yaml"], []],
+  [[".beads/issues.jsonl", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/check-docs.sh"], []],
   [[".github/workflows/ffi-xcframework.yml"], []],
-  [[".github/actions/setup-rust-lane/action.yml"], []],
+  [[".github/actions/setup-rust-lane/action.yml"], ALL],
   [[".cargo/config.toml"], ["phux", "web", "native", "desktop"]],
   [["tools/src/desktop/source.ts"], ["desktop"]],
   [["tools/src/lib/git.ts"], ["web", "desktop"]],
@@ -194,10 +197,23 @@ test("desktop file inputs outside its tree run the desktop lane", () => {
     expect([path, lanes([path]).includes("desktop")]).toEqual([path, true]);
 });
 
-test("outputs carry exactly the classify-changes action's keys", () => {
-  const action = readFileSync(join(ROOT, ".github/actions/classify-changes/action.yml"), "utf8");
-  const keys = Object.keys(table(table(Bun.YAML.parse(action))["outputs"])).toSorted();
-  expect(Object.keys(toOutputs(classifier.classify([]))).toSorted()).toEqual(keys);
+test("content republishes on docs, installers and product skills only", () => {
+  expectField("contentNeeded", [
+    [[], true],
+    [["docs/SETUP.md"], true],
+    [["scripts/install.sh"], true],
+    [["scripts/install-desktop.sh"], true],
+    [[".agents/skills/using-phux/SKILL.md"], true],
+    [["scripts/skills-package/package.json"], true],
+    [["crates/phux/src/main.rs"], false],
+    [["README.md"], false],
+  ]);
+});
+
+test("outputs name every classification field once", () => {
+  const outputs = Object.keys(toOutputs(classifier.classify([])));
+  expect(outputs).toContain("mobile_ffi_needed");
+  expect(new Set(outputs).size).toBe(outputs.length);
 });
 
 test("UniFFI qualification skips only known unrelated crate inputs", () => {

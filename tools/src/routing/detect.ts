@@ -22,6 +22,7 @@ const NO_LANES: Classification = {
   perfIcountNeeded: false,
   mobileFfiNeeded: false,
   uniffiNeeded: false,
+  contentNeeded: false,
   testFilterset: "",
   unitMode: "skip",
   unitTargets: "",
@@ -38,10 +39,6 @@ function commit(value: unknown, cwd: string): string {
 function eventRange(name: string, event: unknown, cwd: string): [string, string] {
   if (!isTable(event)) throw new Failure("event payload must be an object");
   if (name === "push") return [commit(event["before"], cwd), commit(event["after"], cwd)];
-  if (name === "merge_group") {
-    const group = table(event["merge_group"]);
-    return [commit(group["base_sha"], cwd), commit(group["head_sha"], cwd)];
-  }
   if (name !== "pull_request") throw new Failure("event requests full validation");
   const pr = table(event["pull_request"]);
   const base = commit(table(pr["base"])["sha"], cwd);

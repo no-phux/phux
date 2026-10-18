@@ -8,6 +8,44 @@ fn replacement_hello(incarnation: u8) -> FrameKind {
     hello
 }
 
+#[test]
+fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
+        .unwrap();
+    let first_attach = outbound_attach_id(&mut plane);
+    attach(&mut plane, first_attach, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let _ = plane.take_outbound();
+    plane.connection_lost(None);
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    let mut hello = hello_ok_with(&[ServerFeature::SpawnIdempotency]);
+    if let FrameKind::HelloOk { server_id, .. } = &mut hello {
+        server_id.fill(0xCD);
+    }
+    plane.feed(hello).unwrap();
+    finish_reconnected_attach(&mut plane);
+    assert!(
+        plane
+            .take_outbound()
+            .iter()
+            .all(|bytes| !matches!(decode(bytes), FrameKind::SpawnResource { .. }))
+    );
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(message) }
+            if *id == request_id && message.contains("server restarted")
+    )));
+}
+
 fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
     plane.connection_lost(None);
     plane.connection_opened();

@@ -1,4 +1,4 @@
-//! Agent coordination over MCP (ADR-0187): `phux_mail_send`,
+//! Agent coordination over MCP (ADR-0188): `phux_mail_send`,
 //! `phux_mail_read`, `phux_mail_ack`, `phux_claim_take`,
 //! `phux_claim_renew`, `phux_claim_release`, and `phux_claim_list`. Each is a transport for
 //! the canonical CLI's `phux.coord/v1` document, so the work store has one

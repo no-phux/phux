@@ -1,7 +1,7 @@
 //! Forward the next-channel identity into the binary.
 //!
 //! Stable builds leave `PHUX_VERSION_LABEL` equal to the crate version.
-//! The next-release workflow sets `PHUX_BUILD_CHANNEL=next` and
+//! The next workflow sets `PHUX_BUILD_CHANNEL=next` and
 //! `PHUX_BUILD_SHA` to the git SHA so `--version` and `phux update --check`
 //! can tell a next install from the last stable Cargo version.
 

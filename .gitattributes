@@ -1,0 +1,10 @@
+# Generated, tool-written, or vendored files. Also exempts them from the
+# pre-commit file-size gate (scripts/check-file-tokens.sh).
+.beads/*.jsonl linguist-generated=true
+CHANGELOG.md linguist-generated=true
+docs/spec/CHANGELOG.md -linguist-generated
+docs/reference/cli.md linguist-generated=true
+docs/reference/config.md linguist-generated=true
+docs/assets/*.cast linguist-generated=true
+integrations/runtime/dist/** linguist-generated=true
+crates/phux-record/assets/*.bdf linguist-vendored=true

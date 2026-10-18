@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-18
 ---
 
-# 0187 — Agents coordinate through phux
+# 0188 — Agents coordinate through phux
 
 **TL;DR.** Mail between agents and advisory claims on paths live in the
 host's work store, written by its one keeper. An agent's address is its pane

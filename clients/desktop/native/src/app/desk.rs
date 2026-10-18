@@ -89,6 +89,7 @@ pub struct SessionRenameTarget {
 pub enum Modal {
     None,
     Commands,
+    Capture,
     Goto,
     Settings,
     Notifications,
@@ -218,6 +219,7 @@ pub struct Desk {
     pub(crate) settings_controls: Option<SettingsControls>,
     pub(crate) settings_page: Option<super::settings_panel::Page>,
     pub(crate) native_launch: super::native_launch::State,
+    pub(crate) capture: super::capture::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -456,6 +458,7 @@ fn session_failure(create: bool) -> &'static str {
 fn listed_modal(id: &str) -> Option<Modal> {
     Some(match id {
         "palette" => Modal::Commands,
+        "capture" => Modal::Capture,
         "goto" => Modal::Goto,
         "windows" => Modal::Windows,
         "settings" => Modal::Settings,
@@ -551,6 +554,7 @@ impl Desk {
             keymap,
             ghostty,
             paint: RefCell::new(None),
+            capture: super::capture::State::default(),
             modal: Modal::None,
             prepared: Modal::None,
             find: None,
@@ -800,6 +804,7 @@ impl Desk {
             link.workspace.handle(events, &link.connection);
             link.workspace.settle(&link.connection);
         }
+        self.capture_receipts(events, cx);
         self.settle_project_terminal();
         self.reveal_pending_native(cx);
         self.take_notices();
@@ -1685,6 +1690,7 @@ impl Desk {
     /// what belonged to it: agent alerts, the find bar, and pending uploads
     /// with a notice.
     fn release_link(&mut self, replacing: bool) {
+        self.capture.cancel_pending();
         let uploading = !self.uploads.is_empty() || self.uploads_reading > 0;
         self.uploads.clear();
         self.upload_epoch = self.upload_epoch.wrapping_add(1);

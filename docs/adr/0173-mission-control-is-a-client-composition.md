@@ -70,7 +70,7 @@ stages. The grant is built on main (`#1191`, `fa80d732`).
 3. **One layer.** The coordinator owns tasks. Until phux-ajxq, the interim
    store is that coordinator. The ops hub is its first read-and-command
    client and keeps no task state. Agent mail and claims share this store
-   ([ADR-0187](./0187-agents-coordinate-through-phux.md)); beads is dev-only.
+   ([ADR-0188](./0188-agents-coordinate-through-phux.md)); beads is dev-only.
 
 4. **Merge.** The only merge is Patrick's explicit, TTY-confirmed action
    at the reviewed SHA. Nothing merges automatically. An agent never

@@ -15,8 +15,6 @@ fail() {
 # no-phux/website serves these verbatim and refuses one without a POSIX shebang.
 for installer in scripts/install.sh scripts/install-desktop.sh; do
   [[ $(head -n 1 "$installer") == '#!/bin/sh' ]] || fail "$installer must start with #!/bin/sh"
-  grep -Fq -- "- \"$installer\"" .github/workflows/website-dispatch.yml \
-    || fail "website-dispatch.yml must rebuild phux.sh when $installer changes"
 done
 
 # Clients discover releases from the channel manifest only (ADR-0176); the
@@ -30,7 +28,6 @@ done
 
 [[ $failures -eq 0 ]] || { phux_error "install surface check failed"; exit 1; }
 
-bun tools/main.ts release-manifest fixtures --check
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh

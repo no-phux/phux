@@ -1,5 +1,5 @@
 //! `phux mail` and `phux claim`: agent coordination in the work store
-//! (ADR-0187).
+//! (ADR-0188).
 //!
 //! Both talk to the work store's keeper, which `phux mission` also uses and
 //! starts on demand. `mail send` then rings each recipient's pane: one

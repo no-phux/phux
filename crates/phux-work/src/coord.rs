@@ -1,6 +1,6 @@
 //! Agent coordination: mail between agents and claims on paths.
 //!
-//! Both live in the work store beside the objectives (ADR-0187), so one
+//! Both live in the work store beside the objectives (ADR-0188), so one
 //! keeper is their only writer and one file holds who asked whom for what.
 //!
 //! **Addresses.** An agent is addressed by the pane it runs in, `@749`,

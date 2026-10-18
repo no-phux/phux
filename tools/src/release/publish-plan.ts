@@ -1,9 +1,9 @@
 // Choose which draft releases to ship, and which stale drafts to drop.
 //
-// publish.yml is the only workflow that flips a draft public. Release Please
-// has already cut the tag and the notes. This plan runs when that happens and
-// again when ci.yml finishes, plus on a schedule, so the two events can arrive
-// in either order and a missed event still converges. It builds nothing.
+// release.yml is the only workflow that flips a draft public. It runs after
+// each green main ci, right after Release Please cuts any new tags and notes,
+// plus on a schedule, so a missed or superseded run still converges. It
+// builds nothing.
 import { Failure } from "../lib/command.ts";
 import { writeOutputs } from "../lib/actions.ts";
 import { git } from "../lib/git.ts";
@@ -203,7 +203,7 @@ function releases(repository: string): Release[] {
     .map((row) => ({ ...row, sha: tagSha(row.tag) }));
 }
 
-/** publish.yml's `plan` job: env in, Actions outputs out. */
+/** release.yml's `plan` job: env in, Actions outputs out. */
 export function main(): number {
   const env = process.env;
   const repository = env["GITHUB_REPOSITORY"];

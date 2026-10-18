@@ -1,7 +1,7 @@
 // Dispatch agent-integration-release.yml and wait for it.
 //
 // npm trusted publishing matches the entry workflow filename. Calling that
-// workflow with workflow_call makes the token say publish.yml, and npm
+// workflow with workflow_call makes the token say release.yml, and npm
 // answers 404. A workflow_dispatch keeps the filename npm trusts.
 import { Failure } from "../lib/command.ts";
 import { gh, ghInherit } from "../lib/github.ts";
@@ -44,7 +44,7 @@ export async function dispatch(repo: string, tag: string, deps = GH): Promise<un
   throw new Failure(`no ${WORKFLOW} run appeared for ${tag}`);
 }
 
-/** publish.yml's `integration` job: TAGS (a JSON list) in, one watched run each. */
+/** release.yml's `integrations` job: TAGS (a JSON list) in, one watched run each. */
 export async function main(): Promise<number> {
   const [repo, raw] = [process.env["GITHUB_REPOSITORY"], process.env["TAGS"]];
   if (!repo || raw === undefined) throw new Failure("GITHUB_REPOSITORY and TAGS are required");

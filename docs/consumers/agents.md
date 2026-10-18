@@ -973,7 +973,7 @@ on `RETAIN_ON_EXIT` (normative: [resource protocol](../spec/L1.md),
 ### `mail` / `claim` (`schema` `phux.coord/v1`)
 
 Agent coordination in the host's work store
-([ADR-0187](../adr/0187-agents-coordinate-through-phux.md)). An address is a
+([ADR-0188](../adr/0188-agents-coordinate-through-phux.md)). An address is a
 pane (`@749`), a labelled pane (`pi@749`, keyed by the pane), or a bare name
 for something outside a pane; you speak as `--as`, else
 `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
@@ -1196,7 +1196,7 @@ not durable evidence
 The planned durable coordinator is a separate endpoint, not a property of
 this stream ([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md)).
 Agent mail and path claims live in the host's work store, not in a separate
-service ([ADR-0187](../adr/0187-agents-coordinate-through-phux.md)).
+service ([ADR-0188](../adr/0188-agents-coordinate-through-phux.md)).
 
 ## 12. MCP and SDK
 

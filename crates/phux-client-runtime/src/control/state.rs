@@ -6,6 +6,22 @@ use super::{
 };
 
 impl ControlPlane {
+    pub(super) fn fail_pending_spawns(&mut self) {
+        let spawns: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, pending)| matches!(pending, Pending::Spawn { .. }).then_some(*id))
+            .collect();
+        for request_id in spawns {
+            self.pending.remove(&request_id);
+            self.push_event(Event::TerminalSpawned {
+                request_id,
+                terminal_id: None,
+                error: Some("server restarted before the spawn was confirmed; check its panes before retrying".to_owned()),
+            });
+        }
+    }
+
     /// Resolve every outstanding correlation as failed: the socket that
     /// carried it is gone. Topology refreshes drop silently, as a fresh
     /// `ATTACHED` is on its way.

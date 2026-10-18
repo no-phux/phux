@@ -1,0 +1,19 @@
+name: macOS desktop setup
+description: Pinned contributor Rust and Zig, just, and the Metal compiler. Bun comes from setup-bun.
+inputs:
+  source:
+    description: Checkout containing the pinned contributor toolchains
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Contributor Rust, Zig and Metal setup
+      shell: bash
+      working-directory: ${{ inputs.source }}
+      run: |
+        set -euo pipefail
+        bash scripts/setup-rust.sh native
+        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        brew install just
+        xcodebuild -downloadComponent MetalToolchain
+        xcrun metal --version

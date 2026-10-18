@@ -3,7 +3,7 @@
 # docs/SETUP.md#choosing-an-environment says which to pick and what each covers.
 #
 # Both environments are held together rather than merely documented as similar:
-# `just toolchain-check` (a `just ci` gate) checks this file against the
+# `just toolchain-check` (a `just guards` gate) checks this file against the
 # manifests their native consumers actually read AND against flake.nix, and
 # `just toolchain-parity` compares the two resolved environments tool by tool
 # when both are installed.
@@ -28,7 +28,7 @@ node = "24"
 bun = "1.4.2"
 
 # --- Root gate tools --------------------------------------------------------
-# With these installed, the Mise path runs `just ci`, not just `cargo` loops.
+# With these installed, the Mise path runs `just check`, not just `cargo` loops.
 # Each is pinned to the release the Nix shell currently resolves, so a gate
 # cannot pass in one environment and fail in the other over a linter version.
 # `just toolchain-parity` is what catches them diverging on a nixpkgs bump.

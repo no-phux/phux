@@ -51,7 +51,7 @@ export function problems(state: Snapshot, graceMs: number, now = Date.now()): st
       const minutes = Math.round((now - Date.parse(release.created)) / 60_000);
       found.push(
         `${release.tag} has been a draft for ${minutes} minutes. ` +
-          `Finish it: gh workflow run publish.yml --repo ${repo} -f tag=${release.tag}`,
+          `Finish it: gh workflow run release.yml --repo ${repo} -f tag=${release.tag}`,
       );
     }
     if (!release.draft && release.assets === 0) {
@@ -78,7 +78,7 @@ export function problems(state: Snapshot, graceMs: number, now = Date.now()): st
     const latest = newest(releases, prefix);
     if (listed !== latest) {
       found.push(
-        `channels/stable.json names ${product} ${String(listed)}, but ${prefix}${String(latest)} is published. Rebuild it: gh workflow run publish.yml --repo ${repo}`,
+        `channels/stable.json names ${product} ${String(listed)}, but ${prefix}${String(latest)} is published. Rebuild it: gh workflow run release.yml --repo ${repo}`,
       );
     }
   }

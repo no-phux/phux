@@ -1,4 +1,4 @@
-# Publish one agent integration tag. publish.yml dispatches this once ci is
+# Publish one agent integration tag. release.yml dispatches this once ci is
 # green for the tag; it re-tests that tree, packs one artifact, publishes npm
 # packages with provenance, attaches the artifact, then flips the draft public.
 #
@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-agent-integration-release-${{ inputs.tag }}
+  group: agent-integration-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:

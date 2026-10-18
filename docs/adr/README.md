@@ -126,7 +126,7 @@ column is the base status word plus at most one relationship clause, about
 | [0092](./0092-durable-work-coordinator-authority.md) | The coordinator owns durable work | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md); see [0132](./0132-swarm-members-are-coordinator-clients.md), [0173](./0173-mission-control-is-a-client-composition.md)) |
 | [0093](./0093-remote-target-as-a-resolution-ladder.md) | `--remote user@host` is a resolution ladder, not a new transport | Accepted |
 | [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) | Per-pane scrollback is bounded in bytes, by phux, explicitly | Accepted |
-| [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Superseded by [0187](./0187-agents-coordinate-through-phux.md) |
+| [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Superseded by [0188](./0188-agents-coordinate-through-phux.md) |
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
 | [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) | Durable coordinator is a separate bounded endpoint | Accepted (forward-compat; superseded in part by [0132](./0132-swarm-members-are-coordinator-clients.md)) |
 | [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md); proof profile superseded in part by [0116](./0116-workload-auth-is-mtls.md)) |
@@ -218,7 +218,8 @@ column is the base status word plus at most one relationship clause, about
 | [0184](./0184-build-and-ci-logic-is-one-bun-package.md) | Build and CI logic is one Bun package | Accepted |
 | [0185](./0185-quictun-gets-acme-certificates-and-multiplexes-consumers.md) | quictun gets ACME certificates and multiplexes consumers | Accepted (builds on [0183](./0183-quictun-is-a-standalone-tunnel-product.md)) |
 | [0186](./0186-the-client-neutral-config-is-its-own-crate.md) | The client-neutral config is its own crate | Accepted (builds on [0039](./0039-layered-config.md), [0133](./0133-one-client-runtime-below-every-binding.md)) |
-| [0187](./0187-agents-coordinate-through-phux.md) | Agents coordinate through phux | Accepted (supersedes [0095](./0095-the-blackbird-boundary.md); builds on [0076](./0076-agent-prompt-and-lifecycle-wait.md), [0173](./0173-mission-control-is-a-client-composition.md)) |
+| [0187](./0187-quick-capture.md) | Quick capture saves intent before dispatching work | Proposed |
+| [0188](./0188-agents-coordinate-through-phux.md) | Agents coordinate through phux | Accepted (supersedes [0095](./0095-the-blackbird-boundary.md); builds on [0076](./0076-agent-prompt-and-lifecycle-wait.md), [0173](./0173-mission-control-is-a-client-composition.md)) |
 
 ## When to write an ADR
 
