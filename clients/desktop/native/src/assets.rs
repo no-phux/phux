@@ -29,7 +29,12 @@ gpui_kit::assets::icon_assets!(
         MousePointer2,
         Sparkle,
         Feather,
-        WandSparkles
+        WandSparkles,
+        // The Changes panel.
+        Columns2,
+        Rows2,
+        List,
+        Send
     ]
 );
 
@@ -73,6 +78,15 @@ mod tests {
             IconName::Pencil,
             IconName::Trash,
             IconName::GitBranch,
+            IconName::Columns2,
+            IconName::Rows2,
+            IconName::List,
+            IconName::Send,
+            IconName::ChevronDown,
+            IconName::Eye,
+            IconName::Check,
+            IconName::ArrowUp,
+            IconName::ArrowDown,
             IconName::Minus,
             IconName::ChevronLeft,
             IconName::ChevronRight,

@@ -10,6 +10,12 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod patch;
+mod stage;
+
+pub use patch::{Selection, Side, partial_patch};
+pub use stage::{MAX_PATCH_BYTES, MAX_UNTRACKED, PatchText, Source, read_file, read_patch};
+
 /// A diff longer than this is cut, with a note saying so.
 pub const MAX_DIFF_LINES: usize = 4000;
 /// An untracked file larger than this is not read for its preview.
@@ -136,6 +142,16 @@ pub enum Op {
     UnstageAll,
     /// Commit the index with this message.
     Commit(String),
+    /// Apply a [`partial_patch`] to the index, reversed to unstage.
+    Apply {
+        patch: String,
+        reverse: bool,
+    },
+    /// Write a conflicted file's resolved text, then stage it.
+    Resolve {
+        path: String,
+        text: String,
+    },
 }
 
 /// The status of the checkout containing `dir`. `Ok(None)` means `dir` is not
@@ -217,6 +233,8 @@ pub fn apply(root: &Path, op: &Op) -> Result<(), String> {
         Op::StageAll => run(root, &["add", "-A"], None),
         Op::UnstageAll => run(root, &["reset", "-q"], None),
         Op::Commit(message) => run(root, &["commit", "-q", "-F", "-"], Some(message)),
+        Op::Apply { patch, reverse } => stage::apply_patch(root, patch, *reverse),
+        Op::Resolve { path, text } => stage::resolve(root, path, text),
     }
     .map(drop)
 }
@@ -497,5 +515,9 @@ fn hunk_start(header: &str) -> Option<(u32, u32)> {
     Some((old, new))
 }
 
+#[cfg(test)]
+mod patch_tests;
+#[cfg(test)]
+mod stage_tests;
 #[cfg(test)]
 mod tests;

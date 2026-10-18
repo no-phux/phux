@@ -47,6 +47,10 @@ impl Desk {
         matches!(self.drag, Some(Drag::Sidebar))
     }
 
+    pub(crate) fn dragging_changes(&self) -> bool {
+        matches!(self.drag, Some(Drag::Changes))
+    }
+
     pub fn set_viewport(&mut self, size: gpui::Size<gpui::Pixels>) {
         self.viewport = size;
     }
@@ -89,6 +93,11 @@ impl Desk {
 
     pub fn begin_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         self.drag = Some(Drag::Sidebar);
+        cx.notify();
+    }
+
+    pub fn begin_changes_drag(&mut self, cx: &mut Context<Self>) {
+        self.drag = Some(Drag::Changes);
         cx.notify();
     }
 
@@ -142,6 +151,7 @@ impl Desk {
     pub(crate) fn drag_cursor(&self) -> Option<CursorStyle> {
         match self.drag.as_ref()? {
             Drag::Sidebar
+            | Drag::Changes
             | Drag::Split {
                 axis: Axis::Row, ..
             } => Some(CursorStyle::ResizeLeftRight),
@@ -166,6 +176,15 @@ impl Desk {
                     .round()
                     .clamp(crate::settings::SIDEBAR_MIN, crate::settings::SIDEBAR_MAX);
                 self.prefs.sidebar_width = width;
+                cx.notify();
+            }
+            Some(Drag::Changes) => {
+                // The panel hugs the window's right edge, so its width is
+                // what lies right of the pointer, leaving the panes room.
+                use crate::app::changes::{MIN_WIDTH, PANES_MIN};
+                let viewport = self.viewport.width.as_f32();
+                let max = (viewport - PANES_MIN).max(MIN_WIDTH);
+                self.changes.width = (viewport - x).round().clamp(MIN_WIDTH, max);
                 cx.notify();
             }
             Some(Drag::Split { id, axis }) => {

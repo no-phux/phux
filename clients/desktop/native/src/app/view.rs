@@ -272,11 +272,12 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                 })
                 .child(panes::main_column(desk, &look, window, cx))
                 .when(desk.changes.open && !quick(desk), |row| {
+                    let width = changes::width(desk, window.viewport_size().width.as_f32());
                     row.child(chrome_slot(
                         &mut desk.chrome.changes,
                         changes::build,
                         StyleRefinement::default()
-                            .w(px(changes::WIDTH))
+                            .w(px(width))
                             .flex_shrink_0()
                             .h_full(),
                         cx,

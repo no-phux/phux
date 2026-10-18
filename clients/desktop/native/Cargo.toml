@@ -45,6 +45,28 @@ phux-gpui = { path = "phux-gpui", features = ["patched-gpui"] }
 gpui = { package = "gpui-pre", version = "=0.3.9" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 gpui-kit = { version = "=0.7.3" }
+# The Changes panel's diffs: Kit's diff view highlights syntax only with these
+# grammars. Same crate and version Kit already pulls in; this only turns on its
+# tree-sitter features for the languages agents mostly edit.
+gpui-component = { version = "=0.7.3", features = [
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-javascript",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+    "tree-sitter-zig",
+] }
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"

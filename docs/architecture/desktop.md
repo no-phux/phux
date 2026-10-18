@@ -262,18 +262,28 @@ provider SDK process enters the GUI.
 The [Changes panel guide](../consumers/desktop-changes.md) owns behavior.
 `native/src/git.rs` owns Git: it shells out to the user's `git` with
 `GIT_OPTIONAL_LOCKS=0` and `GIT_TERMINAL_PROMPT=0`, parses
-`status --porcelain=v2 --branch -z` and unified diffs, and applies stage,
-unstage and commit. It has no GPUI dependency and is tested against a real
-temporary repository. No Git library is linked, so hooks, config, credential
-helpers and ignore rules match the terminal.
+`status --porcelain=v2 --branch -z`, reads each comparison as one raw patch,
+and applies stage, unstage, commit and conflict resolution. Line staging cuts
+a partial patch from the shown comparison and pipes it to
+`git apply --cached`, reversed for unstaging. It has no GPUI dependency and is
+tested against a real temporary repository. No Git library is linked, so
+hooks, config, credential helpers and ignore rules match the terminal.
 
 `app/changes.rs` binds the panel to the focused placement's reported `cwd`,
 refusing remote windows and satellite terminals rather than resolving their
-paths locally. Every call runs through `smol::unblock`; a generation counter
-drops results for a folder the panel has left. An open panel polls status and
-notifies the desk only when the parsed status or open diff changed.
+paths locally. One `smol::unblock` read takes the status, both comparisons
+with wide context, and the text of each conflicted file. It parses them into
+GPUI Kit `DiffFile`s off the UI thread, and a generation counter drops results
+for a folder the panel has left. The diff view is Kit's `DiffState`. The panel
+replaces its files only when a comparison's fingerprint changed, because
+replacing them resets scroll and folds. Viewed marks key on each file's patch
+fingerprint.
+
 `app/view/changes.rs` is a cached chrome slot like the sidebar, so terminal
-frames do not rebuild the file list or diff.
+frames do not rebuild it. Kit's `Diff` element renders the patch: word-level
+inline changes, syntax from the Kit tree-sitter grammars enabled in
+`Cargo.toml`, folded context, split or unified layout, and annotation slots
+that hold the review notes.
 
 ## Tooling
 
