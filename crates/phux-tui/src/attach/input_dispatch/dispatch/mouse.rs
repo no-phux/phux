@@ -312,7 +312,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let spec = if is_window {
             crate::attach::context_menu::window_menu(
                 self.ctx.keybindings,
-                &active_window_name(self.ctx),
+                &active_window_label(self.ctx),
             )
         } else {
             crate::attach::context_menu::session_menu(self.ctx.keybindings, self.ctx.session_name)
@@ -803,11 +803,18 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
 
 /// The active window's name, or an empty string when the workspace has no
 /// windows yet. Used as the window menu's title.
-fn active_window_name(ctx: &DispatchCtx<'_>) -> String {
-    ctx.workspace
-        .groups
-        .get(ctx.workspace.active)
-        .map_or_else(String::new, |w| w.name.clone())
+/// The active tab as the bar labels it: its name, or `Tab N` by its index
+/// when the name is one the server handed out (a bare integer, which would
+/// read as a second, disagreeing index).
+fn active_window_label(ctx: &DispatchCtx<'_>) -> String {
+    let Some(window) = ctx.workspace.groups.get(ctx.workspace.active) else {
+        return String::new();
+    };
+    if crate::attach::pane_state::auto_named(&window.name) {
+        format!("Tab {}", ctx.workspace.active)
+    } else {
+        window.name.clone()
+    }
 }
 
 /// Quantise an f64 pointer position (1-px-per-cell per SPEC §9.2.1) to an
