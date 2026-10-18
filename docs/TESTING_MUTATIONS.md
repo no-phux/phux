@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-17
 ---
 
 # Scoped mutation testing
@@ -56,10 +56,10 @@ just mutation-rust --help
 ### Rust
 
 Install the runner's exact `cargo-mutants` version into a checkout-local tool
-directory (the version pin lives in `scripts/mutation/rust_runner.py`):
+directory (the version pin lives in `tools/src/mutation/pin.ts`):
 
 ```sh
-version="$(python3 -c 'import runpy; print(runpy.run_path("scripts/mutation/rust_runner.py")["VERSION"])')"
+version="$(sed -n 's/^export const CARGO_MUTANTS_VERSION = "\(.*\)";$/\1/p' tools/src/mutation/pin.ts)"
 cargo install cargo-mutants --version "$version" --locked --jobs 2 \
   --root "target/mutation-tools/cargo-mutants-$version"
 just mutation-rust
@@ -100,7 +100,7 @@ caught, missed, unviable, timeout, failing-baseline, diff, sample, and cleanup
 behavior:
 
 ```sh
-python3 scripts/mutation/rust_check.py
+just mutation-rust-check   # bun tools/main.ts mutation-check
 ```
 
 ### CI

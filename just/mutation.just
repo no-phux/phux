@@ -6,10 +6,10 @@
 [group('mutation')]
 [doc('Bounded Rust mutation scan; arguments pass through to the runner.')]
 mutation-rust *args:
-    bash scripts/mutation/rust.sh "$@"
+    bun tools/main.ts mutation-run "$@"
 
 
 # Real-tool adapter acceptance in disposable fixtures (requires the pinned tool).
 [group('mutation')]
 mutation-rust-check:
-    python3 scripts/mutation/rust_check.py
+    bun tools/main.ts mutation-check

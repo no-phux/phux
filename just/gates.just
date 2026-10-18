@@ -115,7 +115,6 @@ tools-check:
 workflow-check: shellcheck tools-check
     actionlint .github/workflows/*.yml
     bash scripts/check-release-cpu-baselines.sh
-    python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh

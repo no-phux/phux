@@ -45,7 +45,7 @@ test("optional scans are not scheduled", () => {
 
 test("the mutation workflow keeps Rust without the archived Zig pilot", () => {
   const mutation = workflowText("mutation.yml");
-  expect(mutation).toContain("run: bash scripts/mutation/rust.sh");
+  expect(mutation).toContain("run: bun tools/main.ts mutation-run");
   expect(mutation).not.toContain("scripts/mutation/zig.sh");
   expect(mutation).not.toContain("test_zig.py");
   expect(mutation).not.toContain("inputs.language");
