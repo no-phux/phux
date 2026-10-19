@@ -42,6 +42,9 @@ pub(crate) enum PerfAction {
         /// Copy the trace here as well.
         #[usage(short = 'o', long = "out", value_name = "PATH")]
         out: Option<PathBuf>,
+        /// Trace the dev-mode desktop and the server onto one timeline.
+        #[usage(long)]
+        desktop: bool,
         #[usage(flatten)]
         json: JsonOpt,
     },
@@ -51,6 +54,20 @@ pub(crate) enum PerfAction {
     /// started with `PHUX_DEV=1` starts with it on. A server binary without
     /// the counting allocator answers `installed: false` and reports no heap.
     Alloc {
+        /// `on` or `off`.
+        #[usage(value_enum)]
+        state: AllocSwitch,
+        /// Switch the dev-mode desktop's heap accounting instead.
+        #[usage(long)]
+        desktop: bool,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+    /// Show or hide the dev-mode desktop's performance HUD
+    ///
+    /// The HUD sits in each window's corner: frame rate, frame build time,
+    /// jank, CPU, memory, heap, and the server's CPU and memory.
+    Hud {
         /// `on` or `off`.
         #[usage(value_enum)]
         state: AllocSwitch,
@@ -71,6 +88,8 @@ pub(crate) enum AllocSwitch {
 pub(crate) struct PerfOptions {
     /// Print JSON instead of the table.
     pub(crate) json: bool,
+    /// Read the dev-mode desktop instead of the server.
+    pub(crate) desktop: bool,
     /// Poll every this many seconds and print interval deltas.
     pub(crate) watch: Option<f64>,
     /// Zero the server's metrics after each snapshot.
@@ -78,7 +97,7 @@ pub(crate) struct PerfOptions {
 }
 
 /// Shortest poll interval `--watch` will honour.
-const MIN_WATCH: Duration = Duration::from_millis(100);
+pub(crate) const MIN_WATCH: Duration = Duration::from_millis(100);
 
 /// Longest trace `phux perf trace` will ask for.
 const MAX_TRACE: Duration = Duration::from_secs(3600);
@@ -95,11 +114,36 @@ pub(crate) fn run_perf(
     action: Option<PerfAction>,
     socket: Option<PathBuf>,
 ) -> ExitCode {
+    use crate::commands::perf_desktop::{self, Ask};
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let (json, plan) = match action {
+        None if opts.desktop => {
+            return perf_desktop::run(opts.json, Ask::Report(opts), &socket_path);
+        }
         None => (opts.json, Plan::Report(opts)),
-        Some(PerfAction::Trace { seconds, out, json }) => (json.json, Plan::Trace { seconds, out }),
-        Some(PerfAction::Alloc { state, json }) => (json.json, Plan::Alloc(state)),
+        Some(PerfAction::Trace {
+            seconds,
+            out,
+            desktop,
+            json,
+        }) if desktop || opts.desktop => {
+            return perf_desktop::run(json.json, Ask::Trace { seconds, out }, &socket_path);
+        }
+        Some(PerfAction::Trace {
+            seconds, out, json, ..
+        }) => (json.json, Plan::Trace { seconds, out }),
+        Some(PerfAction::Alloc {
+            state,
+            desktop,
+            json,
+        }) if desktop || opts.desktop => {
+            return perf_desktop::run(json.json, Ask::Alloc(state), &socket_path);
+        }
+        Some(PerfAction::Alloc { state, json, .. }) => (json.json, Plan::Alloc(state)),
+        Some(PerfAction::Hud { state, json }) => {
+            return perf_desktop::run(json.json, Ask::Hud(state), &socket_path);
+        }
     };
     let rt = match cli_runtime() {
         Ok(rt) => rt,
