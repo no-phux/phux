@@ -1,0 +1,37 @@
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index a1b4f33..e518863 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -1965,6 +1965,11 @@ impl PlatformWindow for MacWindow {
+             };
+             let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
+             let _: () = msg_send![native_window, setAppearance: appearance];
++            // A rounded material is the window's silhouette. The frame's shadow
++            // and outline follow the window's own corners and size, so they
++            // would show as a second, mismatched surface behind it.
++            let framed = corner_radius <= px(0.);
++            let _: () = msg_send![native_window, setHasShadow: framed as BOOL];
+             // Calling again restyles the installed material instead of stacking another.
+             if let Some(glass) = existing {
+                 let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
+@@ -2041,6 +2046,7 @@ impl PlatformWindow for MacWindow {
+             let _: () = msg_send![native, release];
+             NSView::removeFromSuperview(glass);
+             let _: () = msg_send![native_window, setAppearance: nil];
++            let _: () = msg_send![native_window, setHasShadow: YES];
+         }
+         // Restore what the recorded background appearance implies, blur included.
+         self.set_background_appearance(self.background_appearance());
+diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
+index 52a5e8d..946fe95 100644
+--- a/gpui-fast/src/window.rs
++++ b/gpui-fast/src/window.rs
+@@ -3177,6 +3177,8 @@ impl Window {
+     }
+ 
+     /// Installs a native compositor glass surface, returning whether it is supported.
++    /// A nonzero `corner_radius` makes the material the window's silhouette, so the
++    /// window drops its system shadow until the glass is cleared.
+     pub fn set_glass_effect(&self, corner_radius: Pixels, appearance: WindowAppearance) -> bool {
+         self.platform_window
+             .set_glass_effect(corner_radius, appearance)
