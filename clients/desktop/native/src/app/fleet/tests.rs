@@ -4,8 +4,7 @@ use crate::app::{AppOptions, Desktop};
 use crate::connection::DeterministicDial;
 use crate::workspace::{Workspace, WorkspaceOptions};
 use gpui::{Entity, TestAppContext};
-use phux_client_core::layout::wire::HandleMap;
-use phux_client_runtime::control::{SessionDescriptor, Topology};
+use phux_client_runtime::control::SessionDescriptor;
 use phux_protocol::ResourceId;
 
 fn key(byte: u8) -> SessionKey {
@@ -34,17 +33,75 @@ fn connection(owner: u8, sessions: Vec<SessionDescriptor>) -> Connection {
     let mut connection =
         Connection::connect_with_key("/isolated-fleet.sock".into(), first.name.clone(), first.key)
             .unwrap();
-    connection.status = Status::Attached;
-    connection.topology = Some(Topology {
-        focused_session: first.id,
-        focused_pane: ResourceId::local(0),
-        sessions,
-        panes: Vec::new(),
-        agent_sessions: Vec::new(),
-        authority: Some(authority(owner)),
-        inbox: None,
-        handles: HandleMap::default(),
-    });
+    use phux_protocol::caps::{
+        BootstrapLimits, BootstrapProfile, Layer, LayerSet, ServerCapabilities, ServerFeatureExt,
+        ServerFeatureExtSet,
+    };
+    use phux_protocol::ids::{Revision, SessionId, WindowId};
+    use phux_protocol::wire::frame::{
+        Command, CommandResult, CommandValue, FrameKind, OrganizationPage, SessionRecord,
+    };
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+    let client = connection.client.clone();
+    client.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_layers(LayerSet::with(&[Layer::L3]))
+                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
+            server_id: vec![owner; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .unwrap();
+    for bytes in client.take_outbound() {
+        let FrameKind::Command {
+            request_id,
+            command,
+        } = FrameKind::decode(&bytes).unwrap().0
+        else {
+            continue;
+        };
+        let value = match command {
+            Command::GetState { .. } => CommandValue::State(
+                SessionSnapshot::new(
+                    SessionId::new(first.id),
+                    WindowId::new(1),
+                    ResourceId::local(0),
+                )
+                .with_sessions(
+                    sessions
+                        .iter()
+                        .map(|s| SessionInfo::new(SessionId::new(s.id), &s.name))
+                        .collect(),
+                ),
+            ),
+            Command::GetOrganization { .. } => CommandValue::OrganizationPage(Box::new(
+                OrganizationPage::new(authority(owner), Revision::new(1), 0).with_sessions(
+                    sessions
+                        .iter()
+                        .map(|s| {
+                            SessionRecord::new(s.key.unwrap(), &s.name, Revision::new(1))
+                                .with_live(Some(SessionId::new(s.id)))
+                        })
+                        .collect(),
+                ),
+            )),
+            _ => continue,
+        };
+        client
+            .feed(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::OkWith(value),
+            })
+            .unwrap();
+    }
+    connection.drain();
+    let _ = client.take_outbound();
     connection
 }
 fn fixture(cx: &mut TestAppContext) -> (Entity<Desk>, Entity<Desktop>) {
@@ -120,6 +177,7 @@ fn observe(fleet: &mut Fleet, host: Option<&str>, connection: Connection) {
     fleet.observers.insert(
         host,
         Observer {
+            workspace: None,
             connection: Some(connection),
             last,
             error: None,
@@ -163,6 +221,7 @@ fn with_agent(mut connection: Connection, terminal: u32, state: AgentState) -> C
 
 fn unreachable(error: &str) -> Observer {
     Observer {
+        workspace: None,
         connection: None,
         last: Vec::new(),
         error: Some(error.into()),

@@ -309,9 +309,7 @@ impl Desk {
         self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abandon_organize();
-        self.retain_work_inventory();
-        self.release_link(true);
-        self.link = None;
+        self.park_link(cx);
         self.pending_project_terminal = None;
         self.connect_error = None;
         self.fleet_view.pending = None;

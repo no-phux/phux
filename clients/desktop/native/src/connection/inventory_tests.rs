@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::{
     CommandResult, CommandValue, EntryRef, EntryTarget, FrameKind, OrganizationPage,
     ResourceRecord, SessionRecord,
 };
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 fn outbound(client: &Client) -> Vec<FrameKind> {
     client
@@ -32,19 +32,18 @@ fn inventory_fetches_group_labels_without_attaching_or_spawning() {
     let terminal = ResourceId::local(7);
     client.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
     let mut sent = outbound(&client);
-    client
-        .feed(FrameKind::HelloOk {
-            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_layers(LayerSet::with(&[Layer::L3]))
-                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
-            server_id: vec![0xAB; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: BootstrapLimits::default(),
-        })
-        .unwrap();
+    let hello = FrameKind::HelloOk {
+        protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+        protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+        protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new()
+            .with_layers(LayerSet::with(&[Layer::L3]))
+            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
+        server_id: vec![0xAB; 16],
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
+    };
+    client.feed(hello.clone()).unwrap();
     let initial = outbound(&client);
     for frame in &initial {
         let FrameKind::Command {
@@ -57,7 +56,18 @@ fn inventory_fetches_group_labels_without_attaching_or_spawning() {
         let value = match command {
             Command::GetState { .. } => CommandValue::State(
                 SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal.clone())
-                    .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")]),
+                    .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")])
+                    .with_windows(vec![WindowInfo::new(
+                        WindowId::new(1),
+                        SessionId::new(1),
+                        "shell",
+                    )])
+                    .with_resources(vec![ResourceInfo::new(
+                        terminal.clone(),
+                        WindowId::new(1),
+                        80,
+                        24,
+                    )]),
             ),
             Command::GetOrganization { .. } => CommandValue::OrganizationPage(Box::new(
                 OrganizationPage::new(authority, Revision::new(1), 0)
@@ -133,4 +143,35 @@ fn inventory_fetches_group_labels_without_attaching_or_spawning() {
         )),
         "browsing must stay read-only: {sent:?}"
     );
+    // Selecting this host promotes that same negotiated socket, preserving
+    // all inventory and arrangement reads without a second handshake.
+    assert!(connection.activate_home("work".into(), Some(session), Some(authority)));
+    assert!(Arc::ptr_eq(&client, &connection.client));
+    assert!(connection.session_validated());
+    assert_eq!(client.selected_session(), Some(1));
+    let promoted = outbound(&client);
+    assert!(promoted.iter().any(|frame| matches!(frame,
+        FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. }
+        if terminal_id == &terminal)));
+    assert!(promoted.iter().all(|frame| !matches!(
+        frame,
+        FrameKind::Attach { .. } | FrameKind::Hello { .. } | FrameKind::SpawnResource { .. }
+    )));
+
+    // After transport loss, the pinned desktop identity must be revalidated
+    // against fresh organization state before any terminal is acquired.
+    client.with_control(|control| {
+        control.connection_lost(None);
+        control.connection_opened();
+    });
+    let _ = outbound(&client);
+    client.feed(hello).unwrap();
+    assert!(outbound(&client).iter().all(|frame| !matches!(
+        frame,
+        FrameKind::Attach { .. }
+            | FrameKind::Command {
+                command: Command::AttachResource { .. },
+                ..
+            }
+    )));
 }

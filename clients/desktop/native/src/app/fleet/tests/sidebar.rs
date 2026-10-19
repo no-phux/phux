@@ -348,7 +348,14 @@ fn only_the_caret_changes_disclosure_and_equal_names_on_other_hosts_stay_open(
     let caret = cx.debug_bounds("disclose-work-mini-8").unwrap();
     cx.simulate_click(caret.center(), gpui::Modifiers::none());
     draw(cx);
-    assert!(cx.debug_bounds("catalog-pane-mini-@1").is_some());
+    assert!(
+        cx.debug_bounds("pane-@1").is_some(),
+        "the promoted host is already active"
+    );
+    assert!(
+        cx.debug_bounds("catalog-pane-Local-@1").is_some(),
+        "the other host remains expanded"
+    );
 }
 
 #[gpui::test]

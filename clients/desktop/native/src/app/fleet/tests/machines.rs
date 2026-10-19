@@ -23,6 +23,7 @@ fn machine_rows_report_reach_and_open_the_machines_own_work(cx: &mut TestAppCont
         desk.fleet.observers.insert(
             Some("gone".into()),
             Observer {
+                workspace: None,
                 connection: None,
                 last: Vec::new(),
                 error: Some("connection refused".into()),

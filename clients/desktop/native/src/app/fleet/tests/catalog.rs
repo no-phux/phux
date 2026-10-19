@@ -212,3 +212,122 @@ fn a_drain_that_changes_no_work_reports_nothing(cx: &mut TestAppContext) {
         assert_eq!(desk.fleet.revision, revision);
     });
 }
+
+#[gpui::test]
+fn switching_sessions_reuses_the_hosts_negotiated_socket(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (desk, _) = fixture(cx);
+    desk.update(cx, |desk, cx| {
+        install(
+            desk,
+            connection(1, vec![session(7, "one"), session(8, "two")]),
+        );
+        let client = desk.link.as_ref().unwrap().connection.client.clone();
+        let epoch = client.connection_epoch();
+        let target = desk
+            .work_catalog()
+            .into_iter()
+            .find(|work| work.id == 8)
+            .unwrap()
+            .destination;
+        desk.navigate_work(target, cx);
+        let link = desk.link.as_ref().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&client, &link.connection.client));
+        assert_eq!(client.connection_epoch(), epoch);
+        assert_eq!(link.connection.home_key(), Some(key(8)));
+        assert!(link.connection.session_validated());
+        assert_eq!(client.selected_session(), Some(8));
+        assert!(desk.fleet.observers[&None].connection.is_none());
+    });
+}
+
+#[gpui::test]
+fn host_round_trip_promotes_inventory_and_keeps_one_runtime_per_host(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (desk, _) = fixture(cx);
+    desk.update(cx, |desk, cx| {
+        install(desk, connection(1, vec![session(7, "local")]));
+        let local = desk.link.as_ref().unwrap().connection.client.clone();
+        let remote = connection(2, vec![session(8, "remote")]);
+        let remote_client = remote.client.clone();
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        for host in [Some("mini"), None, Some("mini"), None] {
+            let target = desk
+                .work_catalog()
+                .into_iter()
+                .find(|work| work.destination.host.as_deref() == host)
+                .unwrap()
+                .destination;
+            desk.navigate_work(target, cx);
+            let expected = if host.is_some() {
+                &remote_client
+            } else {
+                &local
+            };
+            assert!(std::sync::Arc::ptr_eq(
+                expected,
+                &desk.link.as_ref().unwrap().connection.client
+            ));
+            assert!(
+                desk.fleet.observers[&host.map(str::to_owned)]
+                    .connection
+                    .is_none()
+            );
+            assert_eq!(
+                desk.fleet
+                    .observers
+                    .values()
+                    .filter(|observer| observer.connection.is_some())
+                    .count(),
+                1
+            );
+        }
+        desk.disconnect_machine(Some("mini".into()), cx);
+        assert!(remote_client.status().is_terminal());
+        assert!(
+            desk.fleet.observers[&Some("mini".into())]
+                .workspace
+                .is_none()
+        );
+        desk.prepare_close(cx);
+        assert!(local.status().is_terminal());
+        assert!(desk.fleet.observers.is_empty());
+    });
+}
+
+#[gpui::test]
+fn leaving_a_failed_host_does_not_mark_its_cached_work_online(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (desk, _) = fixture(cx);
+    desk.update(cx, |desk, cx| {
+        install(desk, connection(1, vec![session(7, "local")]));
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            connection(2, vec![session(8, "remote")]),
+        );
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        desk.link.as_mut().unwrap().connection.status = Status::Failed;
+        let target = desk
+            .work_catalog()
+            .into_iter()
+            .find(|work| work.destination.host.is_some())
+            .unwrap()
+            .destination;
+        desk.navigate_work(target, cx);
+        assert!(matches!(desk.machine_reach(None), Reach::Unavailable(_)));
+        let local = desk
+            .work_catalog()
+            .into_iter()
+            .find(|work| work.destination.host.is_none())
+            .unwrap();
+        assert!(!local.online);
+    });
+}

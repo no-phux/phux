@@ -99,7 +99,7 @@ impl Connection {
         self.expected_authority = authority;
     }
 
-    fn attach_pinned_home(&mut self) {
+    pub(super) fn attach_pinned_home(&mut self) {
         if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
             return;
         }
@@ -125,7 +125,13 @@ impl Connection {
             self.key_bootstrap_pending = false;
             self.client
                 .attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(id)));
-            self.status = Status::Negotiated;
+            // A healthy inventory/working socket switches locally. Only a
+            // pending attach needs a later barrier before workspace admission.
+            if self.client.status() == Status::Attached {
+                self.verify_pinned_home();
+            } else {
+                self.status = Status::Negotiated;
+            }
             return;
         }
         self.verify_pinned_home();
@@ -140,8 +146,8 @@ impl Connection {
         // subscriptions; a connection-level attach instead records its home.
         let attached = self
             .client
-            .attached_session()
-            .or_else(|| self.client.selected_session());
+            .selected_session()
+            .or_else(|| self.client.attached_session());
         if attached.is_none() || attached != self.home_session() {
             self.refuse_replaced_home();
         } else {

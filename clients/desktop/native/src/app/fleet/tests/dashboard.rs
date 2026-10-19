@@ -156,9 +156,14 @@ fn fleet_keyboard_navigation_survives_a_narrow_resize(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("enter");
     draw(cx);
     desk.read_with(cx, |desk, _| {
-        assert_eq!(
-            desk.fleet_view.pending.as_ref().unwrap().terminal,
-            ResourceId::local(10)
+        assert!(desk.fleet_view.pending.is_none());
+        assert!(
+            desk.link.as_ref().unwrap().workspace.awaiting_output(&[
+                phux_client_runtime::control::Event::TerminalChanged {
+                    terminal_id: ResourceId::local(10),
+                }
+            ]),
+            "the warm socket immediately queues the selected terminal"
         );
         assert_eq!(desk.remote.as_deref(), Some("mini"));
     });
@@ -198,12 +203,14 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         assert_eq!(desk.remote.as_deref(), Some("mini"));
         assert_eq!(desk.session, "remote");
         assert_eq!(desk.modal, super::super::super::desk::Modal::None);
+        assert!(desk.fleet_view.pending.is_none());
         assert!(
-            desk.fleet_view
-                .pending
-                .as_ref()
-                .unwrap()
-                .same_target(&target)
+            desk.link.as_ref().unwrap().workspace.awaiting_output(&[
+                phux_client_runtime::control::Event::TerminalChanged {
+                    terminal_id: target.terminal.clone(),
+                }
+            ]),
+            "the warm socket immediately queues the validated agent"
         );
     });
     desk.update(cx, |desk, _| {
@@ -215,6 +222,8 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         // The authority changed during the dial: never reveal a recycled id.
         changed.topology.as_mut().unwrap().authority = Some(authority(3));
         install(desk, changed);
+        // An actual reconnect still waits for its fresh incarnation before reveal.
+        desk.fleet_view.pending = Some(target.clone());
         desk.settle_fleet_terminal();
         assert!(desk.fleet_view.pending.is_none());
         assert!(desk.link.as_ref().unwrap().workspace.tabs.is_empty());
