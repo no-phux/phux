@@ -29,6 +29,9 @@ pub struct Options {
     pub quick: bool,
     /// Open the native performance monitor at launch; it can also be opened live.
     pub dev_telemetry: bool,
+    /// Dev mode ([`crate::devtools`]): heap accounting, the HUD and the dev
+    /// socket. `PHUX_DEV=1` does the same.
+    pub dev: bool,
     /// Directory for presentation evidence and `perf.jsonl`.
     pub evidence: Option<PathBuf>,
     /// Exit 0 once evidence of a presented frame is written.
@@ -36,7 +39,7 @@ pub struct Options {
 }
 
 const USAGE: &str = "usage: phux-desktop [--socket PATH] [--session NAME] [--phux PATH] \
-[--layout PATH] [--fresh] [--terminal ID] [--quick] [--dev-telemetry] [--evidence DIR] [--smoke]";
+[--layout PATH] [--fresh] [--terminal ID] [--quick] [--dev] [--dev-telemetry] [--evidence DIR] [--smoke]";
 
 impl Options {
     /// Parse `args` (without the program name).
@@ -59,6 +62,7 @@ impl Options {
                 "--fresh" => options.fresh = true,
                 "--quick" => options.quick = true,
                 "--dev-telemetry" => options.dev_telemetry = true,
+                "--dev" => options.dev = true,
                 "--smoke" => options.smoke = true,
                 // macOS passes a process serial number to apps opened by Finder.
                 arg if arg.starts_with("-psn_") => {}
@@ -223,6 +227,13 @@ pub fn main() -> ExitCode {
             || std::env::var("PHUX_DESKTOP_DEV_TELEMETRY").as_deref() == Ok("1"),
         startup_error: resolved.error,
     };
+    // A startup error means no CLI or no server; the HUD then shows no server line.
+    let cli = (app_options.startup_error.is_none() && !app_options.socket.as_os_str().is_empty())
+        .then(|| crate::devtools::ServerCli {
+            phux: app_options.phux.clone(),
+            socket: app_options.socket.clone(),
+        });
+    crate::devtools::init(crate::devtools::requested(options.dev), cli);
     let evidence = options.evidence.clone().map(|dir| diag::EvidenceOptions {
         dir,
         exit_after: options.smoke,
@@ -233,6 +244,7 @@ pub fn main() -> ExitCode {
             cx.set_app_identity("dev.phux.desktop", "phux");
             gpui_kit::init(cx);
             diag::install(evidence, cx);
+            crate::devtools::install(cx);
             if let Err(error) = app::open(app_options, cx) {
                 let line = format!("could not open the desktop window: {error:#}");
                 log::error!("{line}");
@@ -240,6 +252,7 @@ pub fn main() -> ExitCode {
                 cx.quit();
             }
         });
+    crate::devtools::shutdown();
     diag::exit_code()
 }
 
@@ -273,6 +286,7 @@ mod tests {
             "local:3",
             "--quick",
             "--dev-telemetry",
+            "--dev",
             "--evidence",
             "/tmp/e",
             "--smoke",
@@ -281,6 +295,7 @@ mod tests {
         assert_eq!(options.socket.as_deref(), Some(Path::new("/tmp/s")));
         assert_eq!(options.session.as_deref(), Some("w"));
         assert!(options.fresh && options.quick && options.smoke && options.dev_telemetry);
+        assert!(options.dev);
         assert_eq!(options.terminal.as_deref(), Some("local:3"));
     }
 

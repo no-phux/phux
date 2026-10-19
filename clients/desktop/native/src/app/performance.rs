@@ -52,6 +52,8 @@ struct PerformanceMonitor {
     copy_status: Option<SharedString>,
     focus: FocusHandle,
     timer: Option<Task<()>>,
+    /// Keeps the server poller reading while the monitor is open.
+    _server: Option<crate::devtools::server::Watch>,
 }
 
 impl PerformanceMonitor {
@@ -70,9 +72,106 @@ impl PerformanceMonitor {
             copy_status: None,
             focus,
             timer: None,
+            _server: crate::devtools::get()
+                .cli
+                .as_ref()
+                .map(|cli| crate::devtools::get().poller.watch(cli)),
         };
         monitor.start_timer(cx);
         monitor
+    }
+
+    fn toggle_hud(&mut self, cx: &mut Context<Self>) {
+        crate::devtools::set_hud(!crate::devtools::hud_visible());
+        cx.notify();
+    }
+
+    fn capture_trace(&mut self, cx: &mut Context<Self>) {
+        self.copy_status = Some("Recording a 5-second trace of the desktop and server…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = smol::unblock(|| {
+                crate::devtools::capture_trace(Duration::from_secs(5), true)
+            })
+            .await;
+            let _ = this.update(cx, |monitor, cx| {
+                monitor.copy_status = Some(match result {
+                    Ok(trace) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            trace.path.display().to_string(),
+                        ));
+                        let server = trace.server_error.map_or_else(String::new, |error| {
+                            format!(" Server did not take part: {error}")
+                        });
+                        format!(
+                            "Trace saved, path copied: {} ({} events). Open it in ui.perfetto.dev.{server}",
+                            crate::devtools::display_path(&trace.path),
+                            trace.events,
+                        )
+                        .into()
+                    }
+                    Err(error) => format!("Trace failed: {error:#}").into(),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn server_row(&self, cx: &App) -> impl IntoElement {
+        let (sample, error) = crate::devtools::get().poller.latest();
+        let cpu = sample
+            .as_ref()
+            .and_then(|sample| sample.cpu_percent)
+            .map_or_else(unavailable, |value| format!("{value:.1}%"));
+        let rss = memory(sample.as_ref().and_then(|sample| sample.report.rss_bytes));
+        let heap = sample
+            .as_ref()
+            .and_then(|sample| sample.report.alloc)
+            .map_or_else(unavailable, |alloc| signed_memory(alloc.live_bytes));
+        let detail = match (&sample, error) {
+            (_, Some(error)) => error,
+            (Some(sample), None) => format!("PID {} · via `phux perf --json`", sample.report.pid),
+            (None, None) if crate::devtools::get().cli.is_none() => {
+                "No phux CLI is known to this desktop".to_owned()
+            }
+            (None, None) => "Waiting for the first reading".to_owned(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Server process"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(detail),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(summary_card("Server CPU", cpu, "One core = 100%", cx))
+                    .child(summary_card("Server memory", rss, "Resident set (RSS)", cx))
+                    .child(summary_card(
+                        "Server heap",
+                        heap,
+                        "Live heap; needs PHUX_DEV=1 on the server",
+                        cx,
+                    )),
+            )
     }
 
     fn start_timer(&mut self, cx: &mut Context<Self>) {
@@ -127,6 +226,11 @@ impl PerformanceMonitor {
             "cpu_percent": self.latest.cpu_percent,
             "resident_bytes": self.latest.resident_bytes,
             "peak_resident_bytes": self.latest.peak_resident_bytes,
+            "frames": crate::devtools::frames::last_second(),
+            "server": crate::devtools::get().poller.latest().0.map(|sample| serde_json::json!({
+                "cpu_percent": sample.cpu_percent,
+                "report": sample.report,
+            })),
             "report": &self.latest.report,
             "interval_seconds": self.interval_seconds,
             "interval_report": &self.interval,
@@ -259,6 +363,8 @@ impl gpui::Render for PerformanceMonitor {
                                     .items_center()
                                     .gap_2()
                                     .child(Button::new("performance-pause").small().label(if self.paused { "Resume" } else { "Pause" }).on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_pause(cx))))
+                                    .child(Button::new("performance-hud").small().ghost().label(if crate::devtools::hud_visible() { "Hide HUD" } else { "Show HUD" }).on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_hud(cx))))
+                                    .child(Button::new("performance-trace").small().ghost().label("Capture Trace").on_click(cx.listener(|monitor, _, _, cx| monitor.capture_trace(cx))))
                                     .child(Button::new("performance-copy").small().ghost().label("Copy JSON").on_click(cx.listener(|monitor, _, _, cx| monitor.copy_json(cx)))),
                             ),
                     )
@@ -268,9 +374,11 @@ impl gpui::Render for PerformanceMonitor {
                             .gap_3()
                             .child(summary_card("CPU", cpu, "One core = 100%", cx))
                             .child(summary_card("Current memory", memory(self.latest.resident_bytes), "Resident set (RSS)", cx))
-                            .child(summary_card("Peak memory", memory(self.latest.peak_resident_bytes), "Process lifetime high-water mark", cx)),
+                            .child(summary_card("Peak memory", memory(self.latest.peak_resident_bytes), "Process lifetime high-water mark", cx))
+                            .child(summary_card("Heap", self.latest.report.alloc.map_or_else(unavailable, |alloc| signed_memory(alloc.live_bytes)), "Live heap; dev mode only", cx)),
                     )
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Desktop app only — excludes the server and terminal child processes. — means unavailable or not sampled yet."))
+                    .child(self.server_row(cx))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Terminal child processes are not included. — means unavailable or not sampled yet."))
                     .when_some(self.copy_status.clone(), |this, message| this.child(div().text_sm().text_color(cx.theme().muted_foreground).child(message)))
                     .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(interval_label))
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Rates and timing distributions cover the last active interval. Gauges show current values. Copy JSON includes cumulative totals; p95 is a histogram estimate.")),
@@ -353,6 +461,15 @@ fn memory(bytes: Option<u64>) -> String {
     bytes.map_or_else(unavailable, |value| {
         format!("{:.1} MiB", value as f64 / 1_048_576.)
     })
+}
+
+fn signed_memory(bytes: i64) -> String {
+    let magnitude = memory(Some(bytes.unsigned_abs()));
+    if bytes < 0 {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
 }
 
 fn quantity(value: u64, unit: Unit) -> String {

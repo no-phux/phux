@@ -102,6 +102,8 @@ const CATALOG: &str = "\
     performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
     copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log
     performance-monitor-stop | Stop Performance Monitoring | Utilities |  | Close the performance window and stop its sampler. | telemetry cpu memory rss
+    perf-hud | Toggle Performance HUD | Utilities |  | Show frame rate, frame build time, CPU, memory, heap and the server's load over the window. | fps hud overlay telemetry frames jank heap
+    perf-trace | Capture Performance Trace | Utilities |  | Record five seconds of desktop and server spans to a Perfetto file and copy its path. | trace perfetto profile timeline spans flamegraph
     tab-1 | Go to Tab | Tabs | cmd+1 | Switch to the tab at this position. |
     tab-2 | Go to Tab | Tabs | cmd+2 | Switch to the tab at this position. |
     tab-3 | Go to Tab | Tabs | cmd+3 | Switch to the tab at this position. |

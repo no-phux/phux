@@ -176,7 +176,7 @@ fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) 
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
-    let _frame = crate::diag::FRAME.timer();
+    let _frame = crate::devtools::frames::FrameTimer::start();
     let tab_position = desk.tab_position();
     desk.set_viewport(window.viewport_size());
     if desk.tab_position() != tab_position {
@@ -298,6 +298,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
             StyleRefinement::default().absolute().inset_0().size_full(),
             cx,
         ))
+        .children(super::hud::element(desk.prefs.font_family.clone().into()))
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
 }
 

@@ -70,6 +70,20 @@ fn render_header(out: &mut String, report: &PerfReport, interval: Option<std::ti
             p.involuntary_ctx_switches,
         );
     }
+    if let Some(rss) = report.rss_bytes {
+        let _ = write!(out, "  rss {}", fmt_bytes(rss));
+    }
+    if let Some(a) = &report.alloc {
+        let _ = write!(
+            out,
+            "  heap live {} peak {}  allocs {} ({}) frees {}",
+            fmt_signed_bytes(a.live_bytes),
+            fmt_signed_bytes(a.peak_bytes),
+            a.allocs,
+            fmt_bytes(a.alloc_bytes),
+            a.frees,
+        );
+    }
     out.push('\n');
 }
 
@@ -184,6 +198,16 @@ fn fmt_bytes(b: u64) -> String {
         format!("{:.1}MiB", f / (KIB * KIB))
     } else {
         format!("{:.2}GiB", f / (KIB * KIB * KIB))
+    }
+}
+
+/// [`fmt_bytes`] for a net figure that can go negative.
+fn fmt_signed_bytes(b: i64) -> String {
+    let magnitude = fmt_bytes(b.unsigned_abs());
+    if b < 0 {
+        format!("-{magnitude}")
+    } else {
+        magnitude
     }
 }
 

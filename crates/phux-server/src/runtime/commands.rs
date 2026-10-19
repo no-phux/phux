@@ -803,6 +803,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::SignalTerminal { .. } => "signal_terminal",
         Command::PutFile { .. } => "put_file",
         Command::GetPerf { .. } => "get_perf",
+        Command::PerfControl { .. } => "perf_control",
         Command::Transcribe { .. } => "transcribe",
         Command::AppendResourceOutput { .. } => "append_resource_output",
         _ => "other",
@@ -1041,6 +1042,7 @@ async fn dispatch_local(
             handle_get_state_federated(state, client_id, &scope, out_tx).await
         }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
+        Command::PerfControl { op } => super::perf_control::handle(op).await,
         Command::Transcribe {
             upload_id,
             terminal_id,

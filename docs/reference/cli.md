@@ -2892,12 +2892,28 @@ lifetime; with `--watch SECS` the verb polls and prints each interval on its
 own, so counters become rates and a stall shows up in the second it happened.
 Does not start a server.
 
-Usage: phux perf [FLAGS]
+`phux perf trace` records a span trace of the server for Perfetto; `phux perf
+alloc on|off` switches its heap accounting.
+
+`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`) instead: its
+frame rate, frame build times, jank, CPU, memory, heap and every desktop
+histogram. `phux perf trace --desktop` records the desktop and the server onto
+one timeline; `phux perf hud on|off` shows the desktop's in-window HUD.
+
+Usage: phux perf [FLAGS] [SUBCOMMAND]
+
+Commands:
+  alloc  Switch the server's heap accounting on or off
+  hud    Show or hide the dev-mode desktop's performance HUD
+  trace  Record a span trace of the server and save it as Chrome trace JSON
+  help   Print this message or the help of the given subcommand(s)
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
+      --desktop        Read the dev-mode phux desktop serving this socket, not
+                       the server.
       --watch <SECS>   Poll every SECS seconds and print each interval as a
                        delta.
       --reset          Zero the server's metrics after each snapshot.
@@ -2905,6 +2921,83 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux perf alloc`
+
+```text
+Switch the server's heap accounting on or off
+
+Heap figures appear in `phux perf` while accounting is on. A server started with
+`PHUX_DEV=1` starts with it on. A server binary without the counting allocator
+answers `installed: false` and reports no heap.
+
+Usage: phux perf alloc [--desktop] [--json] <STATE>
+
+Arguments:
+  <STATE>  `on` or `off`.
+           [possible values: on, off]
+
+Flags:
+      --desktop        Switch the dev-mode desktop's heap accounting instead.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux perf hud`
+
+```text
+Show or hide the dev-mode desktop's performance HUD
+
+The HUD sits in each window's corner: frame rate, frame build time, jank, CPU,
+memory, heap, and the server's CPU and memory.
+
+Usage: phux perf hud [--json] <STATE>
+
+Arguments:
+  <STATE>  `on` or `off`.
+           [possible values: on, off]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux perf trace`
+
+```text
+Record a span trace of the server and save it as Chrome trace JSON
+
+Arms the server's span capture, waits, then stops it. The server writes the
+trace under its state directory, beside the server log, and this prints the
+path; open it in <https://ui.perfetto.dev>. Ctrl-C ends the wait early and still
+saves the trace.
+
+Usage: phux perf trace [FLAGS]
+
+Flags:
+      --seconds <SECS>  Seconds to record.
+                        (default: 5)
+  -o, --out <PATH>      Copy the trace here as well.
+      --desktop         Trace the dev-mode desktop and the server onto one
+                        timeline.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux play`

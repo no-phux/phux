@@ -7,6 +7,12 @@
 
 #![forbid(unsafe_code)]
 
+/// Counts heap traffic while accounting is on (`PHUX_DEV=1`, or
+/// `phux perf alloc on` against a running server); one relaxed load per
+/// allocation otherwise.
+#[global_allocator]
+static ALLOC: phux_perf::alloc::Counting = phux_perf::alloc::Counting::system();
+
 fn main() -> std::process::ExitCode {
     phux::set_checkout_distros(concat!(env!("CARGO_MANIFEST_DIR"), "/../../distros"));
     phux::run()

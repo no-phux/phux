@@ -762,6 +762,7 @@ enum CommandTag {
     RevokeDelegation = 0x36,
     SessionKill = 0x37,
     NativeAgent = 0x38,
+    PerfControl = 0x39,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -815,6 +816,8 @@ pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = CommandTag::Shutdown as u8;
 pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = CommandTag::ReportAgentState as u8;
 /// Wire tag for [`Command::GetPerf`].
 pub(crate) const COMMAND_TAG_GET_PERF: u8 = CommandTag::GetPerf as u8;
+/// Wire tag for [`Command::PerfControl`].
+pub(crate) const COMMAND_TAG_PERF_CONTROL: u8 = CommandTag::PerfControl as u8;
 /// Wire tag for [`Command::Transcribe`].
 pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = CommandTag::Transcribe as u8;
 /// Wire tag for [`Command::AppendResourceOutput`].
@@ -972,8 +975,8 @@ mod whoami;
 pub use command::{
     AgentEvent, ApprovalOutcome, Command, CommandResult, CommandValue, ControlAction,
     FileUploadAck, GET_SCREEN_FORMAT_SELECTOR_MASK, GET_SCREEN_FORMAT_UNWRAP, InputMode,
-    KillConditions, KillPrecondition, ListenerTransport, ReportedAgentState, ResourceEventType,
-    ResourceLifecycle, StateScope, TerminalSignal,
+    KillConditions, KillPrecondition, ListenerTransport, PerfOp, ReportedAgentState,
+    ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
