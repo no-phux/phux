@@ -1271,11 +1271,13 @@ fn dispatch(
         Some(Command::Perf {
             action,
             json,
+            desktop,
             watch,
             reset,
         }) => commands::perf::run_perf(
             commands::perf::PerfOptions {
                 json: json.json,
+                desktop,
                 watch,
                 reset,
             },
