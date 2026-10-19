@@ -121,6 +121,15 @@ pub enum Modal {
         current: String,
         target: Option<SessionRenameTarget>,
     },
+    /// Link a session into a named project. Projects meet by name across
+    /// machines, so each machine's server keeps the link for its own session.
+    Project {
+        /// The machine whose server holds the session.
+        host: Option<String>,
+        session: SessionKey,
+        name: String,
+        current: Option<String>,
+    },
     /// Kill a whole session: every member ends and the session is deleted.
     KillSession {
         name: String,
@@ -474,6 +483,18 @@ fn session_failure(create: bool) -> &'static str {
         "Could not create the session"
     } else {
         "Could not rename the session"
+    }
+}
+
+/// Why a project name cannot be stored, before it is sent. The server keeps
+/// the same rule; a session attribute holds at most 256 bytes.
+fn project_refusal(name: &str) -> Option<&'static str> {
+    if name.len() > 256 {
+        Some("Project names are at most 256 bytes.")
+    } else if name.chars().any(char::is_control) {
+        Some("Project names cannot contain control characters.")
+    } else {
+        None
     }
 }
 

@@ -48,6 +48,10 @@ pub mod attr {
     pub const LINKED_WORKTREE: &str = "project.linked_worktree";
     /// [`super::SessionProject::host`].
     pub const HOST: &str = "project.host";
+    /// A session's explicit project link (`phux project link`): a display
+    /// name that outranks the identity for grouping. Not part of the
+    /// identity; [`super::SessionProject::from_attrs`] ignores it.
+    pub const LINK: &str = "project.link";
 }
 
 /// Longest attribute value the wire carries, in UTF-8 bytes.
@@ -332,6 +336,17 @@ mod tests {
         );
         assert_eq!(
             SessionProject::from_attrs([("project", "phux"), (attr::ID, "x")]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_project_link_is_not_part_of_the_identity() {
+        let mut attrs = sample().to_attrs();
+        attrs.push((attr::LINK.to_owned(), "elsewhere".to_owned()));
+        assert_eq!(SessionProject::from_attrs(pairs(&attrs)), Some(sample()));
+        assert_eq!(
+            SessionProject::from_attrs([(attr::LINK, "phux"), (attr::NAME, "phux")]),
             None
         );
     }

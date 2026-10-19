@@ -65,4 +65,5 @@ pub enum InputSlot {
     SessionDir,
     HostTarget,
     HostName,
+    Project,
 }

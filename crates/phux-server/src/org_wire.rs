@@ -252,6 +252,9 @@ pub fn core_launch(
 #[must_use]
 pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    if let Some(link) = &a.project_link {
+        out.push((LINK.to_owned(), link.clone()));
+    }
     if let Some(project) = &a.project {
         out.push(("project".to_owned(), project.clone()));
     }
@@ -270,14 +273,22 @@ pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
     out
 }
 
+const LINK: &str = phux_core::project_identity::attr::LINK;
+
 /// Wire attribute pairs in core; the `project.*` names (ADR-0168) are one
-/// typed repository identity, and unknown names are ignored.
+/// typed repository identity, `project.link` is the separate explicit link,
+/// and unknown names are ignored.
 #[must_use]
 pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
     let mut a = phux_core::Attrs::default();
     for (name, value) in pairs {
         match name.as_str() {
             "project" => a.project = Some(value.clone()),
+            // `SESSION_SET_PROJECT`'s rules, except that a bad link at
+            // create is dropped rather than refused: attributes describe.
+            LINK if !value.is_empty() && value.trim() == value => {
+                a.project_link = Some(value.clone());
+            }
             "directory" => a.directory = Some(std::path::PathBuf::from(value)),
             "host" => a.host_label = Some(value.clone()),
             "mission.task" => a.mission_task = Some(value.clone()),
@@ -457,6 +468,15 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
         } => frame::AgentEvent::SessionRenamed {
             session: session_key(*key)?,
             name: name.clone(),
+            revision: revision(*r),
+        },
+        E::SessionProjectSet {
+            key,
+            project,
+            revision: r,
+        } => frame::AgentEvent::SessionProjectSet {
+            session: session_key(*key)?,
+            project: project.clone(),
             revision: revision(*r),
         },
         E::SessionLifetimeChanged {

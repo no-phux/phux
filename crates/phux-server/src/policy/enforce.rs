@@ -646,6 +646,7 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
             _ => None,
         },
         Command::SessionRename { session, .. }
+        | Command::SessionSetProject { session, .. }
         | Command::SessionSetLifetime { session, .. }
         | Command::SessionDelete { session, .. }
         | Command::SessionKill { session, .. }

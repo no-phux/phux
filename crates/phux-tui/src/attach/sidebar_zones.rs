@@ -379,16 +379,18 @@ pub(super) fn session_roster(
         out.push(entry);
         projects.push(RowProject {
             project: phux_client::project_identity::of_session(session),
+            link: phux_client::project_identity::link_of_session(session),
             label: peers.project_tags.get(&session.id).map(String::as_str),
         });
     }
     let satellites = satellite_roster(peers.hosts);
     projects.extend(satellites.iter().map(|_| RowProject::default()));
     out.extend(satellites);
-    for (entry, project) in machine_roster(&peers.other_machines()) {
+    for (entry, session) in machine_roster(&peers.other_machines()) {
         out.push(entry);
         projects.push(RowProject {
-            project: project.cloned(),
+            project: session.and_then(|session| session.project.clone()),
+            link: session.and_then(|session| session.project_link.as_deref()),
             label: None,
         });
     }
@@ -399,6 +401,7 @@ pub(super) fn session_roster(
 #[derive(Default)]
 struct RowProject<'a> {
     project: Option<SessionProject>,
+    link: Option<&'a str>,
     label: Option<&'a str>,
 }
 
@@ -416,6 +419,7 @@ fn group_roster(
         .zip(projects)
         .map(|(entry, row)| GroupRow {
             project: row.project.as_ref(),
+            link: row.link,
             label: row.label,
             needs_you: entry.blocked,
         })
@@ -478,7 +482,10 @@ pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize
 /// rung, the same "nothing known" reading a not-yet-swept peer gets.
 fn machine_roster<'a>(
     hosts: &[&'a phux_core::host_list::HostJson],
-) -> Vec<(SessionRosterEntry, Option<&'a SessionProject>)> {
+) -> Vec<(
+    SessionRosterEntry,
+    Option<&'a phux_core::session_list::SessionJson>,
+)> {
     let mut out = Vec::new();
     for host in hosts {
         let base = SessionRosterEntry {
@@ -514,7 +521,7 @@ fn machine_roster<'a>(
                     name: session.name.clone(),
                     ..base.clone()
                 },
-                session.project.as_ref(),
+                Some(session),
             )
         }));
     }
@@ -732,6 +739,7 @@ mod tests {
                     members: 0,
                     exec: phux_core::session_list::ExecCounts::default(),
                     project: None,
+                    project_link: None,
                     key: None,
                 })
                 .collect(),
@@ -1248,6 +1256,64 @@ mod tests {
                 ("phux", "laptop", Some("phux"), false),
                 ("scratch", "mini", None, false),
                 ("notes", "laptop", None, false),
+            ]
+        );
+    }
+
+    /// A session linked into a project by name (`phux project link`), here
+    /// or on another machine, joins the group of that project's git
+    /// sessions; the link rides the session's `project.link` attribute. A
+    /// recipe's free-text `project` label naming something else leaves a
+    /// git session in its repository's group.
+    #[test]
+    fn a_linked_session_joins_its_project_group_across_machines() {
+        use phux_core::host_list::HostKind;
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "scratch"));
+        let mut here = identity(false, "mini").to_attrs();
+        here.push(("project".to_owned(), "phux-checkout".to_owned()));
+        let session = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(1))
+            .expect("fixture session");
+        *session = session.clone().with_attrs(here);
+        let peer = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(2))
+            .expect("fixture session");
+        *peer = peer
+            .clone()
+            .with_attrs(vec![("project.link".to_owned(), "phux".to_owned())]);
+        let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
+        let mut laptop = machine("local", "laptop", HostKind::Local, true, &["docs", "notes"]);
+        laptop.sessions[0].project_link = Some("phux".to_owned());
+        let hosts = vec![laptop];
+        let peers = PeerInputs {
+            origin: Some(&origin),
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        let rows: Vec<_> = roster
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.host.as_str(),
+                    r.group.as_ref().map(|g| g.name.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("here", "mini", Some("phux")),
+                ("peer", "mini", Some("phux")),
+                ("docs", "laptop", Some("phux")),
+                ("scratch", "mini", None),
+                ("notes", "laptop", None),
             ]
         );
     }

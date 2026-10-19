@@ -16,7 +16,12 @@ For installation and development, see the [desktop README](README.md).
 The main menu beside the window controls drops a glass menu: new terminal,
 agent, session, folder or window, **Open Recent**, Go To and the palette,
 **View** (tab placement and sidebar grouping), pane splits, Settings and
-Reconnect. Its header leads to **Switch Machine**. Session, tab and pane
+Reconnect. The trigger names the window's session behind a small mark for
+its machine (a laptop for this Mac, a server for another), and the menu's
+header leads to **Switch Session**: every session on every machine, project by
+project, each marked with its machine, then **Machines…** and **Add
+Machine…**. A machine saved by address shows the name the system resolver
+gives it, so a tailnet IP reads as its MagicDNS name. Session, tab and pane
 actions (the **…** on a row, or a right-click) use the same glass menu.
 **⌘P**, **⇧⌘P**, and **⌘,** open the same searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
 across hosts plus the active session's terminals and tabs; a typed search also
@@ -146,8 +151,13 @@ exclusions are saved, do not disconnect hosts, and do not limit Work search.
 The sidebar's **All machines / Machines · filtered** control opens that menu;
 **Reset** shows every machine again, even when the active host was hidden.
 Offline inventory stays visible and cannot be opened until it is refreshed.
+A session's **Link to Project…** action files it under a named project, kept
+on that session's own server. Projects meet by name across machines: link a
+session on the mini and one on this Mac to the same name, or to a
+repository's name, and they are listed together in the sidebar's project
+grouping and in **Switch Session**. **Unlink** returns it to its repository.
 **Settings > Hosts & connections** (also **Machines…** from the main menu's
-**Switch Machine** page, the File menu and the palette) lists This Mac and every saved
+**Switch Session** page, the File menu and the palette) lists This Mac and every saved
 machine with its state, opens, retries, disconnects, adds or forgets machines, and
 refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an

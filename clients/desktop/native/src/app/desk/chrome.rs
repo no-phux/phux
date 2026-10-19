@@ -14,7 +14,10 @@ impl Desk {
             (None, _) => "phux".into(),
         };
         let title = match self.remote.as_deref() {
-            Some(host) => format!("{title} · {}", display_title(host)),
+            Some(host) => format!(
+                "{title} · {}",
+                display_title(&super::super::machine_name::display(host))
+            ),
             None => title,
         };
         if title != self.window_title {

@@ -1,6 +1,6 @@
 use super::{
     TabGeometry, command_span, display_title, held_paste_target_holds, paint_batch, pane_label,
-    tab_drop_index,
+    project_refusal, tab_drop_index,
 };
 use crate::settings::TabPosition;
 use phux_client_runtime::control::{Event, PaneDescriptor};
@@ -232,4 +232,12 @@ fn repeated_agent_metadata_rides_the_paint_path() {
     assert!(!paint_batch(&[output, metadata], true));
     assert!(!paint_batch(&[], false));
     assert!(!paint_batch(&[Event::TopologyChanged], false));
+}
+
+#[test]
+fn project_names_are_refused_before_sending_only_when_the_server_would_refuse() {
+    assert_eq!(project_refusal("phux"), None);
+    assert_eq!(project_refusal(&"p".repeat(256)), None);
+    assert!(project_refusal(&"p".repeat(257)).is_some());
+    assert!(project_refusal("bad\nname").is_some());
 }

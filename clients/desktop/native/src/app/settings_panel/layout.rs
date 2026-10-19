@@ -174,7 +174,7 @@ fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
     SettingGroup::new()
         .title("Sidebar machines")
         .items(hosts.into_iter().map(|host| {
-            let label = host.clone().unwrap_or_else(|| "This Mac".into());
+            let label = super::super::machine_name::label(host.as_deref());
             let (reader, writer) = (handle.clone(), handle.clone());
             let read_host = host.clone();
             SettingItem::new(

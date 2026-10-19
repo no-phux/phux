@@ -847,9 +847,9 @@ Global flags:
 Recreate an archive's missing sessions without starting them.
 
 Each missing session becomes a persistent session with its archived host,
-project, and directory, and each archived local pane a dormant record in its
-arrangement; nothing is launched until `phux restore`. A session of the same
-name already on the server is skipped.
+project, project link, and directory, and each archived local pane a dormant
+record in its arrangement; nothing is launched until `phux restore`. A session
+of the same name already on the server is skipped.
 
 Usage: phux archive import [--plan] <ARCHIVE>
 
@@ -3293,12 +3293,14 @@ Usage: phux project <SUBCOMMAND>
 Commands:
   init     Write a starter `.phux/project.toml` into a checkout.
   inspect  Map a git repository and its checked-out worktrees.
+  link     Link a session into a named project, on any machine.
   list     List the `[[projects]]` catalog and whether each session is open.
            [aliases: ls]
   open     Attach to a project's session, building it from its recipe if absent.
   status   Report whether a recipe is approved: exit 0 trusted, 1 untrusted or
            absent, 2 undeterminable.
   trust    Validate a recipe and approve its exact bytes on this machine.
+  unlink   Clear a session's project link; it groups by its repository again.
   untrust  Withdraw this machine's approval of a recipe.
   help     Print this message or the help of the given subcommand(s)
 
@@ -3350,6 +3352,45 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project link`
+
+```text
+Link a session into a named project, on any machine.
+
+The link is stored on the server that owns SESSION, so every client (desktop,
+TUI, `phux ls`) sees it, and groups sessions by project name across hosts: a
+link outranks the git repository a session was created in, and a link named like
+a repository joins that repository's group. Relinking replaces the link; the
+last writer wins. NAME is trimmed.
+
+Usage: phux project link [--json] [--remote <[USER@]HOST[:PORT]>] <SESSION> <NAME>
+
+Arguments:
+  <SESSION>  Session name or key (`^ab23cd`).
+  <NAME>     Project name (at most 256 bytes, no control characters).
+
+Flags:
+      --json                      Emit a stable JSON document instead of human
+                                  text.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
+                                  defaults to 8788. Cannot combine with
+                                  `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux project list`
@@ -3432,6 +3473,41 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project unlink`
+
+```text
+Clear a session's project link; it groups by its repository again.
+
+Only the link is cleared, never the free-text project a recipe or archive
+recorded.
+
+Usage: phux project unlink [--json] [--remote <[USER@]HOST[:PORT]>] <SESSION>
+
+Arguments:
+  <SESSION>  Session name or key (`^ab23cd`).
+
+Flags:
+      --json                      Emit a stable JSON document instead of human
+                                  text.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
+                                  defaults to 8788. Cannot combine with
+                                  `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux project untrust`

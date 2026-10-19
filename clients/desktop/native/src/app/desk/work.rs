@@ -262,12 +262,35 @@ impl Desk {
                     Ok(hosts) => {
                         desk.hosts = hosts;
                         desk.sync_fleet(cx);
+                        desk.name_machines(cx);
                     }
                     // No CLI is already explained at launch; the section just stays empty.
                     Err(error) => log::warn!("host list: {error}"),
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Look up names for machines saved by address, then repaint with them.
+    fn name_machines(&mut self, cx: &mut Context<Self>) {
+        let addresses = super::super::machine_name::unresolved(
+            self.hosts
+                .iter()
+                .map(|host| host.name.as_str())
+                .chain(self.remote.as_deref()),
+        );
+        if addresses.is_empty() {
+            return;
+        }
+        let resolved = cx
+            .background_executor()
+            .spawn(async move { super::super::machine_name::resolve(addresses) });
+        cx.spawn(async move |desk, cx| {
+            if resolved.await {
+                let _ = desk.update(cx, |_, cx| cx.notify());
+            }
         })
         .detach();
     }

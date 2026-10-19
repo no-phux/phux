@@ -1091,6 +1091,11 @@ pub enum ServerFeatureExt {
     /// switch heap accounting. A client MUST see the bit before sending the
     /// command.
     PerfControl = 0x0000_0080,
+    /// The server accepts `SESSION_SET_PROJECT` (`docs/spec/L1.md` §5.7):
+    /// link a session into a named project after creation, or clear the
+    /// link. Advertised only beside [`Self::Organization`]; a client MUST see
+    /// the bit before sending the command.
+    SessionProject = 0x0000_0100,
 }
 
 impl ServerFeatureExt {
@@ -1104,6 +1109,7 @@ impl ServerFeatureExt {
         Self::SessionKill,
         Self::NativeAgent,
         Self::PerfControl,
+        Self::SessionProject,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -1118,6 +1124,7 @@ impl ServerFeatureExt {
             Self::SessionKill => "SESSION_KILL",
             Self::NativeAgent => "NATIVE_AGENT",
             Self::PerfControl => "PERF_CONTROL",
+            Self::SessionProject => "SESSION_PROJECT",
         }
     }
 
@@ -1140,7 +1147,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::Organization as u32
         | ServerFeatureExt::SessionKill as u32
         | ServerFeatureExt::NativeAgent as u32
-        | ServerFeatureExt::PerfControl as u32;
+        | ServerFeatureExt::PerfControl as u32
+        | ServerFeatureExt::SessionProject as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

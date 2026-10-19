@@ -183,7 +183,16 @@ fn run_on<F>(socket: Option<PathBuf>, verb: &str, json: bool, body: F) -> ExitCo
 where
     F: AsyncFnOnce(&ServerTarget, &mut Connection) -> ExitCode,
 {
-    let (rt, server) = match ServerSpec::local(socket).prepare(verb, json) {
+    run_on_server(ServerSpec::local(socket), verb, json, body)
+}
+
+/// Run `body` on a fresh connection to the server `spec` names, local or
+/// `--remote`.
+fn run_on_server<F>(spec: ServerSpec, verb: &str, json: bool, body: F) -> ExitCode
+where
+    F: AsyncFnOnce(&ServerTarget, &mut Connection) -> ExitCode,
+{
+    let (rt, server) = match spec.prepare(verb, json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
@@ -224,6 +233,73 @@ pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf
             ),
         };
         finish(json, "rm", target, &key, result, &line)
+    })
+}
+
+/// `phux project link SESSION NAME` (`project: Some`) and `phux project
+/// unlink SESSION` (`None`): set or clear the session's project link on the
+/// server that owns it (`SESSION_SET_PROJECT`, last writer wins). Every
+/// client groups sessions across hosts by that link. The name is trimmed
+/// first. Exit 0 success, 1 no server or no such session, 2 refusal or a
+/// server without `SESSION_PROJECT`.
+pub(crate) fn run_set_project(
+    target: &str,
+    project: Option<&str>,
+    json: bool,
+    server: ServerSpec,
+) -> ExitCode {
+    let project = project.map(str::trim);
+    let verb = if project.is_some() {
+        "project link"
+    } else {
+        "project unlink"
+    };
+    run_on_server(server, verb, json, async |_, conn| {
+        if org::supported(conn) && !org::session_project_supported(conn) {
+            return Refusal::new(
+                codes::SERVER_TOO_OLD,
+                format!("{verb}: the server predates project links (SESSION_SET_PROJECT)"),
+                "upgrade the server (`phux upgrade`)",
+                2,
+            )
+            .emit(json);
+        }
+        let inventory = match records(conn, verb).await {
+            Ok(inventory) => inventory,
+            Err(failure) => return failure.emit(json),
+        };
+        let record = match resolve(conn, &inventory, target, verb).await {
+            Ok(Target::Session(record)) => record,
+            Ok(Target::Resource(_)) => {
+                return Refusal::new(
+                    codes::WRONG_RESOURCE_KIND,
+                    format!("{verb}: {target} is a pane; a project link names a session"),
+                    "name the session (`phux ls` lists them)",
+                    1,
+                )
+                .emit(json);
+            }
+            Err(failure) => return failure.emit(json),
+        };
+        let key = key_text(&inventory, *record.key.as_bytes());
+        match org::set_session_project(conn, record.key, project).await {
+            Ok(committed) if json => {
+                let mut document = committed_document(verb, target, &key, &committed);
+                document["session"] = serde_json::json!(record.name);
+                document["project"] = serde_json::json!(project);
+                crate::output::json(&document)
+            }
+            Ok(_) => {
+                match project {
+                    Some(project) => {
+                        outln!("linked session {:?} to project {project:?}", record.name);
+                    }
+                    None => outln!("unlinked session {:?} from its project", record.name),
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => Refusal::org(verb, &err).emit(json),
+        }
     })
 }
 

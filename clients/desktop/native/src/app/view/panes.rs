@@ -130,7 +130,10 @@ fn empty_state(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEle
         Some(Status::Idle | Status::Connecting | Status::Negotiated) => muted(
             look,
             match desk.remote.as_deref() {
-                Some(host) => format!("Connecting to {host}…"),
+                Some(host) => format!(
+                    "Connecting to {}…",
+                    super::super::machine_name::display(host)
+                ),
                 None => format!("Connecting to {}…", desk.socket.display()),
             },
         )
