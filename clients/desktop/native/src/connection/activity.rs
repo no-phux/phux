@@ -298,14 +298,17 @@ impl Connection {
         self.agents.clear();
         self.project_tag = None;
         self.projects.clear();
+        self.links.clear();
         self.directories.clear();
     }
 
     fn rebuild_projects(&mut self) {
         self.projects.clear();
+        self.links.clear();
         self.directories.clear();
         if self.organization() {
-            let (projects, directories) = (&mut self.projects, &mut self.directories);
+            let (projects, links, directories) =
+                (&mut self.projects, &mut self.links, &mut self.directories);
             self.client.with_control(|control| {
                 for record in control.organization().sessions() {
                     let Some(id) = record.live.map(phux_protocol::ids::SessionId::get) else {
@@ -313,6 +316,11 @@ impl Connection {
                     };
                     if let Some(project) = session_attr(&record.attrs, "project") {
                         projects.insert(id, project.to_owned());
+                    }
+                    if let Some(link) =
+                        phux_client_runtime::project_identity::link_of_attrs(&record.attrs)
+                    {
+                        links.insert(id, link.to_owned());
                     }
                     if let Some(directory) = session_attr(&record.attrs, "directory") {
                         directories.insert(id, directory.to_owned());

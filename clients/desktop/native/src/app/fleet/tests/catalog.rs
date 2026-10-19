@@ -212,3 +212,54 @@ fn a_drain_that_changes_no_work_reports_nothing(cx: &mut TestAppContext) {
         assert_eq!(desk.fleet.revision, revision);
     });
 }
+
+#[gpui::test]
+fn a_project_link_is_refused_once_the_window_shows_another_machine(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            install(desk, connection(1, vec![session(7, "main")]));
+            desk.modal = super::super::desk::Modal::Project {
+                host: Some("mini".into()),
+                session: key(7),
+                name: "main".into(),
+                current: None,
+            };
+            desk.link_project(Some("phux".into()), window, cx);
+            assert_eq!(desk.modal, super::super::desk::Modal::None);
+            assert!(
+                desk.feed
+                    .peek()
+                    .is_some_and(|entry| entry.title == "Session moved")
+            );
+        })
+    });
+}
+
+#[gpui::test]
+fn project_names_that_cannot_be_stored_keep_the_dialog_open(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            install(desk, connection(1, vec![session(7, "main")]));
+            let modal = super::super::desk::Modal::Project {
+                host: None,
+                session: key(7),
+                name: "main".into(),
+                current: None,
+            };
+            desk.modal = modal.clone();
+            desk.link_project(Some("bad\nname".into()), window, cx);
+            assert_eq!(desk.modal, modal);
+            assert!(
+                desk.feed
+                    .items()
+                    .any(|entry| entry.title == "Could not link the project")
+            );
+        })
+    });
+}
