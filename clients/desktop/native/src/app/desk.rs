@@ -303,6 +303,8 @@ pub struct Link {
 
 enum Drag {
     Sidebar,
+    /// The Changes panel's left edge.
+    Changes,
     Split {
         id: String,
         axis: Axis,

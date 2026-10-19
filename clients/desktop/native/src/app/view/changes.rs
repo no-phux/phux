@@ -1,39 +1,81 @@
-//! The Changes panel: the focused pane's checkout as a card beside the panes.
-//! Its branch heads the card, changed files follow by area, a file's diff
-//! opens under its row, and the commit field closes the card.
+//! The Changes panel: the focused pane's checkout as a review surface beside
+//! the panes. The branch heads it; below, the changed files as a tree with the
+//! commit field under them, and beside them every file's diff in one scroll.
+//! Its left edge drags to resize it.
 //!
 //! The panel is a cached chrome slot: terminal frames do not rebuild it, only
-//! desk notifications (a new status, a diff, a keystroke in the field).
+//! desk notifications (a new status or patch, a keystroke in a field) and the
+//! diff view's own state.
+//!
+//! | Module | Owns |
+//! |---|---|
+//! | [`files`] | the file tree or list, by section, with stage controls |
+//! | [`diff`] | the toolbar, the diff, file header controls, comments |
+
+mod diff;
+mod files;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, Hsla, IntoElement, SharedString, Window, div, px};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, MouseButton, Window, div, px};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::{Selectable, Sizable};
 
-use crate::git::{Area, Diff, DiffLine, Entry, LineKind, Op, Status};
+use crate::git::{Area, Status};
 
-use super::super::changes::{Selected, View};
+use super::super::changes::{Layout, View};
 use super::super::color::from_hex;
 use super::super::desk::Desk;
 use super::super::skin::{Look, Surface, Surfaced};
-use super::super::ui::list::{Emphasis, row_label};
-use super::super::ui::{ghost_button, ghost_icon, muted, row, row_icon, section_label};
+use super::super::ui::{ghost_icon, muted};
 
-/// The card's width beside the panes.
-pub(crate) const WIDTH: f32 = 380.;
-/// Rows listed per section; a vast untracked tree is counted, not painted.
-const MAX_ROWS: usize = 500;
+/// The file column's width.
+const FILES_WIDTH: f32 = 252.;
+
+/// The panel's width this frame: as dragged, but never crowding out the panes.
+pub(crate) fn width(desk: &Desk, viewport: f32) -> f32 {
+    use super::super::changes::{MIN_WIDTH, PANES_MIN};
+    let sidebar = if super::navigator::wanted(desk) {
+        desk.prefs.sidebar_width as f32 * desk.look().skin.chrome.sidebar.clamp(0., 1.)
+    } else {
+        0.
+    };
+    let available = (viewport - sidebar).max(0.);
+    desk.changes
+        .width
+        .min(available - PANES_MIN)
+        .max(MIN_WIDTH.min(viewport * 0.5))
+}
 
 pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     desk.prepare_changes_input(window, cx);
     let look = desk.look();
     let gutter = look.skin.shape.gutter;
-    let mono = SharedString::from(desk.prefs.font_family.clone());
+    let panel = width(desk, window.viewport_size().width.as_f32());
     let body = match desk.changes.view.clone() {
-        View::Repo(status) if !status.entries.is_empty() => files(desk, &status, &mono, &look, cx),
+        View::Repo(status) if !status.entries.is_empty() => {
+            let diff_width = panel - FILES_WIDTH - gutter;
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .w(px(FILES_WIDTH))
+                        .flex_shrink_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .border_r_1()
+                        .border_color(look.divider)
+                        .child(files::list(desk, &status, &look, cx))
+                        .child(commit_box(desk, &look, cx)),
+                )
+                .child(diff::column(desk, diff_width, &look, cx))
+                .into_any_element()
+        }
         View::Repo(_) => placeholder("Nothing to commit", "The working tree is clean.", &look),
         View::Loading => placeholder("Reading changes…", "", &look),
         View::NotRepo(folder) => {
@@ -44,6 +86,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     };
     div()
         .size_full()
+        .relative()
         .pt(px(gutter))
         .pr(px(gutter))
         .pb(px(gutter))
@@ -59,50 +102,90 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
                 .border_1()
                 .border_color(look.border)
                 .child(header(desk, &look, cx))
-                .child(body)
-                .children(
-                    desk.changes
-                        .status()
-                        .is_some()
-                        .then(|| commit_box(desk, &look, cx)),
-                ),
+                .child(body),
         )
+        .child(resize(desk, &look, cx))
         .into_any_element()
 }
 
-/// Branch, upstream drift and the repository, with refresh and close.
+/// The left edge, dragged to resize the panel.
+fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let active = desk.dragging_changes();
+    let accent = from_hex(&look.chrome.theme.accent);
+    div()
+        .id("changes-resize")
+        .debug_selector(|| "changes-resize".into())
+        .absolute()
+        .left(px(-3.))
+        .top(px(0.))
+        .w(px(6.))
+        .h_full()
+        .cursor_col_resize()
+        .when(active, |handle| handle.bg(accent))
+        .hover(move |style| style.bg(accent.opacity(0.5)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, _, cx| desk.begin_changes_drag(cx)),
+        )
+}
+
+/// The branch, or where HEAD is detached.
+fn branch_title(status: Option<&Status>) -> String {
+    let Some(branch) = status.map(|status| &status.branch) else {
+        return "Changes".into();
+    };
+    branch.name.clone().unwrap_or_else(|| {
+        let commit = branch.commit.as_deref().unwrap_or("no commit");
+        format!("detached at {commit}")
+    })
+}
+
+/// The repository, then how the branch stands against its upstream.
+fn branch_detail(status: &Status) -> String {
+    let branch = &status.branch;
+    let drift = [
+        (branch.ahead > 0).then(|| format!("{} to push", branch.ahead)),
+        (branch.behind > 0).then(|| format!("{} to pull", branch.behind)),
+        (branch.upstream.is_none() && branch.name.is_some()).then(|| "no upstream".into()),
+    ];
+    std::iter::once(status.name())
+        .chain(drift.into_iter().flatten())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The layout button's icon and tooltip: what it shows, and what a click does.
+fn layout_control(layout: Layout) -> (IconName, &'static str) {
+    match layout {
+        Layout::Auto => (
+            IconName::Columns2,
+            "Layout: Automatic (click for Side by Side)",
+        ),
+        Layout::Split => (
+            IconName::Columns2,
+            "Layout: Side by Side (click for Unified)",
+        ),
+        Layout::Unified => (IconName::Rows2, "Layout: Unified (click for Automatic)"),
+    }
+}
+
+/// Branch, upstream drift and the repository, with view toggles, refresh and close.
 fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let status = desk.changes.status();
-    let branch = status.map_or_else(
-        || "Changes".to_owned(),
-        |status| {
-            status.branch.name.clone().unwrap_or_else(|| {
-                let commit = status.branch.commit.as_deref().unwrap_or("no commit");
-                format!("detached at {commit}")
-            })
-        },
-    );
-    let mut detail = Vec::new();
-    if let Some(status) = status {
-        detail.push(status.name());
-        let b = &status.branch;
-        if b.ahead > 0 {
-            detail.push(format!("{} to push", b.ahead));
-        }
-        if b.behind > 0 {
-            detail.push(format!("{} to pull", b.behind));
-        }
-        if b.upstream.is_none() && b.name.is_some() {
-            detail.push("no upstream".into());
-        }
-    }
+    let (layout_icon, layout_label) = layout_control(desk.changes.layout);
+    let (tree_icon, tree_label) = if desk.changes.tree {
+        (IconName::List, "Show as List")
+    } else {
+        (IconName::ListTree, "Show as Tree")
+    };
+    let repo = status.is_some();
     div()
         .flex()
         .flex_shrink_0()
         .items_center()
-        .gap(px(8.))
+        .gap(px(6.))
         .px(px(12.))
-        .py(px(10.))
+        .py(px(8.))
         .border_b_1()
         .border_color(look.divider)
         .child(
@@ -121,12 +204,29 @@ fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                         .truncate()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(branch),
+                        .child(branch_title(status)),
                 )
-                .when(!detail.is_empty(), |column| {
-                    column.child(muted(look, detail.join(" · ")).truncate())
-                }),
+                .children(status.map(|status| muted(look, branch_detail(status)).truncate())),
         )
+        .when(repo, |header| {
+            header
+                .child(
+                    ghost_icon("changes-tree", tree_icon, tree_label).on_click(cx.listener(
+                        |desk, _, _, cx| {
+                            desk.changes.tree = !desk.changes.tree;
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    ghost_icon("changes-layout", layout_icon, layout_label)
+                        .selected(desk.changes.layout != Layout::Auto)
+                        .on_click(cx.listener(|desk, _, _, cx| {
+                            desk.changes.layout = desk.changes.layout.next();
+                            cx.notify();
+                        })),
+                )
+        })
         .child(
             ghost_icon("changes-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
                 |desk, _, _, cx| {
@@ -160,289 +260,6 @@ fn placeholder(title: &str, detail: &str, look: &Look) -> AnyElement {
         .when(!detail.is_empty(), |column| {
             column.child(muted(look, detail.to_owned()).text_center())
         })
-        .into_any_element()
-}
-
-/// The scrolling file list: conflicts, staged, then working-tree changes.
-fn files(
-    desk: &Desk,
-    status: &Status,
-    mono: &SharedString,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let sections = [
-        ("Conflicts", vec![Area::Conflicted], None),
-        (
-            "Staged",
-            vec![Area::Staged],
-            Some(("Unstage All", Op::UnstageAll)),
-        ),
-        (
-            "Changes",
-            vec![Area::Unstaged, Area::Untracked],
-            Some(("Stage All", Op::StageAll)),
-        ),
-    ];
-    let mut list = div().flex().flex_col().px(px(6.)).py(px(6.)).gap(px(2.));
-    for (title, areas, bulk) in sections {
-        let entries: Vec<&Entry> = areas
-            .iter()
-            .flat_map(|area| status.in_area(*area))
-            .collect();
-        if entries.is_empty() {
-            continue;
-        }
-        list = list.child(section(
-            title,
-            entries.len(),
-            bulk,
-            desk.changes.busy,
-            look,
-            cx,
-        ));
-        let hidden = entries.len().saturating_sub(MAX_ROWS);
-        for entry in entries.into_iter().take(MAX_ROWS) {
-            let selected = desk
-                .changes
-                .selected
-                .as_ref()
-                .filter(|selected| &selected.entry == entry);
-            list = list.child(file_row(
-                entry,
-                selected.is_some(),
-                desk.changes.busy,
-                look,
-                cx,
-            ));
-            if let Some(selected) = selected {
-                list = list.child(diff_view(selected, mono, look));
-            }
-        }
-        if hidden > 0 {
-            list = list.child(muted(look, format!("{hidden} more not shown")).px(px(8.)));
-        }
-    }
-    div()
-        .id("changes-files")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .track_scroll(&desk.changes.scroll)
-        .child(list)
-        .into_any_element()
-}
-
-fn section(
-    title: &str,
-    count: usize,
-    bulk: Option<(&'static str, Op)>,
-    busy: bool,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .pt(px(6.))
-        .pr(px(2.))
-        .child(
-            div()
-                .flex_1()
-                .child(section_label(&format!("{title} · {count}"), look)),
-        )
-        .children(bulk.map(|(label, op)| {
-            ghost_button(SharedString::from(format!("changes-bulk-{title}")), label)
-                .xsmall()
-                .disabled(busy)
-                .on_click(cx.listener(move |desk, _, _, cx| desk.change_index(op.clone(), cx)))
-        }))
-}
-
-/// A file: its status letter, name and folder, and a stage or unstage button
-/// that shows on hover.
-fn file_row(
-    entry: &Entry,
-    selected: bool,
-    busy: bool,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
-    let (name, folder) = entry.split_name();
-    let id = SharedString::from(format!("change-{:?}-{}", entry.area, entry.path));
-    let group = SharedString::from(format!("change-group-{:?}-{}", entry.area, entry.path));
-    let (icon, label) = match entry.area {
-        Area::Staged => (IconName::Minus, "Unstage"),
-        Area::Conflicted => (IconName::Check, "Mark Resolved"),
-        Area::Unstaged | Area::Untracked => (IconName::Plus, "Stage"),
-    };
-    let tooltip = match &entry.from {
-        Some(from) => format!("{from} → {}", entry.path),
-        None => entry.path.clone(),
-    };
-    let open = entry.clone();
-    let toggle = entry.clone();
-    row(id.clone(), look)
-        .debug_selector({
-            let id = id.clone();
-            move || id.to_string()
-        })
-        .group(group.clone())
-        .when(selected, |row| row.bg(look.active))
-        .tooltip(move |window, cx| {
-            gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-        })
-        .on_click(cx.listener(move |desk, _, _, cx| desk.select_change(open.clone(), cx)))
-        .child(row_icon(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(code_color(entry, look))
-                .child(code_letter(entry).to_string()),
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_baseline()
-                .gap(px(6.))
-                .child(
-                    row_label(name.to_owned(), Emphasis::Normal, look)
-                        .flex_none()
-                        .max_w_full(),
-                )
-                .when(!folder.is_empty(), |line| {
-                    line.child(muted(look, folder.to_owned()).flex_1().min_w_0().truncate())
-                }),
-        )
-        .child(
-            div()
-                .invisible()
-                .group_hover(group, |style| style.visible())
-                .child(
-                    ghost_icon(SharedString::from(format!("{id}-stage")), icon, label)
-                        .disabled(busy)
-                        .on_click(cx.listener(move |desk, _, _, cx| {
-                            cx.stop_propagation();
-                            desk.stage_change(&toggle, cx);
-                        })),
-                ),
-        )
-}
-
-/// The letter a file row leads with. Untracked files read as added.
-fn code_letter(entry: &Entry) -> char {
-    match entry.code {
-        '?' => 'A',
-        code => code,
-    }
-}
-
-fn code_color(entry: &Entry, look: &Look) -> Hsla {
-    let theme = &look.chrome.theme;
-    from_hex(match code_letter(entry) {
-        'A' | 'C' => &theme.success,
-        'D' | 'U' => &theme.danger,
-        'R' | 'T' => &theme.accent,
-        _ => &theme.warning,
-    })
-}
-
-/// The open file's hunks with line numbers, added and removed lines washed.
-/// File headers are left out: the row above already names the file.
-fn diff_view(selected: &Selected, mono: &SharedString, look: &Look) -> AnyElement {
-    let container = div()
-        .mx(px(4.))
-        .mb(px(4.))
-        .py(px(4.))
-        .rounded(px(look.skin.shape.kit_radius))
-        .bg(look.hover)
-        .font_family(mono.clone())
-        .text_xs();
-    let diff = match &selected.diff {
-        None => {
-            return container
-                .px(px(8.))
-                .child(muted(look, "Loading diff…"))
-                .into_any_element();
-        }
-        Some(Err(error)) => {
-            return container
-                .px(px(8.))
-                .child(muted(look, error.clone()))
-                .into_any_element();
-        }
-        Some(Ok(diff)) => diff,
-    };
-    container
-        .id(SharedString::from(format!("diff-{}", selected.entry.path)))
-        .overflow_x_scroll()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .min_w_full()
-                .children(summary(diff, look))
-                .children(
-                    diff.lines
-                        .iter()
-                        .filter(|line| line.kind != LineKind::Meta)
-                        .map(|line| diff_line(line, look)),
-                ),
-        )
-        .into_any_element()
-}
-
-fn summary(diff: &Diff, look: &Look) -> Option<AnyElement> {
-    if diff.added + diff.removed == 0 {
-        return None;
-    }
-    let theme = &look.chrome.theme;
-    Some(
-        div()
-            .flex()
-            .gap(px(8.))
-            .px(px(8.))
-            .pb(px(2.))
-            .child(
-                div()
-                    .text_color(from_hex(&theme.success))
-                    .child(format!("+{}", diff.added)),
-            )
-            .child(
-                div()
-                    .text_color(from_hex(&theme.danger))
-                    .child(format!("−{}", diff.removed)),
-            )
-            .into_any_element(),
-    )
-}
-
-fn diff_line(line: &DiffLine, look: &Look) -> AnyElement {
-    let theme = &look.chrome.theme;
-    let (wash, ink) = match line.kind {
-        LineKind::Added => (Some(from_hex(&theme.success).opacity(0.16)), look.ink),
-        LineKind::Removed => (Some(from_hex(&theme.danger).opacity(0.16)), look.ink),
-        LineKind::Hunk => (None, from_hex(&theme.accent)),
-        LineKind::Note | LineKind::Meta => (None, from_hex(&look.chrome.muted)),
-        LineKind::Context => (None, from_hex(&look.chrome.subtext)),
-    };
-    let number = line.number.map(|n| n.to_string()).unwrap_or_default();
-    div()
-        .flex()
-        .whitespace_nowrap()
-        .when_some(wash, |line, wash| line.bg(wash))
-        .child(
-            div()
-                .w(px(36.))
-                .flex_shrink_0()
-                .pr(px(6.))
-                .text_right()
-                .text_color(from_hex(&look.chrome.faint))
-                .child(number),
-        )
-        .child(div().pr(px(8.)).text_color(ink).child(line.text.clone()))
         .into_any_element()
 }
 

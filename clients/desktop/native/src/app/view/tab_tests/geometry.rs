@@ -88,6 +88,8 @@ fn side_panels_never_squeeze_bottom_tab_navigation_away(cx: &mut TestAppContext)
     run(&desk, "tabs-bottom", cx);
     desk.update(cx, |desk, cx| {
         desk.changes.open = true;
+        // Dragged to its narrowest, so the bottom strip still fits at 1000.
+        desk.changes.width = crate::app::changes::MIN_WIDTH;
         cx.notify();
     });
     for (width, placement) in [(640., TabPosition::Top), (1000., TabPosition::Bottom)] {

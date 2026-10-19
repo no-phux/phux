@@ -177,7 +177,7 @@ impl Desk {
     }
 
     /// Queue a bracketed paste. False, with a notification, when the terminal is not ready.
-    pub(super) fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
+    pub(crate) fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
         if self.refuse_native_input(terminal) {
             return false;
         }

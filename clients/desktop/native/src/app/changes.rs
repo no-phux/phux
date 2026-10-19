@@ -1,28 +1,51 @@
-//! The Changes panel's state: which checkout it follows, its last status, the
-//! file whose diff is open, and the commit message.
+//! The Changes panel's state: which checkout it follows, its last status, both
+//! comparisons' patches, the diff view over one of them, and the review.
 //!
 //! The panel follows the focused pane's working directory, so an agent's
 //! edits show beside the pane it runs in. Paths resolve only on this Mac: a
 //! remote window or a satellite terminal shows why instead of reading some
-//! other local folder. Every `git` call runs off the UI thread; a result for a
-//! folder the panel has since left is dropped. While open, the panel re-reads
-//! the status on a short poll and repaints only when something changed.
+//! other local folder. Every `git` call runs off the UI thread, parsing
+//! included; a result for a folder the panel has since left is dropped. While
+//! open, the panel re-reads on a short poll and repaints only when something
+//! changed.
+//!
+//! | Module | Owns |
+//! |---|---|
+//! | [`tree`] | the file tree's rows |
+//! | [`review`] | parsed patches, viewed marks, comments and the review prompt |
+//! | [`navigate`] | which comparison and file the diff shows, viewed marks, folds |
+//! | [`actions`] | staging, line staging, conflict resolution, commit, comments |
 
+mod actions;
+mod navigate;
+pub(crate) mod review;
+pub(crate) mod tree;
+
+#[cfg(test)]
+mod pipeline_tests;
+
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::prelude::*;
-use gpui::{Context, Entity, Focusable, ScrollHandle, Subscription, Task, Window};
-use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui::{Context, Entity, Focusable, Subscription, Task, Window};
+use gpui_kit::component::diff::{DiffMode, DiffState};
+use gpui_kit::component::input::TextareaState;
+use phux_protocol::ids::ResourceId;
 
 use crate::connection::path as paths;
-use crate::git::{self, Area, Diff, Entry, Op, Status};
+use crate::git::{self, Area, Source, Status};
 
 use super::desk::Desk;
-use super::notifications::Kind;
+use review::{Comment, Draft, Loaded};
 
-/// How often an open panel re-reads the status.
+/// How often an open panel re-reads the checkout.
 const POLL: Duration = Duration::from_secs(3);
+/// The panel's starting width, and its bounds while dragged.
+pub(crate) const WIDTH: f32 = 760.;
+pub(crate) const MIN_WIDTH: f32 = 480.;
+/// Room the panes keep while the panel is dragged wider.
+pub(crate) const PANES_MIN: f32 = 320.;
 
 /// What the panel can show for the focused pane.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,41 +62,144 @@ pub(crate) enum View {
     Failed(String),
 }
 
-/// The file whose diff is open under its row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Selected {
-    pub entry: Entry,
-    /// `None` while it loads.
-    pub diff: Option<Result<Diff, String>>,
+/// How the diff lays out the two sides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// Side by side when the diff is wide enough, else one column.
+    #[default]
+    Auto,
+    Split,
+    Unified,
 }
 
-#[derive(Default)]
+impl Layout {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Split,
+            Self::Split => Self::Unified,
+            Self::Unified => Self::Auto,
+        }
+    }
+
+    /// The mode for a diff `width` points wide.
+    pub(crate) fn mode(self, width: f32) -> DiffMode {
+        match self {
+            Self::Split => DiffMode::Split,
+            Self::Unified => DiffMode::Unified,
+            Self::Auto if width >= SPLIT_WIDTH => DiffMode::Split,
+            Self::Auto => DiffMode::Unified,
+        }
+    }
+}
+
+/// The narrowest diff an automatic layout splits.
+const SPLIT_WIDTH: f32 = 820.;
+
+/// Both comparisons of one read, parsed.
+#[derive(Clone, Default)]
+pub(crate) struct Comparisons {
+    changes: Loaded,
+    staged: Loaded,
+}
+
+impl Comparisons {
+    pub(crate) fn get(&self, source: Source) -> &Loaded {
+        match source {
+            Source::Changes => &self.changes,
+            Source::Staged => &self.staged,
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        self.changes.same(&other.changes) && self.staged.same(&other.staged)
+    }
+}
+
 pub(crate) struct Changes {
     pub open: bool,
     pub view: View,
     /// The folder the view was read for.
     folder: Option<PathBuf>,
+    /// The checkout that owns review notes, independent of temporary loading states.
+    review_root: Option<PathBuf>,
+    /// The terminal the folder came from; a review is sent there.
+    pub terminal: Option<ResourceId>,
     /// Bumped per read; a result carrying an older number is stale.
     generation: u64,
     reading: bool,
-    pub selected: Option<Selected>,
+    /// The comparison the diff shows.
+    pub source: Source,
+    comparisons: Comparisons,
+    pub diff: Option<(Entity<DiffState>, Subscription)>,
+    /// The file last revealed, kept in view across reloads.
+    pub focus: Option<String>,
+    /// Viewed files, per comparison, and the fingerprint each was viewed at.
+    viewed: HashMap<(Source, String), u64>,
+    /// Folded folders, by [`tree::Row::Folder`] key.
+    pub collapsed: HashSet<String>,
+    /// Files under folders, or one flat list.
+    pub tree: bool,
+    pub layout: Layout,
+    pub width: f32,
+    pub comments: Vec<Comment>,
+    pub draft: Option<Draft>,
+    next_comment: u64,
     /// An operation (stage, unstage, commit) is running.
     pub busy: bool,
     /// A commit landed; the field empties when next prepared.
     pending_clear: bool,
     pub message: Option<(Entity<TextareaState>, Subscription)>,
-    pub scroll: ScrollHandle,
     _poll: Option<Task<()>>,
 }
 
+impl Default for Changes {
+    fn default() -> Self {
+        Self {
+            open: false,
+            view: View::default(),
+            folder: None,
+            review_root: None,
+            terminal: None,
+            generation: 0,
+            reading: false,
+            source: Source::Changes,
+            comparisons: Comparisons::default(),
+            diff: None,
+            focus: None,
+            viewed: HashMap::new(),
+            collapsed: HashSet::new(),
+            tree: true,
+            layout: Layout::default(),
+            width: WIDTH,
+            comments: Vec::new(),
+            draft: None,
+            next_comment: 0,
+            busy: false,
+            pending_clear: false,
+            message: None,
+            _poll: None,
+        }
+    }
+}
+
 impl Changes {
-    /// Whether the commit field holds the keyboard, so the terminal must not take it.
+    /// Whether a panel field holds the keyboard, so the terminal must not take it.
     pub(crate) fn has_keys(&self, window: &Window, cx: &gpui::App) -> bool {
+        let focused =
+            |input: &Entity<TextareaState>| input.read(cx).focus_handle(cx).is_focused(window);
         self.open
-            && self
+            && (self
                 .message
                 .as_ref()
-                .is_some_and(|(input, _)| input.read(cx).focus_handle(cx).is_focused(window))
+                .is_some_and(|(input, _)| focused(input))
+                || self
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| focused(&draft.input))
+                || self
+                    .diff
+                    .as_ref()
+                    .is_some_and(|(state, _)| state.focus_handle(cx).contains_focused(window, cx)))
     }
 
     pub(crate) fn status(&self) -> Option<&Status> {
@@ -81,6 +207,57 @@ impl Changes {
             View::Repo(status) => Some(status),
             _ => None,
         }
+    }
+
+    pub(crate) fn loaded(&self, source: Source) -> &Loaded {
+        self.comparisons.get(source)
+    }
+
+    /// Whether `path` is marked viewed in the shown comparison and unchanged since.
+    pub(crate) fn is_viewed(&self, path: &str) -> bool {
+        let mark = self.viewed.get(&(self.source, path.to_owned()));
+        mark.is_some() && mark.copied() == self.loaded(self.source).print(path)
+    }
+
+    /// Drop the shown comparison's marks whose file changed or left, and
+    /// return the paths still listed: they must unfold.
+    pub(crate) fn lapse_viewed(&mut self) -> Vec<String> {
+        let (source, loaded) = (self.source, self.comparisons.get(self.source));
+        let mut unfold = Vec::new();
+        self.viewed.retain(|(side, path), print| {
+            let lapsed = *side == source && loaded.print(path) != Some(*print);
+            if lapsed && loaded.sections.contains_key(path) {
+                unfold.push(path.clone());
+            }
+            !lapsed
+        });
+        unfold
+    }
+
+    /// Mark `path` viewed at its current fingerprint, or clear the mark.
+    pub(crate) fn set_viewed(&mut self, path: &str, viewed: bool) {
+        let key = (self.source, path.to_owned());
+        match self.loaded(self.source).print(path).filter(|_| viewed) {
+            Some(print) => self.viewed.insert(key, print),
+            None => self.viewed.remove(&key),
+        };
+    }
+
+    /// Viewed files of the shown comparison, and how many it has.
+    pub(crate) fn progress(&self) -> (usize, usize) {
+        let files = &self.loaded(self.source).files;
+        let viewed = files
+            .iter()
+            .filter(|file| self.is_viewed(file.path()))
+            .count();
+        (viewed, files.len())
+    }
+
+    /// Comments on the shown comparison.
+    pub(crate) fn shown_comments(&self) -> impl Iterator<Item = &Comment> {
+        self.comments
+            .iter()
+            .filter(move |comment| comment.source == self.source)
     }
 
     pub(crate) fn message_text(&self, cx: &gpui::App) -> String {
@@ -108,7 +285,6 @@ impl Desk {
             self.arm_changes_poll(cx);
         } else {
             self.changes._poll = None;
-            self.changes.selected = None;
         }
         cx.notify();
     }
@@ -133,10 +309,16 @@ impl Desk {
     }
 
     /// Re-read when the focused pane now points at another folder (focus
-    /// moved, or its shell changed directory).
+    /// moved, or its shell changed directory). Another pane in the same
+    /// checkout becomes where a review is sent.
     pub(crate) fn follow_changes(&mut self, cx: &mut Context<Self>) {
-        if self.changes.open && self.changes_folder().ok() != self.changes.folder {
+        if !self.changes.open {
+            return;
+        }
+        if self.changes_folder().ok() != self.changes.folder {
             self.refresh_changes(true, cx);
+        } else if let Some(terminal) = self.focused_terminal() {
+            self.changes.terminal = Some(terminal);
         }
     }
 
@@ -160,203 +342,146 @@ impl Desk {
         Ok(expand_home(&cwd))
     }
 
-    /// Re-read the status for the focused pane's folder. `force` reads even
-    /// while another read is in flight, such as after the focus moved.
+    /// Re-read the focused pane's checkout. `force` reads even while another
+    /// read is in flight, such as after the focus moved.
     pub(crate) fn refresh_changes(&mut self, force: bool, cx: &mut Context<Self>) {
         if !self.changes.open || (self.changes.reading && !force) {
             return;
         }
-        let folder = match self.changes_folder() {
-            Ok(folder) => folder,
+        match self.changes_folder() {
+            Ok(folder) => self.read_changes(folder, cx),
             Err(reason) => {
+                self.changes.generation += 1;
+                self.changes.reading = false;
+                self.changes.terminal = None;
                 self.changes.folder = None;
-                self.changes.selected = None;
-                self.set_changes_view(View::Unavailable(reason), cx);
-                return;
+                self.set_changes_view(View::Unavailable(reason), Comparisons::default(), cx);
             }
-        };
+        }
+    }
+
+    /// Read `folder` off the UI thread. A later read makes this one's result stale.
+    fn read_changes(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.changes.terminal = self.focused_terminal();
         if self.changes.folder.as_ref() != Some(&folder) {
-            self.changes.selected = None;
             self.changes.folder = Some(folder.clone());
-            self.set_changes_view(View::Loading, cx);
+            self.changes.focus = None;
+            self.set_changes_view(View::Loading, Comparisons::default(), cx);
         }
         self.changes.generation += 1;
         self.changes.reading = true;
         let generation = self.changes.generation;
         cx.spawn(async move |this, cx| {
             let read = folder.clone();
-            let result = smol::unblock(move || git::read_status(&read)).await;
+            let result = smol::unblock(move || read_checkout(&read)).await;
             let _ = this.update(cx, |desk, cx| {
                 if desk.changes.generation != generation {
                     return;
                 }
                 desk.changes.reading = false;
-                let view = match result {
-                    Ok(Some(status)) => View::Repo(status),
-                    Ok(None) => View::NotRepo(folder),
-                    Err(error) => View::Failed(error),
+                let (view, comparisons) = match result {
+                    Ok(Some((status, comparisons))) => (View::Repo(status), comparisons),
+                    Ok(None) => (View::NotRepo(folder), Comparisons::default()),
+                    Err(error) => (View::Failed(error), Comparisons::default()),
                 };
-                desk.set_changes_view(view, cx);
+                desk.set_changes_view(view, comparisons, cx);
             });
         })
         .detach();
     }
 
-    /// Repaint only for a different view. A selected file that left the list
-    /// closes; one still listed reloads its diff, whose text can change while
-    /// its status stays the same.
-    fn set_changes_view(&mut self, view: View, cx: &mut Context<Self>) {
+    /// Show `view` and its comparisons. The diff reloads only when the shown
+    /// comparison changed, since a reload resets its scroll and folds. An
+    /// emptied comparison gives way to the other.
+    fn set_changes_view(&mut self, view: View, comparisons: Comparisons, cx: &mut Context<Self>) {
+        if let View::Repo(status) = &view {
+            self.changes.bind_review(&status.root);
+        }
         if self.changes.view != view {
             self.changes.view = view;
             cx.notify();
         }
-        let Some(selected) = self.changes.selected.clone() else {
-            return;
-        };
-        let listed = self
-            .changes
-            .status()
-            .is_some_and(|status| status.entries.contains(&selected.entry));
-        if listed {
-            self.load_diff(selected.entry, cx);
-        } else {
-            self.changes.selected = None;
+        let old = std::mem::replace(&mut self.changes.comparisons, comparisons);
+        let was = self.changes.source;
+        let fresh = &self.changes.comparisons;
+        if fresh.get(was).files.is_empty() && !fresh.get(was.other()).files.is_empty() {
+            self.changes.source = was.other();
+        }
+        let shown = self.changes.source;
+        if shown != was
+            || !old.get(shown).same(self.changes.loaded(shown))
+            || self.changes.diff.is_none()
+        {
+            self.show_source(cx);
+        } else if !old.same(&self.changes.comparisons) {
             cx.notify();
         }
     }
+}
 
-    /// Open `entry`'s diff, or close it when it is already open.
-    pub(crate) fn select_change(&mut self, entry: Entry, cx: &mut Context<Self>) {
-        if self
-            .changes
-            .selected
-            .as_ref()
-            .is_some_and(|selected| selected.entry == entry)
-        {
-            self.changes.selected = None;
-            cx.notify();
+impl Changes {
+    /// Never carry a review to another checkout's terminal or reuse its viewed marks.
+    fn bind_review(&mut self, root: &std::path::Path) {
+        if self.review_root.as_deref() == Some(root) {
             return;
         }
-        self.changes.selected = Some(Selected {
-            entry: entry.clone(),
-            diff: None,
-        });
-        self.load_diff(entry, cx);
-        cx.notify();
+        self.comments.clear();
+        self.draft = None;
+        self.viewed.clear();
+        self.review_root = Some(root.to_owned());
     }
+}
 
-    fn load_diff(&mut self, entry: Entry, cx: &mut Context<Self>) {
-        let Some(root) = self.changes.status().map(|status| status.root.clone()) else {
-            return;
+#[cfg(test)]
+impl Desk {
+    /// Show `status` with these patches, as a read of a checkout would.
+    pub(crate) fn show_checkout(
+        &mut self,
+        status: Status,
+        changes: &str,
+        staged: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let parse = |text: &str| {
+            let patch = git::PatchText {
+                text: text.to_owned(),
+                reduced: false,
+            };
+            Loaded::parse(patch, Vec::new())
         };
-        cx.spawn(async move |this, cx| {
-            let wanted = entry.clone();
-            let diff = smol::unblock(move || git::read_diff(&root, &wanted)).await;
-            let _ = this.update(cx, |desk, cx| {
-                if let Some(selected) = desk
-                    .changes
-                    .selected
-                    .as_mut()
-                    .filter(|selected| selected.entry == entry)
-                    && selected.diff.as_ref() != Some(&diff)
-                {
-                    selected.diff = Some(diff);
-                    cx.notify();
-                }
-            });
+        let comparisons = Comparisons {
+            changes: parse(changes),
+            staged: parse(staged),
+        };
+        self.set_changes_view(View::Repo(status), comparisons, cx);
+    }
+}
+
+/// Status, then both comparisons, then the text of each conflicted file.
+fn read_checkout(folder: &std::path::Path) -> Result<Option<(Status, Comparisons)>, String> {
+    let Some(status) = git::read_status(folder)? else {
+        return Ok(None);
+    };
+    let root = status.root.clone();
+    let untracked: Vec<String> = status
+        .in_area(Area::Untracked)
+        .map(|entry| entry.path.clone())
+        .collect();
+    let conflicts: Vec<(String, String)> = status
+        .in_area(Area::Conflicted)
+        .filter_map(|entry| {
+            git::read_file(&root, &entry.path)
+                .ok()
+                .map(|text| (entry.path.clone(), text))
         })
-        .detach();
-    }
-
-    /// Run `op` against the shown checkout, then re-read it. A commit that
-    /// lands clears the message; a refusal (a hook, nothing staged) posts
-    /// git's own words and keeps the message.
-    pub(crate) fn change_index(&mut self, op: Op, cx: &mut Context<Self>) {
-        if self.changes.busy {
-            return;
-        }
-        let Some(root) = self.changes.status().map(|status| status.root.clone()) else {
-            return;
-        };
-        self.changes.busy = true;
-        cx.notify();
-        let committing = matches!(op, Op::Commit(_));
-        cx.spawn(async move |this, cx| {
-            let result = smol::unblock(move || git::apply(&root, &op)).await;
-            let _ = this.update(cx, |desk, cx| {
-                desk.changes.busy = false;
-                match result {
-                    Ok(()) if committing => {
-                        desk.changes.pending_clear = true;
-                        desk.post(Kind::Info, "Committed", None);
-                    }
-                    Ok(()) => {}
-                    Err(error) => {
-                        let title = if committing {
-                            "Commit refused"
-                        } else {
-                            "Git refused the change"
-                        };
-                        desk.post(Kind::Error, title, Some(error));
-                    }
-                }
-                desk.refresh_changes(true, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn stage_change(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        let op = match entry.area {
-            Area::Staged => Op::Unstage(
-                std::iter::once(entry.path.clone())
-                    .chain(entry.from.clone())
-                    .collect(),
-            ),
-            Area::Unstaged | Area::Untracked | Area::Conflicted => {
-                Op::Stage(vec![entry.path.clone()])
-            }
-        };
-        self.change_index(op, cx);
-    }
-
-    pub(crate) fn commit_changes(&mut self, cx: &mut Context<Self>) {
-        if !self.changes.can_commit(cx) {
-            return;
-        }
-        let message = self.changes.message_text(cx).trim().to_owned();
-        self.change_index(Op::Commit(message), cx);
-    }
-
-    /// Build the commit field once a window is at hand, and empty it after a
-    /// commit landed.
-    pub(crate) fn prepare_changes_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.changes.message.is_none() {
-            let input = cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .placeholder("Commit message")
-                    .auto_grow(1, 6)
-                    .submit_on_enter(true)
-            });
-            // Enter commits and Shift+Enter adds a line, as in the conversation composer.
-            let subscription = cx.subscribe_in(
-                &input,
-                window,
-                |desk, _, event: &InputEvent, _, cx| match event {
-                    InputEvent::PressEnter { shift: false, .. } => desk.commit_changes(cx),
-                    InputEvent::Change => cx.notify(),
-                    _ => {}
-                },
-            );
-            self.changes.message = Some((input, subscription));
-        }
-        if std::mem::take(&mut self.changes.pending_clear)
-            && let Some((input, _)) = self.changes.message.as_ref()
-        {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
+        .collect();
+    let changes = git::read_patch(&root, Source::Changes, &untracked, review::FETCH_CONTEXT)?;
+    let staged = git::read_patch(&root, Source::Staged, &[], review::FETCH_CONTEXT)?;
+    let comparisons = Comparisons {
+        changes: Loaded::parse(changes, conflicts),
+        staged: Loaded::parse(staged, Vec::new()),
+    };
+    Ok(Some((status, comparisons)))
 }
 
 /// `~/x` as an absolute path, for a shell that reported its folder that way.
@@ -374,11 +499,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn review_notes_belong_to_one_checkout() {
+        use gpui_kit::component::diff::{DiffLineRange, DiffSide};
+        let mut changes = Changes::default();
+        changes.bind_review(std::path::Path::new("/first"));
+        changes.comments.push(Comment {
+            id: 1,
+            source: Source::Changes,
+            range: DiffLineRange::new("f.rs", DiffSide::Modified, 1, 1),
+            body: "Review only the first checkout".into(),
+        });
+        changes.bind_review(std::path::Path::new("/first"));
+        assert_eq!(changes.comments.len(), 1);
+        changes.bind_review(std::path::Path::new("/second"));
+        assert!(changes.comments.is_empty());
+    }
+
+    #[test]
     fn a_home_relative_folder_expands_and_others_stay() {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         assert_eq!(expand_home("~"), home);
         assert_eq!(expand_home("~/src/phux"), home.join("src/phux"));
         assert_eq!(expand_home("/tmp/x"), PathBuf::from("/tmp/x"));
         assert_eq!(expand_home("~other/x"), PathBuf::from("~other/x"));
+    }
+
+    #[test]
+    fn auto_layout_splits_only_a_wide_diff() {
+        assert_eq!(Layout::Auto.mode(SPLIT_WIDTH - 1.), DiffMode::Unified);
+        assert_eq!(Layout::Auto.mode(SPLIT_WIDTH), DiffMode::Split);
+        assert_eq!(Layout::Unified.mode(2000.), DiffMode::Unified);
+        assert_eq!(Layout::Split.mode(10.), DiffMode::Split);
+        assert_eq!(Layout::Unified.next(), Layout::Auto);
     }
 }

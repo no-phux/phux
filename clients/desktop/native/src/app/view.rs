@@ -52,7 +52,7 @@ use super::overlays;
 use super::skin::Look;
 use super::ui::shadow;
 
-pub(super) use changes::WIDTH as CHANGES_WIDTH;
+pub(super) use changes::width as changes_width;
 pub(super) use status::{notification_edge, notification_text};
 pub(super) use tabs::MIN_STRIP_WIDTH;
 
@@ -280,11 +280,12 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                 })
                 .child(panes::main_column(desk, &look, window, cx))
                 .when(desk.changes.open && !quick(desk), |row| {
+                    let width = changes::width(desk, window.viewport_size().width.as_f32());
                     row.child(chrome_slot(
                         &mut desk.chrome.changes,
                         changes::build,
                         StyleRefinement::default()
-                            .w(px(changes::WIDTH))
+                            .w(px(width))
                             .flex_shrink_0()
                             .h_full(),
                         cx,
