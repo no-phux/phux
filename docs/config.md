@@ -148,6 +148,19 @@ phux project open       # open the project's session, or attach if it exists
 
 Edit the file and you have to `phux project trust` it again.
 
+Sessions created inside a git checkout group by repository in the sidebar,
+the session picker, and `phux ls`, across machines. To put any other
+session in a project, link it by name; the link is stored on the server
+that owns the session, so every client sees it:
+
+```sh
+phux project link notes phux     # group session "notes" with the phux sessions
+phux project unlink notes        # back to its repository, or ungrouped
+```
+
+A link outranks the repository, and a link named like a repository joins
+that repository's group.
+
 ## Layers
 
 A config file can declare `extends = ["path/to/other.toml"]` to build on

@@ -215,7 +215,10 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Kill { remote, .. }
         | Command::Rename { remote, .. }
         | Command::Detach { remote, .. }
-        | Command::Upload { remote, .. } => remote.remote.as_deref(),
+        | Command::Upload { remote, .. }
+        | Command::Project {
+            action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
+        } => remote.remote.as_deref(),
         _ => None,
     }
 }
@@ -400,7 +403,10 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             Some(PairAction::Revoke { .. }) => Some("pair revoke"),
         },
         Command::Project { action } => match action {
-            ProjectAction::Open { .. } | ProjectAction::List { .. } => None,
+            ProjectAction::Open { .. }
+            | ProjectAction::List { .. }
+            | ProjectAction::Link { .. }
+            | ProjectAction::Unlink { .. } => None,
             ProjectAction::Init { .. } => Some("project init"),
             ProjectAction::Trust { .. } => Some("project trust"),
             ProjectAction::Untrust { .. } => Some("project untrust"),
@@ -2972,6 +2978,42 @@ pub(crate) enum ProjectAction {
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
         json: bool,
+    },
+
+    /// Link a session into a named project, on any machine.
+    ///
+    /// The label is stored on the server that owns SESSION, so every client
+    /// (desktop, TUI, `phux ls`) sees it, and groups sessions by project
+    /// name across hosts: an explicit link outranks the git repository a
+    /// session was created in, and a link named like a repository joins
+    /// that repository's group. Relinking replaces the label; the last
+    /// writer wins.
+    Link {
+        /// Session name or key (`^ab23cd`).
+        session: String,
+
+        /// Project name (at most 256 bytes, no control characters).
+        name: String,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+
+        #[usage(flatten)]
+        remote: RemoteOpt,
+    },
+
+    /// Clear a session's project link; it groups by its repository again.
+    Unlink {
+        /// Session name or key (`^ab23cd`).
+        session: String,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+
+        #[usage(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Map a git repository and its checked-out worktrees.
