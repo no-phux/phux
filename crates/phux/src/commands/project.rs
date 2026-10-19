@@ -43,6 +43,33 @@ pub(crate) fn run_project(action: &ProjectAction, socket: Option<PathBuf>) -> Ex
         ProjectAction::Untrust { target } => run_untrust(target.as_deref()),
         ProjectAction::Status { target, json } => run_status(target.as_deref(), *json),
         ProjectAction::Inspect { path, json } => inspect::run_inspect(path, *json),
+        ProjectAction::Link {
+            session,
+            name,
+            json,
+            remote,
+        } => crate::commands::org::run_set_project(
+            session,
+            Some(name),
+            *json,
+            crate::commands::server_target::ServerSpec {
+                socket,
+                remote: remote.remote.clone(),
+            },
+        ),
+        ProjectAction::Unlink {
+            session,
+            json,
+            remote,
+        } => crate::commands::org::run_set_project(
+            session,
+            None,
+            *json,
+            crate::commands::server_target::ServerSpec {
+                socket,
+                remote: remote.remote.clone(),
+            },
+        ),
     }
 }
 
