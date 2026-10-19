@@ -34,6 +34,15 @@ Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
 search, then closes the panel; clicking outside also closes it. Commands that
 open a dialog move the keyboard into that dialog.
 
+### Fullscreen
+
+Use **⌃⌘F**, **Toggle Full Screen** in the command palette, or the green
+window button to enter or leave native fullscreen. On macOS, the menu bar
+and Dock auto-hide so the window fills the display; moving the pointer to
+the corresponding screen edge reveals them. Exiting restores the window
+through the normal macOS fullscreen transition. **Maximize Window** only
+zooms the window within the desktop and is separate from fullscreen.
+
 ### Performance monitor
 
 Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
