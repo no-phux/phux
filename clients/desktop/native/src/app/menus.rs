@@ -28,6 +28,7 @@ const REOPEN_GUARD: Duration = Duration::from_millis(400);
 /// Trigger keys: what opened the showing menu, and where its anchor is.
 pub(super) const MAIN: &str = "main-menu";
 pub(super) const VIEW: &str = "sidebar-view";
+pub(super) const HOST_FILTER: &str = "sidebar-host-filter";
 
 pub(super) struct OpenMenu {
     key: SharedString,

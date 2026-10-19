@@ -274,17 +274,26 @@ fn host_filter(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEle
         .flex()
         .items_center()
         .child(
-            div().debug_selector(|| "sidebar-host-filter".into()).child(
-                ghost_button(
-                    "sidebar-host-filter",
-                    if filtered {
-                        "Machines · filtered"
-                    } else {
-                        "All machines"
-                    },
-                )
-                .on_click(cx.listener(|desk, _, window, cx| desk.open_view_menu(window, cx))),
-            ),
+            div()
+                .relative()
+                .debug_selector(|| "sidebar-host-filter".into())
+                .child(desk.anchors.probe(menus::HOST_FILTER))
+                .child(
+                    ghost_button(
+                        "sidebar-host-filter",
+                        if filtered {
+                            "Machines · filtered"
+                        } else {
+                            "All machines"
+                        },
+                    )
+                    .toggled(desk.menu_open(menus::HOST_FILTER))
+                    .on_click(
+                        cx.listener(|desk, _, window, cx| {
+                            desk.open_sidebar_host_filter(window, cx)
+                        }),
+                    ),
+                ),
         )
         .when(filtered, |bar| {
             bar.child(

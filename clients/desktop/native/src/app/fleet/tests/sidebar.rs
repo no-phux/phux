@@ -1,6 +1,54 @@
 use super::*;
 
 #[gpui::test]
+fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    desk.update(cx, |desk, cx| {
+        install(desk, connection(1, vec![session(7, "main")]));
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            connection(2, vec![session(8, "remote")]),
+        );
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        cx.notify();
+    });
+    draw(cx);
+    let trigger = cx.debug_bounds("sidebar-host-filter").unwrap();
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk
+            .anchors
+            .get(crate::app::menus::HOST_FILTER)),
+        Some(trigger)
+    );
+    cx.simulate_click(trigger.center(), Modifiers::none());
+    draw(cx);
+    let menu = desk.read_with(cx, |desk, _| desk.menu_window()).unwrap();
+    {
+        let menu_cx = &mut VisualTestContext::from_window(menu, cx);
+        draw(menu_cx);
+        let local = menu_cx
+            .debug_bounds("glass-menu-show-host-This Mac")
+            .expect("machine checkboxes open directly, without a View submenu");
+        menu_cx.simulate_click(local.center(), Modifiers::none());
+        menu_cx.run_until_parked();
+    }
+    draw(cx);
+    assert!(cx.debug_bounds("work-Local-7").is_none());
+    assert!(cx.debug_bounds("work-mini-8").is_some());
+    desk.read_with(cx, |desk, _| {
+        assert!(desk.remote.is_none());
+        assert_eq!(desk.session, "main");
+    });
+}
+
+#[gpui::test]
 fn session_names_keep_their_column_when_counts_and_hosts_are_long(cx: &mut TestAppContext) {
     use gpui::{VisualTestContext, px};
     let _dial = DeterministicDial::arm();

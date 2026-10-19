@@ -1,6 +1,6 @@
 //! The View page: tab placement, sidebar grouping and the panels beside the panes.
 
-use gpui::{Context, WeakEntity};
+use gpui::{Context, WeakEntity, point, px};
 use gpui_kit::assets::IconName;
 
 use crate::settings::{SidebarGrouping, TabPosition};
@@ -92,6 +92,21 @@ fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
         .selector(format!("show-host-{label}"))
     }));
     MenuPage::titled("Visible machines", items)
+}
+
+impl Desk {
+    /// Host visibility opens directly below its own trigger, not from the
+    /// unrelated View button at the foot of the sidebar.
+    pub(crate) fn open_sidebar_host_filter(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = self.anchor_below(super::HOST_FILTER, point(px(12.), px(80.)));
+        let page = host_filter_page(self, &cx.weak_entity());
+        let spec = spec("Visible machines", page, 260., self);
+        self.toggle_menu(super::HOST_FILTER, anchor, spec, window, cx);
+    }
 }
 
 pub(super) fn view_menu(desk: &Desk, cx: &mut Context<Desk>) -> MenuSpec {
