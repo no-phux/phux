@@ -175,6 +175,17 @@ pub fn set_hud(visible: bool) {
     }
 }
 
+/// Toggle only this desktop's allocation counters, not dev mode, socket
+/// publication or the server. Counts begin now; this is intentionally unsaved.
+pub fn set_allocation_counting(enabled: bool, cx: &mut App) {
+    if enabled {
+        phux_perf::alloc::enable();
+    } else {
+        phux_perf::alloc::disable();
+    }
+    refresh_windows(cx);
+}
+
 /// Every metric table in this process, for naming trace spans.
 #[must_use]
 pub fn tables() -> [&'static [Metric]; 4] {

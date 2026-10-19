@@ -73,13 +73,22 @@ resolution failure still opens the window, with the reason shown.
 - **Performance monitor:** search the palette for **Performance Monitor** to
   open a window that samples the desktop process once a second, plus the
   server's CPU, memory and heap: CPU over the elapsed interval, current and
-  peak resident memory,
+  peak resident memory, macOS physical footprint and bounded Kit history charts,
   and the kernel, runtime, painter, and UI-thread metrics as rates, means,
   and estimated p95. **Copy JSON** copies them. Nothing is sampled until the
   window opens, and nothing is uploaded. `--dev-telemetry` or
   `PHUX_DESKTOP_DEV_TELEMETRY=1` opens it at launch. The view owns its
   sampler and cancellable task; `telemetry::Sampler` itself does no
   background work. `diag::report()` exposes the typed report.
+  **Memory** explains RSS versus physical footprint versus net Rust allocations
+  since dev counting was enabled; native graphics allocations are not Rust heap.
+  **Copy JSON** includes `physical_footprint_bytes` separately (null off macOS).
+  **Settings > Performance > Count Rust allocations** enables or disables the
+  desktop's counter live, across windows, for this run only. It does not enable
+  the dev socket, change the server or require a restart.
+  Closing Changes releases parsed comparisons and its Kit diff entity while
+  preserving review notes, drafts and viewed marks; stale reads cannot restore
+  the closed preview.
 - **Log:** `~/Library/Logs/phux-desktop.log` and stderr
   (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`). Lines are redacted
   (URL passwords, labeled tokens and secrets including `PREFIX_TOKEN=` keys

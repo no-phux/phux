@@ -62,15 +62,34 @@ the runtime controls.
 The monitor samples the **desktop process** once per second, and shows the
 server's CPU, memory and heap every two seconds by running `phux perf
 --json`. Terminal child processes are not included. **Show HUD** and
-**Capture Trace** are the same commands the palette offers below. CPU is
+**5 s Trace** are the same commands the palette offers below. CPU is
 measured over the actual elapsed interval
 (one fully occupied core is 100%, so multiple cores can exceed 100%). Current
 resident memory and lifetime peak resident memory are separate readings.
 An em dash means unavailable or no interval yet, not zero.
 
+**Overview**, **Memory**, and **Metrics** separate quick readings from the raw
+instrumentation. Overview has hoverable Longbridge Kit CPU and RSS charts;
+Memory adds a macOS physical-footprint chart, the reading closest to Activity
+Monitor's memory accounting. Charts retain at most 120 numeric samples, not
+full reports, and restart after a pause. The content scrolls even in a short
+window. Space pauses or resumes; Escape, ⌘W or Ctrl-W closes the monitor.
+
+Footprint, RSS and tracked Rust heap overlap: do not add them or subtract heap
+from RSS to infer GPU memory. Native AppKit, Metal, window surfaces and
+allocator-retained pages are outside the Rust allocation counter. The Memory
+tab explains the measurements and gives the process-specific `vmmap -summary`
+command for native attribution. Rust counting requires an isolated development
+launch with `PHUX_DEV=1`, or **Settings > Performance > Count Rust allocations**.
+The setting applies immediately across desktop windows without a restart and
+lasts only for this run. It does not enable a dev socket or change the server.
+Turn it off after profiling to remove counting overhead. Opening the monitor
+never enables counting automatically.
+
 The scrollable metric table shows the existing kernel, runtime, renderer, and
 UI-thread instrumentation as interval rates, mean timings, and estimated p95.
-**Pause** freezes the readings and stops sampling; **Resume** starts a fresh
+**Pause** freezes the readings and releases this monitor's server polling watch;
+another open HUD may still poll. **Resume** starts a fresh
 interval. **Copy JSON** copies the displayed process readings, interval metrics,
 and cumulative report. Sampling stops when the monitor closes; use the palette
 to reopen it. This is local instrumentation: no telemetry is uploaded and no
