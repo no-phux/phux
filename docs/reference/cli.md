@@ -847,9 +847,9 @@ Global flags:
 Recreate an archive's missing sessions without starting them.
 
 Each missing session becomes a persistent session with its archived host,
-project, and directory, and each archived local pane a dormant record in its
-arrangement; nothing is launched until `phux restore`. A session of the same
-name already on the server is skipped.
+project, project link, and directory, and each archived local pane a dormant
+record in its arrangement; nothing is launched until `phux restore`. A session
+of the same name already on the server is skipped.
 
 Usage: phux archive import [--plan] <ARCHIVE>
 

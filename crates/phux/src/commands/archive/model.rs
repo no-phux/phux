@@ -26,6 +26,9 @@ pub(crate) struct WorkspaceSession {
     /// Project tag (`phux.session.project/v1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) project: Option<String>,
+    /// The project a person linked the session into (`phux project link`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) project_link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
@@ -146,6 +149,8 @@ pub(crate) struct CreateRequest {
     pub(crate) directory: Option<String>,
     pub(crate) host: Option<String>,
     pub(crate) project: Option<String>,
+    /// Recreated as the session's `project.link` attribute.
+    pub(crate) project_link: Option<String>,
     pub(crate) command: Option<Vec<String>>,
     pub(crate) agent_session: Option<WorkspaceAgentSession>,
     pub(crate) native_launch: Option<phux_protocol::native_agent::SpawnNativeAgent>,
@@ -200,6 +205,7 @@ pub(crate) fn restore_plan(
             name: session.name.clone(),
             host: session.host.clone(),
             project: session.project.clone(),
+            project_link: session.project_link.clone(),
             directory: session
                 .cwd
                 .clone()
@@ -387,12 +393,16 @@ mod tests {
                     "host": "edge",
                     "cwd": "/src/api",
                     "project": "phux",
+                    "project_link": "mobile",
                     "windows": []
                 }
             ]
         }"#;
         let archive = parse_archive(json).expect("archive parses");
         let plan = restore_plan(&archive, &[]).expect("restore plan");
+        assert_eq!(plan.creates[0].project_link.as_deref(), Some("mobile"));
+        let saved = serde_json::to_value(&archive).expect("archive renders");
+        assert_eq!(saved["sessions"][0]["project_link"], "mobile");
         assert_eq!(plan.creates[0].host.as_deref(), Some("edge"));
         assert_eq!(plan.creates[0].cwd.as_deref(), Some("/src/api"));
         assert_eq!(plan.creates[0].project.as_deref(), Some("phux"));

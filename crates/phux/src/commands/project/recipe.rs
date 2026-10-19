@@ -197,6 +197,7 @@ pub(crate) fn compile(
             cwd: None,
             host: None,
             project: Some(project.to_owned()),
+            project_link: None,
             command: None,
             windows,
         }],
