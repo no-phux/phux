@@ -40,6 +40,82 @@ fn pane(name: Option<&str>, title: Option<&str>, cwd: Option<&str>) -> PaneDescr
     }
 }
 
+#[gpui::test]
+fn pane_reveal_waits_for_attachment_and_layout_restoration(cx: &mut gpui::TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::app::Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-pending-reveal-{}", std::process::id()));
+    let handle = desktop.update(cx, |desktop, cx| {
+        desktop
+            .launch(
+                crate::app::AppOptions {
+                    socket: path.join("isolated.sock"),
+                    session: "work".into(),
+                    phux: path.join("not-installed"),
+                    layout_path: path.join("layout.json"),
+                    fresh: false,
+                    initial_terminal: None,
+                    quick: false,
+                    dev_telemetry: false,
+                    startup_error: Some("isolated test".into()),
+                },
+                cx,
+            )
+            .unwrap()
+    });
+    let desk = handle
+        .update(cx, |root, _, _| {
+            root.view().clone().downcast::<super::Desk>().unwrap()
+        })
+        .unwrap();
+    desk.update(cx, |desk, cx| {
+        let mut connection =
+            crate::connection::Connection::connect(path.join("isolated.sock"), "work".into())
+                .unwrap();
+        let terminal = ResourceId::local(1);
+        connection.topology = Some(phux_client_runtime::control::Topology {
+            sessions: Vec::new(),
+            panes: vec![pane(None, None, None)],
+            agent_sessions: Vec::new(),
+            focused_session: 1,
+            focused_pane: terminal.clone(),
+            authority: None,
+            inbox: None,
+            handles: Default::default(),
+        });
+        connection.status = phux_client_runtime::control::Status::Negotiated;
+        desk.link = Some(super::Link {
+            connection,
+            workspace: crate::workspace::Workspace::new(
+                "work".into(),
+                crate::workspace::WorkspaceOptions::default(),
+            ),
+        });
+        desk.pending_project_terminal = Some(terminal.clone());
+        desk.settle_project_terminal();
+        assert_eq!(
+            desk.pending_project_terminal.as_ref(),
+            Some(&terminal),
+            "topology can precede ATTACH_READY"
+        );
+        desk.link.as_mut().unwrap().connection.status =
+            phux_client_runtime::control::Status::Attached;
+        desk.settle_project_terminal();
+        assert_eq!(
+            desk.pending_project_terminal.as_ref(),
+            Some(&terminal),
+            "saved focus must be restored before the clicked pane is revealed"
+        );
+        desk.prepare_close(cx);
+    });
+    if path.exists() {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
 #[test]
 fn a_label_is_the_name_then_title_then_folder_then_group() {
     let group = Some("logs");

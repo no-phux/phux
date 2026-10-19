@@ -133,6 +133,13 @@ either has space held for it or floats over the content:
   on the others.
 - Controls depend on the mode, never on the highlighted row. Open details
   keep their height when the highlighted row has none.
+- The desktop navigator's host filter and per-session disclosure are independent
+  of selection. Every session keeps its pane rows and count when inactive;
+  sidebar tabs have a fixed-height scrollable shelf outside the session tree.
+  Before switching authorities, retain the leaving connection's inventory so a
+  still-dialing observer cannot remove that machine from the navigator. Initial
+  layout adoption seeds display preferences; navigation restores destination
+  tabs/splits without replacing the current window's display preferences.
 
 Regression tests assert bounds are identical across the interaction, for
 example `switching_tabs_never_resizes_the_chrome` and

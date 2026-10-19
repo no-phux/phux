@@ -62,7 +62,7 @@ const CATALOG: &str = "\
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-bottom | Tabs on Bottom | View |  | Place workspace tabs below your work, including in plain terminal mode. | layout horizontal placement
-    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar, under their session. | layout vertical placement side rail
+    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar’s fixed tab area. | layout vertical placement side rail
     group-projects | Group Sessions by Project | View |  | List sessions under their repository in the navigator. | view organize
     group-machines | Group Sessions by Machine | View |  | List sessions under the machine they run on in the navigator. | view hosts organize
     group-none | Ungroup Sessions | View |  | List every session in one navigator list without headings. | view flat

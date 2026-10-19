@@ -117,6 +117,8 @@ pub struct DisplayPrefs {
     pub tab_position: TabPosition,
     /// How the sidebar groups sessions.
     pub sidebar_grouping: SidebarGrouping,
+    /// Explicit sidebar filter exclusions. `None` is this machine.
+    pub sidebar_hidden_hosts: Vec<Option<String>>,
     /// Agent notifications.
     pub notifications: bool,
     /// Cell width multiplier.
@@ -163,6 +165,7 @@ pub fn default_display() -> DisplayPrefs {
         sidebar_width: 248.0,
         tab_position: TabPosition::Top,
         sidebar_grouping: SidebarGrouping::Project,
+        sidebar_hidden_hosts: Vec::new(),
         notifications: true,
         cell_width: 1.0,
         cell_height: 1.0,
@@ -181,6 +184,22 @@ pub fn default_display() -> DisplayPrefs {
 }
 
 impl DisplayPrefs {
+    /// Host visibility never depends on which session is selected.
+    #[must_use]
+    pub fn sidebar_shows_host(&self, host: Option<&str>) -> bool {
+        !self
+            .sidebar_hidden_hosts
+            .iter()
+            .any(|hidden| hidden.as_deref() == host)
+    }
+
+    pub fn set_sidebar_host_visible(&mut self, host: Option<String>, visible: bool) {
+        self.sidebar_hidden_hosts.retain(|hidden| hidden != &host);
+        if !visible {
+            self.sidebar_hidden_hosts.push(host);
+        }
+    }
+
     /// Terminal background opacity as painted: opaque on a solid window.
     #[must_use]
     pub fn painted_terminal_opacity(&self) -> f64 {
@@ -283,6 +302,20 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         sidebar_grouping: SidebarGrouping::parse(
             object.get("sidebarGrouping").and_then(Value::as_str),
         ),
+        sidebar_hidden_hosts: object
+            .get("sidebarHiddenHosts")
+            .and_then(Value::as_array)
+            .map(|hosts| {
+                hosts
+                    .iter()
+                    .filter_map(|host| match host {
+                        Value::Null => Some(None),
+                        Value::String(name) => Some(Some(name.clone())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         notifications: flag("notifications", fallback.notifications),
         cell_width: number("cellWidth", fallback.cell_width),
         cell_height: number("cellHeight", fallback.cell_height),
@@ -316,6 +349,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "sidebarWidth": display.sidebar_width,
         "tabPosition": display.tab_position.as_str(),
         "sidebarGrouping": display.sidebar_grouping.as_str(),
+        "sidebarHiddenHosts": display.sidebar_hidden_hosts,
         "notifications": display.notifications,
         "cellWidth": display.cell_width,
         "cellHeight": display.cell_height,
@@ -381,6 +415,30 @@ mod tests {
             assert_eq!(parsed.sidebar_grouping, SidebarGrouping::Project);
             assert_eq!(parsed.font_size, 15.);
         }
+    }
+
+    #[test]
+    fn sidebar_host_filters_round_trip_without_changing_the_catalog_or_other_prefs() {
+        let mut prefs = default_display();
+        assert!(prefs.sidebar_shows_host(None));
+        assert!(prefs.sidebar_shows_host(Some("mini")));
+        prefs.set_sidebar_host_visible(None, false);
+        prefs.set_sidebar_host_visible(Some("mini".into()), false);
+        prefs.set_sidebar_host_visible(Some("mini".into()), false);
+        assert_eq!(prefs.sidebar_hidden_hosts.len(), 2, "idempotent exclusions");
+        assert_eq!(parse_display(&display_value(&prefs)), prefs);
+        assert!(!prefs.sidebar_shows_host(None));
+        assert!(!prefs.sidebar_shows_host(Some("mini")));
+        assert!(
+            prefs.sidebar_shows_host(Some("new-host")),
+            "new hosts default visible"
+        );
+        prefs.set_sidebar_host_visible(None, true);
+        assert!(prefs.sidebar_shows_host(None));
+        assert!(!prefs.sidebar_shows_host(Some("mini")));
+        assert!(parse_display(&json!({})).sidebar_hidden_hosts.is_empty());
+        let parsed = parse_display(&json!({"sidebarHiddenHosts": [null, "mini", 3, true]}));
+        assert_eq!(parsed.sidebar_hidden_hosts, [None, Some("mini".into())]);
     }
 
     #[test]

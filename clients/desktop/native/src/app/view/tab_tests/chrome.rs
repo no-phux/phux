@@ -243,7 +243,7 @@ fn shown_chords_follow_the_keymap(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn sidebar_tabs_live_under_their_session_and_return_to_the_titlebar_when_it_hides(
+fn sidebar_tabs_live_in_a_fixed_shelf_and_return_to_the_titlebar_when_it_hides(
     cx: &mut TestAppContext,
 ) {
     let _dial = DeterministicDial::arm();
@@ -258,14 +258,15 @@ fn sidebar_tabs_live_under_their_session_and_return_to_the_titlebar_when_it_hide
     });
     run(&desk, "tabs-side", cx);
     let width = desk.read_with(cx, |desk, _| desk.prefs.sidebar_width as f32);
-    let session = cx
-        .debug_bounds("session-current")
-        .expect("this window's session heads its tabs");
+    let shelf = cx
+        .debug_bounds("sidebar-tab-shelf")
+        .expect("tabs keep their own fixed area");
     let tab = cx
         .debug_bounds("tab-fixture-a")
         .expect("tab in the sidebar");
     assert!(tab.right() <= px(width), "the tab is inside the sidebar");
-    assert!(tab.origin.y >= session.bottom(), "under its session");
+    assert!(tab.origin.y >= shelf.origin.y, "inside the shelf");
+    assert_eq!(shelf.size.height, px(160.));
     assert!(
         cx.debug_bounds("top-tabs").is_none(),
         "one place for tabs, not two"
