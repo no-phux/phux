@@ -212,8 +212,8 @@ blended! {
         pub card_radius: f32,
         /// The glass main menu.
         pub popover_radius: f32,
-        /// Workspace tabs: `[top, side]`.
-        pub tab_radius: [f32; 2],
+        /// Workspace tabs. The selected side tab takes the list row radius.
+        pub tab_radius: f32,
         /// Kit controls.
         pub kit_radius: f32,
         pub kit_radius_lg: f32,
@@ -328,7 +328,7 @@ pub const GLASS: Skin = Skin {
         radius: 12.,
         card_radius: 14.,
         popover_radius: 26.,
-        tab_radius: [10., 11.],
+        tab_radius: 10.,
         kit_radius: 8.,
         kit_radius_lg: 14.,
         gutter: 12.,
@@ -385,7 +385,7 @@ pub const TERMINAL: Skin = Skin {
         radius: 0.,
         card_radius: 10.,
         popover_radius: 12.,
-        tab_radius: [6., 6.],
+        tab_radius: 6.,
         kit_radius: 6.,
         kit_radius_lg: 10.,
         gutter: 0.,

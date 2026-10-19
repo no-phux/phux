@@ -52,11 +52,16 @@ fn terminal_body(
             .items_center()
             .justify_center()
             .text_color(from_hex(&look.chrome.muted))
-            .child(if placement.terminal_id.is_none() {
-                "Saved terminal is not on this server"
-            } else {
-                "Waiting for terminal"
-            })
+            .child(
+                div()
+                    .w_full()
+                    .text_center()
+                    .child(if placement.terminal_id.is_none() {
+                        "Saved terminal is not on this server"
+                    } else {
+                        "Waiting for terminal"
+                    }),
+            )
             .into_any_element();
     };
     let remote = desk.remote.clone();
@@ -180,7 +185,7 @@ pub(super) fn pane_view(
     };
     let shine = look
         .lit
-        .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin) * (1. - depth));
+        .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin) * (1. - depth) * presence);
     let controls_bar = controls.then(|| {
         pane_controls(desk, placement, identity.origin, zoomed, &look, cx).into_any_element()
     });
@@ -303,7 +308,6 @@ pub(super) fn pane_view(
                     dim.map(|amount| div().absolute().inset_0().bg(Hsla { a: amount, ..fade })),
                 ),
         )
-        .children(specular(shine, look.skin.shape.radius))
         .child(
             // Reveals the controls. It holds no other listener, so presses and
             // drags still reach the terminal under it.
@@ -321,11 +325,17 @@ pub(super) fn pane_view(
         .when(dropping, |card| card.child(drop_hint(&look, remote_files)))
         .children(find_bar);
     // The slot keeps the split's geometry; the card draws in from its edges.
+    // The highlight lies on the card's top border row, outside the card's
+    // clip, which excludes a painted border.
     div()
         .size_full()
+        .relative()
         .px(px(inset_x))
         .py(px(inset_y))
         .child(card)
+        .children(
+            specular(shine, inset_x + look.skin.shape.radius).map(|line| line.top(px(inset_y))),
+        )
         .into_any_element()
 }
 

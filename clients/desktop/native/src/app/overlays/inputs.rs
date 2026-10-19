@@ -14,6 +14,10 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
     match desk.modal.clone() {
         Modal::None => {}
         Modal::Capture => desk.prepare_capture(window, cx),
+        Modal::AgentFleet => {
+            desk.fleet_view.open();
+            window.focus(&desk.focus, cx);
+        }
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession

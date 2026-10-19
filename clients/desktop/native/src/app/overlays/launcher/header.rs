@@ -88,18 +88,21 @@ pub(super) fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>
                 )
             },
         )
+        // A plain title sits where a mode button's label would.
         .when(modal == Modal::WindowSession, |modes| {
-            modes.child("Sessions")
+            modes.child(div().px(px(4.)).child("Sessions"))
         })
         .when(modal == Modal::MoveResources, |modes| {
-            modes.child("Move to")
+            modes.child(div().px(px(4.)).child("Move to"))
         });
     let controls = header_controls(state, handle);
     let wrapped = wraps_controls(&modal, state.compact, state.empty_query);
     div()
         .h(px(if wrapped { 68. } else { 36. }))
         .when(wrapped, |this| this.flex_wrap())
-        .px(px(10.))
+        // With the xsmall buttons' 4pt label padding, labels sit 12pt in,
+        // on the search field's and the rows' text column.
+        .px(px(8.))
         .flex_shrink_0()
         .flex()
         .items_center()

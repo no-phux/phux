@@ -368,9 +368,10 @@ impl Desk {
     }
 
     fn arm_changes_poll(&mut self, cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
         self.changes._poll = Some(cx.spawn(async move |this, cx| {
             loop {
-                smol::Timer::after(POLL).await;
+                executor.timer(POLL).await;
                 let Ok(open) = this.update(cx, |desk, cx| {
                     if desk.changes.open {
                         desk.refresh_changes(false, cx);

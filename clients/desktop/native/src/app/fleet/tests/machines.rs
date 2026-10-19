@@ -55,15 +55,6 @@ fn machine_rows_report_reach_and_open_the_machines_own_work(cx: &mut TestAppCont
     });
 }
 
-fn unreachable(error: &str) -> Observer {
-    Observer {
-        connection: None,
-        last: Vec::new(),
-        error: Some(error.into()),
-        _wake: None,
-    }
-}
-
 #[gpui::test]
 fn this_windows_own_route_reports_its_link_and_reconnects_from_open(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();

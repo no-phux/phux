@@ -128,6 +128,48 @@ fn observe(fleet: &mut Fleet, host: Option<&str>, connection: Connection) {
     );
 }
 
+fn with_agent(mut connection: Connection, terminal: u32, state: AgentState) -> Connection {
+    let session = connection.topology.as_ref().unwrap().sessions[0].clone();
+    let terminal_id = ResourceId::local(terminal);
+    connection.topology.as_mut().unwrap().panes.push(
+        phux_client_runtime::control::PaneDescriptor {
+            terminal_id: terminal_id.clone(),
+            session_id: session.id,
+            session_name: session.name,
+            cols: 80,
+            rows: 24,
+            title: Some(format!("Task {terminal}")),
+            cwd: None,
+            is_focused: false,
+            key: None,
+            revision: None,
+            name: None,
+            activation: None,
+            exec: None,
+        },
+    );
+    connection.agents.insert(
+        terminal_id,
+        crate::connection::AgentInfo {
+            name: format!("Agent {terminal}"),
+            kind: Some("opencode".into()),
+            state,
+            attention: crate::connection::AgentAttention::None,
+            changed_at_ms: 1,
+        },
+    );
+    connection
+}
+
+fn unreachable(error: &str) -> Observer {
+    Observer {
+        connection: None,
+        last: Vec::new(),
+        error: Some(error.into()),
+        _wake: None,
+    }
+}
+
 fn draw(cx: &mut gpui::VisualTestContext) {
     for _ in 0..3 {
         cx.run_until_parked();
@@ -149,5 +191,6 @@ fn click_on(cx: &mut gpui::VisualTestContext, selector: &str) {
 }
 
 mod catalog;
+mod dashboard;
 mod machines;
 mod sidebar;

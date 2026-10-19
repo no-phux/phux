@@ -12,6 +12,13 @@ use super::super::skin::Look;
 use super::super::ui::{agent_swatch, dot, ghost_icon, muted, notice_card};
 use super::chip_radius;
 
+/// The notification peek's width while the pane area has room for it.
+const PEEK_WIDTH: f32 = 340.;
+/// The peek's distance from the pane cards' right and bottom edges.
+const PEEK_INSET: f32 = 12.;
+/// The width of the peek's colour stripe.
+const PEEK_STRIPE: f32 = 3.;
+
 /// Exceptions only: an unhealthy connection, a terminal still starting, and
 /// a pane scrolled away from live output. Agents that need a person are
 /// marked on their tabs and sessions, not counted here.
@@ -141,45 +148,64 @@ pub(super) fn peek_card(
     let entry = desk.feed.peek()?;
     let id = entry.id;
     let more = desk.feed.unread().count().saturating_sub(1);
-    Some(
-        notice_card(look, 0.94)
-            .id(("notification-peek", id as usize))
-            .absolute()
-            .bottom(px(12.))
-            .right(px(12.))
-            .w(px(340.))
-            .p(px(10.))
-            .pl(px(12.))
-            .border_l_4()
-            .border_color(notification_edge(entry, look))
-            .occlude()
-            .cursor_pointer()
-            .flex()
-            .gap(px(8.))
-            .child(
-                notification_text(entry, look, true, 3).when(more > 0, |text| {
-                    text.child(
-                        div()
-                            .text_xs()
-                            .text_color(from_hex(&colors.subtext))
-                            .child(format!("+{more} unread alerts")),
-                    )
-                }),
-            )
-            .child(
-                ghost_icon(
-                    ("notification-peek-dismiss", id as usize),
-                    IconName::Close,
-                    "Dismiss",
+    let gutter = look.skin.shape.gutter;
+    // Spans the pane area, held PEEK_INSET in from its cards' edges, so the
+    // card narrows with the area instead of escaping it.
+    let area = div()
+        .absolute()
+        .left(px(gutter + PEEK_INSET))
+        .right(px(gutter + PEEK_INSET))
+        .bottom(px(PEEK_INSET))
+        .flex()
+        .justify_end();
+    let card = notice_card(look, 0.94)
+        .id(("notification-peek", id as usize))
+        .relative()
+        .overflow_hidden()
+        .w(px(PEEK_WIDTH))
+        .min_w_0()
+        .p(px(10.))
+        .pl(px(12. + PEEK_STRIPE))
+        .occlude()
+        .cursor_pointer()
+        .flex()
+        .gap(px(8.))
+        .child(stripe(notification_edge(entry, look), look))
+        .child(
+            notification_text(entry, look, true, 3).when(more > 0, |text| {
+                text.child(
+                    div()
+                        .text_xs()
+                        .text_color(from_hex(&colors.subtext))
+                        .child(format!("+{more} unread alerts")),
                 )
-                .on_click(cx.listener(move |desk, _, _, cx| {
-                    cx.stop_propagation();
-                    desk.feed.read(id);
-                    cx.notify();
-                })),
+            }),
+        )
+        .child(
+            ghost_icon(
+                ("notification-peek-dismiss", id as usize),
+                IconName::Close,
+                "Dismiss",
             )
-            .on_click(cx.listener(move |desk, _, window, cx| {
-                desk.open_notification(id, window, cx);
+            .on_click(cx.listener(move |desk, _, _, cx| {
+                cx.stop_propagation();
+                desk.feed.read(id);
+                cx.notify();
             })),
-    )
+        )
+        .on_click(cx.listener(move |desk, _, window, cx| {
+            desk.open_notification(id, window, cx);
+        }));
+    Some(area.child(card))
+}
+
+/// A notice's colour down its left side, inside the hairline. Clips are
+/// rectangular, so the stripe is a rounded border that follows the corners.
+fn stripe(color: Hsla, look: &Look) -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px((look.skin.shape.radius - 1.).max(0.)))
+        .border_l(px(PEEK_STRIPE))
+        .border_color(color)
 }

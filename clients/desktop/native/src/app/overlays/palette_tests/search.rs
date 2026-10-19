@@ -26,9 +26,11 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
         .debug_bounds("palette-result-find")
         .expect("last essential action");
     let panel = cx.debug_bounds("palette-panel").unwrap();
-    assert!(
-        last.bottom() <= panel.bottom(),
-        "last action stays inside the panel"
+    // The row's 6pt kit padding, the list's 4pt inset, the card's 1pt border.
+    assert_eq!(
+        panel.bottom() - last.bottom(),
+        gpui::px(11.),
+        "the panel ends the list's inset below its last row"
     );
 }
 

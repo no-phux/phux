@@ -199,6 +199,46 @@ fn the_changes_panel_opens_beside_the_panes_and_lists_a_checkout(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn changes_poll_uses_the_window_clock_and_stops_when_the_panel_closes(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    run(&desk, "changes", cx);
+    desk.update(cx, |desk, cx| {
+        desk.show_checkout(checkout(), CHANGES, STAGED, cx)
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(matches!(desk.changes.view, View::Repo(_)))
+    });
+
+    // Advancing GPUI's clock, not the wall clock, admits the scheduled read.
+    // With no focused terminal the read must return to the unavailable view.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(4));
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(matches!(desk.changes.view, View::Unavailable(_)))
+    });
+
+    run(&desk, "changes", cx);
+    desk.update(cx, |desk, cx| {
+        desk.show_checkout(checkout(), CHANGES, STAGED, cx)
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(4));
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.changes.open);
+        assert!(
+            matches!(desk.changes.view, View::Repo(_)),
+            "closing cancels further reads"
+        );
+    });
+    desk.update(cx, |desk, cx| desk.prepare_close(cx));
+}
+
+#[gpui::test]
 fn the_changes_panel_resizes_from_its_left_edge_and_leaves_the_panes_room(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk) = fixture(cx);
@@ -226,4 +266,27 @@ fn the_changes_panel_resizes_from_its_left_edge_and_leaves_the_panes_room(cx: &m
     draw(cx);
     let panes = cx.debug_bounds("main-column").unwrap();
     assert!(panes.size.width >= px(crate::app::changes::PANES_MIN));
+}
+
+#[gpui::test]
+fn the_changes_panel_ends_where_the_panes_end_in_every_placement(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1320.), px(840.)));
+    run(&desk, "changes", cx);
+    for command in [
+        "tabs-bottom",
+        "plain-terminal",
+        "tabs-top",
+        "plain-terminal",
+    ] {
+        let panel = cx.debug_bounds("changes-panel").unwrap();
+        let panes = cx.debug_bounds("workspace-body").unwrap();
+        assert_eq!(panel.bottom(), panes.bottom(), "before {command}");
+        run(&desk, command, cx);
+    }
+    let panel = cx.debug_bounds("changes-panel").unwrap();
+    let panes = cx.debug_bounds("workspace-body").unwrap();
+    assert_eq!(panel.bottom(), panes.bottom());
 }

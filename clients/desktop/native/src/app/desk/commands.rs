@@ -4,6 +4,10 @@ use super::*;
 
 impl Desk {
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == "agent-fleet" && !self.prefs.agent_fleet {
+            self.show_settings_page(super::super::settings_panel::Page::Layout, window, cx);
+            return;
+        }
         if self.text_field_has_keys() && settings::yields_to_text_field(id) {
             return;
         }
@@ -216,6 +220,10 @@ impl Desk {
     /// Keys the window owns outside its key bindings. Escape closes the modal,
     /// else the find bar that holds the keys, and otherwise reaches the terminal.
     pub fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal == Modal::AgentFleet && self.fleet_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
         let action: Option<fn(&mut Self, &mut Window, &mut Context<Self>)> = match key {

@@ -67,6 +67,13 @@ pub(super) fn strip(
     let geometry = desk.tab_geometry.clone();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
+    // Top tabs start on the pane column; the bottom bar already insets by
+    // the gutter.
+    let lead_pad = if position == TabPosition::Top {
+        look.skin.shape.gutter.max(4.)
+    } else {
+        4.
+    };
     let id = match position {
         TabPosition::Top => "top-tabs",
         TabPosition::Bottom => "bottom-tabs",
@@ -88,14 +95,12 @@ pub(super) fn strip(
                 .when(!side, |list| {
                     list.gap(px(5.))
                         .w_full()
-                        .min_w(px(tabs.len() as f32 * 105. + 3.))
+                        .min_w(px(tabs.len() as f32 * 105. + 3. + lead_pad - 4.))
                         .h_full()
                         .items_center()
-                        .px(px(if position == TabPosition::Bottom {
-                            0.
-                        } else {
-                            4.
-                        }))
+                        .when(position == TabPosition::Top, |list| {
+                            list.pl(px(lead_pad)).pr(px(4.))
+                        })
                 })
                 .children(tabs.iter().map(|tab| {
                     tab_button(desk, tab, active, position, look, cx).into_any_element()
@@ -155,20 +160,16 @@ fn side_lead(
 }
 
 /// A titlebar tab's leading slot: nothing while its corner mark asks for a
-/// person, else its harness mark, else its agent's quiet state.
+/// person, else what a sidebar tab leads with.
 fn top_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
     harness: Option<Harness>,
     look: &Look,
 ) -> Option<AnyElement> {
-    if attention.is_some() {
-        return None;
-    }
-    Some(match harness {
-        Some(harness) => harness_mark(harness, agent, 13., look).into_any_element(),
-        None => state_dot(None, agent).into_any_element(),
-    })
+    attention
+        .is_none()
+        .then(|| side_lead(None, agent, harness, look))
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -354,7 +355,7 @@ fn tab_button(
             tab.rounded(px(if side {
                 row_radius(&look.skin)
             } else {
-                look.skin.shape.tab_radius[0]
+                look.skin.shape.tab_radius
             }))
             .border_1()
             .border_color(gpui::transparent_black())

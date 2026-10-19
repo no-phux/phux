@@ -121,6 +121,7 @@ impl Desk {
             collapsed: Default::default(),
             hosts: Vec::new(),
             fleet: Default::default(),
+            fleet_view: Default::default(),
             host_adding: None,
             drag_region: None,
             menu: None,

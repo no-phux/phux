@@ -314,6 +314,7 @@ impl Desk {
         self.link = None;
         self.pending_project_terminal = None;
         self.connect_error = None;
+        self.fleet_view.pending = None;
         self.goto_search = Default::default();
         self.remote = name.clone();
         self.session = session.clone();

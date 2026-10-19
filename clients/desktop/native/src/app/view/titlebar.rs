@@ -126,6 +126,8 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                 .when(fit < 1., |lead| lead.overflow_hidden().opacity(fit))
                 .when(fit > 0., |lead| {
                     lead.child(main_menu(desk, look, cx))
+                        // The trigger hugs its name; the buttons stay at the rail's end.
+                        .child(div().flex_1())
                         .when(!quick, |lead| {
                             lead.child(icon_button(
                                 "sidebar",
@@ -198,6 +200,19 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     .when(desk.native_agents_offered(), |actions| {
                         actions.child(native_agents_toggle(desk, cx))
                     })
+                    .when(desk.prefs.agent_fleet, |actions| {
+                        actions.child(div().debug_selector(|| "agent-fleet".into()).child(
+                            icon_button(
+                                "agent-fleet",
+                                IconName::LayoutDashboard,
+                                "Agent Fleet",
+                                None,
+                                cx.listener(|desk, _, window, cx| {
+                                    desk.execute("agent-fleet", window, cx)
+                                }),
+                            ),
+                        ))
+                    })
                     .child(bell(desk, look, cx)),
             )
         })
@@ -224,7 +239,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     cx.listener(|desk, _, window, cx| desk.execute("plain-terminal", window, cx)),
                 )),
         )
-        .child(update_button(desk, cx))
+        .children(update_button(desk, cx))
 }
 
 /// Snap every agent pane to its conversation or back to its terminal; lit
@@ -278,10 +293,9 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
         .id("main-menu")
         .debug_selector(|| "main-menu-rail".into())
         .relative()
-        .flex_1()
         .min_w_0()
         .max_w(px(196.))
-        .h(px(28.))
+        .h(px(tabs::tab_height(look.skin.chrome.titlebar)))
         .px(px(9.))
         .flex()
         .items_center()
@@ -326,16 +340,16 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
         .into_any_element()
 }
 
-fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
     let entity = desk.updates.clone();
-    let Some(action) = entity.read(cx).desktop_action() else {
-        return div().into_any_element();
-    };
-    Button::new("desktop-update-ready")
-        .label(action.label())
-        .small()
-        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
-        .into_any_element()
+    let action = entity.read(cx).desktop_action()?;
+    Some(
+        Button::new("desktop-update-ready")
+            .label(action.label())
+            .small()
+            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
+            .into_any_element(),
+    )
 }
 
 /// The titlebar's way into the notification list, with the unread count.
