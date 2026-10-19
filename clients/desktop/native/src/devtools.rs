@@ -175,6 +175,17 @@ pub fn set_hud(visible: bool) {
     }
 }
 
+/// Toggle only this desktop's allocation counters, not dev mode, socket
+/// publication or the server. Counts begin now; this is intentionally unsaved.
+pub fn set_allocation_counting(enabled: bool, cx: &mut App) {
+    if enabled {
+        phux_perf::alloc::enable();
+    } else {
+        phux_perf::alloc::disable();
+    }
+    refresh_windows(cx);
+}
+
 /// Every metric table in this process, for naming trace spans.
 #[must_use]
 pub fn tables() -> [&'static [Metric]; 4] {
@@ -195,6 +206,8 @@ pub struct Snapshot {
     pub hud: bool,
     pub dev: bool,
     pub socket: Option<PathBuf>,
+    pub physical_footprint_bytes: Option<u64>,
+    pub native_heap: Option<phux_perf::alloc::native::HeapStats>,
 }
 
 /// Take a [`Snapshot`] now.
@@ -211,6 +224,8 @@ pub fn snapshot() -> Snapshot {
         hud: hud_visible(),
         dev: devtools.dev,
         socket: devtools.socket.get().cloned(),
+        physical_footprint_bytes: ProcessStats::physical_footprint_bytes(),
+        native_heap: phux_perf::alloc::native::stats(),
     }
 }
 
@@ -382,6 +397,16 @@ fn sample_counters() {
     }
     if let Some(alloc) = phux_perf::alloc::stats() {
         phux_perf::trace::counter("memory.heap_live_bytes", alloc.live_bytes as f64);
+    }
+    if let Some(footprint) = ProcessStats::physical_footprint_bytes() {
+        phux_perf::trace::counter("memory.physical_footprint_bytes", footprint as f64);
+    }
+    if let Some(heap) = phux_perf::alloc::native::stats() {
+        phux_perf::trace::counter("memory.native_heap_in_use_bytes", heap.in_use_bytes as f64);
+        phux_perf::trace::counter(
+            "memory.native_heap_capacity_bytes",
+            heap.capacity_bytes as f64,
+        );
     }
     let frames = frames::recent(Duration::from_millis(250));
     phux_perf::trace::counter("frames.fps", frames.len() as f64 * 4.0);

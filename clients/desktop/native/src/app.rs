@@ -88,6 +88,12 @@ pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
     ui::menu::preview(cx)
 }
 
+/// Preview or capture the real monitor without a daemon or production state.
+#[cfg(feature = "ui-fixtures")]
+pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    performance::preview(capture, cx)
+}
+
 /// Measure native menu creation without opening visible windows.
 #[cfg(feature = "ui-fixtures")]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {

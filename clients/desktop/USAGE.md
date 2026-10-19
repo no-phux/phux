@@ -45,40 +45,10 @@ zooms the window within the desktop and is separate from fullscreen.
 
 ### Performance monitor
 
-Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
-or **telemetry** to opt in. This is a utility, not a separate Developer menu.
-It opens a native window and starts sampling immediately; neither the desktop
-nor the server needs a restart. Reopening the command raises the same window.
-
-While monitoring, the palette also offers **Stop Performance Monitoring**.
-This closes the monitor and stops its sampler. Closing the window does the
-same. You can enable it again immediately; each new monitor starts a fresh CPU
-and metric interval.
-
-For automatic opening at launch, the native executable accepts `--dev-telemetry`
-or `PHUX_DESKTOP_DEV_TELEMETRY=1`. These are conveniences, not prerequisites for
-the runtime controls.
-
-The monitor samples the **desktop process** once per second, and shows the
-server's CPU, memory and heap every two seconds by running `phux perf
---json`. Terminal child processes are not included. **Show HUD** and
-**Capture Trace** are the same commands the palette offers below. CPU is
-measured over the actual elapsed interval
-(one fully occupied core is 100%, so multiple cores can exceed 100%). Current
-resident memory and lifetime peak resident memory are separate readings.
-An em dash means unavailable or no interval yet, not zero.
-
-The scrollable metric table shows the existing kernel, runtime, renderer, and
-UI-thread instrumentation as interval rates, mean timings, and estimated p95.
-**Pause** freezes the readings and stops sampling; **Resume** starts a fresh
-interval. **Copy JSON** copies the displayed process readings, interval metrics,
-and cumulative report. Sampling stops when the monitor closes; use the palette
-to reopen it. This is local instrumentation: no telemetry is uploaded and no
-metrics history is written by the monitor.
-
-Without opening the monitor, there is no monitor sampling loop. The existing
-cheap atomic render/runtime counters remain on. Nothing about enabling or
-stopping this monitor changes the server.
+Search the palette for **Performance Monitor**, **CPU**, **memory**, or
+**telemetry** to open the live desktop/server monitor without a restart.
+The [performance monitor guide](PERFORMANCE.md) covers charts, baselines,
+native memory accounting, allocation controls, metric filtering and traces.
 
 ### Dev mode
 

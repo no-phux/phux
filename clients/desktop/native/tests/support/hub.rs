@@ -1,6 +1,7 @@
 //! Full native chrome pixels, using the same Metal renderer as the terminal fixtures.
 
 use gpui::Keystroke;
+use gpui_kit::component::WindowExt as _;
 use phux_desktop::app::{AppOptions, Desk, Modal};
 use std::sync::Arc;
 
@@ -197,6 +198,12 @@ fn ghostty_settings_render(
             desk.read_with(cx, |desk, _| desk.modal.clone()),
             Modal::Settings
         );
+        // Import warnings also create timed toasts. Their legitimate expiry
+        // between the retained and scratch captures is not a stale-frame bug;
+        // this fixture checks the diagnostic page, not toast lifetime.
+        cx.update_window(window, |_, window, cx| window.clear_notifications(cx))
+            .unwrap();
+        draw(cx, window);
         save(cx, window, &format!("{appearance}-ghostty-{query}"));
     }
 }

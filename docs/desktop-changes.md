@@ -126,5 +126,11 @@ then parses Kit `DiffFile`s off the UI thread. Per-file patch sections drive
 line staging, viewed fingerprints and change detection. Kit's `DiffState`
 replaces files only when the shown comparison changes, preserving folds and
 scroll position on unchanged polls.
+Closing the panel fences outstanding reads and releases parsed comparisons and
+the Kit diff entity. Notes, drafts, viewed marks and compact conflict choices
+survive; choices are restored only after a successful checkout read and only
+when the conflicted file's fingerprint still matches. Freed malloc pages may
+remain resident for reuse, so releasing the preview need not immediately lower
+the macOS physical footprint.
 `app/view/changes.rs` is cached chrome, so terminal frames do not rebuild the
 file list or diff.

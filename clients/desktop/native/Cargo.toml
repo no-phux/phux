@@ -32,6 +32,10 @@ ui-fixtures = []
 name = "glass_menu"
 required-features = ["ui-fixtures"]
 
+[[example]]
+name = "performance_monitor"
+required-features = ["ui-fixtures"]
+
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }

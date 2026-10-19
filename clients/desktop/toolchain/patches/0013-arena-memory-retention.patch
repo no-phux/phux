@@ -1,0 +1,190 @@
+diff --git a/gpui-fast/src/arena.rs b/gpui-fast/src/arena.rs
+index ea5968f..815bf19 100644
+--- a/gpui-fast/src/arena.rs
++++ b/gpui-fast/src/arena.rs
+@@ -5,6 +5,7 @@ use std::{
+     ops::{Deref, DerefMut},
+     ptr::{self, NonNull},
+     rc::Rc,
++    time::{Duration, Instant},
+ };
+ 
+ struct ArenaElement {
+@@ -85,6 +86,7 @@ pub struct Arena {
+     current_chunk_index: usize,
+     chunk_size: NonZeroUsize,
+     scope_depth: usize,
++    low_usage_since: Option<Instant>,
+ }
+ 
+ impl Drop for Arena {
+@@ -103,6 +105,7 @@ impl Arena {
+             current_chunk_index: 0,
+             chunk_size,
+             scope_depth: 0,
++            low_usage_since: None,
+         }
+     }
+ 
+@@ -148,15 +151,34 @@ impl Arena {
+     }
+ 
+     fn force_clear(&mut self) {
++        let used_chunks = self.current_chunk_index + 1;
+         self.valid.set(false);
+         self.valid = Rc::new(Cell::new(true));
+         self.elements.clear();
++        self.trim_surplus_chunks(used_chunks, Instant::now());
+         for chunk_index in 0..=self.current_chunk_index {
+             self.chunks[chunk_index].reset();
+         }
+         self.current_chunk_index = 0;
+     }
+ 
++    fn trim_surplus_chunks(&mut self, used_chunks: usize, now: Instant) {
++        // Arenas are shared across windows. A single small draw must not evict
++        // the capacity needed by an interleaved large one. Wait for five
++        // seconds continuously below a quarter of capacity, then keep 2x usage.
++        // Use time rather than draw counts: windows can have unequal cadences.
++        // Call only after elements are dropped, never while a scope is active.
++        if self.chunks.len() <= used_chunks.saturating_mul(4) {
++            self.low_usage_since = None;
++            return;
++        }
++        let since = self.low_usage_since.get_or_insert(now);
++        if now.saturating_duration_since(*since) >= Duration::from_secs(5) {
++            self.chunks.truncate(used_chunks.saturating_mul(2));
++            self.low_usage_since = None;
++        }
++    }
++
+     #[inline(always)]
+     pub fn alloc<T>(&mut self, f: impl FnOnce() -> T) -> ArenaBox<T> {
+         #[inline(always)]
+@@ -262,6 +284,126 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn a_small_draw_releases_surplus_chunks_after_a_transient_peak() {
++        let mut arena = Arena::new(1024);
++        for n in 0_u8..16 {
++            arena.alloc(|| [n; 1024]);
++        }
++        arena.clear();
++        assert_eq!(
++            arena.capacity(),
++            16 * 1024,
++            "the peak draw remains reusable"
++        );
++        arena.alloc(|| [0_u8; 1024]);
++        arena.clear();
++        assert_eq!(
++            arena.capacity(),
++            16 * 1024,
++            "keep transient peaks during the grace period"
++        );
++        arena.low_usage_since = Some(Instant::now() - Duration::from_secs(6));
++        arena.alloc(|| [0_u8; 1024]);
++        arena.clear();
++        assert_eq!(
++            arena.capacity(),
++            2 * 1024,
++            "keep headroom, not the lifetime peak"
++        );
++    }
++
++    #[test]
++    fn repeated_draws_reuse_chunks_without_trimming_or_regrowth() {
++        let mut arena = Arena::new(1024);
++        for _ in 0..8 {
++            for n in 0_u8..8 {
++                arena.alloc(|| [n; 1024]);
++            }
++            let storage: Vec<_> = arena.chunks.iter().map(|chunk| chunk.start).collect();
++            arena.clear();
++            assert_eq!(arena.capacity(), 8 * 1024);
++            assert_eq!(
++                arena
++                    .chunks
++                    .iter()
++                    .map(|chunk| chunk.start)
++                    .collect::<Vec<_>>(),
++                storage
++            );
++        }
++    }
++
++    #[test]
++    fn nested_clear_defers_reclamation_and_runs_destructors_before_trimming() {
++        struct Guard {
++            dropped: Rc<Cell<usize>>,
++            payload: [u8; 512],
++        }
++        impl Drop for Guard {
++            fn drop(&mut self) {
++                assert!(self.payload.iter().all(|byte| *byte == 0x5a));
++                self.dropped.set(self.dropped.get() + 1);
++            }
++        }
++        let mut arena = Arena::new(1024);
++        for _ in 0..16 {
++            arena.alloc(|| [0_u8; 1024]);
++        }
++        arena.clear();
++        arena.low_usage_since = Some(Instant::now() - Duration::from_secs(6));
++        let dropped = Rc::new(Cell::new(0));
++        arena.begin_scope();
++        let guard = arena.alloc(|| Guard {
++            dropped: dropped.clone(),
++            payload: [0x5a; 512],
++        });
++        arena.begin_scope();
++        arena.clear();
++        assert_eq!(arena.capacity(), 16 * 1024);
++        assert_eq!(dropped.get(), 0);
++        assert_eq!(guard.payload[0], 0x5a);
++        arena.end_scope();
++        arena.clear();
++        assert_eq!(dropped.get(), 0);
++        arena.end_scope();
++        arena.clear();
++        assert_eq!(dropped.get(), 1);
++        assert_eq!(arena.capacity(), 2 * 1024);
++        assert!(!guard.valid.get(), "cleared handles remain invalid");
++        arena.clear();
++        assert_eq!(dropped.get(), 1);
++    }
++
++    #[test]
++    fn interleaved_large_and_small_windows_do_not_churn_capacity() {
++        let mut arena = Arena::new(1024);
++        for _ in 0..16 {
++            for n in 0_u8..16 {
++                arena.alloc(|| [n; 1024]);
++            }
++            arena.clear();
++            arena.alloc(|| [0_u8; 1024]);
++            arena.clear();
++            assert_eq!(arena.capacity(), 16 * 1024);
++        }
++    }
++
++    #[test]
++    fn a_small_60hz_window_does_not_evict_a_large_1hz_window() {
++        let mut arena = Arena::new(1024);
++        for n in 0_u8..16 {
++            arena.alloc(|| [n; 1024]);
++        }
++        arena.clear();
++        let start = Instant::now();
++        for frame in 0..600 {
++            let used = if frame % 60 == 0 { 16 } else { 1 };
++            arena.trim_surplus_chunks(used, start + Duration::from_millis(frame * 16));
++            assert_eq!(arena.capacity(), 16 * 1024);
++        }
++    }
++
+     #[test]
+     fn test_arena() {
+         let mut arena = Arena::new(1024);

@@ -34,6 +34,7 @@
     "patches/0009-straight-alpha-capture.patch": "8ce7d93db5f0675f85b0a4ddf5864a179641f9d321def284fa9573343b0f3885",
     "patches/0010-path-source-over-alpha.patch": "405cb870623b8d40dc2dd7a7a736e73708b8ebc07e000b84e8937feae293e2dd",
     "patches/0011-native-fullscreen-presentation.patch": "71576f89b0c9aca7ca6c94ea1e2160e3aa77705ebec173ef2aa4b703b8ce1c1b",
-    "patches/0012-rounded-glass-sheds-frame-shadow.patch": "7a52355e20b1857ee3e83a875abe94a004b50bc06e2f95eff0048806344dc4ec"
+    "patches/0012-rounded-glass-sheds-frame-shadow.patch": "7a52355e20b1857ee3e83a875abe94a004b50bc06e2f95eff0048806344dc4ec",
+    "patches/0013-arena-memory-retention.patch": "8e159ae7004eb957a5105838f537e1732c2669716cc83c281c0febd55d0810dd"
   }
 }

@@ -51,6 +51,7 @@ impl Desk {
         // Folds outlive a reload, so a file the agent changed after it was
         // viewed unfolds again as its mark lapses.
         let lapsed = self.changes.lapse_viewed();
+        self.changes.restore_conflicts(&state, cx);
         state.update(cx, |state, cx| {
             for path in &lapsed {
                 state.set_file_collapsed(path, false, cx);

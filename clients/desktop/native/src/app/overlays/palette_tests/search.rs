@@ -3,6 +3,20 @@
 use super::*;
 
 #[gpui::test]
+fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "allocation");
+    keys(cx, "enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        Some(crate::app::settings_panel::Page::Performance)
+    );
+    assert!(cx.debug_bounds("settings-panel").is_some());
+}
+
+#[gpui::test]
 fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext) {
     let (handle, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
