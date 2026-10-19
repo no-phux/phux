@@ -46,6 +46,16 @@ clock) must notify the entity that renders it. Running with
 `GPUI_VIEW_RETENTION=0` draws every view from scratch each frame, which rules
 retention in or out when something looks stale.
 
+The element and event arenas no longer retain a transient draw's lifetime
+peak forever. After five seconds continuously using less than a quarter of
+capacity, a safe outermost clear drops surplus chunks and retains twice the
+latest usage. A larger draw restarts that grace period, so a small animated
+window does not evict capacity needed by a slower large window. Values are
+dropped before chunks; nested scopes still defer reclamation. This reduces
+live allocator capacity, not necessarily the process's immediate footprint.
+`clients/desktop/native/tests/gpui_arena.rs` runs the exact materialized arena tests without
+the image/font fixtures missing from the published GPUI archive.
+
 ## Changing the framework
 
 ```sh
