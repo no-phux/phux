@@ -20,16 +20,6 @@ use crate::app::ui::status::{harness_mark, state_dot};
 use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
 
-/// A record worth a row: one whose process is coming up, up, or going down.
-/// An exited, failed, lost, or never-started record has nothing to show or
-/// attach to, so it stays out of the list.
-pub(super) fn running(resource: &ResourceRecord) -> bool {
-    matches!(
-        exec_state(resource),
-        Some(ExecState::Starting | ExecState::Running | ExecState::Stopping)
-    )
-}
-
 fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
     resource
         .activation
@@ -49,7 +39,7 @@ pub(super) fn record_row(
         ResourceKind::Terminal => "Terminal",
         _ => "Item",
     };
-    let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
+    let label = record_label(resource);
     let state = match exec_state(resource) {
         Some(ExecState::Starting) => "Starting",
         Some(ExecState::Running) => "Running",
@@ -139,6 +129,58 @@ pub(super) fn pane_row(
             desk.after_command(window, cx);
         }))
         .tooltip(move |window, cx| pane_tooltip(&tooltip_terminal, &handle, window, cx))
+}
+
+/// Inventory rows are visible before a session is selected. Opening one
+/// navigates first and defers the reveal until that authority is attached.
+pub(super) fn catalog_pane_row(
+    _: &Desk,
+    work: &crate::app::fleet::Work,
+    pane: &crate::app::fleet::WorkPane,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let destination = work.destination.clone();
+    let terminal = pane.descriptor.terminal_id.clone();
+    let title = pane.label.clone();
+    let selector = format!("catalog-pane-{}-{terminal}", destination.host_label());
+    child_row(SharedString::from(format!("pane-{terminal}")), look)
+        .debug_selector(move || selector.clone())
+        .child(row_icon(dot(5., from_hex(&look.chrome.faint))))
+        .child(row_label(title, Emphasis::Quiet, look))
+        .on_click(cx.listener(move |desk, _, _, cx| {
+            desk.open_work_terminal(destination.clone(), terminal.clone(), cx);
+        }))
+        .into_any_element()
+}
+
+pub(super) fn catalog_record_row(
+    work: &crate::app::fleet::Work,
+    resource: &ResourceRecord,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let destination = work.destination.clone();
+    child_row(
+        SharedString::from(format!("resource-{}", resource.key)),
+        look,
+    )
+    .child(row_icon(dot(5., from_hex(&look.chrome.faint))))
+    .child(row_label(record_label(resource), Emphasis::Quiet, look))
+    .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(destination.clone(), cx)))
+    .into_any_element()
+}
+
+fn record_label(resource: &ResourceRecord) -> String {
+    resource
+        .name
+        .as_deref()
+        .map(crate::app::desk::display_title)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| match resource.kind {
+            ResourceKind::Terminal => "Terminal".into(),
+            _ => "Item".into(),
+        })
 }
 
 /// Detail stays available on hover without repeating it in every row.

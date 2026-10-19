@@ -22,10 +22,6 @@ fn sidebar_tabs_and_background_rows_share_columns_and_keep_actions_inside(cx: &m
         });
         draw(cx);
         let background = cx.debug_bounds("pane-label-@4").expect("background label");
-        let caption = cx
-            .debug_bounds("background-terminals-label")
-            .expect("child caption");
-        assert_eq!(caption.origin.x, background.origin.x);
         for (row, label, actions) in [
             ("tab-fixture-a", "tab-label-fixture-a", "tab-more-fixture-a"),
             ("tab-fixture-c", "tab-label-fixture-c", "tab-more-fixture-c"),

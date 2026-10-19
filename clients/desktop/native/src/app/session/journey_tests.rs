@@ -119,9 +119,13 @@ impl Server {
     /// its stdout. Panics on failure.
     fn output(&self, args: &[&str], stdin: &[u8]) -> Vec<u8> {
         use std::io::Write as _;
-        let mut child = Command::new(&self.binary)
-            .arg("--socket")
-            .arg(&self.socket)
+        let mut command = Command::new(&self.binary);
+        // Workload authority commands operate on isolated disk state and
+        // explicitly reject socket selectors; every dialing verb uses ours.
+        if args.first() != Some(&"workload") {
+            command.arg("--socket").arg(&self.socket);
+        }
+        let mut child = command
             .args(args)
             .env("HOME", &self.root)
             .env("XDG_CONFIG_HOME", self.root.join("config"))

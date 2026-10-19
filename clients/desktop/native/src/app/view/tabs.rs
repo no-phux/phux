@@ -1,6 +1,5 @@
 //! One tab renderer and one set of tab actions: a compact strip in the
-//! titlebar or below the workspace, or rows under the current session in the
-//! navigator. A tab whose agent needs a person wears that state itself: a
+//! titlebar or below the workspace, or rows in the navigator's fixed tab shelf. A tab whose agent needs a person wears that state itself: a
 //! wash and a mark on its corner, not an entry in a separate list. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
 //! (shorter and fainter) until it is selected or hovered.

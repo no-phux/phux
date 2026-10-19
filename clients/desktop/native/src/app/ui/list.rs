@@ -19,8 +19,6 @@ pub(crate) const ROW_INSET: f32 = 8.;
 pub(crate) const ROW_GAP: f32 = 8.;
 /// A child begins one icon column beyond its session's leading edge.
 pub(crate) const CHILD_INSET: f32 = ROW_INSET + ICON;
-/// The shared text column of child tabs, terminals and their section captions.
-pub(crate) const CHILD_LABEL: f32 = CHILD_INSET + ICON + ROW_GAP;
 
 /// List row corners: just inside the kit's.
 pub(crate) fn row_radius(skin: &Skin) -> f32 {
