@@ -61,9 +61,19 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
+- **Dev mode:** `PHUX_DEV=1` or `--dev` ([`devtools`](src/devtools.rs)).
+  `devtools::frames` keeps the last 1200 desk renders (build time and gap)
+  for FPS, jank and the HUD ([`app/hud.rs`](src/app/hud.rs)). The binary
+  installs `phux_perf::alloc::Counting`, which dev mode enables.
+  `devtools::capture_trace` arms `phux_perf::trace` and runs `phux perf
+  trace` against the server at the same time, then merges the two.
+  `devtools::socket` serves all of it as line JSON beside the server socket.
+  `devtools::server` reads the server's report by running `phux perf --json`
+  every two seconds while the HUD or monitor needs it, and never otherwise.
 - **Performance monitor:** search the palette for **Performance Monitor** to
-  open a window that samples the desktop process (not the server) once a
-  second: CPU over the elapsed interval, current and peak resident memory,
+  open a window that samples the desktop process once a second, plus the
+  server's CPU, memory and heap: CPU over the elapsed interval, current and
+  peak resident memory,
   and the kernel, runtime, painter, and UI-thread metrics as rates, means,
   and estimated p95. **Copy JSON** copies them. Nothing is sampled until the
   window opens, and nothing is uploaded. `--dev-telemetry` or

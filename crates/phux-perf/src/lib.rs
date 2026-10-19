@@ -8,11 +8,14 @@
 //! folds two reports into an interval for `phux perf --watch`. See
 //! `docs/operations.md` §"Performance observability" for the catalog.
 
-// `deny`, not `forbid`: native RSS in `process` and pthread QoS in `sched`
-// have narrowly scoped `allow`s with `SAFETY` notes at the FFI calls.
+// `deny`, not `forbid`: native RSS in `process`, pthread QoS in `sched` and
+// the `GlobalAlloc` impl in `alloc` have narrowly scoped `allow`s with
+// `SAFETY` notes.
 #![deny(unsafe_code)]
 
+pub mod alloc;
 mod counter;
+pub mod dev;
 pub mod echo_hop;
 mod histogram;
 mod process;
@@ -20,6 +23,7 @@ mod render;
 mod report;
 mod sched;
 mod throttle;
+pub mod trace;
 
 pub use counter::{Counter, Gauge};
 pub use histogram::{Histogram, HistogramSnapshot, Timer};
@@ -56,6 +60,8 @@ pub fn snapshot_since(
     let process = ProcessStats::capture().map(|now| baseline.map_or(now, |base| now.delta(base)));
     PerfReport {
         stream_diagnostics: None,
+        rss_bytes: ProcessStats::current_rss_bytes(),
+        alloc: alloc::stats(),
         schema_version: SCHEMA_VERSION,
         role: role.to_owned(),
         pid: std::process::id(),

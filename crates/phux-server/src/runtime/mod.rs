@@ -46,6 +46,7 @@ mod native_agent;
 pub mod operation_dedupe;
 mod organization;
 mod path_search;
+pub mod perf_control;
 mod process_env;
 mod program_status;
 /// Shared per-generation state both pane output pumps enforce.

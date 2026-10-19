@@ -33,8 +33,9 @@ use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, InputMode, KillPrecondition,
-    ListenerTransport, ReportedAgentState, SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY, Scope,
-    SpawnResource, StateScope, TerminalSignal, ViewportInfo, WHOAMI_KEY, encode_session_keep_empty,
+    ListenerTransport, PerfOp, ReportedAgentState, SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY,
+    Scope, SpawnResource, StateScope, TerminalSignal, ViewportInfo, WHOAMI_KEY,
+    encode_session_keep_empty,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
@@ -511,6 +512,9 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         }),
         command(Command::GetPerf { reset: false }),
         command(Command::GetPerf { reset: true }),
+        command(Command::PerfControl {
+            op: PerfOp::TraceStart,
+        }),
         command(Command::AppendResourceOutput {
             terminal_id: t.clone(),
             bytes: b"{}\n".to_vec(),
@@ -1257,6 +1261,9 @@ fn rows(world: &mut World) -> Vec<Row> {
             port_range: None,
             linger_secs: 0,
         })),
+        denied(command(Command::PerfControl {
+            op: PerfOp::TraceStop,
+        })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
         // Through the parent alone: a grant naming only the child fails.
@@ -1655,6 +1662,14 @@ fn shutdown_and_open_listener_deny_remote_paired_signal_global() {
             transport: ListenerTransport::Quic,
             port_range: None,
             linger_secs: 0,
+        }
+    ));
+    let observe_bind = scoped(&["observe@global", "bind@global"]);
+    assert!(!admits_command(
+        &world,
+        &observe_bind,
+        Command::PerfControl {
+            op: PerfOp::AllocOn,
         }
     ));
     assert!(admits_command(&world, &grant, Command::Upgrade));
