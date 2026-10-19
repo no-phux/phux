@@ -95,6 +95,8 @@ mod tests {
             process,
             metrics: Vec::new(),
             stream_diagnostics: None,
+            rss_bytes: None,
+            alloc: None,
         }
     }
 

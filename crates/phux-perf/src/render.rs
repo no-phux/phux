@@ -204,7 +204,11 @@ fn fmt_bytes(b: u64) -> String {
 /// [`fmt_bytes`] for a net figure that can go negative.
 fn fmt_signed_bytes(b: i64) -> String {
     let magnitude = fmt_bytes(b.unsigned_abs());
-    if b < 0 { format!("-{magnitude}") } else { magnitude }
+    if b < 0 {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,249 @@
+//! The dev socket: the desktop's telemetry as line JSON, for `phux perf
+//! --desktop`, agents, and `nc -U`.
+//!
+//! One request per line, one response per line:
+//!
+//! ```text
+//! {"op":"perf"}                         full report, frame summary, HUD state
+//! {"op":"frames","n":120}               the last n frames: age, build, gap
+//! {"op":"server"}                       the server's report via `phux perf --json`
+//! {"op":"trace","seconds":5,"server":true}  Perfetto capture; returns paths
+//! {"op":"hud","on":true}                show or hide the HUD
+//! {"op":"alloc","on":true}              heap accounting on or off
+//! {"op":"reset"}                        zero every desktop histogram and counter
+//! {"op":"help"}                         this list
+//! ```
+//!
+//! Every response is `{"ok":true,...}` or `{"ok":false,"error":"..."}`. The
+//! socket is created `0600` and carries no terminal content.
+
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+/// Environment override for the socket path.
+pub const PATH_ENV: &str = "PHUX_DESKTOP_DEV_SOCKET";
+
+/// Longest trace a request may ask for.
+const MAX_TRACE: Duration = Duration::from_secs(60);
+
+/// `desktop-<pid>.dev.sock` beside the server socket, so `phux perf
+/// --desktop` finds it for the same profile; the temp directory when no
+/// server socket is known. [`PATH_ENV`] overrides both.
+#[must_use]
+pub fn path_for(server_socket: Option<&Path>) -> PathBuf {
+    if let Some(path) = std::env::var_os(PATH_ENV) {
+        return PathBuf::from(path);
+    }
+    let name = format!("desktop-{}.dev.sock", std::process::id());
+    server_socket
+        .and_then(Path::parent)
+        .filter(|dir| dir.is_dir())
+        .map_or_else(|| std::env::temp_dir().join(&name), |dir| dir.join(&name))
+}
+
+/// Bind `path` and serve it on a background thread. Returns the bound path.
+///
+/// # Errors
+///
+/// The path could not be bound.
+pub fn serve(path: &Path) -> anyhow::Result<PathBuf> {
+    // A previous desktop with this pid cannot be alive; its socket is stale.
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    std::thread::Builder::new()
+        .name("phux-devtools-socket".to_owned())
+        .spawn(move || accept(&listener))?;
+    Ok(path.to_path_buf())
+}
+
+fn accept(listener: &UnixListener) {
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let spawned = std::thread::Builder::new()
+                    .name("phux-devtools-conn".to_owned())
+                    .spawn(move || serve_connection(stream));
+                if let Err(error) = spawned {
+                    log::warn!("dev socket: could not serve a connection: {error}");
+                }
+            }
+            Err(error) => log::warn!("dev socket: accept failed: {error}"),
+        }
+    }
+}
+
+fn serve_connection(stream: UnixStream) {
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
+    for line in BufReader::new(stream).lines() {
+        let Ok(line) = line else { return };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Ok(request) => handle(&request),
+            Err(error) => failure(format!("request is not JSON: {error}")),
+        };
+        if writeln!(writer, "{response}").is_err() {
+            return;
+        }
+    }
+}
+
+/// Answer one request.
+#[must_use]
+pub fn handle(request: &Value) -> Value {
+    match request["op"].as_str().unwrap_or_default() {
+        "perf" => perf(),
+        "frames" => frames(request["n"].as_u64()),
+        "server" => server(),
+        "trace" => trace(request),
+        "hud" => toggle(request, super::hud_visible(), |on| {
+            super::set_hud(on);
+            json!({ "ok": true, "hud": on })
+        }),
+        "alloc" => toggle(request, phux_perf::alloc::enabled(), |on| {
+            if on {
+                phux_perf::alloc::enable();
+            } else {
+                phux_perf::alloc::disable();
+            }
+            json!({ "ok": true, "alloc": on, "installed": phux_perf::alloc::installed() })
+        }),
+        "reset" => {
+            for table in super::tables() {
+                phux_perf::reset(table);
+            }
+            json!({ "ok": true })
+        }
+        "help" | "" => json!({
+            "ok": true,
+            "ops": ["perf", "frames", "server", "trace", "hud", "alloc", "reset", "help"],
+        }),
+        other => failure(format!("unknown op {other:?}; try {{\"op\":\"help\"}}")),
+    }
+}
+
+fn failure(error: impl Into<String>) -> Value {
+    json!({ "ok": false, "error": error.into() })
+}
+
+/// `on` from the request, or the opposite of `current` when it is absent.
+fn toggle(request: &Value, current: bool, apply: impl FnOnce(bool) -> Value) -> Value {
+    apply(request["on"].as_bool().unwrap_or(!current))
+}
+
+fn perf() -> Value {
+    let snapshot = super::snapshot();
+    json!({
+        "ok": true,
+        "report": snapshot.report,
+        "frames": snapshot.frames,
+        "hud": snapshot.hud,
+        "dev": snapshot.dev,
+        "socket": snapshot.socket,
+    })
+}
+
+fn frames(n: Option<u64>) -> Value {
+    let n = n.map_or(120, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let now = Instant::now();
+    let frames: Vec<Value> = super::frames::last(n.min(super::frames::CAPACITY))
+        .iter()
+        .map(|frame| {
+            json!({
+                "ago_us": micros(now.saturating_duration_since(frame.at)),
+                "build_us": micros(frame.build),
+                "gap_us": frame.gap.map(micros),
+            })
+        })
+        .collect();
+    json!({ "ok": true, "frames": frames })
+}
+
+fn server() -> Value {
+    let Some(cli) = &super::get().cli else {
+        return failure("no phux CLI is known to this desktop");
+    };
+    match cli.report() {
+        Ok(report) => json!({ "ok": true, "report": report }),
+        Err(error) => failure(format!("{error:#}")),
+    }
+}
+
+fn trace(request: &Value) -> Value {
+    let seconds = request["seconds"].as_f64().unwrap_or(5.0);
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return failure("seconds must be positive");
+    }
+    let duration = Duration::from_secs_f64(seconds).min(MAX_TRACE);
+    let with_server = request["server"].as_bool().unwrap_or(true);
+    match super::capture_trace(duration, with_server) {
+        Ok(result) => {
+            let mut value = json!(result);
+            value["ok"] = json!(true);
+            value
+        }
+        Err(error) => failure(format!("{error:#}")),
+    }
+}
+
+fn micros(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_and_malformed_requests_fail_politely() {
+        let reply = handle(&json!({ "op": "explode" }));
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap_or_default().contains("help"));
+        assert_eq!(handle(&json!({ "op": "help" }))["ok"], true);
+        assert_eq!(handle(&json!({ "op": "trace", "seconds": 0 }))["ok"], false);
+    }
+
+    #[test]
+    fn perf_and_frames_answer_over_a_real_socket() {
+        let dir = std::env::temp_dir().join(format!("phux-devsock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let path = serve(&dir.join("t.sock")).unwrap_or_else(|e| panic!("{e}"));
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        drop(crate::devtools::frames::FrameTimer::start());
+        let stream = UnixStream::connect(&path).unwrap_or_else(|e| panic!("{e}"));
+        let mut writer = stream.try_clone().unwrap_or_else(|e| panic!("{e}"));
+        let mut lines = BufReader::new(stream).lines();
+        let mut ask = |request: Value| -> Value {
+            writeln!(writer, "{request}").unwrap_or_else(|e| panic!("{e}"));
+            let line = lines
+                .next()
+                .unwrap_or_else(|| panic!("no reply"))
+                .unwrap_or_else(|e| panic!("{e}"));
+            serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}"))
+        };
+        let perf = ask(json!({ "op": "perf" }));
+        assert_eq!(perf["ok"], true);
+        assert!(
+            perf["report"]["metrics"]
+                .as_array()
+                .is_some_and(|m| !m.is_empty())
+        );
+        assert!(perf["frames"]["fps"].is_number());
+        let frames = ask(json!({ "op": "frames", "n": 5 }));
+        assert!(frames["frames"].as_array().is_some_and(|f| !f.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

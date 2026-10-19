@@ -130,10 +130,7 @@ pub fn stop() -> Option<Capture> {
         .clone();
     let mut collected = Vec::with_capacity(threads.len());
     for thread in threads {
-        let mut slot = thread
-            .events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut slot = thread.events.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.0 != generation || slot.1.is_empty() {
             continue;
         }
@@ -155,12 +152,7 @@ pub fn stop() -> Option<Capture> {
 /// Record a span that ended now and lasted `dur`, keyed by histogram address.
 pub(crate) fn record_histogram(histogram: usize, dur: Duration) {
     if armed() {
-        push(
-            Key::Histogram(histogram),
-            Kind::Span {
-                dur_ns: nanos(dur),
-            },
-        );
+        push(Key::Histogram(histogram), Kind::Span { dur_ns: nanos(dur) });
     }
 }
 
@@ -334,10 +326,10 @@ impl Capture {
     ) -> Value {
         let name = match event.key {
             Key::Named(name) => name.to_owned(),
-            Key::Histogram(addr) => names.iter().find(|(a, _)| *a == addr).map_or_else(
-                || format!("histogram@{addr:#x}"),
-                |(_, n)| (*n).to_owned(),
-            ),
+            Key::Histogram(addr) => names
+                .iter()
+                .find(|(a, _)| *a == addr)
+                .map_or_else(|| format!("histogram@{addr:#x}"), |(_, n)| (*n).to_owned()),
         };
         let cat = name.split('.').next().unwrap_or_default().to_owned();
         let ts = self.ts_us(event.start_ns);
