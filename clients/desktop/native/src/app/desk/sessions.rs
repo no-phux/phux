@@ -308,7 +308,7 @@ impl Desk {
             );
             return;
         };
-        match link.connection.kill_session(key) {
+        match link.connection.try_kill_session(key) {
             Ok(operation) => {
                 self.kills.insert(operation, name.to_owned());
             }

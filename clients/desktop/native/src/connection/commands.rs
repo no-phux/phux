@@ -16,11 +16,15 @@ impl Connection {
     }
 
     /// Kill `session` with one `SESSION_KILL`. The result is
-    /// [`Event::OrganizationOperation`] for the returned operation.
-    ///
-    /// # Errors
-    /// A sentence when the connection or journal refuses the submission.
-    pub fn kill_session(&self, session: SessionKey) -> Result<OperationId, String> {
+    /// [`Event::OrganizationOperation`] for the returned operation; `None`
+    /// when the server does not take the command.
+    #[must_use]
+    pub fn kill_session(&self, session: SessionKey) -> Option<OperationId> {
+        self.try_kill_session(session).ok()
+    }
+
+    /// Submit a session kill while preserving the failure for the UI.
+    pub(crate) fn try_kill_session(&self, session: SessionKey) -> Result<OperationId, String> {
         if self.closed || self.status != Status::Attached {
             return Err("Not connected.".to_owned());
         }
