@@ -43,7 +43,35 @@ pub fn path_for(server_socket: Option<&Path>) -> PathBuf {
     server_socket
         .and_then(Path::parent)
         .filter(|dir| dir.is_dir())
-        .map_or_else(|| std::env::temp_dir().join(&name), |dir| dir.join(&name))
+        .map_or_else(|| private_temp_dir().join(&name), |dir| dir.join(&name))
+}
+
+/// A `0700` directory of this process's own under the temp directory, so
+/// the socket is never briefly reachable at the umask's mode in a shared
+/// `/tmp` between `bind` and `chmod`.
+fn private_temp_dir() -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let dir = std::env::temp_dir().join(format!("phux-desktop-{}", std::process::id()));
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    dir
+}
+
+/// Remove `path` only when it is a socket nobody answers on: a desktop that
+/// died with this pid. Anything else at the path is left alone, so a
+/// mistaken override cannot delete the server's socket or a file.
+fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileTypeExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if !meta.file_type().is_socket() {
+        anyhow::bail!("{} exists and is not a socket", path.display());
+    }
+    if UnixStream::connect(path).is_ok() {
+        anyhow::bail!("{} is already being served", path.display());
+    }
+    std::fs::remove_file(path)?;
+    Ok(())
 }
 
 /// Bind `path` and serve it on a background thread. Returns the bound path.
@@ -52,8 +80,7 @@ pub fn path_for(server_socket: Option<&Path>) -> PathBuf {
 ///
 /// The path could not be bound.
 pub fn serve(path: &Path) -> anyhow::Result<PathBuf> {
-    // A previous desktop with this pid cannot be alive; its socket is stale.
-    let _ = std::fs::remove_file(path);
+    remove_stale_socket(path)?;
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     std::thread::Builder::new()
@@ -244,6 +271,11 @@ mod tests {
         assert!(perf["frames"]["fps"].is_number());
         let frames = ask(json!({ "op": "frames", "n": 5 }));
         assert!(frames["frames"].as_array().is_some_and(|f| !f.is_empty()));
+        assert!(serve(&path).is_err(), "a live socket is never replaced");
+        let file = dir.join("not-a-socket");
+        std::fs::write(&file, "keep").unwrap_or_else(|e| panic!("{e}"));
+        assert!(serve(&file).is_err());
+        assert!(file.exists(), "a non-socket at the path is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -28,6 +28,9 @@ const PATH_ENV: &str = "PHUX_DESKTOP_DEV_SOCKET";
 /// presumed stuck: it also waits for the server and writes two files.
 const TRACE_SLACK: Duration = Duration::from_secs(30);
 
+/// The longest trace the desktop's dev socket records.
+const MAX_DESKTOP_TRACE: Duration = Duration::from_secs(60);
+
 /// What to ask the desktop.
 #[derive(Debug)]
 pub(crate) enum Ask {
@@ -212,14 +215,20 @@ fn print(json: bool, report: &PerfReport, frames: &Value, interval: Option<Durat
 }
 
 fn trace(json: bool, seconds: f64, out: Option<&Path>, path: &Path) -> Result<(), Refusal> {
-    let span = Duration::try_from_secs_f64(seconds).map_err(|_| {
-        Refusal::new(
-            "invalid_argument",
-            format!("--seconds {seconds} is not a usable duration"),
-            "give a positive number of seconds",
-            2,
-        )
-    })?;
+    let span = Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|span| !span.is_zero() && *span <= MAX_DESKTOP_TRACE)
+        .ok_or_else(|| {
+            Refusal::new(
+                "invalid_argument",
+                format!("--seconds {seconds} is not a usable duration"),
+                format!(
+                    "give more than 0 and at most {} seconds; the desktop caps a trace there",
+                    MAX_DESKTOP_TRACE.as_secs()
+                ),
+                2,
+            )
+        })?;
     if !json {
         info!("recording a desktop and server trace for {seconds}s");
     }

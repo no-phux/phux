@@ -39,6 +39,14 @@ fn ok_json(value: &serde_json::Value) -> CommandResult {
     CommandResult::OkWith(CommandValue::Json(value.to_string()))
 }
 
+/// A trace nobody stops (the CLI was killed, the connection dropped) is
+/// stopped and saved after this long, so it cannot hold its buffers and
+/// refuse every later trace until the server restarts.
+pub const TRACE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Trace files kept in the traces directory; older ones are removed.
+const KEEP_TRACES: usize = 20;
+
 fn trace_start() -> CommandResult {
     if !trace::start(trace::DEFAULT_MAX_EVENTS) {
         return refuse(
@@ -46,8 +54,23 @@ fn trace_start() -> CommandResult {
             "PERF_CONTROL: a trace is already recording",
         );
     }
+    let generation = trace::generation();
+    tokio::spawn(async move {
+        tokio::time::sleep(TRACE_DEADLINE).await;
+        let Some(capture) = trace::stop_generation(generation) else {
+            return;
+        };
+        match tokio::task::spawn_blocking(move || write_capture(&capture)).await {
+            Ok(Ok(reply)) => tracing::warn!(
+                path = %reply["path"],
+                "perf trace was never stopped; stopped it at the deadline and saved it"
+            ),
+            Ok(Err(message)) => tracing::warn!(%message, "abandoned perf trace not written"),
+            Err(err) => tracing::warn!(%err, "abandoned perf trace writer failed"),
+        }
+    });
     tracing::info!("perf trace started");
-    ok_json(&json!({ "tracing": true }))
+    ok_json(&json!({ "tracing": true, "deadline_secs": TRACE_DEADLINE.as_secs() }))
 }
 
 async fn trace_stop() -> CommandResult {
@@ -80,8 +103,16 @@ fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)
         .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    let body = capture.to_chrome_json(PROCESS_NAME, &[crate::perf::TABLE]);
-    std::fs::write(&path, body).map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    prune_traces(dir, KEEP_TRACES.saturating_sub(1));
+    let file = std::fs::File::create(&path)
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    capture
+        .write_chrome_json(
+            std::io::BufWriter::new(file),
+            PROCESS_NAME,
+            &[crate::perf::TABLE],
+        )
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
     tracing::info!(path = %path.display(), events = capture.event_count(), "perf trace written");
     Ok(json!({
         "path": path.display().to_string(),
@@ -89,6 +120,31 @@ fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> 
         "dropped": capture.dropped(),
         "duration_ms": u64::try_from(capture.duration().as_millis()).unwrap_or(u64::MAX),
     }))
+}
+
+/// Keep only the newest `keep` server traces in `dir`, by name (the names
+/// start with a millisecond timestamp). Failures are ignored: retention is
+/// housekeeping, never a reason to lose the trace being written.
+fn prune_traces(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut traces: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "json")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("server-"))
+        })
+        .collect();
+    traces.sort();
+    let excess = traces.len().saturating_sub(keep);
+    for old in traces.into_iter().take(excess) {
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 /// `<state dir>/traces`, beside the server log.
@@ -116,6 +172,32 @@ fn alloc_switch(on: bool) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_keeps_the_newest_server_traces_only() {
+        let dir = std::env::temp_dir().join(format!("phux-trace-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        for name in [
+            "server-100-1.json",
+            "server-200-1.json",
+            "server-300-1.json",
+            "other.json",
+        ] {
+            std::fs::write(dir.join(name), "{}").unwrap_or_else(|e| panic!("{e}"));
+        }
+        prune_traces(&dir, 2);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["other.json", "server-200-1.json", "server-300-1.json"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn trace_path_names_the_process_and_lands_in_the_dir() {

@@ -16,11 +16,14 @@
 //! capture, so captures from the server and the desktop line up on one
 //! timeline when [`merge_chrome_json`] puts them in one file.
 
+use std::borrow::Cow;
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{Metric, MetricSource};
@@ -114,20 +117,42 @@ pub fn start(max_events: usize) -> bool {
     true
 }
 
+/// The armed capture's id; it changes with every [`start`].
+#[must_use]
+pub fn generation() -> u64 {
+    GENERATION.load(Relaxed)
+}
+
 /// Disarm and collect. `None` when nothing was armed.
 #[must_use]
 pub fn stop() -> Option<Capture> {
+    stop_matching(None)
+}
+
+/// [`stop`], but only the capture [`generation`] named: a deadline set for
+/// one capture must not end the next.
+#[must_use]
+pub fn stop_generation(generation: u64) -> Option<Capture> {
+    stop_matching(Some(generation))
+}
+
+fn stop_matching(only: Option<u64>) -> Option<Capture> {
     let _control = CONTROL.lock().unwrap_or_else(PoisonError::into_inner);
-    if !ARMED.swap(false, Relaxed) {
+    let generation = GENERATION.load(Relaxed);
+    if only.is_some_and(|only| only != generation) || !ARMED.swap(false, Relaxed) {
         return None;
     }
-    let generation = GENERATION.load(Relaxed);
     let anchor_ns = ANCHOR_NS.load(Relaxed);
     let duration = Duration::from_nanos(now_ns().saturating_sub(anchor_ns));
-    let threads = THREADS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let threads = {
+        let mut threads = THREADS.lock().unwrap_or_else(PoisonError::into_inner);
+        let all = threads.clone();
+        // A buffer only this list holds belongs to a thread that has exited
+        // (its thread-local dropped); collect it below, then forget it, so a
+        // churning pool does not grow the list capture after capture.
+        threads.retain(|buf| Arc::strong_count(buf) > 2);
+        all
+    };
     let mut collected = Vec::with_capacity(threads.len());
     for thread in threads {
         let mut slot = thread.events.lock().unwrap_or_else(PoisonError::into_inner);
@@ -215,7 +240,9 @@ fn push(key: Key, kind: Kind) {
         Kind::Instant | Kind::Counter { .. } => now,
     };
     let generation = GENERATION.load(Relaxed);
-    LOCAL.with(|cell| {
+    // `try_with`: a span can end while this thread's locals are being torn
+    // down; that event is lost rather than panicking the thread.
+    let _ = LOCAL.try_with(|cell| {
         let buf = cell.get_or_init(register_thread);
         let mut slot = buf.events.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.0 != generation {
@@ -287,65 +314,91 @@ impl Capture {
     /// histogram events, with the metric's dotted prefix as the category.
     #[must_use]
     pub fn to_chrome_json(&self, process: &str, tables: &[&[Metric]]) -> String {
+        let mut out = Vec::new();
+        // Writing to a Vec cannot fail.
+        let _ = self.write_chrome_json(&mut out, process, tables);
+        String::from_utf8(out).unwrap_or_default()
+    }
+
+    /// [`Self::to_chrome_json`] streamed into `out` one event at a time, so
+    /// a full capture never exists as a JSON tree in memory. Give it a
+    /// `BufWriter` over the file.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `out` returns.
+    pub fn write_chrome_json(
+        &self,
+        mut out: impl std::io::Write,
+        process: &str,
+        tables: &[&[Metric]],
+    ) -> std::io::Result<()> {
         let pid = std::process::id();
-        let names = histogram_names(tables);
-        let mut events = vec![json!({
-            "ph": "M", "name": "process_name", "pid": pid, "tid": 0,
-            "args": { "name": process },
-        })];
+        let names: HashMap<usize, &'static str> = histogram_names(tables).into_iter().collect();
+        out.write_all(b"{\"traceEvents\":[")?;
+        let meta = |name, tid, label| OutEvent {
+            ph: "M",
+            name,
+            cat: "",
+            pid,
+            tid,
+            ts: None,
+            dur: None,
+            s: None,
+            args: Some(Args::Name { name: label }),
+        };
+        serde_json::to_writer(&mut out, &meta("process_name", 0, process))?;
         for thread in &self.threads {
-            events.push(json!({
-                "ph": "M", "name": "thread_name", "pid": pid, "tid": thread.tid,
-                "args": { "name": thread.name },
-            }));
+            out.write_all(b",")?;
+            serde_json::to_writer(&mut out, &meta("thread_name", thread.tid, &thread.name))?;
             for event in &thread.events {
-                events.push(self.event_json(pid, thread.tid, event, &names));
+                let name: Cow<'_, str> = match event.key {
+                    Key::Named(name) => Cow::Borrowed(name),
+                    Key::Histogram(addr) => names.get(&addr).map_or_else(
+                        || Cow::Owned(format!("histogram@{addr:#x}")),
+                        |name| Cow::Borrowed(*name),
+                    ),
+                };
+                let mut line = OutEvent {
+                    ph: "X",
+                    name: &name,
+                    cat: name.split('.').next().unwrap_or_default(),
+                    pid,
+                    tid: thread.tid,
+                    ts: Some(self.ts_us(event.start_ns)),
+                    dur: None,
+                    s: None,
+                    args: None,
+                };
+                match event.kind {
+                    Kind::Span { dur_ns } => line.dur = Some(ns_to_us(dur_ns)),
+                    Kind::Instant => {
+                        line.ph = "i";
+                        line.s = Some("t");
+                    }
+                    Kind::Counter { value } => {
+                        line.ph = "C";
+                        line.args = Some(Args::Value { value });
+                    }
+                }
+                out.write_all(b",")?;
+                serde_json::to_writer(&mut out, &line)?;
             }
         }
-        json!({
-            "traceEvents": events,
-            "displayTimeUnit": "ns",
-            "otherData": {
+        out.write_all(b"],\"displayTimeUnit\":\"ns\",\"otherData\":")?;
+        serde_json::to_writer(
+            &mut out,
+            &json!({
                 "process": process,
                 "pid": pid,
                 "anchor_unix_us": self.anchor_unix_us,
                 "duration_us": u64::try_from(self.duration.as_micros()).unwrap_or(u64::MAX),
                 "events": self.event_count(),
                 "dropped": self.dropped,
-            },
-        })
-        .to_string()
-    }
-
-    fn event_json(
-        &self,
-        pid: u32,
-        tid: u64,
-        event: &Event,
-        names: &[(usize, &'static str)],
-    ) -> Value {
-        let name = match event.key {
-            Key::Named(name) => name.to_owned(),
-            Key::Histogram(addr) => names
-                .iter()
-                .find(|(a, _)| *a == addr)
-                .map_or_else(|| format!("histogram@{addr:#x}"), |(_, n)| (*n).to_owned()),
-        };
-        let cat = name.split('.').next().unwrap_or_default().to_owned();
-        let ts = self.ts_us(event.start_ns);
-        match event.kind {
-            Kind::Span { dur_ns } => json!({
-                "ph": "X", "name": name, "cat": cat, "pid": pid, "tid": tid,
-                "ts": ts, "dur": ns_to_us(dur_ns),
             }),
-            Kind::Instant => json!({
-                "ph": "i", "s": "t", "name": name, "cat": cat, "pid": pid, "tid": tid, "ts": ts,
-            }),
-            Kind::Counter { value } => json!({
-                "ph": "C", "name": name, "cat": cat, "pid": pid, "tid": tid, "ts": ts,
-                "args": { "value": value },
-            }),
-        }
+        )?;
+        out.write_all(b"}")?;
+        out.flush()
     }
 
     /// Wall-clock microseconds for a [`now_ns`] reading. A span that began
@@ -362,6 +415,32 @@ impl Capture {
         };
         self.anchor_unix_us as f64 + offset
     }
+}
+
+/// One trace event as written; fields absent for a kind are left out.
+#[derive(Serialize)]
+struct OutEvent<'a> {
+    ph: &'static str,
+    name: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    cat: &'a str,
+    pid: u32,
+    tid: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ts: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dur: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    s: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<Args<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Args<'a> {
+    Name { name: &'a str },
+    Value { value: f64 },
 }
 
 /// Merge Chrome trace-event documents (from [`Capture::to_chrome_json`],
@@ -506,5 +585,13 @@ mod tests {
             merged["otherData"]["processes"].as_array().map(Vec::len),
             Some(2)
         );
+
+        // A deadline for one capture does not end the next.
+        assert!(start(4));
+        let armed_generation = generation();
+        assert!(stop_generation(armed_generation + 1).is_none());
+        assert!(armed());
+        assert!(stop_generation(armed_generation).is_some());
+        assert!(!armed());
     }
 }

@@ -24,6 +24,7 @@ use phux_protocol::wire::frame::PerfOp;
 use phux_server::runtime::default_socket_path;
 use usage::{Subcommands, ValueEnum};
 
+use crate::commands::json_err::Refusal;
 use crate::commands::{JsonOpt, cli_runtime, json_err};
 
 /// Subcommands of `phux perf`. Absent, the verb prints the telemetry report.
@@ -99,13 +100,17 @@ pub(crate) struct PerfOptions {
 /// Shortest poll interval `--watch` will honour.
 pub(crate) const MIN_WATCH: Duration = Duration::from_millis(100);
 
-/// Longest trace `phux perf trace` will ask for.
-const MAX_TRACE: Duration = Duration::from_secs(3600);
+/// Longest trace `phux perf trace` will ask for: the server stops any trace
+/// at its own deadline, so asking for more would only lose the stop.
+const MAX_TRACE: Duration = phux_server::runtime::perf_control::TRACE_DEADLINE;
 
 /// What one `phux perf` invocation does once connected.
 enum Plan {
     Report(PerfOptions),
-    Trace { seconds: f64, out: Option<PathBuf> },
+    Trace {
+        span: Duration,
+        out: Option<PathBuf>,
+    },
     Alloc(AllocSwitch),
 }
 
@@ -132,7 +137,10 @@ pub(crate) fn run_perf(
         }
         Some(PerfAction::Trace {
             seconds, out, json, ..
-        }) => (json.json, Plan::Trace { seconds, out }),
+        }) => match trace_span(seconds) {
+            Ok(span) => (json.json, Plan::Trace { span, out }),
+            Err(refusal) => return refusal.emit(json.json),
+        },
         Some(PerfAction::Alloc {
             state,
             desktop,
@@ -159,9 +167,9 @@ async fn run(json: bool, plan: Plan, socket_path: &Path) -> Result<(), AttachErr
     let mut conn = Connection::connect(socket_path).await?;
     match plan {
         Plan::Report(opts) => report(opts, &mut conn).await,
-        Plan::Trace { seconds, out } => {
+        Plan::Trace { span, out } => {
             require_perf_control(&mut conn).await?;
-            trace(json, seconds, out.as_deref(), &mut conn).await
+            trace(json, span, out.as_deref(), &mut conn).await
         }
         Plan::Alloc(state) => {
             require_perf_control(&mut conn).await?;
@@ -183,24 +191,37 @@ async fn require_perf_control(conn: &mut Connection) -> Result<(), AttachError> 
     ))
 }
 
+/// `--seconds` as a trace length, checked before anything connects so a bad
+/// value reads as a bad argument, not as a server problem.
+fn trace_span(seconds: f64) -> Result<Duration, Refusal> {
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|span| !span.is_zero() && *span <= MAX_TRACE)
+        .ok_or_else(|| {
+            Refusal::new(
+                "invalid_argument",
+                format!("--seconds {seconds} is not a usable duration"),
+                format!(
+                    "give more than 0 and at most {} seconds; the server stops any trace there",
+                    MAX_TRACE.as_secs()
+                ),
+                2,
+            )
+        })
+}
+
 async fn trace(
     json: bool,
-    seconds: f64,
+    span: Duration,
     out: Option<&Path>,
     conn: &mut Connection,
 ) -> Result<(), AttachError> {
-    let Some(span) = Duration::try_from_secs_f64(seconds)
-        .ok()
-        .filter(|span| *span <= MAX_TRACE)
-    else {
-        return Err(AttachError::Refused(format!(
-            "--seconds {seconds} is not a usable duration; give 0 to {} seconds",
-            MAX_TRACE.as_secs()
-        )));
-    };
     phux_client::state::perf_control_on(conn, PerfOp::TraceStart).await?;
     if !json {
-        info!("recording a server trace for {seconds}s (Ctrl-C stops early)");
+        info!(
+            "recording a server trace for {}s (Ctrl-C stops early)",
+            span.as_secs_f64()
+        );
     }
     tokio::select! {
         () = tokio::time::sleep(span) => {}
