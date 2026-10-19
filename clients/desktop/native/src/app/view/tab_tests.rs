@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::tabs::tab_height;
-use super::titlebar::{MENU_RAIL, controls_fit};
+use super::titlebar::controls_fit;
 use super::*;
 use crate::app::desk::Modal;
 use crate::app::ui::list::row_radius;

@@ -117,10 +117,13 @@ Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 `~/.config/phux-desktop/updates.json`). Bare development executables and launches
 with explicit CLI/socket/profile overrides cannot install updates.
 
-The window is a sidebar (every visible session, its pane count and independently
-expandable contents), workspace tabs, split panes, and a status bar that
-speaks only for exceptions. Command-key chords belong to the app; everything
-else reaches the terminal.
+The window is a sidebar (every visible session, its terminal count and
+independently expandable contents), workspace tabs and split panes. Exceptions
+speak where they apply: a connection or startup chip in the titlebar, and a
+**Follow live** pill on a pane scrolled back from its output. The sidebar, the
+Changes panel and a session's rows slide open and shut unless **Animations** is
+off or the system reduces motion. Command-key chords belong to the app;
+everything else reaches the terminal.
 
 Choose **Top**, **Bottom** or **Sidebar** in **Settings > Layout & notifications > Tab placement**,
 or **View** in the main menu. The choice is saved with your display

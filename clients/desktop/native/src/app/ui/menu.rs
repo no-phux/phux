@@ -32,6 +32,9 @@ const PAD: f32 = 10.;
 const ICON_COLUMN: f32 = 16.;
 /// The header's icon disc.
 const DISC: f32 = 30.;
+/// The chevron glyph's blank right side at 13pt: trailing chevrons give it
+/// back so their ink ends on the shortcuts' edge.
+const CHEVRON_BEARING: f32 = 3.5;
 const ROW: f32 = 34.;
 const DETAIL_ROW: f32 = 48.;
 /// Space above a row that starts a group.

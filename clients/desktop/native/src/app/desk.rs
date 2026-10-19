@@ -59,6 +59,18 @@ pub(crate) use labels::*;
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_MOVED: &str = "The terminal changed before the upload started. Nothing was pasted.";
 
+/// How long a part of the chrome that just opened or closed keeps moving: a
+/// little past the chrome spring's settle, so nothing is dropped mid-flight.
+pub(crate) const DISCLOSURE: Duration = Duration::from_millis(600);
+/// [`Desk::disclose`] keys for the sidebar and the Changes panel.
+pub(crate) const SIDEBAR_DISCLOSURE: &str = "sidebar";
+pub(crate) const CHANGES_DISCLOSURE: &str = "changes";
+
+/// The [`Desk::disclose`] key for a session's rows.
+pub(crate) fn session_disclosure(key: &str) -> String {
+    format!("session:{key}")
+}
+
 fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
     super::notifications::AgentAttention {
         state: info.state,
@@ -255,6 +267,9 @@ pub struct Desk {
     pending_project_terminal: Option<ResourceId>,
     /// Explicitly folded sessions, keyed by host, authority and session identity.
     pub(crate) collapsed: std::collections::HashSet<String>,
+    /// When each part of the chrome last opened or closed (the sidebar, the
+    /// Changes panel, a session's rows): see [`Desk::disclose`].
+    pub(crate) disclosures: HashMap<String, Instant>,
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,

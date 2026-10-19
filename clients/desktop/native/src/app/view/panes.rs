@@ -7,7 +7,9 @@
 
 use crate::settings::TabPosition;
 use gpui::prelude::*;
-use gpui::{Context, IntoElement, ParentElement, StyleRefinement, Styled, Window, div, px};
+use gpui::{
+    AnimationExt, Context, IntoElement, ParentElement, StyleRefinement, Styled, Window, div, px,
+};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use phux_client_runtime::control::Status;
@@ -31,7 +33,6 @@ pub(super) fn main_column(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
-    let status = look.skin.chrome.status;
     div()
         .debug_selector(|| "main-column".into())
         .flex_grow(1.)
@@ -53,22 +54,29 @@ pub(super) fn main_column(
                 ))
             },
         )
-        .when(status > 0., |column| {
-            column.child(super::status::status_bar(desk, status, look, cx))
-        })
 }
 
-/// The height of the chrome under the panes: the bottom tab strip while tabs
-/// sit there, then the status line. A sibling of the main column ends this
-/// far up to share the pane cards' bottom edge.
-pub(super) fn bottom_chrome(desk: &Desk, look: &Look) -> f32 {
-    let chrome = &look.skin.chrome;
-    let tabs = if super::tabs_at(desk, &look.skin, TabPosition::Bottom) {
-        chrome.titlebar
-    } else {
+/// The space the workspace keeps under its cards: none over the bottom tab
+/// strip, which spaces itself, else one gutter.
+pub(super) fn foot(desk: &Desk, look: &Look) -> f32 {
+    if super::tabs_at(desk, &look.skin, TabPosition::Bottom) {
         0.
-    };
-    tabs + chrome.status.max(0.)
+    } else {
+        look.skin.shape.gutter
+    }
+}
+
+/// The cards' inset from the main column's leading edge: one gutter, less
+/// the sidebar's own row inset while it shows, so the space between the
+/// sidebar's rows and the first card reads as one gutter too.
+pub(super) fn lead_inset(desk: &Desk, look: &Look) -> f32 {
+    let gutter = look.skin.shape.gutter;
+    let sidebar = super::navigator::wanted(desk) && look.skin.chrome.sidebar > 0.;
+    if sidebar {
+        (gutter - super::navigator::LIST_INSET * look.skin.chrome.sidebar.clamp(0., 1.)).max(0.)
+    } else {
+        gutter
+    }
 }
 
 fn workspace_body(
@@ -78,6 +86,8 @@ fn workspace_body(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let gutter = look.skin.shape.gutter;
+    let lead = lead_inset(desk, look);
+    let moves = super::chrome_moves(desk, cx);
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
     div()
@@ -86,7 +96,8 @@ fn workspace_body(
         .min_h(px(0.))
         .relative()
         .pt(px(gutter))
-        .px(px(gutter))
+        .pr(px(gutter))
+        .pb(px(foot(desk, look)))
         .child(if let Some(id) = zoomed {
             desk.placement(&id).cloned().map_or_else(
                 || div().into_any_element(),
@@ -97,7 +108,13 @@ fn workspace_body(
         } else {
             empty_state(desk, look, cx).into_any_element()
         })
-        .children(super::status::peek_card(desk, look, cx))
+        .children(super::status::peek_card(desk, look, window, cx))
+        // Springs with the sidebar, so the cards keep their gap as it moves.
+        .with_spring(
+            "workspace-lead",
+            super::chrome_spring(moves, lead),
+            |body, inset| body.pl(px(inset)),
+        )
 }
 
 fn empty_state(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {

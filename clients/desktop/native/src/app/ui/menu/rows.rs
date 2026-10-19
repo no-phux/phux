@@ -103,7 +103,8 @@ impl GlassMenu {
                             el.child(
                                 Icon::new(IconName::ChevronRight)
                                     .size(px(13.))
-                                    .text_color(ink.opacity(MUTED)),
+                                    .text_color(ink.opacity(MUTED))
+                                    .mr(px(-CHEVRON_BEARING)),
                             )
                         }),
                 )
@@ -192,7 +193,8 @@ impl GlassMenu {
                 el.child(
                     Icon::new(IconName::ChevronRight)
                         .size(px(13.))
-                        .text_color(ink.opacity(HINT)),
+                        .text_color(ink.opacity(HINT))
+                        .mr(px(-CHEVRON_BEARING)),
                 )
             })
             .when(item.checked, |el| {

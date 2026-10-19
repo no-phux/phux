@@ -1,7 +1,7 @@
-//! Terminal-first chrome: titlebar, navigator, split tree, status, overlays.
+//! Terminal-first chrome: titlebar, navigator, split tree, overlays.
 //!
-//! The window is one sheet of glass over the desktop blur. Titlebar,
-//! navigator and status sit on it unframed; panes float on it as rounded
+//! The window is one sheet of glass over the desktop blur. The titlebar
+//! and navigator sit on it unframed; panes float on it as rounded
 //! cards with no header. A pane's controls appear when the pointer reaches
 //! its top edge. Every extent, radius and paint comes from the desk's skin
 //! each frame, so a skin shift (such as into the plain terminal) morphs
@@ -16,7 +16,7 @@
 //! | [`changes`] | the Changes panel: the focused pane's Git checkout |
 //! | [`tabs`] | one tab renderer for the titlebar, bottom strip and navigator |
 //! | [`panes`] | the split tree, pane cards, their controls and the empty state |
-//! | [`status`] | the exceptions-only status line and the notification peek |
+//! | [`status`] | exception chips, the Follow live pill and the notification peek |
 //!
 //! Shared pieces come from [`super::ui`]; menus from [`super::menus`].
 
@@ -36,7 +36,7 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, BoxShadow, Context, CursorStyle, DispatchPhase, Entity, IntoElement,
+    AnimationExt, AnyElement, BoxShadow, Context, CursorStyle, DispatchPhase, Entity, IntoElement,
     MouseMoveEvent, MouseUpEvent, ParentElement, StyleRefinement, Styled, WeakEntity, Window,
     canvas, div, linear_color_stop, linear_gradient, px,
 };
@@ -57,6 +57,27 @@ pub(super) use navigator::group as group_work;
 pub(super) use status::{notification_edge, notification_text};
 pub(super) use tabs::MIN_STRIP_WIDTH;
 
+/// The spring the chrome's edges ride when the sidebar or the Changes panel
+/// opens or closes: critically damped, so everything that follows an edge
+/// lands with it, together, without overshoot.
+pub(super) const CHROME_SPRING: gpui::SpringConfig = gpui::SpringConfig::new(600., 49., 1.);
+
+/// Whether the chrome moves: the Animations preference and the system's
+/// reduced motion both stop it.
+pub(super) fn chrome_moves(desk: &Desk, cx: &gpui::App) -> bool {
+    desk.prefs.animations && !cx.reduce_motion()
+}
+
+/// [`CHROME_SPRING`] to `target`, snapping there when the chrome does not move.
+pub(super) fn chrome_spring(moves: bool, target: f32) -> gpui::SpringAnimation<f32> {
+    let spring = gpui::SpringAnimation::new(CHROME_SPRING).to(target);
+    if moves {
+        spring
+    } else {
+        spring.playback(gpui::SpringPlayback::Completed)
+    }
+}
+
 /// Whether the skin shows workspace tabs when there are `count` of them.
 fn tabs_shown(skin: &Skin, count: usize) -> bool {
     skin.chrome.tabs == TabsWhen::Always || count >= 2
@@ -75,11 +96,6 @@ fn tabs_at(desk: &Desk, skin: &Skin, position: TabPosition) -> bool {
 /// highlights scale with it so they fade out as the glass goes opaque.
 fn gloss(skin: &Skin) -> f32 {
     (1. - skin.material.card_solid).clamp(0., 1.)
-}
-
-/// Small status chips.
-fn chip_radius(skin: &Skin) -> f32 {
-    skin.shape.kit_radius / 2.
 }
 
 /// The selected tab's lift, plus a specular top edge and a faint accent glow
@@ -211,8 +227,17 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     observe_motion(desk, window);
     // The sidebar slides shut as the skin withdraws it, whatever the prefs say.
     let presence = skin.chrome.sidebar.clamp(0., 1.);
-    let sidebar = navigator::wanted(desk) && presence > 0.;
+    let wanted = navigator::wanted(desk);
+    let sidebar =
+        presence > 0. && !quick(desk) && (wanted || desk.disclosing(desk::SIDEBAR_DISCLOSURE));
     let sidebar_width = desk.prefs.sidebar_width as f32 * presence;
+    let sidebar_reveal = reveal(
+        "sidebar-reveal",
+        sidebar_width,
+        desk.disclosing(desk::SIDEBAR_DISCLOSURE).then_some(wanted),
+    );
+    let changes_open = desk.changes.open && !quick(desk);
+    let changes = changes_open || (!quick(desk) && desk.disclosing(desk::CHANGES_DISCLOSURE));
     let sheen_height = skin.material.sheen_height;
     let sheen = sheen_height > 0.
         && look.sheen.a > 0.
@@ -272,17 +297,21 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                     } else {
                         style
                     };
-                    row.child(chrome_slot(
-                        &mut desk.chrome.sidebar,
-                        navigator::build,
-                        style,
-                        cx,
-                    ))
+                    // Held by its trailing edge, it slides out to the left.
+                    let slot = chrome_slot(&mut desk.chrome.sidebar, navigator::build, style, cx);
+                    row.child(sidebar_reveal(div().justify_end().child(slot)))
                 })
                 .child(panes::main_column(desk, &look, window, cx))
-                .when(desk.changes.open && !quick(desk), |row| {
+                .when(changes, |row| {
                     let width = changes::width(desk, window.viewport_size().width.as_f32());
-                    row.child(chrome_slot(
+                    let reveal = reveal(
+                        "changes-reveal",
+                        width,
+                        desk.disclosing(desk::CHANGES_DISCLOSURE)
+                            .then_some(changes_open),
+                    );
+                    // Held by its leading edge, it slides in from the right.
+                    let slot = chrome_slot(
                         &mut desk.chrome.changes,
                         changes::build,
                         StyleRefinement::default()
@@ -290,7 +319,8 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                             .flex_shrink_0()
                             .h_full(),
                         cx,
-                    ))
+                    );
+                    row.child(reveal(div().child(slot)))
                 }),
         )
         .child(chrome_slot(
@@ -301,6 +331,31 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         ))
         .children(super::hud::element(desk.prefs.font_family.clone().into()))
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
+}
+
+/// A side panel's slot, `width` wide at rest. While the panel opens or
+/// closes (`opening` is `Some`) the slot rides [`CHROME_SPRING`] between shut
+/// and `width`; the panel keeps its own width and overflows past the window
+/// edge it sits against, so it slides rather than squeezes. At rest the
+/// spring snaps, so a resize drag tracks the pointer exactly. The slot keeps
+/// one element id throughout, so the panel's scroll state survives.
+fn reveal(
+    id: &'static str,
+    width: f32,
+    opening: Option<bool>,
+) -> impl FnOnce(gpui::Div) -> AnyElement {
+    move |slot| {
+        let spring = match opening {
+            Some(true) => chrome_spring(true, width).from(0.),
+            Some(false) => chrome_spring(true, 0.),
+            None => chrome_spring(false, width),
+        };
+        slot.h_full()
+            .flex_shrink_0()
+            .flex()
+            .with_spring(id, spring, |slot, width| slot.w(px(width.max(0.))))
+            .into_any_element()
+    }
 }
 
 /// Feed this frame's placements to the motion clock, and keep frames coming

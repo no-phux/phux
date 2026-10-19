@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, Context, FontWeight, HighlightStyle, Hsla, IntoElement, Styled, StyledText, Window,
-    div, px,
+    div, px, relative,
 };
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem};
@@ -353,7 +353,9 @@ fn item(
                 div()
                     .relative()
                     .top(drop)
-                    .max_w(px(220.))
+                    // Details take the room titles leave, up to most of the row.
+                    .max_w(relative(0.6))
+                    .flex_shrink_0()
                     .truncate()
                     .text_size(px(11.))
                     .text_color(from_hex(&colors.muted))

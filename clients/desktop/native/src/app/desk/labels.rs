@@ -59,7 +59,7 @@ pub(crate) fn short_path(path: Option<String>) -> String {
         .map_or_else(|| path.clone(), |(_, rest)| format!("~/{rest}"))
 }
 
-/// How the status bar colours a state.
+/// How a status chip colours a state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tone {
     Good,
@@ -103,6 +103,11 @@ pub(crate) fn detach_detail(
         (None, "") => "The server ended the attach without saying why.".to_owned(),
         (None, extra) => extra.to_owned(),
     }
+}
+
+/// `count` of `noun`, pluralized with an s: "1 terminal", "3 terminals".
+pub(crate) fn counted(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 /// Longest title, in characters, any chrome surface or the window shows.

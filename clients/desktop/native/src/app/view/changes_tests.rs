@@ -266,10 +266,21 @@ fn the_changes_panel_resizes_from_its_left_edge_and_leaves_the_panes_room(cx: &m
     draw(cx);
     let panes = cx.debug_bounds("main-column").unwrap();
     assert!(panes.size.width >= px(crate::app::changes::PANES_MIN));
+
+    // A narrower window keeps the panes' room; the panel yields toward its floor.
+    for width in [1000., 960.] {
+        cx.simulate_resize(gpui::size(px(width), px(600.)));
+        draw(cx);
+        let panes = cx.debug_bounds("main-column").unwrap();
+        assert!(
+            panes.size.width >= px(crate::app::changes::PANES_MIN),
+            "at {width}"
+        );
+    }
 }
 
 #[gpui::test]
-fn the_changes_panel_ends_where_the_panes_end_in_every_placement(cx: &mut TestAppContext) {
+fn the_changes_panel_keeps_the_window_foot_in_every_placement(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
@@ -281,12 +292,21 @@ fn the_changes_panel_ends_where_the_panes_end_in_every_placement(cx: &mut TestAp
         "tabs-top",
         "plain-terminal",
     ] {
+        let gutter = desk.read_with(cx, |desk, _| desk.skin().shape.gutter);
         let panel = cx.debug_bounds("changes-panel").unwrap();
-        let panes = cx.debug_bounds("workspace-body").unwrap();
-        assert_eq!(panel.bottom(), panes.bottom(), "before {command}");
+        // One gutter above the window's foot, with no strip under it, and
+        // level with the cards whenever nothing sits under them.
+        assert_eq!(panel.bottom(), px(840. - gutter), "before {command}");
+        if desk.read_with(cx, |desk, _| desk.tab_position() != TabPosition::Bottom) {
+            assert_eq!(panel.bottom(), cards_bottom(&desk, cx), "before {command}");
+        }
         run(&desk, command, cx);
     }
-    let panel = cx.debug_bounds("changes-panel").unwrap();
-    let panes = cx.debug_bounds("workspace-body").unwrap();
-    assert_eq!(panel.bottom(), panes.bottom());
+}
+
+/// The workspace keeps its foot under the cards.
+fn cards_bottom(desk: &Entity<Desk>, cx: &mut VisualTestContext) -> gpui::Pixels {
+    let body = cx.debug_bounds("workspace-body").unwrap();
+    let foot = desk.read_with(cx, |desk, _| super::panes::foot(desk, &desk.look()));
+    body.bottom() - px(foot)
 }

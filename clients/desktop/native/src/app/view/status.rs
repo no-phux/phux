@@ -1,94 +1,163 @@
-//! The status line, which speaks only for exceptions, and the notification
-//! peek: the newest alert, briefly, over the workspace.
+//! Exceptions where they apply: the titlebar's connection and startup chips,
+//! a scrolled-back pane's Follow live pill, and the notification peek, the
+//! newest alert, briefly, over the workspace.
 
 use gpui::prelude::*;
-use gpui::{Context, Hsla, IntoElement, div, px};
+use gpui::{
+    Animation, AnimationExt, AnyElement, Context, Hsla, IntoElement, Window, div, ease_out_quint,
+    px, rems,
+};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
 
 use super::super::color::from_hex;
 use super::super::desk::{Desk, Modal, Tone};
 use super::super::notifications::{Kind, Notification};
-use super::super::skin::Look;
-use super::super::ui::{agent_swatch, dot, ghost_icon, muted, notice_card};
-use super::chip_radius;
+use super::super::skin::{Look, Surface, Surfaced};
+use super::super::ui::{agent_swatch, dot, ghost_icon, muted};
 
 /// The notification peek's width while the pane area has room for it.
 const PEEK_WIDTH: f32 = 340.;
 /// The peek's distance from the pane cards' right and bottom edges.
 const PEEK_INSET: f32 = 12.;
-/// The width of the peek's colour stripe.
-const PEEK_STRIPE: f32 = 3.;
+/// The peek's padding around its content.
+const PEEK_PAD: f32 = 12.;
+/// The Follow live pill's distance from its pane's foot, and its height.
+const FOLLOW_INSET: f32 = 12.;
+const FOLLOW_HEIGHT: f32 = 28.;
 
-/// Exceptions only: an unhealthy connection, a terminal still starting, and
-/// a pane scrolled away from live output. Agents that need a person are
-/// marked on their tabs and sessions, not counted here.
-pub(super) fn status_bar(
-    desk: &Desk,
-    height: f32,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
+/// Exceptions only, in the titlebar: an unhealthy connection and a terminal
+/// still starting. A pane scrolled back says so on itself ([`follow_live`]);
+/// agents that need a person are marked on their tabs and sessions.
+pub(super) fn status_chips(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Option<AnyElement> {
     let colors = &look.chrome;
-    let radius = chip_radius(&look.skin);
-    let chip = |id: &'static str| div().id(id).rounded(px(radius));
     let (label, tone) = desk.connection_label();
-    let unhealthy = desk.unhealthy();
-    let scrolled = desk.scrolled_back();
     let pending = desk
         .link
         .as_ref()
         .map_or(0, |link| link.workspace.pending());
+    if tone == Tone::Good && pending == 0 {
+        return None;
+    }
     let tone_color = from_hex(match tone {
         Tone::Good => &colors.theme.success,
         Tone::Busy => &colors.theme.warning,
         Tone::Bad => &colors.theme.danger,
     });
-    let hover = look.hover;
-    div()
-        .h(px(height))
-        .w_full()
-        .flex_shrink_0()
-        .overflow_hidden()
-        .px(px(10.))
+    let unhealthy = desk.unhealthy();
+    let chip = |id: &'static str| {
+        div()
+            .id(id)
+            .h(px(24.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded_full()
+            .text_xs()
+    };
+    let moves = super::chrome_moves(desk, cx);
+    let chips = div()
+        .debug_selector(|| "status-chips".into())
         .flex()
         .items_center()
-        .gap(px(12.))
-        .text_xs()
-        .text_color(from_hex(&colors.muted))
-        .when(tone != Tone::Good, |bar| {
-            bar.child(
+        .gap(px(2.))
+        .mr(px(4.))
+        .when(tone != Tone::Good, |chips| {
+            chips.child(
                 chip("status-connection")
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(4.))
-                    .child(dot(7., tone_color))
-                    .child(div().text_color(tone_color).child(label))
+                    .bg(tone_color.opacity(0.12))
+                    .text_color(tone_color)
+                    .child(dot(6., tone_color))
+                    .child(label)
                     .when(unhealthy, |status| {
                         status
                             .cursor_pointer()
-                            .hover(move |style| style.bg(hover))
+                            .hover(move |style| style.bg(tone_color.opacity(0.2)))
                             .on_click(cx.listener(|desk, _, window, cx| {
                                 desk.execute("reconnect", window, cx)
                             }))
                     }),
             )
         })
-        .when(pending > 0, |bar| bar.child("starting terminal…"))
-        .child(div().flex_grow(1.))
-        .when(scrolled, |bar| {
-            bar.child(
-                chip("status-scrolled")
-                    .px(px(6.))
-                    .bg(from_hex(&colors.accent_wash))
-                    .text_color(from_hex(&colors.theme.accent))
-                    .cursor_pointer()
-                    .child("scrolled back · follow live")
-                    .on_click(
-                        cx.listener(|desk, _, window, cx| desk.execute("follow", window, cx)),
-                    ),
+        .when(pending > 0, |chips| {
+            chips.child(
+                chip("status-pending")
+                    .text_color(from_hex(&colors.muted))
+                    .child("Starting terminal…"),
             )
-        })
+        });
+    Some(enter(chips, "status-chips", look, moves, |chips, shown| {
+        chips.opacity(shown)
+    }))
+}
+
+/// A pane scrolled away from live output: one pill, centred at its foot, back
+/// to the tail.
+pub(super) fn follow_live(look: &Look, moves: bool, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
+    let accent = from_hex(&colors.theme.accent);
+    let pill = div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom(px(FOLLOW_INSET))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("follow-live")
+                .debug_selector(|| "follow-live".into())
+                // Clicks stop here; the wheel still scrolls the pane under it.
+                .block_mouse_except_scroll()
+                .h(px(FOLLOW_HEIGHT))
+                .pl(px(10.))
+                .pr(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded_full()
+                .surface(look, Surface::Capsule)
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(look.ink)
+                .cursor_pointer()
+                .hover(move |style| style.bg(accent.opacity(0.18)))
+                .child(
+                    Icon::new(IconName::ArrowDown)
+                        .size(px(12.))
+                        .text_color(accent),
+                )
+                .child("Follow live")
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    cx.stop_propagation();
+                    desk.execute("follow", window, cx)
+                })),
+        );
+    enter(pill, "follow-live", look, moves, |pill, shown| {
+        pill.opacity(shown).mb(px(-6. * (1. - shown)))
+    })
+}
+
+/// The chrome's entrance: `animate` over the skin's menu span, eased out,
+/// once; still when the chrome does not move.
+fn enter<E: IntoElement + 'static>(
+    element: E,
+    id: impl Into<gpui::ElementId>,
+    look: &Look,
+    moves: bool,
+    animate: impl Fn(E, f32) -> E + 'static,
+) -> AnyElement {
+    if !moves {
+        return element.into_any_element();
+    }
+    element
+        .with_animation(
+            id,
+            Animation::new(look.skin.motion.menu_enter()).with_easing(ease_out_quint()),
+            animate,
+        )
+        .into_any_element()
 }
 
 /// The colour a notification wears: its agent's state, or its kind.
@@ -135,10 +204,12 @@ pub(crate) fn notification_text(
 }
 
 /// The newest agent or error entry, briefly, over the workspace. Everything
-/// else waits behind the bell.
+/// else waits behind the bell. It is a notification row lifted onto the
+/// popover material: the kind's dot on the title line, the body under it.
 pub(super) fn peek_card(
     desk: &Desk,
     look: &Look,
+    window: &Window,
     cx: &mut Context<Desk>,
 ) -> Option<impl IntoElement> {
     let colors = &look.chrome;
@@ -149,63 +220,89 @@ pub(super) fn peek_card(
     let id = entry.id;
     let more = desk.feed.unread().count().saturating_sub(1);
     let gutter = look.skin.shape.gutter;
+    // Over a scrolled-back pane, the peek clears its Follow live pill.
+    let moves = super::chrome_moves(desk, cx);
+    let lift = if desk.follows_live() {
+        FOLLOW_HEIGHT + PEEK_INSET
+    } else {
+        0.
+    };
     // Spans the pane area, held PEEK_INSET in from its cards' edges, so the
     // card narrows with the area instead of escaping it.
     let area = div()
         .absolute()
-        .left(px(gutter + PEEK_INSET))
+        .left(px(super::panes::lead_inset(desk, look) + PEEK_INSET))
         .right(px(gutter + PEEK_INSET))
-        .bottom(px(PEEK_INSET))
+        .bottom(px(super::panes::foot(desk, look) + PEEK_INSET + lift))
         .flex()
         .justify_end();
-    let card = notice_card(look, 0.94)
+    let title_line =
+        super::super::overlays::line_height(window, rems(0.875).to_pixels(window.rem_size()));
+    let card = div()
         .id(("notification-peek", id as usize))
+        .group("notification-peek")
         .relative()
-        .overflow_hidden()
         .w(px(PEEK_WIDTH))
         .min_w_0()
-        .p(px(10.))
-        .pl(px(12. + PEEK_STRIPE))
+        .surface(look, Surface::Popover)
+        .bg(from_hex(&colors.raised).opacity(0.96))
+        .when(!look.popover_shadow.is_empty(), |card| card.shadow_lg())
+        .p(px(PEEK_PAD))
+        .pr(px(PEEK_PAD - 4.))
         .occlude()
         .cursor_pointer()
         .flex()
-        .gap(px(8.))
-        .child(stripe(notification_edge(entry, look), look))
+        .items_start()
+        .gap(px(10.))
+        .child(
+            div()
+                .flex_shrink_0()
+                .h(title_line)
+                .flex()
+                .items_center()
+                .child(dot(7., notification_edge(entry, look))),
+        )
         .child(
             notification_text(entry, look, true, 3).when(more > 0, |text| {
                 text.child(
                     div()
+                        .pt(px(2.))
                         .text_xs()
                         .text_color(from_hex(&colors.subtext))
-                        .child(format!("+{more} unread alerts")),
+                        .child(format!(
+                            "+{}",
+                            super::super::desk::counted(more, "unread alert")
+                        )),
                 )
             }),
         )
         .child(
-            ghost_icon(
-                ("notification-peek-dismiss", id as usize),
-                IconName::Close,
-                "Dismiss",
-            )
-            .on_click(cx.listener(move |desk, _, _, cx| {
-                cx.stop_propagation();
-                desk.feed.read(id);
-                cx.notify();
-            })),
+            // Shown with the pointer on the card, so a glance reads only words.
+            div()
+                .flex_shrink_0()
+                .opacity(0.)
+                .group_hover("notification-peek", |style| style.opacity(1.))
+                .child(
+                    ghost_icon(
+                        ("notification-peek-dismiss", id as usize),
+                        IconName::Close,
+                        "Dismiss",
+                    )
+                    .on_click(cx.listener(move |desk, _, _, cx| {
+                        cx.stop_propagation();
+                        desk.feed.read(id);
+                        cx.notify();
+                    })),
+                ),
         )
         .on_click(cx.listener(move |desk, _, window, cx| {
             desk.open_notification(id, window, cx);
         }));
-    Some(area.child(card))
-}
-
-/// A notice's colour down its left side, inside the hairline. Clips are
-/// rectangular, so the stripe is a rounded border that follows the corners.
-fn stripe(color: Hsla, look: &Look) -> impl IntoElement {
-    div()
-        .absolute()
-        .inset_0()
-        .rounded(px((look.skin.shape.radius - 1.).max(0.)))
-        .border_l(px(PEEK_STRIPE))
-        .border_color(color)
+    Some(area.child(enter(
+        card,
+        ("notification-peek-enter", id as usize),
+        look,
+        moves,
+        |card, shown| card.opacity(shown).top(px(8. * (1. - shown))),
+    )))
 }
