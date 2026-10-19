@@ -28,6 +28,7 @@ impl ServerCli {
     /// The CLI could not run, ran out of time, or exited non-zero (its stderr
     /// is the error).
     pub fn run(&self, args: &[&str], timeout: Duration) -> anyhow::Result<Vec<u8>> {
+        self.check_socket()?;
         let mut child = Command::new(&self.phux)
             .arg("--socket")
             .arg(&self.socket)
@@ -84,6 +85,16 @@ impl ServerCli {
     #[must_use]
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// Apply the shared build-identity guard before delegating to a CLI,
+    /// which may itself be an installed binary allowed to reach production.
+    ///
+    /// # Errors
+    ///
+    /// This development build is associated with a production socket.
+    pub fn check_socket(&self) -> anyhow::Result<()> {
+        phux_config_core::socket::refuse_dev_on_production(&self.socket).map_err(anyhow::Error::msg)
     }
 }
 
@@ -283,5 +294,24 @@ mod tests {
         let cpu = cpu_between(&before, &report(7, 2_000_000), later).unwrap_or_default();
         assert!((cpu - 50.0).abs() < 1e-9, "{cpu}");
         assert_eq!(cpu_between(&before, &report(8, 2_000_000), later), None);
+    }
+
+    #[test]
+    fn dev_desktop_refuses_production_before_spawning_any_cli() {
+        let cli = ServerCli {
+            phux: PathBuf::from("/nonexistent/installed-phux"),
+            socket: PathBuf::from("/run/user/4294967294/phux/phux.sock"),
+        };
+        assert_eq!(
+            phux_config_core::instance::build_kind(),
+            phux_config_core::instance::BuildKind::Dev
+        );
+        let error = cli
+            .run(&["perf", "trace"], REPORT_TIMEOUT)
+            .expect_err("production is refused");
+        assert!(
+            error.to_string().contains("production phux socket"),
+            "{error:#}"
+        );
     }
 }

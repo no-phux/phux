@@ -23,7 +23,7 @@ pub mod socket;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use gpui::App;
 use phux_perf::{Metric, PerfReport, ProcessStats};
@@ -114,9 +114,9 @@ pub fn install(cx: &mut App) {
     .detach();
     ensure_hud_pacer(cx);
     if devtools.dev {
-        match socket::serve(&socket::path_for(
-            devtools.cli.as_ref().map(ServerCli::socket),
-        )) {
+        match socket::path_for(devtools.cli.as_ref().map(ServerCli::socket))
+            .and_then(|path| socket::serve(&path))
+        {
             Ok(path) => {
                 log::info!("dev socket listening at {}", path.display());
                 let _ = devtools.socket.set(path);
@@ -255,6 +255,7 @@ const COUNTER_INTERVAL: Duration = Duration::from_millis(50);
 ///
 /// A capture is already armed, or the trace file could not be written.
 pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<TraceResult> {
+    check_trace_server(with_server)?;
     // Arm here first: a refused request must not start a server trace too.
     if !phux_perf::trace::start(phux_perf::trace::DEFAULT_MAX_EVENTS) {
         anyhow::bail!("a trace is already recording in the desktop");
@@ -272,42 +273,15 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
     let capture = phux_perf::trace::stop()
         .ok_or_else(|| anyhow::anyhow!("the desktop trace was stopped by someone else"))?;
     let dir = trace_dir();
-    std::fs::create_dir_all(&dir)?;
-    let stamp = unix_millis();
-    let pid = std::process::id();
-    let desktop_json = capture.to_chrome_json("phux desktop", &tables());
-    let desktop = dir.join(format!("desktop-{stamp}-{pid}.json"));
-    std::fs::write(&desktop, &desktop_json)?;
-    let (mut server, mut server_error) = match server.map(std::thread::JoinHandle::join) {
-        None if with_server => (
-            None,
-            Some("no phux CLI is known to this desktop".to_owned()),
-        ),
-        None => (None, None),
-        Some(Ok(Ok(path))) => (Some(path), None),
-        Some(Ok(Err(error))) => (None, Some(format!("{error:#}"))),
-        Some(Err(_)) => (None, Some("the server trace thread panicked".to_owned())),
-    };
-    // The server names a path on its own host; over a forwarded socket it
-    // is not readable here. That loses the merge, not the desktop's trace.
-    let server_json = server.as_ref().map(std::fs::read_to_string);
-    let path = match server_json {
-        Some(Ok(server_json)) => {
-            let merged =
-                phux_perf::trace::merge_chrome_json([desktop_json.as_str(), server_json.as_str()]);
-            let path = dir.join(format!("phux-{stamp}-{pid}.json"));
-            std::fs::write(&path, merged)?;
-            path
-        }
-        Some(Err(error)) => {
-            server_error = Some(format!(
-                "the server wrote {} but it is not readable here: {error}",
-                server.take().unwrap_or_default().display()
-            ));
-            desktop.clone()
-        }
-        None => desktop.clone(),
-    };
+    let (desktop, desktop_json) = write_desktop_trace(&dir, &capture)?;
+    let (mut server, mut server_error) = join_server_trace(server, with_server);
+    let path = merge_server_trace(
+        &dir,
+        &desktop,
+        &desktop_json,
+        &mut server,
+        &mut server_error,
+    )?;
     Ok(TraceResult {
         path,
         desktop,
@@ -317,6 +291,72 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
         dropped: capture.dropped(),
         duration_ms: u64::try_from(capture.duration().as_millis()).unwrap_or(u64::MAX),
     })
+}
+
+fn check_trace_server(with_server: bool) -> anyhow::Result<()> {
+    if !with_server {
+        return Ok(());
+    }
+    if let Some(cli) = &get().cli {
+        cli.check_socket()?;
+    }
+    Ok(())
+}
+
+fn write_desktop_trace(
+    dir: &Path,
+    capture: &phux_perf::trace::Capture,
+) -> anyhow::Result<(PathBuf, String)> {
+    std::fs::create_dir_all(dir)?;
+    let json = capture.to_chrome_json("phux desktop", &tables());
+    let (path, mut file) = phux_perf::trace::create_trace_file(dir, "desktop")?;
+    std::io::Write::write_all(&mut file, json.as_bytes())?;
+    Ok((path, json))
+}
+
+fn join_server_trace(
+    server: Option<std::thread::JoinHandle<anyhow::Result<PathBuf>>>,
+    with_server: bool,
+) -> (Option<PathBuf>, Option<String>) {
+    match server.map(std::thread::JoinHandle::join) {
+        None if with_server => (
+            None,
+            Some("no phux CLI is known to this desktop".to_owned()),
+        ),
+        None => (None, None),
+        Some(Ok(Ok(path))) => (Some(path), None),
+        Some(Ok(Err(error))) => (None, Some(format!("{error:#}"))),
+        Some(Err(_)) => (None, Some("the server trace thread panicked".to_owned())),
+    }
+}
+
+fn merge_server_trace(
+    dir: &Path,
+    desktop: &Path,
+    desktop_json: &str,
+    server: &mut Option<PathBuf>,
+    server_error: &mut Option<String>,
+) -> anyhow::Result<PathBuf> {
+    // The server names a path on its own host; over a forwarded socket it
+    // is not readable here. That loses the merge, not the desktop's trace.
+    let server_json = server.as_ref().map(std::fs::read_to_string);
+    let path = match server_json {
+        Some(Ok(server_json)) => {
+            let merged = phux_perf::trace::merge_chrome_json([desktop_json, server_json.as_str()]);
+            let (path, mut file) = phux_perf::trace::create_trace_file(dir, "phux")?;
+            std::io::Write::write_all(&mut file, merged.as_bytes())?;
+            path
+        }
+        Some(Err(error)) => {
+            *server_error = Some(format!(
+                "the server wrote {} but it is not readable here: {error}",
+                server.take().unwrap_or_default().display()
+            ));
+            desktop.to_path_buf()
+        }
+        None => desktop.to_path_buf(),
+    };
+    Ok(path)
 }
 
 /// `phux perf trace --seconds S --json` against the desktop's server.
@@ -345,13 +385,6 @@ fn sample_counters() {
     }
     let frames = frames::recent(Duration::from_millis(250));
     phux_perf::trace::counter("frames.fps", frames.len() as f64 * 4.0);
-}
-
-fn unix_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
 }
 
 /// `path` without the home directory, for a status line.

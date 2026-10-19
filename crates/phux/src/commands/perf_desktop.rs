@@ -8,7 +8,7 @@
 //! says: the report as a table or JSON, a merged desktop-and-server trace, or
 //! a HUD switch.
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -30,6 +30,7 @@ const TRACE_SLACK: Duration = Duration::from_secs(30);
 
 /// The longest trace the desktop's dev socket records.
 const MAX_DESKTOP_TRACE: Duration = Duration::from_secs(60);
+const MAX_REPLY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What to ask the desktop.
 #[derive(Debug)]
@@ -60,8 +61,17 @@ fn dispatch(json: bool, ask: Ask, path: &Path) -> Result<(), Refusal> {
 /// The live dev socket: [`PATH_ENV`], else the newest `desktop-*.dev.sock`
 /// beside `server_socket` that accepts a connection.
 fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
-    if let Some(path) = std::env::var_os(PATH_ENV) {
-        return Ok(PathBuf::from(path));
+    find_with_override(server_socket, std::env::var_os(PATH_ENV).map(PathBuf::from))
+}
+
+fn find_with_override(
+    server_socket: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<PathBuf, Refusal> {
+    refuse_production_server(server_socket)?;
+    if let Some(path) = override_path {
+        verify_server(&path, server_socket)?;
+        return Ok(path);
     }
     let dir = server_socket.parent().unwrap_or_else(|| Path::new("."));
     let mut live: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
@@ -71,6 +81,7 @@ fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
         .map(|entry| entry.path())
         .filter(|path| is_dev_socket(path))
         .filter(|path| live_or_prune(path))
+        .filter(|path| serves_server(path, server_socket))
         .map(|path| {
             let modified = std::fs::metadata(&path)
                 .and_then(|meta| meta.modified())
@@ -89,6 +100,43 @@ fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
         )
     })
 }
+
+fn serves_server(path: &Path, server_socket: &Path) -> bool {
+    verify_server(path, server_socket).is_ok()
+}
+
+fn refuse_production_server(server_socket: &Path) -> Result<(), Refusal> {
+    phux_config::socket::refuse_dev_on_production(server_socket)
+        .map_err(|message| Refusal::new("production_socket", message, "", 1))
+}
+
+fn verify_server(path: &Path, server_socket: &Path) -> Result<(), Refusal> {
+    let reply = ask(path, &json!({"op": "identity"}), Duration::from_secs(1))?;
+    let actual = reply["server_socket"].as_str().ok_or_else(|| {
+        Refusal::new(
+            "desktop_protocol",
+            "the desktop did not identify its associated server socket",
+            "",
+            1,
+        )
+    })?;
+    let actual = Path::new(actual);
+    refuse_production_server(actual)?;
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if canonical(actual) != canonical(server_socket) {
+        return Err(Refusal::new(
+            "desktop_server_mismatch",
+            "the desktop is associated with a different server socket",
+            "",
+            1,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod production_tests;
 
 /// Whether a desktop answers at `path`. A socket nobody listens on belongs
 /// to a desktop that was killed; it is removed so it is not probed again.
@@ -112,6 +160,7 @@ fn is_dev_socket(path: &Path) -> bool {
 
 /// One request, one reply; a reply with `ok: false` is a refusal.
 fn ask(path: &Path, request: &Value, timeout: Duration) -> Result<Value, Refusal> {
+    refuse_production_server(path)?;
     let unreachable = |error: std::io::Error| {
         Refusal::new(
             "desktop_unreachable",
@@ -127,12 +176,23 @@ fn ask(path: &Path, request: &Value, timeout: Duration) -> Result<Value, Refusal
     stream
         .set_read_timeout(Some(timeout))
         .map_err(unreachable)?;
-    writeln!(stream, "{request}").map_err(unreachable)?;
-    let mut line = String::new();
-    BufReader::new(&stream)
-        .read_line(&mut line)
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(unreachable)?;
-    let reply: Value = serde_json::from_str(&line).map_err(|error| {
+    writeln!(stream, "{request}").map_err(unreachable)?;
+    let mut line = Vec::new();
+    BufReader::new((&stream).take(MAX_REPLY_BYTES + 1))
+        .read_until(b'\n', &mut line)
+        .map_err(unreachable)?;
+    if line.len() as u64 > MAX_REPLY_BYTES {
+        return Err(Refusal::new(
+            "desktop_protocol",
+            "the desktop reply exceeds 8 MiB",
+            "",
+            1,
+        ));
+    }
+    let reply: Value = serde_json::from_slice(&line).map_err(|error| {
         Refusal::new(
             "desktop_protocol",
             format!("the desktop answered something that is not JSON: {error}"),
@@ -152,27 +212,39 @@ fn ask(path: &Path, request: &Value, timeout: Duration) -> Result<Value, Refusal
 }
 
 fn report(opts: &PerfOptions, path: &Path) -> Result<(), Refusal> {
-    let read = || -> Result<(PerfReport, Value), Refusal> {
-        let reply = ask(path, &json!({ "op": "perf" }), Duration::from_secs(5))?;
-        let report = serde_json::from_value(reply["report"].clone()).map_err(|error| {
-            Refusal::new(
-                "desktop_protocol",
-                format!("the desktop's report did not parse: {error}"),
-                "check the desktop and this CLI come from the same release",
-                1,
-            )
-        })?;
-        Ok((report, reply["frames"].clone()))
-    };
-    if opts.reset {
-        ask(path, &json!({ "op": "reset" }), Duration::from_secs(5))?;
-    }
-    let Some(every) = opts.watch else {
-        let (report, frames) = read()?;
+    let every = opts.watch.map(watch_interval).transpose()?;
+    let Some(every) = every else {
+        let (report, frames) = read_report(path, opts.reset)?;
         print(opts.json, &report, &frames, None);
         return Ok(());
     };
-    let every = Duration::try_from_secs_f64(every)
+    let (mut prev, _) = read_report(path, opts.reset)?;
+    loop {
+        std::thread::sleep(every);
+        let (cur, frames) = read_report(path, opts.reset)?;
+        if !opts.json {
+            out!("\x1b[H\x1b[2J");
+        }
+        print(
+            opts.json,
+            &interval_report(&cur, &prev, opts.reset),
+            &frames,
+            Some(every),
+        );
+        prev = cur;
+    }
+}
+
+fn interval_report(cur: &PerfReport, prev: &PerfReport, reset: bool) -> PerfReport {
+    let mut report = cur.delta(prev);
+    if reset {
+        report.metrics.clone_from(&cur.metrics);
+    }
+    report
+}
+
+fn watch_interval(every: f64) -> Result<Duration, Refusal> {
+    Duration::try_from_secs_f64(every)
         .map_err(|_| {
             Refusal::new(
                 "invalid_argument",
@@ -180,18 +252,25 @@ fn report(opts: &PerfOptions, path: &Path) -> Result<(), Refusal> {
                 "give a finite number of seconds",
                 2,
             )
-        })?
-        .max(MIN_WATCH);
-    let (mut prev, _) = read()?;
-    loop {
-        std::thread::sleep(every);
-        let (cur, frames) = read()?;
-        if !opts.json {
-            out!("\x1b[H\x1b[2J");
-        }
-        print(opts.json, &cur.delta(&prev), &frames, Some(every));
-        prev = cur;
-    }
+        })
+        .map(|duration| duration.max(MIN_WATCH))
+}
+
+fn read_report(path: &Path, reset: bool) -> Result<(PerfReport, Value), Refusal> {
+    let reply = ask(
+        path,
+        &json!({ "op": "perf", "reset": reset }),
+        Duration::from_secs(5),
+    )?;
+    let report = serde_json::from_value(reply["report"].clone()).map_err(|error| {
+        Refusal::new(
+            "desktop_protocol",
+            format!("the desktop's report did not parse: {error}"),
+            "check the desktop and this CLI come from the same release",
+            1,
+        )
+    })?;
+    Ok((report, reply["frames"].clone()))
 }
 
 fn print(json: bool, report: &PerfReport, frames: &Value, interval: Option<Duration>) {
@@ -304,9 +383,10 @@ mod tests {
         drop(UnixListener::bind(dir.join("desktop-1.dev.sock")).unwrap_or_else(|e| panic!("{e}")));
         let serving = dir.join("desktop-2.dev.sock");
         let listener = UnixListener::bind(&serving).unwrap_or_else(|e| panic!("{e}"));
+        let server_socket = dir.join("server.sock");
         let server = std::thread::spawn(move || {
-            // One probe from `find`, then the request.
-            for (n, stream) in listener.incoming().take(2).enumerate() {
+            // Liveness probe, identity handshake, then the request.
+            for (n, stream) in listener.incoming().take(3).enumerate() {
                 let stream = stream.unwrap_or_else(|e| panic!("{e}"));
                 if n == 0 {
                     continue;
@@ -316,6 +396,15 @@ mod tests {
                     .read_line(&mut line)
                     .unwrap_or_else(|e| panic!("{e}"));
                 let mut writer = &stream;
+                if n == 1 {
+                    writeln!(
+                        writer,
+                        "{}",
+                        json!({ "ok": true, "server_socket": server_socket })
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
+                    continue;
+                }
                 writeln!(writer, r#"{{"ok":false,"error":"no thanks"}}"#)
                     .unwrap_or_else(|e| panic!("{e}"));
             }
@@ -333,5 +422,114 @@ mod tests {
         assert_eq!(refused.err.message, "no thanks");
         server.join().unwrap_or_else(|_| panic!("server thread"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_selects_the_matching_server_not_the_newest_socket() {
+        let dir = tempfile::TempDir::new().unwrap_or_else(|e| panic!("{e}"));
+        let mut workers = Vec::new();
+        for (name, server) in [
+            ("desktop-1.dev.sock", "a.sock"),
+            ("desktop-2.dev.sock", "b.sock"),
+        ] {
+            let listener =
+                UnixListener::bind(dir.path().join(name)).unwrap_or_else(|e| panic!("{e}"));
+            let server = dir.path().join(server);
+            workers.push(std::thread::spawn(move || {
+                for (n, stream) in listener.incoming().take(2).enumerate() {
+                    let stream = stream.unwrap_or_else(|e| panic!("{e}"));
+                    if n == 0 {
+                        continue;
+                    }
+                    let mut line = String::new();
+                    BufReader::new(&stream)
+                        .read_line(&mut line)
+                        .unwrap_or_else(|e| panic!("{e}"));
+                    writeln!(&stream, "{}", json!({"ok": true, "server_socket": server}))
+                        .unwrap_or_else(|e| panic!("{e}"));
+                }
+            }));
+        }
+        assert_eq!(
+            find(&dir.path().join("a.sock")).unwrap_or_else(|r| panic!("{}", r.err.message)),
+            dir.path().join("desktop-1.dev.sock")
+        );
+        for worker in workers {
+            worker.join().unwrap_or_else(|_| panic!("worker"));
+        }
+    }
+
+    #[test]
+    fn invalid_watch_does_not_connect_or_reset() {
+        let opts = PerfOptions {
+            json: true,
+            desktop: true,
+            watch: Some(f64::NAN),
+            reset: true,
+        };
+        let error = report(&opts, Path::new("/nonexistent/dev.sock")).expect_err("invalid watch");
+        assert_eq!(error.err.code, "invalid_argument");
+    }
+
+    #[test]
+    fn every_reset_sample_requests_snapshot_then_reset_and_keeps_interval_metrics() {
+        let dir = tempfile::TempDir::new().unwrap_or_else(|e| panic!("{e}"));
+        let path = dir.path().join("desktop.sock");
+        let listener = UnixListener::bind(&path).unwrap_or_else(|e| panic!("{e}"));
+        let worker = std::thread::spawn(move || {
+            for (stream, count) in listener.incoming().take(2).zip([9, 4]) {
+                let stream = stream.unwrap_or_else(|e| panic!("{e}"));
+                let mut line = String::new();
+                BufReader::new(&stream)
+                    .read_line(&mut line)
+                    .unwrap_or_else(|e| panic!("{e}"));
+                let request: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(request, json!({"op": "perf", "reset": true}));
+                let mut report = phux_perf::snapshot("desktop", &[], Duration::ZERO);
+                report.metrics.push(phux_perf::MetricSnapshot {
+                    name: "test.count".to_owned(),
+                    unit: phux_perf::Unit::Count,
+                    value: phux_perf::MetricValue::Counter(count),
+                });
+                writeln!(
+                    &stream,
+                    "{}",
+                    json!({"ok": true, "report": report, "frames": {}})
+                )
+                .unwrap_or_else(|e| panic!("{e}"));
+            }
+        });
+        let (before, _) = read_report(&path, true).unwrap_or_else(|r| panic!("{}", r.err.message));
+        let (now, _) = read_report(&path, true).unwrap_or_else(|r| panic!("{}", r.err.message));
+        assert_eq!(before.metrics[0].value, phux_perf::MetricValue::Counter(9));
+        assert_eq!(
+            interval_report(&now, &before, true).metrics[0].value,
+            phux_perf::MetricValue::Counter(4)
+        );
+        worker.join().unwrap_or_else(|_| panic!("worker"));
+    }
+
+    #[test]
+    fn oversized_desktop_reply_is_refused_without_unbounded_buffering() {
+        let dir = tempfile::TempDir::new().unwrap_or_else(|e| panic!("{e}"));
+        let path = dir.path().join("desktop.sock");
+        let listener = UnixListener::bind(&path).unwrap_or_else(|e| panic!("{e}"));
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap_or_else(|e| panic!("{e}"));
+            let mut line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap_or_else(|e| panic!("{e}"));
+            let _ = (&stream).write_all(&vec![
+                b'x';
+                usize::try_from(MAX_REPLY_BYTES + 1)
+                    .unwrap_or_default()
+            ]);
+        });
+        let error = ask(&path, &json!({"op": "perf"}), Duration::from_secs(5))
+            .expect_err("oversized reply");
+        assert_eq!(error.err.code, "desktop_protocol");
+        assert!(error.err.message.contains("8 MiB"));
+        worker.join().unwrap_or_else(|_| panic!("worker"));
     }
 }

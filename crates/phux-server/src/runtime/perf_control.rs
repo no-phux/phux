@@ -98,14 +98,17 @@ async fn trace_stop() -> CommandResult {
 
 /// Write `capture` to a fresh file under the traces directory and describe it.
 fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> {
-    let path = trace_path(&traces_dir());
-    phux_config::production::refuse_dev_on_production_state(&path)?;
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir)
+    static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _writer = WRITER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = traces_dir();
+    phux_config::production::refuse_dev_on_production_state(&dir)?;
+    std::fs::create_dir_all(&dir)
         .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    prune_traces(dir, KEEP_TRACES.saturating_sub(1));
-    let file = std::fs::File::create(&path)
-        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    prune_traces(&dir, KEEP_TRACES.saturating_sub(1));
+    let (path, file) = trace::create_trace_file(&dir, "server")
+        .map_err(|err| format!("cannot create trace in {}: {err}", dir.display()))?;
     capture
         .write_chrome_json(
             std::io::BufWriter::new(file),
@@ -123,7 +126,7 @@ fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> 
 }
 
 /// Keep only the newest `keep` server traces in `dir`, by name (the names
-/// start with a millisecond timestamp). Failures are ignored: retention is
+/// start with a timestamp). Failures are ignored: retention is
 /// housekeeping, never a reason to lose the trace being written.
 fn prune_traces(dir: &Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -150,14 +153,6 @@ fn prune_traces(dir: &Path, keep: usize) {
 /// `<state dir>/traces`, beside the server log.
 fn traces_dir() -> PathBuf {
     crate::telemetry::state_dir().join("traces")
-}
-
-/// `server-<unix ms>-<pid>.json` under `dir`.
-fn trace_path(dir: &Path) -> PathBuf {
-    let unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis());
-    dir.join(format!("server-{unix_ms}-{}.json", std::process::id()))
 }
 
 fn alloc_switch(on: bool) -> CommandResult {
@@ -197,20 +192,5 @@ mod tests {
             ["other.json", "server-200-1.json", "server-300-1.json"]
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn trace_path_names_the_process_and_lands_in_the_dir() {
-        let path = trace_path(Path::new("/x/traces"));
-        assert_eq!(path.parent(), Some(Path::new("/x/traces")));
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        assert!(name.starts_with("server-"), "{name}");
-        assert!(
-            name.ends_with(&format!("-{}.json", std::process::id())),
-            "{name}"
-        );
     }
 }

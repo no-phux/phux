@@ -19,7 +19,10 @@
 use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicU64, AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -32,10 +35,9 @@ use crate::{Metric, MetricSource};
 /// a trace Perfetto opens without complaint.
 pub const DEFAULT_MAX_EVENTS: usize = 1_000_000;
 
-static ARMED: AtomicBool = AtomicBool::new(false);
-/// Bumped per capture; a buffer still holding a previous capture's events
-/// discards them on its next push.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Generation in the high bits and armed in bit zero. One acquire reads
+/// both the admission identity and the configuration published by start.
+static STATE: AtomicU64 = AtomicU64::new(0);
 static BUDGET: AtomicUsize = AtomicUsize::new(0);
 static RECORDED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -77,8 +79,9 @@ enum Kind {
 struct Event {
     key: Key,
     kind: Kind,
-    /// Start, on the [`now_ns`] clock.
-    start_ns: u64,
+    /// End, on the [`now_ns`] clock. Subtract span duration only at export:
+    /// a retrospective span may have begun before this clock's epoch.
+    end_ns: u64,
 }
 
 /// One thread's events, tagged with the capture generation they belong to.
@@ -96,7 +99,7 @@ thread_local! {
 /// Is a capture armed?
 #[must_use]
 pub fn armed() -> bool {
-    ARMED.load(Relaxed)
+    STATE.load(Acquire) & 1 != 0
 }
 
 /// Arm a capture with room for `max_events`, discarding anything a previous
@@ -104,23 +107,23 @@ pub fn armed() -> bool {
 /// already armed.
 pub fn start(max_events: usize) -> bool {
     let _control = CONTROL.lock().unwrap_or_else(PoisonError::into_inner);
-    if ARMED.load(Relaxed) {
+    let state = STATE.load(Acquire);
+    if state & 1 != 0 {
         return false;
     }
-    GENERATION.fetch_add(1, Relaxed);
     RECORDED.store(0, Relaxed);
     DROPPED.store(0, Relaxed);
     BUDGET.store(max_events, Relaxed);
     ANCHOR_NS.store(now_ns(), Relaxed);
     ANCHOR_UNIX_US.store(unix_us_now(), Relaxed);
-    ARMED.store(true, Relaxed);
+    STATE.store((state & !1).wrapping_add(2) | 1, Release);
     true
 }
 
 /// The armed capture's id; it changes with every [`start`].
 #[must_use]
 pub fn generation() -> u64 {
-    GENERATION.load(Relaxed)
+    STATE.load(Acquire) >> 1
 }
 
 /// Disarm and collect. `None` when nothing was armed.
@@ -138,10 +141,12 @@ pub fn stop_generation(generation: u64) -> Option<Capture> {
 
 fn stop_matching(only: Option<u64>) -> Option<Capture> {
     let _control = CONTROL.lock().unwrap_or_else(PoisonError::into_inner);
-    let generation = GENERATION.load(Relaxed);
-    if only.is_some_and(|only| only != generation) || !ARMED.swap(false, Relaxed) {
+    let state = STATE.load(Acquire);
+    let generation = state >> 1;
+    if only.is_some_and(|only| only != generation) || state & 1 == 0 {
         return None;
     }
+    STATE.store(state & !1, Release);
     let anchor_ns = ANCHOR_NS.load(Relaxed);
     let duration = Duration::from_nanos(now_ns().saturating_sub(anchor_ns));
     let threads = {
@@ -176,8 +181,13 @@ fn stop_matching(only: Option<u64>) -> Option<Capture> {
 
 /// Record a span that ended now and lasted `dur`, keyed by histogram address.
 pub(crate) fn record_histogram(histogram: usize, dur: Duration) {
-    if armed() {
-        push(Key::Histogram(histogram), Kind::Span { dur_ns: nanos(dur) });
+    let admission = STATE.load(Acquire);
+    if admission & 1 != 0 {
+        push_generation(
+            Key::Histogram(histogram),
+            Kind::Span { dur_ns: nanos(dur) },
+            admission,
+        );
     }
 }
 
@@ -187,24 +197,22 @@ pub(crate) fn record_histogram(histogram: usize, dur: Duration) {
 /// timing is worth keeping in reports too.
 #[must_use]
 pub fn span(name: &'static str) -> Span {
+    let generation = STATE.load(Acquire);
     Span {
         name,
-        started: armed().then(Instant::now),
+        started: (generation & 1 != 0).then(Instant::now),
+        generation,
     }
 }
 
 /// Mark a point in time on the current thread's track.
 pub fn instant(name: &'static str) {
-    if armed() {
-        push(Key::Named(name), Kind::Instant);
-    }
+    push(Key::Named(name), Kind::Instant);
 }
 
 /// Sample a counter track (`rss`, `heap.live`, `fps`) at this moment.
 pub fn counter(name: &'static str, value: f64) {
-    if armed() {
-        push(Key::Named(name), Kind::Counter { value });
-    }
+    push(Key::Named(name), Kind::Counter { value });
 }
 
 /// Guard returned by [`span`].
@@ -212,16 +220,18 @@ pub fn counter(name: &'static str, value: f64) {
 pub struct Span {
     name: &'static str,
     started: Option<Instant>,
+    generation: u64,
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
         if let Some(started) = self.started {
-            push(
+            push_generation(
                 Key::Named(self.name),
                 Kind::Span {
                     dur_ns: nanos(started.elapsed()),
                 },
+                self.generation,
             );
         }
     }
@@ -230,33 +240,45 @@ impl Drop for Span {
 /// Append one event that ends now to this thread's buffer; a span's start
 /// is backdated by its length.
 fn push(key: Key, kind: Kind) {
-    if RECORDED.fetch_add(1, Relaxed) >= BUDGET.load(Relaxed) {
-        DROPPED.fetch_add(1, Relaxed);
+    push_generation(key, kind, STATE.load(Acquire));
+}
+
+fn push_generation(key: Key, kind: Kind, admission: u64) {
+    if admission & 1 == 0 {
         return;
     }
     let now = now_ns();
-    let start_ns = match kind {
-        Kind::Span { dur_ns } => now.saturating_sub(dur_ns),
-        Kind::Instant | Kind::Counter { .. } => now,
-    };
-    let generation = GENERATION.load(Relaxed);
+    let generation = admission >> 1;
     // `try_with`: a span can end while this thread's locals are being torn
     // down; that event is lost rather than panicking the thread.
     let _ = LOCAL.try_with(|cell| {
         let buf = cell.get_or_init(register_thread);
         let mut slot = buf.events.lock().unwrap_or_else(PoisonError::into_inner);
+        // Stop drains under this same lock. An event racing stop (or the
+        // next start) must not append to an already-collected capture.
+        if STATE.load(Acquire) != admission {
+            return;
+        }
+        if RECORDED.fetch_add(1, Relaxed) >= BUDGET.load(Relaxed) {
+            DROPPED.fetch_add(1, Relaxed);
+            return;
+        }
         if slot.0 != generation {
             *slot = (generation, Vec::new());
         }
         slot.1.push(Event {
             key,
             kind,
-            start_ns,
+            end_ns: now,
         });
     });
 }
 
 fn register_thread() -> Arc<ThreadBuf> {
+    // Registration is a cold path. Serialize it with stop's thread-list
+    // snapshot so stop always drains a registered writer before start can
+    // publish another capture's budget.
+    let _control = CONTROL.lock().unwrap_or_else(PoisonError::into_inner);
     let current = std::thread::current();
     let tid = NEXT_TID.fetch_add(1, Relaxed);
     let buf = Arc::new(ThreadBuf {
@@ -333,64 +355,27 @@ impl Capture {
         process: &str,
         tables: &[&[Metric]],
     ) -> std::io::Result<()> {
-        let pid = std::process::id();
         let names: HashMap<usize, &'static str> = histogram_names(tables).into_iter().collect();
         out.write_all(b"{\"traceEvents\":[")?;
-        let meta = |name, tid, label| OutEvent {
-            ph: "M",
-            name,
-            cat: "",
-            pid,
-            tid,
-            ts: None,
-            dur: None,
-            s: None,
-            args: Some(Args::Name { name: label }),
-        };
-        serde_json::to_writer(&mut out, &meta("process_name", 0, process))?;
+        write_metadata(&mut out, "process_name", 0, process)?;
         for thread in &self.threads {
             out.write_all(b",")?;
-            serde_json::to_writer(&mut out, &meta("thread_name", thread.tid, &thread.name))?;
+            write_metadata(&mut out, "thread_name", thread.tid, &thread.name)?;
             for event in &thread.events {
-                let name: Cow<'_, str> = match event.key {
-                    Key::Named(name) => Cow::Borrowed(name),
-                    Key::Histogram(addr) => names.get(&addr).map_or_else(
-                        || Cow::Owned(format!("histogram@{addr:#x}")),
-                        |name| Cow::Borrowed(*name),
-                    ),
-                };
-                let mut line = OutEvent {
-                    ph: "X",
-                    name: &name,
-                    cat: name.split('.').next().unwrap_or_default(),
-                    pid,
-                    tid: thread.tid,
-                    ts: Some(self.ts_us(event.start_ns)),
-                    dur: None,
-                    s: None,
-                    args: None,
-                };
-                match event.kind {
-                    Kind::Span { dur_ns } => line.dur = Some(ns_to_us(dur_ns)),
-                    Kind::Instant => {
-                        line.ph = "i";
-                        line.s = Some("t");
-                    }
-                    Kind::Counter { value } => {
-                        line.ph = "C";
-                        line.args = Some(Args::Value { value });
-                    }
-                }
                 out.write_all(b",")?;
-                serde_json::to_writer(&mut out, &line)?;
+                self.write_event(&mut out, event, &names, thread.tid)?;
             }
         }
+        self.write_footer(out, process)
+    }
+
+    fn write_footer(&self, mut out: impl std::io::Write, process: &str) -> std::io::Result<()> {
         out.write_all(b"],\"displayTimeUnit\":\"ns\",\"otherData\":")?;
         serde_json::to_writer(
             &mut out,
             &json!({
                 "process": process,
-                "pid": pid,
+                "pid": std::process::id(),
                 "anchor_unix_us": self.anchor_unix_us,
                 "duration_us": u64::try_from(self.duration.as_micros()).unwrap_or(u64::MAX),
                 "events": self.event_count(),
@@ -399,6 +384,48 @@ impl Capture {
         )?;
         out.write_all(b"}")?;
         out.flush()
+    }
+
+    fn write_event(
+        &self,
+        out: &mut impl std::io::Write,
+        event: &Event,
+        names: &HashMap<usize, &'static str>,
+        tid: u64,
+    ) -> std::io::Result<()> {
+        let name: Cow<'_, str> = match event.key {
+            Key::Named(name) => Cow::Borrowed(name),
+            Key::Histogram(addr) => names.get(&addr).map_or_else(
+                || Cow::Owned(format!("histogram@{addr:#x}")),
+                |name| Cow::Borrowed(*name),
+            ),
+        };
+        let mut line = OutEvent {
+            ph: "X",
+            cat: name.split('.').next().unwrap_or_default(),
+            name: &name,
+            pid: std::process::id(),
+            tid,
+            ts: Some(self.ts_us(event.end_ns)),
+            dur: None,
+            s: None,
+            args: None,
+        };
+        match event.kind {
+            Kind::Span { dur_ns } => {
+                line.ts = line.ts.map(|end| end - ns_to_us(dur_ns));
+                line.dur = Some(ns_to_us(dur_ns));
+            }
+            Kind::Instant => {
+                line.ph = "i";
+                line.s = Some("t");
+            }
+            Kind::Counter { value } => {
+                line.ph = "C";
+                line.args = Some(Args::Value { value });
+            }
+        }
+        Ok(serde_json::to_writer(out, &line)?)
     }
 
     /// Wall-clock microseconds for a [`now_ns`] reading. A span that began
@@ -415,6 +442,26 @@ impl Capture {
         };
         self.anchor_unix_us as f64 + offset
     }
+}
+
+fn write_metadata(
+    out: &mut impl std::io::Write,
+    name: &str,
+    tid: u64,
+    label: &str,
+) -> std::io::Result<()> {
+    let meta = OutEvent {
+        ph: "M",
+        name,
+        cat: "",
+        pid: std::process::id(),
+        tid,
+        ts: None,
+        dur: None,
+        s: None,
+        args: Some(Args::Name { name: label }),
+    };
+    Ok(serde_json::to_writer(out, &meta)?)
 }
 
 /// One trace event as written; fields absent for a kind are left out.
@@ -493,6 +540,50 @@ fn nanos(d: Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// Exclusively create a trace file without overwriting an earlier capture,
+/// including captures exported concurrently within one clock tick.
+///
+/// # Errors
+///
+/// The directory is not writable or no unique name could be created.
+pub fn create_trace_file(
+    dir: &std::path::Path,
+    prefix: &str,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    create_trace_file_at(dir, prefix, unix_us_now())
+}
+
+fn create_trace_file_at(
+    dir: &std::path::Path,
+    prefix: &str,
+    stamp: u64,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..100 {
+        let sequence = NEXT_FILE.fetch_add(1, Relaxed);
+        let path = dir.join(format!(
+            "{prefix}-{stamp}-{}-{sequence}.json",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "trace filename collisions",
+    ))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn unix_us_now() -> u64 {
     std::time::SystemTime::now()
@@ -506,92 +597,4 @@ const fn unix_us_now() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Histogram, Unit};
-
-    static TRACED: Histogram = Histogram::new();
-    static TABLE: &[Metric] = &[Metric::histogram("test.traced", Unit::Micros, &TRACED)];
-
-    /// Captures are process-global; one test drives the whole lifecycle so a
-    /// parallel test cannot disarm another's capture.
-    #[test]
-    fn capture_names_spans_from_tables_and_respects_the_budget() {
-        TRACED.record_duration(Duration::from_millis(1));
-        assert!(stop().is_none(), "nothing armed yet");
-        assert!(start(4));
-        assert!(!start(4), "a second start while armed is refused");
-        {
-            let _t = TRACED.timer();
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        {
-            let _s = span("test.explicit");
-        }
-        instant("test.mark");
-        counter("test.rss", 42.0);
-        TRACED.record_duration(Duration::from_micros(5));
-        let capture = stop().unwrap_or_else(|| panic!("armed capture"));
-        assert_eq!(capture.event_count(), 4);
-        assert_eq!(capture.dropped(), 1);
-        TRACED.record_duration(Duration::from_millis(1));
-        assert!(stop().is_none(), "disarmed after stop");
-
-        let doc: Value = serde_json::from_str(&capture.to_chrome_json("phux test", &[TABLE]))
-            .unwrap_or_else(|e| panic!("{e}"));
-        let events = doc["traceEvents"]
-            .as_array()
-            .unwrap_or_else(|| panic!("events"));
-        let span = events
-            .iter()
-            .find(|e| e["name"] == "test.traced")
-            .unwrap_or_else(|| panic!("named histogram span in {events:?}"));
-        assert_eq!(span["ph"], "X");
-        assert_eq!(span["cat"], "test");
-        assert!(span["dur"].as_f64().unwrap_or_default() >= 2000.0);
-        assert!(
-            events
-                .iter()
-                .any(|e| e["name"] == "test.explicit" && e["ph"] == "X")
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e["name"] == "test.mark" && e["ph"] == "i")
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e["name"] == "test.rss" && e["args"]["value"] == 42.0)
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e["name"] == "process_name" && e["args"]["name"] == "phux test")
-        );
-        assert_eq!(doc["otherData"]["dropped"], 1);
-
-        let merged: Value = serde_json::from_str(&merge_chrome_json([
-            capture.to_chrome_json("a", &[TABLE]).as_str(),
-            "not json",
-            capture.to_chrome_json("b", &[TABLE]).as_str(),
-        ]))
-        .unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(
-            merged["traceEvents"].as_array().map(Vec::len),
-            Some(events.len() * 2)
-        );
-        assert_eq!(
-            merged["otherData"]["processes"].as_array().map(Vec::len),
-            Some(2)
-        );
-
-        // A deadline for one capture does not end the next.
-        assert!(start(4));
-        let armed_generation = generation();
-        assert!(stop_generation(armed_generation + 1).is_none());
-        assert!(armed());
-        assert!(stop_generation(armed_generation).is_some());
-        assert!(!armed());
-    }
-}
+mod tests;

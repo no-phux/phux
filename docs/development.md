@@ -298,6 +298,10 @@ directory (`traces/`, beside `server.log`); open it in
 accounting, which then shows as `heap` in `phux perf`. A server started
 with `PHUX_DEV=1` has heap accounting on from the start. Both use
 `PERF_CONTROL`, gated on `features_ext.PERF_CONTROL`.
+It is restricted to the ordinary owner socket, not delegated or remote
+grants. An abandoned server capture stops and saves after ten minutes;
+the server retains the newest 20 trace files. Exports use exclusive,
+owner-readable files so simultaneous captures cannot overwrite each other.
 
 `PHUX_DEV=1` is the one dev-mode switch for every phux process
 (`phux_perf::dev`). In the desktop it also turns on the performance HUD and
@@ -308,6 +312,16 @@ answers line JSON (`clients/desktop/native/src/devtools/socket.rs`).
 `phux perf hud on|off` toggles the HUD. Every `phux_perf` histogram becomes
 a trace span with no extra code, so a new hot path needs only a histogram
 in its crate's `TABLE` to show in reports, traces and the HUD.
+The dev socket verifies the connecting UID and requires a non-symlink,
+owner-only parent directory; `PHUX_DESKTOP_DEV_SOCKET` overrides its path
+but does not relax those checks. Discovery checks the associated server
+socket, including when several server sockets share a directory. Development
+builds retain the production-socket guard, including
+explicit dev-socket overrides and desktop calls through an installed CLI;
+an override must identify the same permitted server before dispatch.
+Requests are limited to 64 KiB, 16 concurrent connections, and five-second I/O
+deadlines; a desktop trace records at most 60 seconds. `--reset` returns
+each snapshot before clearing its counters, including in watch mode.
 
 ## Mutation testing
 

@@ -221,6 +221,16 @@ panes, `GET_SCREEN`, tags, organization moves, agent session streams,
 approvals. Events include pane lifecycle, agent state changes, asks,
 bells, and command boundaries from shell integration.
 
+`PERF_CONTROL` (command tag `0x39`) is gated on
+`features_ext.PERF_CONTROL` (`0x80`). Its positional body is one op byte:
+trace start (`0`), trace stop (`1`), heap accounting on (`2`), or off (`3`).
+Undefined ops decode and receive `INVALID_COMMAND`. The ordinary owner
+socket alone can use it: traces write files on the server host and heap
+accounting affects every allocation. Delegated and remote grants cannot
+enable it. Older servers do not advertise the bit; clients check before
+sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
+JSON fields that old readers ignore.
+
 Panes are **resources** with a **kind**: `Terminal` or `AgentSession` so
 far, each with its own methods and events. A client tolerates kinds it
 does not know. The kind catalog in `phux-protocol::kinds` lists every
