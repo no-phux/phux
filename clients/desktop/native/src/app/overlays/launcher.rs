@@ -24,10 +24,45 @@ use header::{Header, header, wraps_controls};
 
 use super::goto_facts::FactsCard;
 use super::goto_filter::GotoFilter;
+use super::surface::baseline;
 use super::{
     Row, Section, Target, WINDOWS, command_results, command_sections, corner, move_sections,
     prepare_goto, query_terms, rank_sections, session_sections, settings_sections, window_sections,
 };
+
+/// The header, the search field (33 with its rule), and the list's 4pt inset
+/// above and below its rows.
+const CHROME: f32 = 36. + 33. + 2. * 4.;
+const ROW: f32 = 36.;
+/// A section heading: the kit's 6pt above and below a line pinned to 16.
+const HEADING: f32 = 28.;
+const HEADING_LINE: f32 = HEADING - 12.;
+/// A row's content box; its texts share it as their line box.
+const ROW_LINE: f32 = 24.;
+const MAX_ROWS: usize = 8;
+
+/// The palette's height for `sections` under `chrome`: up to eight rows and
+/// the headings over them, ending on a whole row when `max` cuts the list.
+fn list_height(sections: &[Section], chrome: f32, max: f32) -> f32 {
+    let steps = sections
+        .iter()
+        .flat_map(|section| {
+            let heading = if section.label.is_some() { HEADING } else { 0. };
+            (0..section.rows.len()).map(move |row| if row == 0 { heading + ROW } else { ROW })
+        })
+        .take(MAX_ROWS);
+    let mut height = chrome;
+    let mut rows = 0;
+    for step in steps {
+        if height + step > max {
+            break;
+        }
+        height += step;
+        rows += 1;
+    }
+    // An empty list still holds a row for its "No results".
+    if rows == 0 { height + ROW } else { height }.min(max)
+}
 
 fn results(desk: &mut Desk, query: &str, cx: &Context<Desk>) -> (&'static str, Vec<Section>) {
     match desk.modal {
@@ -102,19 +137,17 @@ pub(super) fn palette(
     } else {
         0.
     };
-    let headings = sections
-        .iter()
-        .filter(|section| section.label.is_some())
-        .count();
     let compact = viewport.width.as_f32() < 452.;
     let extra_header = if wraps_controls(&desk.modal, compact, query.trim().is_empty()) {
         32.
     } else {
         0.
     };
-    let list_height = (80. + extra_header + count.clamp(1, 8) as f32 * 36. + headings as f32 * 28.)
-        .min(400.)
-        .min(available - detail_height);
+    let list_height = list_height(
+        &sections,
+        CHROME + extra_header,
+        (available - detail_height).min(400.),
+    );
     let width = (viewport.width.as_f32() - 2. * super::SHEET_GUTTER).clamp(0., 560.);
     let look = desk.look();
     let handle = cx.weak_entity();
@@ -137,15 +170,19 @@ pub(super) fn palette(
         .bordered(false)
         .rounded(corner(&look, 12.))
         .h(px(list_height))
+        .line_height(px(HEADING_LINE))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
-        .max_h(px((list_height - 72. - extra_header).max(36.)))
+        .max_h(px((list_height - CHROME + 8. - extra_header).max(ROW)))
         .header(move |_, _, _| header(&header_state, &header_colors, &header_handle))
         .empty(move |_, _, _| {
+            // The one row an empty list holds, its text on the rows' column.
             div()
                 .w_full()
-                .py(px(24.))
-                .px(px(16.))
+                .h(px(ROW))
+                .flex()
+                .items_center()
+                .px(px(8.))
                 .text_sm()
                 .text_color(from_hex(&empty_colors.muted))
                 .child("No results")
@@ -273,7 +310,11 @@ fn item(
     if let Some(id) = row.command {
         item = item.action(Box::new(Run::new(id)));
     }
-    item.child(move |_, _| {
+    item.child(move |_, cx| {
+        // Each text fills the row's line box, then the small ones drop onto
+        // the title's baseline.
+        let line = px(ROW_LINE);
+        let drop = baseline(cx, px(13.), line) - baseline(cx, px(11.), line);
         div()
             .debug_selector(move || {
                 format!("palette-result-{}", row.command.unwrap_or("destination"))
@@ -284,11 +325,12 @@ fn item(
             .flex()
             .flex_1()
             .min_w_0()
-            .h(px(24.))
+            .h(px(ROW_LINE))
             .when(nested, |row| row.pl(px(16.)))
             .items_center()
             .gap(px(12.))
             .text_size(px(13.))
+            .line_height(line)
             .text_color(from_hex(if destructive {
                 &colors.theme.danger
             } else {
@@ -309,6 +351,8 @@ fn item(
             ))
             .children(detail.clone().map(|detail| {
                 div()
+                    .relative()
+                    .top(drop)
                     .max_w(px(220.))
                     .truncate()
                     .text_size(px(11.))
@@ -320,6 +364,8 @@ fn item(
             .children(chord.clone().map(|chord| {
                 let selector = format!("palette-chord:{chord}");
                 div()
+                    .relative()
+                    .top(drop)
                     .flex_shrink_0()
                     .when(selected, |hint| hint.debug_selector(move || selector))
                     .when(!selected, |hint| hint.invisible())

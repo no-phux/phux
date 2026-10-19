@@ -160,7 +160,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                 .debug_selector(|| "sidebar-filter".into())
                 .flex_1()
                 .min_w_0()
-                .h(px(28.))
+                .h(px(24.))
                 .px(px(10.))
                 .mr(px(4.))
                 .flex()
@@ -174,7 +174,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                 .aria_label("Find work, terminals and tabs")
                 .child(
                     Icon::new(IconName::Search)
-                        .size(px(13.))
+                        .size(px(14.))
                         .text_color(from_hex(&look.chrome.muted)),
                 )
                 .child(muted(look, "Filter").flex_1().text_sm())
@@ -254,13 +254,17 @@ fn host_word(desk: &Desk, host: Option<&str>) -> Option<String> {
 
 /// A session's leading slot: its caret, or a lit dot while something in it
 /// needs a person.
-fn session_slot(caret: &'static str, attention: Option<AgentState>, look: &Look) -> gpui::Div {
+fn session_slot(collapsed: bool, attention: Option<AgentState>, look: &Look) -> gpui::Div {
     row_icon(match attention {
-        Some(state) => state_dot(Some(state), None),
-        None => div()
-            .text_xs()
-            .text_color(from_hex(&look.chrome.faint))
-            .child(caret),
+        Some(state) => state_dot(Some(state), None).into_any_element(),
+        None => Icon::new(if collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        })
+        .size(px(12.))
+        .text_color(from_hex(&look.chrome.muted))
+        .into_any_element(),
     })
 }
 

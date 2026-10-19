@@ -325,7 +325,7 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
                 div()
                     .h(px(6.))
                     .w(px(28.))
-                    .rounded(scaled(shape.tab_radius[0]))
+                    .rounded(scaled(shape.tab_radius))
                     .bg(look.active),
             )
         });
