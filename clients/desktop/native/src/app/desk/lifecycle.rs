@@ -119,6 +119,7 @@ impl Desk {
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
+            disclosures: HashMap::new(),
             hosts: Vec::new(),
             fleet: Default::default(),
             fleet_view: Default::default(),

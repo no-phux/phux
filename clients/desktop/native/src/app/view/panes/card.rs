@@ -164,6 +164,8 @@ pub(super) fn pane_view(
             crate::attach::TerminalHost::Local
         )
     });
+    // Only the focused pane is read for scrollback; the pill sits on it.
+    let follow = focused && !leaving && desk.follows_live();
     let controls = find.is_none()
         && !dropping
         && !leaving
@@ -323,6 +325,10 @@ pub(super) fn pane_view(
         .children(corner)
         .children(controls_bar)
         .when(dropping, |card| card.child(drop_hint(&look, remote_files)))
+        .when(follow, |card| {
+            let moves = super::super::chrome_moves(desk, cx);
+            card.child(super::super::status::follow_live(&look, moves, cx))
+        })
         .children(find_bar);
     // The slot keeps the split's geometry; the card draws in from its edges.
     // The highlight lies on the card's top border row, outside the card's

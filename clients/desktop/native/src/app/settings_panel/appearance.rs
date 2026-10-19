@@ -170,7 +170,7 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
                 handle,
                 "Plain terminal",
                 |prefs| &mut prefs.plain,
-                format!("Opaque and square, with no sidebar or status bar.{plain_chord}"),
+                format!("Opaque and square, with no sidebar.{plain_chord}"),
             )
             .keywords(["plain", "ghostty", "minimal", "terminal", "skin"]),
         )
@@ -285,7 +285,7 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
 }
 
 /// A window in miniature, painted from the skin's own tokens: sheet,
-/// titlebar, sidebar, gutter, pane cards and status bar.
+/// titlebar, sidebar, gutter and pane cards.
 fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyElement {
     let look = Look::of(skin, colors, prefs);
     let (chrome, shape) = (&skin.chrome, &skin.shape);
@@ -349,7 +349,7 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
         .flex()
         .gap(scaled(shape.gap))
         .px(scaled(shape.gutter))
-        .pb(scaled(if chrome.status > 0. { 0. } else { shape.gutter }))
+        .pb(scaled(shape.gutter))
         .children(sidebar)
         .child(
             div()
@@ -373,8 +373,5 @@ fn skin_preview(skin: &Skin, colors: &Palette, prefs: &DisplayPrefs) -> AnyEleme
         .flex_col()
         .child(titlebar)
         .child(body)
-        .when(chrome.status > 0., |preview| {
-            preview.child(div().h(scaled(chrome.status)).flex_shrink_0())
-        })
         .into_any_element()
 }

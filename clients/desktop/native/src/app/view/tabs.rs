@@ -6,8 +6,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
-    SharedString, Window, div, px,
+    AnimationExt, AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton,
+    MouseDownEvent, SharedString, Window, div, px,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -29,6 +29,8 @@ use super::tab_glow;
 
 /// Both selected and inactive tabs reserve the surface's one-point rim.
 const TAB_RIM: f32 = 1.;
+/// The widest a top or bottom tab grows: tabs share the strip up to this.
+const TAB_MAX: f32 = 280.;
 /// Enough room for one readable horizontal tab and its actions while scrolling.
 pub(crate) const MIN_STRIP_WIDTH: f32 = 160.;
 
@@ -40,14 +42,22 @@ pub(super) fn tab_height(titlebar: f32) -> f32 {
 /// The cached bottom strip uses the same horizontal tabs as the titlebar.
 pub(super) fn build_bottom(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
+    let lead = super::panes::lead_inset(desk, &look);
+    let moves = super::chrome_moves(desk, cx);
     div()
         .id("bottom-tab-bar")
         .debug_selector(|| "bottom-tab-bar".into())
         .size_full()
-        .px(px(look.skin.shape.gutter))
+        .pr(px(look.skin.shape.gutter))
         .flex()
         .items_center()
         .child(strip(desk, TabPosition::Bottom, &look, cx))
+        // On the cards' column, moving with it as the sidebar does.
+        .with_spring(
+            "bottom-tab-lead",
+            super::chrome_spring(moves, lead),
+            |bar, inset| bar.pl(px(inset)),
+        )
         .into_any_element()
 }
 
@@ -67,10 +77,10 @@ pub(super) fn strip(
     let geometry = desk.tab_geometry.clone();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
-    // Top tabs start on the pane column; the bottom bar already insets by
-    // the gutter.
-    let lead_pad = if position == TabPosition::Top {
-        look.skin.shape.gutter.max(4.)
+    // Beside the sidebar, top tabs start on the cards' column (the titlebar
+    // rail spans the sidebar); the bottom bar insets itself.
+    let lead_pad = if position == TabPosition::Top && super::navigator::wanted(desk) {
+        super::panes::lead_inset(desk, look).max(4.)
     } else {
         4.
     };
@@ -142,6 +152,7 @@ fn side_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
     harness: Option<Harness>,
+    selected: bool,
     look: &Look,
 ) -> AnyElement {
     if attention.is_some() {
@@ -155,7 +166,11 @@ fn side_lead(
     }
     Icon::new(IconName::SquareTerminal)
         .size(px(13.))
-        .text_color(from_hex(&look.chrome.faint))
+        .text_color(from_hex(if selected {
+            &look.chrome.subtext
+        } else {
+            &look.chrome.faint
+        }))
         .into_any_element()
 }
 
@@ -165,11 +180,12 @@ fn top_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
     harness: Option<Harness>,
+    selected: bool,
     look: &Look,
 ) -> Option<AnyElement> {
     attention
         .is_none()
-        .then(|| side_lead(None, agent, harness, look))
+        .then(|| side_lead(None, agent, harness, selected, look))
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -340,7 +356,7 @@ fn tab_button(
         .when(!side, |tab| {
             tab.h(px(height - sunk))
                 .min_w(px(100.))
-                .max_w(px(220.))
+                .max_w(px(TAB_MAX))
                 .flex_1()
                 .pl(px(10.))
         })
@@ -368,18 +384,23 @@ fn tab_button(
         .when(organizing, |tab| tab.bg(look.active))
         .block_mouse_except_scroll()
         .when(side, |tab| {
-            tab.child(row_icon(side_lead(attention, agent, harness, look)))
+            tab.child(row_icon(side_lead(
+                attention, agent, harness, selected, look,
+            )))
         })
         .when(!side, |tab| {
-            // A fixed slot, so the label holds still as an agent comes and goes.
+            // A fixed slot, so the label holds still as an agent comes and goes;
+            // like a row's, set a point low to meet the label's lowercase.
             tab.child(
                 div()
                     .size(px(13.))
+                    .relative()
+                    .top(px(1.))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(top_lead(attention, agent, harness, look)),
+                    .children(top_lead(attention, agent, harness, selected, look)),
             )
         })
         .child(

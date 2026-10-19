@@ -182,6 +182,9 @@ impl Desk {
             return false;
         }
         self.refresh_tab_placement(axis);
+        if self.prefs.sidebar_visible != before.sidebar_visible {
+            self.disclose(SIDEBAR_DISCLOSURE.into(), cx);
+        }
         if self.prefs.ghostty_keys != before.ghostty_keys {
             self.sync_bindings(cx);
         }

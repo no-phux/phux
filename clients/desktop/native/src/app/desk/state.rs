@@ -67,6 +67,16 @@ impl Desk {
                 .is_some_and(|frame| !frame.scrollbar.at_tail())
     }
 
+    /// Whether the focused pane shows its Follow live pill: scrolled back,
+    /// with no find bar over its foot.
+    pub(crate) fn follows_live(&self) -> bool {
+        self.scrolled_back()
+            && self.find.as_ref().is_none_or(|find| {
+                self.focused_placement()
+                    .is_none_or(|placement| placement.id != find.placement_id)
+            })
+    }
+
     /// The runtime state the chrome renders without an event of its own:
     /// terminal output and input receipts change it in paint-only batches.
     pub(super) fn read_runtime_chrome(&self) -> RuntimeChrome {
@@ -137,7 +147,7 @@ impl Desk {
         )
     }
 
-    /// Human connection status and its tone, for the status bar and Settings.
+    /// Human connection status and its tone, for the titlebar's status chip and Settings.
     pub(crate) fn connection_label(&self) -> (String, Tone) {
         let Some(link) = self.link.as_ref() else {
             return ("Not connected".into(), Tone::Bad);
@@ -179,7 +189,38 @@ impl Desk {
         if !self.collapsed.remove(name) {
             self.collapsed.insert(name.to_owned());
         }
+        self.disclose(session_disclosure(name), cx);
         cx.notify();
+    }
+
+    /// Note that the chrome part `key` just opened or closed. For a short
+    /// while a closing part stays drawn as it springs shut, and an opening
+    /// one springs from nothing; at any other time a part simply is where its
+    /// state puts it, so nothing animates at launch or on restore. Without
+    /// motion a part opens and closes at once.
+    pub(crate) fn disclose(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.prefs.animations || cx.reduce_motion() {
+            self.disclosures.remove(&key);
+            return;
+        }
+        let now = Instant::now();
+        self.disclosures
+            .retain(|_, at| now.saturating_duration_since(*at) < DISCLOSURE);
+        self.disclosures.insert(key, now);
+        // Drop whatever stayed drawn once it has settled.
+        let timer = cx.background_executor().timer(DISCLOSURE);
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// Whether `key` opened or closed within the last [`DISCLOSURE`].
+    pub(crate) fn disclosing(&self, key: &str) -> bool {
+        self.disclosures
+            .get(key)
+            .is_some_and(|at| at.elapsed() < DISCLOSURE)
     }
 
     pub(super) fn pane_cwd(&self, terminal: Option<&ResourceId>) -> Option<String> {

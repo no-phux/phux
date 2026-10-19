@@ -24,6 +24,7 @@ use gpui_kit::component::input::Textarea;
 use gpui_kit::component::{Selectable, Sizable};
 
 use crate::git::{Area, Status};
+use crate::workspace::layout::{Axis, LayoutNode};
 
 use super::super::changes::{Layout, View};
 use super::super::color::from_hex;
@@ -31,10 +32,19 @@ use super::super::desk::Desk;
 use super::super::skin::{Look, Surface, Surfaced};
 use super::super::ui::{ghost_icon, muted};
 
-/// The file column's width.
+/// The narrowest the panel goes to keep the panes their room: a file column
+/// and a readable diff. Below it the panel holds and the panes take the rest.
+const PANEL_FLOOR: f32 = 360.;
+/// Room each column of side-by-side panes keeps beside the panel.
+const COLUMN_MIN: f32 = 280.;
+/// The file column's width, and the share of a narrow panel it takes at most.
 const FILES_WIDTH: f32 = 252.;
+const FILES_SHARE: f32 = 0.45;
 
-/// The panel's width this frame: as dragged, but never crowding out the panes.
+/// The panel's width this frame: as dragged and at least its minimum where
+/// the window has room, yielding to keep the panes their room (`PANES_MIN`,
+/// or [`COLUMN_MIN`] for each column set side by side) down to its own
+/// [`PANEL_FLOOR`].
 pub(crate) fn width(desk: &Desk, viewport: f32) -> f32 {
     use super::super::changes::{MIN_WIDTH, PANES_MIN};
     let sidebar = if super::navigator::wanted(desk) {
@@ -45,8 +55,32 @@ pub(crate) fn width(desk: &Desk, viewport: f32) -> f32 {
     let available = (viewport - sidebar).max(0.);
     desk.changes
         .width
-        .min(available - PANES_MIN)
         .max(MIN_WIDTH.min(viewport * 0.5))
+        .min(available - PANES_MIN.max(columns(desk) as f32 * COLUMN_MIN))
+        .max(PANEL_FLOOR.min(available))
+}
+
+/// How many panes the active tab sets side by side.
+fn columns(desk: &Desk) -> usize {
+    fn across(node: &LayoutNode) -> usize {
+        match node {
+            LayoutNode::Leaf { .. } => 1,
+            LayoutNode::Split {
+                axis: Axis::Row,
+                first,
+                second,
+                ..
+            } => across(first) + across(second),
+            LayoutNode::Split { first, second, .. } => across(first).max(across(second)),
+        }
+    }
+    desk.active_tab().map_or(1, |tab| {
+        if tab.zoomed_id.is_some() {
+            1
+        } else {
+            across(&tab.root)
+        }
+    })
 }
 
 pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
@@ -54,17 +88,17 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     let look = desk.look();
     let gutter = look.skin.shape.gutter;
     let panel = width(desk, window.viewport_size().width.as_f32());
-    let bottom = super::panes::bottom_chrome(desk, &look);
     let body = match desk.changes.view.clone() {
         View::Repo(status) if !status.entries.is_empty() => {
-            let diff_width = panel - FILES_WIDTH - gutter;
+            let files_width = FILES_WIDTH.min(panel * FILES_SHARE);
+            let diff_width = panel - files_width - gutter;
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .child(
                     div()
-                        .w(px(FILES_WIDTH))
+                        .w(px(files_width))
                         .flex_shrink_0()
                         .h_full()
                         .flex()
@@ -90,7 +124,8 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
         .relative()
         .pt(px(gutter))
         .pr(px(gutter))
-        .pb(px(bottom))
+        // Its foot is the window's, whatever sits under the panes.
+        .pb(px(gutter))
         .child(
             div()
                 .id("changes")
@@ -109,7 +144,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
                 .child(header(desk, &look, cx))
                 .child(body),
         )
-        .child(resize(desk, bottom, &look, cx))
+        .child(resize(desk, gutter, &look, cx))
         .into_any_element()
 }
 

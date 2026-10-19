@@ -28,7 +28,7 @@ use super::{navigator, tabs, tabs_at};
 
 /// Left inset that clears the traffic lights.
 pub(super) const TRAFFIC_LIGHTS: f32 = 78.;
-/// Room for the main menu and sidebar toggle, even with the navigator hidden.
+/// Room for the main menu and sidebar toggle without a sidebar to size them.
 pub(super) const MENU_RAIL: f32 = 256.;
 /// Titlebar heights between which its controls fade in: a slim drag strip
 /// holds only the traffic lights and a title.
@@ -41,13 +41,19 @@ pub(super) fn controls_fit(titlebar: f32) -> f32 {
     ((titlebar - SLIM_BAR) / (FULL_BAR - SLIM_BAR)).clamp(0., 1.)
 }
 
-/// The lead's width: the sidebar's, so top tabs start where the panes do,
-/// or the menu rail without one.
-fn titlebar_lead(sidebar: bool, quick: bool, sidebar_width: f32) -> f32 {
+/// The lead's width: the sidebar's, so top tabs start where the panes do.
+/// With the sidebar hidden it holds that width up to the menu rail, so at
+/// the usual widths its toggle never moves out from under the pointer that
+/// pressed it, and a wide sidebar never crowds the tabs it left behind.
+fn titlebar_lead(quick: bool, sidebar: bool, sidebar_width: f32) -> f32 {
     if quick {
         return MENU_RAIL - 28.;
     }
-    if sidebar { sidebar_width } else { MENU_RAIL }
+    if sidebar {
+        sidebar_width
+    } else {
+        sidebar_width.min(MENU_RAIL)
+    }
 }
 
 pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
@@ -66,11 +72,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
     let quick = super::quick(desk);
     let sidebar = navigator::wanted(desk);
     let presence = skin.chrome.sidebar.clamp(0., 1.);
-    let full = titlebar_lead(
-        sidebar && presence > 0.,
-        quick,
-        desk.prefs.sidebar_width as f32 * presence,
-    );
+    let full = titlebar_lead(quick, sidebar, desk.prefs.sidebar_width as f32 * presence);
     let lead = (TRAFFIC_LIGHTS + (full - TRAFFIC_LIGHTS) * fit).max(TRAFFIC_LIGHTS);
     let top_tabs = tabs_at(desk, skin, TabPosition::Top);
     let title = (fit < 1. && !top_tabs).then(|| {
@@ -154,7 +156,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                 })
                 .with_spring(
                     "main-menu-rail",
-                    gpui::SpringAnimation::new(gpui::SpringConfig::new(600., 49., 1.)).to(lead),
+                    gpui::SpringAnimation::new(super::CHROME_SPRING).to(lead),
                     |rail, width| rail.w(px(width)),
                 ),
         )
@@ -173,6 +175,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
         .items_center()
         .gap(px(2.))
         .pr(px(8.))
+        .children(super::status::status_chips(desk, look, cx))
         .when(fit > 0., |cluster| {
             cluster.child(
                 div()
@@ -412,10 +415,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_reserves_space_with_or_without_the_sidebar() {
-        assert_eq!(titlebar_lead(true, false, 248.), 248.);
-        assert_eq!(titlebar_lead(true, false, 180.), 180.);
-        assert_eq!(titlebar_lead(false, false, 248.), MENU_RAIL);
-        assert!(titlebar_lead(false, true, 248.) > TRAFFIC_LIGHTS);
+    fn the_menu_holds_the_sidebar_width_with_or_without_the_sidebar() {
+        assert_eq!(titlebar_lead(false, true, 248.), 248.);
+        assert_eq!(titlebar_lead(false, false, 248.), 248.);
+        assert_eq!(titlebar_lead(false, true, 400.), 400.);
+        assert_eq!(titlebar_lead(false, false, 400.), MENU_RAIL);
+        assert!(titlebar_lead(true, true, 248.) > TRAFFIC_LIGHTS);
     }
 }

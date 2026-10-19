@@ -357,6 +357,7 @@ impl Changes {
 impl Desk {
     pub(crate) fn toggle_changes(&mut self, cx: &mut Context<Self>) {
         self.changes.open = !self.changes.open;
+        self.disclose(super::desk::CHANGES_DISCLOSURE.into(), cx);
         if self.changes.open {
             self.refresh_changes(true, cx);
             self.arm_changes_poll(cx);

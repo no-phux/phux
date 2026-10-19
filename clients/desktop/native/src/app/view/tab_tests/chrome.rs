@@ -53,7 +53,6 @@ fn the_slim_strip_fades_controls_and_shows_tabs_only_when_several() {
     assert_eq!(gloss(&GLASS), 1.);
     assert_eq!(gloss(&TERMINAL), 0.);
     assert_eq!(row_radius(&GLASS), 6.);
-    assert_eq!(chip_radius(&GLASS), 4.);
 }
 
 #[gpui::test]
@@ -393,4 +392,42 @@ fn the_find_count_never_moves_the_find_field(cx: &mut TestAppContext) {
         );
         assert_eq!(cx.debug_bounds("find-status"), Some(slot), "{status:?}");
     }
+}
+
+#[gpui::test]
+fn a_hidden_sidebar_slides_out_with_motion_and_goes_at_once_without(cx: &mut TestAppContext) {
+    use crate::app::desk::{DISCLOSURE, SIDEBAR_DISCLOSURE};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    run(&desk, "sidebar", cx);
+    assert!(cx.debug_bounds("sidebar-footer").is_some());
+    run(&desk, "sidebar", cx);
+    assert!(
+        cx.debug_bounds("sidebar-footer").is_none(),
+        "reduced motion closes at once"
+    );
+    assert!(!desk.read_with(cx, |desk, _| desk.disclosing(SIDEBAR_DISCLOSURE)));
+
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    run(&desk, "sidebar", cx);
+    run(&desk, "sidebar", cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.prefs.sidebar_visible);
+        assert!(desk.disclosing(SIDEBAR_DISCLOSURE));
+    });
+    assert!(
+        cx.debug_bounds("sidebar-footer").is_some(),
+        "it stays drawn while it slides out"
+    );
+    desk.update(cx, |desk, cx| {
+        let settled = std::time::Instant::now() - DISCLOSURE;
+        desk.disclosures.insert(SIDEBAR_DISCLOSURE.into(), settled);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("sidebar-footer").is_none(),
+        "then it is gone"
+    );
 }

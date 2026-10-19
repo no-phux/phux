@@ -8,7 +8,9 @@
 //! never add, hide or reorder work within a session.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, IntoElement, MouseButton, SharedString, Window, div, px};
+use gpui::{
+    AnimationExt, AnyElement, Context, IntoElement, MouseButton, SharedString, Window, div, px,
+};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
@@ -35,6 +37,8 @@ use session::session_block;
 
 const FOOTER_HEIGHT: f32 = 44.;
 const TAB_SHELF_HEIGHT: f32 = 160.;
+/// The list's inset from the sidebar's edges; rows highlight within it.
+pub(super) const LIST_INSET: f32 = 8.;
 
 /// Whether the prefs show the sidebar in this window.
 pub(super) fn wanted(desk: &Desk) -> bool {
@@ -234,7 +238,7 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .px(px(8.))
+        .px(px(LIST_INSET))
         .pt(px(4.))
         .pb(px(48.))
         .flex()
@@ -242,7 +246,7 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
         .gap(px(1.))
         .when(empty, |list| {
             list.child(
-                muted(look, "No sessions match this view.")
+                muted(look, empty_words(desk))
                     .px(px(8.))
                     .py(px(6.))
                     .text_sm(),
@@ -250,6 +254,16 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
         })
         .children(rows)
         .children(unavailable(desk, look, cx))
+}
+
+/// What an empty list says: why there is nothing, not a filter that isn't set.
+fn empty_words(desk: &Desk) -> &'static str {
+    use phux_client_runtime::control::Status;
+    match desk.link.as_ref().map(|link| link.connection.status) {
+        Some(Status::Attached) => "No sessions match this view.",
+        Some(Status::Idle | Status::Connecting | Status::Negotiated) => "Connecting…",
+        _ => "Not connected. Sessions show here once phux is reachable.",
+    }
 }
 
 /// The machine a row names: nothing on this Mac or under a machine heading.
@@ -260,18 +274,32 @@ fn host_word(desk: &Desk, host: Option<&str>) -> Option<String> {
 }
 
 /// A session's leading slot: its caret, or a lit dot while something in it
-/// needs a person.
-fn session_slot(collapsed: bool, attention: Option<AgentState>, look: &Look) -> gpui::Div {
+/// needs a person. The caret turns, on the chrome spring, rather than swap.
+fn session_slot(
+    key: &str,
+    collapsed: bool,
+    attention: Option<AgentState>,
+    moves: bool,
+    look: &Look,
+) -> gpui::Div {
     row_icon(match attention {
         Some(state) => state_dot(Some(state), None).into_any_element(),
-        None => Icon::new(if collapsed {
-            IconName::ChevronRight
-        } else {
-            IconName::ChevronDown
-        })
-        .size(px(12.))
-        .text_color(from_hex(&look.chrome.muted))
-        .into_any_element(),
+        None => {
+            let turn = if collapsed {
+                0.
+            } else {
+                std::f32::consts::FRAC_PI_2
+            };
+            Icon::new(IconName::ChevronRight)
+                .size(px(12.))
+                .text_color(from_hex(&look.chrome.muted))
+                .with_spring(
+                    SharedString::from(format!("disclose-caret-{key}")),
+                    super::chrome_spring(moves, turn),
+                    |caret, turn| caret.rotate(gpui::radians(turn)),
+                )
+                .into_any_element()
+        }
     })
 }
 

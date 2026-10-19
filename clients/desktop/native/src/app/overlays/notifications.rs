@@ -132,12 +132,18 @@ pub(super) fn approval_buttons(
 }
 
 pub(super) fn notification_heading(title: &str, unread: usize, look: &Look) -> AnyElement {
-    muted(look, format!("{title} · {unread} unread alerts"))
-        .px(px(COLUMN))
-        .pt(px(14.))
-        .pb(px(8.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .into_any_element()
+    muted(
+        look,
+        format!(
+            "{title} · {}",
+            crate::app::desk::counted(unread, "unread alert")
+        ),
+    )
+    .px(px(COLUMN))
+    .pt(px(14.))
+    .pb(px(8.))
+    .font_weight(gpui::FontWeight::SEMIBOLD)
+    .into_any_element()
 }
 
 /// A quiet card in the notification cards' shape, its text on their column.

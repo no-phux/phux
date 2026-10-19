@@ -263,7 +263,8 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
     draw(cx);
     let g = cx.debug_bounds("tab-fixture-g").unwrap();
     let h = cx.debug_bounds("tab-fixture-h").unwrap();
-    assert!(g.origin.x >= px(MENU_RAIL));
+    let rail = desk.read_with(cx, |desk, _| desk.prefs.sidebar_width as f32);
+    assert!(g.origin.x >= px(rail));
     assert!(h.right() < px(800.), "scroll reveals the overflowed tabs");
     cx.simulate_mouse_down(g.center(), MouseButton::Left, Modifiers::none());
     draw(cx);

@@ -87,9 +87,9 @@ pub(super) fn work_rows(desk: &Desk) -> Vec<Row> {
             let intake = if work.intake { " · Intake" } else { "" };
             let mark = current_mark(desk.work_is_active(&destination));
             let detail = format!(
-                "{mark}{} · {} terminals{intake}{status}",
+                "{mark}{} · {}{intake}{status}",
                 destination.host_label(),
-                work.terminals
+                crate::app::desk::counted(work.terminals, "terminal")
             );
             let mut row = simple_row(
                 &destination.name.clone(),
@@ -274,7 +274,11 @@ pub(super) fn goto_sections(desk: &Desk) -> Vec<Section> {
                 return None;
             }
             let mark = current_mark(tab.id == link.workspace.active_id);
-            let detail = format!("{mark}Tab {} · {} panes", index + 1, placed.len());
+            let detail = format!(
+                "{mark}Tab {} · {}",
+                index + 1,
+                crate::app::desk::counted(placed.len(), "pane")
+            );
             let title = desk::tab_title(desk, tab);
             let panes = placed
                 .into_iter()

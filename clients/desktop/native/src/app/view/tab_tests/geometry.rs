@@ -64,10 +64,12 @@ fn bottom_tabs_belong_to_the_workspace_and_leave_the_sidebar_footer_anchored(
         let main = cx.debug_bounds("main-column").unwrap();
         let strip = cx.debug_bounds("bottom-tab-bar").unwrap();
         let tab = cx.debug_bounds("tab-fixture-a").unwrap();
-        let gutter = desk.read_with(cx, |desk, _| desk.skin().shape.gutter);
+        let lead = desk.read_with(cx, |desk, _| {
+            super::super::panes::lead_inset(desk, &desk.look())
+        });
         assert_eq!(strip.origin.x, main.origin.x);
         assert_eq!(strip.right(), main.right());
-        assert_eq!(tab.origin.x, main.origin.x + px(gutter));
+        assert_eq!(tab.origin.x, main.origin.x + px(lead));
         assert_eq!(cx.debug_bounds("sidebar-footer").unwrap(), footer);
         assert!(tab.right() <= main.right());
         run(&desk, "tabs-side", cx);
@@ -89,9 +91,16 @@ fn top_tabs_start_on_the_pane_column_beside_the_sidebar(cx: &mut TestAppContext)
         draw(cx);
         let main = cx.debug_bounds("main-column").unwrap();
         let tab = cx.debug_bounds("tab-fixture-a").unwrap();
-        let gutter = desk.read_with(cx, |desk, _| desk.skin().shape.gutter);
+        let lead = desk.read_with(cx, |desk, _| {
+            super::super::panes::lead_inset(desk, &desk.look())
+        });
         assert!(main.origin.x >= px(width as f32), "the sidebar shows");
-        assert_eq!(tab.origin.x, main.origin.x + px(gutter));
+        assert_eq!(tab.origin.x, main.origin.x + px(lead));
+        // The sidebar's rows end LIST_INSET before its edge; the first card
+        // starts one gutter after them.
+        let gutter = desk.read_with(cx, |desk, _| desk.skin().shape.gutter);
+        let rows_end = px(width as f32 - super::super::navigator::LIST_INSET);
+        assert_eq!(main.origin.x + px(lead) - rows_end, px(gutter));
     }
 }
 
@@ -137,7 +146,8 @@ fn toggling_a_panel_retires_a_drag_even_when_the_bottom_strip_returns(cx: &mut T
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    cx.simulate_resize(gpui::size(px(800.), px(500.)));
+    // Narrow enough that the open panel leaves the bottom strip no room.
+    cx.simulate_resize(gpui::size(px(760.), px(500.)));
     desk.update(cx, selectable_work);
     run(&desk, "tabs-side", cx);
     run(&desk, "tabs-bottom", cx);

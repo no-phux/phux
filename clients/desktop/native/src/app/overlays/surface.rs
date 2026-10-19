@@ -189,7 +189,7 @@ pub(super) fn inset_radius(look: &Look, inset: f32) -> gpui::Pixels {
 }
 
 /// The line box GPUI gives `size` text at the default line height.
-pub(super) fn line_height(window: &Window, size: gpui::Pixels) -> gpui::Pixels {
+pub(crate) fn line_height(window: &Window, size: gpui::Pixels) -> gpui::Pixels {
     gpui::TextStyle {
         font_size: size.into(),
         ..Default::default()

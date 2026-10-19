@@ -28,7 +28,7 @@ pub(crate) use goto_search::GotoSearch;
 pub(crate) use inputs::{find_input, prepare};
 pub(crate) use path_panel::{PathItem, path_items};
 pub use surface::layer;
-pub(crate) use surface::{SHEET_GUTTER, card, corner, sheet, sheet_top};
+pub(crate) use surface::{SHEET_GUTTER, card, corner, line_height, sheet, sheet_top};
 
 use picking::Target;
 use ranking::{filter_sections, goto_id, prepare_goto, query_terms, rank_sections, section_ids};

@@ -231,8 +231,6 @@ blended! {
     pub struct Chrome {
         /// Titlebar height in points.
         pub titlebar: f32,
-        /// Status bar height in points. Zero hides it.
-        pub status: f32,
         /// Sidebar presence, 0 (hidden whatever the prefs say) to 1.
         pub sidebar: f32,
         pub tabs: TabsWhen,
@@ -337,7 +335,6 @@ pub const GLASS: Skin = Skin {
     },
     chrome: Chrome {
         titlebar: 44.,
-        status: 26.,
         sidebar: 1.,
         tabs: TabsWhen::Always,
         sheen: true,
@@ -394,7 +391,6 @@ pub const TERMINAL: Skin = Skin {
     },
     chrome: Chrome {
         titlebar: 28.,
-        status: 0.,
         sidebar: 0.,
         tabs: TabsWhen::Many,
         sheen: false,
@@ -582,7 +578,6 @@ mod tests {
         assert_eq!(late.chrome.tabs, TabsWhen::Many);
         assert!(!late.chrome.sheen);
         assert!(!late.motion.cursor_effects);
-        assert_eq!(late.chrome.status, 13.);
     }
 
     #[test]

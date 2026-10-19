@@ -70,12 +70,22 @@ pub(super) fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>
                     .into_iter()
                     .map(|(choice, label, id)| {
                         let handle = handle.clone();
+                        let current = modal == choice;
                         div().debug_selector(move || id.into()).child(
                             Button::new(id)
                                 .label(label)
                                 .ghost()
                                 .xsmall()
-                                .toggled(modal == choice)
+                                .toggled(current)
+                                // The mode in use reads as chosen: filled and
+                                // in full ink; the others step back.
+                                .when(current, |mode| {
+                                    mode.bg(from_hex(&colors.active))
+                                        .text_color(from_hex(&colors.theme.foreground))
+                                })
+                                .when(!current, |mode| {
+                                    mode.text_color(from_hex(&colors.subtext))
+                                })
                                 .on_click(move |_, window, cx| {
                                     let _ = handle.update(cx, |desk, cx| {
                                         if desk.modal != choice {

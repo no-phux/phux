@@ -308,6 +308,8 @@ fn only_the_caret_changes_disclosure_and_equal_names_on_other_hosts_stay_open(
     cx: &mut TestAppContext,
 ) {
     let _dial = DeterministicDial::arm();
+    // Folding at once: with motion, the rows stay drawn while they spring shut.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let (handle, desk, _) = launch(cx);
     let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
     desk.update(cx, |desk, cx| {
