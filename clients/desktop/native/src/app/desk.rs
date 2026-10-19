@@ -124,6 +124,7 @@ pub enum Modal {
     KillSession {
         name: String,
         session: u32,
+        target: Option<SessionRenameTarget>,
     },
     WindowSession,
     /// Every open native window, its session, host and tabs.

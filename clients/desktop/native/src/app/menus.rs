@@ -519,6 +519,7 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
         .gap(),
     );
     if !designated {
+        let target = desk.rename_session_target(id);
         let name = name.to_owned();
         items.push(
             MenuItem::action(
@@ -528,6 +529,7 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
                         Modal::KillSession {
                             name: name.clone(),
                             session: id,
+                            target: target.clone(),
                         },
                         window,
                         cx,
