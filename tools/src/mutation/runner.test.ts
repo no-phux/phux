@@ -113,6 +113,112 @@ test.each([
   10_000,
 );
 
+test("stopInvocation never adopts an already-reaped leader", async () => {
+  const child = Bun.spawn([process.execPath, "-e", ""], { stdio: ["ignore", "ignore", "ignore"] });
+  await child.exited;
+  expect(await stopInvocation(child, 0)).toEqual({ tracked_pids: [], escalated_pids: [] });
+});
+
+/** Exercise the actual CLI with a checkout-local stand-in for process discovery. */
+function mutationWithPs(dir: string, tool: string, script: string) {
+  writeFileSync(
+    join(dir, "ps"),
+    `#!${process.execPath}\nimport { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(dir, "discovery-pid"))}, String(process.pid));
+${script}`,
+    { mode: 0o755 },
+  );
+  const output = join(dir, "report");
+  const runner = Bun.spawn(
+    [
+      process.execPath,
+      join(ROOT, "tools/main.ts"),
+      "mutation-run",
+      "--root",
+      dir,
+      "--output",
+      output,
+      "--run-timeout",
+      "1",
+    ],
+    {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH ?? ""}`,
+        CARGO_MUTANTS_BIN: tool,
+        FAKE_EXIT_ON_SIGINT: "1",
+        FAKE_DEPTH: "2",
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  return { runner, output };
+}
+
+test(
+  "mutation-run: process discovery tolerates a busy host without abandoning cleanup",
+  () =>
+    withFakeTool(async (dir, tool) => {
+      const ps = Bun.which("ps");
+      expect(ps).not.toBeNull();
+      const { runner, output } = mutationWithPs(
+        dir,
+        tool,
+        `
+await Bun.sleep(1200);
+// Fill both pipes before forwarding the real snapshot.
+process.stdout.write("\\n".repeat(256 * 1024));
+process.stderr.write("diagnostic".repeat(32 * 1024));
+const result = Bun.spawnSync([${JSON.stringify(ps)}, ...process.argv.slice(2)], { stdio: ["ignore", "inherit", "inherit"] });
+process.exit(result.exitCode);
+`,
+      );
+      try {
+        expect(await runner.exited).toBe(1);
+        const summary = table(JSON.parse(readFileSync(join(output, "summary.json"), "utf8")));
+        expect(summary["error"]).toContain("timed out after 1 seconds");
+        expect(summary["cleanup"]).toMatchObject({
+          tracked_pids: pids(dir).toSorted((a, b) => a - b),
+          escalated_pids: pids(dir)
+            .slice(1)
+            .toSorted((a, b) => a - b),
+        });
+        await eventually(() => survivors(dir, tool).length === 0);
+      } finally {
+        runner.kill("SIGKILL");
+      }
+    }),
+  20_000,
+);
+
+test.each([
+  ["fails", 'console.error("discovery refused"); process.exit(23);', "discovery refused"],
+  ["hangs", "setInterval(() => {}, 1000);", "SIGKILL"],
+])(
+  "mutation-run: discovery that %s fails closed without signalling the invocation",
+  (_, script, message) =>
+    withFakeTool(async (dir, tool) => {
+      const { runner, output } = mutationWithPs(dir, tool, script);
+      const started = performance.now();
+      try {
+        expect(await runner.exited).toBe(1);
+        expect(performance.now() - started).toBeLessThan(10_000);
+        const summary = table(JSON.parse(readFileSync(join(output, "summary.json"), "utf8")));
+        expect(summary["status"]).toBe("tool_error");
+        expect(summary["error"]).toContain(message);
+        expect(summary["cleanup"]).toBeUndefined();
+        const discoveryPid = readFileSync(join(dir, "discovery-pid"), "utf8");
+        const discovery = Bun.spawnSync(["ps", "-p", discoveryPid, "-o", "command="]);
+        expect(discovery.stdout.toString()).not.toContain(join(dir, "ps"));
+        expect(pids(dir)).toHaveLength(3);
+        expect(survivors(dir, tool)).toEqual(pids(dir));
+      } finally {
+        runner.kill("SIGKILL");
+      }
+    }),
+  15_000,
+);
+
 test.each([
   ["SIGTERM", [], 143, "interrupted", "interrupted by SIGTERM"],
   ["an invocation timeout", ["--run-timeout", "1"], 1, "tool_error", "timed out after 1 seconds"],
