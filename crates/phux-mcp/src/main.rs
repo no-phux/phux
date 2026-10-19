@@ -40,6 +40,7 @@ mod operation_tests;
 mod operations;
 mod org_tools;
 mod pane_tools;
+mod perf_tools;
 mod plugin_tools;
 mod resource_tools;
 mod tool_table;

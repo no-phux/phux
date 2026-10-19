@@ -2072,5 +2072,106 @@
       "schema",
       "claims"
     ]
+  },
+  "phux_perf": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "role": {
+        "type": "string"
+      },
+      "pid": {
+        "type": "integer"
+      },
+      "captured_unix_ms": {
+        "type": "integer"
+      },
+      "uptime_ms": {
+        "type": "integer"
+      },
+      "process": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "metrics": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "value": {}
+          },
+          "required": [
+            "name",
+            "unit",
+            "kind"
+          ]
+        }
+      },
+      "rss_bytes": {
+        "type": "integer"
+      },
+      "alloc": {
+        "type": "object"
+      },
+      "stream_diagnostics": {},
+      "report": {
+        "type": "object"
+      },
+      "frames": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_perf_trace": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "path": {
+        "type": "string"
+      },
+      "desktop": {},
+      "server": {},
+      "server_error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "events": {
+        "type": "integer"
+      },
+      "dropped": {
+        "type": "integer"
+      },
+      "duration_ms": {
+        "type": "number"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "path"
+    ]
   }
 }
