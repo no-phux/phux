@@ -252,6 +252,7 @@ pub fn main() -> ExitCode {
                 cx.quit();
             }
         });
+    crate::devtools::shutdown();
     diag::exit_code()
 }
 

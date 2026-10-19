@@ -67,7 +67,7 @@ fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| is_dev_socket(path))
-        .filter(|path| UnixStream::connect(path).is_ok())
+        .filter(|path| live_or_prune(path))
         .map(|path| {
             let modified = std::fs::metadata(&path)
                 .and_then(|meta| meta.modified())
@@ -85,6 +85,20 @@ fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
             1,
         )
     })
+}
+
+/// Whether a desktop answers at `path`. A socket nobody listens on belongs
+/// to a desktop that was killed; it is removed so it is not probed again.
+fn live_or_prune(path: &Path) -> bool {
+    match UnixStream::connect(path) {
+        Ok(_) => true,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::ConnectionRefused {
+                let _ = std::fs::remove_file(path);
+            }
+            false
+        }
+    }
 }
 
 fn is_dev_socket(path: &Path) -> bool {
@@ -299,6 +313,10 @@ mod tests {
         });
         let found = find(&dir.join("server.sock")).unwrap_or_else(|r| panic!("{}", r.err.message));
         assert_eq!(found, serving);
+        assert!(
+            !dir.join("desktop-1.dev.sock").exists(),
+            "the dead desktop's socket is pruned"
+        );
         let refused = ask(&found, &json!({ "op": "perf" }), Duration::from_secs(5))
             .err()
             .unwrap_or_else(|| panic!("an ok:false reply is a refusal"));

@@ -299,6 +299,16 @@ accounting, which then shows as `heap` in `phux perf`. A server started
 with `PHUX_DEV=1` has heap accounting on from the start. Both use
 `PERF_CONTROL`, gated on `features_ext.PERF_CONTROL`.
 
+`PHUX_DEV=1` is the one dev-mode switch for every phux process
+(`phux_perf::dev`). In the desktop it also turns on the performance HUD and
+a dev socket, `desktop-<pid>.dev.sock` beside the server socket, that
+answers line JSON (`clients/desktop/native/src/devtools/socket.rs`).
+`phux perf --desktop [--watch S] [--json]` reads it, `phux perf trace
+--desktop` records the desktop and server onto one Perfetto timeline, and
+`phux perf hud on|off` toggles the HUD. Every `phux_perf` histogram becomes
+a trace span with no extra code, so a new hot path needs only a histogram
+in its crate's `TABLE` to show in reports, traces and the HUD.
+
 ## Mutation testing
 
 Regression tests belong in the ordinary suite; mutation runs are a bounded,
